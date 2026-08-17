@@ -2,9 +2,9 @@
 # docs/252 phase 9 (req 14) — install the agent CLIs this deployment selected.
 #
 # WHICH harnesses an install has is a build input, not a setting: SHIPIT_HARNESSES
-# (comma- or space-separated harness ids, defaulting to every harness this build
-# knows) is a build arg on
-# EVERY image that carries the CLIs, and this one script is what consumes it. Two
+# (comma- or space-separated harness ids, defaulting to DEFAULT_HARNESSES below) is
+# a build arg on EVERY image that carries the CLIs, and this one script is what
+# consumes it. Two
 # images install them independently — the orchestrator (docker/Dockerfile.prod,
 # which probes its own binaries for the picker and runs session naming locally) and
 # the session worker (docker/Dockerfile.session-worker.prod, where turns run — so a
@@ -35,6 +35,16 @@ INSTALL_REPORT="${SHIPIT_AGENTS_INSTALL_REPORT:-/opt/shipit/agents/installed.jso
 # src/server/orchestrator/agent-cli-install.test.ts, which fails the build when a
 # harness is added to the catalogue without an install mapping here.
 KNOWN_HARNESSES="claude codex opencode"
+
+# The harnesses an install gets when SHIPIT_HARNESSES says nothing. A SEPARATE,
+# hand-maintained list — deliberately NOT derived from KNOWN_HARNESSES (docs/271).
+#
+# Adding a harness above makes it installable and offerable at once; it does NOT
+# make it default-on. Shipping a newly integrated agent CLI to every install that
+# accepted the defaults is a product decision, so it stays off until someone edits
+# this line. `deployment/vps/setup.sh` carries the same list as its picker
+# preselection, and agent-cli-install.test.ts pins the two together.
+DEFAULT_HARNESSES="claude codex opencode"
 
 # The npm scope+name prefix each harness installs under. A prefix, not an exact
 # name: both CLIs ship platform-specific optional dependencies alongside the main
@@ -79,13 +89,11 @@ contains() {
 # default, and blanking the line in shipit.env gets the default rather than an
 # agentless image. Naming nothing explicitly (",") is the error below.
 #
-# The default is KNOWN_HARNESSES — every harness this build knows about (docs/271).
-# That is deliberately derived rather than spelled out: a new harness added to
-# that one list is then on by default everywhere, with no build arg, compose file
-# or installer to remember to update.
+# The default is DEFAULT_HARNESSES, the approved set — not every known harness.
+# See its declaration above for why the two lists are separate.
 raw_selection="${SHIPIT_HARNESSES:-}"
 if [ -z "$raw_selection" ]; then
-  raw_selection="$KNOWN_HARNESSES"
+  raw_selection="$DEFAULT_HARNESSES"
 fi
 selected=""
 for token in $(printf '%s' "$raw_selection" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do

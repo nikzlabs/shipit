@@ -150,8 +150,10 @@ updating in place (no host-side systemd watcher locally).
 ## Choosing which agent harnesses to install
 
 A **harness** is an agent CLI plus the adapter that normalizes its event stream. ShipIt installs
-**every harness it ships with** by default — today Claude Code, Codex, and OpenCode, and any added
-later without you having to opt in. `SHIPIT_HARNESSES` narrows that set:
+**Claude Code, Codex, and OpenCode** by default. A harness added to ShipIt later is offered in the
+installer's list straight away but is not preselected — the default set changes only deliberately, so
+an update never adds an agent CLI to your images behind your back. `SHIPIT_HARNESSES` narrows the
+set, or names one that is not in it:
 
 ```bash
 SHIPIT_HARNESSES=codex        # this install runs Codex only

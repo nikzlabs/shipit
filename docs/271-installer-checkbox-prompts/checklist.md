@@ -7,7 +7,10 @@
 - [x] Harness question converted to a three-row checklist
 - [x] `SHIPIT_HARNESSES` from the environment validated at the question, not at the image build
 - [x] Validators normalize like `install-agent-clis.sh` and reject separator-only values
-- [x] Empty harness selection falls back to `claude,codex` with a message
+- [x] Defaults: Tailscale alone for access; Claude Code + Codex + OpenCode for harnesses
+- [x] The default harness set is hand-approved, not derived — a new harness is offered but unchecked
+- [x] Tests pin offered-set to the catalogue and the two default lists to each other
+- [x] Empty harness selection falls back to the approved default set, with a message
 - [x] `--dry-run` / `SHIPIT_DRY_RUN=1` in the installer itself — asks both questions, changes nothing, needs no root
 - [x] pty-driven test over the extracted picker block, and over the real installer in dry mode
 - [x] `deployment/README.md` updated for both questions

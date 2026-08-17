@@ -28,11 +28,12 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
-      # Harnesses are not named here: the images default to every harness the
-      # build knows (docs/271), which is what the inner instance wants so it can
-      # exercise all of them. Naming a set here would also have to match the
-      # `onboarding` build block below — both name the same image tag, so
-      # whichever built last would silently win a disagreement.
+      # Harnesses are not named here: the images default to the approved set
+      # (install-agent-clis' DEFAULT_HARNESSES, docs/271), which today is every
+      # shipped harness — what the inner instance wants so it can exercise all of
+      # them. Naming a set here would also have to match the `onboarding` build
+      # block below — both name the same image tag, so whichever built last would
+      # silently win a disagreement.
     image: shipit-dogfood:local
     # REQUIRED in a Contained session (docs/263). A contained service must
     # declare a numeric, non-root runtime UID that is not the reserved resolver

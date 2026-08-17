@@ -179,24 +179,31 @@ SHIPIT_ENV_FILE="/etc/shipit/shipit.env"
 # the deliberate choice, since a public hostname is the bigger commitment.
 ACCESS_DEFAULT="tailscale"
 
-# The harnesses this installer offers, as "key|Label|hint" picker rows. ONE list:
-# the keys validate a scripted SHIPIT_HARNESSES, the rows are what an operator
-# sees, and EVERY key is selected by default — so adding a harness here is all it
-# takes for new installs to get it (docs/271). The image build derives the same
-# default from KNOWN_HARNESSES in docker/agent-cli/install-agent-clis.sh.
+# The harnesses this installer OFFERS, as "key|Label|hint" picker rows. Their keys
+# are also what validates a scripted SHIPIT_HARNESSES, so adding a row here makes
+# a harness both visible and accepted — one edit, no second list to remember.
 HARNESS_ROWS=(
   "claude|Claude Code|Anthropic's CLI"
   "codex|Codex|OpenAI's CLI"
   "opencode|OpenCode|open-source, bring your own provider"
 )
 SUPPORTED_HARNESSES=""
-HARNESS_DEFAULT=""
 for _row in "${HARNESS_ROWS[@]}"; do
-  _key="${_row%%|*}"
-  SUPPORTED_HARNESSES="${SUPPORTED_HARNESSES:+$SUPPORTED_HARNESSES }$_key"
-  HARNESS_DEFAULT="${HARNESS_DEFAULT:+$HARNESS_DEFAULT,}$_key"
+  SUPPORTED_HARNESSES="${SUPPORTED_HARNESSES:+$SUPPORTED_HARNESSES }${_row%%|*}"
 done
-unset _row _key
+unset _row
+
+# The harnesses PRESELECTED in that list. Deliberately its own list rather than
+# "every row" (docs/271): adding a harness above offers it to the operator right
+# away, but turning it on for everyone who accepts the defaults is a product
+# decision that happens here, on purpose. A newly added harness therefore appears
+# unchecked until this line names it.
+#
+# Mirrors DEFAULT_HARNESSES in docker/agent-cli/install-agent-clis.sh, which is
+# what an install that never sees this prompt gets; agent-cli-install.test.ts
+# fails if the two disagree. They are separate files because this question is
+# asked before the repo is cloned.
+HARNESS_DEFAULT="claude,codex,opencode"
 
 ACCESS=""
 INSTALL_CLOUDFLARE=false

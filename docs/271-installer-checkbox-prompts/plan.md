@@ -16,8 +16,8 @@ Access setup — how do you want to reach ShipIt from your browser?
   …
   [up/down] move    [space] select    [enter] confirm
 
-  > [*] Cloudflare Tunnel  public HTTPS domain, Zero Trust protected
-    [ ] Tailscale          private, reachable from your tailnet only
+  > [ ] Cloudflare Tunnel  public HTTPS domain, Zero Trust protected
+    [*] Tailscale          private, reachable from your tailnet only
 ```
 
 ## Why bash, and not a library
@@ -28,7 +28,7 @@ a consequence of *when* the question is asked, not a preference:
 
 `sudo bash -c "$(curl … setup.sh)"` runs the script on a **bare Ubuntu box**, and
 the access question is the **first thing** it does — before `apt-get`, before
-Docker, before git, before the repo is cloned (req 9). Any library has to be
+Docker, before git, before the repo is cloned (req 10). Any library has to be
 fetched before it can draw anything:
 
 - **`whiptail` / `dialog`** — usually present on Ubuntu Server, *not* guaranteed
@@ -78,7 +78,7 @@ shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
   as the empty string.
 - **No terminal, no prompt.** `shipit_pick` returns non-zero *without reading*
   when stdin or stdout is not a TTY, leaving the caller's preselection in
-  `SHIPIT_PICK_RESULT` (req 7). Every caller also gates its explanatory prose on
+  `SHIPIT_PICK_RESULT` (req 8). Every caller also gates its explanatory prose on
   `[ -t 0 ]`, so a piped install prints nothing about a question it never asked.
 - **Self-contained on purpose.** It cannot call a helper from outside the
   markers, because there is no library file to source at the moment it runs — the
@@ -90,37 +90,43 @@ shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
 | Question | Options | Preselected | Pre-answer |
 |---|---|---|---|
 | Access setup | `cloudflare`, `tailscale` | `tailscale` | `SHIPIT_ACCESS` |
-| Agent harnesses | every known harness | all of them | `SHIPIT_HARNESSES` |
+| Agent harnesses | every known harness | the approved set | `SHIPIT_HARNESSES` |
 
-## Defaults (req 6)
+## Defaults (reqs 6, 7)
 
 **Tailscale, alone, for access.** It reaches your own devices and nothing else,
 with no domain to own and no public URL to protect. Cloudflare is the deliberate
 choice, because a public hostname is the bigger commitment.
 
-**Every harness, for harnesses — including ones added later.** "Even when we add
-more" rules out a spelled-out default, so there are exactly two lists and each
-derives its default:
+**Claude Code, Codex and OpenCode for harnesses — an approved set, not a derived
+one.** Two questions that look like one, and the whole point of req 7 is that
+they have different answers:
 
-- `HARNESS_ROWS` in `setup.sh` — the picker rows. Their keys *are*
-  `SUPPORTED_HARNESSES` and `HARNESS_DEFAULT`, both built from the array at
-  startup, so adding a row offers the harness, validates it, and preselects it.
-- `KNOWN_HARNESSES` in `docker/agent-cli/install-agent-clis.sh` — the image
-  build. `SHIPIT_HARNESSES` empty now means "all of these", and every Dockerfile
-  declares `ARG SHIPIT_HARNESSES=` (empty) so the script decides rather than five
-  Dockerfiles each carrying a copy of the answer. Compose passes
-  `${SHIPIT_HARNESSES:-}` through for the same reason.
+| Question | Source of truth | Pinned to the catalogue? |
+|---|---|---|
+| Which harnesses may I *have*? | `KNOWN_HARNESSES` (build), `HARNESS_ROWS` (installer) | **Yes** — a harness in `HARNESSES` and nowhere else fails the build |
+| Which do I get by *default*? | `DEFAULT_HARNESSES` (build), `HARNESS_DEFAULT` (installer) | **No** — hand-maintained on purpose |
 
-Both are pinned to the TS catalogue by `agent-cli-install.test.ts`, so a harness
-added to `HARNESSES` and nowhere else fails the build with a message naming it.
+So integrating a harness makes it installable and visible in the picker
+immediately, sitting **unchecked**. Turning it on for everyone who accepts the
+defaults ships a new agent CLI to every install, which is a product decision, so
+it takes a deliberate edit to the two `*_DEFAULT*` lines. An earlier revision of
+this branch derived the default from the known set; that made "add a harness"
+and "ship it to everybody" the same commit, which is what req 7 rules out.
 
-The build default matters as much as the picker: an **unanswered** question
-deliberately persists nothing (see `resolve_harnesses`), so the build's default
-is what a `curl | bash` or local install actually gets. Leaving that at
-`claude,codex` would have made "all by default" true only for operators who saw
-the prompt.
+`agent-cli-install.test.ts` guards all four lists: the two "may have" ones must
+equal the catalogue, the two default ones must equal each other, and the default
+set may only name real harnesses (so a typo or a leftover id fails here rather
+than in a much later image build).
 
-This reverses docs/268 req 3, which kept OpenCode out of the default set while it
+Why the build's default matters as much as the picker's: an **unanswered**
+question deliberately persists nothing (see `resolve_harnesses`), so
+`DEFAULT_HARNESSES` is what a `curl | bash` or local install actually gets. Every
+Dockerfile declares `ARG SHIPIT_HARNESSES=` (empty) and compose passes
+`${SHIPIT_HARNESSES:-}` through, so that one line is the only place the answer
+lives.
+
+Adding OpenCode to the set reverses docs/268 req 3, which kept it out while it
 was new. That doc records the supersession.
 
 **Access** was a 1/2/3/4 menu whose items 3 and 4 were "both" and "none". Since
@@ -132,7 +138,7 @@ counterpart of `SHIPIT_HARNESSES` and gives the non-interactive path a way to sa
 something other than the default, which the old typed prompt never had.
 
 The no-terminal access path is also a fix rather than a preservation — see
-requirements.md req 7 for what the old unconditional `read` did under
+requirements.md req 8 for what the old unconditional `read` did under
 `curl | bash`.
 
 **Harnesses** was a typed comma-separated list. The picker cannot produce an

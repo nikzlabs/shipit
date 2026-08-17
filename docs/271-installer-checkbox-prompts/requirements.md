@@ -27,19 +27,20 @@ list for the other. They should be a keyboard-driven checkbox list instead.
    later.
 5. Everything the installer does after each answer is unchanged.
 
+6. The options preselected when the list first appears are:
+   - **Access:** Tailscale, and only Tailscale.
+   - **Harnesses:** Claude Code, Codex, and OpenCode.
+7. The default harness set is approved by a human, not derived. A harness added
+   to ShipIt is offered in the list straight away, but stays **unchecked** until
+   someone adds it to the approved set.
+
 ## Requirements that preserve existing behaviour
 
 These are not new asks. They record what the installer already does, so that
-changing the prompt does not change the install.
+changing the prompt does not change the install. (Requirements 6 and 7 above
+deliberately do change it — see the resolved questions.)
 
-6. The options preselected when the list first appears are:
-   - **Access:** Tailscale, and only Tailscale.
-   - **Harnesses:** every harness this ShipIt has. Adding a harness later must
-     make it default-on without anyone remembering to update a default.
-
-   This is a change of defaults, not a preservation of them — see the resolved
-   question below.
-7. An install with no terminal to prompt on proceeds with those defaults instead
+8. An install with no terminal to prompt on proceeds with those defaults instead
    of hanging or failing — the `curl | bash` and CI paths stay non-interactive.
 
    The harness question already worked this way. The access question did **not**:
@@ -47,11 +48,11 @@ changing the prompt does not change the install.
    `curl | bash` the read swallowed the script's own next line as the answer and
    died on "choose 1, 2, 3, or 4". This requirement is therefore a fix there, not
    a preservation.
-8. A pre-set `SHIPIT_HARNESSES` still skips the harness question and is used
+9. A pre-set `SHIPIT_HARNESSES` still skips the harness question and is used
    as-is — including the mixed-case and spaced forms the image build accepts
    (`Claude, Codex`).
-9. The installer needs nothing installed on the host to draw the list. It runs on
-   a bare Ubuntu box before Docker, `jq`, or the repo are there.
+10. The installer needs nothing installed on the host to draw the list. It runs on
+    a bare Ubuntu box before Docker, `jq`, or the repo are there.
 
 ## Out of scope
 
@@ -74,13 +75,21 @@ the only default. For harnesses, all should be enabled by default, even when we
 add more." Requirement 6 was rewritten from the previous defaults (Cloudflare;
 Claude Code and Codex) to say this.
 
-Two consequences he was told about rather than asked:
+One consequence he was told about rather than asked: the harness default is
+everywhere, not only in the VPS picker. An unanswered question falls through to
+the image build's own default, so leaving that at `claude,codex` would have made
+the new default true only for operators who saw the prompt.
 
-- The harness default is now **every** harness, everywhere — not only in the VPS
-  picker. An unanswered question falls through to the image build's own default,
-  so leaving that at `claude,codex` would have made "all by default" true only
-  for operators who saw the prompt. The build default is now derived from
-  `KNOWN_HARNESSES`, which is also what "even when we add more" requires.
-- That reverses **docs/268 req 3**, which put OpenCode outside the default set
-  when it was new. Recorded there too; this instruction is the later one and
-  wins.
+That reverses **docs/268 req 3**, which put OpenCode outside the default set when
+it was new. Recorded there too; this instruction is the later one and wins.
+
+**2026-08-17 — does a newly added harness become default-on by itself?** No.
+Nik: "today's default is 'claude code, codex, opencode', but when we add a new
+harness, it doesn't become the new default until I approve it." Requirement 7
+records this.
+
+The first implementation had derived the default from the list of *known*
+harnesses, so adding one turned it on for everybody. That is now two separate
+lists — what is offered, and what is preselected — and only the first is pinned
+to the catalogue. A new harness is therefore visible and installable at once, and
+unchecked until the approved list names it.

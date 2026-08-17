@@ -23,7 +23,7 @@ import { execFileSync } from "node:child_process";
  * instead of living in a sourced library file, because the installer runs
  * standalone — `sudo bash -c "$(curl ... setup.sh)"` asks the access question
  * before the repo is cloned, so there is no second file to source at that point
- * (requirements.md req 9).
+ * (requirements.md req 10).
  */
 const SETUP_SH = fileURLToPath(
   new URL("../../../../deployment/vps/setup.sh", import.meta.url),
@@ -139,7 +139,7 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
   });
 
   it("without a terminal, answers with the preselection instead of prompting", () => {
-    // The curl|bash and CI paths land here: no prompt, today's default (req 7).
+    // The curl|bash and CI paths land here: no prompt, today's default (req 8).
     const out = execFileSync("bash", [driverPath], {
       input: "",
       encoding: "utf8",
@@ -277,7 +277,7 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
     });
 
     it("reports the defaults when nothing is preset and nothing can be asked", () => {
-      // Tailscale-only access, every harness (docs/271 reqs 6a/6b).
+      // Tailscale-only access, the approved harness set (docs/271 reqs 6, 7).
       const out = dryRun();
       expect(out).toContain("run tailscale.sh");
       expect(out).not.toContain("run cloudflare.sh");
