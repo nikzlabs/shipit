@@ -1,5 +1,5 @@
 import { Fragment, useState, useMemo } from "react";
-import { ICON_SIZE } from "../design-tokens.js";
+import { INSET_FOCUS_RING, ICON_SIZE } from "../design-tokens.js";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import { formatTokenCount, getContextLevel } from "../utils/model-info.js";
@@ -277,7 +277,7 @@ export function ContextDial({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-(--color-bg-hover) transition-colors"
+          className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-(--color-bg-hover) transition-colors ${INSET_FOCUS_RING}`}
           aria-label={`Context usage: ${Math.round(percentage)}%${
             running ? `, ${RUNNING_FIGURE_TITLE[running.kind]}: ${formatCost(running.usd)}` : ""
           }`}

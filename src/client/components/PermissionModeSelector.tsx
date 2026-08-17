@@ -1,5 +1,5 @@
 import { NotepadIcon, ShieldCheckIcon, FastForwardIcon, CheckIcon } from "@phosphor-icons/react";
-import { ICON_SIZE } from "../design-tokens.js";
+import { INSET_FOCUS_RING, ICON_SIZE } from "../design-tokens.js";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -134,7 +134,7 @@ export function PermissionModeSelector({
           <button
             aria-label="Permission mode"
             disabled={disabled}
-            className={`flex items-center gap-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+            className={`flex items-center gap-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${INSET_FOCUS_RING} ${
               isAuto
                 ? "p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
                 : "px-1.5 py-1.5 bg-(--color-accent)/15 text-(--color-accent) hover:bg-(--color-accent)/25"
