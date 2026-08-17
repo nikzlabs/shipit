@@ -52,7 +52,7 @@ RUN corepack enable
 # Pinned, and kept in lockstep with Dockerfile.session-worker.prod — see the
 # canonical comment there for why a mutable tag here costs a multi-GB rebuild of
 # every layer below it. Renovate owns the bump (renovate.json, `uv` rule).
-COPY --from=ghcr.io/astral-sh/uv:0.12.3 /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc /uv /uvx /usr/local/bin/
 
 # Agent CLIs: lockfile-pinned, integrity-verified install (docs/141). See the
 # canonical comment in Dockerfile.session-worker.prod. docs/252 phase 9 — the

@@ -39,15 +39,25 @@ describe("external image references are pinned", () => {
   // layer below the reference. `COPY --from=ghcr.io/astral-sh/uv:latest` sat
   // above the Playwright, JDK, Android SDK and Gradle layers and rebuilt all of
   // them on Astral's release schedule (roughly weekly).
-  it.each(ALL_IMAGES)("%s pins every image it copies from", (dockerfile) => {
+  it.each(ALL_IMAGES)("%s pins every image it copies from to a digest", (dockerfile) => {
     const copies = instructions(dockerfile).match(/^COPY\s+--from=\S+/gm) ?? [];
     for (const copy of copies) {
       const ref = copy.replace(/^COPY\s+--from=/, "");
       // A bare name with no registry/tag is an earlier build STAGE, not an image.
       if (!ref.includes("/") && !ref.includes(":")) continue;
-      expect(ref, `${dockerfile}: ${copy} must pin a version tag or digest`).not.toMatch(/:latest$/);
-      expect(ref, `${dockerfile}: ${copy} must pin a version tag or digest`).toMatch(/[:@]/);
+      expect(ref, `${dockerfile}: ${copy} must pin a sha256 digest`).toMatch(/@sha256:[0-9a-f]{64}$/);
     }
+  });
+
+  // The two worker images ship the same tools to the same agent; a uv that
+  // differs between them makes a dev-only or prod-only Python failure that
+  // reproduces nowhere else.
+  it("both session-worker images pin the same uv", () => {
+    const uvRef = (dockerfile: string) =>
+      /^COPY\s+--from=(ghcr\.io\/astral-sh\/uv\S+)/m.exec(instructions(dockerfile))?.[1];
+    const prod = uvRef("Dockerfile.session-worker.prod");
+    expect(prod).toMatch(/@sha256:[0-9a-f]{64}$/);
+    expect(uvRef("Dockerfile.session-worker.dev")).toBe(prod);
   });
 
   // A digest is the stronger pin and is what the node bases use, but an explicit
