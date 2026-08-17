@@ -20,37 +20,71 @@
  *      it is a real reading and dropping it would be a lie of omission — but
  *      nothing is known to produce one.
  *
- * ## The contract is reverse-engineered, and the parser is written that way
+ * ## The payload, as measured
  *
- * `GET https://api.z.ai/api/monitor/usage/quota/limit` is the internal endpoint
- * behind Z.ai's own subscription UI. It is **not documented by Z.ai** and can
- * change without notice, so every field name below is a guess informed by
- * community implementations rather than a published contract.
+ * `GET https://api.z.ai/api/monitor/usage/quota/limit` is undocumented — it is
+ * the internal endpoint behind Z.ai's own subscription UI. It was exercised
+ * against a real coding-plan key on 2026-08-17, and **every field guess taken
+ * from community reports was wrong**, which is the single most useful fact in
+ * this file:
  *
- * That is why {@link parseZaiQuota} **fails closed**: anything it cannot read
- * completely and unambiguously yields no window, and a payload that yields no
- * window at all yields no snapshot. req 10 prefers no indicator to a fictional
- * one, and a quota bar that is quietly wrong is the same dishonesty phase 5
- * refused to build a failover cutoff over. Three specific choices follow from
- * it, each of which would be over-cautious against a documented API:
+ * ```jsonc
+ * { "code": 200, "msg": "Operation successful", "success": true,
+ *   "data": {
+ *     "level": "lite",                       // the PLAN TIER
+ *     "limits": [
+ *       // the 5-hour window, before it has been opened by any usage:
+ *       { "type": "CREDIT_LIMIT", "unit": 3, "number": 5,
+ *         "usage": 2000, "remaining": 2000, "currentValue": 0, "percentage": 0 },
+ *       // the long window:
+ *       { "type": "CREDIT_LIMIT", "unit": 6, "number": 1,
+ *         "usage": 10000, "remaining": 9210, "currentValue": 789,
+ *         "percentage": 7, "nextResetTime": 1787407089998 }
+ *     ] } }
+ * ```
  *
- *   - **A window needs a percentage AND a reset time.** An entry with only one
- *     of them is more likely a field we misread than a window that is half
- *     reported, so it is discarded rather than rendered as a bare countdown.
- *   - **A percentage outside 0–100 is a misread, not a value to clamp.** If
- *     `usage` turns out to be a token count, clamping would render "100% used"
- *     for a plan that is barely touched. The whole entry is dropped instead.
- *   - **Windows are told apart by their reset horizon, not by the `unit` field.**
- *     Community reports say a numeric `unit` distinguishes the 5-hour window
- *     from the weekly one, but not which value means which — and guessing wrong
- *     swaps the two meters silently. A reset that falls within ~5h is the
- *     session window and one beyond it is the weekly window, which needs no
- *     magic number and checks itself. Two entries landing in the same bucket
- *     are ambiguous and that bucket reports nothing.
+ * Four things it establishes, each of which a plausible reading gets backwards:
  *
- * Until this has been exercised against a real GLM coding-plan key, the honest
- * summary is that a correct payload renders correctly and every other payload
- * renders nothing.
+ *   - **`usage` is the ALLOWANCE, not the consumption**, and certainly not a
+ *     percentage. Consumption is `usage - remaining`. A reader that treated
+ *     `usage` as a percent — which is what the community field names suggested —
+ *     would have reported this plan as 100% spent while it sat at 0.05%.
+ *   - **`currentValue` lags and must not be used.** After one small call
+ *     `remaining` moved 2000 → 1999 while `currentValue` stayed at 0, so the two
+ *     disagree inside a single entry. `usage - remaining` is self-consistent in
+ *     both entries; `currentValue` is not.
+ *   - **`percentage` is unreliable at the low end.** The same entry reported
+ *     `1` for a true 0.05%. It is kept only as a fallback for a payload that
+ *     omits `remaining`, never in preference to the exact fraction.
+ *   - **A window with no usage yet carries no `nextResetTime`.** The 5-hour
+ *     entry gained one the moment a request landed, resetting exactly 5.00 hours
+ *     later. So an absent reset is "no window is open", not a malformed payload.
+ *
+ * `unit` + `number` define the window length. **`unit: 3` is hours** — measured:
+ * `number: 5` produced a reset exactly five hours out. That is the only unit
+ * value this reader claims to know. `unit: 6` (`number: 1`) is the long window,
+ * whose absolute length is NOT established: its reset sat 4.85 days out and did
+ * not move between probes, which fits a monthly cycle as readily as a weekly
+ * one. So the long window is placed by its reset horizon and carries no
+ * `startedAt`, leaving the badge to draw its elapsed marker against the 7d
+ * constant it already assumes. See `docs/252-custom-models/plan.md`.
+ *
+ * ## The parser still fails closed
+ *
+ * The measurement pins today's contract; it does not make it a published one,
+ * and this endpoint can change without notice. So {@link parseZaiQuota}
+ * discards anything it cannot read completely, and the rules below are what
+ * turned a wrong-shaped payload into an empty pill rather than a fabricated
+ * "100% used" bar when the guesses were tested:
+ *
+ *   - **A window needs a consumed fraction AND a future reset time.**
+ *   - **A percentage outside 0–100, or a `remaining` outside `[0, usage]`, is a
+ *     misread field, not a value to clamp.** Clamping is right against a
+ *     documented API — Claude's reader does exactly that — and wrong here,
+ *     because being out of range is the evidence that the field is not what we
+ *     think it is.
+ *   - **Two windows that cannot be told apart report nothing.** Ambiguity is
+ *     resolved by discarding, never by picking.
  */
 
 import type { LimitsProvider } from "../agents/types.js";
@@ -85,6 +119,13 @@ const WEEKLY_HORIZON_MS = WEEKLY_WINDOW_MS + 60 * 60_000;
 interface WindowSnapshot {
   session: SubscriptionLimitsWindow | null;
   weekly: SubscriptionLimitsWindow | null;
+  /**
+   * The plan tier, from the payload's `data.level` ("lite"). Carried on the
+   * snapshot rather than fetched separately, because unlike Claude and Codex —
+   * which read a tier out of a credentials file or a JWT claim — this one
+   * arrives in the same response as the numbers.
+   */
+  plan: string | null;
   at: number;
 }
 
@@ -151,7 +192,9 @@ export class ZaiLimitsProvider implements LimitsProvider {
     weekly: SubscriptionLimitsWindow | null,
     routeId: string,
   ): void {
-    this.eventLatest.set(routeId, { session, weekly, at: this.now() });
+    // An event carries no tier, and inventing one is the same class of fiction
+    // as inventing a percentage.
+    this.eventLatest.set(routeId, { session, weekly, plan: null, at: this.now() });
   }
 
   async fetch(routeId: string): Promise<SubscriptionLimits | null> {
@@ -172,9 +215,7 @@ export class ZaiLimitsProvider implements LimitsProvider {
       serviceId: this.serviceId,
       billingMode: this.billingMode,
       routeId,
-      // The payload carries no tier name we can trust, and inventing one is the
-      // same class of fiction as inventing a percentage.
-      plan: null,
+      plan: latest?.plan ?? null,
       session: latest?.session ?? null,
       weekly: latest?.weekly ?? null,
       fetchedAt: latest?.at ?? 0,
@@ -271,7 +312,12 @@ export class ZaiLimitsProvider implements LimitsProvider {
       return { routeId, outcome: "skipped" };
     }
     this.lockedUntil.delete(routeId);
-    this.apiLatest.set(routeId, { session: parsed.session, weekly: parsed.weekly, at: this.now() });
+    this.apiLatest.set(routeId, {
+      session: parsed.session,
+      weekly: parsed.weekly,
+      plan: parsed.plan,
+      at: this.now(),
+    });
     return { routeId, outcome: "updated" };
   }
 }
@@ -286,7 +332,28 @@ function pickFresher(a: WindowSnapshot | null, b: WindowSnapshot | null): Window
 // ---- Payload parsing ----
 
 /**
- * Read Z.ai's quota envelope into the two windows req 10's indicator renders.
+ * Milliseconds per `unit` value, for the unit values this reader has actually
+ * measured — which today is exactly one.
+ *
+ * `unit: 3` is hours: an entry with `number: 5` produced a `nextResetTime`
+ * exactly five hours after the request that opened the window. Nothing else is
+ * listed, because nothing else has been observed. `unit: 6` is deliberately
+ * ABSENT rather than guessed at: its window sat 4.85 days out and did not move
+ * between probes, which fits a monthly cycle as readily as a weekly one, and a
+ * wrong entry here would put a precise-looking `startedAt` on a window whose
+ * length we invented. An unlisted unit falls back to the reset horizon below,
+ * which is less precise and cannot be wrong in that particular way.
+ */
+const UNIT_MS: Record<number, number> = {
+  3: 60 * 60_000,
+};
+
+/** Longest window that belongs in the `session` slot rather than the long one. */
+const SESSION_SLOT_MAX_MS = 6 * 60 * 60_000;
+
+/**
+ * Read Z.ai's quota envelope into the two windows req 10's indicator renders,
+ * plus the plan tier.
  *
  * Exported for its own tests: this function is the whole fail-closed contract,
  * and the rules it enforces are stated in this module's docstring. Returns
@@ -296,118 +363,155 @@ function pickFresher(a: WindowSnapshot | null, b: WindowSnapshot | null): Window
 export function parseZaiQuota(
   body: unknown,
   now: number,
-): { session: SubscriptionLimitsWindow | null; weekly: SubscriptionLimitsWindow | null } | null {
-  const entries = readLimitEntries(body);
-  if (!entries) return null;
+): {
+  session: SubscriptionLimitsWindow | null;
+  weekly: SubscriptionLimitsWindow | null;
+  plan: string | null;
+} | null {
+  const root = readEnvelope(body);
+  if (!root) return null;
 
   let session: SubscriptionLimitsWindow | null = null;
   let weekly: SubscriptionLimitsWindow | null = null;
   let sessionAmbiguous = false;
   let weeklyAmbiguous = false;
 
-  for (const entry of entries) {
+  for (const entry of root.limits) {
     const read = readWindow(entry, now);
     if (!read) continue;
-    if (read.dueInMs <= SESSION_HORIZON_MS) {
+    if (read.isSessionSlot) {
       if (session) sessionAmbiguous = true;
       session = read.window;
-    } else if (read.dueInMs <= WEEKLY_HORIZON_MS) {
+    } else {
       if (weekly) weeklyAmbiguous = true;
       weekly = read.window;
     }
-    // A reset beyond a week belongs to no window this indicator renders
-    // (a monthly allowance, a subscription expiry) and is left alone.
   }
 
-  // Two entries in one bucket means the horizon rule could not tell them apart.
-  // Showing either would be a coin flip presented as a measurement.
+  // Two entries in one slot means neither the declared window length nor the
+  // reset horizon could tell them apart. Showing either would be a coin flip
+  // presented as a measurement.
   if (sessionAmbiguous) session = null;
   if (weeklyAmbiguous) weekly = null;
   if (!session && !weekly) return null;
-  return { session, weekly };
+  return { session, weekly, plan: root.plan };
 }
 
 /**
- * The `data.limits[]` array, tolerating an envelope that is one level flatter
- * than reported. Both shapes are guesses; accepting either costs nothing,
- * because every entry still has to parse completely to count.
+ * The `data.limits[]` array and `data.level`, tolerating an envelope one level
+ * flatter than the measured one. The flat form is a guess kept because it costs
+ * nothing — every entry still has to parse completely to count.
  */
-function readLimitEntries(body: unknown): Record<string, unknown>[] | null {
-  if (!body || typeof body !== "object") return null;
-  const root = body as Record<string, unknown>;
+function readEnvelope(body: unknown): { limits: Record<string, unknown>[]; plan: string | null } | null {
+  if (!isRecord(body)) return null;
   // An explicit failure envelope is a failure, whatever else it carries.
-  if (root.success === false) return null;
-  const data = isRecord(root.data) ? root.data : root;
-  const limits = Array.isArray(data.limits) ? data.limits : root.limits;
-  if (!Array.isArray(limits)) return null;
-  const entries = limits.filter(isRecord);
-  return entries.length > 0 ? entries : null;
+  if (body.success === false) return null;
+  const data = isRecord(body.data) ? body.data : body;
+  const raw = Array.isArray(data.limits) ? data.limits : body.limits;
+  if (!Array.isArray(raw)) return null;
+  const limits = raw.filter(isRecord);
+  if (limits.length === 0) return null;
+  // `level` is the plan tier ("lite"). Titled for display, since every other
+  // provider's `plan` is a proper noun ("Pro", "Max 20x") and this one arrives
+  // lowercase.
+  const level = typeof data.level === "string" ? data.level.trim() : "";
+  const plan = level ? level.charAt(0).toUpperCase() + level.slice(1) : null;
+  return { limits, plan };
 }
 
 /**
  * One `limits[]` entry, or `null` if it cannot be read completely.
  *
- * `dueInMs` comes back alongside the window because the caller classifies by
- * reset horizon rather than by the entry's own `unit` field — see the module
- * docstring for why.
+ * `isSessionSlot` is decided by the entry's DECLARED window length when its
+ * `unit` is one we have measured, and by the reset horizon otherwise. The
+ * declared length is preferred because it is the API's own statement rather
+ * than our inference from a timestamp — and it is what lets the 5-hour window
+ * carry an exact `startedAt`, so the badge's elapsed marker stops depending on
+ * a constant this vendor never agreed to.
  */
 function readWindow(
   entry: Record<string, unknown>,
   now: number,
-): { window: SubscriptionLimitsWindow; dueInMs: number } | null {
-  const usedPct = readPercent(entry);
+): { window: SubscriptionLimitsWindow; isSessionSlot: boolean } | null {
+  const usedPct = readConsumedPct(entry);
   if (usedPct === null) return null;
   const resetMs = readTimestamp(entry);
-  if (resetMs === null) return null;
-  const dueInMs = resetMs - now;
-  // A window that has already reset describes a period that has ended, so it is
-  // not evidence about now (`subscriptionWindowIsCurrent` says the same thing
-  // downstream). Reading one here would also misclassify it as the 5h window.
-  if (dueInMs <= 0) return null;
-  return { window: { usedPct, resetAt: new Date(resetMs).toISOString() }, dueInMs };
+  // No reset time means no window is open yet (the measured shape of an unused
+  // 5-hour window), and a reset already past describes a period that has ended.
+  // Neither is evidence about now — `subscriptionWindowIsCurrent` says the same
+  // thing downstream — and neither can be placed on a horizon.
+  if (resetMs === null || resetMs - now <= 0) return null;
+
+  const windowMs = readDeclaredWindowMs(entry);
+  const isSessionSlot = windowMs !== null
+    ? windowMs <= SESSION_SLOT_MAX_MS
+    : resetMs - now <= SESSION_HORIZON_MS;
+  // A window longer than a week that we could only place by horizon is not one
+  // of the two slots this indicator renders; drop it rather than file it as
+  // "7d". A DECLARED length is trusted even when long, because the API said it.
+  if (windowMs === null && !isSessionSlot && resetMs - now > WEEKLY_HORIZON_MS) return null;
+
+  return {
+    window: {
+      usedPct,
+      resetAt: new Date(resetMs).toISOString(),
+      ...(windowMs !== null ? { startedAt: new Date(resetMs - windowMs).toISOString() } : {}),
+    },
+    isSessionSlot,
+  };
 }
 
-const PERCENT_KEYS = [
-  "usage",
-  "usagePercent",
-  "usage_percent",
-  "used",
-  "usedPct",
-  "used_pct",
-  "utilization",
-  "percent",
-  "percentage",
-];
+/** The entry's declared window length, when its `unit` is one we have measured. */
+function readDeclaredWindowMs(entry: Record<string, unknown>): number | null {
+  const unit = entry.unit;
+  const number = entry.number;
+  if (typeof unit !== "number" || typeof number !== "number") return null;
+  if (!Number.isFinite(number) || number <= 0) return null;
+  const unitMs = UNIT_MS[unit];
+  return unitMs === undefined ? null : unitMs * number;
+}
 
 /**
- * The entry's consumed percentage, on a 0–100 scale.
+ * The fraction of this window's allowance already consumed, 0–100.
  *
- * A value outside that range is rejected rather than clamped. Against a
- * documented API clamping is right — Claude's reader does exactly that, and its
- * comment records the bug that came from treating a small value as a fraction.
- * Here the field NAMES are the guess, so an out-of-range number is evidence we
- * read the wrong field (a token count, a byte total), and clamping it to 100
- * would paint a full bar over an untouched plan.
+ * **`usage` is the allowance and `remaining` is what is left**, so consumption
+ * is their difference — measured, and the correction that matters most in this
+ * file. Reading `usage` as a percentage (the shape community reports suggested)
+ * turns a plan at 0.05% into one reporting 100%.
+ *
+ * `percentage` is a fallback only. The same entry that was truly at 0.05%
+ * reported `1`, so it is the coarser answer; and `currentValue` is not used at
+ * all, because it lagged `remaining` inside a single entry.
+ *
+ * Out-of-range values are rejected rather than clamped: being out of range is
+ * the evidence that the field is not what we think it is.
  */
-function readPercent(entry: Record<string, unknown>): number | null {
-  for (const key of PERCENT_KEYS) {
-    const value = entry[key];
-    if (typeof value !== "number" || !Number.isFinite(value)) continue;
-    if (value < 0 || value > 100) return null;
-    return value;
+function readConsumedPct(entry: Record<string, unknown>): number | null {
+  const allowance = entry.usage;
+  const remaining = entry.remaining;
+  if (
+    typeof allowance === "number" && Number.isFinite(allowance) && allowance > 0
+    && typeof remaining === "number" && Number.isFinite(remaining)
+    && remaining >= 0 && remaining <= allowance
+  ) {
+    return ((allowance - remaining) / allowance) * 100;
+  }
+  const percentage = entry.percentage;
+  if (typeof percentage === "number" && Number.isFinite(percentage) && percentage >= 0 && percentage <= 100) {
+    return percentage;
   }
   return null;
 }
 
 const RESET_KEYS = [
+  "nextResetTime",
+  "next_reset_time",
   "resetTime",
   "reset_time",
   "resetAt",
   "reset_at",
   "resetsAt",
   "resets_at",
-  "nextResetTime",
-  "next_reset_time",
 ];
 
 /** The entry's reset instant as epoch ms, from an ISO string or an epoch number. */

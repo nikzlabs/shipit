@@ -1790,19 +1790,47 @@ a credential is added and at boot, a re-read when its secret is replaced, and a
 forget when it is removed. `setRateLimits()` is still honoured, because a
 reading that does arrive is a real one, but nothing is known to produce one.
 
-**The contract is reverse-engineered, so the parser fails closed.** The endpoint
-is internal to Z.ai's own subscription UI and is not documented; every field name
-is a guess informed by community implementations. `parseZaiQuota` therefore
-discards anything it cannot read completely: a window needs **both** a
-percentage and a future reset time, a percentage outside 0–100 is treated as
-evidence we read the wrong field rather than clamped to 100, and two windows
-that cannot be told apart report nothing. The rule that most repays reading is
-the classification one — community reports say a numeric `unit` distinguishes
-the 5-hour window from the weekly one but not which value means which, so the
-reader ignores `unit` and classifies by **reset horizon** instead, which needs no
-magic number and checks itself. A payload that has changed under us renders an
-empty pill, never a plausible one; req 10 prefers the first, and phase 5 refused
-to build a control over the second.
+**The contract is undocumented, and measuring it invalidated every guess.** The
+endpoint is internal to Z.ai's own subscription UI. It was first written against
+community-reported field names, then exercised against a real coding-plan key —
+and the measurement is the most useful thing in the file, because the guesses
+were not merely incomplete, they were **backwards**:
+
+| Field | Guessed | Measured |
+|---|---|---|
+| `usage` | the consumed percentage | the **allowance** (2000, 10000) |
+| consumption | — | `usage - remaining` |
+| `currentValue` | — | **lags**; stayed 0 while `remaining` moved 2000 → 1999 |
+| `percentage` | the number to use | reported `1` for a true `0.05` |
+| a missing reset | malformed | **no window is open yet** — it appears on first use |
+| `unit` / `number` | an opaque discriminator | the window LENGTH: `unit: 3` is hours |
+| plan tier | not present | `data.level` (`"lite"`) |
+
+A reader that took `usage` as a percentage would have reported this plan at
+**100% spent while it sat at 0.05%**. What stopped it was the rule that an
+out-of-range value is a misread field rather than something to clamp: 2000 is
+not a percentage, so the entry was discarded and the pill stayed empty. That is
+the fail-closed design doing exactly the job it was written for, on the first
+real payload it ever saw — and it is why the rule survives the measurement
+rather than being relaxed by it.
+
+So consumption is now derived from `usage - remaining` (exact, and
+self-consistent across both entries, which `currentValue` is not), and
+`percentage` is kept only as a fallback for a payload that omits `remaining`.
+
+**`unit: 3` is hours, and that is the only unit this reader claims to know.** It
+was established, not assumed: an entry declaring `number: 5` produced a reset
+exactly 5.00 hours after the request that opened the window. Knowing the
+declared length is what lets the 5-hour window carry a real `startedAt`, so the
+badge's elapsed marker stops depending on a constant Z.ai never agreed to. The
+long window (`unit: 6, number: 1`) is deliberately **not** in the unit table:
+its reset sat 4.85 days out and did not move between probes, which fits a
+monthly cycle as readily as a weekly one. It is placed by reset horizon instead
+and carries no `startedAt` — less precise, and unable to be wrong in the
+particular way a guessed length would be. **The one open question this leaves**
+is the label: `SubscriptionLimits` has only `session` and `weekly` slots, so a
+monthly allowance would render under a "7d" heading. The number and the
+countdown are right either way; only the heading is at risk.
 
 **Switching it on was one line, and that is the load-bearing part.** Adding
 `zai-plan-usage` to `IMPLEMENTED_QUOTA_INTEGRATIONS` gave GLM's rows a usage
@@ -1819,11 +1847,11 @@ than `modeReportsQuota`, because Codex's numbers can only ever be received. And
 the refresh button's failure copy now names the service it actually called,
 rather than telling a GLM user that Anthropic rate-limited them.
 
-**What is not done: verification.** Every number above is a guess until the
-reader has been run against a real GLM coding-plan key, which cannot be done
-from a session container. The fail-closed parser is what makes shipping it
-before that defensible — the failure mode is an empty pill — but planning#339
-stays open on its own acceptance until someone with a key exercises it.
+**Verified end-to-end** against a live coding-plan key: the reader returns the
+5-hour window at its exact fraction with a derived `startedAt`, the long window,
+and `plan: "Lite"`. The test fixture is that payload transcribed verbatim rather
+than paraphrased — a fixture that "looks about right" would re-admit precisely
+the misreadings the real shape caused.
 
 ## The default for a session that never picked a model (planning#353)
 

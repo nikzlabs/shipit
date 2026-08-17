@@ -39,13 +39,17 @@ table — a phase is checked off when its PR has merged.
       store/Settings key. Deferred out of phase 2 (the type was declared and unread); done
       now. The credential ROOT on disk stays harness-keyed on purpose, and a completed
       sign-in fans out via `refreshAuthForLogin` instead of naming one harness.
-- [ ] GLM's `zai-plan-usage` quota reader — tracked as **planning#339**. `ZaiLimitsProvider`
-      is built, registered and under test, and `zai-plan-usage` has joined
-      `IMPLEMENTED_QUOTA_INTEGRATIONS`, so GLM's rows now carry a usage read-out, a refresh
-      button and failover cutoffs. **Still open on the last acceptance bullet**: the payload
-      contract is reverse-engineered and has not been exercised against a real GLM
-      coding-plan key, which cannot be done from a session container. The parser fails closed
-      until it is, so an unverified guess renders nothing rather than a wrong number.
+- [x] GLM's `zai-plan-usage` quota reader (**planning#339**). `ZaiLimitsProvider` is built,
+      registered and under test, and `zai-plan-usage` has joined
+      `IMPLEMENTED_QUOTA_INTEGRATIONS`, so GLM's rows carry a usage read-out, a refresh
+      button, a plan tier and failover cutoffs. **Verified against a live coding-plan key**,
+      which is what turned it from plausible to correct: every community-reported field name
+      was wrong, and `usage` — read as a percentage — is the plan's ALLOWANCE, so the first
+      draft would have reported a plan at 0.05% as fully spent. The fail-closed rule that an
+      out-of-range value is a misread field rather than something to clamp is what caught it.
+      Req 15 is now met on GLM's quota. One question is left for the label, not the number:
+      the long window's absolute length is unestablished, so a monthly allowance would render
+      under `SubscriptionLimits`' "7d" heading.
 
 ## Phase 5 — Credential-failure policy
 

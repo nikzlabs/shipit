@@ -2,22 +2,50 @@ import { describe, it, expect, vi } from "vitest";
 import { ZaiLimitsProvider, parseZaiQuota, ZAI_QUOTA_URL } from "./zai-limits-provider.js";
 
 const ROUTE = "cred_glm";
-const NOW = Date.parse("2026-06-01T00:00:00Z");
+const NOW = Date.parse("2026-08-17T17:30:00Z");
 const HOUR = 60 * 60_000;
 
-/** A well-formed envelope: a 5h window 2h out, a weekly window 3 days out. */
-function goodBody(sessionPct = 42, weeklyPct = 7): unknown {
-  return {
-    code: 200,
-    success: true,
-    data: {
-      limits: [
-        { unit: 1, usage: sessionPct, resetTime: new Date(NOW + 2 * HOUR).toISOString() },
-        { unit: 2, usage: weeklyPct, resetTime: new Date(NOW + 72 * HOUR).toISOString() },
-      ],
-    },
-  };
-}
+/**
+ * **The measured payload**, captured verbatim from `api.z.ai` against a real
+ * coding-plan key on 2026-08-17, after one small request had opened the 5-hour
+ * window. Everything else in this file is a variation on it.
+ *
+ * It is transcribed rather than paraphrased because every plausible reading of
+ * these field names is wrong in some way (see the module docstring), so a
+ * fixture that "looks about right" would re-admit exactly the bugs the shape
+ * caused. `usage` is the ALLOWANCE, `remaining` is what is left, `currentValue`
+ * lags both, and `percentage` reports 1 for a true 0.05%.
+ */
+const MEASURED = {
+  code: 200,
+  msg: "Operation successful",
+  success: true,
+  data: {
+    level: "lite",
+    limits: [
+      {
+        type: "CREDIT_LIMIT",
+        unit: 3,
+        number: 5,
+        usage: 2000,
+        currentValue: 0,
+        remaining: 1999,
+        percentage: 1,
+        nextResetTime: NOW + 5 * HOUR,
+      },
+      {
+        type: "CREDIT_LIMIT",
+        unit: 6,
+        number: 1,
+        usage: 10000,
+        currentValue: 789,
+        remaining: 9210,
+        percentage: 7,
+        nextResetTime: NOW + 116 * HOUR,
+      },
+    ],
+  },
+};
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -40,54 +68,124 @@ function makeProvider(opts: {
   });
 }
 
-describe("parseZaiQuota", () => {
-  it("reads the documented envelope into a session and a weekly window", () => {
-    const parsed = parseZaiQuota(goodBody(), NOW);
-    expect(parsed?.session).toEqual({ usedPct: 42, resetAt: new Date(NOW + 2 * HOUR).toISOString() });
-    expect(parsed?.weekly).toEqual({ usedPct: 7, resetAt: new Date(NOW + 72 * HOUR).toISOString() });
+describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
+  it("reads the measured envelope into both windows and the plan tier", () => {
+    const parsed = parseZaiQuota(MEASURED, NOW);
+    expect(parsed).toEqual({
+      session: {
+        // (2000 - 1999) / 2000 — the EXACT fraction, not the payload's coarse
+        // `percentage: 1`.
+        usedPct: 0.05,
+        resetAt: new Date(NOW + 5 * HOUR).toISOString(),
+        // `unit: 3, number: 5` is a measured five hours, so the window's start
+        // is known rather than assumed from the badge's constant.
+        startedAt: new Date(NOW).toISOString(),
+      },
+      weekly: {
+        usedPct: 7.9,
+        resetAt: new Date(NOW + 116 * HOUR).toISOString(),
+        // No `startedAt`: `unit: 6`'s length is not established, and a precise
+        // marker drawn from a guessed length is worse than none.
+      },
+      plan: "Lite",
+    });
   });
 
-  it("classifies by reset horizon, not by the unit field", () => {
-    // `unit` deliberately reversed against the horizons: community reports say
-    // the field distinguishes the windows but not which value means which, so
-    // trusting it is what would swap the meters.
+  it("treats `usage` as the allowance, never as a percentage", () => {
+    // THE regression this file exists for. An earlier parser took `usage` from
+    // community field names and read 2000 as a percent — which, clamped, would
+    // have painted a full bar over a plan at 0.05%. Rejecting out-of-range
+    // values is what caught it, and deriving from `remaining` is the fix.
+    const parsed = parseZaiQuota(MEASURED, NOW);
+    expect(parsed?.session?.usedPct).toBe(0.05);
+    expect(parsed?.session?.usedPct).not.toBe(100);
+  });
+
+  it("ignores `currentValue`, which lags `remaining` inside one entry", () => {
+    // Measured: after one request `remaining` moved 2000 → 1999 while
+    // `currentValue` stayed 0. Reading it would report the window as untouched.
+    const parsed = parseZaiQuota(MEASURED, NOW);
+    expect(parsed?.session?.usedPct).toBeGreaterThan(0);
+  });
+
+  it("falls back to `percentage` only when `remaining` is unusable", () => {
+    const parsed = parseZaiQuota(
+      { data: { limits: [{ unit: 3, number: 5, percentage: 42, nextResetTime: NOW + HOUR }] } },
+      NOW,
+    );
+    expect(parsed?.session?.usedPct).toBe(42);
+  });
+
+  it("reports no window for a 5h allowance nothing has opened yet", () => {
+    // Measured shape before any usage: full `remaining`, and NO `nextResetTime`
+    // at all. That is "no window is open", and a countdown cannot be drawn for
+    // it — but it must not take the whole payload down with it.
+    const unopened = {
+      data: {
+        level: "lite",
+        limits: [
+          { unit: 3, number: 5, usage: 2000, currentValue: 0, remaining: 2000, percentage: 0 },
+          MEASURED.data.limits[1],
+        ],
+      },
+    };
+    const parsed = parseZaiQuota(unopened, NOW);
+    expect(parsed?.session).toBeNull();
+    expect(parsed?.weekly?.usedPct).toBe(7.9);
+  });
+
+  it("places a window of unmeasured `unit` by its reset horizon, with no startedAt", () => {
     const parsed = parseZaiQuota(
       {
         data: {
           limits: [
-            { unit: 2, usage: 90, resetTime: new Date(NOW + HOUR).toISOString() },
-            { unit: 1, usage: 10, resetTime: new Date(NOW + 100 * HOUR).toISOString() },
+            { unit: 99, usage: 100, remaining: 90, nextResetTime: NOW + 2 * HOUR },
+            { unit: 98, usage: 100, remaining: 50, nextResetTime: NOW + 72 * HOUR },
           ],
         },
       },
       NOW,
     );
-    expect(parsed?.session?.usedPct).toBe(90);
-    expect(parsed?.weekly?.usedPct).toBe(10);
+    expect(parsed?.session).toEqual({ usedPct: 10, resetAt: new Date(NOW + 2 * HOUR).toISOString() });
+    expect(parsed?.weekly?.usedPct).toBe(50);
   });
 
-  it("accepts a flatter envelope and epoch-second reset times", () => {
+  it("trusts a DECLARED long window even when its reset is imminent", () => {
+    // The horizon rule alone would call a monthly window resetting in 2h a "5h
+    // window". The declared length is the API's own statement, so it wins.
     const parsed = parseZaiQuota(
-      { limits: [{ usage: 55, reset_time: Math.floor((NOW + 3 * HOUR) / 1000) }] },
+      { data: { limits: [{ unit: 3, number: 168, usage: 100, remaining: 40, nextResetTime: NOW + 2 * HOUR }] } },
       NOW,
     );
-    expect(parsed?.session).toEqual({ usedPct: 55, resetAt: new Date(NOW + 3 * HOUR).toISOString() });
-    expect(parsed?.weekly).toBeNull();
+    expect(parsed?.session).toBeNull();
+    expect(parsed?.weekly?.usedPct).toBe(60);
   });
 
   // ---- Fail-closed rules. Each of these would otherwise render a number
   // ---- nobody measured, which req 10 prefers an empty pill to.
 
-  it("reports nothing when both entries land in the same horizon bucket", () => {
-    // Ambiguous: the horizon rule cannot say which of these is the 5h window,
-    // and picking one is a coin flip presented as a measurement.
+  it("rejects a `remaining` outside [0, usage] rather than clamping it", () => {
+    expect(
+      parseZaiQuota({ data: { limits: [{ unit: 3, number: 5, usage: 2000, remaining: 5000, nextResetTime: NOW + HOUR }] } }, NOW),
+    ).toBeNull();
+  });
+
+  it("rejects a `percentage` outside 0-100 rather than clamping it", () => {
+    expect(
+      parseZaiQuota({ data: { limits: [{ unit: 3, number: 5, percentage: 184_320, nextResetTime: NOW + HOUR }] } }, NOW),
+    ).toBeNull();
+  });
+
+  it("reports nothing when two entries land in the same slot", () => {
+    // Ambiguous: nothing distinguishes which of these is the 5h window, and
+    // picking one is a coin flip presented as a measurement.
     expect(
       parseZaiQuota(
         {
           data: {
             limits: [
-              { usage: 20, resetTime: new Date(NOW + HOUR).toISOString() },
-              { usage: 80, resetTime: new Date(NOW + 2 * HOUR).toISOString() },
+              { unit: 3, number: 5, usage: 100, remaining: 80, nextResetTime: NOW + HOUR },
+              { unit: 3, number: 5, usage: 100, remaining: 20, nextResetTime: NOW + 2 * HOUR },
             ],
           },
         },
@@ -96,14 +194,14 @@ describe("parseZaiQuota", () => {
     ).toBeNull();
   });
 
-  it("keeps the unambiguous bucket when only the other one is ambiguous", () => {
+  it("keeps the unambiguous slot when only the other one is ambiguous", () => {
     const parsed = parseZaiQuota(
       {
         data: {
           limits: [
-            { usage: 20, resetTime: new Date(NOW + HOUR).toISOString() },
-            { usage: 80, resetTime: new Date(NOW + 2 * HOUR).toISOString() },
-            { usage: 5, resetTime: new Date(NOW + 96 * HOUR).toISOString() },
+            { unit: 3, number: 5, usage: 100, remaining: 80, nextResetTime: NOW + HOUR },
+            { unit: 3, number: 5, usage: 100, remaining: 20, nextResetTime: NOW + 2 * HOUR },
+            { unit: 6, number: 1, usage: 100, remaining: 95, nextResetTime: NOW + 96 * HOUR },
           ],
         },
       },
@@ -113,44 +211,20 @@ describe("parseZaiQuota", () => {
     expect(parsed?.weekly?.usedPct).toBe(5);
   });
 
-  it("rejects a percentage outside 0-100 rather than clamping it", () => {
-    // The likely misread: `usage` is a token count, not a percent. Clamping
-    // would paint a full bar over an untouched plan.
+  it("drops an entry with a reset that has already passed", () => {
     expect(
-      parseZaiQuota({ data: { limits: [{ usage: 184_320, resetTime: new Date(NOW + HOUR).toISOString() }] } }, NOW),
+      parseZaiQuota({ data: { limits: [{ unit: 3, number: 5, usage: 100, remaining: 50, nextResetTime: NOW - HOUR }] } }, NOW),
     ).toBeNull();
   });
 
-  it("drops an entry that has a reset time but no readable percentage", () => {
+  it("drops a horizon-placed window beyond a week instead of filing it as 7d", () => {
     expect(
-      parseZaiQuota({ data: { limits: [{ resetTime: new Date(NOW + HOUR).toISOString() }] } }, NOW),
-    ).toBeNull();
-  });
-
-  it("drops an entry that has a percentage but no readable reset time", () => {
-    expect(parseZaiQuota({ data: { limits: [{ usage: 33 }] } }, NOW)).toBeNull();
-  });
-
-  it("drops a window whose reset has already passed", () => {
-    expect(
-      parseZaiQuota(
-        { data: { limits: [{ usage: 33, resetTime: new Date(NOW - HOUR).toISOString() }] } },
-        NOW,
-      ),
-    ).toBeNull();
-  });
-
-  it("ignores a reset beyond a week instead of filing it as the weekly window", () => {
-    expect(
-      parseZaiQuota(
-        { data: { limits: [{ usage: 33, resetTime: new Date(NOW + 40 * 24 * HOUR).toISOString() }] } },
-        NOW,
-      ),
+      parseZaiQuota({ data: { limits: [{ usage: 100, remaining: 50, nextResetTime: NOW + 40 * 24 * HOUR }] } }, NOW),
     ).toBeNull();
   });
 
   it("reports nothing for an explicit failure envelope", () => {
-    expect(parseZaiQuota({ success: false, data: { limits: [] } }, NOW)).toBeNull();
+    expect(parseZaiQuota({ success: false, data: { limits: MEASURED.data.limits } }, NOW)).toBeNull();
   });
 
   it.each([
@@ -160,6 +234,7 @@ describe("parseZaiQuota", () => {
     ["limits that is not an array", { data: { limits: { usage: 10 } } }],
     ["an empty limits array", { data: { limits: [] } }],
     ["entries that are not objects", { data: { limits: [1, "x", null] } }],
+    ["entries with no readable fields", { data: { limits: [{ type: "CREDIT_LIMIT" }] } }],
   ])("reports nothing for %s", (_label, body) => {
     expect(parseZaiQuota(body, NOW)).toBeNull();
   });
@@ -179,7 +254,7 @@ describe("ZaiLimitsProvider", () => {
   });
 
   it("fetches the quota endpoint with the route's key as a bearer token", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(goodBody()));
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(MEASURED));
     const provider = makeProvider({ fetchImpl: fetchImpl as unknown as typeof fetch });
 
     expect(await provider.refreshNow("seed", ROUTE)).toEqual({ routeId: ROUTE, outcome: "updated" });
@@ -192,10 +267,11 @@ describe("ZaiLimitsProvider", () => {
     expect(snap?.serviceId).toBe("zai");
     expect(snap?.billingMode).toBe("sub");
     expect(snap?.routeId).toBe(ROUTE);
-    expect(snap?.session?.usedPct).toBe(42);
-    expect(snap?.weekly?.usedPct).toBe(7);
-    // No tier name is trustworthy in this payload, so none is invented.
-    expect(snap?.plan).toBeNull();
+    expect(snap?.session?.usedPct).toBe(0.05);
+    expect(snap?.weekly?.usedPct).toBe(7.9);
+    // The tier rides the same response as the numbers, unlike Claude's (a
+    // credentials file) and Codex's (a JWT claim).
+    expect(snap?.plan).toBe("Lite");
   });
 
   it("records no snapshot at all when the payload is unrecognised", async () => {
@@ -253,7 +329,7 @@ describe("ZaiLimitsProvider", () => {
   });
 
   it("skips a seed once a reading exists, but a manual press always attempts", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(goodBody()));
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(MEASURED));
     const provider = makeProvider({ fetchImpl: fetchImpl as unknown as typeof fetch });
 
     await provider.refreshNow("seed", ROUTE);
@@ -265,7 +341,7 @@ describe("ZaiLimitsProvider", () => {
   });
 
   it("shares one request between concurrent refreshes of the same route", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(goodBody()));
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(MEASURED));
     const provider = makeProvider({ fetchImpl: fetchImpl as unknown as typeof fetch });
 
     const [a, b] = await Promise.all([
@@ -284,7 +360,7 @@ describe("ZaiLimitsProvider", () => {
 
     const pending = provider.refreshNow("manual", ROUTE);
     provider.forgetRoute(ROUTE);
-    release(jsonResponse(goodBody()));
+    release(jsonResponse(MEASURED));
 
     expect((await pending).outcome).toBe("skipped");
     expect(await provider.fetch(ROUTE)).toBeNull();
@@ -292,7 +368,7 @@ describe("ZaiLimitsProvider", () => {
 
   it("forgetRoute drops the reading, so a deleted credential loses its pill", async () => {
     const provider = makeProvider({
-      fetchImpl: vi.fn().mockResolvedValue(jsonResponse(goodBody())) as unknown as typeof fetch,
+      fetchImpl: vi.fn().mockResolvedValue(jsonResponse(MEASURED)) as unknown as typeof fetch,
     });
     await provider.refreshNow("seed", ROUTE);
     expect(await provider.fetch(ROUTE)).not.toBeNull();
@@ -308,12 +384,12 @@ describe("ZaiLimitsProvider", () => {
     const provider = new ZaiLimitsProvider({
       listRouteIds: () => [ROUTE],
       secretForRoute: () => "zai-key",
-      fetchImpl: vi.fn().mockResolvedValue(jsonResponse(goodBody(42, 7))) as unknown as typeof fetch,
+      fetchImpl: vi.fn().mockResolvedValue(jsonResponse(MEASURED)) as unknown as typeof fetch,
       now: () => clock,
     });
 
     await provider.refreshNow("seed", ROUTE);
-    expect((await provider.fetch(ROUTE))?.session?.usedPct).toBe(42);
+    expect((await provider.fetch(ROUTE))?.session?.usedPct).toBe(0.05);
 
     clock = NOW + 60_000;
     provider.setRateLimits(
@@ -324,5 +400,8 @@ describe("ZaiLimitsProvider", () => {
     const snap = await provider.fetch(ROUTE);
     expect(snap?.session?.usedPct).toBe(61);
     expect(snap?.fetchedAt).toBe(NOW + 60_000);
+    // An event carries no tier, so the pill loses its label rather than keeping
+    // one that describes an older reading.
+    expect(snap?.plan).toBeNull();
   });
 });
