@@ -238,6 +238,25 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
       // ceiling that pushes the turn path onto stdin.
       // `--auto` matches the turn adapter: a naming run that somehow reaches a
       // tool call must not block on an interactive permission gate with no TTY.
+      // Naming gets its own throwaway XDG data root, and must NOT use the home's.
+      //
+      // Two reasons, either one sufficient. (1) `$HOME/.local/share/opencode` is
+      // a symlink into /credentials in every image and nothing creates the
+      // target, so the link dangles and OpenCode's bootstrap mkdir dies EEXIST
+      // before reading an argument — naming spawns with HOME=/root
+      // (`namingHome`), exactly the symlinked home, so every production naming
+      // run failed, silently, since naming falls back to a derived title.
+      // (2) Creating that target is the WRONG repair here: it is the flat
+      // credentials root, so its existence flips `copyCredentialPath`'s "no
+      // source" early-return and starts copying this orchestrator-wide session
+      // store into every session's credential subtree (docs/138 isolation).
+      //
+      // A scratch root avoids both, and costs nothing: OpenCode is key-mode only
+      // (req 5), so naming authenticates from the provider block below and has
+      // nothing to read from the home. Per-run rather than shared, cleaned up
+      // beside the config file, so concurrent naming runs share no sqlite store.
+      // Revisit if OpenCode login integration ever lands — then naming would
+      // want the real home, and the symlink target with it.
       const args = ["run", "--format", "json", "--auto"];
       const extraEnv: Record<string, string> = {
         // The CLI resolves its project dir from $PWD over the real cwd (the
@@ -269,6 +288,11 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
         args.push("--model", model);
       }
       args.push(prompt);
+      // Created here, on the one path that actually spawns — the provider-block
+      // failure above returns before this — and torn down in the `finally`
+      // beside the config file.
+      const dataHome = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-naming-data-"));
+      extraEnv.XDG_DATA_HOME = dataHome;
       try {
         const raw = await callCli("opencode", args, target, extraEnv);
         if (raw.text === null) return raw;
@@ -281,6 +305,7 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
         };
       } finally {
         cleanupConfig?.();
+        try { fs.rmSync(dataHome, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     }
   }
