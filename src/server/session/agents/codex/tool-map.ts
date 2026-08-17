@@ -19,6 +19,11 @@ export const CODEX_TOOL_MAP: Record<string, CanonicalTool> = {
   spawnAgent: "agent",
   collabToolCall: "agent",
   collabAgentToolCall: "agent",
+  // Collab lifecycle beyond the spawn: the event handler passes any collab
+  // item's tool name through (`item.tool ?? "collab"`), and a real 0.147.0
+  // turn emits these two (docs/272 codex run, 2026-08-17).
+  wait: "agent",
+  closeAgent: "agent",
   mcpToolCall: "mcp",
   dynamicToolCall: "mcp",
   tool_search: "tool_search",

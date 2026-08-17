@@ -247,6 +247,35 @@ describe("ClaudeAdapter", () => {
       } as ClaudeEvent);
       expect(events).toHaveLength(0);
     });
+
+    it("drops thinking_tokens / task_progress as named cases, not unknown subtypes", () => {
+      // Both are byte-shaped from a real CLI 2.1.224 capture (2026-08-17,
+      // docs/272 Run 1). thinking_tokens is a per-tick estimate superseded by
+      // the authoritative usage on `result`; task_progress is a per-task
+      // liveness ping superseded by `background_tasks_changed` +
+      // `task_notification`. The docs/272 run flagged them as undocumented
+      // silent drops through the bare default — this locks them as deliberate.
+      const { inner, events } = harness();
+      inner.emit("event", {
+        type: "system",
+        subtype: "thinking_tokens",
+        estimated_tokens: 39,
+        estimated_tokens_delta: 34,
+        uuid: "69794849-f59d-49aa-bd2f-4d23e5fbf3b1",
+        session_id: "a80a2232-3941-46f5-9d9e-52440c0af284",
+      } as ClaudeEvent);
+      inner.emit("event", {
+        type: "system",
+        subtype: "task_progress",
+        task_id: "a6886dc757aeebf72",
+        tool_use_id: "toolu_016wHK8xXsiLixyUwqntzLvZ",
+        description: "Running Count the number of files in the current directory",
+        subagent_type: "general-purpose",
+        usage: { total_tokens: 11373, tool_uses: 1, duration_ms: 3612 },
+        last_tool_name: "Bash",
+      } as ClaudeEvent);
+      expect(events).toHaveLength(0);
+    });
   });
 
   describe("compaction (docs/178)", () => {

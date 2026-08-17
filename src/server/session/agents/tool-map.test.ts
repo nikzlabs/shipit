@@ -72,6 +72,9 @@ describe("canonicalizeTool", () => {
     expect(canonicalizeTool("codex", "imageView")).toBe("image_view");
     expect(canonicalizeTool("codex", "tool_search")).toBe("tool_search");
     expect(canonicalizeTool("codex", "AskUserQuestion")).toBe("ask_user");
+    // Collab lifecycle tools observed in a real 0.147.0 turn (docs/272 run).
+    expect(canonicalizeTool("codex", "wait")).toBe("agent");
+    expect(canonicalizeTool("codex", "closeAgent")).toBe("agent");
   });
 
   it("maps OpenCode CLI tool names to canonical names", () => {

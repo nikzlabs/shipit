@@ -287,6 +287,21 @@ export class ClaudeAdapter
             // them too would mean maintaining a second, weaker view of the same
             // state.
             return null;
+          case "task_progress":
+            // Deliberately dropped, same reasoning as task_started/task_updated:
+            // a per-task liveness ping ({task_id, tool_use_id, description,
+            // usage, last_tool_name}) for a running background task, superseded
+            // by the `background_tasks_changed` list and the task_notification
+            // completion edge. Nothing in the transcript draws per-tick
+            // subagent progress today.
+            return null;
+          case "thinking_tokens":
+            // Deliberately dropped. A per-tick thinking-token estimate
+            // ({estimated_tokens, estimated_tokens_delta}) — the most frequent
+            // event in a real stream (50+ per turn). Authoritative token usage
+            // arrives once, on `result`; mapping these would stream a second,
+            // estimated counter nothing consumes.
+            return null;
           default:
             return null;
         }
