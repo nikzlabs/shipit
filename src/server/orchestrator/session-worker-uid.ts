@@ -596,11 +596,16 @@ export function chownWorkspaceGitToSessionWorker(workspaceDir: string, deps?: Gi
  * exactly two things, and both come out as before:
  *
  *   - **The session's own identity**, because `cloneFromCache` ends with
- *     `chownTreeToSessionWorker(sessionDir)` (`repo-git.ts`) — a fresh clone is
+ *     `handWorkspaceBackToWorker(sessionDir)` (`repo-git.ts`) — a fresh clone is
  *     handed over *before* any handback runs, so the drop resolves to that same
  *     identity. A later root-side `checkout -b` / `reset --hard` rewrites files
  *     *inside* the tree without changing the root directory's owner, so claim
- *     and rebase land here too.
+ *     and rebase land here too. *(That call used to be the plain
+ *     `chownTreeToSessionWorker` and this docstring still named it after docs/270
+ *     replaced it with the object-aware composite. Corrected rather than left,
+ *     because the conclusion below rests on it and this comment has already been
+ *     corrected once for the same class of drift — verified at `repo-git.ts` on
+ *     2026-08-17, docs/272-shared-cache-ownership.)*
  *   - **Root**, when nothing is recorded — that clone-time chown is itself a
  *     no-op then, the drop declines on a root-owned tree, and this returns null:
  *     nothing happens at all.
@@ -733,6 +738,59 @@ export function handWorkspaceBackToWorker(workspaceDir: string): void {
     depDirs = [...DEFAULT_DEP_DIRS];
   }
   chownWorktreeToSessionWorker(workspaceDir, depDirs);
+}
+
+/**
+ * Hand a **plugin generation's checkout** to the identity that will run the
+ * install in it — object-aware, so it cannot reach through a hardlink into the
+ * shared plugin bare cache (planning#417, docs/272-shared-cache-ownership req 3).
+ *
+ * ## What this replaces, and why it was wrong
+ *
+ * `plugin-install.ts` used the plain recursive {@link chownTreeToSessionWorker}
+ * here. The tree it names is the one `plugin-generations.ts`'s `checkoutCommit`
+ * created with `git clone --local` from the shared plugin bare cache — which
+ * lives under the SAME `repo-cache/<hash>` root as every session's bare cache —
+ * so `.git/objects` is hardlinked into it and an inode has exactly one owner
+ * across every link. The recursive walk therefore handed **the cache's** object
+ * files to whichever session installed last, and with them chmod and rewrite
+ * rights over content every other generation and every sibling session reads.
+ * Observed on disk: object files inside the root-owned production caches owned by
+ * uid 1000, and inside one cache by 2000024 — a per-session worker uid.
+ *
+ * ## Why this is not simply {@link handWorkspaceBackToWorker}
+ *
+ * It is that composite **minus the dep-dir exclusion**, and the difference is the
+ * point:
+ *
+ *   - The dep-dir skip exists to keep a walk from crossing a populated
+ *     `node_modules` the worker already owns. A fresh plugin checkout has no
+ *     populated dep dir — and if the repository *commits* one, that directory is
+ *     part of the overlay's **lower** dir, so it must be worker-owned or the
+ *     install fails at its first copy-up. Excluding it here would reintroduce, by
+ *     a different route, the failure the chown at that call site exists to
+ *     prevent.
+ *   - The object-awareness is what closes planning#417.
+ *
+ * ## The constraint this preserves rather than narrowing away
+ *
+ * `plugin-install.ts`'s comment names a real reason for chowning at all:
+ * **overlayfs takes the merged directory's permissions from the LOWER dir**, so a
+ * root-owned checkout leaves the plugin root unwritable and every install fails
+ * at its first file. That is unaffected — the lower dir's root and every worktree
+ * file below it are still handed over. The ONLY thing left alone is the immutable
+ * `0444` object data files, which the install never writes: an install runs
+ * `npm ci` and friends over the worktree, not over `.git/objects`. So the
+ * narrowing costs the install nothing and closes the cross-session hole.
+ *
+ * No-op wherever no identity resolves — the non-root runtime off, every test.
+ */
+export function handPluginCheckoutToWorker(checkoutDir: string): void {
+  // Each half self-gates, for the reason `handWorkspaceBackToWorker`'s docstring
+  // gives: asking one predicate at this level is a third place for the two to
+  // drift apart.
+  chownWorkspaceGitToSessionWorker(checkoutDir);
+  chownWorktreeToSessionWorker(checkoutDir);
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,16 @@ import {
   sanitizeGitEnv,
   type GitRemoteCredential,
 } from "./repo-git.js";
+import { ensureSharedTreeOwnedByShipIt } from "./shared-tree-ownership.js";
+
+// docs/272-shared-cache-ownership — the gate is inert below root by design, so a
+// real call proves nothing here. Spy on it and keep the real implementation, so
+// these tests observe that it is consulted without changing what it does.
+vi.mock("./shared-tree-ownership.js", async (load) => {
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  const real = await load<typeof import("./shared-tree-ownership.js")>();
+  return { ...real, ensureSharedTreeOwnedByShipIt: vi.fn(real.ensureSharedTreeOwnedByShipIt) };
+});
 
 let tmpDir: string;
 let remoteDir: string;
@@ -164,6 +174,53 @@ describe("RepoGit bare-cache fetch advances HEAD", () => {
 
     const exclude = fs.readFileSync(path.join(workspaceDir, ".git", "info", "exclude"), "utf-8");
     expect(exclude.split("\n").some((l) => l.trim() === ".pnpm-store/")).toBe(true);
+  });
+});
+
+/**
+ * planning#425 / planning#428 / docs/272-shared-cache-ownership req 1 & 4 — the
+ * bare cache must be ShipIt's own before ShipIt's git runs in it.
+ *
+ * Spied at the seam rather than exercised for real, because the failing state is
+ * not creatable here: it needs a root process and a foreign-owned tree, and a
+ * session container has neither (no root, `unshare -r` refused). The gate itself
+ * is unit-tested in `shared-tree-ownership.test.ts`; what these two assert is the
+ * part no behavioural test can reach — that the gate is CONSULTED, on both
+ * operations, and by a path that does not depend on `ensureBareCache` having been
+ * called first.
+ */
+describe("the bare cache is made ShipIt's own before git touches it", () => {
+  it("fetchCache checks the cache it is about to write refs into", async () => {
+    // The planning#425 site. A uid-1000 cache root makes `safeSimpleGit(repoDir)`
+    // drop to uid 1000, which then cannot create `refs/heads/shipit/<x>.lock`
+    // inside a root-owned subdirectory a pre-drop build left behind.
+    const cacheDir = path.join(tmpDir, "cache-gate-fetch");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+    vi.mocked(ensureSharedTreeOwnedByShipIt).mockClear();
+
+    await cacheGit.fetchCache(0);
+
+    expect(vi.mocked(ensureSharedTreeOwnedByShipIt)).toHaveBeenCalledWith(cacheDir, expect.any(String));
+  });
+
+  it("cloneFromCache checks the SOURCE, which is the tree arming refused", async () => {
+    // The planning#428 site, and the reason it survived three audits: the census
+    // asked who owned the DESTINATION (already handled — `handWorkspaceBackToWorker`
+    // runs at the end of this function) and never who owned the SOURCE. Root
+    // reading a uid-1000 cache is `fatal: detected dubious ownership`, and 6 of 10
+    // production caches were uid 1000.
+    const cacheDir = path.join(tmpDir, "cache-gate-clone");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+    vi.mocked(ensureSharedTreeOwnedByShipIt).mockClear();
+
+    await cacheGit.cloneFromCache(path.join(tmpDir, "workspace-gate"), remoteUrl);
+
+    const checked = vi.mocked(ensureSharedTreeOwnedByShipIt).mock.calls.map((c) => c[0]);
+    expect(checked).toContain(cacheDir);
   });
 });
 

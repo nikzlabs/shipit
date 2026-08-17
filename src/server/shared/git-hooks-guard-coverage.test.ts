@@ -825,25 +825,56 @@ describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266-orchest
    * Every bare site that exists on purpose, with what owns the tree its git
    * touches. Keyed by file and COUNT, not by line, so ordinary edits above a
    * site don't churn the list while a new site still fails.
+   *
+   * **Both answers are required, and that is the planning#428 correction**
+   * (docs/272-shared-cache-ownership req 7). This census used to carry one `why`
+   * per site, and every entry answered about the DESTINATION — the question the
+   * docs/266 audit had learned to ask. planning#428 is a failure on the SOURCE:
+   * root reading a uid-1000 bare cache is `fatal: detected dubious ownership`,
+   * and `repo-git.ts:284` was cleared 21/21 by a census that never asked. Two
+   * fields, so half an answer cannot pass as a whole one.
    */
-  const ALLOWED: Record<string, { count: number; why: string }> = {
+  const ALLOWED: Record<string, { count: number; source: string; destination: string }> = {
     "server/orchestrator/repo-git.ts": {
       count: 1,
-      why: "cloneFromCache: source is the root-owned shared bare cache. The destination is "
-        + "handed to the session uid (handWorkspaceBackToWorker) before the next git call.",
+      source: "cloneFromCache reads the shared bare cache. It is ShipIt's own tree and must be "
+        + "root-owned — which planning#428 proved was a belief about the disk, not a fact: 6 of 10 "
+        + "production caches were uid 1000 and arming broke session creation here. Now ENFORCED: "
+        + "`ensureSharedTreeOwnedByShipIt(this.repoDir)` runs before the clone "
+        + "(docs/272-shared-cache-ownership).",
+      destination: "A fresh session workspace, handed to the session's identity by the "
+        + "object-aware `handWorkspaceBackToWorker(sessionDir)` before the next git call.",
     },
     "server/orchestrator/plugin-generations.ts": {
       count: 1,
-      why: "checkoutCommit: source is the root-owned plugin bare cache. Same handback before "
-        + "the dropped git that follows (planning#410).",
+      source: "checkoutCommit reads the plugin bare cache — the same `repo-cache/<hash>` root as "
+        + "above, via the same `getBareCacheDir`, so the same enforcement covers it: every path "
+        + "that populates or refreshes that cache goes through `RepoGit.fetchCache`.",
+      destination: "A generation staging dir inside a session, handed over by "
+        + "`handWorkspaceBackToWorker(targetDir)` before the dropped git that follows "
+        + "(planning#410).",
     },
     "server/orchestrator/services/marketplace.ts": {
       count: 1,
-      why: "cloneCatalog: clone from a URL into a fresh cache dir (the first clone AND a "
-        + "rebuild's staging dir both go through it) — no local source tree to own, and the "
-        + "cache is ShipIt's own rather than a session's.",
+      source: "A URL. There is no local source tree to own, so no ownership predicate applies "
+        + "to the read at all.",
+      destination: "`<stateDir>/marketplace-cache/<id>` (or a rebuild's staging sibling) — "
+        + "ShipIt's own, a sibling of `sessions/` and not under it, so no session handover is "
+        + "owed. Its ownership is kept ShipIt's by the boot pass in `startup-janitor.ts`, which "
+        + "is what planning#418 lacked: that fix made a broken cache recoverable and left the "
+        + "drift that broke it unaddressed.",
     },
   };
+
+  it("every listed bare site answers BOTH ownership questions", () => {
+    // The structural half of the rule. A site added with an empty or placeholder
+    // answer is the exact failure planning#428 was: a census entry that reads as
+    // a clearance without being one.
+    for (const [file, entry] of Object.entries(ALLOWED)) {
+      expect(entry.source.length, `${file}: who owns the SOURCE tree?`).toBeGreaterThan(40);
+      expect(entry.destination.length, `${file}: who owns the DESTINATION tree?`).toBeGreaterThan(40);
+    }
+  });
 
   it("every bare safeSimpleGit() is a listed site with a stated owner", () => {
     const found = new Map<string, number>();
@@ -873,7 +904,9 @@ describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266-orchest
       "",
       "If you added one: hand the destination over (handWorkspaceBackToWorker — the",
       "object-aware one, because `clone --local` hardlinks the source's objects) before",
-      "the next git call, then add the site here with what owns the tree.",
+      "the next git call, then add the site here with BOTH answers — who owns the",
+      "source and who owns the destination. A site can fail on either, and planning#428",
+      "failed on the source while this census asked only about the destination.",
     ].join("\n")).toEqual(expected);
   });
 
@@ -904,6 +937,110 @@ describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266-orchest
     // assertion is the honest record of the rule's edge, not a claim that the
     // shape is safe.
     expect(bare("safeSimpleGit(maybeDir)")).toBe(false);
+  });
+});
+
+/**
+ * planning#428 / docs/272-shared-cache-ownership req 7 — **every** clone, not
+ * just the bare ones.
+ *
+ * The census above covers the shape with no ownership predicate at all. But the
+ * question planning#428 exposed — *who owns the SOURCE?* — applies to a clone
+ * whether or not it has a `baseDir`, and the sites that DO have one were audited
+ * by hand in the arming runbook's Table B2. A hand-audited table is exactly what
+ * goes stale: Table B2 cleared `repo-git.ts:284` as "shared bare cache,
+ * root-owned", which was true of the code and false of the disk.
+ *
+ * So this rule moves that table into CI. Every clone site is listed with both
+ * answers, and a new one fails the build with the two questions it has to answer.
+ *
+ * **The stated gap**, because an unstated one is worse than a named one:
+ * simple-git's `.clone()` METHOD form is not matched here — the pattern reads the
+ * `"clone"` argv literal, which is how every raw and `raw([...])` clone in this
+ * tree is written. There is exactly one method-form site
+ * (`services/marketplace.ts`'s `cloneCatalog`), it is censused by the bare rule
+ * above with both answers, and a `.clone(`-shaped pattern would collide with
+ * `Response.clone()` (`trackers/github/adapter.ts`) the same way `.exec(` collides
+ * with `RegExp.prototype.exec` several hundred times over.
+ */
+describe("git spawn coverage: every clone states both owners (planning#428)", () => {
+  /**
+   * `"clone"` in the SUBCOMMAND POSITION — the first element of an argv array,
+   * `["clone", …]`, across a line break too (`session-fork-merge.ts` writes it
+   * one argument per line).
+   *
+   * Anchored on the `[` rather than matching the bare word, because the word is
+   * also a perfectly ordinary string in this tree:
+   * `credentialFreeRemote(url, "clone")` passes it as a CONTEXT LABEL for a log
+   * line, one argument away from the real subcommand on the same line. An
+   * unanchored pattern counted that as a fourth clone site in `repo-git.ts` —
+   * caught by this rule failing on its own first run, which is the cheap version
+   * of the lesson: a census whose pattern over-matches gets its numbers padded
+   * until someone stops trusting them.
+   */
+  const CLONE_ARGV = /\[\s*(["'])clone\1/g;
+
+  const CLONE_SITES: Record<string, { count: number; source: string; destination: string }> = {
+    "server/orchestrator/repo-git.ts": {
+      count: 3,
+      source: "Two clone from a URL (`clone`, `cloneBare`) — no local source tree, so nothing to "
+        + "own. The third (`cloneFromCache`) reads the shared bare cache and is the planning#428 "
+        + "site: enforced ShipIt-owned by `ensureSharedTreeOwnedByShipIt` before the clone.",
+      destination: "The URL clones write into `baseDir` itself — the cache dir, root-owned. "
+        + "`cloneFromCache`'s destination is a session workspace, handed over object-aware.",
+    },
+    "server/orchestrator/plugin-generations.ts": {
+      count: 1,
+      source: "The plugin bare cache under the same `repo-cache/<hash>` root, same enforcement.",
+      destination: "A generation staging dir inside a session, handed over by "
+        + "`handWorkspaceBackToWorker` before the dropped git that follows.",
+    },
+    "server/orchestrator/services/session-fork-merge.ts": {
+      count: 1,
+      source: "The ACTIVE SESSION's workspace — a tree untrusted code can write, so it must NOT "
+        + "be read as root: the clone runs dropped to the source session's own identity "
+        + "(planning#407). The mirror image of the cache case, and the reason `--no-hardlinks` "
+        + "is required there (root-owned 0444 objects a non-root uid may not link).",
+      destination: "The fork's workspace: created first, chowned to the SOURCE identity for the "
+        + "clone's duration, then sealed and handed to the FORK's identity. Both orderings are "
+        + "argued in place.",
+    },
+  };
+
+  it("every listed clone site answers BOTH ownership questions", () => {
+    for (const [file, entry] of Object.entries(CLONE_SITES)) {
+      expect(entry.source.length, `${file}: who owns the SOURCE tree?`).toBeGreaterThan(40);
+      expect(entry.destination.length, `${file}: who owns the DESTINATION tree?`).toBeGreaterThan(40);
+    }
+  });
+
+  it("every `\"clone\"` argv site is censused", () => {
+    const found = new Map<string, number>();
+    for (const file of ROOTS.flatMap(sourceFiles)) {
+      const src = stripComments(fs.readFileSync(file, "utf-8"));
+      const count = [...src.matchAll(CLONE_ARGV)].length;
+      if (count > 0) found.set(path.relative(REPO_SRC, file).split(path.sep).join("/"), count);
+    }
+
+    const expected = Object.fromEntries(
+      Object.entries(CLONE_SITES).map(([file, { count }]) => [file, count]),
+    );
+
+    // Vacuity guard: a pattern that matches nothing asserts nothing.
+    expect([...found.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+
+    expect(Object.fromEntries([...found].sort()), [
+      "A clone spans TWO trees with two owners, and it can fail on either:",
+      "  - the SOURCE, because git's ownership check tests the repository being READ",
+      "    and `clone --local` can only hardlink an object file the cloning identity",
+      "    may link (`protected_hardlinks` is 1 on the deploy hosts);",
+      "  - the DESTINATION, because the next `safeSimpleGit(<destination>)` drops to",
+      "    that path's session uid and meets whatever the clone left behind.",
+      "",
+      "planning#428 was a SOURCE failure that a destination-only census cleared 21/21,",
+      "against a build that then could not start a session for 6 of 10 repositories.",
+      "So list the site here with BOTH answers.",
+    ].join("\n")).toEqual(expected);
   });
 });
 

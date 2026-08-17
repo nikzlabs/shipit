@@ -60,7 +60,7 @@ import {
 } from "./plugin-overlay.js";
 import {
   chownToSessionWorker,
-  chownTreeToSessionWorker,
+  handPluginCheckoutToWorker,
   identityForSession,
   shareTreeOnce,
 } from "./session-worker-uid.js";
@@ -344,7 +344,18 @@ async function runInstallOnce(
       // its first file. This is also the ownership handoff for a generation
       // staged after the session container booted, which the entrypoint's
       // boot-time chown cannot cover. No-op when the non-root runtime is off.
-      chownTreeToSessionWorker(job.stagingDir);
+      //
+      // planning#417 / docs/272-shared-cache-ownership req 3 — object-aware, and
+      // NOT the plain recursive `chownTreeToSessionWorker` this used to call.
+      // `job.stagingDir` was created by `clone --local` from the shared plugin
+      // bare cache, so `.git/objects` is HARDLINKED into it and an inode has one
+      // owner across every link: the recursive walk handed the cache's object
+      // files to whichever session installed last, and with them rewrite rights
+      // over content every sibling session reads. Everything the overlay
+      // constraint above needs is still handed over — the checkout root and every
+      // worktree file — because an install writes the worktree, never
+      // `.git/objects`.
+      handPluginCheckoutToWorker(job.stagingDir);
       await createPluginOverlay(deps.docker, spec);
     } catch (err) {
       const reason = `could not prepare the plugin's writable layer: ${message(err)}`;

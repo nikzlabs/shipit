@@ -80,6 +80,36 @@
  *     state, the plugin store, the dep cache and the pnpm store — not the cache.)
  *   - **The path cannot be stat'd.** A missing directory is not a tree we can
  *     reason about; git will fail on it for its own reasons.
+ *
+ * ## Should ONE stat decide the whole tree? (planning#425, docs/272-shared-cache-ownership req 8)
+ *
+ * **No — and the fix is not to stat more, it is to make the tree uniform.**
+ *
+ * The question is not academic: in production, six of ten bare caches were owned
+ * by uid 1000 with **root-owned subdirectories inside them**, left by this
+ * orchestrator's own prefetch running as root before the drop below deployed.
+ * The non-session fall-through stats the top level, resolves uid 1000, and then
+ * cannot create a `.lock` inside a root-owned subdirectory — eleven refs failing
+ * every prefetch pass, logged non-fatal, so the cache silently lagged.
+ *
+ * Statting more is a dead end in both directions. Statting the whole tree is
+ * O(tree) per git invocation, on a path this function is deliberately cheap for
+ * (see below). Statting a *sample* — `.git/objects`, the candidate the docs/266
+ * arming runbook left open — trades one silent wrong answer for another, because
+ * nothing makes the sample representative of the rest.
+ *
+ * The deeper reason is that a mixed tree has **no correct answer to return**.
+ * Root can write all of it, but running root over a tree a non-root uid owns is
+ * precisely the escalation this module exists to prevent (that uid can plant a
+ * `.git/config` payload and so choose the identity it executes at). The tree's
+ * own owner cannot write the parts owned by anyone else. So the mixed state is
+ * not a case to resolve; it is a state to end.
+ *
+ * `orchestrator/shared-tree-ownership.ts` ends it, for the trees ShipIt owns: the
+ * uniformity this function assumes is now a **repaired** condition, checked by one
+ * `lstat` before any git touches a shared cache, rather than an inherited belief
+ * about the disk. This function keeps its one stat, and the "root-owned tree" case
+ * above keeps its clearance — with the enforcement now living somewhere.
  */
 
 import fs from "node:fs";
@@ -152,7 +182,49 @@ export function resolveGitTreeUid(
   // A root-owned tree is ShipIt's own (bare cache, /opt/shipit). Dropping there
   // would break writes for no security gain: nothing untrusted can write it.
   if (owner.uid === 0) return null;
+  noteForeignTreeDrop(dir, owner);
   return { uid: owner.uid, gid: owner.gid };
+}
+
+/**
+ * Trees this process has already reported dropping into. Bounded, because an
+ * unbounded map keyed by path in a function called on every git invocation is a
+ * leak; past the bound the reporting stops rather than the dropping.
+ *
+ * This is NOT a cache of the decision — that stays uncached and per-call, for the
+ * reason {@link resolveGitTreeUid} documents. It only makes the log line once.
+ */
+const reportedForeignTrees = new Set<string>();
+const REPORTED_FOREIGN_TREE_LIMIT = 64;
+
+/**
+ * Say, once per tree, that a path belonging to no session was resolved to a
+ * non-root owner (docs/272-shared-cache-ownership req 8).
+ *
+ * This branch is *correct* for a tree that is genuinely somebody else's — a
+ * host-bind dev checkout owned by the developer. It is also exactly what
+ * planning#425 looked like from the inside, and it took days to find because
+ * nothing said it had happened: a shared bare cache left uid-1000-owned by an
+ * unknown writer resolved here, ShipIt's git dropped to a uid it had not chosen,
+ * and the resulting `Permission denied` arrived at a process that is root and
+ * therefore "cannot" get one.
+ *
+ * So the line names the drop and the reading. It stays quiet for the two cases
+ * that dominate — a root-owned tree returns above without reaching here, and a
+ * session path is answered by the session's own record — so in a healthy
+ * deployment it never fires at all.
+ */
+function noteForeignTreeDrop(dir: string, owner: GitTreeUid): void {
+  if (reportedForeignTrees.has(dir)) return;
+  if (reportedForeignTrees.size >= REPORTED_FOREIGN_TREE_LIMIT) return;
+  reportedForeignTrees.add(dir);
+  console.warn(
+    `[git-tree-uid] ${dir} belongs to no session and is owned by ${owner.uid}:${owner.gid}, `
+    + `so git here runs as ${owner.uid}:${owner.gid} and not as root. If this is a tree ShipIt `
+    + "owns (a bare cache, a catalog cache) that is a defect, not a configuration: read any "
+    + "later `Permission denied` as \"the process dropped uid and the tree is not uniformly "
+    + "owned\" (planning#425, docs/272-shared-cache-ownership).",
+  );
 }
 
 
