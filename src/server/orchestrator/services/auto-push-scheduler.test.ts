@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createAutoPushScheduler, type AutoPushDeps } from "./auto-push-scheduler.js";
+import {
+  createAutoPushScheduler,
+  MAX_PUSH_DEFERRALS,
+  PUSH_DEFER_RETRY_MS,
+  type AutoPushDeps,
+} from "./auto-push-scheduler.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 
@@ -18,6 +23,9 @@ function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>> = {}): Gi
     getRemotes: vi.fn(async () => [{ name: "origin", url: "https://github.com/o/r.git" }]),
     getCurrentBranch: vi.fn(async () => "shipit/feature"),
     push: vi.fn(async () => {}),
+    // The default workspace is not mid-rewrite, so a rejection here is a real
+    // divergence and takes the loud path.
+    isRebaseInProgress: vi.fn(async () => false),
     ...overrides,
   } as unknown as GitManager;
 }
@@ -34,6 +42,7 @@ function fakeRunner(): FakeRunner {
     emitMessage: vi.fn(),
     beginPostTurnWork: vi.fn(),
     endPostTurnWork: vi.fn(),
+    systemTurnInProgress: false,
   } as unknown as FakeRunner;
 }
 
@@ -568,5 +577,190 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
     await fireDebounce();
 
     expect(appendedNotices(deps)).toHaveLength(0);
+  });
+});
+
+/**
+ * The 2026-08-17 incident (session 590c19aa): a turn's commit armed this push,
+ * the auto-conflict-resolve path started a rebase 1.2s later, and the push fired
+ * 4s into it. It was rejected non-fast-forward — because our own `git rebase`
+ * had just rewritten local history — and the user got the full "your branch has
+ * diverged … a pull request on it would merge WITHOUT this commit" notice, with
+ * recovery commands, for a branch the rebase driver force-pushed 23 seconds
+ * later. Nothing was wrong and nothing needed them.
+ */
+describe("auto-push scheduler — a rejection explained by our own rebase is not a divergence", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  /** Mid-rebase on the first check, settled by the time the retry fires. */
+  function rebasingThenHealedGit(): GitManager {
+    let probes = 0;
+    return fakeGit({
+      isRebaseInProgress: vi.fn(async () => { probes++; return probes === 1; }),
+    });
+  }
+
+  it("does not even attempt the push while a rebase is in flight", async () => {
+    // Mid-rebase the workspace is on a detached HEAD, so `getCurrentBranch()`
+    // returns the literal "HEAD" and `git push origin HEAD` is refused by git
+    // with a message ending in "failed to push some refs" — which
+    // `isNonFastForwardError` matches. That is how a push that never reached
+    // the remote came to be reported as a diverged branch.
+    const runner = fakeRunner();
+    const deps = makeDeps({ getRunner: () => runner });
+    const git = fakeGit({ isRebaseInProgress: vi.fn(async () => true) });
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+
+    expect(git.push).not.toHaveBeenCalled();
+    expect(appendedNotices(deps)).toHaveLength(0);
+    expect(runner.emitMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "git_push_rejected" }),
+    );
+  });
+
+  it("persists no notice and raises no rebase banner for a rejection inside the window", async () => {
+    // The half only the runner's flag can see: `git rebase --continue` has
+    // finished, so git reports no rebase, but the driver has not force-pushed
+    // the rewritten history yet. A genuine non-fast-forward, and still ours.
+    const runner = fakeRunner();
+    runner.systemTurnInProgress = true;
+    const deps = makeDeps({ getRunner: () => runner });
+    createAutoPushScheduler(deps).schedule(divergedGit(), "s1");
+
+    await fireDebounce();
+
+    expect(appendedNotices(deps)).toHaveLength(0);
+    expect(runner.emitMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "git_push_rejected" }),
+    );
+  });
+
+  it("does NOT hold back a push that would succeed merely because a system turn is running", async () => {
+    // The asymmetry that keeps the generic flag safe: CI auto-fix, wake turns
+    // and prepared dispatch hold `systemTurnInProgress` too, and none of them
+    // rewrite history. The flag is consulted only after a push has already
+    // failed, so a healthy push during a long system turn still lands.
+    const runner = fakeRunner();
+    runner.systemTurnInProgress = true;
+    const deps = makeDeps({ getRunner: () => runner });
+    const git = fakeGit();
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+
+    expect(git.push).toHaveBeenCalledTimes(1);
+    expect(deps.notifyAutoPush).toHaveBeenCalledWith("s1");
+  });
+
+  it("still says so on the operator's log and in the session log ring", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(
+      fakeGit({ isRebaseInProgress: vi.fn(async () => true) }),
+      "s1",
+    );
+
+    await fireDebounce();
+
+    // Silence is the failure mode this module exists to prevent — a quieter
+    // wording is fine, no line at all is not.
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("deferred"))).toBe(true);
+    expect(deps.broadcastLog).toHaveBeenCalledWith("s1", "server", expect.stringContaining("deferred"));
+  });
+
+  it("retries the deferred push, so the commit still reaches origin", async () => {
+    // Deferring, not dropping, is what covers the rebase-ABORT path: an abort
+    // restores the pre-rebase branch and pushes nothing, so this commit would
+    // otherwise sit local with nothing left to publish it.
+    const deps = makeDeps();
+    const git = rebasingThenHealedGit();
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+    expect(git.push).not.toHaveBeenCalled(); // held back mid-rebase
+
+    await vi.advanceTimersByTimeAsync(PUSH_DEFER_RETRY_MS);
+    await vi.waitFor(() => {});
+
+    expect(git.push).toHaveBeenCalledTimes(1);
+    expect(appendedNotices(deps)).toHaveLength(0);
+    expect(deps.notifyAutoPush).toHaveBeenCalledWith("s1"); // the retry landed
+  });
+
+  it("keeps the post-turn lease balanced across a deferral and its retry", async () => {
+    // The lease is what stops the idle enforcer destroying the container out
+    // from under a commit that has landed but not been pushed. A re-arm takes a
+    // fresh hold while the firing timer's `finally` releases the old one, so the
+    // two must stay in step — a chain of retries must not under- or over-hold.
+    const runner = fakeRunner();
+    const deps = makeDeps({ getRunner: () => runner });
+    createAutoPushScheduler(deps).schedule(rebasingThenHealedGit(), "s1");
+
+    await fireDebounce();
+    // Mid-chain: one more begin than end, i.e. the pending retry still holds.
+    expect(runner.beginPostTurnWork.mock.calls.length - runner.endPostTurnWork.mock.calls.length).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(PUSH_DEFER_RETRY_MS);
+    await vi.waitFor(() => {});
+
+    expect(runner.beginPostTurnWork.mock.calls.length).toBe(runner.endPostTurnWork.mock.calls.length);
+  });
+
+  it("reports the rejection normally once the rewrite window refuses to close", async () => {
+    const deps = makeDeps();
+    const git = fakeGit({
+      isRebaseInProgress: vi.fn(async () => true),
+      push: vi.fn(async () => {
+        throw new Error("Updates were rejected because the tip of your current branch is behind");
+      }),
+    });
+    createAutoPushScheduler(deps).schedule(git, "s1");
+
+    await fireDebounce();
+    // 30 deferrals at 30s each, then the push is attempted and its rejection
+    // reported — rather than letting a wedged signal suppress a real divergence
+    // for the session's lifetime. The budget is shared by both checks, so a
+    // spent cap cannot be refilled by handing the push to the other one.
+    for (let i = 0; i <= MAX_PUSH_DEFERRALS; i++) {
+      await vi.advanceTimersByTimeAsync(PUSH_DEFER_RETRY_MS);
+      await vi.waitFor(() => {});
+    }
+
+    expect(appendedNotices(deps)).toHaveLength(1);
+    expect(appendedNotices(deps)[0]).toContain("Not pushed");
+  });
+
+  it("leaves a genuine divergence loud — no rebase, no runner flag, full notice", async () => {
+    const runner = fakeRunner();
+    const deps = makeDeps({ getRunner: () => runner });
+    createAutoPushScheduler(deps).schedule(divergedGit(), "s1");
+
+    await fireDebounce();
+
+    expect(appendedNotices(deps)).toHaveLength(1);
+    expect(runner.emitMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "git_push_rejected" }),
+    );
+  });
+
+  it("stays loud when the rebase probe itself cannot answer", async () => {
+    // Fails toward visible: "cannot tell" must not become "nothing to see".
+    const deps = makeDeps();
+    createAutoPushScheduler(deps).schedule(
+      fakeGit({
+        isRebaseInProgress: vi.fn(async () => { throw new Error("unreadable .git"); }),
+        push: vi.fn(async () => {
+          throw new Error("Updates were rejected because the tip of your current branch is behind");
+        }),
+      }),
+      "s1",
+    );
+
+    await fireDebounce();
+
+    expect(appendedNotices(deps)).toHaveLength(1);
   });
 });

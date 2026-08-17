@@ -582,7 +582,7 @@ describe("rebase-driver: runRebaseFlow", () => {
       sessionDir: workDir,
       defaultAgentId: "claude",
     });
-    const captured: { role: string; text: string; toolUse?: { id: string; name: string }[]; toolResults?: { toolUseId: string }[] }[] = [];
+    const captured: { role: string; text: string; toolUse?: { id: string; name: string }[]; toolResults?: { toolUseId: string }[]; branchSynced?: unknown }[] = [];
 
     /**
      * Fake agent that emits the canonical "assistant says X → tool call →
@@ -655,7 +655,9 @@ describe("rebase-driver: runRebaseFlow", () => {
     const userRow = captured.find((m) => m.role === "user");
     expect(userRow?.text).toContain("Rebasing onto");
 
-    const assistantRows = captured.filter((m) => m.role === "assistant");
+    // The completion card is an assistant row too (it carries `branchSynced`
+    // and no text), so exclude it — this assertion is about the TURN's rows.
+    const assistantRows = captured.filter((m) => m.role === "assistant" && !m.branchSynced);
     expect(assistantRows).toHaveLength(2);
 
     // First assistant row: the preamble TEXT + the tool_use block, plus the
@@ -1544,7 +1546,11 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     expect(captured.some((m) => m.branchSynced)).toBe(true);
   });
 
-  it("does NOT emit a sync card when recordSyncCard is unset (auto-resolve path) — but still moves local main", async () => {
+  // 2026-08-17 incident: the automatic path rebased, resolved conflicts and
+  // force-pushed, and left the transcript with the conflict prompt and nothing
+  // else — no way for the user to tell the branch had come out healthy. The card
+  // is now unconditional wherever the branch was actually rewritten.
+  it("emits the sync card on the automatic path too (recordSyncCard unset) — and still moves local main", async () => {
     const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
     createCleanDivergence(bareDir, workDir);
     execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
@@ -1552,13 +1558,62 @@ describe("rebase-driver: docs/221 sync card + local base move", () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     const messages: WsServerMessage[] = [];
     runner.on("message", (m: WsServerMessage) => messages.push(m));
+    const captured: { role: string; text: string; branchSynced?: { cardId: string } }[] = [];
 
-    const result = await runFlow(baseDeps(git, runner, [], true), "main");
+    const result = await runFlow(baseDeps(git, runner, captured, true), "main");
 
     expect(result.status).toBe("rebased");
-    expect(messages.find((m) => m.type === "branch_synced_card")).toBeUndefined();
+    const card = messages.find((m) => m.type === "branch_synced_card");
+    expect(card).toBeDefined();
+    if (card?.type === "branch_synced_card") {
+      expect(card.card.forcePushed).toBe(true);
+      expect(card.card.headFromSha).not.toBe(card.card.headToSha);
+    }
+    // Durable, not emit-only — the whole point is that it is still there tomorrow.
+    expect(captured.some((m) => m.branchSynced)).toBe(true);
     // Local base move is unconditional (plain correctness), independent of the card.
     expect(await git.getRefHash("main")).toBe(await git.getRefHash("origin/main"));
+  });
+
+  it("emits the card LAST on an automatic conflict resolution, after everything the flow said", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const captured: { role: string; text: string; branchSynced?: { cardId: string } }[] = [];
+
+    const result = await runFlow({
+      ...baseDeps(git, runner, captured, true),
+      // Resolve the conflict the way the auto-resolve agent would.
+      agentFactory: () => new FakeRebaseAgent((cwd) => {
+        fs.writeFileSync(path.join(cwd, "shared.txt"), "merged\n");
+        return "Resolved the conflict.";
+      }) as unknown as AgentProcess,
+    }, "main");
+
+    expect(result.status).toBe("conflicts_resolved");
+    // Reassurance is only reassuring below the alarming content: the card is the
+    // last row in history, after the resolution turn's own rows.
+    expect(captured.length).toBeGreaterThan(1);
+    expect(captured[captured.length - 1].branchSynced).toBeDefined();
+  });
+
+  it("a failed card write does not fail the rebase", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const deps = baseDeps(git, runner, [], true);
+    const history = deps.chatHistoryManager as unknown as { append: () => void };
+    history.append = () => { throw new Error("history is wedged"); };
+
+    // The branch was rewritten and pushed before the card was written — a DB
+    // failure must not report that as a failed sync (and, on the automatic
+    // path, burn an attempt).
+    const result = await runFlow(deps, "main");
+    expect(result.status).toBe("rebased");
   });
 
   it("up-to-date branch but local main behind — moves main, emits card, and flags baseMoved on rebase_complete", async () => {
