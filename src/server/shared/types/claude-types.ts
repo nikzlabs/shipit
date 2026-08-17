@@ -385,9 +385,39 @@ export interface ClaudeRateLimitEvent {
   session_id?: string;
 }
 
+/**
+ * A raw Anthropic SSE frame, re-emitted verbatim by the CLI under
+ * `--include-partial-messages`. ShipIt asks for these ONLY on a
+ * service-routed spawn, and consumes exactly one frame type:
+ * `message_delta`, whose `usage` is the **final** per-call token count.
+ *
+ * Why that frame and not the `assistant` event's `message.usage`: the CLI
+ * snapshots assistant usage from the call's `message_start` frame, and a
+ * provider is free to send zeros there and report the real numbers only in
+ * the closing `message_delta`. Z.ai's GLM endpoint does exactly that — every
+ * assistant event reads `{input_tokens: 0, output_tokens: 0}` — while also
+ * leaving `result.usage.iterations` empty, which left ShipIt with no per-call
+ * reading at all and a dial that summed the turn's billing totals. Measured
+ * against `glm-5.3[1m]` on 2026-08-17: last `message_delta` = 24,986 tokens
+ * where the turn-wide sum was 49,727.
+ *
+ * Only the consumed fields are typed; everything else passes through.
+ */
+export interface ClaudeStreamEvent {
+  type: "stream_event";
+  event?: {
+    type?: string;
+    /** Present on `message_delta`: this single call's final token counts. */
+    usage?: ClaudeUsageIteration;
+  };
+  /** Set when the frame belongs to a subagent (Task) call — see ClaudeAssistantEvent. */
+  parent_tool_use_id?: string | null;
+}
+
 export type ClaudeEvent =
   | ClaudeSystemEvent
   | ClaudeAssistantEvent
   | ClaudeUserEvent
   | ClaudeResultEvent
-  | ClaudeRateLimitEvent;
+  | ClaudeRateLimitEvent
+  | ClaudeStreamEvent;

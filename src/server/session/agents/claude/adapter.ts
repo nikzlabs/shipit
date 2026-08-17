@@ -10,7 +10,12 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
-import type { ClaudeEvent, ClaudeMcpServerInit, PermissionMode } from "../../../shared/types.js";
+import type {
+  ClaudeEvent,
+  ClaudeMcpServerInit,
+  ClaudeUsageIteration,
+  PermissionMode,
+} from "../../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../../shared/types.js";
 import { CLAUDE_MODELS, CLAUDE_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import type {
@@ -74,10 +79,22 @@ export class ClaudeAdapter
   private rateLimitWeekly: SubscriptionLimitsWindow | null = null;
 
   /**
-   * Context occupancy from the latest top-level assistant API call. This is a
-   * fallback for Claude-compatible providers that omit result.usage.iterations.
+   * Context occupancy from the latest top-level API call in this turn — the
+   * fallback for Claude-compatible providers that omit
+   * `result.usage.iterations`.
+   *
+   * Two events feed it, because no single one covers every provider:
+   *
+   *  - the `assistant` event's `message.usage` (DeepSeek populates it), and
+   *  - the `message_delta` SSE frame under `--include-partial-messages`
+   *    (Z.ai/GLM reports usage ONLY there — its assistant events are zeroed).
+   *
+   * Both describe the same thing, the prompt size of one model call, so the
+   * later one simply wins; when a provider sends both they agree. Zero and
+   * output-only readings are ignored rather than written, so a provider that
+   * zeroes one source cannot empty a reading the other supplied.
    */
-  private latestAssistantContextTokens: number | undefined;
+  private latestCallContextTokens: number | undefined;
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
@@ -160,6 +177,21 @@ export class ClaudeAdapter
     proc.on("log", (source: string, text: string) => {
       this.emit("log", source, text);
     });
+  }
+
+  /**
+   * Record one model call's prompt size from whichever event carried it.
+   * See {@link latestCallContextTokens} for why there are two sources.
+   */
+  private recordCallContext(usage: ClaudeUsageIteration | undefined): void {
+    if (!usage) return;
+    const contextTokens =
+      (usage.input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0);
+    // An output-only, zeroed or empty usage object has no context reading. Do
+    // not turn it into an authoritative zero that empties the dial.
+    if (contextTokens > 0) this.latestCallContextTokens = contextTokens;
   }
 
   /** Convert a raw ClaudeEvent into the normalized AgentEvent schema. */
@@ -254,17 +286,18 @@ export class ClaudeAdapter
             return null;
         }
 
-      case "assistant":
-        if (!raw.parent_tool_use_id && raw.message.usage) {
-          const usage = raw.message.usage;
-          const contextTokens =
-            (usage.input_tokens ?? 0) +
-            (usage.cache_read_input_tokens ?? 0) +
-            (usage.cache_creation_input_tokens ?? 0);
-          // An output-only or empty usage object has no context reading. Do
-          // not turn it into an authoritative zero that empties the dial.
-          if (contextTokens > 0) this.latestAssistantContextTokens = contextTokens;
+      case "stream_event":
+        // Raw SSE passthrough (`--include-partial-messages`, service-routed
+        // spawns only). Nothing here reaches the orchestrator — the CLI's own
+        // `assistant` events already carry the content — but `message_delta`
+        // is the only place some providers state a call's token usage.
+        if (!raw.parent_tool_use_id && raw.event?.type === "message_delta") {
+          this.recordCallContext(raw.event.usage);
         }
+        return null;
+
+      case "assistant":
+        if (!raw.parent_tool_use_id) this.recordCallContext(raw.message.usage);
         return {
           type: "agent_assistant",
           content: raw.message.content,
@@ -308,14 +341,15 @@ export class ClaudeAdapter
             (lastIter.cache_read_input_tokens ?? 0) +
             (lastIter.cache_creation_input_tokens ?? 0);
         } else {
-          // DeepSeek and some other Claude-compatible providers omit the
-          // result-level iteration list. Their assistant events still carry
-          // per-call usage, so the last top-level assistant event is the final
-          // prompt size. Do not fall back to the result totals: those are sums
-          // across calls and can overstate context by orders of magnitude.
-          contextTokens = this.latestAssistantContextTokens;
+          // DeepSeek, GLM and other Claude-compatible providers omit the
+          // result-level iteration list (GLM sends `iterations: []`), so the
+          // last top-level API call seen in the stream is the final prompt
+          // size. Do not fall back to the result totals: those are sums across
+          // calls and overstate context by roughly the call count — that is
+          // exactly how a GLM turn reported 2.1M against a 1M window.
+          contextTokens = this.latestCallContextTokens;
         }
-        this.latestAssistantContextTokens = undefined;
+        this.latestCallContextTokens = undefined;
         // Authoritative context window comes from `modelUsage.<model>.contextWindow`
         // (e.g. Opus 4.7 reports 1_000_000). Falls back to the static map on
         // the receiving end when undefined.
@@ -400,7 +434,7 @@ export class ClaudeAdapter
     // A resident streaming adapter serves many turns. Clear any reading left
     // by an abnormal prior turn that ended without a result event before the
     // next turn starts, or a result with no assistant usage could reuse it.
-    this.latestAssistantContextTokens = undefined;
+    this.latestCallContextTokens = undefined;
     if (params.useStreaming) {
       if (this._isStreaming) {
         // Persistent streaming process is already alive — send the next turn
@@ -448,7 +482,7 @@ export class ClaudeAdapter
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
     // Persistent streaming turns enter through this method, not run(). Clear
     // a reading left by an abnormal prior turn before accepting new input.
-    this.latestAssistantContextTokens = undefined;
+    this.latestCallContextTokens = undefined;
     if (this.inner instanceof StreamingClaudeProcess) {
       console.log(
         `[claude-adapter] sendUserMessage → streaming (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
