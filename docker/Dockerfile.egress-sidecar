@@ -19,7 +19,7 @@
 # these tags in place for base-image security updates, and deploy.sh builds this
 # image with `--pull` on EVERY deploy, so an in-place rebuild upstream silently
 # re-runs the Go build. Guarded by src/server/orchestrator/docker-build-cache.test.ts.
-FROM golang:1.23.5-alpine3.20@sha256:def59a601e724ddac5139d447e8e9f7d0aeec25db287a9ee1615134bcda266e2 AS proxy-build
+FROM golang:1.24.3-alpine3.20@sha256:9f98e9893fbc798c710f3432baa1e0ac6127799127c3101d2c263c3a954f0abe AS proxy-build
 WORKDIR /src
 COPY egress-sidecar/sni-proxy/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sni-proxy .
@@ -28,7 +28,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sni-pro
 # Digest-pinned. `3.20` is a MINOR tag: it moves to 3.20.1, 3.20.2, … as Alpine
 # ships patch releases, so it is mutable in the same way `:latest` is, only
 # slower. Everything below (the apk layer) re-runs when it moves.
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # iptables + ip6tables + ipset for the rules; bind-tools for `dig`; curl for the
 # self-test; bash for the scripts; dnsmasq for the Tier B controlled resolver.
