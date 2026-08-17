@@ -41,5 +41,7 @@ named `checklist.md` — that name tracks docs/272's own branch work.
       fixture replay + one manual UI turn
 - [ ] Negative control run once against the checker (fabricated tool
       name flagged)
-- [ ] Step 5 record: inventories + per-surface artifacts observed,
-      appended to the integration doc / bump PR
+- [ ] Step 5 record: one file per run —
+      `docs/272-harness-conversion-verification/runs/YYYY-MM-DD-HHMM-<harness>-<cli-version>.md`
+      with `run:` frontmatter metadata, inventories + per-surface
+      artifacts observed; linked from the bump PR
