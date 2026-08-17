@@ -1753,12 +1753,20 @@ function AddServiceDialog({
             )}
             {acceptsString && (
               <>
+                {acceptsAccount && (
+                  <p
+                    className="pt-1 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)"
+                    data-testid="add-service-string-alternative"
+                  >
+                    Or paste a token
+                  </p>
+                )}
                 <input
                   autoFocus
                   type="password"
                   value={secret}
                   onChange={(e) => { setSecret(e.target.value); setError(""); }}
-                  placeholder="sk-…"
+                  placeholder="…"
                   aria-label={`${service.name} credential`}
                   className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
                   data-testid="add-service-secret"
