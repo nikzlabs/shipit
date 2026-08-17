@@ -13,6 +13,7 @@ import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
 import { materializeLfsWithWarning } from "./git-lfs.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { evaluateInstallGate } from "./agent-install-gate.js";
 import { workerInstall, workerGet } from "./worker-http.js";
 
 // ---- Warm session pool ----
@@ -349,6 +350,17 @@ export async function runPreInstall(workspaceDir: string, workerUrl: string, ses
     return;
   }
   if (commands.length === 0) return;
+
+  // docs/271 — the one install path that does NOT go through
+  // `ContainerSessionRunner.runInstall`: this POSTs the worker directly. In
+  // practice a standby's clone is fresh and no plugin container has ever run
+  // against it, so the gate allows — but "in practice" is not the guarantee
+  // req 5 asks for, and an ungated run here would also stamp the marker, which
+  // is the very anchor the gate reads.
+  if (evaluateInstallGate({ workspaceDir, requested: commands }).withheld) {
+    console.warn(`[warm:install:${sessionId}] Skipping pre-install — agent.install is withheld`);
+    return;
+  }
 
   try {
     // The worker returns `{ started: true }` / `{ skipped: true }` fast and

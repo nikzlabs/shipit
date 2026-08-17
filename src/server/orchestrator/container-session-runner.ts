@@ -52,6 +52,11 @@ import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
+import {
+  evaluateInstallGate,
+  installWithheldNotice,
+  recordWithheldCommands,
+} from "./agent-install-gate.js";
 
 // ---------------------------------------------------------------------------
 // Barrel re-exports for backwards compatibility
@@ -196,6 +201,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * session without requiring a restart.
    */
   rerunServiceSetup?: () => void;
+
+  /**
+   * docs/271 — report a withheld `agent.install` into the chat transcript.
+   *
+   * Wired by `runner-registry-factory` (which has the `ChatHistoryManager` this
+   * class does not) to `emitNoticeInTurn`, beside the two hooks above that
+   * solve the same problem. Optional on purpose: a runner built without the
+   * wiring — unit tests, local mode — still withholds, it just does so
+   * silently. The gate's decision must never depend on whether anyone is
+   * listening.
+   */
+  onInstallWithheld?: (message: string) => void;
 
   /**
    * When `true`, the runner's "disposed" lifecycle hook in
@@ -1779,8 +1796,47 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (record(failures)) this.emitMessage({ type: "plugin_repos_updated", sessionId: this.sessionId });
   }
 
-  async runInstall(commands: string[]): Promise<{ ok: boolean }> {
+  async runInstall(commands: string[]): Promise<{ ok: boolean; withheld?: boolean }> {
     if (commands.length === 0) return { ok: true };
+
+    // docs/271 — the ONE place a session's `agent.install` reaches the worker,
+    // which is why the gate is here rather than at the `shipit.yaml` delta the
+    // issue found the bug in. Both paths that can carry a plugin's rewritten
+    // command list converge on this method: the live config delta
+    // (`maybeReinstallForDepChange`) and session setup after a container
+    // recreate (`setupServiceManager`) — and gating only the first would leave
+    // the second open, since a plugin's write is auto-committed like any other
+    // workspace change and read back at the next start.
+    //
+    // Returns ok WITHOUT posting: a withheld install is not a failure. The
+    // session keeps working on the dependencies it already has (req 7), and the
+    // notice tells the user how to get the new ones (req 8).
+    // `this.sessionDir` IS the clone (`app-lifecycle.ts:685`), which is what the
+    // gate wants — it derives the session root and state dir from it.
+    const verdict = evaluateInstallGate({ workspaceDir: this.sessionDir, requested: commands });
+    if (verdict.withheld) {
+      console.warn(
+        `[install:${this.sessionId}] agent.install changed in a plugin-bearing session — withheld (${commands.length} command(s))`,
+      );
+      if (!verdict.alreadyReported) {
+        // Record BEFORE reporting, so a throw in the notice hook cannot turn
+        // into a notice on every recreate.
+        recordWithheldCommands(this.sessionDir, commands);
+        try {
+          this.onInstallWithheld?.(installWithheldNotice(verdict.accepted, commands));
+        } catch (err) {
+          // The hook reaches SQLite and the viewer transports. A failure there
+          // must not become a FAILED INSTALL: `setupServiceManager` maps a throw
+          // to `{ ok: false }`, which latches every `dependsOnInstall` service
+          // to `error` — the opposite of req 7's "must not break the session".
+          console.error(
+            `[install:${this.sessionId}] could not report the withheld agent.install:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+      return { ok: true, withheld: true };
+    }
 
     // Concurrent-call guard: if an install is already in flight (either we
     // armed `_installComplete` and haven't resolved yet, or the worker is
