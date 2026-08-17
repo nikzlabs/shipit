@@ -1317,6 +1317,25 @@ function AddServiceDialog({
     && (!!authError || signInAccount.status !== "authenticating");
 
   /**
+   * Nothing is in flight and nothing is connected: the step is waiting for the
+   * user to pick a path. It gates BOTH controls on a mode that takes an account
+   * and a token — the *Sign in* button and the token field with its *Save* —
+   * because on that mode they are alternatives, and only one of them can be
+   * what the user is doing.
+   *
+   * **The token field must not be on screen beside the challenge.** Anthropic's
+   * subscription sign-in ends at a field reading "Paste authorization code",
+   * and the token field one gap below it reads as a second place to paste the
+   * same thing. It is worse than ambiguous: the fields take different strings,
+   * the wrong one is `autoFocus`ed, and pasting the code into it saves a
+   * credential that cannot work. So while the sign-in runs, the challenge is
+   * the only input; the token comes back if the attempt stops, which is exactly
+   * when a fallback is worth offering.
+   */
+  const signInIdle = !pendingAuth && !signedIn && !startingSignIn
+    && (!signInAccount || signInStalled);
+
+  /**
    * The `(service, mode)` are arguments rather than closure reads because
    * {@link pickMode} calls this from the very click that chose them: `service`
    * and `billingMode` are still the previous render's values there. Both
@@ -1648,9 +1667,11 @@ function AddServiceDialog({
               signing in — that is what almost everyone does with it — so a mode
               accepting BOTH read as "3 · Paste the key" above prose explaining
               you sign in, with the key field first and *Save* as the primary
-              button. Signing in leads; the string stays reachable underneath,
-              since Anthropic's subscription genuinely accepts an env-supplied
-              token and hiding it is what made signing in unreachable before.
+              button. Signing in leads; the string stays reachable underneath
+              *while nothing is in flight*, since Anthropic's subscription
+              genuinely accepts an env-supplied token and hiding it outright is
+              what made that path unreachable before. Once the sign-in starts,
+              its challenge is the only field on the step — see `signInIdle`.
             */}
             <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
               3 · {acceptsAccount ? "Sign in" : "Paste the key"}
@@ -1751,7 +1772,7 @@ function AddServiceDialog({
                 )}
               </div>
             )}
-            {acceptsString && (
+            {acceptsString && (!acceptsAccount || signInIdle) && (
               <>
                 {acceptsAccount && (
                   <p
@@ -1762,7 +1783,12 @@ function AddServiceDialog({
                   </p>
                 )}
                 <input
-                  autoFocus
+                  // Focused on arrival where the field IS the step, so the key
+                  // goes in with one paste and no click. Not where the step
+                  // leads with a sign-in: there the field is the alternative,
+                  // and a caret sitting in it points away from the path the
+                  // heading recommends.
+                  autoFocus={!acceptsAccount}
                   type="password"
                   value={secret}
                   onChange={(e) => { setSecret(e.target.value); setError(""); }}
@@ -1821,7 +1847,9 @@ function AddServiceDialog({
             rather than disappearing — the key is still a working way to connect
             Anthropic's subscription, just not the one being recommended.
 
-            **It appears with the field it saves, and not before.** It used to
+            **It appears with the field it saves, and only with it** — same
+            `signInIdle` gate, so the button cannot outlive the input it acts
+            on. It used to
             render from step 1 (`!billingMode || !service`), where there is
             nothing to save and it is permanently disabled — and, worse, where
             the mode is unknown, so it renders `primary` and then *animates* to
@@ -1830,7 +1858,7 @@ function AddServiceDialog({
             its colour, blue to grey over eight frames, which reads exactly as a
             control that was available and then was taken away.
           */}
-          {acceptsString && (
+          {acceptsString && (!acceptsAccount || signInIdle) && (
             <Button
               variant={acceptsAccount ? "secondary" : "primary"}
               size="md"
@@ -1867,8 +1895,7 @@ function AddServiceDialog({
             sending a code offers no one-press retry, and is recovered the way
             everything else in this dialog is, by closing it and starting again.
           */}
-          {acceptsAccount && !pendingAuth && !signedIn && !startingSignIn
-            && (!signInAccount || signInStalled) && (
+          {acceptsAccount && signInIdle && (
             <Button
               // Secondary only where the step signs itself in: there the button
               // is a recovery, not the way forward. Where the user must press
