@@ -610,6 +610,55 @@ describe("ServicesPanel", () => {
       expect(logins()).toBe(0);
     });
 
+    it("takes the token field away while the sign-in has a field of its own", async () => {
+      // Anthropic's sign-in ends at "Paste authorization code". The token field
+      // one gap below it is a second place to paste, it takes a different
+      // string, and pasting the code there saves a credential that cannot work.
+      // So the challenge is the only input while the login runs — and the token
+      // comes back when the attempt stops, which is when a fallback is useful.
+      const account = {
+        id: "acct-anthropic-1",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
+        label: "Anthropic account 1", isPrimary: true, status: "authenticating",
+        createdAt: 1, updatedAt: 1,
+      };
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
+      });
+
+      render(<ServicesPanel agentList={[claudeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      expect(screen.getByTestId("add-service-secret")).toBeInTheDocument();
+
+      // The wait, then the challenge: no token field through either, and no
+      // Save either — the button cannot outlive the field it acts on.
+      await userEvent.click(screen.getByTestId("add-service-sign-in"));
+      await waitFor(() => expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument());
+      expect(screen.queryByTestId("add-service-secret")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("add-service-save")).not.toBeInTheDocument();
+
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-anthropic-1", {
+        loginId: "anthropic-oauth", accountId: "acct-anthropic-1",
+        verificationUri: "https://claude.ai/oauth/authorize",
+      });
+      await waitFor(() => expect(
+        screen.getByTestId("provider-account-challenge-acct-anthropic-1"),
+      ).toBeInTheDocument());
+      expect(screen.queryByTestId("add-service-secret")).not.toBeInTheDocument();
+
+      // The provider rejects it — the failure event clears the challenge and
+      // files the reason — so there is one input again, and it is the token's.
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-anthropic-1", null);
+      useSettingsStore.getState().setProviderAccountAuthError(
+        "anthropic-oauth", "acct-anthropic-1", "That code was refused.",
+      );
+      await waitFor(() => expect(screen.getByTestId("add-service-secret")).toBeInTheDocument());
+      expect(screen.getByTestId("add-service-save")).toBeInTheDocument();
+    });
+
     it("starts nothing that would fail on arrival, and says why", async () => {
       // A harness that cannot run the login: the step stays as it was, with the
       // reason on it, rather than auto-starting into an error.
