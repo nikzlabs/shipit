@@ -119,7 +119,8 @@ import { reapOrphanPluginInstalls } from "./plugin-install.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
-import type { RepoGit } from "./repo-git.js";
+import type { RepoGit, GitRemoteCredential } from "./repo-git.js";
+import { getRepoScopedGitCredential } from "./services/github.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 import { sessionCredentialsRoot } from "./session-credentials.js";
 import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } from "./disk-utils.js";
@@ -171,7 +172,14 @@ export interface DiskJanitorDeps {
    * are wired in `index.ts`.
    */
   githubAuthManager?: GitHubAuthManager;
-  createRepoGit?: (dir: string) => RepoGit;
+  /**
+   * planning#426 — the second parameter is load-bearing, not optional decoration:
+   * the sweep's `push --delete` supplies its own repo-scoped credential rather
+   * than relying on the orchestrator's ambient global helper. A factory that
+   * ignores it (a test fake) still type-checks and still pushes — it just pushes
+   * the way it did before.
+   */
+  createRepoGit?: (dir: string, credential?: GitRemoteCredential) => RepoGit;
   getBareCacheDir?: (repoUrl: string) => string;
   /** Default true. Set false to disable the branch sweep entirely. */
   sweepOrphanBranches?: boolean;
@@ -878,15 +886,66 @@ interface ShipitPrStatesQueryResult {
  *     practice — repos without caches were probably already cleaned up
  *     by `sweepOrphanedCaches`).
  *
- * The remote URL on the bare cache is refreshed to embed the current
- * token before pushing, mirroring `unarchiveSession` — without this, a
- * rotated PAT would 401 the push.
+ * ## How the push authenticates (planning#426)
+ *
+ * This docstring used to say the cache's remote URL is "refreshed to embed the
+ * current token before pushing". That has not been true since docs/262 req 19:
+ * `setRemoteUrl` runs every URL through `credentialFreeRemote`, which STRIPS an
+ * embedded credential and can now only ever remove one. The mechanism the
+ * docstring named was deliberately deleted, and nothing replaced it here — so
+ * this push carried no credential of its own and depended entirely on the
+ * orchestrator's ambient global helper being present and readable. When it is
+ * not, the push dies with `fatal: could not read Username for
+ * 'https://github.com'`, which is one of the three paths that produced those
+ * lines in the planning#410 soak.
+ *
+ * It now resolves an explicit repo-scoped credential — the same one every other
+ * deliberate remote op takes (`getRepoScopedGitCredential`), which this sweep is
+ * unusually well placed to ask for because it already knows `owner`/`repo`. Two
+ * things follow, and both are the point:
+ *
+ *   - The push no longer *depends* on ambient config, so it cannot lose its
+ *     credential to a state elsewhere in the process.
+ *   - `RepoGit`'s credentialled path sets `GIT_TERMINAL_PROMPT=0`, so a genuinely
+ *     absent credential fails fast and classifiably instead of stalling into
+ *     git's "could not read Username" — and the log below then names WHICH of the
+ *     two shapes happened: no credential (plumbing) or a refusal (this token
+ *     cannot reach this repository, which is legitimate and still worth saying).
  */
+/**
+ * planning#426 — the credential this sweep's `push --delete` runs with.
+ *
+ * `getRepoScopedGitCredential` is the same resolver the git-credential broker and
+ * every dropped-uid remote op use: a short-lived, single-repo installation token
+ * when a GitHub App is configured, and the PAT when one is not. Scoped to
+ * `https://github.com` and offered to no other origin, which is why the raw PAT
+ * in an ambient host-blind helper was the weaker shape even when it worked.
+ *
+ * Never throws — a resolver failure resolves to `null`, which the caller reads as
+ * "skip this repo and say why". A sweep that cannot authenticate must decline
+ * loudly, not push and let git ask for a username nobody can answer.
+ */
+async function resolveCacheCredential(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+): Promise<GitRemoteCredential | null> {
+  try {
+    const token = await getRepoScopedGitCredential(githubAuthManager, {
+      host: "github.com", owner, repo,
+    });
+    return token ? { origin: "https://github.com", token } : null;
+  } catch (err) {
+    console.warn(`[disk-janitor] resolving a credential for ${owner}/${repo} failed:`, getMessage(err));
+    return null;
+  }
+}
+
 async function sweepOrphanMergedBranches(
   sessionManager: SessionManager,
   repoStore: RepoStore,
   githubAuthManager: GitHubAuthManager,
-  createRepoGit: (dir: string) => RepoGit,
+  createRepoGit: (dir: string, credential?: GitRemoteCredential) => RepoGit,
   getBareCacheDir: (repoUrl: string) => string,
   paceMs: number,
 ): Promise<number> {
@@ -942,7 +1001,23 @@ async function sweepOrphanMergedBranches(
       } catch {
         return null; // No bare cache for this repo — skip.
       }
-      const gitInstance = createRepoGit(cacheDir);
+      // planning#426 — an explicit credential for this repository, rather than
+      // whatever the ambient global helper happens to hold. `null` means the
+      // resolver could not produce one at all (no token for this host, a mint that
+      // failed with no PAT behind it); say so once per repo and skip, because a
+      // push with nothing to authenticate with can only produce the "could not
+      // read Username" line this issue is about.
+      const credential = await resolveCacheCredential(
+        githubAuthManager, parsed.owner, parsed.repo,
+      );
+      if (!credential) {
+        console.warn(
+          `[disk-janitor] no GitHub credential available for ${parsed.owner}/${parsed.repo} — `
+          + `skipping ${eligible.length} orphan-branch deletion(s); reconnect GitHub in Settings`,
+        );
+        return null;
+      }
+      const gitInstance = createRepoGit(cacheDir, credential);
       try {
         // Normalize the cache's origin URL to the plain form. Credentials
         // come from the global git credential helper, not the URL.
@@ -992,10 +1067,17 @@ async function sweepOrphanMergedBranches(
         await git.deleteBranch(fullName);
         removed += 1;
       } catch (err) {
-        console.warn(
-          `[disk-janitor] failed to delete orphan branch ${fullName}:`,
-          getMessage(err),
-        );
+        // planning#426 — name which of the two shapes this was. They need
+        // different fixes and the old single line conflated them: a missing
+        // credential is a plumbing bug on our side, a refusal means the connected
+        // account cannot reach this repository, which is legitimate.
+        const message = getMessage(err);
+        const shape = /could not read Username|terminal prompts disabled/i.test(message)
+          ? " (no credential reached git — this is a ShipIt plumbing fault, please report it)"
+          : /\b401\b|\b403\b|Authentication failed|Permission to .* denied/i.test(message)
+            ? " (GitHub refused the credential — the connected account may not have push access to this repository)"
+            : "";
+        console.warn(`[disk-janitor] failed to delete orphan branch ${fullName}:${shape}`, message);
       }
     }
   }

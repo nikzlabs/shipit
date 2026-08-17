@@ -77,3 +77,39 @@
       was rewritten" notice — so the turn most likely to need it never got it
 - [x] Re-park that notice when the dispatched turn dies before the agent sees the
       prompt — read-and-clear would otherwise let a spawn failure burn it for good
+
+## planning#426 — the pull had no credential, and the fork stayed silent
+
+- [x] `git lfs pull` carries a per-remote credential resolved the way
+      `GitManager.remoteGit` does, so a dropped-uid pull on a PRIVATE repo stops
+      dying with `could not read Username` and silently leaving stubs
+- [x] Register that resolver once at boot (`configureLfsRemoteCredentialResolver`)
+      rather than threading it through twelve call sites, where an added site
+      would silently opt out
+- [x] Credential the fork's `fetch origin --prune` — the raw site left behind when
+      `mergeSession` got a resolver in docs/266 E3
+- [x] Classify a failed pull's two shapes from git-lfs's own output
+      (`no-credential` = our plumbing fault, `access-denied` = the token cannot
+      reach this repository), each with its own advice
+- [x] Report a fork whose LFS content did not resolve: an SSE toast now, and a
+      durable `pending_agent_notice` for the first turn — however much later that
+      is — naming the cause and the `head -c 120` pointer-header check
+- [x] Report on every non-`materialized` status, not just `failed`: `disabled` and
+      `binary-missing` leave the same stubs on disk
+- [x] Surface the fork's `fetch origin` failure instead of a bare `console.warn`
+- [x] Give the disk janitor's orphan-branch `push --delete` an explicit
+      repo-scoped credential, decline the sweep loudly when none can be resolved,
+      and name which shape a failure was
+- [x] Correct the `sweepOrphanMergedBranches` docstring, which still claimed the
+      cache's remote URL embeds the token — a mechanism docs/262 req 19 deleted
+- [x] Review finding: drop the inherited `GIT_CONFIG_COUNT` / `GIT_ASKPASS` class
+      on the credentialled pull, matching `credentialledGit` — one of those
+      outranks every `-c` and could reinstate the helper the reset just cleared
+- [x] Review finding: APPEND the LFS notice instead of overwriting, since docs/221's
+      slot is last-write-wins for a different fact class; name the residual
+      later-writer clobber in Known gaps rather than building a queue for it
+- [x] Tests: the credential on the pull's argv and in its environment (and the
+      secret in neither the argv nor the config), the unchanged no-credential
+      path, both failure classifications, the notice's content and every cause,
+      the fork's resolution scoped to its own workspace, the no-remote negative,
+      and the janitor's credential + fail-closed decline

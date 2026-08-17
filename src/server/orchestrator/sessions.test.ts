@@ -557,6 +557,44 @@ describe("SessionManager", () => {
       mgr.setPendingAgentNotice("sess-1", "second");
       expect(mgr.consumePendingAgentNotice("sess-1")).toBe("second");
     });
+
+    // planning#426 — the slot now carries a SECOND fact class (a fork's LFS content
+    // is unresolved). For two writers describing DIFFERENT facts, last-write-wins
+    // is data loss rather than supersession, so that class appends. Review finding.
+    it("append preserves a notice describing a different fact", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPendingAgentNotice("sess-1", "[System] your branch moved");
+      mgr.appendPendingAgentNotice("sess-1", "[System] LFS content is unresolved");
+      const delivered = mgr.consumePendingAgentNotice("sess-1");
+      expect(delivered).toContain("your branch moved");
+      expect(delivered).toContain("LFS content is unresolved");
+    });
+
+    it("append is the plain set when nothing is pending", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.appendPendingAgentNotice("sess-1", "only");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBe("only");
+    });
+
+    it("append does not stack an identical notice twice", () => {
+      // A fork-time report that somehow ran twice must not deliver the same
+      // paragraph two times over.
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.appendPendingAgentNotice("sess-1", "[System] LFS unresolved");
+      mgr.appendPendingAgentNotice("sess-1", "[System] LFS unresolved");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBe("[System] LFS unresolved");
+    });
+
+    it("append still delivers exactly once, then clears", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.appendPendingAgentNotice("sess-1", "once");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBe("once");
+      expect(mgr.consumePendingAgentNotice("sess-1")).toBeUndefined();
+    });
   });
 
   describe("docs/110: setPinned / archive clears pin", () => {

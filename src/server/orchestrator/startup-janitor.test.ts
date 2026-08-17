@@ -8,6 +8,7 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runDiskJanitor } from "./startup-janitor.js";
 import { repoUrlToHash } from "./git-utils.js";
+import type { GitRemoteCredential } from "./repo-git.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
@@ -654,10 +655,16 @@ describe("runDiskJanitor", () => {
    */
   function buildGitHubStub(
     branches: Record<string, { name: string; states: string[] }[]>,
-    opts: { authenticated?: boolean } = {},
+    opts: { authenticated?: boolean; token?: string | null } = {},
   ) {
     return {
       authenticated: opts.authenticated ?? true,
+      // planning#426 — the sweep resolves an explicit repo-scoped credential
+      // before pushing, so the stub answers the two reads that resolution makes.
+      // `token: null` is the "authenticated but nothing to authenticate with"
+      // state the sweep must now decline loudly instead of pushing into.
+      getToken: () => (opts.token === undefined ? "ghp_test_token" : opts.token),
+      appTokensEnabled: () => false,
 
       async graphqlQuery(query: string, vars?: Record<string, unknown>) {
         const owner = vars?.owner as string;
@@ -706,19 +713,37 @@ describe("runDiskJanitor", () => {
   function buildRepoGitFactory(opts: { deleteFails?: boolean } = {}) {
     const deleted: string[] = [];
     const setRemoteUrlCalls: string[] = [];
-    const factory = (_dir: string) => ({
-      deleteBranch: (branch: string) => {
-        if (opts.deleteFails) return Promise.reject(new Error("push denied"));
-        deleted.push(branch);
-        return Promise.resolve();
-      },
-      setRemoteUrl: (url: string) => {
-        setRemoteUrlCalls.push(url);
-        return Promise.resolve();
-      },
-    } as unknown as ReturnType<NonNullable<Parameters<typeof runDiskJanitor>[0]["createRepoGit"]>>);
-    return { factory, deleted, setRemoteUrlCalls };
+    // planning#426 — the credential the sweep hands each `RepoGit` is recorded, so
+    // a test can assert the push authenticates explicitly rather than leaning on
+    // the orchestrator's ambient global helper.
+    const credentials: (GitRemoteCredential | undefined)[] = [];
+    const factory = (_dir: string, credential?: GitRemoteCredential) => {
+      credentials.push(credential);
+      return {
+        deleteBranch: (branch: string) => {
+          if (opts.deleteFails) return Promise.reject(new Error("push denied"));
+          deleted.push(branch);
+          return Promise.resolve();
+        },
+        setRemoteUrl: (url: string) => {
+          setRemoteUrlCalls.push(url);
+          return Promise.resolve();
+        },
+      } as unknown as ReturnType<NonNullable<Parameters<typeof runDiskJanitor>[0]["createRepoGit"]>>;
+    };
+    return { factory, deleted, setRemoteUrlCalls, credentials };
   }
+
+  /**
+   * planning#426 — the sweep resolves an explicit repo-scoped credential before it
+   * pushes, so a fake auth manager needs the two reads that resolution makes.
+   * These fakes previously carried only `authenticated: true`, which is a state
+   * production cannot be in: `authenticated` IS `_token !== null`.
+   */
+  const CREDENTIAL_FIELDS = {
+    getToken: () => "ghp_test_token",
+    appTokensEnabled: () => false,
+  };
 
   it("deletes merged-PR branches that no live session points at", async () => {
     setup();
@@ -769,6 +794,89 @@ describe("runDiskJanitor", () => {
     // Credentials refreshed exactly once for this repo (lazy: only when we
     // actually have a deletion to perform).
     expect(setRemoteUrlCalls).toEqual([repoUrl]);
+  });
+
+  // planning#426 — the sweep's `push --delete` used to carry no credential of its
+  // own. Its docstring claimed the cache's remote URL embedded the token, but
+  // docs/262 req 19 made `setRemoteUrl` STRIP credentials, so the push depended
+  // entirely on the orchestrator's ambient global helper — and when that answered
+  // nothing it died with `fatal: could not read Username for 'https://github.com'`,
+  // one of the three paths in the planning#410 soak.
+  it("hands the bare-cache push an explicit repo-scoped credential", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    const githubAuthManager = buildGitHubStub({
+      "example/repo": [{ name: "old-merged", states: ["MERGED"] }],
+    });
+    const { factory, deleted, credentials } = buildRepoGitFactory();
+
+    await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted).toEqual(["shipit/old-merged"]);
+    // Scoped to the origin it is for, never offered to another host — the
+    // ambient global helper is host-blind and this is not.
+    expect(credentials).toEqual([{
+      origin: "https://github.com",
+      token: { username: "x-access-token", password: "ghp_test_token" },
+    }]);
+  });
+
+  // The other half of the same fix: when no credential can be produced, DECLINE
+  // rather than push. A push with nothing to authenticate with can only produce
+  // the "could not read Username" line this issue is about, so failing closed and
+  // saying so is strictly better than failing open and being unreadable.
+  it("declines the sweep, loudly, when no credential can be resolved", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    // `authenticated` true but no token — the inconsistent state a wiped
+    // credentials volume or a `clear` that raced an install produces.
+    const githubAuthManager = buildGitHubStub(
+      { "example/repo": [{ name: "old-merged", states: ["MERGED"] }] },
+      { token: null },
+    );
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    let result;
+    try {
+      result = await runDiskJanitor({
+        sessionManager,
+        repoStore,
+        stateDir: tmpDir,
+        runDocker: () => Promise.resolve(""),
+        githubAuthManager,
+        createRepoGit: factory,
+        getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(deleted).toEqual([]);
+    expect(result.orphanBranchesRemoved).toBe(0);
+    expect(warnings.some((w) => w.includes("no GitHub credential available for example/repo"))).toBe(true);
   });
 
   it("no-ops when GitHub auth is unauthenticated", async () => {
@@ -1022,6 +1130,7 @@ describe("runDiskJanitor", () => {
 
     const githubAuthManager = {
       authenticated: true,
+      ...CREDENTIAL_FIELDS,
       async graphqlQuery(query: string) {
         if (query.includes("pullRequests(states:")) {
           return {
@@ -1083,6 +1192,7 @@ describe("runDiskJanitor", () => {
     let prPage = 0;
     const githubAuthManager = {
       authenticated: true,
+      ...CREDENTIAL_FIELDS,
       async graphqlQuery(query: string) {
         if (query.includes("pullRequests(states:")) {
           prPage += 1;

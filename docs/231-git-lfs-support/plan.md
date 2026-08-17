@@ -266,6 +266,138 @@ agent makes the resolution turn reject, so `runRebaseFlow`'s own `finally`
 aborts and restores against the same clone. A second pull there would race that
 one for no added coverage.
 
+### 7. The pull needs a credential of its own (planning#426)
+
+Two earlier changes stacked into a silent regression that the planning#410
+production soak surfaced as **46 occurrences** of
+`fatal: could not read Username for 'https://github.com'`:
+
+- **docs/266-orchestrator-git-trust-boundary E1** made orchestrator-side git on a
+  session workspace run as that workspace's uid. `git-lfs.ts`'s `runGit` spreads
+  `gitSpawnOverridesForTree`, so the LFS pull drops too.
+- **E3** moved the PAT out of the worker-readable gitconfig into a **root-only**
+  file the global helper `cat`s. A dropped-uid git gets EACCES there, so the
+  global helper answers nothing.
+
+Git then falls through to the next helper in the list, and on a session workspace
+that is the **local** one `configureGitCredentials` writes
+(`github-auth.ts:configureGitCredentials`):
+`/usr/local/bin/shipit-git-credential`, the *container's* broker, which does not
+exist on the orchestrator. So nothing answers at all.
+
+**Both halves of that were measured, not inherited** (CLAUDE.md: "verify an
+inherited guarantee at the source"), against git 2.39.5 and git-lfs 3.3.0:
+
+1. **The fall-through produces the soak's error verbatim.** A global helper that
+   exits without output (the EACCES `cat` case) plus a local
+   `credential.helper = /usr/local/bin/shipit-git-credential` that does not exist
+   yields exactly `fatal: could not read Username for '<origin>': terminal
+   prompts disabled`. Git does *not* report the missing helper binary — it falls
+   through silently and then asks for a username, which is why this degraded with
+   nothing anywhere naming the cause.
+2. **`-c` reaches `git lfs`, and git-lfs uses it.** `git -c credential.helper=
+   -c credential.<origin>.helper=<h> lfs pull` against an endpoint that answers
+   `401` invoked `<h>` with `get` and retried the batch request carrying
+   `Authorization: Basic <base64(user:pass)>`. So the credential does cross the
+   `git` → `git-lfs` → `git credential fill` boundary; git re-derives
+   `GIT_CONFIG_PARAMETERS` for the child from its own `-c`, which is why
+   `sanitizeGitEnv` dropping the *inherited* variable is not a conflict.
+
+`GitManager` had already been given the fix for its own remote ops
+(`shared/git.ts` `remoteGit`). Two raw sites were left behind, and they are
+exactly the two the soak named:
+
+| Site | Consequence before the fix |
+|---|---|
+| `git lfs pull` (`git-lfs.ts` `runGit`) | Every provisioning and tree-rewrite path silently left pointer stubs on a **private** LFS repo. |
+| `forkSession`'s `fetch origin --prune` (`services/session-fork-merge.ts`) | Anonymous fetch → stale `origin/*` refs → the diff inflation that fetch exists to prevent. `mergeSession` already took a resolver; the fork did not. |
+
+The pull now resolves its own credential through
+`resolveTreeRemoteCredential(dir, "origin", …)`, exactly as `GitManager` does.
+The resolver is registered **once at boot** by
+`configureLfsRemoteCredentialResolver` (`app-di.ts`) rather than threaded through
+`materializeLfsContent` / `materializeLfsWithWarning` /
+`restoreLfsAfterTreeRewrite`: there are twelve call sites, the resolver is a
+process-wide singleton either way, and a hand-kept list of "the ones that pass a
+resolver" is stale the moment someone adds one more — **silently**, because a
+missing credential does not fail the pull, it leaves stubs. Same reasoning
+`git-tree-uid.ts` gives for its own choke point. Unregistered means "resolve
+nothing", which is the pre-fix behaviour and what every unit test wants.
+
+It resolves **after** the `usesLfs` gate, so a non-LFS repo still costs one
+`git grep` and no remote-URL read; and it is `null` on every path that is not a
+dropped-uid git (every test, local mode, the root-owned bare cache), where root
+git reads the global helper and the pull is byte-for-byte unchanged.
+
+**The two shapes are now separated, because they need different fixes.**
+`LfsFailure` classifies a failed pull from git-lfs's own output (all of these exit
+2, so the code cannot distinguish them): `no-credential` is a plumbing fault on
+our side — git's `could not read Username` and git-lfs's
+`Git credentials for <url> not found`; `access-denied` is a legitimate outcome
+(401/403 — the stored token has no access to this repository) that must still be
+*reported* rather than swallowed. Each carries its own advice.
+
+**The reporting half, which is a defect on its own terms.** This is
+planning#382's shape: the reason existed and reached one surface while the
+surface the reader actually reads stayed silent. A fork of an LFS repo opened
+with a complete tree, every tracked file present, and each of those files holding
+~130 bytes of pointer text — so a build, a test, or an agent reading an asset got
+**plausible wrong data** rather than a missing file, which is worse than the fork
+refusing outright. `forkSession` now takes two sinks (`ForkReportSinks`, wired by
+`forkReportSinks`), because the two readers are different:
+
+- `warn` → an SSE toast now, the same surface every other provisioning path's LFS
+  warning uses. A fork is user-initiated, so someone is looking. It also replaced
+  the fetch failure's bare `console.warn`.
+- `noticeForAgent` → a durable `pending_agent_notice` (docs/221's slot) on the
+  **new** session, delivered as a `[System] …` line on its first turn — which may
+  be tomorrow, long after any toast. `buildLfsUnresolvedAgentNotice` names the
+  cause and teaches the one cheap check (`head -c 120 <path>` → look for
+  `version https://git-lfs.github.com/spec/v1`), which is the check that
+  distinguishes "this asset is a stub" from the misdiagnoses the original
+  docs/231 reporter lost time to. It says "may", not "are": a batched pull can
+  fail part-way.
+
+Every non-`materialized` status is reported, not just `failed` — `disabled` and
+`binary-missing` leave stubs on disk in exactly the same way.
+
+The notice **appends** (`appendPendingAgentNotice`) rather than overwriting.
+docs/221's slot is last-write-wins because every writer described the same fact —
+where the branch now points — and supersession is correct for that. This is a
+*different* fact, so overwriting a branch-movement notice with it (or the reverse)
+would be data loss rather than supersession. Branch-movement notices keep the
+plain setter and keep superseding each other. Found by review.
+
+Two constraints stated rather than left implied:
+
+- **A later `setPendingAgentNotice` still replaces an appended notice wholesale.**
+  One slot cannot fix that direction, and widening it into a queue is not worth
+  the window: it requires a manual sync of the fork *before its first turn*, the
+  user-facing toast has already fired, and docs/221's own contract already accepts
+  losing one notice to a crash. Named in Known gaps.
+- **The credential is offered only to `origin`'s own host** (`gitCredentialConfig`
+  scopes `credential.<origin>.helper`). For GitHub that is right: the LFS *batch
+  API* lives on `github.com`, and the transfer URLs it hands back
+  (`objects.githubusercontent.com` / `github-cloud.s3.amazonaws.com`, §5) are
+  pre-signed and need no credential. A deployment whose LFS endpoint is on a
+  different host from its git remote would get no credential offered — the same
+  scoping every other credential path in this repo has, and the deliberate
+  alternative to the host-blind helper docs/172 Gap 2 removed.
+
+**The janitor's orphan-branch deletion**, the third path the soak named, is a
+different fault and is fixed differently. Its `push --delete` runs root-side
+against the root-owned bare cache, so no uid drop applies and the global helper
+should answer; the docstring on `sweepOrphanMergedBranches` claimed the cache's
+remote URL "embedded the current token", but docs/262 req 19 made `setRemoteUrl`
+**strip** embedded credentials, so the mechanism it named was deliberately
+deleted and nothing replaced it. That push therefore had no credential of its own
+and depended entirely on ambient config. It now resolves an explicit repo-scoped
+credential (it already knows `owner`/`repo`), which also brings
+`GIT_TERMINAL_PROMPT=0`, so an absent credential fails fast and classifiably; and
+the sweep **declines loudly** when no credential can be resolved rather than
+pushing into a username prompt nobody can answer. Its failure log now names which
+shape happened.
+
 ## Configuration
 
 | Env var | Default | Effect |
@@ -300,6 +432,14 @@ binary is present.
 
 ## Known gaps
 
+- **A branch-movement notice can still overwrite a fork's unresolved-LFS notice**
+  (planning#426). The LFS notice appends, so it never destroys one that is already
+  pending, but `pending_agent_notice` is a single slot and a later
+  `setPendingAgentNotice` replaces its whole contents. Reaching it needs a manual
+  "Sync with `<base>`" on a fork *before that fork's first turn*; the SSE toast has
+  already fired by then, and the agent-facing docs teach the `head -c 120` check
+  independently. A queue instead of a slot is the fix if this is ever observed —
+  deliberately not built for a window this narrow.
 - **No LFS object sharing via the bare cache.** Every session clone pays its own
   network transfer, where git objects are hardlinked from the per-remote bare
   cache. Fetching LFS into the cache and hardlinking `lfs/objects` into each
@@ -332,7 +472,9 @@ binary is present.
 
 ## Key files
 
-- `src/server/orchestrator/git-lfs.ts` — detection, materialization, warning wrapper
+- `src/server/orchestrator/git-lfs.ts` — detection, materialization, warning
+  wrapper, the per-remote credential the pull carries (§7), failure
+  classification, and the unresolved-LFS agent notice
 - `src/server/orchestrator/git-lfs.test.ts` — detection + status/warning contract
 - `src/server/orchestrator/git-lfs-dockerfiles.test.ts` — guards the per-role
   smudge asymmetry, which can't be verified by a build in-session
@@ -341,6 +483,10 @@ binary is present.
 - `services/rebase-driver.ts`, `services/pre-turn-reset.ts`,
   `services/session-fork-merge.ts`, `services/child-sessions.ts` — the §6
   tree-rewrite call sites, each with a wiring guard in its own `.test.ts`
+- `src/server/orchestrator/app-di.ts` — the one-time
+  `configureLfsRemoteCredentialResolver` registration (§7)
+- `src/server/orchestrator/startup-janitor.ts` — the orphan-branch sweep's
+  explicit repo-scoped credential and its fail-closed decline (§7)
 - `src/server/orchestrator/egress-allowlist.ts` — LFS transfer host
 - `docker/Dockerfile{.prod,.dev,.dogfood,.session-worker.prod,.session-worker.dev}`
 - `src/server/shipit-docs/environment.md` — agent-facing "it's a stub, not a

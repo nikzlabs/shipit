@@ -2,6 +2,13 @@ import { spawn } from "node:child_process";
 import { killChild } from "../shared/kill-child.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
+import {
+  type GitRemoteCredential,
+  type GitRemoteCredentialResolver,
+  gitCredentialSpawnOverrides,
+  resolveTreeRemoteCredential,
+  sanitizeGitEnv,
+} from "../shared/git-remote-credential.js";
 
 /**
  * Git LFS support for session provisioning (docs/231).
@@ -57,6 +64,33 @@ import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
  *    the order — just don't rely on "the pull writes as root", which is no
  *    longer true.
  *
+ * ## The pull needs a credential of its own (planning#426)
+ *
+ * `git lfs pull` fetches over HTTPS, so on a private repository it authenticates
+ * — and since docs/266-orchestrator-git-trust-boundary E1/E3 it cannot do so from
+ * the orchestrator's ambient config. Two changes stacked to produce that:
+ *
+ *   - **E1** made orchestrator git on a session workspace run as that
+ *     workspace's uid ({@link runGit} spreads `gitSpawnOverridesForTree`).
+ *   - **E3** moved the PAT out of the worker-readable gitconfig into a root-only
+ *     file the global helper `cat`s. A dropped-uid git gets EACCES there, so the
+ *     global helper answers nothing.
+ *
+ * Git then falls through to the next helper in the list, and on a session
+ * workspace that is the LOCAL one `configureGitCredentials` writes:
+ * `/usr/local/bin/shipit-git-credential`, the *container's* broker, which does
+ * not exist on the orchestrator. So nothing answers at all and the pull dies
+ * with `fatal: could not read Username for 'https://github.com'` — 46 times in
+ * the planning#410 soak. `GitManager` had already been given the fix for its own
+ * remote ops (`shared/git.ts` `remoteGit`); this module and the fork's
+ * `fetch origin` were the two raw sites left behind.
+ *
+ * So the pull resolves its own credential, exactly as `GitManager` does:
+ * {@link resolveTreeRemoteCredential} against `origin`, through the resolver
+ * registered once at boot by {@link configureLfsRemoteCredentialResolver}. It is
+ * `null` — change nothing — on every path that is NOT a dropped-uid git, which
+ * is every test, local mode, and the root-owned bare cache.
+ *
  * ## Provisioning is not the only path that has to do this
  *
  * The same skip-smudge asymmetry applies to every LATER orchestrator-side
@@ -90,10 +124,30 @@ export type LfsStatus =
   /** Repo uses LFS and the pull failed or timed out — content may be partial. */
   | "failed";
 
+/**
+ * Why a `failed` pull failed, as far as its output says — planning#426's
+ * "separate the two shapes explicitly, they need different fixes".
+ *
+ *  - `no-credential` — nothing answered the LFS endpoint's auth challenge. On the
+ *    orchestrator that is a PLUMBING bug: the git that ran could not read a
+ *    credential (see the module docstring). It is the shape that produced the
+ *    soak's 46 `could not read Username` lines.
+ *  - `access-denied` — a credential WAS offered and the server refused it. That
+ *    is a legitimate outcome (the stored token has no access to this repository)
+ *    and needs reporting, not plumbing.
+ *  - `timeout` / `other` — everything else, unchanged.
+ *
+ * Classified from git-lfs's own output rather than an exit code, because
+ * `git lfs pull` exits 2 for all of them.
+ */
+export type LfsFailure = "no-credential" | "access-denied" | "timeout" | "other";
+
 export interface LfsResult {
   status: LfsStatus;
   /** Whether the repo declares LFS filters in a tracked `.gitattributes`. */
   usesLfs: boolean;
+  /** Present only on `status: "failed"` — see {@link LfsFailure}. */
+  failure?: LfsFailure;
   /**
    * Operator/user-facing explanation, present for every status except
    * `not-an-lfs-repo` and `materialized`. Written to be actionable on its own —
@@ -125,13 +179,30 @@ export interface RunResult {
  * root-owned trees this is also called with — the bare cache, and
  * `process.cwd()` for the `git lfs version` probe.
  */
-export function runGit(args: string[], cwd: string, timeoutMs: number): Promise<RunResult> {
+export function runGit(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  /**
+   * planning#426 — the whole environment for this git, defaulting to the
+   * orchestrator's own.
+   *
+   * It REPLACES rather than extends `process.env`, and that is the point: the
+   * credentialled pull has to *remove* inherited variables (`GIT_CONFIG_COUNT`,
+   * `GIT_ASKPASS`, …), and a spread can only ever add. `GIT_TERMINAL_PROMPT=0`
+   * is re-applied below either way, so no caller can lose it.
+   *
+   * The credential's own variables travel here — the *shape* half rides `args`,
+   * which is what makes it undroppable; see `shared/git-remote-credential.ts`.
+   */
+  env?: NodeJS.ProcessEnv,
+): Promise<RunResult> {
   return new Promise((resolve) => {
     let proc;
     try {
       proc = spawn("git", gitArgsWithHooksDisabled(args), {
         cwd,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        env: { ...(env ?? process.env), GIT_TERMINAL_PROMPT: "0" },
         stdio: ["ignore", "pipe", "pipe"],
         ...gitSpawnOverridesForTree(cwd),
       });
@@ -161,6 +232,35 @@ export function runGit(args: string[], cwd: string, timeoutMs: number): Promise<
       resolve({ code, stdout, stderr, timedOut });
     });
   });
+}
+
+/**
+ * planning#426 — the resolver `git lfs pull` mints its own remote credential
+ * through, registered once at boot from `app-di.ts`.
+ *
+ * A module-level registration rather than a parameter threaded through
+ * {@link materializeLfsContent} / {@link materializeLfsWithWarning} /
+ * {@link restoreLfsAfterTreeRewrite}, for the reason `git-tree-uid.ts` gives for
+ * its own choke point: there are twelve call sites across provisioning, every
+ * tree-rewrite path and the fork, and a hand-converted list of "the ones that
+ * pass a resolver" is stale the moment someone adds one more — silently, because
+ * a missing credential does not fail the pull, it leaves pointer stubs. The
+ * resolver is a process-wide singleton either way (one `GitHubAuthManager`), so
+ * there is nothing per-call to thread.
+ *
+ * Unset is the honest default: it means "resolve nothing", which is exactly the
+ * pre-planning#426 behaviour and what every unit test wants.
+ */
+let lfsRemoteCredentialResolver: GitRemoteCredentialResolver | undefined;
+
+/**
+ * Point this module at the orchestrator's credential resolver. Idempotent; pass
+ * `undefined` to unregister (the tests use that).
+ */
+export function configureLfsRemoteCredentialResolver(
+  resolve: GitRemoteCredentialResolver | undefined,
+): void {
+  lfsRemoteCredentialResolver = resolve;
 }
 
 let availabilityProbe: Promise<boolean> | null = null;
@@ -211,6 +311,40 @@ export async function repoDeclaresLfs(dir: string, ref = "HEAD"): Promise<boolea
   return res.code === 0;
 }
 
+/**
+ * The two credential shapes, read off git-lfs's output.
+ *
+ * `could not read Username` and `terminal prompts disabled` are git's words for
+ * "no helper answered"; `Git credentials for <url> not found` is git-lfs's own
+ * words for the same thing, and it is the line the planning#426 soak captured.
+ * A refusal is separate and is git-lfs relaying the server: `401`/`403`, or the
+ * "repository not found" a private repo returns to an unauthorized reader.
+ */
+export function classifyPullFailure(output: string): LfsFailure {
+  if (/could not read Username|could not read Password|terminal prompts disabled|credentials for .* not found/i.test(output)) {
+    return "no-credential";
+  }
+  if (/\b401\b|\b403\b|Authentication failed|Access denied|repository not found|does not exist/i.test(output)) {
+    return "access-denied";
+  }
+  return "other";
+}
+
+/** The actionable half of a failure warning — different per shape, by design. */
+function failureAdvice(failure: LfsFailure): string {
+  const stubs = "Some LFS-tracked files may still be pointer stubs rather than real content";
+  switch (failure) {
+    case "no-credential":
+      return `${stubs}. ShipIt could not present a credential to the LFS endpoint — `
+        + "reconnect GitHub in Settings, then re-run `git lfs pull` in the terminal.";
+    case "access-denied":
+      return `${stubs}. The LFS server refused the credential ShipIt presented — `
+        + "the connected GitHub account may not have access to this repository's LFS storage.";
+    default:
+      return `${stubs} — re-run \`git lfs pull\` in the terminal.`;
+  }
+}
+
 function pullTimeoutMs(): number {
   const raw = Number(process.env[PULL_TIMEOUT_ENV]);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_PULL_TIMEOUT_MS;
@@ -219,6 +353,32 @@ function pullTimeoutMs(): number {
 /** `SHIPIT_GIT_LFS=off` — detect and warn, but don't spend the bandwidth. */
 function lfsDownloadsDisabled(): boolean {
   return (process.env[LFS_MODE_ENV] ?? "").trim().toLowerCase() === "off";
+}
+
+/** Test seams shared by the three entry points below. */
+export interface LfsOpts {
+  /**
+   * Overrides the `git lfs version` probe so the `binary-missing` branch — the
+   * exact condition this feature exists to fix — is testable on a machine that
+   * *does* have git-lfs installed.
+   */
+  isAvailable?: () => Promise<boolean>;
+  /**
+   * planning#426 — overrides the per-remote credential resolution. Needed
+   * because the interesting state (root, against a tree owned by someone else)
+   * cannot be produced in a session container, the same reason
+   * `resolveGitTreeUid` carries an injection seam. Returning `null` asserts the
+   * unauthenticated shape; omitting it entirely uses the registered resolver.
+   */
+  resolveCredential?: () => Promise<GitRemoteCredential | null>;
+  /**
+   * planning#426 — overrides the `git lfs pull` spawn itself, so a test can read
+   * the argv and environment the credential produced and can drive each failure
+   * classification without a network or a real LFS server. Only the pull is
+   * routed through it; the detection grep and the binary probe stay real, because
+   * their exit-code semantics are the thing worth testing against real git.
+   */
+  spawnGit?: typeof runGit;
 }
 
 /**
@@ -234,12 +394,7 @@ function lfsDownloadsDisabled(): boolean {
  */
 export async function materializeLfsContent(
   workspaceDir: string,
-  /**
-   * Test seam. `isAvailable` overrides the `git lfs version` probe so the
-   * `binary-missing` branch — the exact condition this feature exists to fix —
-   * is testable on a machine that *does* have git-lfs installed.
-   */
-  opts?: { isAvailable?: () => Promise<boolean> },
+  opts?: LfsOpts,
 ): Promise<LfsResult> {
   const usesLfs = await repoDeclaresLfs(workspaceDir);
   if (!usesLfs) return { status: "not-an-lfs-repo", usesLfs: false };
@@ -269,8 +424,34 @@ export async function materializeLfsContent(
     };
   }
 
+  // planning#426 — resolved AFTER the `usesLfs` gate, so a repo that tracks
+  // nothing with LFS costs one `git grep` and no remote-URL read. `null` on every
+  // path that is not a dropped-uid git, which leaves the pull byte-for-byte as it
+  // was: root git reads the global helper, which reads the root-only PAT file.
+  const credential = opts?.resolveCredential === undefined
+    ? await resolveTreeRemoteCredential(workspaceDir, "origin", lfsRemoteCredentialResolver)
+    : await opts.resolveCredential();
+  const cred = gitCredentialSpawnOverrides(credential);
+
   const startedAt = Date.now();
-  const res = await runGit(["lfs", "pull"], workspaceDir, pullTimeoutMs());
+  const res = await (opts?.spawnGit ?? runGit)(
+    [...cred.args, "lfs", "pull"],
+    workspaceDir,
+    pullTimeoutMs(),
+    // Sanitized ONLY when a credential is in play, which is exactly when
+    // `credentialledGit` is constructed and for the same reason: one inherited
+    // `GIT_CONFIG_COUNT` / `GIT_CONFIG_PARAMETERS` is higher-precedence than
+    // anything `-c` can say, so it could reinstate the very helper the reset just
+    // cleared, and `GIT_ASKPASS` would be reached instead of the helper we
+    // supplied. Review finding.
+    //
+    // Deliberately NOT applied to the uncredentialled pull. `sanitizeGitEnv`
+    // also drops `GIT_SSH_COMMAND` and `PAGER`, and dropping those on the
+    // root-side path would change an op that authenticates through the global
+    // helper and works today — availability over tidiness, the same trade
+    // `resolveTreeRemoteCredential` makes by returning `null` there.
+    credential ? { ...sanitizeGitEnv(process.env), ...cred.env } : undefined,
+  );
   const durationMs = Date.now() - startedAt;
 
   if (res.code === 0) {
@@ -278,18 +459,20 @@ export async function materializeLfsContent(
     return { status: "materialized", usesLfs: true, durationMs };
   }
 
-  const detail = (res.stderr || res.stdout).trim().split("\n").slice(-3).join(" ").slice(0, 300);
+  const output = res.stderr || res.stdout;
+  const detail = output.trim().split("\n").slice(-3).join(" ").slice(0, 300);
   const reason = res.timedOut
     ? `timed out after ${Math.round(pullTimeoutMs() / 1000)}s`
     : `exited ${res.code ?? "abnormally"}${detail ? `: ${detail}` : ""}`;
+  const failure = res.timedOut ? "timeout" : classifyPullFailure(output);
   console.warn(`[git-lfs] git lfs pull failed for ${workspaceDir} — ${reason}`);
   return {
     status: "failed",
     usesLfs: true,
     durationMs,
+    failure,
     warning:
-      `This repository uses Git LFS and \`git lfs pull\` ${reason}. Some LFS-tracked files ` +
-      "may still be pointer stubs rather than real content — re-run `git lfs pull` in the terminal.",
+      `This repository uses Git LFS and \`git lfs pull\` ${reason}. ${failureAdvice(failure)}`,
   };
 }
 
@@ -307,17 +490,73 @@ export async function materializeLfsWithWarning(
   workspaceDir: string,
   repoLabel: string,
   warn: (message: string) => void,
-  opts?: { isAvailable?: () => Promise<boolean> },
+  opts?: LfsOpts,
 ): Promise<LfsResult> {
   let result: LfsResult;
   try {
     result = await materializeLfsContent(workspaceDir, opts);
   } catch (err) {
     console.warn(`[git-lfs] Materialization threw for ${workspaceDir}:`, String(err));
-    return { status: "failed", usesLfs: true };
+    return { status: "failed", usesLfs: true, failure: "other" };
   }
   if (result.warning) warn(`${repoLabel}: ${result.warning}`);
   return result;
+}
+
+/**
+ * planning#426 — the `[System] …` line a session whose LFS content did NOT
+ * resolve must hand its next agent turn.
+ *
+ * ## Why a toast is not enough
+ *
+ * This is planning#382's shape: the reason existed and reached one surface while
+ * the surface the reader actually reads stayed silent. A provisioning warning is
+ * an SSE toast, which is gone in seconds; the session then opens with a complete
+ * tree, every tracked file present, and each of those files holding ~130 bytes of
+ * pointer text. Every downstream read — a build, a test, an agent opening an
+ * asset — gets **plausible wrong data** rather than a missing file, which is a
+ * worse failure than the provisioning refusing outright.
+ *
+ * So the party about to read those bytes is told, in the prompt, on the first
+ * turn — however much later that is. The wording names the pointer header
+ * (`version https://git-lfs.github.com/spec/v1`) on purpose: that string is the
+ * one cheap check that distinguishes "this asset is a stub" from the misdiagnoses
+ * the original docs/231 reporter lost time to (sandbox networking, codec
+ * support).
+ *
+ * Deliberately says "may" rather than "are": `git lfs pull` is batched and can
+ * fail part-way, so some assets can hold real content while others do not.
+ */
+export function buildLfsUnresolvedAgentNotice(result: LfsResult): string {
+  const because = (() => {
+    switch (result.status) {
+      case "disabled":
+        return `LFS downloads are disabled on this deployment (${LFS_MODE_ENV}=off)`;
+      case "binary-missing":
+        return "the `git-lfs` binary is not available to ShipIt's provisioning";
+      default:
+        switch (result.failure) {
+          case "no-credential":
+            return "ShipIt could not present a credential to the LFS endpoint";
+          case "access-denied":
+            return "the LFS server refused the credential ShipIt presented";
+          case "timeout":
+            return "the pull exceeded its time limit";
+          default:
+            return "the pull failed";
+        }
+    }
+  })();
+  return (
+    "[System] This workspace's Git LFS content did not finish resolving during setup, because "
+    + `${because}. LFS-tracked files (images, audio, models, other large assets) may therefore `
+    + "hold a ~130-byte pointer stub instead of their real content. A stub still looks like the "
+    + "file and git reports the tree as clean, so a build, a test, or a read of one of these "
+    + "assets will see plausible wrong data rather than a missing file. Before relying on any "
+    + "large asset, check it with `head -c 120 <path>` — a stub starts with "
+    + "`version https://git-lfs.github.com/spec/v1`. Run `git lfs pull` in the terminal to fetch "
+    + "the real content, and report it if that fails too."
+  );
 }
 
 /**
@@ -391,7 +630,7 @@ export async function restoreLfsAfterTreeRewrite(
   workspaceDir: string,
   operation: string,
   warn: (message: string) => void = (message) => console.warn(`[git-lfs] ${message}`),
-  opts?: { isAvailable?: () => Promise<boolean> },
+  opts?: LfsOpts,
 ): Promise<LfsResult> {
   const run = async (): Promise<LfsResult> => {
     try {

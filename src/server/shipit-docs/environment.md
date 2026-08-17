@@ -161,6 +161,15 @@ note appended to the system message for a merged-branch reset — and then your
 assets ARE stubs. Treat that message as a job: run `git lfs pull` before reading,
 building with, or rendering any LFS-tracked file.
 
+**A session forked from an LFS repo tells you the same way.** If the fork's
+`git lfs pull` did not finish, your first turn starts with a `[System]` line
+saying so and naming the cause. Read it as the same job: the tree looks complete
+and every tracked file is present, so nothing else will tell you the contents are
+pointers. If the line says ShipIt could not present a credential to the LFS
+endpoint, that is a ShipIt fault worth reporting; if it says the LFS server
+refused the credential, the connected GitHub account may simply not have access
+to that repository's LFS storage.
+
 **When they don't, you will see pointer stubs, not an error.** An LFS pointer is
 a ~130-byte text file starting with `version https://git-lfs.github.com/spec/v1`.
 That failure mode is easy to misdiagnose — images render broken, audio fails with

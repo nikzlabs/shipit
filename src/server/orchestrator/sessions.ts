@@ -519,9 +519,43 @@ export class SessionManager {
    * Last-write-wins by design: every writer is describing the same fact (where
    * this branch now points), so a second sync before the user's next message
    * supersedes the first rather than queueing behind it.
+   *
+   * planning#426 — that rationale is why {@link appendPendingAgentNotice} exists
+   * beside it rather than replacing it. This slot now carries a SECOND fact class
+   * (a fork's LFS content is unresolved), and for two writers describing
+   * *different* facts, last-write-wins is data loss rather than supersession.
+   * Branch-movement notices keep this setter and keep superseding each other.
    */
   setPendingAgentNotice(id: string, notice: string): void {
     this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(notice, id);
+  }
+
+  /**
+   * planning#426 — add a notice describing a DIFFERENT fact from whatever may
+   * already be pending, instead of overwriting it.
+   *
+   * Read-modify-write in one transaction, so two concurrent appends cannot read
+   * the same prior value and each write a version missing the other's line.
+   * Idempotent on exact repeats: re-running a fork-time report must not stack the
+   * same paragraph twice.
+   *
+   * Note the asymmetry this deliberately does NOT fix, because one slot cannot:
+   * a *later* `setPendingAgentNotice` (a manual sync of this branch before its
+   * first turn) still replaces an appended notice wholesale. Widening the slot
+   * into a queue is not worth it for that window — the user-facing toast has
+   * already fired, and docs/221's own contract already accepts losing one notice.
+   * Recorded as a known gap in `docs/231-git-lfs-support/plan.md`.
+   */
+  appendPendingAgentNotice(id: string, notice: string): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT pending_agent_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_agent_notice: string | null } | undefined;
+      const existing = row?.pending_agent_notice ?? "";
+      if (existing.includes(notice)) return;
+      const combined = existing ? `${existing}\n\n${notice}` : notice;
+      this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(combined, id);
+    })();
   }
 
   /**
