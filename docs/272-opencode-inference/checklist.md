@@ -77,10 +77,15 @@ Zen authenticates and then answers `AI_APICallError: Insufficient balance`.
       of the CLI's request rather than of a model, a credential or a row, so
       the gate stays and no row-level change can lift it. A fix would have to
       stop the CLI sending the field; the binary exposes no flag for it
-- [ ] Codex × Zen / Go (`openai-responses`) — a live turn, then add the
-      `@ai-sdk/openai` rows (GPT-5.6 Sol/Terra/Luna, Grok) that are unauthored
-      today because no harness could reach them. Neither product declares
-      `openai-responses`, so this needs the rows first, not just credit
+- [x] Codex × Zen / Go (`openai-responses`) — **both pass.** The rows had to
+      come first, since the join refuses a pair whose style no model declares:
+      Zen now carries `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` and
+      `grok-4.6`, and Go carries `gpt-5.6-luna` alone (a no-key registry probe
+      on `/zen/go/v1/responses` answers `ModelError` for Sol, so the asymmetry
+      is measured, not assumed). Codex then ran a real turn on each product —
+      metered on Zen ($0.0049 / 19 454 tokens), **included** on Go ($0 metered,
+      $0.0024 at API rates). `carriers` on both credentials is now
+      `["opencode", "codex"]`
 - [ ] Qwen3.8 Max on Go: settle the source conflict (vendor docs say
       `/messages`, models.dev says chat-completions) and add the row
 - [ ] The Go cap-exceeded response shape, and whether "Use balance" leaves

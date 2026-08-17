@@ -246,12 +246,12 @@ excludes, and `nativeService` staying deferred. Key files:
     a key nobody has run yet; the header matrix says the credential *would*
     authenticate on all three harnesses, which is not the same claim. So the
     service launches on the harness whose own CLI exercises it, and the gate
-    lifts one measured pair at a time by deleting the line. Two consequences
-    worth stating: Zen's Claude-family rows are offered on OpenCode only even
-    though Claude Code speaks their style, and the `@ai-sdk/openai` rows
-    (GPT-5.6 Sol/Terra/Luna, Grok 4.6, Go's Luna and Grok 4.5) are **not
-    authored at all** — `openai-responses` is Codex's style alone, so under the
-    gate they would be rows no harness could reach.
+    lifts one measured pair at a time.
+    - **As measured (§7)**: Codex passed and was added; Claude Code failed and
+      stays out. The `@ai-sdk/openai` rows shipped a pass later than the rest
+      for a reason worth keeping: `openai-responses` is Codex's style alone, so
+      while the gate excluded Codex they would have been rows no harness could
+      reach. Authoring them and lifting the gate is one change, not two.
   - **Row-authoring source, as built**: the vendor's own per-model endpoint
     table (`opencode.ai/docs/zen`, `/docs/go`) cross-checked against live
     models.dev — they agree everywhere except the Go Qwen rows, where the docs
@@ -340,24 +340,33 @@ pass — the key was supplied after the rows merged):
   express today), and a service-refused turn renders as an empty assistant
   bubble with the error text dropped somewhere above the adapter.
 
+- ✅ **The `O_RESP` half, authored and then measured.** No model declared that
+  style, so the join refused Codex before any credential was consulted — the
+  rows came first: Zen `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` /
+  `grok-4.6`, Go `gpt-5.6-luna` alone. Go's narrowness is measured, not
+  assumed: a no-key probe on `/zen/go/v1/responses` answers `AuthError` for
+  Luna and `ModelError` for Sol. Codex then ran a real turn on each product —
+  **metered** on Zen ($0.0049 / 19 454 tokens) and **included** on Go ($0
+  metered, $0.0024 at API rates). Both credentials now carry
+  `carriers: ["opencode", "codex"]`.
+
+So every style each product declares is now measured end to end: Zen `A_MSG` ✅
+`O_CC` ✅ `O_RESP` ✅, Go `O_CC` ✅ `O_RESP` ✅.
+
 Still open (per req 5's "live verification needed"):
 
-1. The `O_RESP` half of both products — no model declares that style today, so
-   the GPT/Grok rows have to be authored before a turn can be run. Every style
-   a row DOES declare is now measured: Zen `A_MSG` ✅, Zen `O_CC` ✅, Go
-   `O_CC` ✅.
-2. Codex × Zen/Go, which needs (1) first: Codex speaks only `O_RESP`, so the
-   catalogue join refuses the pair on style alone and there is nothing to
-   measure until an `O_RESP` row exists. Claude Code × Zen is measured and
-   **failed** (see above) — the gate is now held by evidence rather than by
-   caution, and lifting it needs the CLI to stop sending `context_management`,
-   not a catalogue edit.
-3. The Go cap-exceeded shape (expected 429 `UsageLimitError`-family, cf. the
+1. Claude Code × Zen stays excluded, and by evidence rather than caution —
+   lifting it needs the CLI to stop sending `context_management`, not a
+   catalogue edit.
+2. The Go cap-exceeded shape (expected 429 `UsageLimitError`-family, cf. the
    free tier's `FreeUsageLimitError`) and the "Use balance" fallback's
-   visibility (expected: none).
-4. OAuth device flow end-to-end (token on the wire, refresh, console
+   visibility (expected: none). Not forceable on demand.
+3. OAuth device flow end-to-end (token on the wire, refresh, console
    reachability requirement).
-5. Re-pull live models.dev / vendor tables at row-authoring time (§4 drift).
+4. Qwen3.8 Max on Go, where the vendor's table and models.dev still disagree
+   about the style.
+5. Re-pull live models.dev / vendor tables (§4 drift). The `O_RESP` rows were
+   authored from a re-pull on 2026-08-17; the older rows were not re-checked.
 
 ## 8. Go quota — investigation findings ("figure out first")
 
