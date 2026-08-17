@@ -117,6 +117,26 @@ export interface WsSetReasoningMessage {
   effort: string | null;
 }
 
+/**
+ * docs/272-user-selectable-roles reqs 1, 4 — Client → Server: start this session on a
+ * configured role.
+ *
+ * **There is no `null`, deliberately** (req 15). Selecting a role is the only
+ * thing this message does; *leaving* one is not an action of its own but a
+ * consequence of moving the harness, the model or the reasoning level, which the
+ * three messages above already express. A "clear the role" message would name a
+ * state the user cannot want — the session goes on running exactly as the role
+ * set it up, minus the name.
+ *
+ * Refused once the session has taken its first turn (req 4): standing
+ * instructions describe what a session is *for*, and a session already under way
+ * is already for something.
+ */
+export interface WsSetRoleMessage {
+  type: "set_role";
+  roleName: string;
+}
+
 // ---- Interrupt messages ----
 
 /** Client → Server: interrupt the currently running agent process. */
@@ -275,6 +295,7 @@ export type WsClientMessage =
   | WsSetAgentMessage
   | WsSetModelMessage
   | WsSetReasoningMessage
+  | WsSetRoleMessage
   | WsTerminalStart
   | WsTerminalInput
   | WsTerminalResize

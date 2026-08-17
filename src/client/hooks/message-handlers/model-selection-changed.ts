@@ -1,6 +1,7 @@
 import type { WsModelSelectionChanged } from "../../../server/shared/types.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
+import { saveRoleName } from "../../utils/local-storage.js";
 import type { Handler } from "./types.js";
 
 /**
@@ -41,10 +42,30 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
             ...(data.reasoningEffort
               ? { reasoningEffort: data.reasoningEffort }
               : { reasoningEffort: undefined }),
+            // docs/272 reqs 13, 15 — the role in force. It rides this message
+            // because setting one and leaving one are the same event as the
+            // three fields above: `set_role` writes all four at once, and a
+            // harness/model/reasoning pick clears this one *because* it moved
+            // one of them. Applied unconditionally, null included — this is the
+            // only thing that un-names a role on screen.
+            ...(data.roleName ? { roleName: data.roleName } : { roleName: undefined }),
           }
         : s,
     ),
   );
+  // docs/272-user-selectable-roles req 12 — **the seed follows the session's role.**
+  //
+  // The seed decides what the NEXT new session starts on, and leaving a role is
+  // not an act of its own: it happens when a parameter moves, and only the
+  // server knows whether one actually did (re-selecting the value a role already
+  // set is not a change — req 15). So the seed is written from the server's
+  // answer here rather than cleared by each of the three handlers on the way
+  // out, which re-implemented that comparison and got it wrong in exactly the
+  // case the rule exists for.
+  //
+  // Only for the session the user is looking at: a background session's
+  // selection change says nothing about what the next new session should be.
+  if (session.sessionId === data.sessionId) saveRoleName(data.roleName ?? undefined);
   // The server has answered. Say so unconditionally — the composer's optimistic
   // pick has to be dropped whether the answer was "yes" or "no", and a REFUSED
   // pick leaves the session row exactly as it was, so "the row now matches"

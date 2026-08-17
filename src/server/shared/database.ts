@@ -1385,6 +1385,21 @@ const MIGRATIONS: Migration[] = [
       "CREATE INDEX IF NOT EXISTS idx_messages_bug_report ON messages(session_id) WHERE bug_report IS NOT NULL",
     );
   },
+  // docs/272-user-selectable-roles — the role currently IN FORCE on a session, which is a
+  // different fact from `origin_role_name` beside it and cannot share its column.
+  //
+  // `origin_role_name` is write-once provenance: what the session was started as
+  // (req 6). This one is what the composer NAMES, and it is cleared the moment
+  // the user moves the harness, model or reasoning (req 15) — because the role
+  // stopped being true. One column could serve only one of the two: it would
+  // either keep naming a role the session no longer runs as, or lose the
+  // provenance the first time somebody changed the model.
+  //
+  // NULL for every existing row, which is the correct reading rather than a
+  // backfill gap: no session that predates this feature had a role in force.
+  (db) => {
+    addSessionColumnIfMissing(db, "role_name");
+  },
 ];
 
 /**

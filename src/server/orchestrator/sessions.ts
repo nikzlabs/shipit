@@ -90,6 +90,12 @@ interface SessionRow {
   root_session_id: string | null;
   /** docs/264 — the role this session was created from; NULL when none was named. Write-once. */
   origin_role_name: string | null;
+  /**
+   * docs/272 — the role currently IN FORCE, which the composer names. Cleared
+   * when the harness, model or reasoning moves; NOT the same fact as
+   * `origin_role_name` above, which records what the session STARTED as.
+   */
+  role_name: string | null;
   /** docs/182 — 1 when the session's last completed turn ended in an error. */
   last_turn_errored: number;
   /** docs/186 — 1 when the auto-fix-CI loop is paused for this session. */
@@ -372,6 +378,7 @@ export class SessionManager {
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
     if (row.origin_role_name) info.originRoleName = row.origin_role_name;
+    if (row.role_name) info.roleName = row.role_name;
     if (row.root_session_id) info.rootSessionId = row.root_session_id;
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
@@ -1135,6 +1142,26 @@ export class SessionManager {
     this.db.prepare(
       "UPDATE sessions SET origin_role_name = ? WHERE id = ? AND origin_role_name IS NULL",
     ).run(originRoleName, id);
+  }
+
+  /**
+   * docs/272-user-selectable-roles reqs 13, 15 — the role currently **in force**, which is what
+   * the composer names.
+   *
+   * The deliberate opposite of {@link SessionManager.setOriginRoleName} above,
+   * and the pair is the whole of docs/272's storage: that one is write-once
+   * provenance ("what did this session start as"), this one is mutable truth
+   * ("does the role still describe what it runs on"). Set when the user selects
+   * a role; cleared with `null` the moment the harness, model or reasoning
+   * moves, because changing one of them is the whole of leaving a role (req 15).
+   *
+   * Nothing derives it. A session whose parameters happen to equal a role's is
+   * NOT named after that role (req 13): a role also carries standing
+   * instructions, which no amount of moving three controls puts in force, so the
+   * name reports the user's choice and only that.
+   */
+  setRoleName(id: string, roleName: string | null): void {
+    this.db.prepare("UPDATE sessions SET role_name = ? WHERE id = ?").run(roleName, id);
   }
 
   /**

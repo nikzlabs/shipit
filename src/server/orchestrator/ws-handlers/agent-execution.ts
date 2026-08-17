@@ -25,6 +25,7 @@ import { executeAgentTurn } from "../turn-executor.js";
 import { releaseResidentOnSpawnChange } from "../resident-spawn-guard.js";
 import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-routing.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
+import { takeRoleStandingInstructions } from "../services/session-role.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
 // tests, secret-resolver coverage) keep their import path working while the
@@ -457,9 +458,25 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const agentPrefix = [pendingAgentNotice, bugOutcomeNotice, resetAgentPrefix]
     .filter(Boolean)
     .join("\n\n");
+  // docs/272 req 2 — the standing instructions of the role this session was
+  // started on, on its FIRST turn only. The latch lives in the helper (keyed on
+  // `originRoleName`), so calling it unconditionally here is correct and the two
+  // turn entry points cannot disagree about when a role has spoken.
+  const roleContext = capturedSessionId
+    ? takeRoleStandingInstructions(capturedSessionId, {
+        sessionManager: ctx.sessionManager,
+        credentialStore: ctx.credentialStore,
+      })
+    : "";
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +
-    assembleAgentPrompt({ userText, fileContext, imageContext, dictated: opts.dictated });
+    assembleAgentPrompt({
+      userText,
+      fileContext,
+      imageContext,
+      dictated: opts.dictated,
+      ...(roleContext ? { roleContext } : {}),
+    });
 
   // docs/218 — the persisted "branch updated" card (or the planning#297 skip notice)
   // is emitted right after the resumed user row, from inside the executor via

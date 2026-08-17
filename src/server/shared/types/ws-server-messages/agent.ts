@@ -162,6 +162,18 @@ export interface WsModelSelectionChanged {
   modelId: string | null;
   /** docs/217 — the session's reasoning effort after the change; null ⇒ CLI default. */
   reasoningEffort: string | null;
+  /**
+   * docs/272-user-selectable-roles reqs 5, 15 — the role **in force** after the change, or
+   * null.
+   *
+   * It rides this message rather than one of its own because setting a role and
+   * leaving a role are the same event as the three fields above: `set_role`
+   * writes all four, and a `set_agent` / `set_model` / `set_reasoning` clears
+   * this one *because* it moved one of them. Two messages could arrive out of
+   * order and leave the composer naming a role whose model it has already
+   * updated — the one screen state req 13 exists to rule out.
+   */
+  roleName: string | null;
   /** Present only when the server moved something the user did not pick. */
   notice?: string;
 }

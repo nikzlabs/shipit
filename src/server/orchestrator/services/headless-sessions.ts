@@ -23,6 +23,7 @@ import { ServiceError } from "./types.js";
 import { saveUploadedFile, MAX_UPLOAD_FILES_PER_REQUEST } from "./files.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
+import { resolveUserRole } from "./session-role.js";
 import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
 
 export interface HeadlessUploadInput {
@@ -144,6 +145,19 @@ export interface CreateHeadlessSessionOptions {
    */
   reasoning?: string;
   /**
+   * docs/272-user-selectable-roles reqs 1, 11 — the role the user picked in the quick-capture
+   * overlay.
+   *
+   * **It replaces `agent` / `model` / `serviceId` / `billingMode` / `reasoning`
+   * outright** rather than filling their gaps, because a role *is* those five
+   * values and the composer hid the controls that produce them: whatever the
+   * browser's seed slots still hold describes a choice the user has handed over.
+   * Resolved before anything touches disk, so an unknown, reserved or unrunnable
+   * role costs no claimed warm session and no container (req 8 — nothing is ever
+   * substituted).
+   */
+  role?: string;
+  /**
    * Raw files uploaded alongside the prompt (multipart). Saved into the new
    * session's uploads dir before the agent turn is dispatched, so the
    * resulting `UploadRef[]` rides along with `runner.dispatch({ text, uploads })`
@@ -210,6 +224,30 @@ export async function createHeadlessSession(
   const explicitBranch = seed?.branch;
   const explicitTitle = opts.title?.trim() || seed?.title;
   const branchName = explicitBranch || generateBranchPrefix();
+
+  // docs/272 reqs 1, 8, 11 — a role, when the overlay carried one, decided the
+  // five parameters below. Resolved FIRST and substituted over the request, so
+  // every check downstream asks its questions of the role's tuple: the role was
+  // validated when it was saved and again just now, so those checks pass, and
+  // the ones that would have fired on a stale browser seed no longer see one.
+  //
+  // A refusal here is the whole of the role's failure handling on this path. It
+  // happens before the claim, which is the ordering this function already
+  // states: "a selection the server is going to refuse should cost no claimed
+  // warm session, no branch rename, and no container".
+  const userRole = opts.role && credentialStore
+    ? resolveUserRole(opts.role, { credentialStore })
+    : undefined;
+  if (userRole) {
+    opts = {
+      ...opts,
+      agent: userRole.params.harnessId,
+      model: userRole.params.modelId,
+      serviceId: userRole.params.serviceId,
+      billingMode: userRole.params.billingMode,
+      reasoning: userRole.params.reasoningEffort,
+    };
+  }
 
   // Defense-in-depth: the model is the single source of truth (docs/142,
   // Problem C). When a recognized model is supplied, derive the agent from it
@@ -378,6 +416,12 @@ export async function createHeadlessSession(
   // Workspace-side branch identity must be set before graduateSession so the
   // session row matches what's on disk.
   sessionManager.setBranch(newSessionId, branchName);
+
+  // docs/272 req 5 — the role is in force from creation, so the composer of the
+  // session the user lands in names it. Written BEFORE the dispatch below,
+  // because that first turn is what collects the role's standing instructions
+  // (req 2) — `takeRoleInstructions` reads this row.
+  if (userRole) sessionManager.setRoleName(newSessionId, userRole.role.name);
 
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
   if (credentialsDir && credentialStore) {

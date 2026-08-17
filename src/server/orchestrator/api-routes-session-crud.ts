@@ -457,6 +457,13 @@ export async function registerSessionCrudRoutes(
       serviceId?: string;
       billingMode?: BillingMode;
       /**
+       * docs/272-user-selectable-roles reqs 1, 11 — the role the user picked in the overlay.
+       * Resolved server-side and applied OVER the five fields above, which
+       * describe controls the role replaced. Refused by name when it is unknown,
+       * reserved, or cannot run (req 8 — nothing is ever substituted).
+       */
+      role?: string;
+      /**
        * docs/144 — the prompt was dictated by voice (quick-capture Mode B), so
        * the first turn's prompt carries the `<dictated_input>` hint. Multipart
        * sends it as the string "true"/"false".
@@ -473,6 +480,7 @@ export async function registerSessionCrudRoutes(
       let serviceId: string | undefined;
       let billingMode: BillingMode | undefined;
       let reasoning: string | undefined;
+      let role: string | undefined;
       let issueRef: IssueRef | undefined;
       let armAutoMerge = false;
       let dictated = false;
@@ -509,6 +517,9 @@ export async function registerSessionCrudRoutes(
               case "reasoning":
                 reasoning = value;
                 break;
+              case "role":
+                role = value;
+                break;
               case "armAutoMerge":
                 armAutoMerge = value === "true";
                 break;
@@ -532,6 +543,7 @@ export async function registerSessionCrudRoutes(
         serviceId = body.serviceId;
         billingMode = body.billingMode;
         reasoning = body.reasoning;
+        role = body.role;
         issueRef = body.issueRef;
         if (body.armAutoMerge !== undefined && typeof body.armAutoMerge !== "boolean") {
           reply.code(400).send({ error: "armAutoMerge must be a boolean" });
@@ -559,6 +571,7 @@ export async function registerSessionCrudRoutes(
             ...(serviceId !== undefined ? { serviceId } : {}),
             ...(billingMode !== undefined ? { billingMode } : {}),
             ...(reasoning !== undefined ? { reasoning } : {}),
+            ...(role !== undefined && role !== "" ? { role } : {}),
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
             armAutoMerge,
             ...(dictated ? { dictated: true } : {}),

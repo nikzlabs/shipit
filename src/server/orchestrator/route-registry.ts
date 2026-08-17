@@ -53,6 +53,8 @@ import type { StartupMonitors } from "./startup-monitors.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { buildComposeAttachReplay } from "./compose-attach-replay.js";
 import { startSseKeepalive, startWebSocketKeepalive } from "./keepalive.js";
+import { applyRoleToSession, resolveUserRole } from "./services/session-role.js";
+import { ServiceError } from "./services/types.js";
 
 /**
  * Register the long-lived `/api/events` SSE endpoint. Kept as its own step so
@@ -523,7 +525,7 @@ export async function registerRoutes(
   // ---- Per-session WebSocket route ----
   // Session-scoped WS: auto-activates the session on connect, no activate_session needed.
   // The session ID is in the URL path. Agent preference via ?agent= query param.
-  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string; service?: string; billingMode?: string } }>(
+  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string; service?: string; billingMode?: string; role?: string } }>(
     "/ws/sessions/:sessionId",
     { websocket: true },
     (socket, request) => {
@@ -621,7 +623,22 @@ export async function registerRoutes(
         // control, so the **model is authoritative** — derive the agent that
         // owns it. This is the server-side guard against the Opus→gpt-5.5 switch.
         const model = selectedModel;
-        const modelOwner = model
+        // docs/272-user-selectable-roles reqs 8, 13 — **a role's harness is never re-derived**,
+        // and this is the one place that would have done it behind the user's
+        // back. The derivation below answers "which harness owns this model" with
+        // whichever the registry lists first, and docs/252 made that ambiguous:
+        // a dual-harness model (DeepSeek V4) belongs to both. So a session
+        // running the role `triage` on Codex would, on its next RECONNECT, be
+        // moved to Claude and persisted there (the write two blocks down) while
+        // the composer went on naming `triage` — the session running something
+        // other than what the role says, with nothing on screen to tell.
+        //
+        // A role in force means the row is not two independent sources that need
+        // reconciling: all three fields were written together, from one tuple the
+        // user chose. Nothing to derive, so nothing is derived — which is
+        // docs/264 req 6's rule reaching the one path that predates it.
+        const roleDecidesHarness = !!session.roleName;
+        const modelOwner = model && !roleDecidesHarness
           ? agentRegistry.list().find((a) => a.capabilities.models.includes(model))
           : undefined;
         if (modelOwner) {
@@ -712,6 +729,76 @@ export async function registerRoutes(
           try { sessionManager.setReasoning(sessionId, selectedReasoning ?? null); } catch { /* ignore */ }
         }
       }
+      // docs/272-user-selectable-roles reqs 3, 13 — **if the reconciliation above moved the
+      // session off what the role set, the name stops being shown**, because it
+      // has stopped being true.
+      //
+      // Everything above answers "what should this session run", and two of its
+      // answers can move a session nobody touched: a **retired** model resolves
+      // to its successor (`applyModelRetirement`), and a model the session's
+      // harness no longer lists is replaced with that harness's first. Neither
+      // goes through `set_model`, so neither reaches
+      // `leaveRoleOnParameterChange` — and a role whose model has been swapped
+      // out from under it would go on naming a session running something else,
+      // which is the one screen state req 13 exists to rule out.
+      //
+      // Compared against `session`, the row as it was read at the top of this
+      // handler, so this sees the whole of what the block decided rather than any
+      // single write inside it.
+      if (
+        session.roleName
+        && (perConnectionAgentId !== session.agentId
+          || selectedModel !== session.model
+          || (selectedReasoning ?? undefined) !== (session.reasoningEffort ?? undefined))
+      ) {
+        try { sessionManager.setRoleName(sessionId, null); } catch { /* ignore */ }
+      }
+
+      // docs/272-user-selectable-roles req 12 — the role the user last selected, seeding a
+      // BRAND-NEW session exactly as `?agent=` / `?model=` / `?reasoning=` above
+      // seed the three controls it replaces.
+      //
+      // **It overrides all three**, and that precedence is the whole point: a
+      // role IS the harness, model and level, so the seeds reconciled just above
+      // describe controls the user has handed over to it. Applying the role last
+      // is what makes "the composer shows a role" and "the session runs the
+      // role's parameters" the same fact on the very first turn.
+      //
+      // Guarded three ways, each of which is a case where the seed must NOT win:
+      // a session that has taken its first turn (req 4 — nothing applies a role
+      // after that), one that already carries a role (its own choice outranks a
+      // browser slot), and one whose harness is pinned. A role that no longer
+      // resolves — deleted, stranded, disconnected — is skipped in silence
+      // rather than refused: this is a page load, not an action, and the user is
+      // told by the composer showing today's ordinary controls instead of a name
+      // that would be a lie (req 8: nothing is ever substituted).
+      const requestedRole =
+        typeof request.query.role === "string" && request.query.role.length > 0
+          ? request.query.role
+          : undefined;
+      //
+      // **It does not need a fourth guard against re-applying a role the clear
+      // just above removed**, which cross-agent review expected it to: the seed
+      // outlives the clear, so a later connect does reach here with the role's
+      // name — and `resolveUserRole` refuses it, because the only two things
+      // that clear a role here (a retired model, a model the harness no longer
+      // lists) are both things that make the ROLE unrunnable too. A retired id
+      // lives in its mode's `retired[]` and not in its model list, so
+      // `selectionExists` is already false for it. Pinned by a test in
+      // `services/session-role.test.ts`, since it is a property of the catalogue
+      // rather than of this block.
+      if (requestedRole && !session.agentPinned && !session.roleName) {
+        try {
+          const seededRole = resolveUserRole(requestedRole, { credentialStore });
+          applyRoleToSession(sessionId, seededRole, { sessionManager });
+          perConnectionAgentId = seededRole.params.harnessId;
+          selectedModel = seededRole.params.modelId;
+          selectedReasoning = seededRole.params.reasoningEffort;
+        } catch {
+          // Skipped, deliberately — see above.
+        }
+      }
+
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
       let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
@@ -778,8 +865,46 @@ export async function registerRoutes(
           selection: selection ?? null,
           modelId: session.model ?? null,
           reasoningEffort: session.reasoningEffort ?? null,
+          // docs/272 req 15 — read from the row rather than passed in, so the
+          // one place that clears a role (the three handlers below) and the one
+          // that sets it cannot disagree with what this reports.
+          roleName: session.roleName ?? null,
           ...(notice ? { notice } : {}),
         });
+      };
+
+      /**
+       * docs/272-user-selectable-roles req 15 — **changing a parameter is the whole of leaving a
+       * role.**
+       *
+       * Called by `set_agent`, `set_model` and `set_reasoning`, because those
+       * three are exactly the controls a role replaced. Nothing is confirmed,
+       * warned about or put back: the session goes on running whatever the user
+       * just chose, and only the *name* stops being shown — because it stopped
+       * being true.
+       *
+       * Not called by `set_role` itself, which writes the same three fields:
+       * that write is the role being applied, not the user leaving it.
+       *
+       * **A pick that changes nothing is not a change**, which is why this takes
+       * a `before` snapshot rather than firing on every message. Re-selecting the
+       * harness a role already named — easy to do, since "Adjust parameters…"
+       * opens those very controls with the role's own values in them — would
+       * otherwise un-name the role while leaving the session identical. The
+       * snapshot is also what makes the refusal paths safe: those `return` before
+       * reaching here, so a rejected `set_model` cannot cost the user their role.
+       */
+      const roleRelevantSnapshot = (): string => {
+        const s = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+        return [s?.agentId, s?.serviceId, s?.billingMode, s?.model, s?.reasoningEffort]
+          .map((v) => v ?? "")
+          .join("|");
+      };
+      const leaveRoleOnParameterChange = (before: string): void => {
+        if (!activeAppSessionId) return;
+        if (!sessionManager.get(activeAppSessionId)?.roleName) return;
+        if (roleRelevantSnapshot() === before) return;
+        try { sessionManager.setRoleName(activeAppSessionId, null); } catch { /* ignore */ }
       };
 
       const onContainerStarted = (sid: string) => {
@@ -1313,6 +1438,8 @@ export async function registerRoutes(
           case "log_clear": { serviceHandlers.handleLogClear(ctx, msg); return; }
           case "set_agent": {
             const agentId = msg.agentId;
+            // docs/272 req 15 — see `leaveRoleOnParameterChange`.
+            const roleBefore = roleRelevantSnapshot();
             // docs/138 — once the session has taken its first turn the agent is
             // pinned for life: its credentials were provisioned into the
             // per-session credentials dir and the other agent's creds are
@@ -1396,6 +1523,7 @@ export async function registerRoutes(
                     && m.modelId === move.selection!.modelId,
                 )
               : undefined;
+            leaveRoleOnParameterChange(roleBefore);
             sendSelectionChanged(
               agentId,
               describeSelectionMove({
@@ -1415,6 +1543,10 @@ export async function registerRoutes(
             return;
           }
           case "set_model": {
+            // docs/272 req 15 — see `leaveRoleOnParameterChange`. Captured before
+            // the handler's own "decide everything before mutating" pass, so a
+            // refused triple leaves the role exactly where it was.
+            const roleBefore = roleRelevantSnapshot();
             const currentAgentId = ctx.getActiveAgentId();
             const activeAgent = agentRegistry.get(currentAgentId);
             // docs/252 phase 4 — **decide everything before mutating anything.**
@@ -1525,6 +1657,7 @@ export async function registerRoutes(
             // id to a different `(service, mode)` than the picker highlighted —
             // invisible when the two share a model id, which is exactly the case
             // this feature creates. No notice: the user asked for this one.
+            leaveRoleOnParameterChange(roleBefore);
             sendSelectionChanged(ctx.getActiveAgentId());
             return;
           }
@@ -1542,10 +1675,65 @@ export async function registerRoutes(
                 return;
               }
             }
+            const roleBefore = roleRelevantSnapshot();
             ctx.setSelectedReasoning(effort ?? undefined);
             if (activeAppSessionId) {
               sessionManager.setReasoning(activeAppSessionId, effort);
             }
+            // docs/272 req 15 — the reasoning level is one of the three a role
+            // set, so moving it leaves the role. `sendSelectionChanged` then
+            // carries the cleared name; without it the composer would keep
+            // showing a role whose level the user has just overridden.
+            leaveRoleOnParameterChange(roleBefore);
+            sendSelectionChanged(ctx.getActiveAgentId());
+            return;
+          }
+          case "set_role": {
+            // docs/272-user-selectable-roles reqs 1, 2, 4, 8, 9, 10 — start this session on a
+            // configured role.
+            //
+            // **Decide everything before mutating anything**, the rule
+            // `set_model` above states: `resolveUserRole` refuses an unknown
+            // name, the reserved reviewer, and a role this install cannot run —
+            // and a refusal must leave the session exactly as it was, because
+            // "your role could not start" plus a session silently moved onto
+            // half of it is the worst of both.
+            if (!activeAppSessionId) {
+              send({ type: "error", message: "No session to apply a role to." });
+              return;
+            }
+            const roleSession = sessionManager.get(activeAppSessionId);
+            // req 4 — selectable until the first turn STARTS, and not after.
+            // `agentPinned` is that moment: it is set when the first turn
+            // provisions per-agent credentials, which is also what makes the
+            // harness irreversible. Starting from an issue or forking does not
+            // begin a turn, so both land here with the role still selectable —
+            // which is exactly the receipt req 4 records.
+            if (roleSession?.agentPinned) {
+              send({
+                type: "error",
+                message: "A role can only be chosen before the session's first message.",
+              });
+              return;
+            }
+            let resolvedRole;
+            try {
+              resolvedRole = resolveUserRole(msg.roleName, { credentialStore });
+            } catch (err) {
+              send({
+                type: "error",
+                message: err instanceof ServiceError ? err.message : `Could not start the "${msg.roleName}" role.`,
+              });
+              return;
+            }
+            applyRoleToSession(activeAppSessionId, resolvedRole, { sessionManager });
+            // The per-connection state has to follow the row, or this turn spawns
+            // on whatever the connection was holding: these three are read at
+            // spawn time, and the row alone does not reach them.
+            ctx.setActiveAgentId(resolvedRole.params.harnessId);
+            ctx.setSelectedModel(resolvedRole.params.modelId);
+            ctx.setSelectedReasoning(resolvedRole.params.reasoningEffort);
+            sendSelectionChanged(resolvedRole.params.harnessId);
             return;
           }
           // new_session and activate_session are NOT handled — session is implicit from URL

@@ -15,11 +15,14 @@ import {
   getSavedModelSelection,
   getSavedQuickSessionRepo,
   getSavedReasoning,
+  getSavedRoleName,
   saveModelId,
   saveModelSelection,
   saveQuickSessionRepo,
+  saveRoleName,
 } from "../utils/local-storage.js";
 import { newSessionAgentId } from "../utils/new-session-agent.js";
+import { applyRoleSeeds } from "../utils/role-seed.js";
 import { persistHarnessPick } from "../utils/harness-seed.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { useChatDisabledReason } from "../utils/chat-runnable.js";
@@ -217,6 +220,12 @@ export function QuickCaptureOverlay({
         ? { serviceId: savedSelection.serviceId, billingMode: savedSelection.billingMode }
         : {}),
       ...(reasoning ? { reasoning } : {}),
+      // docs/272 reqs 1, 11 — the role, which the server resolves and applies
+      // OVER the harness/model/reasoning above rather than alongside them: those
+      // describe controls the user handed over when they picked it. Sending both
+      // keeps the client from having to resolve a role's tuple, which is the
+      // second implementation docs/264 keeps out of the browser.
+      ...(getSavedRoleName() ? { role: getSavedRoleName()! } : {}),
       ...(armAutoMerge ? { armAutoMerge: true } : {}),
       // docs/144 — Mode B is the voice-native path (hold the hotkey, speak a
       // task, it spawns a session), so the dictation hint matters most here.
@@ -337,6 +346,10 @@ export function QuickCaptureOverlay({
                 ...(selectedModel ? { current: { modelId: selectedModel } } : {}),
               });
               if (nextModelId) setSelectedModel(nextModelId);
+              // docs/272 req 15 — changing one of the three a role set is the
+              // whole of leaving it, here as in the composer. There is no server
+              // to ask on this surface, so the seed is cleared directly.
+              saveRoleName(undefined);
               seedWritten();
               // Reasoning is per-agent — drop any explicit pick made for the
               // harness being left, exactly as a model switch does below.
@@ -361,6 +374,8 @@ export function QuickCaptureOverlay({
                 saveModelId(selection.modelId);
               }
               setSelectedModel(selection.modelId);
+              // docs/272 req 15 — see the harness handler above.
+              saveRoleName(undefined);
               seedWritten();
               // Reasoning is per-agent; a model switch can change the agent, so
               // drop the explicit pick and let the new agent's seed take over.
@@ -371,7 +386,26 @@ export function QuickCaptureOverlay({
             // `pending` state drive the displayed value. We only need the
             // callback to (a) make the control visible and (b) capture the pick
             // for the creation params below.
-            onReasoningChange={(effort) => setSelectedReasoning(effort ?? undefined)}
+            onReasoningChange={(effort) => {
+              // docs/272 req 15 — the level is the third of the three.
+              saveRoleName(undefined);
+              seedWritten();
+              setSelectedReasoning(effort ?? undefined);
+            }}
+            // No `sessionRoleName`: this overlay has no session, so `MessageInput`
+            // displays the seed slot itself — the same slot the creation params
+            // above read. A second copy in this component's state was one more
+            // thing that could disagree with it.
+            onRoleChange={(roleName) => {
+              // The pick IS the seed here: the creation params carry it and the
+              // server applies it to the session it creates.
+              saveRoleName(roleName);
+              // …and the three pickers' seeds become the role's, so this overlay
+              // shows what the role set rather than what it held before.
+              applyRoleSeeds(useSettingsStore.getState().roles.find((r) => r.name === roleName));
+              clearParkedHarness();
+              seedWritten();
+            }}
             modelInfo={modelInfo}
             hasActiveSession={false}
           />

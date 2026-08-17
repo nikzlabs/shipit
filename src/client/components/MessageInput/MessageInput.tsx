@@ -25,6 +25,9 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
+import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
+import { getSavedRoleName } from "../../utils/local-storage.js";
+import { applyRoleSeeds } from "../../utils/role-seed.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
@@ -109,6 +112,9 @@ export function MessageInput({
   onModelChange,
   onReasoningChange,
   sessionReasoning,
+  sessionRoleName,
+  onRoleChange,
+  roleLocked = false,
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
@@ -160,6 +166,23 @@ export function MessageInput({
   onReasoningChange?: (effort: string | null) => void;
   /** docs/217 — the active session's persisted reasoning effort, if any. */
   sessionReasoning?: string;
+  /**
+   * docs/272-user-selectable-roles reqs 5, 13 — the role currently IN FORCE, if any.
+   *
+   * The server's answer, never derived here: a session whose harness, model and
+   * level happen to equal a role's is not that role, because selecting one also
+   * puts its standing instructions in force and moving three controls does not.
+   * When set, the three selectors it replaced come out of the row and this name
+   * stands in their place.
+   */
+  sessionRoleName?: string;
+  /** docs/272 req 1 — start this session on the named role. Absent ⇒ no role control. */
+  onRoleChange?: (roleName: string) => void;
+  /**
+   * docs/272 req 4 — the session has taken its first turn, so no role applies any
+   * more. The same fact that pins the harness, and shown the same way.
+   */
+  roleLocked?: boolean;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
@@ -190,6 +213,69 @@ export function MessageInput({
   // rather than `disabled`, which guards submission only.
   const inert = !!disabledReason;
   const [text, setText] = useState("");
+  // ── docs/272-user-selectable-roles — the role control's three states ─────────────────────
+  // 1. no roles configured → nothing at all, the row exactly as it is today (req 16)
+  // 2. roles exist, none in force → today's three controls plus the bare mark
+  // 3. a role in force → the role's name INSTEAD of the three controls (req 5)
+  //
+  // `roleParamsRevealed` is the fourth thing that can happen and is not a fourth
+  // state: "Adjust parameters…" brings the three controls back beside the name
+  // (req 15). The role stays in force until one of them actually moves, and the
+  // reveal is deliberately local and unpersisted — it is a look, not a setting.
+  // Keyed off the role name so switching role folds the parameters away again,
+  // which is what stops a revealed row from outliving the decision that opened
+  // it.
+  const { roles, hasRoles } = useRolePickerState();
+  const [revealedFor, setRevealedFor] = useState<string | undefined>(undefined);
+  // **Before a session is active there is no row to read the role from**, and
+  // that is where this was reported broken: on `/{repo}/new` the composer sits
+  // on a WARM session, `SessionManager.list()` filters `warm = 0`, so the
+  // browser's session list has no row for it — the server applied the role and
+  // its answer landed on nothing, leaving the control reading "None" forever.
+  // Quick Capture has no session at all and reaches the same place.
+  //
+  // So before a session is active the seed IS the display, exactly as
+  // `seedFromHistory` makes the seed the display for the harness, model and
+  // reasoning pickers on this same route. Held in state as well as in
+  // localStorage because React cannot subscribe to localStorage, and initialised
+  // from it so a role chosen before a reload is still named after one.
+  const [pendingRole, setPendingRole] = useState<string | undefined>(() => getSavedRoleName());
+  // Once a session IS active its role is the SERVER's answer and nothing else.
+  // The seed may name a role this session never took — it is chosen for the
+  // *next* one — so falling back to it there would name a role the session is
+  // not running, which is the one thing req 13 rules out.
+  const roleInForce = hasActiveSession ? sessionRoleName : (sessionRoleName ?? pendingRole);
+  /**
+   * req 15, for the session-less composer: moving one of the three controls a
+   * role set leaves the role here too.
+   *
+   * A bound session gets this from the server, which answers on the row and only
+   * when something actually moved. With no session there is no server to ask, so
+   * the local rule is the blunter one — any pick from those three menus drops the
+   * pending role. It errs toward *not* naming a role, which is the safe
+   * direction: the alternative is a composer claiming a role the session it
+   * creates will not be started on.
+   */
+  const leavePendingRole = () => setPendingRole(undefined);
+  const roleView = roles.find((r) => r.name === roleInForce);
+  // The seed slots the three pickers DISPLAY have to hold the role's own
+  // parameters, or the composer names a role beside a model that role will not
+  // run — reported as "the model name is incorrect".
+  //
+  // Picking a role writes them (`handleRoleChange`), but a role can also arrive
+  // from the slot on a page load, and then nothing has written them this
+  // session: a seed left over from earlier work stays on screen under the
+  // role's name. So they are reconciled here too. `applyRoleSeeds` reports
+  // whether it moved anything, which is what keeps this from looping, and the
+  // bump is needed because localStorage is not something React can subscribe to.
+  const [, noteSeedWrite] = useState(0);
+  // eslint-disable-next-line no-restricted-syntax -- reconciles an external store (localStorage) the pickers read during render; there is nothing else to subscribe to
+  useEffect(() => {
+    if (!roleInForce || hasActiveSession) return;
+    if (applyRoleSeeds(roleView)) noteSeedWrite((n) => n + 1);
+  }, [roleInForce, hasActiveSession, roleView]);
+  const roleParamsRevealed = !roleInForce || revealedFor === roleInForce;
+  const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
   const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
@@ -898,6 +984,20 @@ export function MessageInput({
                   onModelChange={onModelChange}
                   onReasoningChange={onReasoningChange}
                   sessionReasoning={sessionReasoning}
+                  // docs/272 req 15 — the same fact in docs/260's shape: below
+                  // 700px the role folds into this one menu, alongside the
+                  // controls it sets. The reveal state is shared with the wide
+                  // row so crossing the breakpoint does not re-fold what the
+                  // user just opened.
+                  {...(onRoleChange
+                    ? { onRoleChange: (name: string) => { setPendingRole(name); onRoleChange(name); } }
+                    : {})}
+                  {...(roleInForce ? { sessionRoleName: roleInForce } : {})}
+                  roleParamsRevealed={roleParamsRevealed}
+                  onAdjustRoleParameters={() => { if (roleInForce) setRevealedFor(roleInForce); }}
+                  onRoleSelected={() => setRevealedFor(undefined)}
+                  onLeaveRole={leavePendingRole}
+                  roleLocked={roleLocked}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   // Same split the wide row makes three lines apart: the harness
@@ -1094,16 +1194,48 @@ export function MessageInput({
               </div>
             )}
 
+            {/* docs/272-user-selectable-roles reqs 5, 14, 16 — the role control. It sits at the
+                head of the three selectors it can replace, because when a role
+                is in force it stands exactly where they would have. Inside the
+                clip group with them, and cheap to keep there: a row showing a
+                role is SHORTER than today's, so this can only reduce the width
+                pressure docs/260 manages, never add to it. */}
+            {showRoleControl && (
+              <div className="flex items-center shrink-0">
+                <RoleSelector
+                  roles={roles}
+                  {...(roleInForce ? { selectedRole: roleInForce } : {})}
+                  onSelectRole={(name) => {
+                    // A fresh pick folds the parameters away: they described the
+                    // role the user has just left behind.
+                    setRevealedFor(undefined);
+                    setPendingRole(name);
+                    onRoleChange?.(name);
+                  }}
+                  {...(roleInForce && !roleParamsRevealed
+                    ? { onAdjustParameters: () => setRevealedFor(roleInForce) }
+                    : {})}
+                  locked={roleLocked}
+                  disabled={disabled || isLoading || inert}
+                />
+              </div>
+            )}
+
             {/* docs/252 phase 3 — harness and model are two controls, not one
                 grouped dropdown. The harness is irreversible once the session
                 pins it and the model is not, so the asymmetry is structural
-                rather than a lock badge inside a menu. */}
-            {onAgentChange && (
+                rather than a lock badge inside a menu.
+
+                docs/272 req 5 — hidden while a role is in force and its
+                parameters have not been asked for: the role IS these three, so
+                restating them says nothing the user did not just decide. */}
+            {onAgentChange && roleParamsRevealed && (
               <div className="flex items-center shrink-0">
                 <HarnessSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
-                  onAgentChange={onAgentChange}
+                  // docs/272 req 15 — see `leavePendingRole`.
+                  onAgentChange={(id) => { leavePendingRole(); onAgentChange(id); }}
                   hasActiveSession={hasActiveSession}
                   // No session bound to this composer at all (Quick Capture, or
                   // the new-session route before its warm session is claimed),
@@ -1120,12 +1252,12 @@ export function MessageInput({
                 />
               </div>
             )}
-            {onAgentChange && (
+            {onAgentChange && roleParamsRevealed && (
               <div className="flex items-center shrink-0">
                 <ModelSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
-                  onModelChange={onModelChange}
+                  onModelChange={(selection) => { leavePendingRole(); onModelChange?.(selection); }}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   seedFromHistory={!sessionId}
@@ -1136,14 +1268,14 @@ export function MessageInput({
 
             {/* docs/217 — Control B: per-session reasoning effort, beside the
                 model selector. Self-hides when the active agent has no knob. */}
-            {onReasoningChange && (
+            {onReasoningChange && roleParamsRevealed && (
               <div className="flex items-center shrink-0">
                 <ReasoningSelector
                   // Key on the session so the optimistic pick never lingers across a switch.
                   key={sessionId ?? "__new__"}
                   agent={agents.find((a) => a.id === activeAgentId)}
                   sessionReasoning={sessionReasoning}
-                  onChange={onReasoningChange}
+                  onChange={(effort) => { leavePendingRole(); onReasoningChange(effort); }}
                   disabled={disabled || isLoading || inert}
                   seedFromHistory={!hasActiveSession}
                 />

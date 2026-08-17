@@ -264,6 +264,25 @@ export interface SessionInfo {
    */
   originRoleName?: string;
   /**
+   * docs/272-user-selectable-roles reqs 5, 13, 15 — the role currently **in force**: the one the
+   * composer shows in place of the harness, model and reasoning selectors.
+   *
+   * Not the same fact as {@link SessionInfo.originRoleName} above, and the two
+   * are deliberately separate rather than one field with a rule. That one is
+   * provenance and never changes; this one is true only while the role still
+   * describes what the session runs on, and is **cleared the moment the user
+   * moves any of the three controls the role set** (req 15). A single field
+   * would either go on naming a role the session has left, or lose the
+   * provenance the first time somebody switched model.
+   *
+   * **Never derived** (req 13). A session whose harness, model and level happen
+   * to equal a role's carries nothing here: selecting a role also puts its
+   * standing instructions in force, and those are not reachable by moving
+   * controls, so a coincidental match is not the same state and must not read
+   * like one.
+   */
+  roleName?: string;
+  /**
    * docs/201 — the top-level ancestor of this session's spawn tree. A child can
    * itself spawn grandchildren; `parentSessionId` is single-step, so the sidebar
    * keys its grouping and merged-view-cap exemption off this ROOT instead — a

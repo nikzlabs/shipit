@@ -191,6 +191,13 @@ export async function createHeadlessSession(opts: {
    */
   reasoning?: string;
   /**
+   * docs/272-user-selectable-roles reqs 1, 11 — the role picked in the overlay. Resolved by
+   * the server and applied OVER `agent`/`model`/`reasoning`, which describe the
+   * controls a role replaces; a name rather than a tuple, so the role's
+   * parameters are resolved where they are stored.
+   */
+  role?: string;
+  /**
    * docs/175 — arm auto-merge for the new session at creation time. Per-session
    * and never persisted (decision #1): the overlay does NOT remember it in
    * localStorage, unlike the model/agent pickers.

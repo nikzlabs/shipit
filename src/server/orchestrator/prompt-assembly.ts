@@ -100,14 +100,31 @@ export function assembleAgentPrompt(input: {
   imageContext: string;
   /** docs/144 — the user spoke this message; warn the agent about STT artifacts. */
   dictated?: boolean;
+  /**
+   * docs/272-user-selectable-roles req 2 — the standing instructions of the role this session
+   * was started on, delivered to its **first turn only**.
+   *
+   * One more context block, for the same reason as the two above it: it rides
+   * the prompt and never enters the transcript, so a user who typed "fix the
+   * flaky test" does not find a page of standing instructions inside their own
+   * message bubble. The caller decides whether there is one —
+   * `takeRoleStandingInstructions` owns the once-only latch — and this function
+   * only places it.
+   *
+   * It goes **first** among the context blocks (last, after the text, for a
+   * slash invocation): standing instructions describe what the whole session is
+   * for, so they frame the attachments and the task rather than the other way
+   * round.
+   */
+  roleContext?: string;
 }): string {
-  const { userText, fileContext, imageContext, dictated } = input;
+  const { userText, fileContext, imageContext, dictated, roleContext } = input;
   const dictationContext = dictated ? DICTATION_CONTEXT : "";
   const isSlashInvocation = /^\/[a-zA-Z0-9._-]+/.test(userText.trimStart());
   return (
     isSlashInvocation
-      ? [userText, fileContext, imageContext, dictationContext]
-      : [dictationContext, imageContext, fileContext, userText]
+      ? [userText, fileContext, imageContext, dictationContext, roleContext ?? ""]
+      : [roleContext ?? "", dictationContext, imageContext, fileContext, userText]
   )
     .filter(Boolean)
     .join("\n\n");

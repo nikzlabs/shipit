@@ -144,7 +144,8 @@ import {
   repoLabelToNewPath,
   parseNewSessionSlug,
 } from "./utils/repo-label.js";
-import { clearParkedHarness, saveModelId, saveModelSelection } from "./utils/local-storage.js";
+import { clearParkedHarness, saveModelId, saveModelSelection, saveRoleName } from "./utils/local-storage.js";
+import { applyRoleSeeds } from "./utils/role-seed.js";
 import { persistHarnessPick } from "./utils/harness-seed.js";
 import {
   siblingsOf,
@@ -1597,6 +1598,43 @@ export default function App() {
     [send],
   );
 
+  /**
+   * docs/272-user-selectable-roles reqs 1, 12 — start this session on a configured role.
+   *
+   * Two writes, and they answer different questions. `set_role` is what applies
+   * the role to THIS session: the server resolves it, writes the harness, model
+   * and level onto the row, and records the name — nothing is guessed here,
+   * because a second implementation of "can this role run" in the browser is
+   * exactly what docs/264 kept out of it. The seed is what makes the NEXT new
+   * session start on the same role (req 12), the way the model and harness seeds
+   * already work.
+   *
+   * The seed is written optimistically and the session is not: a refused role
+   * comes back as an error and leaves the session untouched, while the seed is
+   * only ever a starting point the user can change in the same place.
+   *
+   * **Nothing here clears the seed**, and that is deliberate. Leaving a role
+   * happens when a parameter moves, and only the server knows whether one
+   * actually did — re-selecting the harness a role already set is not a change
+   * (req 15), and "Adjust parameters…" opens those very controls holding the
+   * role's own values. So the seed follows the server's answer, in
+   * `model-selection-changed.ts`, rather than being cleared by the three
+   * handlers on the way out. Clearing it here re-implemented the comparison and
+   * got it wrong in the one case the rule exists for.
+   */
+  const handleRoleChange = useCallback(
+    (roleName: string) => {
+      saveRoleName(roleName);
+      // req 15 — the seeds the three pickers display become the role's, so
+      // "Adjust parameters…" shows what the role actually set rather than what
+      // some earlier session left behind. See `utils/role-seed.ts`.
+      applyRoleSeeds(useSettingsStore.getState().roles.find((r) => r.name === roleName));
+      clearParkedHarness();
+      send({ type: "set_role", roleName });
+    },
+    [send],
+  );
+
   const handleInstructionsSave = useCallback(async (content: string) => {
     await useSettingsStore
       .getState()
@@ -2196,6 +2234,15 @@ export default function App() {
           onModelChange={handleModelChange}
           onReasoningChange={handleReasoningChange}
           sessionReasoning={currentSession?.reasoningEffort}
+          {...(currentSession?.roleName ? { sessionRoleName: currentSession.roleName } : {})}
+          onRoleChange={handleRoleChange}
+          // docs/272 req 4 — a role applies until the session's first turn and
+          // not after. `agentPinned` IS that moment: it is set when the first
+          // turn provisions per-agent credentials, which is the same fact that
+          // makes the harness irreversible. Server-side `set_role` refuses on
+          // it too; this only stops the user reaching for a control that would
+          // be refused.
+          roleLocked={!!currentSession?.agentPinned}
           modelInfo={modelInfo}
           contextTokens={contextTokens}
           hasActiveSession={!showNewSessionView && !!sessionId}
