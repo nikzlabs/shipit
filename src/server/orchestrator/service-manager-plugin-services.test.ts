@@ -269,7 +269,40 @@ describe("plugin services in the compose stack", () => {
     }
   });
 
-  describe("a plugin that ignores the port it was given (docs/266 req 8)", () => {
+  it("does not refuse a plugin service whose port was the previous activation's own (nikzlabs/shipit#2379)", async () => {
+	    // A plugin service registered in a previous start() call is still in
+	    // the services map with origin set. The port clash check must skip
+	    // entries with origin — they are plugin services, not the project's own.
+	    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	    try {
+	      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+	      const upCalls: string[][] = [];
+	      const mgr = createManager(workspaceDir, {
+	        composeRunner: async (args) => {
+	          if (args.includes("up")) upCalls.push(args.filter((a) => !a.startsWith("-") && a !== "compose"));
+	        },
+	      });
+	      // First start: the plugin is admitted and registered with origin.
+	      mgr.setPluginServices([pluginService({ name: "probe", port: 4310 })]);
+	      await mgr.start();
+	      expect(mgr.getService("probe")?.status).not.toBe("error");
+	      expect(mgr.getService("probe")?.origin).toBeDefined();
+	      upCalls.length = 0;
+
+	      // Second start without reconcile: stale plugin entry from the first
+	      // start is still in the map. Without the #2379 fix it clashes with
+	      // itself and is refused as "this project's own service".
+	      mgr.setPluginServices([pluginService({ name: "probe", port: 4310 })]);
+	      await mgr.start();
+	      expect(mgr.getService("probe")?.status).not.toBe("error");
+	      expect(mgr.getService("probe")?.error).toBeUndefined();
+	      await mgr.stop();
+	    } finally {
+	      warn.mockRestore();
+	    }
+	  });
+
+	  describe("a plugin that ignores the port it was given (docs/266 req 8)", () => {
     /** Reach the one-shot probe without waiting out its real delays. */
     interface Probe { armPluginPortProbe(name: string, attempt?: number): void }
 
