@@ -606,8 +606,19 @@ export function parseComposeFile(
 
     // Preserve an explicit `user:` so the override doesn't clobber it. Compose
     // accepts string (`node`, `1000:1000`) and bare-number forms.
-    const user =
+    //
+    // An EMPTY or whitespace-only value normalizes to `undefined`, i.e. to "the
+    // project declared nothing" — which is what it means, and what both readers
+    // must agree it means. docs/271 gave the two readers different answers for a
+    // moment: validation trimmed before testing for absence and so admitted
+    // `user: ""` as a fill-in case, while this kept the empty string, so the
+    // fill-in was skipped and the empty value reached the daemon as the image
+    // default — root, on the usual images, in a CONTAINED session. `user: null`
+    // was already normalized here and was safe throughout; only the empty string
+    // could split the two. One normalization, read by both (review finding A1).
+    const rawUser =
       typeof svc.user === "string" || typeof svc.user === "number" ? String(svc.user) : undefined;
+    const user = rawUser?.trim() ? rawUser : undefined;
 
     result.push({
       name,
@@ -1356,7 +1367,16 @@ export function validateServiceSecurity(
     //
     // The group-write half of the fix (`session-worker-uid.ts`) is what keeps a
     // DELIBERATE declaration working. This is what stops one being demanded.
-    const shipitFillsIn = containedUser === "" && sessionWorkerUid() !== null;
+    // `> 0`, not merely "set": `sessionWorkerUid()` rejects a negative value but
+    // returns 0 as a number, and a deployment with `SHIPIT_SESSION_WORKER_UID=0`
+    // would have the fill-in emit `user: "0:0"` — root, under containment, which
+    // is the one thing docs/263's rule exists to prevent. That deployment used to
+    // fail closed here (no declaration, whole file refused) and must keep doing
+    // so. Checked at this gate rather than by tightening `sessionWorkerUid()`,
+    // whose 0 is read as "legacy root runtime" by the drift guard and by every
+    // chown helper (review finding A2).
+    const fillInUid = sessionWorkerUid();
+    const shipitFillsIn = containedUser === "" && fillInUid !== null && fillInUid > 0;
     const containedUid = /^\d+(?::\d+)?$/.test(containedUser)
       ? Number(containedUser.split(":", 1)[0])
       : NaN;
@@ -1773,9 +1793,18 @@ export function generateComposeOverride(
       // the piece that makes the group channel available to BOTH shapes rather
       // than only to the lucky spelling.
       //
-      // Additive and capability-free: a supplementary group grants nothing beyond
-      // what that gid owns, which here is this session's own workspace. It is not
-      // a route out of containment.
+      // Additive and capability-free — but NOT because that gid owns only this
+      // session's workspace. It does not: the shared gid is exactly what makes
+      // the cross-session surfaces writable to every session (docs/270 req 9 —
+      // the dep cache, the pnpm store, the overlay dependency base). What makes
+      // this safe is that a service container cannot ADDRESS any of them: none is
+      // mounted into one, and a project's own bind mounts are restricted to
+      // relative workspace paths. So the reachable set is this session's tree.
+      //
+      // Stated this way on purpose. Mounting a shared surface into a service
+      // container would turn this line into a cross-session write channel, and a
+      // comment claiming the gid owns nothing else would have hidden that from
+      // whoever adds the mount (review finding B).
       entry.group_add = [String(workerGid)];
     }
 

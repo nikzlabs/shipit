@@ -1523,6 +1523,42 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     expect(doc.services.web.group_add).toBeUndefined();
   });
 
+  // docs/271 review finding A1. Validation trimmed before testing for absence,
+  // so it read `user: ""` as "declared nothing" and admitted it under
+  // containment; generation kept the empty string, so it read the same service as
+  // "declared something" and skipped the fill-in. The empty value then reached
+  // the daemon, which resolves it to the image default — root, on the usual
+  // images. Both readers must answer the same question the same way.
+  it("treats an empty user: as absent, and fills in the identity rather than leaving root", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "2000006";
+    for (const declared of ['""', '"   "']) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-empty-user-"));
+      const file = path.join(dir, "docker-compose.yml");
+      fs.writeFileSync(file, `services:\n  web:\n    image: node:22-alpine\n    user: ${declared}\n`);
+      const services = parseComposeFile(file, { dockerSocket: false, containEgress: true });
+      const override = generateComposeOverride(services, { ...baseOpts, containEgress: true });
+      const doc = parseYaml(override) as {
+        services: Record<string, { user?: string; group_add?: string[] }>;
+      };
+      // Filled in — NOT left for the image default to decide.
+      expect(doc.services.web.user).toBe("2000006:2000006");
+      expect(doc.services.web.group_add).toBeUndefined();
+    }
+  });
+
+  // docs/271 review finding A2. `sessionWorkerUid()` returns 0 as a number
+  // (it rejects only a negative), so a deployment that sets the var to 0 would
+  // have had the fill-in emit `user: "0:0"` — root under containment. That
+  // deployment failed closed before the relaxation and must keep failing closed.
+  it("refuses an undeclared contained service when the fill-in would be root", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "0";
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-root-fillin-"));
+    const file = path.join(dir, "docker-compose.yml");
+    fs.writeFileSync(file, `services:\n  web:\n    image: node:22-alpine\n`);
+    expect(() => parseComposeFile(file, { dockerSocket: false, containEgress: true }))
+      .toThrow("numeric, non-root");
+  });
+
   it("adds no group in legacy all-root mode, where there is no session group", () => {
     delete process.env.SHIPIT_SESSION_WORKER_UID;
     const override = generateComposeOverride(

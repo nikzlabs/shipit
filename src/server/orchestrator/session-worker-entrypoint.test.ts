@@ -870,10 +870,14 @@ describe("host journal readability (#1917)", () => {
   it("leaves the workspace group-writable, without re-moding hardlinked objects", () => {
     const tree = tempDir();
     mkdirSync(join(tree, ".git/objects/4d"), { recursive: true });
+    mkdirSync(join(tree, ".git/lfs/objects/ab/cd"), { recursive: true });
     mkdirSync(join(tree, "src"), { recursive: true });
-    for (const f of [".git/objects/4d/deadbeef", "src/a.ts", "run.sh"]) {
+    for (const f of [
+      ".git/objects/4d/deadbeef", ".git/lfs/objects/ab/cd/oid", "src/a.ts", "run.sh",
+    ]) {
       writeFileSync(join(tree, f), "");
     }
+    chmodSync(join(tree, ".git/lfs/objects/ab/cd/oid"), 0o444);
     chmodSync(join(tree, "src"), 0o755);
     chmodSync(join(tree, "src/a.ts"), 0o644);
     chmodSync(join(tree, "run.sh"), 0o755);
@@ -891,8 +895,11 @@ describe("host journal readability (#1917)", () => {
     // nothing that was not.
     expect(mode("src/a.ts")).toBe(0o664);
     expect(mode("run.sh")).toBe(0o775);
-    // The object file is left exactly as it was — same reason it is not chowned.
+    // The object files are left exactly as they were — same reason they are not
+    // chowned. LFS asserted beside git's own store: the two are separate patterns
+    // in the `find`, so one can be dropped without the other failing.
     expect(mode(".git/objects/4d/deadbeef")).toBe(0o444);
+    expect(mode(".git/lfs/objects/ab/cd/oid")).toBe(0o444);
     // The object DIRECTORY is moded, or the worker could not add an object.
     expect(mode(".git/objects/4d")).toBe(0o2775);
   });

@@ -87,6 +87,12 @@ fi
 #
 # Best-effort (`|| true`), unlike the chown: this script runs under `set -e`, and
 # a boot must not die over a file mode on a filesystem that will not take one.
+#
+# The object patterns are anchored at the TOP-LEVEL `.git`, so a submodule's
+# `.git/modules/<name>/objects` is not pruned — matching the chown above, and
+# harmless for the same reason: `git clone --local` hardlinks only the top-level
+# object store from the bare cache, so a submodule's objects are this session's
+# own. Revisit both if the bare cache ever starts carrying submodule objects.
 chown_workspace() {
   d="$1"
   find "$d" \

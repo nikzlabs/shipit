@@ -90,14 +90,25 @@ Object *directories* are moded, so the worker can still add an object.
 
 ## 3. Known residual
 
-**A file a foreign-UID service creates is still not agent-writable.** With
+**What a foreign-UID service creates is still not agent-writable.** With
 `group_add` the service can write the tree, but its own umask is 022, so what it
-creates lands `0644` owned by that UID. The setgid bit puts it in the shared
-group, so the agent can read it; it cannot modify it. This is pre-existing — it
-has been true of any declared `user:` since docs/150 — and it does not arise for a
-service that declares nothing, which is now every service that can manage it. The
-durable fix is a group-writable umask inside the service, which means wrapping a
-command ShipIt does not own; it is not attempted here.
+creates lands `0644`/`0755` owned by that UID. The setgid bit fixes group
+*ownership*, not group *write*. So the agent can read a file the service wrote and
+not modify it — **and can traverse a directory the service created but not add to
+or delete from it**, which is the sharper half: `rm -rf build` or `./gradlew clean`
+EACCESes as the agent.
+
+This is pre-existing — true of any declared `user:` since docs/150 — and it does
+not arise for a service that declares nothing, which after this change is every
+service whose image tolerates it. It does still arise for the declared-user shape
+this change sets out to keep working, including the three services this repo
+itself ships that way (see §4). Requirement 1 as written does not carve it out;
+it is named here rather than rounded off.
+
+The durable fix is a group-writable umask inside the service, which means
+wrapping a command ShipIt does not own, or default POSIX ACLs on the workspace,
+which need `acl` support on every backing filesystem including the overlay. Both
+are larger than this fix and neither is attempted here.
 
 ## 4. Deploy ordering
 
