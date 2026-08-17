@@ -31,6 +31,7 @@ import {
   AGENT_CREDENTIAL_PATHS,
   chownSessionCredentialsTree,
   perSessionCredentialsDir,
+  readSessionAccountMarker,
 } from "./session-credentials-scaffold.js";
 
 /**
@@ -1376,15 +1377,62 @@ export function sessionTokenIsAheadOfSource(
  * token. No-op for agents without a registered token file. (docs/142 A)
  */
 export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+  // The same identity-before-ordering rule as the account write-back below, in
+  // the direction that looks like it cannot be wrong and is worse when it is: a
+  // session on a reserved/legacy route still gets same-harness background work,
+  // and that work routes to an ACCOUNT independently of the session. Its borrow
+  // leaves an account's bearer in a subtree whose route is flat, and this
+  // write-back would publish it to the flat root — which is not just one more
+  // wrong copy. `<credentialsRoot>/.claude/.credentials.json` is exactly the
+  // marker `migrateProviderDefault` reads as "this install has pre-account
+  // credentials", so the next boot would mint a whole extra `claude-default`
+  // account row holding a duplicate of a real account's token, and the
+  // duplicate quarantine would then demand a reconnect of both.
+  const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
+  if (holder !== undefined) {
+    console.warn(
+      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to the flat root: `
+        + `the subtree holds account ${holder}`,
+    );
+    return;
+  }
   syncAgentTokenBackToRoot(credentialsRoot, sessionId, agentId, credentialsRoot);
 }
 
+/**
+ * The account write-back, refusing any publication the subtree does not own.
+ *
+ * The freshness guard inside orders two tokens; it cannot tell whose they are.
+ * That is enough while a session's subtree only ever holds its own account's
+ * copy — and it stops being true the moment a same-harness consult BORROWS the
+ * subtree for another account (`provisionSubAgentCredentials`, and see its
+ * docstring for the whole shape). During that window every caller here is still
+ * pointed at the session's own account while the file holds the borrowed one's
+ * bearer, and "the borrowed token is newer" is the normal case — a freshly
+ * reconnected account has the latest expiry there is. The write then copies one
+ * account's credential into another account's root, and both accounts are
+ * afterwards authenticating as the same subscription.
+ *
+ * So identity is checked before ordering: the subtree's own marker says whose
+ * copy is on disk, and a write-back may only publish to that account. A marker
+ * that names nothing is equally a refusal — every account-routed turn writes one
+ * (`ensureSessionAccountCredentials`), so its absence means no account turn has
+ * happened here and there is nothing of that account's to publish.
+ */
 export function syncProviderAccountTokenBack(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
   accountId: string,
 ): void {
+  const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
+  if (holder !== accountId) {
+    console.warn(
+      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
+        + `the subtree holds ${holder ?? "no recorded account"}`,
+    );
+    return;
+  }
   syncAgentTokenBackToRoot(
     credentialsRoot,
     sessionId,

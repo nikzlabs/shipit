@@ -12,6 +12,8 @@ import {
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
   removeSubAgentCredentials,
+  readSessionAccountMarker,
+  writeSessionAccountMarker,
   removeSessionCredentials,
   syncAgentTokenIn,
   syncProviderAccountTokenIn,
@@ -353,6 +355,11 @@ describe("session-credentials", () => {
     writeClaudeToken(accountB, "B-NEW", 9_000);
     provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
 
+    // A turn that moves the session to acct-b makes the subtree acct-b's FIRST
+    // (`ensureSessionAccountCredentials`, docs/260 req 4) and only then syncs
+    // the token. The write-back publishes to the account the subtree records,
+    // so the two steps are one sequence, not two independent ones.
+    writeSessionAccountMarker(root, sid, "claude", "acct-b");
     syncProviderAccountTokenIn(root, sid, "claude", "acct-b");
     expect(readTail(path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json"))).toBe("B-NEW");
 
@@ -361,6 +368,62 @@ describe("session-credentials", () => {
 
     expect(readTail(path.join(accountB, ".claude", ".credentials.json"))).toBe("B-ROTATED");
     expect(readTail(path.join(accountA, ".claude", ".credentials.json"))).toBe("A-OLD");
+  });
+
+  // A same-harness consult (`shipit agent run`, session naming, voice cleanup)
+  // BORROWS the session's own credential subtree for an account chosen
+  // independently of the session's. While that borrow is in place the session's
+  // token file holds the borrowed account's bearer, and every write-back path —
+  // the turn-end sync-back and the mid-turn publisher — is still pointed at the
+  // session's own account. Publishing then copies one account's credential into
+  // another account's root, which is the duplicate-bearer state
+  // `quarantineDuplicateClaudeCredentials` exists to clean up after.
+  it("does not publish a BORROWED account's token into the session's own account root", () => {
+    const accountA = path.join(root, "provider-accounts", "claude", "acct-a");
+    const accountB = path.join(root, "provider-accounts", "claude", "acct-b");
+    // A was just reconnected, so its token has the latest expiry of the two —
+    // which is exactly what makes the freshness guard wave the write through.
+    writeClaudeToken(accountA, "A-FRESH", 12_000);
+    writeClaudeToken(accountB, "B-LIVE", 5_000);
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-b"); // the session runs on B
+    provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // a consult borrows A
+
+    syncProviderAccountTokenBack(root, sid, "claude", "acct-b");
+
+    expect(readTail(path.join(accountB, ".claude", ".credentials.json"))).toBe("B-LIVE");
+  });
+
+  // The same hazard in the direction that looks safe. A reserved/legacy-route
+  // session still gets same-harness background work, and that work routes to an
+  // account of its own — so the flat write-back can be handed an account's
+  // bearer. The flat root is `migrateProviderDefault`'s "this install has
+  // pre-account credentials" marker, so a copy landing there mints an extra
+  // account row at the next boot, holding a duplicate of a real account's token.
+  it("does not publish a borrowed account's token into the flat root", () => {
+    writeClaudeToken(root, "FLAT", 1_000);
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A-FRESH", 12_000);
+    fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
+    provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // background work borrows A
+
+    syncAgentTokenBack(root, sid, "claude");
+
+    expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("FLAT");
+  });
+
+  it("records the borrowed account on the subtree marker, so the borrow is visible", () => {
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
+    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-b");
+
+    provisionSubAgentCredentials(root, sid, "claude", "acct-a");
+    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+
+    // The borrow's own write-back still reaches the account it actually ran on.
+    writeClaudeToken(perSessionCredentialsDir(root, sid), "A-ROTATED", 15_000);
+    syncProviderAccountTokenBack(root, sid, "claude", "acct-a");
+    expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
+      .toBe("A-ROTATED");
   });
 
   it("syncAgentTokenBack does NOT clobber a fresher source (failed-refresh race guard)", () => {
