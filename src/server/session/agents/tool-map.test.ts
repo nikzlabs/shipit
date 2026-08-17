@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { canonicalizeTool, agentToolName } from "./tool-map.js";
-import { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES } from "../../shared/agent-tool-names.js";
+import {
+  CLAUDE_TOOL_NAMES,
+  CODEX_TOOL_NAMES,
+  OPENCODE_TOOL_NAMES,
+} from "../../shared/agent-tool-names.js";
 
 describe("canonicalizeTool", () => {
   // A tool the CLI advertises but this map has never heard of degrades in
@@ -13,6 +17,9 @@ describe("canonicalizeTool", () => {
     }
     for (const name of CODEX_TOOL_NAMES) {
       expect(canonicalizeTool("codex", name), `codex tool ${name}`).not.toBeNull();
+    }
+    for (const name of OPENCODE_TOOL_NAMES) {
+      expect(canonicalizeTool("opencode", name), `opencode tool ${name}`).not.toBeNull();
     }
   });
 
