@@ -415,12 +415,20 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 
 ## Known gaps, still open
 
-- **`git lfs pull` drops uid, but the workspace is handed back to the worker
-  uid AFTER it runs** — a live regression on `main`, owned by **planning#412**,
-  which carries the four call sites, the two now-false comments that justified
-  the ordering, and the measurement that settles it. Raised from this branch,
-  which predicted the shape before E2's conversion landed; the write-up lives on
-  the issue and deliberately not here, so it has one owner rather than two.
+- ~~**`git lfs pull` drops uid, but the workspace is handed back to the worker
+  uid AFTER it runs** — a live regression on `main`~~ — **withdrawn, not fixed.
+  The regression does not exist.** The in-place-write mechanism was measured
+  correctly; the premise was wrong. At all four call sites
+  (`claim-session.ts:258`, `claim-session.ts:470`, `warm-pool-manager.ts:214`,
+  `services/session.ts`'s `materializeLfsAndChown`) the tree comes from
+  `RepoGit.cloneFromCache`, which calls `handWorkspaceBackToWorker(sessionDir)`
+  **before returning** (`repo-git.ts:320`). So the `checkout -b` runs on an
+  already-handed-over tree, goes through `safeSimpleGit(workspaceDir)`, drops to
+  the session identity and writes worker-owned stubs — and the pull drops to that
+  same identity. Nothing there is written as root, so reordering would be a
+  behaviour change fixing a failure that cannot occur. Reached independently
+  twice: by the planning#412 comments and again by the session that closed it
+  (PR #2395), which declined the reorder its own issue asked for.
 - `mergeSession`'s fallback adds a **sibling session's** workspace as a local
   remote and fetches from it. Git refuses a foreign source on a local fetch, so
   it works only while every session shares one worker uid — a constraint
