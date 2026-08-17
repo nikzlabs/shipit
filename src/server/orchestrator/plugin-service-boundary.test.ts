@@ -172,6 +172,14 @@ beforeEach(() => {
   stateDir = path.join(sessionDir, SESSION_STATE_SUBDIR);
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(stateDir, { recursive: true });
+  // docs/271 — pin the non-root runtime, so the emitted key set is the same
+  // wherever this runs. It used to be read from the ambient environment, which
+  // is set in a session container and unset in CI: `group_add` is emitted only
+  // when a session identity exists, so the key-set guard below passed or failed
+  // on WHERE it ran rather than on what the generator did. Pinned to the
+  // production shape (the runtime is non-root) rather than to the legacy
+  // all-root fallback, so the assertion describes what ships.
+  vi.stubEnv("SHIPIT_SESSION_WORKER_UID", "1000");
 });
 
 afterEach(() => {
