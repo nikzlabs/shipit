@@ -9,10 +9,16 @@
 
 import { describe, it, expect, afterEach } from "vitest";
 import net from "node:net";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
-import { registerWorkerAuthGuard } from "./worker-auth-guard.js";
+import {
+  MissingWorkerTokenError,
+  registerWorkerAuthGuard,
+  requireWorkerToken,
+} from "./worker-auth-guard.js";
 import { SessionWorker } from "./session-worker.js";
 import { LIFECYCLE_PATHS, WORKER_AUTH_HEADER, WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 
@@ -43,22 +49,19 @@ const PEER_CONTAINER_IP = "172.18.0.9";
 // `undefined` to a defaulted parameter would silently take the default and the
 // "no token configured" case would never actually be exercised.
 //
-// The same hazard has a second form the parameter shape can't express: the guard
-// falls back to `WORKER_TOKEN_ENV`, which is set in EVERY session container, so
-// `token: undefined` used to resolve to the ambient container token and the
-// no-token branch was still never reached (it failed in-container, passed in CI).
-// Pinning `env` to an empty object closes that off here regardless of ambient
-// environment; `server-test-setup.ts` also strips the var suite-wide.
-function buildGuardedApp(
-  token: string | undefined,
-  env: NodeJS.ProcessEnv = {},
-): FastifyInstance {
+// The guard reads no environment of its own since planning#421 (the container entry
+// point does, once, via `requireWorkerToken`), so `token: undefined` here means
+// exactly what it says. It used to fall back to `WORKER_TOKEN_ENV` — set in every
+// session container — and the no-token branch was silently never reached
+// in-container while passing in CI.
+function buildGuardedApp(token: string | undefined): FastifyInstance {
   const app = Fastify({ logger: false });
-  registerWorkerAuthGuard(app, { token, env, log: () => {} });
+  registerWorkerAuthGuard(app, { token, log: () => {} });
   app.get("/health", async () => ({ status: "ok" }));
   app.post("/agent-ops/voice/note", async () => ({ brokered: true }));
   app.get("/present-files/:id", async () => ({ artifact: true }));
   app.post("/terminal/start", async () => ({ started: true }));
+  app.post("/install", async () => ({ installed: true }));
   app.get("/present/:id/raw", async () => ({ raw: true }));
   app.post("/agent/start", async () => ({ started: true }));
   app.post("/agent/kill", async () => ({ killed: true }));
@@ -159,62 +162,32 @@ describe("worker auth guard", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("keeps /agent-ops closed even on a worker with no token configured", async () => {
+  it("planning#421: a worker with no token configured refuses every peer container", async () => {
+    // The orchestrator-facing leg used to be served here, as a compatibility
+    // fallback for a container created by an orchestrator that predates the
+    // token. `/install` is the one that matters most: docs/271's `agent.install`
+    // gate sits at `runInstall`, not on this route, so a plugin service that can
+    // reach the agent container had a direct-POST bypass of the whole gate.
     app = buildGuardedApp(undefined);
-    const brokered = await app.inject({
-      method: "POST",
-      url: "/agent-ops/voice/note",
-      remoteAddress: PEER_CONTAINER_IP,
-      payload: {},
-    });
-    expect(brokered.statusCode).toBe(403);
-    // …while the orchestrator leg stays open, so a mid-deploy skew can't brick
-    // a session (see decideWorkerRequest).
-    const terminal = await app.inject({
-      method: "POST",
-      url: "/terminal/start",
-      remoteAddress: PEER_CONTAINER_IP,
-      payload: {},
-    });
-    expect(terminal.statusCode).toBe(200);
+    for (const url of ["/agent-ops/voice/note", "/terminal/start", "/install"]) {
+      const res = await app.inject({
+        method: "POST",
+        url,
+        remoteAddress: PEER_CONTAINER_IP,
+        payload: {},
+      });
+      expect(res.statusCode, url).toBe(403);
+    }
   });
 
-  // The real container path: `SessionWorker` always passes the `token` key and
-  // its own dep is unset in the standalone entry point, so a live worker is
-  // gated *only* because the env fallback fires. Nothing covered that before —
-  // the suite-wide strip of the var would have hidden a regression that stopped
-  // honouring it, leaving every production worker silently ungated.
-  it("takes the token from the environment when the dep is undefined", async () => {
-    app = buildGuardedApp(undefined, { [WORKER_TOKEN_ENV]: TOKEN });
-
-    const unauthenticated = await app.inject({
-      method: "POST",
-      url: "/terminal/start",
-      remoteAddress: PEER_CONTAINER_IP,
-      payload: {},
-    });
-    expect(unauthenticated.statusCode).toBe(403);
-
-    const authenticated = await app.inject({
-      method: "POST",
-      url: "/terminal/start",
-      remoteAddress: PEER_CONTAINER_IP,
-      headers: { [WORKER_AUTH_HEADER]: TOKEN },
-      payload: {},
-    });
-    expect(authenticated.statusCode).toBe(200);
-  });
-
-  // `SHIPIT_WORKER_TOKEN=` must read as "no token", not as a token nothing can
-  // match: the orchestrator's `workerTokenFromContainerEnv` maps an empty value
-  // to `undefined` and so sends no header, so holding `""` here would 403 every
-  // orchestrator call and brick the session.
-  it("treats an empty env token as no token rather than an unmatchable one", async () => {
-    app = buildGuardedApp(undefined, { [WORKER_TOKEN_ENV]: "" });
+  it("planning#421: a worker with no token serves its own agent over loopback", async () => {
+    // The other half — the tokenless worker is an in-process test worker, which
+    // drives its routes over 127.0.0.1 and must keep working.
+    app = buildGuardedApp(undefined);
     const res = await app.inject({
       method: "POST",
       url: "/terminal/start",
-      remoteAddress: PEER_CONTAINER_IP,
+      remoteAddress: "127.0.0.1",
       payload: {},
     });
     expect(res.statusCode).toBe(200);
@@ -316,9 +289,10 @@ describe("worker auth guard", () => {
   });
 
   it("planning#241: an unconfigured worker still serves lifecycle routes over loopback", async () => {
-    // The compatibility fallback reaches lifecycle routes too: in-process tests
-    // build a SessionWorker with no token and drive /agent/start over loopback,
-    // and a mid-deploy skew must degrade rather than fail to start turns.
+    // A tokenless worker keeps serving lifecycle routes over LOOPBACK: in-process
+    // tests build a SessionWorker with no token and drive /agent/start over
+    // 127.0.0.1. Not a hole since planning#421 — the same worker refuses every
+    // caller that is not inside its own network namespace.
     app = buildGuardedApp(undefined);
     const res = await app.inject({
       method: "POST",
@@ -340,7 +314,76 @@ describe("worker auth guard", () => {
   });
 });
 
+describe("requireWorkerToken (planning#421)", () => {
+  // The container half of failing closed. `registerWorkerAuthGuard` refuses
+  // remote callers on a tokenless worker; this refuses to have one at all in a
+  // container, which is the state nobody wants a worker serving from.
+  it("returns the token the orchestrator injected", () => {
+    expect(requireWorkerToken({ [WORKER_TOKEN_ENV]: TOKEN })).toBe(TOKEN);
+  });
+
+  it("throws when the variable is absent, naming it", () => {
+    expect(() => requireWorkerToken({})).toThrow(MissingWorkerTokenError);
+    expect(() => requireWorkerToken({})).toThrow(WORKER_TOKEN_ENV);
+  });
+
+  it("throws on an EMPTY value rather than holding an unmatchable token", () => {
+    // The orchestrator's `workerTokenFromContainerEnv` maps `SHIPIT_WORKER_TOKEN=`
+    // to `undefined` and so sends no header. A worker that kept `""` as its
+    // expected token would be up and 403ing every orchestrator call — strictly
+    // harder to diagnose than a container that refused to start.
+    expect(() => requireWorkerToken({ [WORKER_TOKEN_ENV]: "" })).toThrow(MissingWorkerTokenError);
+  });
+});
+
+describe("the container entry point refuses to serve without a token (planning#421)", () => {
+  // The end-to-end half. `requireWorkerToken`'s own tests prove the function
+  // throws; only running the module the way the container runs it proves the
+  // process actually dies instead of listening — the entry block is a top-level
+  // `if (import.meta.url.endsWith(process.argv[1]))`, which no in-process test
+  // can enter.
+  it("exits non-zero, naming the variable, when SHIPIT_WORKER_TOKEN is absent", () => {
+    const entryPoint = fileURLToPath(new URL("./session-worker.ts", import.meta.url));
+    // Stripped suite-wide too; rebuilt explicitly here so the test states its
+    // own premise rather than inheriting it from `server-test-setup.ts`.
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => key !== WORKER_TOKEN_ENV),
+    );
+    // Exactly the container's Cmd (`container-lifecycle.ts`: node --import tsx <entry>).
+    const res = spawnSync(process.execPath, ["--import", "tsx", entryPoint], {
+      env,
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(WORKER_TOKEN_ENV);
+    expect(res.stderr).toContain("refusing to start");
+    // It must not have got as far as binding a port.
+    expect(res.stdout).not.toContain("Listening on");
+  }, 90_000);
+});
+
 describe("SessionWorker installs the guard", () => {
+  it("planning#421: a tokenless real worker refuses a peer container's POST /install", async () => {
+    // Pins the dependency docs/271-agent-install-trust-boundary states but does
+    // not own, on the REAL route table rather than a hand-built app: its
+    // `agent.install` gate sits at `runInstall`, so a plugin service that can
+    // reach the agent container bypasses it entirely by posting here. Before
+    // planning#421 this reached the handler (400 — the body is empty on purpose, so
+    // the assertion never runs an install either way).
+    const worker = new SessionWorker({
+      agentFactory: () => { throw new Error("not used"); },
+    });
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      remoteAddress: PEER_CONTAINER_IP,
+      payload: {},
+    });
+    expect(res.statusCode).toBe(403);
+    await worker.stop();
+  });
+
   it("403s a peer container's /agent-ops request on the real worker app", async () => {
     // The regression guard that matters: it asserts the wiring in
     // `SessionWorker.buildApp`, not a hand-built app.

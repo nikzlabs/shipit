@@ -284,8 +284,10 @@ export interface WorkerRequestOrigin {
   /**
    * The token this worker was configured with, or `undefined` when it has none.
    *
-   * An unconfigured worker does NOT reject remote callers — see
-   * {@link WorkerAuthDecision} for why that fallback is deliberate.
+   * An unconfigured worker rejects every remote caller (planning#421). In a
+   * container that state is unreachable — the worker entry point refuses to
+   * start without {@link WORKER_TOKEN_ENV} — so `undefined` here means an
+   * in-process worker built by a test.
    */
   configuredToken: string | undefined;
 }
@@ -316,7 +318,7 @@ export interface WorkerAuthDecision {
  *     precisely because that step would otherwise wave the caller through.
  *  4. Loopback — the container's own agent; allowed on everything that is left.
  *  5. A matching token — the orchestrator.
- *  6. No token configured → allow, with the caller logging a warning.
+ *  6. No token configured → DENY every remaining (i.e. remote) caller.
  *
  * Step 4 is narrower than it reads. Loopback is trusted for the REST of the
  * surface because the agent already has a shell in this container, so gating it
@@ -326,20 +328,30 @@ export interface WorkerAuthDecision {
  * process and the orchestrator's belief about it — and a stray `/agent/start`
  * gets that agent killed (see {@link LIFECYCLE_PATHS}).
  *
- * Step 6 is a deliberate compatibility fallback, not an oversight. Container env
- * is written by the orchestrator at creation, so an *older* orchestrator running
- * a *newer* worker image would create containers with no {@link WORKER_TOKEN_ENV}
- * and, under a fail-closed rule, every orchestrator→worker call would 403 —
- * bricking the session for a mid-deploy skew. Failing open there is exactly the
- * behavior that shipped before this guard, so it is a strict non-regression, and
- * the loopback-only rule in step 2 (which needs no token) still closes the
- * reported hole in that configuration.
+ * planning#421 — step 6 used to ALLOW, as a compatibility fallback for a container
+ * created by an orchestrator that predates {@link WORKER_TOKEN_ENV}. That made a
+ * tokenless worker serve its whole orchestrator-facing surface to anything on the
+ * session subnet, and `docs/271-agent-install-trust-boundary`'s gate on
+ * `agent.install` rests on the opposite: what keeps a plugin *service* from
+ * POSTing the worker's `/install` directly is that no plugin container holds a
+ * token. A guarantee stated in a plan is not something a future change can fail,
+ * so it is pinned here instead, by a rule with a test on it.
  *
- * Step 3 defers to that same fallback: an unconfigured worker keeps its old
- * behavior on lifecycle routes too. That is what keeps in-process tests (which
- * build a `SessionWorker` with no token and drive `/agent/start` over loopback)
- * working, and it means a mid-deploy skew degrades to the pre-planning#241 surface
- * rather than to a session that cannot start a turn.
+ * Failing closed cannot brick the skew case that fallback was written for. A
+ * container that outlives a deploy keeps running the image it was created from,
+ * so an *older* container is never running *this* code. The reverse pairing —
+ * this worker image created by an orchestrator with no token to inject — is
+ * reachable only inside a deploy's build window (`deployment/vps/deploy.sh`
+ * builds the image before restarting the orchestrator), and only on an upgrade
+ * that crosses v0.3.0, where the old orchestrator predates the token entirely.
+ * There the worker exits before it listens, so creating that session fails at
+ * `waitForWorkerHealth` instead of coming up unauthenticated, and the next
+ * attempt after the deploy succeeds. Nothing already running is affected.
+ *
+ * Step 3 still defers to the tokenless case: an unconfigured worker keeps
+ * serving lifecycle routes over loopback, which is what lets in-process tests
+ * build a `SessionWorker` with no token and drive `/agent/start` over 127.0.0.1.
+ * That is not a hole — a tokenless worker is now unreachable from off-box.
  */
 export function decideWorkerRequest(origin: WorkerRequestOrigin): WorkerAuthDecision {
   // Canonicalized HERE rather than by the caller — see WorkerRequestOrigin.url.
@@ -367,8 +379,10 @@ export function decideWorkerRequest(origin: WorkerRequestOrigin): WorkerAuthDeci
 
   if (loopback) return { allow: true, reason: "loopback" };
 
+  // planning#421 — fail CLOSED. A worker that cannot authenticate its orchestrator
+  // cannot tell it apart from a peer container, so it refuses both.
   if (origin.configuredToken === undefined) {
-    return { allow: true, reason: "no-token-configured" };
+    return { allow: false, reason: "no-token-configured" };
   }
 
   return tokensMatch(origin.configuredToken, origin.presentedToken)

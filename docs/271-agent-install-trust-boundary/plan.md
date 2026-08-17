@@ -212,10 +212,20 @@ skipped.
    route to the worker — but `shared/worker-auth.ts` requires the
    per-container token for a non-loopback caller on `/install`, and no plugin
    container holds it. This is a **load-bearing dependency of this design that
-   this design does not own**: the guard's no-token fallback fails open, so a
+   this design does not own**: the guard's no-token fallback failed open, so a
    container created without a token would expose a direct-POST bypass of
    everything here. Verified by the independent review at the source, recorded
    because a future change to that fallback silently reopens this route.
+
+   **Now owned and pinned (planning#421, 2026-08-17).** The fallback is gone: a
+   tokenless worker refuses every non-loopback caller, and in a container it
+   refuses to start at all. The dependency is a test rather than this paragraph —
+   `shared/worker-auth.test.ts` and `session/worker-auth-guard.test.ts` both fail
+   if the rule is relaxed, the latter by POSTing `/install` from a peer container
+   IP against the real `SessionWorker` route table. See
+   `docs/251-worker-trust-boundary/plan.md` §"Token resolution, and failing
+   closed". The route is still not gated by *this* design — what changed is that
+   the guarantee it borrows can now fail a build.
 5. **The route is closed for `agent.install` only.** The other two routes are
    docs/266 (`.git`, shipped) and planning#386 (the compose file, closed). This
    design does not make `/project` safe to write in general, and docs/262 req 29
