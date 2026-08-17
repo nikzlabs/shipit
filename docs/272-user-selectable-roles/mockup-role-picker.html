@@ -112,7 +112,7 @@
     color: var(--accent); background: var(--accent-subtle);
     border: 1px solid transparent;
   }
-  .rolectl .dia { font-size: 9px; }
+  .rolectl .dia { display: inline-flex; }
   .rolectl .car { font-size: 9px; opacity: .8; }
   .rolectl.open { border-color: var(--accent); }
   .rolectl.empty { color: var(--text-tertiary); background: transparent; }
@@ -176,6 +176,7 @@
     border-bottom: 1px solid var(--border-primary); margin-bottom: 5px;
     font-size: 12px; color: var(--text-secondary);
   }
+  .rootrow .ic { color: var(--text-tertiary); display: inline-flex; flex: none; }
   .rootrow { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 8px; font-size: 13px; }
   .rootrow.sub { padding-left: 26px; }
   .rootrow .lab { flex: 1; }
@@ -233,7 +234,7 @@
             <span class="spacer"></span>
             <span class="clipgroup">
               <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
-              <span class="rolectl empty"><span class="dia">◆</span> Role <span class="car">▾</span></span>
+              <span class="rolectl empty"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span> Role <span class="car">▾</span></span>
               <span class="ctl">Claude Code <span class="lock">🔒</span></span>
               <span class="ctl">Opus 5 <span class="car">▾</span></span>
               <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
@@ -257,7 +258,7 @@
             <span class="spacer"></span>
             <span class="clipgroup">
               <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
-              <span class="rolectl"><span class="dia">◆</span> Deep dive <span class="car">▾</span></span>
+              <span class="rolectl"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span> Deep dive <span class="car">▾</span></span>
             </span>
             <span class="stop">■</span><span class="send">↑</span>
           </div>
@@ -279,7 +280,7 @@
             <span class="spacer"></span>
             <span class="clipgroup">
               <span class="dial"><span class="ring"></span><span class="tok">114.9K</span></span>
-              <span class="rolectl open"><span class="dia">◆</span> Deep dive <span class="car">▴</span></span>
+              <span class="rolectl open"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span> Deep dive <span class="car">▴</span></span>
               <span class="ctl">Claude Code <span class="lock">🔒</span></span>
               <span class="ctl">Opus 5 <span class="car">▾</span></span>
               <span class="ctl"><span class="ic">◍</span> Think hard <span class="car">▾</span></span>
@@ -304,7 +305,7 @@
             <span class="spacer"></span>
             <span class="clipgroup">
               <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
-              <span class="rolectl empty"><span class="dia">◆</span> Role <span class="car">▾</span></span>
+              <span class="rolectl empty"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span> Role <span class="car">▾</span></span>
               <span class="ctl">Claude Code <span class="lock">🔒</span></span>
               <span class="ctl">Opus 5 <span class="car">▾</span></span>
               <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
@@ -342,7 +343,7 @@
           <div class="group-label">Roles <span class="hint">— sets harness, model and reasoning</span></div>
 
           <div class="row sel">
-            <span class="check">✓</span><span class="vendor v-role">◆</span>
+            <span class="check">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span>
             <span class="body">
               <span class="name">Deep dive</span>
               <span class="desc">Long architectural investigations. Reads widely before proposing.</span>
@@ -351,7 +352,7 @@
           </div>
 
           <div class="row">
-            <span class="check blank">✓</span><span class="vendor v-role">◆</span>
+            <span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span>
             <span class="body">
               <span class="name">Docs writer</span>
               <span class="desc">Writes and edits prose. Never touches source files.</span>
@@ -360,7 +361,7 @@
           </div>
 
           <div class="row">
-            <span class="check blank">✓</span><span class="vendor v-role">◆</span>
+            <span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span>
             <span class="body">
               <span class="name">Triage</span>
               <span class="desc">Cheap first pass on a bug report.</span>
@@ -369,7 +370,7 @@
           </div>
 
           <div class="row disabled">
-            <span class="check blank">✓</span><span class="vendor v-role">◆</span>
+            <span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span>
             <span class="body">
               <span class="name">Cheap sweep <span class="pill danger">disconnected</span></span>
               <span class="desc">DeepSeek is not connected. Reconnect it in Settings → Services.</span>
@@ -377,7 +378,7 @@
           </div>
 
           <div class="row disabled">
-            <span class="check blank">✓</span><span class="vendor v-role">◆</span>
+            <span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span>
             <span class="body">
               <span class="name">Old reliable <span class="pill warn">stranded</span></span>
               <span class="desc">Its model was retired. Edit the role in Settings to pick another.</span>
@@ -438,7 +439,7 @@
       <div>
         <div class="phone">
           <div class="rootrow"><span class="mg">&#9656;&#9656;</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
-          <div class="rootrow"><span>◆</span><span class="lab">Role</span><span class="val accent">Deep dive</span><span class="car">›</span></div>
+          <div class="rootrow"><span class="ic"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span><span class="lab">Role</span><span class="val accent">Deep dive</span><span class="car">›</span></div>
         </div>
         <p class="caption">
           Role selected — <strong>two</strong> rows. Harness, model and reasoning are not listed,
@@ -475,7 +476,7 @@
       <div>
         <div class="phone">
           <div class="rootrow"><span class="mg">&#9656;&#9656;</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
-          <div class="rootrow"><span>◆</span><span class="lab">Role</span><span class="val">—</span><span class="car">›</span></div>
+          <div class="rootrow"><span class="ic"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span><span class="lab">Role</span><span class="val">—</span><span class="car">›</span></div>
           <div class="rootrow"><span>▣</span><span class="lab">Harness</span><span class="val">Claude Code</span><span class="car">›</span></div>
           <div class="rootrow"><span>◇</span><span class="lab">Model</span><span class="val">Opus 5</span><span class="car">›</span></div>
           <div class="rootrow"><span>◍</span><span class="lab">Reasoning</span><span class="val">Medium</span><span class="car">›</span></div>
@@ -510,7 +511,7 @@
           <div class="toolbar">
             <span class="ctl icon-only">＋</span>
             <span class="spacer"></span>
-            <span class="rolectl"><span class="dia">◆</span> Deep dive <span class="car">▾</span></span>
+            <span class="rolectl"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56ZM96,48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96ZM216,72v41.61A184,184,0,0,1,128,136a184.07,184.07,0,0,1-88-22.38V72Zm0,128H40V131.64A200.19,200.19,0,0,0,128,152a200.25,200.25,0,0,0,88-20.37V200ZM104,112a8,8,0,0,1,8-8h32a8,8,0,0,1,0,16H112A8,8,0,0,1,104,112Z"/></svg></span> Deep dive <span class="car">▾</span></span>
             <span class="send">↑</span>
           </div>
         </div>
