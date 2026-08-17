@@ -410,17 +410,26 @@ describe("SessionContainerManager", () => {
     // mkdir, the store lands root:root and the non-root agent EACCESes on
     // `pnpm install` with no way to recover — hence the wiring is pinned HERE,
     // where the mkdir actually happens, not only on the helper's own unit tests.
-    it("hands the pnpm store dir to the worker uid before mounting it", async () => {
+    // docs/270 — the handoff is by GROUP, and the shared gid is what
+    // `sessionWorkerGid()` parses out of SHIPIT_SESSION_WORKER_UID. The variable
+    // is therefore set to the test process's own primary gid, which is a group
+    // it can actually `chgrp` to; setting it to the process's *uid* only worked
+    // on a machine where uid == gid (CI: 1000/1000). A ShipIt session container
+    // runs an allocated uid over the shared group (e.g. 2000006:1000), where the
+    // real chgrp EPERMs and `ensurePnpmStoreDir` correctly reports false.
+    it("hands the pnpm store dir to the shared worker gid before mounting it", async () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      const myGid = process.getgid?.();
+      if (myUid === undefined || myGid === undefined) return; // not POSIX — skip
       const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
-      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myGid);
       const storeDir = path.join(TEST_SESSION_DIR, "pnpm-store", "deadbeefcafe0001");
       const spy = vi.spyOn(fs, "lchownSync");
       try {
         await manager.create(buildConfig({ pnpmStoreDir: storeDir }));
         expect(fs.existsSync(storeDir)).toBe(true);
-        expect(spy).toHaveBeenCalledWith(storeDir, myUid, myUid);
+        // Owner untouched, group set to the shared gid.
+        expect(spy).toHaveBeenCalledWith(storeDir, myUid, myGid);
         // Handoff verified → the mount is still there.
         const call = mockDocker.createContainer.mock.calls[0][0];
         expect(call.HostConfig.Binds).toContain(`${storeDir}:/workspace/.pnpm-store:rw`);
@@ -1115,6 +1124,15 @@ describe("SessionContainerManager", () => {
 
     it("end-to-end: a pnpm session mounts the store + sets npm_config_store_dir and gets NO overlay", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
+      // `create()` drops the store mount when the group handoff cannot be
+      // verified, so this test's mount-shape assertions depend on the shared gid
+      // being one the test process can `chgrp` to. State it rather than
+      // inheriting whatever the runner happens to carry: a ShipIt session
+      // container has an ambient SHIPIT_SESSION_WORKER_UID naming a per-session
+      // uid, whose derived gid is not this process's group, so the handoff fails
+      // and the mount vanishes. See `ensurePnpmStoreDir`'s tests for the detail.
+      const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+      process.env.SHIPIT_SESSION_WORKER_UID = String(process.getgid?.() ?? 0);
       const { mgr } = managerWithState();
       try {
         const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
@@ -1138,6 +1156,8 @@ describe("SessionContainerManager", () => {
         // …and older pnpm is pointed at the same path via npm_config_store_dir.
         expect(call.Env).toContain("npm_config_store_dir=/workspace/.pnpm-store");
       } finally {
+        if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+        else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
         await mgr.dispose();
       }
     });

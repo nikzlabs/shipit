@@ -453,10 +453,29 @@ describe("buildEnv", () => {
   // image entrypoint chowns the mounts to the SAME uid the orchestrator-side
   // chown helpers use. Unset → not forwarded (entrypoint default + no-op chowns).
   it("docs/150: forwards SHIPIT_SESSION_WORKER_UID when set", () => {
-    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
-      SHIPIT_SESSION_WORKER_UID: "1000",
-    } as NodeJS.ProcessEnv);
-    expect(env).toContain("SHIPIT_SESSION_WORKER_UID=1000");
+    // The GATE reads the injected `procEnv`, but the VALUE comes from
+    // `identityForTarget`, which resolves through the ambient `process.env`
+    // (session-identity roots are unconfigured in unit tests, so it falls back
+    // to `sessionWorkerUid()`). Both have to say 1000, or the ambient value of
+    // the machine running the suite leaks into the assertion — a ShipIt session
+    // container carries a per-session `SHIPIT_SESSION_WORKER_UID` of its own.
+    const prev = process.env.SHIPIT_SESSION_WORKER_UID;
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    try {
+      const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
+        SHIPIT_SESSION_WORKER_UID: "1000",
+      } as NodeJS.ProcessEnv);
+      expect(env).toContain("SHIPIT_SESSION_WORKER_UID=1000");
+      // docs/270 — the PAIR is forwarded, because `gosu <uid>:<gid>` and the
+      // entrypoint's chown loop can no longer assume the two are equal. The gid
+      // is the shared one, which `sessionWorkerGid()` parses out of this same
+      // variable — the orchestrator never reads SHIPIT_SESSION_WORKER_GID, it
+      // only produces it.
+      expect(env).toContain("SHIPIT_SESSION_WORKER_GID=1000");
+    } finally {
+      if (prev === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = prev;
+    }
   });
 
   it("docs/150: does not forward SHIPIT_SESSION_WORKER_UID when unset", () => {
@@ -973,6 +992,22 @@ describe("ensurePnpmStoreDir (planning#2286)", () => {
   let tmpDir: string;
   const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
 
+  // docs/270 — the store is handed over by GROUP, not by owner, and the shared
+  // gid is what `sessionWorkerGid()` parses out of SHIPIT_SESSION_WORKER_UID
+  // (the orchestrator has exactly one input variable; SHIPIT_SESSION_WORKER_GID
+  // is an output it forwards to the entrypoint and never reads back).
+  //
+  // So these tests configure that variable to a gid the test process can
+  // actually `chgrp` to — its OWN primary gid — and assert the resulting
+  // (owner, group) pair explicitly. Setting it to the process's *uid* only
+  // worked because CI runs uid 1000 / gid 1000: on a machine where they differ
+  // (a ShipIt session container allocates a per-session uid like 2000006 while
+  // the group stays the shared 1000) the real chgrp EPERMs, is swallowed by
+  // design, and the handoff verification correctly reports false. That
+  // uid == gid assumption was the harness's, never the product's.
+  const selfUid = process.getuid?.();
+  const selfGid = process.getgid?.();
+
   afterEach(() => {
     if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
     else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
@@ -993,30 +1028,30 @@ describe("ensurePnpmStoreDir (planning#2286)", () => {
   // or the non-root agent EACCESes on `pnpm install`. Asserted on the chown CALL,
   // not on the resulting uid: a dir the test process just created already carries
   // its own uid, so a uid assertion would pass with no chown at all.
-  it("hands the store dir to the worker uid", () => {
-    const myUid = process.getuid?.();
-    if (myUid === undefined) return; // not POSIX — skip
-    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+  it("hands the store dir to the shared worker gid", () => {
+    if (selfUid === undefined || selfGid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
     const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0002");
     const spy = vi.spyOn(fs, "lchownSync");
     expect(ensurePnpmStoreDir(storeDir)).toBe(true);
-    expect(spy).toHaveBeenCalledWith(storeDir, myUid, myUid);
+    // The OWNER is left alone (chowning the shared store to one session's uid
+    // would take it from every other session) and only the group is set.
+    expect(spy).toHaveBeenCalledWith(storeDir, selfUid, selfGid);
     spy.mockRestore();
   });
 
   // The store is SHARED, so most creations find the dir already there — a
   // create-only chown would leave every store that predates this fix root-owned.
   it("re-chowns an existing store dir (repairs one left root-owned by an earlier build)", () => {
-    const myUid = process.getuid?.();
-    if (myUid === undefined) return; // not POSIX — skip
-    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    if (selfUid === undefined || selfGid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
     const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0003");
     fs.mkdirSync(storeDir, { recursive: true });
     const spy = vi.spyOn(fs, "lchownSync");
     expect(ensurePnpmStoreDir(storeDir)).toBe(true);
-    expect(spy).toHaveBeenCalledWith(storeDir, myUid, myUid);
+    expect(spy).toHaveBeenCalledWith(storeDir, selfUid, selfGid);
     spy.mockRestore();
   });
 
@@ -1036,9 +1071,8 @@ describe("ensurePnpmStoreDir (planning#2286)", () => {
     // container-create hot path. Both halves are asserted, because either one
     // alone is a bug: no walk is the original defect, and an ungated walk is the
     // multi-gigabyte cost the original was avoiding.
-    const myUid = process.getuid?.();
-    if (myUid === undefined) return; // not POSIX — skip
-    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    if (selfGid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
     const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0004");
     fs.mkdirSync(path.join(storeDir, "files", "00"), { recursive: true });

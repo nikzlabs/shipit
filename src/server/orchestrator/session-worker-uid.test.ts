@@ -418,8 +418,8 @@ describe("session-worker-uid (docs/150 §7)", () => {
   // (e.g. `node_modules/.vite`) the worktree handback's dep-dir exclusion skips.
   describe("reconcileDepDirCacheOwnership", () => {
     // Build a node_modules with an installed package and a `.vite` cache subtree.
-    function seedNodeModules(): { nm: string; pkgFile: string; viteFile: string } {
-      const nm = path.join(tmpDir, "node_modules");
+    function seedNodeModules(base: string = tmpDir): { nm: string; pkgFile: string; viteFile: string } {
+      const nm = path.join(base, "node_modules");
       const pkgFile = path.join(nm, "left-pad", "index.js");
       const viteFile = path.join(nm, ".vite", "deps", "chunk.js");
       fs.mkdirSync(path.dirname(pkgFile), { recursive: true });
@@ -454,17 +454,35 @@ describe("session-worker-uid (docs/150 §7)", () => {
 
     // Common case: everything already worker-owned → a shallow scan that chowns
     // nothing (the steady-state cost is just the direct-child lstats).
+    //
+    // The reconcile compares the whole (uid, gid) PAIR, and under docs/270 the
+    // gid is the shared worker group rather than the session's uid. So "already
+    // worker-owned" is stated through the record docs/270 actually reads it
+    // from — the owner of the session directory — instead of being inherited
+    // from the runner. Deriving it from SHIPIT_SESSION_WORKER_UID alone yields
+    // `{uid, gid: uid}`, which matches files the test process created only where
+    // getuid() == getgid(); in a ShipIt session container (uid 2000006, gid
+    // 1000) every seeded child then reads as a leaked tree and gets chowned.
     it("skips children already owned by the worker uid (zero chowns)", () => {
       const myUid = process.getuid?.();
-      if (myUid === undefined) return; // not POSIX — skip
+      const myGid = process.getgid?.();
+      if (myUid === undefined || myGid === undefined) return; // not POSIX — skip
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
-      const { nm } = seedNodeModules();
+      const sessionsRoot = path.join(tmpDir, "sessions");
+      const sessionDir = path.join(sessionsRoot, "sess-1");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      configureSessionIdentityRoots({ sessionsRoot });
+      const { nm } = seedNodeModules(sessionDir);
       const spy = vi.spyOn(fs, "lchownSync");
       try {
+        // The premise, asserted rather than assumed: the resolved identity is
+        // the pair these files were actually created with.
+        expect(identityForTarget(nm)).toEqual({ uid: myUid, gid: myGid });
         reconcileDepDirCacheOwnership(nm);
         expect(spy).not.toHaveBeenCalled();
       } finally {
         spy.mockRestore();
+        configureSessionIdentityRoots(null);
       }
     });
 
