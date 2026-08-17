@@ -161,7 +161,8 @@ It is a **build input, not a setting** — the CLIs are baked into the images �
 editing the env file and re-running the deploy, and there is nothing in Settings that adds or
 removes a harness:
 
-- **VPS**: the installer asks once and persists your answer as `SHIPIT_HARNESSES` in
+- **VPS**: the installer asks once — a checklist you move through with the arrow keys, toggle with
+  the space bar, and confirm with Enter — and persists your answer as `SHIPIT_HARNESSES` in
   `/etc/shipit/shipit.env`. To change it later, edit that line and run
   `bash /opt/shipit/deployment/vps/deploy.sh`. Presetting the variable
   (`SHIPIT_HARNESSES=codex bash setup.sh`) skips the prompt.
@@ -215,7 +216,18 @@ ssh root@<server-ip>   # or: ssh <user>@<server-ip> for a sudo-capable user
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
 ```
 
-The script will ask whether to install Cloudflare, Tailscale, both, or neither, then automatically:
+The script first asks how you want to reach ShipIt. Cloudflare and Tailscale are independent
+checkboxes — arrow keys move, the space bar toggles, Enter confirms:
+
+```
+  > [*] Cloudflare Tunnel  public HTTPS domain, Zero Trust protected
+    [ ] Tailscale          private, reachable from your tailnet only
+```
+
+Tick both to install both; tick neither to install ShipIt without exposing it and add access later.
+A scripted install can pre-answer with `SHIPIT_ACCESS=tailscale` (or `cloudflare,tailscale`, or
+`none`), which skips the question; so does running with no terminal, which keeps the default shown
+above. It then automatically:
 - Install git and clone ShipIt to `/opt/shipit` (installing a fork? prefix the command with `sudo env SHIPIT_REPO_URL=https://github.com/you/shipit.git` — plain `sudo` drops the variable from the environment)
 - Install Docker
 - Configure host limits needed for session containers and file watching

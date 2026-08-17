@@ -6,6 +6,169 @@ set -euo pipefail
 
 CONFIG_FILE="/etc/shipit/setup.conf"
 
+# --- BEGIN shipit-picker (docs/271) ----------------------------------------
+# A checkbox prompt: arrow keys (or j/k) move, space toggles, Enter confirms.
+#
+# Bash and ANSI escapes only — no whiptail, dialog, ncurses, or `tput`. This
+# script is curl|bash'd onto a bare Ubuntu box BEFORE anything is installed
+# (req 9), so the prompt cannot depend on a package the install has not reached
+# yet. `stty` is used only to keep the terminal from echoing stray keystrokes,
+# and its absence degrades the display, never the answer.
+#
+# Usage:
+#   shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
+#   -> SHIPIT_PICK_RESULT holds the chosen keys, comma-separated ("" when none).
+#
+# Returns non-zero WITHOUT prompting when there is no terminal to draw on,
+# leaving the caller's preselection in SHIPIT_PICK_RESULT — so a non-interactive
+# install keeps today's defaults rather than hanging on a read (req 7).
+#
+# The block between these markers is extracted verbatim and driven under a pty by
+# src/server/orchestrator/services/installer-picker.test.ts. Keep it
+# self-contained: nothing in here may call a helper defined outside the markers.
+
+# Join the selected keys into the comma-separated answer.
+shipit_pick_selected() {
+  local i out=""
+  for ((i = 0; i < SHIPIT_PICK_COUNT; i++)); do
+    if [ "${SHIPIT_PICK_MARKS[i]}" = "1" ]; then
+      if [ -n "$out" ]; then out="$out,"; fi
+      out="$out${SHIPIT_PICK_KEYS[i]}"
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# Apply one keystroke to the picker state. Split out from the read loop so the
+# whole key map is exercisable without a terminal.
+shipit_pick_key() {
+  case "$1" in
+    # $'\eOA'/$'\eOB' are the same arrows in application-cursor mode, which some
+    # terminals switch into; accepting both costs one alternative each.
+    $'\e[A' | $'\eOA' | k | K)
+      SHIPIT_PICK_CURSOR=$(((SHIPIT_PICK_CURSOR + SHIPIT_PICK_COUNT - 1) % SHIPIT_PICK_COUNT))
+      ;;
+    $'\e[B' | $'\eOB' | j | J)
+      SHIPIT_PICK_CURSOR=$(((SHIPIT_PICK_CURSOR + 1) % SHIPIT_PICK_COUNT))
+      ;;
+    ' ')
+      SHIPIT_PICK_MARKS[SHIPIT_PICK_CURSOR]=$((1 - SHIPIT_PICK_MARKS[SHIPIT_PICK_CURSOR]))
+      ;;
+    '')
+      # `read -n1` strips the newline, so Enter arrives as the empty string.
+      SHIPIT_PICK_DONE=1
+      ;;
+  esac
+}
+
+# Draw the list, one line per row, leaving the cursor on the line after the last.
+shipit_pick_render() {
+  local i box
+  for ((i = 0; i < SHIPIT_PICK_COUNT; i++)); do
+    if [ "${SHIPIT_PICK_MARKS[i]}" = "1" ]; then box="[*]"; else box="[ ]"; fi
+    printf '\r\033[K'
+    if [ "$i" -eq "$SHIPIT_PICK_CURSOR" ]; then
+      printf '  %s>%s %s' "$SHIPIT_PICK_C_ON" "$SHIPIT_PICK_C_OFF" "$SHIPIT_PICK_C_ON"
+    else
+      printf '    '
+    fi
+    printf '%s %-*s' "$box" "$SHIPIT_PICK_WIDTH" "${SHIPIT_PICK_LABELS[i]}"
+    if [ "$i" -eq "$SHIPIT_PICK_CURSOR" ]; then printf '%s' "$SHIPIT_PICK_C_OFF"; fi
+    if [ -n "${SHIPIT_PICK_HINTS[i]}" ]; then
+      printf '  %s%s%s' "$SHIPIT_PICK_C_DIM" "${SHIPIT_PICK_HINTS[i]}" "$SHIPIT_PICK_C_OFF"
+    fi
+    printf '\n'
+  done
+}
+
+# Undo everything the loop did to the terminal. Runs on the normal exit path AND
+# from the SIGINT trap — a Ctrl-C that left echo off and the cursor hidden would
+# hand the operator an apparently broken shell.
+shipit_pick_restore() {
+  printf '\033[?25h'
+  if [ -n "${SHIPIT_PICK_STTY:-}" ]; then
+    stty "$SHIPIT_PICK_STTY" 2>/dev/null || true
+    SHIPIT_PICK_STTY=""
+  fi
+}
+
+shipit_pick() {
+  local preselected="$1"
+  shift
+  SHIPIT_PICK_KEYS=()
+  SHIPIT_PICK_LABELS=()
+  SHIPIT_PICK_HINTS=()
+  SHIPIT_PICK_MARKS=()
+  SHIPIT_PICK_WIDTH=0
+  SHIPIT_PICK_RESULT=""
+
+  local spec rest label
+  for spec in "$@"; do
+    SHIPIT_PICK_KEYS+=("${spec%%|*}")
+    rest="${spec#*|}"
+    label="${rest%%|*}"
+    SHIPIT_PICK_LABELS+=("$label")
+    if [ "$rest" = "${rest#*|}" ]; then
+      SHIPIT_PICK_HINTS+=("")
+    else
+      SHIPIT_PICK_HINTS+=("${rest#*|}")
+    fi
+    SHIPIT_PICK_MARKS+=(0)
+    if [ "${#label}" -gt "$SHIPIT_PICK_WIDTH" ]; then SHIPIT_PICK_WIDTH="${#label}"; fi
+  done
+  SHIPIT_PICK_COUNT="${#SHIPIT_PICK_KEYS[@]}"
+  if [ "$SHIPIT_PICK_COUNT" -eq 0 ]; then return 1; fi
+
+  local i pre
+  for pre in $(printf '%s' "$preselected" | tr ',' ' '); do
+    for ((i = 0; i < SHIPIT_PICK_COUNT; i++)); do
+      if [ "${SHIPIT_PICK_KEYS[i]}" = "$pre" ]; then SHIPIT_PICK_MARKS[i]=1; fi
+    done
+  done
+  # Set the answer to the preselection BEFORE the terminal check, so the
+  # non-interactive return still hands the caller a usable value.
+  SHIPIT_PICK_RESULT="$(shipit_pick_selected)"
+  if [ ! -t 0 ] || [ ! -t 1 ]; then return 1; fi
+
+  SHIPIT_PICK_C_ON=$'\033[1;36m'
+  SHIPIT_PICK_C_OFF=$'\033[0m'
+  SHIPIT_PICK_C_DIM=$'\033[2m'
+
+  SHIPIT_PICK_STTY=""
+  if command -v stty >/dev/null 2>&1; then
+    SHIPIT_PICK_STTY="$(stty -g 2>/dev/null || true)"
+    if [ -n "$SHIPIT_PICK_STTY" ]; then stty -echo 2>/dev/null || true; fi
+  fi
+  printf '\033[?25l'
+  trap 'shipit_pick_restore; exit 130' INT
+
+  local key rest_seq
+  SHIPIT_PICK_CURSOR=0
+  SHIPIT_PICK_DONE=0
+  shipit_pick_render
+  while [ "$SHIPIT_PICK_DONE" -eq 0 ]; do
+    key=""
+    # A closed stdin (EOF) confirms the current state rather than spinning.
+    if ! IFS= read -rsn1 key; then break; fi
+    if [ "$key" = $'\e' ]; then
+      # An arrow key arrives as three bytes at once, so this returns
+      # immediately; the timeout only bounds a lone Escape keypress.
+      rest_seq=""
+      IFS= read -rsn2 -t 0.05 rest_seq || true
+      key="$key$rest_seq"
+    fi
+    shipit_pick_key "$key"
+    printf '\033[%dA' "$SHIPIT_PICK_COUNT"
+    shipit_pick_render
+  done
+
+  trap - INT
+  shipit_pick_restore
+  SHIPIT_PICK_RESULT="$(shipit_pick_selected)"
+  return 0
+}
+# --- END shipit-picker -----------------------------------------------------
+
 # --- Load saved config from previous run, if any ---
 DOMAIN=""
 REPO_URL=""
@@ -32,47 +195,65 @@ echo "==========================================="
 echo "  ShipIt - Server Provisioning"
 echo "==========================================="
 echo ""
-echo "Access setup — how do you want to reach ShipIt from your browser?"
-echo ""
-echo "  1. Cloudflare Tunnel"
-echo "     Exposes ShipIt at https://your-domain.com (a domain you own and have"
-echo "     added to Cloudflare). Cloudflare proxies traffic into this VPS over an"
-echo "     outbound tunnel — no inbound ports to open, no public IP exposed."
-echo "     Cloudflare Zero Trust is required by default so only authorized users"
-echo "     can reach ShipIt; the script can create the Access app and policy."
-echo ""
-echo "  2. Tailscale"
-echo "     Exposes ShipIt only to devices on your Tailscale network (tailnet)."
-echo "     No public URL; no one outside your tailnet can reach it."
-echo ""
-echo "  3. Both — public domain via Cloudflare AND private access via Tailscale."
-echo ""
-echo "  4. None — install ShipIt but don't expose it yet. You can run"
-echo "     cloudflare.sh or tailscale.sh later to add access."
-echo ""
-read -rp "Choose what to install [1]: " ACCESS_CHOICE
-ACCESS_CHOICE="${ACCESS_CHOICE:-1}"
+# --- Access setup (docs/271 reqs 1, 4) ---
+# Cloudflare and Tailscale are independent, so they are two checkboxes rather
+# than a four-item menu: both selected installs both, neither selected installs
+# ShipIt without exposing it. SHIPIT_ACCESS pre-answers the question for a
+# scripted install, the same way SHIPIT_HARNESSES does below.
+ACCESS_DEFAULT="cloudflare"
+ACCESS=""
+
+access_valid() {
+  local candidate
+  for candidate in $(printf '%s' "$1" | tr ',' ' '); do
+    case "$candidate" in
+      cloudflare | tailscale) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+if [ -n "${SHIPIT_ACCESS:-}" ]; then
+  ACCESS="$(printf '%s' "$SHIPIT_ACCESS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  # "none" is the spelling for "expose nothing"; an empty variable is
+  # indistinguishable from unset, so it cannot carry that meaning.
+  if [ "$ACCESS" = "none" ]; then ACCESS=""; fi
+  if ! access_valid "$ACCESS"; then
+    echo "Error: SHIPIT_ACCESS must be a comma-separated list of 'cloudflare' and/or 'tailscale', or 'none' (got '$SHIPIT_ACCESS')" >&2
+    exit 1
+  fi
+  echo "Access setup: ${ACCESS:-none} (from the environment)"
+elif [ -t 0 ]; then
+  echo "Access setup — how do you want to reach ShipIt from your browser?"
+  echo ""
+  echo "  Cloudflare Tunnel exposes ShipIt at https://your-domain.com (a domain you"
+  echo "  own and have added to Cloudflare). Cloudflare proxies traffic into this VPS"
+  echo "  over an outbound tunnel — no inbound ports to open, no public IP exposed."
+  echo "  Cloudflare Zero Trust is required by default so only authorized users can"
+  echo "  reach ShipIt; the script can create the Access app and policy."
+  echo ""
+  echo "  Tailscale exposes ShipIt only to devices on your Tailscale network"
+  echo "  (tailnet). No public URL; no one outside your tailnet can reach it."
+  echo ""
+  echo "  Select both to get both. Select neither to install ShipIt without exposing"
+  echo "  it yet — you can run cloudflare.sh or tailscale.sh later to add access."
+  echo ""
+  echo "  [up/down] move    [space] select    [enter] confirm"
+  echo ""
+  shipit_pick "$ACCESS_DEFAULT" \
+    "cloudflare|Cloudflare Tunnel|public HTTPS domain, Zero Trust protected" \
+    "tailscale|Tailscale|private, reachable from your tailnet only" || true
+  ACCESS="$SHIPIT_PICK_RESULT"
+  echo ""
+else
+  ACCESS="$ACCESS_DEFAULT"
+fi
 
 INSTALL_CLOUDFLARE=false
 INSTALL_TAILSCALE=false
-case "$ACCESS_CHOICE" in
-  1|cloudflare|Cloudflare)
-    INSTALL_CLOUDFLARE=true
-    ;;
-  2|tailscale|Tailscale)
-    INSTALL_TAILSCALE=true
-    ;;
-  3|both|Both)
-    INSTALL_CLOUDFLARE=true
-    INSTALL_TAILSCALE=true
-    ;;
-  4|none|None)
-    ;;
-  *)
-    echo "Error: choose 1, 2, 3, or 4" >&2
-    exit 1
-    ;;
-esac
+case ",$ACCESS," in *,cloudflare,*) INSTALL_CLOUDFLARE=true ;; esac
+case ",$ACCESS," in *,tailscale,*) INSTALL_TAILSCALE=true ;; esac
 
 # --- Save config for future re-runs (no secrets stored) ---
 mkdir -p "$(dirname "$CONFIG_FILE")"
@@ -291,6 +472,9 @@ fi
 # Skipped without a prompt when SHIPIT_HARNESSES is already set (a scripted
 # install: `SHIPIT_HARNESSES=codex bash setup.sh`) or when stdin is not a TTY, so
 # the curl|bash path stays non-interactive.
+#
+# Keep this list and the picker rows below in step — this one is what validates a
+# scripted install's SHIPIT_HARNESSES, the rows are what an operator sees.
 SUPPORTED_HARNESSES="claude codex opencode"
 
 persist_shipit_env() {
@@ -321,18 +505,33 @@ if [ -z "${SHIPIT_HARNESSES:-}" ] && [ -t 0 ]; then
   echo "==> Agent harnesses"
   echo "    Which agent CLIs should this install run? They are installed into the"
   echo "    ShipIt images, so adding one later means re-running this deploy."
-  echo "    Supported: $(echo "$SUPPORTED_HARNESSES" | tr ' ' ',')"
   echo ""
-  read -rp "  Harnesses to install [claude,codex]: " HARNESS_CHOICE
-  HARNESS_CHOICE="$(printf '%s' "${HARNESS_CHOICE:-claude,codex}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-  if harnesses_valid "$HARNESS_CHOICE"; then
+  echo "    [up/down] move    [space] select    [enter] confirm"
+  echo ""
+  shipit_pick "claude,codex" \
+    "claude|Claude Code|Anthropic's CLI" \
+    "codex|Codex|OpenAI's CLI" \
+    "opencode|OpenCode|open-source, bring your own provider" || true
+  HARNESS_CHOICE="$SHIPIT_PICK_RESULT"
+  echo ""
+  if [ -z "$HARNESS_CHOICE" ]; then
+    # An image with no harness fails the build, so an empty selection cannot be
+    # honoured — say so rather than letting the deploy fall over later.
+    echo "    No harness selected; a deployment needs at least one, so keeping the"
+    echo "    default (claude,codex). Change it later by setting SHIPIT_HARNESSES in"
+    echo "    $SHIPIT_ENV_FILE and re-running deploy.sh."
+  else
     persist_shipit_env SHIPIT_HARNESSES "$HARNESS_CHOICE"
     echo "    Installing harnesses: $HARNESS_CHOICE (SHIPIT_HARNESSES persisted in $SHIPIT_ENV_FILE)."
-  else
-    echo "    '$HARNESS_CHOICE' is not a valid selection; keeping the default (claude,codex)."
-    echo "    Change it later by setting SHIPIT_HARNESSES in $SHIPIT_ENV_FILE and re-running deploy.sh."
   fi
 elif [ -n "${SHIPIT_HARNESSES:-}" ]; then
+  # The picker cannot produce an invalid answer, so this is the only untrusted
+  # input left. Catch it here rather than at the image build, which fails many
+  # minutes later with a message about a build arg.
+  if ! harnesses_valid "$SHIPIT_HARNESSES"; then
+    echo "Error: SHIPIT_HARNESSES must be a comma-separated list of: $(echo "$SUPPORTED_HARNESSES" | tr ' ' ',') (got '$SHIPIT_HARNESSES')" >&2
+    exit 1
+  fi
   persist_shipit_env SHIPIT_HARNESSES "$SHIPIT_HARNESSES"
   echo "==> Agent harnesses: $SHIPIT_HARNESSES (from the environment)."
 fi
