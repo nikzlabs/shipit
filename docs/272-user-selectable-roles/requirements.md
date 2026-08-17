@@ -17,9 +17,9 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
 
 ## Requirements
 
-1. **A user can start their own session on a configured role.** The user selects the role at the
-   moment they start the session, before the first message. What they select is one of the roles
-   they configured in Settings (docs/264 req 5); this feature adds no second place to define one.
+1. **A user can start their own session on a configured role.** The user selects the role before
+   the session does any work. What they select is one of the roles they configured in Settings
+   (docs/264 req 5); this feature adds no second place to define one.
 
 2. **Selecting a role sets what the session runs on.** The session starts on the role's harness,
    service, billing mode, model and reasoning level, and its standing instructions apply to the
@@ -31,9 +31,12 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
    already use, and the session follows them. ShipIt does not put the role's values back, and does
    not warn the user that they have moved away from the role.
 
-4. **A role is selected when a session starts, and not after.** There is no action that applies a
-   role to a session already in progress. Standing instructions describe what a session is for,
-   and a session that is already under way is already for something.
+4. **A role can be selected until the session's first turn starts, and not after.** A session that
+   exists but has done no work is still a session the user can configure — starting one from a
+   tracked issue or by forking another does not begin a turn, so the user chooses there in the
+   same place they choose the model. Once a turn has run there is no action that applies a role.
+   Standing instructions describe what a session is for, and a session that is already under way
+   is already for something.
 
 5. **Selecting a role does not add a control to the composer.** The composer already carries the
    permission mode, the harness, the model and the reasoning level, and below 700px it collapses
@@ -51,8 +54,28 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
 
 8. **A role the install cannot currently run is not silently repaired.** docs/264 req 7 already
    holds: nothing is ever substituted. A role whose model was retired, or whose service is
-   disconnected, does not quietly start on something else. What the user sees in the selection
-   surface is an open question below.
+   disconnected, does not quietly start on something else.
+
+9. **A role the install cannot run stays visible, and says why.** It appears in the selection
+   surface, cannot be selected, and shows its reason — stranded, disconnected, or out of quota —
+   as Settings shows it today. A role the user configured does not disappear without an
+   explanation, because a role that vanishes reads as a fault in ShipIt.
+
+10. **The reviewer role is not offered to the user.** The reviewer resolves its own params: it
+    picks the agent furthest from the one that produced the work (docs/264 req 2). A session the
+    user starts themselves has no such agent, so the rule has nothing to measure and would resolve
+    to an arbitrary agent while looking deliberate. The reviewer stays a role an agent starts.
+
+11. **Every surface that starts a session offers the role.** The user selects a role in the
+    composer and in the quick-capture overlay, which are the two surfaces that start a session and
+    its first turn together. Starting from a tracked issue and forking a session need nothing
+    added: neither begins a turn, so the user selects the role in the composer of the session they
+    have just landed in (req 4).
+
+12. **ShipIt remembers the role the user last selected, and starts the next new session on it.**
+    This is how ShipIt already treats the model and the harness the user chose. The role is still a
+    starting point (req 3) and still optional (req 7): the user changes it, or clears it, in the
+    same place they selected it.
 
 ## Requirement provenance
 
@@ -64,24 +87,27 @@ Kept separate so that what the user asked for stays visible next to what was pro
   role-as-starting-point shape, new sessions only, no new composer control, recorded provenance.
 - **Inherited from docs/264 and docs/261, restated here because this feature must not break them**:
   requirements 7 and 8.
+- **Answered by the user on 2026-08-17**: requirements 9, 10, 11 and 12, and the wording of
+  requirement 4. See the receipts below.
 
 ## Open questions
 
-- **Does the reserved `reviewer` role appear in the list?** Its params are automatic: it resolves
-  to the agent furthest from the one that produced the work (docs/264 req 2). A session the user
-  starts themselves has no implementer to be far from, so there is nothing for the rule to measure
-  against.
-
-- **What does the user see for a role the install cannot run right now** — one whose model was
-  retired, or whose service is disconnected or out of quota (req 8)? ShipIt already models these
-  states and shows them in Settings.
-
-- **Which ways of starting a session offer a role?** The composer is one. ShipIt also starts a
-  session from quick capture, from a tracked issue, and by forking an existing session.
-
-- **Does the selected role persist to the next new session?** ShipIt remembers the model and the
-  harness the user last chose, and seeds the next new session with them.
+_None._
 
 ## Resolved questions
 
-_None yet._
+- **2026-08-17 — Does the reserved `reviewer` role appear in the list?** No: hide it. The user
+  chose this over showing it resolved normally, and over showing it only once edited. → req 10.
+
+- **2026-08-17 — What does the user see for a role the install cannot run right now?** It is shown,
+  disabled, with its reason, as Settings shows it. The user chose this over hiding it, and over
+  letting the user select it and failing at start. → req 9.
+
+- **2026-08-17 — Which ways of starting a session offer a role?** The composer and the quick-capture
+  overlay. The user noted that starting from a tracked issue **does not start a turn**, so the user
+  can choose the configuration after clicking, and said the same holds for a fork. Those two paths
+  therefore need nothing of their own. → req 11, and the rewording of req 4 from "when a session
+  starts" to "until the session's first turn starts".
+
+- **2026-08-17 — Does the selected role persist to the next new session?** Yes, remember it, as
+  ShipIt already remembers the model and the harness. → req 12.
