@@ -77,10 +77,10 @@
  *
  * A failed `lchown` is counted and logged, never thrown: the caller's operation
  * is about to run either way, and the worst outcome of a failed repair is exactly
- * today's behaviour. That is why this needs no arming flag — unlike
- * `SHIPIT_GIT_STRICT_OWNERSHIP`, whose switch exists because arming turns every
- * missed site into a hard failure at once (docs/272 plan, "Rejected
- * alternatives").
+ * today's behaviour. That is why this needed no arming flag of its own, unlike
+ * the removal of `safe.directory=*` — that one shipped behind a switch precisely
+ * because it turns every missed call site into a hard failure at once (docs/272
+ * plan, "Rejected alternatives"; the switch itself is gone as of planning#410).
  */
 
 import fs from "node:fs";

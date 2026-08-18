@@ -1295,13 +1295,14 @@ async function defaultBranch(bareCacheDir: string): Promise<string> {
  * tree, dropped uid — the two disagree, and both halves of that disagreement
  * bite:
  *
- *   - **Today**, `git config gc.auto 0` cannot take `.git/config.lock` in a
- *     `root:root 0755` `.git`, so the write EACCESes and the activation fails.
- *     Invisible everywhere it is exercised: every test and the dogfood inner
- *     instance run non-root, where `resolveGitTreeUid` returns null and no drop
- *     happens at all.
- *   - **Once `SHIPIT_GIT_STRICT_OWNERSHIP` is armed**, it stops at the step
- *     before that with `fatal: detected dubious ownership in repository at
+ *   - `git config gc.auto 0` cannot take `.git/config.lock` in a `root:root
+ *     0755` `.git`, so the write EACCESes and the activation fails. Invisible
+ *     everywhere it is exercised: every test and the dogfood inner instance run
+ *     non-root, where `resolveGitTreeUid` returns null and no drop happens at
+ *     all.
+ *   - It never gets that far in production, because ShipIt grants no
+ *     `safe.directory` (planning#410): git refuses the repository one step
+ *     earlier with `fatal: detected dubious ownership in repository at
  *     '<staging dir>'`.
  *
  * The audit that preceded E2 classified this file as "the bare cache, which is

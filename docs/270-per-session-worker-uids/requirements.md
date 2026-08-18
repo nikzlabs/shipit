@@ -262,3 +262,7 @@ not describe it as closed. This feature addresses one of its four outstanding
 pieces: the cross-session residual (docs/266-orchestrator-git-trust-boundary req 13). `safe.directory` is still
 `*` (planning#403), the dropped git still reaches the PAT (planning#404), and a
 project's own hooks still do not fire on ShipIt's auto-commit (docs/266-orchestrator-git-trust-boundary E4).
+
+**Correction, 2026-08-18 (planning#410):** the `safe.directory` clause above is
+no longer true — the write was deleted after a clean production soak. The other
+two pieces stand, as does planning#384.
