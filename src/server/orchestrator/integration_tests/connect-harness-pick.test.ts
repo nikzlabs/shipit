@@ -52,6 +52,32 @@ describe("Integration: WS connect honours an explicit harness pick (planning#389
   let dbManager: DatabaseManager;
   const savedEnv: Record<string, string | undefined> = {};
 
+  /**
+   * Rebuild the app with a different set of installed harnesses. The registry
+   * reads the install report once, at `buildApp` time, so a test about the
+   * install has to replace the app rather than the file — and the session rows
+   * live in `dbManager`, which is deliberately NOT rebuilt, so a session created
+   * before the swap survives it.
+   */
+  async function restartAppWith(harnesses: string[]): Promise<void> {
+    await app.close();
+    const reportPath = path.join(tmpDir, "installed.json");
+    fs.writeFileSync(reportPath, JSON.stringify({ harnesses }));
+    app = await buildApp({
+      credentialStore: createTestCredentialStore(tmpDir),
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager: sessions,
+      chatHistoryManager: new ChatHistoryManager(dbManager),
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      agentFactory: () => new FakeClaudeProcess() as any,
+      workspaceDir: tmpDir,
+      serveStatic: false,
+    });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+    const match = /:(\d+)$/.exec(address);
+    port = match ? Number(match[1]) : 0;
+  }
+
   beforeEach(async () => {
     // A key per service so the model ids below are ELIGIBLE on every harness that
     // speaks their style — with a credential store wired, `capabilities.models`
@@ -214,6 +240,51 @@ describe("Integration: WS connect honours an explicit harness pick (planning#389
     expect(row?.pendingAgentNotice).toBeUndefined();
 
     client.close();
+  });
+
+  it("does not honour a picked harness this deployment did not install", async () => {
+    // A browser key outlives a deployment that dropped the harness (docs/252
+    // req 14). Honouring one would pin a session whose first turn cannot start,
+    // which is why "can run it" includes the install — the same clause
+    // `newSessionAgentId` applies client-side.
+    await restartAppWith(["claude", "codex"]);
+
+    const client = await TestClient.connect(port, undefined, {
+      agent: "opencode",
+      model: SHARED_MODEL,
+    });
+    await client.receive(); // preview_status
+
+    const row = sessions.get(client.sessionId!);
+    expect(row?.agentId).not.toBe("opencode");
+    expect(row?.agentId).toBe("claude");
+
+    client.close();
+  });
+
+  it("records the reroute notice once, not once per reconnect", async () => {
+    // A session between turns reconnects freely — a proxy cutting an idle socket
+    // is routine (`keepalive.ts`). Re-appending on each of those would hand the
+    // first turn the same paragraph several times over.
+    const first = await TestClient.connect(port, undefined, {
+      agent: "codex",
+      model: CLAUDE_ONLY_MODEL,
+    });
+    await first.receive(); // preview_status
+    const sessionId = first.sessionId!;
+    const afterFirst = sessions.get(sessionId)?.pendingAgentNotice;
+    expect(afterFirst).toBeDefined();
+    first.close();
+
+    // Reconnect with the identical (stale) params, before any turn has run.
+    const second = await TestClient.connect(port, sessionId, {
+      agent: "codex",
+      model: CLAUDE_ONLY_MODEL,
+    });
+    await second.receive(); // preview_status
+
+    expect(sessions.get(sessionId)?.pendingAgentNotice).toBe(afterFirst);
+    second.close();
   });
 
   it("never re-derives the harness of a session running a role (docs/272 reqs 8, 13)", async () => {
