@@ -1127,6 +1127,9 @@ export async function createContainer(
     // docs/183 dep-dir design — recorded so destroyContainer can `docker volume
     // rm` each per-session overlay volume on teardown (and the failure path below).
     overlayVolumeNames: config.overlaySpecs?.map((s) => s.volumeName),
+    // #2426 — what the compose path mounts, so it never has to re-derive
+    // eligibility from a workspace that has moved on since. See the field doc.
+    overlayDepDirs: config.overlaySpecs?.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })),
   };
   deps.containers.set(config.sessionId, sc);
 

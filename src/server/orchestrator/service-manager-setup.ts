@@ -17,6 +17,7 @@ import { collectAccountAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
 import { isOverlayEligible } from "./overlay-session.js";
+import { volumeExists } from "./overlay-volume.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
@@ -44,6 +45,102 @@ export function handleStackError(
     sessionId: runner.sessionId,
     message: err.message,
   });
+}
+
+/**
+ * nikzlabs/shipit#2426 — give the ServiceManager the dep-dir overlay volumes the
+ * agent container actually has, so a compose service that mounts the workspace
+ * nests the SAME overlay at `<service-target>/<dep-dir>` instead of resolving that
+ * path to the plain directory underneath.
+ *
+ * Getting this wrong is invisible and unrecoverable from inside the session: the
+ * `up` still succeeds, and the service simply gets a second, empty dependency
+ * tree that its own install then fills. Nothing the agent does to `node_modules`
+ * afterwards can reach it, and nothing says so. Hence two rules here.
+ *
+ * **The container record is the source of truth, not a re-derivation.** What the
+ * agent has mounted was decided at container-create time. Re-deciding it now reads
+ * the LIVE workspace — `shipit.yaml`'s `dep-dirs`, the pnpm signals, `git
+ * check-ignore` — every one of which the agent can change mid-session, and any
+ * disagreement yields zero mounts. Re-derivation survives only as the fallback for
+ * a container we have no record of (rediscovered / re-adopted), where it is the
+ * only answer available.
+ *
+ * **A dropped mount is announced.** The `volumeExists` filter stays — a stale
+ * record naming a removed volume would fail the whole `compose up` on an
+ * `external` reference, which is worse than one plain dep dir — but anything it
+ * drops now reaches the session's Logs panel instead of only orchestrator stdout.
+ *
+ * Idempotent, and safe to call again on the adoption path: a new agent container
+ * means a newly-created overlay volume set, and the manager that outlived the old
+ * runner is still holding the old answer.
+ *
+ * Exported for `service-manager-overlay-mounts.test.ts` — driving it through
+ * `setupServiceManager` would need a whole container runtime to reach four lines
+ * of decision.
+ */
+export async function applyOverlayDepDirs(
+  runner: SessionRunnerInterface,
+  mgr: ServiceManager,
+  deps: {
+    containerManager: SessionContainerManager | null;
+    session?: SessionInfo;
+    workspaceDir: string;
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
+  },
+): Promise<void> {
+  const { containerManager, session, workspaceDir, broadcastLog } = deps;
+  // A pure env+session pre-gate, so flag-off / ineligible sessions leave the
+  // override and the compose start timing byte-for-byte unchanged.
+  if (!containerManager || !session || !isContainerRunner(runner) || !isOverlayEligible(session)) return;
+
+  const warn = (text: string): void => {
+    console.warn(`[overlay:${runner.sessionId}] ${text}`);
+    if (broadcastLog) broadcastLog(runner.sessionId, "server", `[compose] ${text}`);
+  };
+
+  try {
+    // Orders us after container creation — the volumes are created just before
+    // the container. `dispose()` also resolves it, hence the `disposed` re-check.
+    await runner.whenWorkerReady();
+    if (runner.disposed) return;
+
+    const provisioned = containerManager.provisionedOverlayDepDirs(runner.sessionId);
+    const pairs = provisioned ?? (await containerManager.prepareOverlaySpecs({
+      sessionId: runner.sessionId,
+      workspaceDir,
+      session,
+      requireProvisioned: true,
+    })).map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }));
+
+    // `[]` from the record is authoritative ("this container has no overlay"), so
+    // it is applied as-is. `[]` from the fallback is a guess, and clobbering a
+    // manager that already holds a good answer with a guess is the failure this
+    // whole function exists to prevent.
+    if (pairs.length === 0) {
+      if (provisioned) mgr.setOverlayDepDirs([]);
+      return;
+    }
+
+    const docker = containerManager.dockerClient;
+    const usable: { depDir: string; volumeName: string }[] = [];
+    for (const pair of pairs) {
+      if (await volumeExists(docker, pair.volumeName)) usable.push(pair);
+      else {
+        warn(
+          `${pair.depDir} is overlay-mounted in the agent container but its volume ` +
+          `(${pair.volumeName}) is gone, so compose services get the plain directory ` +
+          `instead — they will not see the agent's installed dependencies there.`,
+        );
+      }
+    }
+    mgr.setOverlayDepDirs(usable);
+  } catch (err) {
+    warn(
+      `could not resolve the dependency overlay (${getErrorMessage(err)}) — compose ` +
+      `services may see different dependency directories than the agent.`,
+    );
+  }
 }
 
 /** Typeguard for the ContainerSessionRunner subclass without an instanceof import here. */
@@ -87,6 +184,13 @@ export function adoptExistingServiceManager(
     containServiceProxy?: boolean;
     resetSessionNetwork?: () => Promise<void>;
     prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>;
+    /**
+     * #2426 — the session + its clone, so the adopted manager can be re-pointed at
+     * the NEW agent container's overlay volumes. Optional only because the older
+     * test doubles for this handoff predate it.
+     */
+    session?: SessionInfo;
+    workspaceDir?: string;
   },
 ): void {
   const { serviceManagers, composeStopPromises, containerManager, broadcastLog, installPromise, secretsLoader } = deps;
@@ -157,6 +261,29 @@ export function adoptExistingServiceManager(
     void runner
       .whenWorkerReady()
       .then(async () => {
+        // #2426 — BEFORE the reconcile below, which regenerates the compose
+        // override. The manager outlived the previous runner, so it is still
+        // holding whatever that runner resolved; the container it was resolved
+        // from is gone.
+        //
+        // No reconcile follows in the common (containment-unchanged) case, which
+        // leaves the override on disk as the previous runner wrote it. That is
+        // safe, and for a specific reason worth stating: an overlay volume is
+        // named `shipit-<sid12>_overlay-<hash(depDir)>`
+        // (`overlay-session.ts` → `overlayVolumeName`), so the name depends on
+        // the SESSION and the dep dir, never on the container. A recreate mints
+        // a new volume under the same name, and the standing `external`
+        // reference keeps resolving. What this call fixes is the case where the
+        // previous runner resolved the WRONG SET — the set is what the next
+        // override generation picks up.
+        if (deps.workspaceDir !== undefined) {
+          await applyOverlayDepDirs(runner, mgr, {
+            containerManager,
+            session: deps.session,
+            workspaceDir: deps.workspaceDir,
+            broadcastLog,
+          });
+        }
         if (containmentChanged) {
           await policyTransition;
           await deps.resetSessionNetwork?.();
@@ -650,6 +777,9 @@ export function setupServiceManager(
       prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
         ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
         : undefined,
+      // #2426 — what the re-point needs to reach the new container's overlay.
+      session,
+      workspaceDir,
     });
     // Clear any stale migration warning — compose is now set up (still).
     composeWarnings.delete(runner.sessionId);
@@ -786,45 +916,11 @@ export function setupServiceManager(
     // Gate on any prior runner's pending compose-stop for this session.
     // Bounded to avoid hanging start() forever if `compose down` wedges.
     await awaitComposeStop(composeStopPromises, runner.sessionId);
-    // docs/183 Phase 5 — resolve the session's overlay dep-dir volumes and hand
-    // them to the manager BEFORE the first start(), so compose services that
-    // share the workspace also mount each dep dir's overlay volume nested at
-    // `<service-target>/<dep-dir>`. The `isOverlayEligible` pre-gate is a pure
-    // env+session check, so for flag-off / ineligible sessions this block is
-    // inert and the override (and compose start timing) is byte-for-byte
-    // unchanged.
-    //
-    // The override references each overlay volume as `external: true`, and the
-    // volumes are created at agent-container-create time — so compose may only
-    // mount what that container was actually built with. Re-deriving
-    // eligibility here can disagree with the provisioned state (observed live:
-    // a container created before OVERLAY_DEP_STORE was enabled has no overlay
-    // volumes, and the recomputed reference failed the whole `compose up` with
-    // "external volume not found"). `whenWorkerReady()` orders us after
-    // container creation (volumes are created just before the container — and
-    // dispose also resolves it, hence the `disposed` re-check), then
-    // `requireProvisioned` keeps only specs whose volume really exists.
-    if (
-      containerManager && session && runner instanceof ContainerSessionRunner &&
-      isOverlayEligible(session)
-    ) {
-      try {
-        await runner.whenWorkerReady();
-        if (!runner.disposed) {
-          const specs = await containerManager.prepareOverlaySpecs({
-            sessionId: runner.sessionId,
-            workspaceDir,
-            session,
-            requireProvisioned: true,
-          });
-          if (specs.length > 0) {
-            mgr.setOverlayDepDirs(specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })));
-          }
-        }
-      } catch (err) {
-        console.error(`[overlay:${runner.sessionId}] dep-dir spec resolution failed:`, getErrorMessage(err));
-      }
-    }
+    // docs/183 Phase 5 — hand the session's overlay dep-dir volumes to the
+    // manager BEFORE the first start(), so compose services that share the
+    // workspace also mount each dep dir's overlay volume nested at
+    // `<service-target>/<dep-dir>`.
+    await applyOverlayDepDirs(runner, mgr, { containerManager, session, workspaceDir, broadcastLog });
     // docs/262 — resolve the plugin services this session surfaces before the
     // first `start()`, so a plugin whose repository is already checked out comes
     // up with the project's own stack rather than one reconcile later. A
