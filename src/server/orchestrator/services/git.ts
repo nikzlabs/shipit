@@ -618,8 +618,14 @@ export type PushFailureClass =
 const PUSH_FAILURE_PATTERNS: readonly (readonly [PushFailureClass, RegExp])[] = [
   ["lfs", /GH008|unknown Git LFS object|LFS upload|lfs\.locksverify|missing (?:a few |some )?(?:Git )?LFS object/i],
   [
+    // A bare `\b40[13]\b` was tried and is WRONG: git's own progress output
+    // carries free-standing numbers, and `remote: Resolving deltas: 100%
+    // (403/403), done.` — which a large push prints on its way to a perfectly
+    // ordinary non-fast-forward rejection — has word boundaries on both sides
+    // of that `403`. An HTTP status only counts where something says it is one,
+    // which is the discipline `git-utils.ts`'s `isGitAuthError` already uses.
     "auth",
-    /Authentication failed|could not read (?:Username|Password)|terminal prompts disabled|Invalid username or (?:password|token)|Bad credentials|Password authentication is not supported|\b40[13]\b|Permission to .+ denied|Repository not found|protected by .*scope|needs the .*workflow.* scope|refusing to allow (?:a|an) .* to create or update .*workflow/i,
+    /Authentication failed|could not read (?:Username|Password)|terminal prompts disabled|Invalid username or (?:password|token)|Bad credentials|Password authentication is not supported|(?:HTTP(?:\/[\d.]+)?\s+|returned error:\s*|status(?:\s+code)?:?\s*)40[13]\b|\b40[13]\b[^\n]{0,30}(?:Forbidden|Unauthorized)|Permission to .+ denied|Repository not found|needs the .*workflow.* scope|refusing to allow (?:a|an) .* to create or update .*workflow/i,
   ],
   ["remote-rejected", /\[remote rejected\]|pre-receive hook declined|protected branch|push declined/i],
   [

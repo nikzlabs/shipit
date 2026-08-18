@@ -88,6 +88,41 @@ export type LfsPushOutcome =
   | { status: "failed"; detail: string };
 
 /**
+ * Does the ref about to be published declare LFS filters?
+ *
+ * Asked of `branch` and not of `HEAD`, because `branch` is what the push
+ * publishes and therefore what the upload has to cover. The two are the same ref
+ * on the auto-push and rebase paths (both push the checked-out branch), but
+ * `GitManager.push()` takes an explicit branch and `services/git.ts`'s push
+ * route passes a caller-supplied one — and a `.gitattributes` that exists on
+ * that branch and not on `HEAD` would make a `HEAD` grep answer "no" and skip
+ * the upload, producing the very GH008 this module exists to prevent
+ * (review finding).
+ *
+ * Falls back to `HEAD` when the branch ref does not resolve — `git grep` exits
+ * 128 there, which is "can't tell", and the fallback keeps a caller that names a
+ * branch git cannot read no worse off than before. Costs a second spawn only on
+ * that path.
+ */
+async function declaresLfs(git: SimpleGit, branch: string): Promise<boolean> {
+  for (const ref of [branch, "HEAD"]) {
+    try {
+      // `raw` throws on exit 1 ("no match"), which is a normal answer here — so
+      // a match is the only thing that returns true, and every other outcome
+      // moves on.
+      return (await git.raw(lfsDeclarationGrepArgs(ref))).trim().length > 0;
+    } catch {
+      // 1 (no match) and 128 (bad ref) are indistinguishable through simple-git,
+      // so the branch attempt falls through to HEAD either way. A repo that
+      // genuinely tracks nothing then pays one extra grep, which is the cheap
+      // side of the trade against skipping a needed upload.
+      continue;
+    }
+  }
+  return false;
+}
+
+/**
  * Upload the LFS objects `branch` references to `remote`, if this repo uses LFS.
  *
  * @param git - the instance the REF push will use. Passing the same one is
@@ -103,14 +138,7 @@ export async function pushLfsObjects(
   remote: string,
   branch: string,
 ): Promise<LfsPushOutcome> {
-  let declaresLfs: boolean;
-  try {
-    // `raw` throws on exit 1 ("no match"), which is a normal answer here.
-    declaresLfs = (await git.raw(lfsDeclarationGrepArgs())).trim().length > 0;
-  } catch {
-    return { status: "not-an-lfs-repo" };
-  }
-  if (!declaresLfs) return { status: "not-an-lfs-repo" };
+  if (!(await declaresLfs(git, branch))) return { status: "not-an-lfs-repo" };
 
   try {
     await git.raw(["lfs", "push", remote, branch]);

@@ -94,6 +94,21 @@ describe("classifyPushFailure", () => {
     }
   });
 
+  it("does not read git's own progress counters as an HTTP status", () => {
+    // A large push prints delta/object counts on its way to an ordinary
+    // rejection, and `(403/403)` has word boundaries on both sides of the 403.
+    // A bare `\b40[13]\b` in the auth pattern turned that into a credential
+    // failure — and auth is checked BEFORE non-fast-forward, so the divergence
+    // never got a look in.
+    const err = new Error(
+      "remote: Resolving deltas: 100% (403/403), done.\n"
+      + "remote: Counting objects: 401, done.\n"
+      + " ! [rejected]        feature -> feature (fetch first)\n"
+      + "error: failed to push some refs",
+    );
+    expect(classifyPushFailure(err)).toBe("non-fast-forward");
+  });
+
   it("separates a server-side hook rejection from a divergence", () => {
     const err = new Error(
       " ! [remote rejected] main -> main (protected branch hook declined)\n"

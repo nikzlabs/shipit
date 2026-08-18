@@ -89,6 +89,34 @@ describe("pushLfsObjects", () => {
     expect(outcome.status).not.toBe("not-an-lfs-repo");
   });
 
+  it("asks about the branch being published, not about HEAD", async () => {
+    // Review finding. `GitManager.push()` takes an explicit branch, and
+    // `services/git.ts`'s push route passes a caller-supplied one — so the ref
+    // being published is not always the checked-out one. Detecting against
+    // `HEAD` would answer "no" for a branch that DOES track LFS and skip the
+    // upload, which is exactly the GH008 this module exists to prevent.
+    run("git checkout -q -b assets", workDir);
+    fs.writeFileSync(path.join(workDir, ".gitattributes"), "*.png filter=lfs diff=lfs merge=lfs -text\n");
+    run("git add -A && git commit -m attrs", workDir);
+    run("git checkout -q main", workDir);
+
+    // HEAD (main) declares nothing; `assets` does.
+    expect((await pushLfsObjects(safeSimpleGit(workDir), "origin", "main")).status)
+      .toBe("not-an-lfs-repo");
+    expect((await pushLfsObjects(safeSimpleGit(workDir), "origin", "assets")).status)
+      .not.toBe("not-an-lfs-repo");
+  });
+
+  it("falls back to HEAD when the named branch does not resolve", async () => {
+    // `git grep` exits 128 on a bad ref, which is "can't tell" — and a caller
+    // naming a ref git cannot read must be no worse off than before.
+    fs.writeFileSync(path.join(workDir, ".gitattributes"), "*.png filter=lfs diff=lfs merge=lfs -text\n");
+    run("git add -A && git commit -m attrs", workDir);
+
+    expect((await pushLfsObjects(safeSimpleGit(workDir), "origin", "no-such-branch")).status)
+      .not.toBe("not-an-lfs-repo");
+  });
+
   it("reports a failed upload instead of throwing", async () => {
     fs.writeFileSync(path.join(workDir, ".gitattributes"), "*.bin filter=lfs diff=lfs merge=lfs -text\n");
     run("git add -A && git commit -m attrs", workDir);
