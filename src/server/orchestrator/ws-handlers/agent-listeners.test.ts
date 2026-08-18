@@ -533,6 +533,61 @@ describe("wireAgentListeners", () => {
       expect(rows.some((m) => m.isError)).toBe(false);
       runner.dispose({ force: true });
     });
+
+    // One death, one bubble. The grok adapter re-emits the OS error from
+    // `proc.on("error")` AND still synthesizes a result from the independent
+    // `close` handler, so both writers can fire for a single failure.
+    describe("only the first writer records a terminal error row", () => {
+      const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+      /**
+       * The distinct error texts this turn wrote. Deliberately a SET over every
+       * write: `replaceInProgress` deletes and re-inserts the turn's rows on
+       * every rebuild, so one row legitimately appears in several snapshots —
+       * counting writes would measure the rebuild, not the transcript. What the
+       * latch guarantees is that one death yields one MESSAGE.
+       */
+      function errorTexts(d: AgentListenerDeps): string[] {
+        const appended = (d.chatHistoryManager.append as ReturnType<typeof vi.fn>).mock.calls
+          .map((c) => c[1] as { isError?: boolean; text?: string });
+        const replaced = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls
+          .flatMap((c) => c[1] as { isError?: boolean; text?: string }[]);
+        return [...new Set([...appended, ...replaced].filter((m) => m.isError).map((m) => m.text!))];
+      }
+
+      it("the `error` event wins when it fires first, and the synthesized result stands down", async () => {
+        // The production ordering: grok re-emits the OS error, then its
+        // independent `close` handler synthesizes the result anyway.
+        const d = deps();
+        const history = new ChatHistoryManager(new DatabaseManager(":memory:"));
+        d.chatHistoryManager = history as never;
+        const { agent, runner } = wire(d);
+
+        agent.emit("error", new Error("spawn ENOENT"));
+        await tick();
+        agent.emit("event", startupDeath);
+
+        // Exactly one row in the history a reload reads — carrying the
+        // OS-level cause, which is the more specific of the two.
+        const rows = history.load("session-1").filter((m) => m.isError);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.text).toBe("Error: spawn ENOENT");
+        runner.dispose({ force: true });
+      });
+
+      it("the result row wins when it lands first, and a late `error` stands down", async () => {
+        const { agent, runner, d } = wire();
+
+        agent.emit("event", startupDeath);
+        agent.emit("error", new Error("spawn ENOENT"));
+        await tick();
+
+        // The late `error` adds nothing the result did not already say, so its
+        // own message never reaches the transcript.
+        expect(errorTexts(d)).toEqual([errorRow.text]);
+        runner.dispose({ force: true });
+      });
+    });
   });
 
   describe("blocked-turn errors (docs/150-multiple-provider-subscriptions req 13)", () => {

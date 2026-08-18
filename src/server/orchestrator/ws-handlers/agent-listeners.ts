@@ -511,6 +511,26 @@ export function wireAgentListeners(
   let sawAuthRequiredThisTurn = false;
   agent.on("auth_required", () => { sawAuthRequiredThisTurn = true; });
 
+  /**
+   * planning#438 — has THIS turn already written its terminal error row? Two
+   * handlers can write one for a single death, and the grok adapter reaches
+   * both: `proc.on("error")` re-emits the OS error, and the INDEPENDENT `close`
+   * handler still synthesizes an `agent_result` carrying its own error (there is
+   * no guard between them — opencode's close handler picks one or the other, so
+   * only grok has the pair). Whichever fires first owns the row; the second
+   * stands down rather than leaving the user two bubbles for one failure.
+   *
+   * First-wins is the right way round in both orderings: the `error` event
+   * carries the OS-level cause (`spawn ENOENT`), which is more specific than the
+   * synthesized "exited with code N", and a late `error` after a result adds
+   * nothing the result did not already say.
+   *
+   * Turn-scoped by construction — `agent-execution.ts` calls
+   * `removeAllListeners()` before re-wiring a reused process, so this closure
+   * never outlives its turn.
+   */
+  let persistedTerminalErrorRow = false;
+
   // ---- MCP mid-turn crash detection (docs/088) + per-tool timing (docs/185) ----
   //
   // The CLI's init event covers cold-start liveness (ClaudeAdapter →
@@ -1626,23 +1646,37 @@ export function wireAgentListeners(
         && !(runner?.wasInterrupted ?? false)
         && !sawAuthRequiredThisTurn
         && !missingConversationDetected
+        && !persistedTerminalErrorRow
       ) {
-        if (runner) {
-          emitChatCard(
-            runner,
-            { type: "error", message: resultError, sessionId: usageSessionId },
-            { role: "assistant", text: `Error: ${resultError}`, isError: true },
-            { chatHistoryManager: deps.chatHistoryManager, sessionId: usageSessionId },
+        persistedTerminalErrorRow = true;
+        // Guarded like the executor's `postTurnStep` steps, and for the same
+        // reason: this block sits BEFORE the turn's group persist a few lines
+        // down, so an unguarded SQLite failure here would abandon the rest of
+        // the handler and cost the turn everything it streamed — trading one
+        // missing row for the whole turn.
+        try {
+          if (runner) {
+            emitChatCard(
+              runner,
+              { type: "error", message: resultError, sessionId: usageSessionId },
+              { role: "assistant", text: `Error: ${resultError}`, isError: true },
+              { chatHistoryManager: deps.chatHistoryManager, sessionId: usageSessionId },
+            );
+          } else {
+            // No runner to record on — persist directly so the row still
+            // survives reload, and emit so an attached viewer sees it live.
+            emitToViewers({ type: "error", message: resultError });
+            deps.chatHistoryManager.append(usageSessionId, {
+              role: "assistant",
+              text: `Error: ${resultError}`,
+              isError: true,
+            });
+          }
+        } catch (err) {
+          console.error(
+            `[agent] failed to persist the terminal error row for ${usageSessionId}:`,
+            err instanceof Error ? err.message : String(err),
           );
-        } else {
-          // No runner to record on — persist directly so the row still
-          // survives reload, and emit so an attached viewer sees it live.
-          emitToViewers({ type: "error", message: resultError });
-          deps.chatHistoryManager.append(usageSessionId, {
-            role: "assistant",
-            text: `Error: ${resultError}`,
-            isError: true,
-          });
         }
       }
 
@@ -1811,11 +1845,19 @@ export function wireAgentListeners(
       );
       deps.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);
       deps.chatHistoryManager.finalizeInProgress(turnSessionId);
-      deps.chatHistoryManager.append(turnSessionId, {
-        role: "assistant",
-        text: blocked ? err.message : `Error: ${err.message}`,
-        isError: true,
-      });
+      // planning#438 — only the FIRST terminal error row for this turn is
+      // written. An errored `agent_result` may already have written one (grok
+      // emits both for a single death; see `persistedTerminalErrorRow`), and a
+      // second bubble saying the same thing is worse than none. Only the row is
+      // gated — the finalize above and the whole teardown below still run.
+      if (!persistedTerminalErrorRow) {
+        persistedTerminalErrorRow = true;
+        deps.chatHistoryManager.append(turnSessionId, {
+          role: "assistant",
+          text: blocked ? err.message : `Error: ${err.message}`,
+          isError: true,
+        });
+      }
     }
     // Clear runner state so a stuck `running=true` doesn't make this runner
     // permanently undisposable. Some adapter paths emit `error` without a
