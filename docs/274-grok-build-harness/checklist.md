@@ -126,6 +126,12 @@ the expansion of every line, with file pointers and gotchas, is in
       planning#443 (marker reader drops grok) found while tracing the
       spawn path. Rerun the recipe once planning#442 lands. Evidence:
       [docs/272 run 2026-08-18-1600](../272-harness-conversion-verification/runs/2026-08-18-1600-grok-1.0.1-agent-run.md).
+      Separately, the *design*-level blocker this item also carried — an
+      explicit grok target being unassemblable, since the five-flag rule
+      demanded a level grok declares none of — is gone:
+      docs/275-roleless-explicit-run (planning#441) makes the four identity
+      flags a complete grok target, so this item no longer depends on a
+      configured grok role at all.
 - [x] Event-conversion verification: the full docs/272 recipe run
       (tool-tour capture ✅, inventory diff, recognition matrix on persisted
       history + UI) —

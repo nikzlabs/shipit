@@ -423,9 +423,13 @@ reviewer names everything there is to name, which is one field fewer. What req 5
 forbids is leaving a real choice to the CLI's own default, and there is no
 choice here to leave.
 
-**One deliberate limitation.** `SpawnTarget`'s `explicit` kind still requires
-all five parameters including the level, so a fully-explicit
-`shipit agent run` naming Grok cannot be assembled. A `--role` on Grok works
-(the role supplies the base). This is docs/264's surface rather than req 8's, and
-widening it is planning#435's if subscription mode turns out to have no levels
-either.
+**One deliberate limitation — since lifted.** `SpawnTarget`'s `explicit` kind
+required all five parameters including the level, so a fully-explicit
+`shipit agent run` naming Grok could not be assembled; the Phase 10 run
+(2026-08-18) recorded it as the structural blocker on "`shipit agent run` both
+directions". docs/275-roleless-explicit-run (planning#441) made completeness
+per-harness: the four identity flags are a complete Grok target, and `--effort`
+on it is refused by name — the explicit path now mirrors the role rule req 8
+established. If subscription mode turns out to have real levels (planning#435),
+`--effort` becomes part of a complete Grok target with nothing further to
+change.

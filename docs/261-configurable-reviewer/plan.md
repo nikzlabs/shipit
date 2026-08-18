@@ -330,6 +330,17 @@ parser, the worker relay body, the HTTP route schema, `RunSubAgentInput`, valida
 spawn and attribution. An omission is an **error**, not a silent completion — which is req 7
 restated, and is why `fallbackModel` cannot survive on this path.
 
+> **Amended by docs/275-roleless-explicit-run.** "Every part is mandatory" turned out to
+> over-state req 7 by one flag: a harness that declares **no** reasoning levels (Grok,
+> docs/274 req 8) has no `--effort` that could be true about it, so the fixed five made an
+> explicit target on such a harness unassemblable — the docs/274 Phase 10 run hit that as a
+> structural blocker. Completeness is now **per-harness** (docs/275 req 2): the four
+> identity flags always, `--effort` exactly where the harness declares levels, and a level
+> named on a level-less harness refused by name (the same rule the role path ships).
+> Req 7's substance is unchanged — an omission of a parameter that *exists* is still
+> refused, and nothing is ever filled in from a stored setting. Who may *assemble* a
+> role-less target also stays where it was: a prompt-side rule (docs/275 req 7).
+
 - `--role reviewer` — mutually exclusive with all five. A call naming a role *and* a reviewer
   is asking two different questions, and req 6 separates them.
 - The spawn's read of `getAgentSubAgentDefaults` (`sub-agent.ts:285`) is replaced by the role
