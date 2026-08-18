@@ -496,9 +496,17 @@ function initialParams(
 ): DraftParams | undefined {
   if (role?.params.kind === "pinned") {
     const { harnessId, serviceId, billingMode, modelId, reasoningEffort } = role.params;
-    // `""` is the draft's "no level", which is what a harness declaring none
-    // stores (docs/274) — the effort control renders empty and the save omits it.
-    return { harnessId, serviceId, billingMode, modelId, reasoningEffort: reasoningEffort ?? "" };
+    // **Verbatim, including an absent level** — `undefined` IS the draft's
+    // Default, the same encoding every other line in this file uses.
+    //
+    // Not `?? ""`, which is what docs/274 put here when a stored absent level
+    // only ever meant "this harness declares none". It breaks twice now that
+    // absent means Default on any harness: `levelLabel` finds no option whose
+    // value is `""` and renders the trigger EMPTY, and `submit` tests
+    // `!== undefined`, so it would send `reasoningEffort: ""` — which the server
+    // refuses outright ("must be a non-empty string, or omitted for Default").
+    // Opening an existing Default role and pressing Save would fail.
+    return { harnessId, serviceId, billingMode, modelId, reasoningEffort };
   }
   if (role) return undefined; // the reviewer — its params are the two slot cards
   const first = models[0];
