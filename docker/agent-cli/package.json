@@ -6,7 +6,7 @@
   "dependencies": {
     "@anthropic-ai/claude-code": "2.1.227",
     "@openai/codex": "0.147.0",
-    "opencode-ai": "1.18.15",
+    "opencode-ai": "1.18.18",
     "@playwright/mcp": "0.0.79"
   }
 }
