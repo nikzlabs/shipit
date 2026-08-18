@@ -249,7 +249,7 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
         h.child.close(0);
       });
 
-      it("surfaces every tool call the tour drove, under Grok's own names", () => {
+      it("surfaces every tool call the tour drove, under the TRANSCRIPT vocabulary", () => {
         const h = makeHarness();
         homes.push(h.home);
         h.child.emitStdout(capture(file));
@@ -261,12 +261,39 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
           .filter((b) => b.type === "tool_use")
           .map((b) => b.name);
         // The docs/272 tour's load-bearing surfaces: the task panel, a read, an
-        // edit, a shell command and a search. A mapping that dropped tool_use
-        // blocks would still produce assistant text, which is exactly why this
-        // asserts on the calls rather than on the turn's final prose.
-        for (const expected of ["todo_write", "read_file", "run_terminal_command", "grep"]) {
+        // edit, a shell command and a search — persisted under the Claude-spelled
+        // names the recognition registries key on (planning#437), never the raw
+        // wire ids. A mapping that dropped tool_use blocks would still produce
+        // assistant text, which is exactly why this asserts on the calls rather
+        // than on the turn's final prose.
+        for (const expected of ["TodoWrite", "Read", "Bash", "Grep", "Edit", "Write"]) {
           expect(toolNames, `${label} tour drove ${expected}`).toContain(expected);
         }
+        for (const raw of ["todo_write", "read_file", "run_terminal_command", "grep", "search_replace", "write"]) {
+          expect(toolNames, `raw wire name ${raw} leaked into the transcript`).not.toContain(raw);
+        }
+      });
+
+      it("renames the divergent input keys so the summary and diff registries read them", () => {
+        const h = makeHarness();
+        homes.push(h.home);
+        h.child.emitStdout(capture(file));
+        h.child.close(0);
+
+        const calls = h.events
+          .filter((e) => e.type === "agent_assistant")
+          .flatMap((e) => (e as { content?: { type: string; name?: string; input?: Record<string, unknown> }[] }).content ?? [])
+          .filter((b) => b.type === "tool_use");
+        const read = calls.find((c) => c.name === "Read");
+        expect(read?.input?.file_path).toBeTruthy();
+        expect(read?.input?.target_file).toBeUndefined();
+        const glob = calls.find((c) => c.name === "Glob");
+        expect(glob?.input?.path).toBeTruthy();
+        expect(glob?.input?.target_directory).toBeUndefined();
+        // Edit/Write bodies are already snake_case on this wire — untouched.
+        const edit = calls.find((c) => c.name === "Edit");
+        expect(edit?.input?.file_path).toBeTruthy();
+        expect(edit?.input?.old_string).toBeTruthy();
       });
 
       it("pairs every tool_use with a tool_result carrying the same id", () => {
@@ -292,6 +319,34 @@ describe("GrokAdapter — the captured tool tour (docs/272)", () => {
         // Unpaired ids are how a transcript ends up with a call that never
         // visibly finishes.
         for (const id of callIds) expect(resultIds, `no result for ${String(id)}`).toContain(id);
+      });
+
+      it("unwraps the spawn_subagent result so the persisted body is the report, not the envelope", () => {
+        const h = makeHarness();
+        homes.push(h.home);
+        h.child.emitStdout(capture(file));
+        h.child.close(0);
+
+        const spawnId = h.events
+          .filter((e) => e.type === "agent_assistant")
+          .flatMap((e) => (e as { content?: { type: string; name?: string; id?: string }[] }).content ?? [])
+          .find((b) => b.type === "tool_use" && b.name === "Agent")?.id;
+        expect(spawnId, `${label} tour drove a subagent`).toBeTruthy();
+        const result = h.events
+          .filter((e) => e.type === "agent_tool_result")
+          .flatMap((e) => (e as { content?: { type: string; tool_use_id?: string; content?: string }[] }).content ?? [])
+          .find((b) => b.type === "tool_result" && b.tool_use_id === spawnId);
+        // 4.6's foreground spawn unwraps to the report ("3"); 4.20's background
+        // spawn unwraps to the launch acknowledgement. Either way, no raw
+        // `{"type":…}` envelope reaches the SubagentCall card.
+        expect(result?.content?.startsWith("{")).toBe(false);
+        // Every OTHER result keeps its envelope verbatim — the honest wire
+        // content, modal-only.
+        const todoResult = h.events
+          .filter((e) => e.type === "agent_tool_result")
+          .flatMap((e) => (e as { content?: { type: string; tool_use_id?: string; content?: string }[] }).content ?? [])
+          .find((b) => b.type === "tool_result" && b.tool_use_id !== spawnId && b.content?.includes("TodosUpdated"));
+        expect(todoResult?.content?.startsWith("{")).toBe(true);
       });
 
       it("reports DISJOINT token figures and the CLI's own cost", () => {

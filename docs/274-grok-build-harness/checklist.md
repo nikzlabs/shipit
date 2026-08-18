@@ -141,3 +141,9 @@ the expansion of every line, with file pointers and gotchas, is in
       diff against. Also **planning#438** (a startup-dead grok turn
       persists no error row), observed live. Evidence:
       [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
+      **Rerun 2026-08-18 16:16Z after the planning#437 normalizer landed:
+      verdict GREEN** — every failed row passes in the rendered DOM (task
+      panel with `merge:true` patches applied, diff blocks with `+N -M`,
+      SubagentCall card with an unwrapped report, one-word icon labels).
+      Evidence:
+      [docs/272 run 2026-08-18-1616](../272-harness-conversion-verification/runs/2026-08-18-1616-grok-1.0.1.md).

@@ -12,9 +12,18 @@
  * tools with no canonical equivalent (`image_view` is Codex's tool for LOOKING
  * at one, which is the opposite operation), and `use_tool` /
  * `get_command_or_subagent_output` / `kill_command_or_subagent` are
- * meta-operations on other calls rather than calls of their own. An unmapped
- * name renders under its raw id, which is the correct outcome for a tool the
- * transcript has no dedicated treatment for.
+ * meta-operations on other calls rather than calls of their own.
+ *
+ * Division of labor (planning#437): this map is the SEMANTIC ORACLE — the
+ * cross-agent statement of what each wire name means — and nothing on the
+ * production render path reads it. What the transcript actually persists and
+ * renders is decided by `grok-tool-normalizer.ts`, which translates most of
+ * these names (and two divergent input keys) into the Claude-spelled
+ * vocabulary the recognition registries key on, at the adapter's Layer A
+ * boundary; its guard tests hold the two tables coherent. A name the
+ * normalizer leaves alone — the six unmapped ones above, plus the three
+ * interactive tools it deliberately skips — renders under its raw id, the
+ * correct outcome for a tool the transcript has no dedicated treatment for.
  */
 
 import type { CanonicalTool } from "../tool-map.js";
