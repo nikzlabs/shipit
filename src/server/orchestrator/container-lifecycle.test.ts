@@ -30,6 +30,7 @@ import {
   sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
 import type { HostMount } from "../shared/shipit-config.js";
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,7 +42,7 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
     sessionDir: "/workspace/sessions/sess-1",
     workspaceDir: "/workspace/sessions/sess-1/workspace",
     sessionStateDir: "/workspace/sessions/sess-1/state",
-    credentialsDir: "/credentials",
+    credentialsDir: TEST_CREDENTIALS_DIR,
     imageName: "shipit-worker:test",
     memoryLimit: 512 * 1024 * 1024,
     cpuQuota: 50_000,
@@ -61,8 +62,8 @@ describe("buildMounts", () => {
     expect(result.binds).toContain("/workspace/sessions/sess-1/workspace:/workspace:rw");
     // docs/138 — the container gets its PRIVATE credentials subtree, never the
     // shared root, so a Claude session can't read Codex's creds and vice versa.
-    expect(result.binds).toContain("/credentials/sessions/sess-1:/credentials:rw");
-    expect(result.binds).not.toContain("/credentials:/credentials:rw");
+    expect(result.binds).toContain(`${TEST_CREDENTIALS_DIR}/sessions/sess-1:/credentials:rw`);
+    expect(result.binds).not.toContain(`${TEST_CREDENTIALS_DIR}:/credentials:rw`);
     // docs/246 / planning#288 — every session mounts the container-visible slice of
     // its state dir; there is no "no state dir" case left to skip it for.
     expect(result.binds).toContain(
@@ -612,7 +613,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       depCacheDir: "/workspace/dep-cache/hash",
     });
     expect(config.depCacheDir).toBe("/workspace/dep-cache/hash");
@@ -623,7 +624,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.depCacheDir).toBeUndefined();
   });
@@ -636,7 +637,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.scratchDir).toBe("/workspace/sessions/s1/scratch");
     // Sibling of workspace/, never nested inside it.
@@ -648,7 +649,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       scratchDir: "/custom/scratch",
     });
     expect(config.scratchDir).toBe("/custom/scratch");
@@ -665,7 +666,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       dockerAccess: true,
       opsSession: true,
     });
@@ -678,7 +679,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       dockerAccess: true,
     });
     expect(config.dockerAccess).toBe(true);
@@ -692,7 +693,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
   });
@@ -709,7 +710,7 @@ describe("buildContainerConfig", () => {
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
       scratchDir: "/custom/scratch",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     // The overridable siblings still honour their overrides...
     expect(config.scratchDir).toBe("/custom/scratch");
@@ -728,7 +729,7 @@ describe("buildContainerConfig", () => {
         sessionId: "s1",
         sessionDir: "/workspace/sessions/s1",
         workspaceDir: "/workspace/sessions/s1",
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
       }),
     ).toThrow(/<sessionDir>\/workspace/);
   });

@@ -34,6 +34,7 @@ import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { SessionContainerManager } from "./session-container.js";
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 /**
  * These tests pin down the contract that protects running agents from being
@@ -693,7 +694,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: null,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "local",
     });
 
@@ -721,7 +722,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: null,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "local",
     });
     const runner = factory!({
@@ -761,7 +762,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       const factory = buildRunnerFactory({
         deps: {},
         containerManager: null,
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
         sessionManager: { get: (id: string) => sessions[id] } as unknown as SessionManager,
         runtimeMode: "local",
         localAgentFactory,
@@ -786,8 +787,8 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       // Two sessions routed to different accounts spawn against different
       // credential roots — the whole point, and what a single process-global
       // HOME could not express.
-      expect(calls[0].home).toBe("/credentials/provider-accounts/claude/acct-a");
-      expect(calls[1].home).toBe("/credentials/provider-accounts/claude/acct-b");
+      expect(calls[0].home).toBe(`${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-a`);
+      expect(calls[1].home).toBe(`${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-b`);
       r1.dispose({ force: true });
       r2.dispose({ force: true });
     });
@@ -804,8 +805,8 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       runner.createAgent!("claude");
 
       expect(calls.map((c) => c.home)).toEqual([
-        "/credentials/provider-accounts/claude/acct-a",
-        "/credentials/provider-accounts/claude/acct-b",
+        `${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-a`,
+        `${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-b`,
       ]);
       runner.dispose({ force: true });
     });
@@ -829,7 +830,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       const factory = buildRunnerFactory({
         deps: {},
         containerManager: null,
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
         sessionManager: { get: () => undefined } as unknown as SessionManager,
         runtimeMode: "local",
         localAgentFactory,
@@ -874,7 +875,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: fakeContainerManager,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "local",
     });
 
@@ -895,7 +896,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: null,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "containerized",
     });
     expect(factory).toBeUndefined();
@@ -913,7 +914,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: { runnerFactory: customFactory },
       containerManager: null,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "local",
     });
 

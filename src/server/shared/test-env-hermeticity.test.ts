@@ -94,4 +94,44 @@ describe("server test environment is hermetic", () => {
         + "brokered /credentials/.gitconfig)",
     ).toBe(true);
   });
+
+  /**
+   * The other half of #2432's family, and the reason it is a static scan rather
+   * than an assertion about this process: the write happens in whichever worker
+   * runs the offending file, so no single test can observe it.
+   *
+   * `credentialsDir` is a HOST path. Passed as the literal, `createContainer` →
+   * `ensureSessionCredentialsScaffold` creates real fixture subtrees under it,
+   * and inside a session container that is the running agent's own credentials
+   * directory. `resolveCredentialsDir` (`app-di.ts`) already refuses the live
+   * volume for anything built through `buildApp()`; this covers the tests that
+   * build a config directly and never reach it. The container-side mount
+   * TARGET is legitimately the literal, so the scan matches the assignment
+   * only.
+   */
+  it("no test passes the live credentials volume as a host path", () => {
+    const root = path.resolve(import.meta.dirname, "..");
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== "node_modules") walk(full);
+        } else if (entry.name.endsWith(".test.ts")) {
+          const text = fs.readFileSync(full, "utf-8");
+          text.split("\n").forEach((line, i) => {
+            if (/credentialsDir:\s*"\/credentials"/.test(line)) {
+              offenders.push(`${path.relative(root, full)}:${i + 1}`);
+            }
+          });
+        }
+      }
+    };
+    walk(root);
+    expect(
+      offenders,
+      "these tests would write fixture credential subtrees into the live /credentials volume — "
+        + "import TEST_CREDENTIALS_DIR from orchestrator/credentials-test-helpers.js instead",
+    ).toEqual([]);
+  });
 });

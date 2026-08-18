@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CredentialRoute, NonTurnFailureCard, WsServerMessage } from "../../shared/types.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { TEST_CREDENTIALS_DIR } from "../credentials-test-helpers.js";
 
 /**
  * docs/252 phase 7 (req 9) — running the work outside a turn.
@@ -362,7 +363,7 @@ describe("makeNonTurnGenerateText — credential window", () => {
       // A session whose primary agent is the same harness the run borrowed —
       // the case whose subtree must be put back after the consult.
       sessionManager: { get: () => ({ agentId: "claude" }) },
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);
 
@@ -397,7 +398,7 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);
 
