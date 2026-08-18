@@ -8,6 +8,10 @@ const BOTTOM_THRESHOLD_PX = 40;
 // this many consecutive frames (layout settled), or until the safety cap.
 const STABLE_FRAMES = 3;
 const MAX_SCROLL_SETTLE_MS = 1000;
+// How long after the last gesture event we keep standing down. A touch drag ends
+// with the finger lifting, but the scroll does not — momentum carries on with no
+// further `touchmove`, and writing `scrollTop` during it kills the momentum dead.
+const GESTURE_GRACE_MS = 400;
 
 function isNearBottom(container: HTMLElement): boolean {
   const { scrollTop, scrollHeight, clientHeight } = container;
@@ -33,8 +37,32 @@ function hasActiveSelectionInside(container: HTMLElement | null): boolean {
   );
 }
 
+// `Date.now()` rather than a constant fallback: a frozen clock would make the
+// settle loop's safety cap unreachable and leave every gesture grace window
+// permanently open.
 function now(): number {
-  return typeof performance !== "undefined" ? performance.now() : 0;
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+/**
+ * Has the user got hold of the scroll right now?
+ *
+ * `autoScrollRef` cannot answer this. It only flips once the user crosses
+ * BOTTOM_THRESHOLD_PX, and a SLOW drag — a thumb walking back through the
+ * transcript on a phone — stays inside that band for many frames. Every
+ * auto-scroll path fires during those frames: a streamed token re-pins through
+ * the layout effect, and on mobile the URL bar collapsing during the scroll
+ * resizes the container, which the observer reads as content growth. So a slow
+ * scroll got dragged back to the bottom while a fast flick, which leaves the
+ * band within a single frame, did not. A live gesture is authoritative over all
+ * of them — "we must never fight a user's scroll" has to hold before the
+ * threshold is crossed, not only after.
+ *
+ * Takes refs rather than closing over them so it can sit at module scope, out of
+ * the `[]`-dependency effect's reach.
+ */
+function userIsDriving(dragging: { current: boolean }, lastGestureAt: { current: number }): boolean {
+  return dragging.current || now() - lastGestureAt.current < GESTURE_GRACE_MS;
 }
 
 /**
@@ -101,6 +129,11 @@ export function useMessageScroll(
   // Canceller for the in-flight post-send settle loop, so a manual scroll can
   // halt it the instant the user takes control (see the gesture listeners below).
   const cancelSettleRef = useRef<(() => void) | null>(null);
+  // Is a finger currently dragging the transcript, and when did the last gesture
+  // event land? `-Infinity` so a freshly-mounted hook is never inside the grace
+  // window. See `userIsDriving` for why this gates every auto-scroll path.
+  const touchDraggingRef = useRef(false);
+  const lastGestureAtRef = useRef(-Infinity);
 
   // Track whether the user has scrolled away from the bottom, and let any manual
   // scroll take authoritative control — we must never fight a user's scroll.
@@ -121,15 +154,34 @@ export function useMessageScroll(
     // programmatic `scrollTop` write — so they are an unambiguous "user took
     // control" signal. Halt the in-flight settle loop on the very first gesture,
     // even before it crosses the near-bottom threshold, so a manual scroll is
-    // never overridden.
+    // never overridden, and stamp the gesture so the OTHER two auto-scroll paths
+    // (the layout effect's re-pin, the observer's) stand down for its duration.
     const handleManualScroll = () => {
+      lastGestureAtRef.current = now();
       cancelSettleRef.current?.();
+    };
+
+    // The drag flag comes from `touchmove`, not `touchstart`: a bare tap on the
+    // transcript scrolls nothing, and letting it suppress auto-follow would strand
+    // a streaming message for the whole grace window over a stray thumb.
+    const handleTouchMove = () => {
+      touchDraggingRef.current = true;
+      handleManualScroll();
+    };
+    // The finger lifting does not end the scroll — momentum runs on with no
+    // further `touchmove` — so clearing the flag hands over to the timestamp
+    // grace rather than resuming auto-follow immediately.
+    const handleTouchEnd = () => {
+      touchDraggingRef.current = false;
+      lastGestureAtRef.current = now();
     };
 
     handleScroll();
     container.addEventListener("scroll", handleScroll, { passive: true });
     container.addEventListener("wheel", handleManualScroll, { passive: true });
-    container.addEventListener("touchmove", handleManualScroll, { passive: true });
+    container.addEventListener("touchmove", handleTouchMove, { passive: true });
+    container.addEventListener("touchend", handleTouchEnd, { passive: true });
+    container.addEventListener("touchcancel", handleTouchEnd, { passive: true });
 
     // Two things move the bottom out from under us, and neither fires a scroll
     // event: the container getting shorter (the composer growing), and the
@@ -142,8 +194,13 @@ export function useMessageScroll(
     // as the growth, i.e. BEFORE the scroll event that growth would otherwise
     // produce, so `handleScroll` never sees a position stranded by our own pin
     // and never mistakes it for the user scrolling away.
+    //
+    // It stands down mid-gesture, though: on mobile the address bar collapses as
+    // the user scrolls, which resizes the container and lands here as a resize
+    // indistinguishable from the transcript growing.
     const observer = typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
+          if (userIsDriving(touchDraggingRef, lastGestureAtRef)) return;
           if (autoScrollRef.current && !hasActiveSelectionInside(container)) scrollToBottom(container);
         })
       : null;
@@ -153,7 +210,9 @@ export function useMessageScroll(
     return () => {
       container.removeEventListener("scroll", handleScroll);
       container.removeEventListener("wheel", handleManualScroll);
-      container.removeEventListener("touchmove", handleManualScroll);
+      container.removeEventListener("touchmove", handleTouchMove);
+      container.removeEventListener("touchend", handleTouchEnd);
+      container.removeEventListener("touchcancel", handleTouchEnd);
       observer?.disconnect();
     };
   }, []);
@@ -172,6 +231,15 @@ export function useMessageScroll(
     const appendedUserMessage = messages.length > previousMessageCount && latestMessage?.role === "user";
 
     if (!autoScrollRef.current && !appendedUserMessage) return;
+    // A live gesture outranks auto-follow — but NOT an explicit send, which is
+    // newer user intent than the drag and re-anchors the conversation. Sending
+    // also ends the gesture: the tap landed on the composer, not the transcript.
+    if (appendedUserMessage) {
+      touchDraggingRef.current = false;
+      lastGestureAtRef.current = -Infinity;
+    } else if (userIsDriving(touchDraggingRef, lastGestureAtRef)) {
+      return;
+    }
     if (hasActiveSelectionInside(containerRef.current)) return;
     const container = containerRef.current;
     if (!container) return;
@@ -181,6 +249,7 @@ export function useMessageScroll(
 
     const cancel = scheduleScrollToBottom(container, () => {
       const latestContainer = containerRef.current;
+      if (userIsDriving(touchDraggingRef, lastGestureAtRef)) return false;
       return latestContainer === container && autoScrollRef.current;
     });
     cancelSettleRef.current = cancel;
