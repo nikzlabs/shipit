@@ -172,6 +172,16 @@ restarted once it completes — so expect a brief preview blink. That's
 intentional: the dependency tree changed, so the service relaunches against the
 fresh `node_modules`. Reinstalls are throttled to one per 30s.
 
+**When the re-install cannot run, or fails.** An `agent.install` that is not
+content-keyable (a codegen step or a shell script, with no declared
+`install-inputs`) is not re-run after a ShipIt-performed rewrite, and a re-install
+that fails obviously leaves the tree uninstalled. Neither is silent: both post a
+`[System]` note and add a `Dependencies:` line to `shipit service list`. **Read
+that line before debugging a `Failed to resolve import` as a code fault** — the
+service still reports `running`, and restarting it does not help, because the
+usual compose guard is `[ -d node_modules ] || npm ci` and the directory exists.
+Re-run the install instead.
+
 ## Multi-service
 
 Define multiple services in docker-compose.yml. Each service with ports gets
@@ -210,6 +220,7 @@ out of the box.
 | `shipit.yaml` or compose file edit | Stack reconciliation (restart services) |
 | `shipit.yaml`/compose file changed by a sync/rebase or rollback | Same reconciliation — services added by the incoming config appear without a session restart |
 | Lockfile/manifest change (edit **or** git reset/checkout/rebase) | Install + restart (30s cooldown) |
+| A ShipIt-performed rewrite where the install can't be re-checked, or its re-run failed | No restart — a `[System]` note and a `Dependencies:` line on `shipit service list` |
 
 ## Browser tools
 

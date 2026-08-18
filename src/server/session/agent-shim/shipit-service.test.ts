@@ -206,6 +206,70 @@ describe("shipit service list", () => {
     });
   });
 
+  /**
+   * nikzlabs/shipit#2429 — the list is where the reported diagnosis went wrong. The
+   * service read `running`, every request failed on an unresolvable import, and
+   * nothing here connected either to the rebase that rewrote the tree.
+   */
+  describe("dependencies that may not match the tree", () => {
+    const GAP = {
+      reason: "not-content-keyed",
+      message:
+        "`agent.install` was not re-run after a sync onto the latest base — installed " +
+        "dependencies may not match this tree.",
+    };
+
+    it("says so beside a service that otherwise reads as healthy", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], {
+        "GET /services/list": {
+          status: 200,
+          body: {
+            services: [{ name: "dev", status: "running", preview: "auto", port: 5173 }],
+            dependencies: GAP,
+          },
+        },
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("running");
+      // The row and the note have to arrive together: the row is the reason the
+      // agent stops looking, and the note is why it should not.
+      expect(res.stdout).toContain("Dependencies:");
+      expect(res.stdout).toContain("a sync onto the latest base");
+    });
+
+    it("carries the note on --json too", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list", "--json"], {
+        "GET /services/list": { status: 200, body: { services: [], dependencies: GAP } },
+      });
+      const parsed = JSON.parse(res.stdout) as { dependencies?: { reason: string; message: string } };
+      expect(parsed.dependencies?.reason).toBe("not-content-keyed");
+      expect(parsed.dependencies?.message).toContain("not re-run");
+    });
+
+    it("survives an empty list, where the note is the only thing worth reading", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], {
+        "GET /services/list": { status: 200, body: { services: [], dependencies: GAP } },
+      });
+      expect(res.stdout).toContain("No services defined");
+      expect(res.stdout).toContain("Dependencies:");
+    });
+
+    it("is absent when there is nothing to report", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], {
+        "GET /services/list": {
+          status: 200,
+          body: { services: [{ name: "dev", status: "running", preview: "auto" }] },
+        },
+      });
+      expect(res.stdout).not.toContain("Dependencies:");
+    });
+  });
+
   it("points at compose.md when the project has no stack", async () => {
     const { run } = makeRunner();
     const res = await run(["service", "list"], {

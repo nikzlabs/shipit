@@ -142,6 +142,52 @@ dep-input set (a non-content-keyable install) is skipped, since its `null` deps
 hash can never match the marker and every sync would reinstall from scratch.
 That session keeps this feature's documented safe default — no auto-reinstall.
 
+### Not re-running is a choice; not saying so was the bug
+
+The skip above and a re-install that FAILS have the same consequence and had the
+same reporting: none. Both leave the installed tree out of step with the
+checkout, and #2429's whole cost was diagnosis, not repair — `npm ci` by hand
+fixed it in seconds. The symptom is specifically resistant to being read
+correctly: the service reports `running`, the error reads like a code fault
+("does the file exist?"), and a restart does not help because the compose guard
+is `[ -d node_modules ] || npm ci` and the directory exists.
+
+So both paths record a `DependencyGap` on the runner
+(`dependency-staleness.ts`) instead of returning quietly, and it is reported on
+the two surfaces the reporter was actually looking at:
+
+- **The transcript** — a persisted `[System]` warn notice, wired in
+  `runner-registry-factory.ts` exactly like docs/271's withheld-install notice.
+  Persisted rather than emitted because the failure is met LATER: a notice that
+  vanished on reload would be gone at the moment it is needed.
+- **`shipit service list` / `GET /api/sessions/:id/services`** — a `dependencies`
+  field riding alongside the list, the same shape and for the same reason as
+  planning#382's `failure`. A service row cannot explain a failure whose cause is
+  that the tree moved under it.
+
+Three properties are load-bearing. The **gap is recorded before the notice is
+emitted**, and the emit is contained — the hook reaches SQLite and the viewer
+transports, and losing the state to a failure there would restore the silence
+being removed. The **rewrite label rides through `onWorkspaceRewritten`**, so the
+report names what moved the tree rather than being a fact with no cause; it is
+*consumed* when an install starts, so a later watcher-driven failure cannot
+inherit a rewrite it had nothing to do with. And the gap is **cleared only on
+positive evidence** — an install that ran and succeeded, or a content-keyed
+marker skip. Not a withheld install (docs/271: it did not run), and not the
+"worker restarted, we cannot tell" resync, which synthesizes a completion from no
+evidence at all.
+
+A **failed** install already latches `dependsOnInstall` services to `error`, which
+is the loud half. It is still reported here because that covers only gated
+services and never names the tree movement as the cause — which is the fact the
+person reading the failure is missing.
+
+Auto-reinstalling the non-keyable case instead was rejected: its `null` deps hash
+can never match the marker, so every rewrite would mean a full codegen/build from
+scratch. Deferring is defensible; the notice is what makes it honest, and the
+`agent.install-inputs` remedy it names is how a project opts into the automatic
+path for good.
+
 ## Key files
 
 - `src/server/orchestrator/container-session-runner.ts` — `setDepReinstallInputs`,
@@ -149,7 +195,13 @@ That session keeps this feature's documented safe default — no auto-reinstall.
   (the bracket); the `file_changes` handler calls into them; dispose clears the timer.
   `notifyWorkspaceRewritten` is the #2429 entry point for an orchestrator-side rewrite.
 - `src/server/orchestrator/workspace-rewrite.ts` — `onWorkspaceRewritten`, the shared
-  "the orchestrator rewrote this tree" call (config re-read + dependency re-check).
+  "the orchestrator rewrote this tree" call (config re-read + dependency re-check),
+  passing the caller label through so a report can name the rewrite.
+- `src/server/orchestrator/dependency-staleness.ts` — the `DependencyGap` type and
+  its two renderings (transcript notice + one-line service-list summary). Pure text.
+- `src/server/orchestrator/api-routes-preview.ts`,
+  `src/server/session/agent-shim/shipit-service.ts` — the `dependencies` field
+  alongside the service list, and its rendering for the agent.
 - `src/server/orchestrator/services/rebase-driver.ts`,
   `src/server/orchestrator/api-routes-git.ts` (rebase-abort, rollback, pull,
   session merge, `reset-to-base`), `src/server/orchestrator/api-routes-github.ts`
@@ -173,7 +225,12 @@ That session keeps this feature's documented safe default — no auto-reinstall.
   surfaces as `install_error` + gated services latched to a clear message
   (better than a silent stale preview).
 - **Non-keyable install** (`./build.sh`, codegen): no watch set → no auto-reinstall,
-  on the watcher path and on the #2429 orchestrator-rewrite path alike.
+  on the watcher path and on the #2429 orchestrator-rewrite path alike. The
+  rewrite path additionally reports it (above); the watcher path does not, because
+  there the person who changed the file is the one reading the transcript.
+- **No `agent.install` at all**: nothing is reported. There is no dependency step
+  to be out of step with the tree, so a warning would be about a problem the
+  session cannot have.
 - **A rewrite that changes both `shipit.yaml` and the lockfile**: the config
   re-read may already have requested a reinstall (a changed `agent.install`), and
   the dependency check then asks again. The 30s cooldown coalesces the two into
@@ -181,7 +238,11 @@ That session keeps this feature's documented safe default — no auto-reinstall.
 
 ## Out of scope
 
-- A stale-dependency hint on import-resolve failures in the preview.
+- Parsing an import-resolve failure out of a service's log to attach the hint to
+  the error itself. The `Dependencies:` line on the service list is the fact; a
+  log-scraper for every ecosystem's phrasing is a different feature.
+- A client-side rendering of the gap in the Preview/services UI. The persisted
+  transcript notice is the human surface; the service list is the agent's.
 - Sharing `node_modules` into non-overlay sessions (repo-backed sessions already
   share the overlay dep store with Compose services — docs/183 Phase 5).
 

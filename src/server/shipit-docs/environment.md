@@ -153,7 +153,11 @@ onto the base), which are reported directly rather than through the file
 watcher. The one case it does not cover is an `agent.install` that is not
 content-keyable — a codegen step or a shell script with no declared
 `install-inputs`; there ShipIt has no way to tell a dependency change from any
-other, and you re-run the install yourself.
+other, and you re-run the install yourself. **You are told when that happens**,
+and when a re-install fails: both post a `[System]` note and add a
+`Dependencies:` line to `shipit service list`. Check that line before treating a
+`Failed to resolve import` as a code fault — the service will still report
+`running`, and restarting it will not help.
 
 **Compose services**: Project services (dev servers, databases, caches) run as
 Docker Compose containers managed by ShipIt. Define them in

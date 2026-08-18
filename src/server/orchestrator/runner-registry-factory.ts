@@ -785,6 +785,19 @@ export function createRunnerRegistry(
             emitNoticeInTurn(runner, runner.sessionId, message, chatHistoryManager, "warn");
           };
         }
+
+        // nikzlabs/shipit#2429 — same wiring, same reason: the runner decides that a
+        // tree rewrite left its dependencies unverified, and this only reports
+        // it. Persisted rather than emitted, because the whole failure is one
+        // the user meets LATER — a service that runs while every request fails
+        // on an unresolvable import — and a notice that vanished on reload
+        // would be missing at exactly the moment it is needed.
+        if ("onDependenciesUnverified" in runner) {
+          (runner as { onDependenciesUnverified?: (message: string) => void })
+            .onDependenciesUnverified = (message: string) => {
+              emitNoticeInTurn(runner, runner.sessionId, message, chatHistoryManager, "warn");
+            };
+        }
       } else if (activatePluginRepos) {
         // docs/262 — local mode has no ServiceManager, but plugin repositories
         // are not a compose feature: checkout, generations, and refresh are

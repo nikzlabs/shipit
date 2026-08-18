@@ -20,3 +20,14 @@
       pull, session merge, rewind (WS), `release prepare` (own clone only)
 - [x] Unit tests (runner gate + helper ordering/fail-safety + the four call sites)
 - [x] Update agent-facing docs (shipit-yaml.md, environment.md, preview.md)
+
+### nikzlabs/shipit#2429 — say so when the re-check cannot run
+
+- [x] `dependency-staleness.ts` — the `DependencyGap` type + its two renderings
+- [x] Record a gap instead of returning silently (non-keyable install; failed re-install)
+- [x] Carry the rewrite label through `onWorkspaceRewritten`, consumed per install
+- [x] Clear the gap only on positive evidence (install ok, or a marker skip)
+- [x] Persisted transcript notice, wired like docs/271's withheld-install notice
+- [x] `dependencies` alongside `GET /api/sessions/:id/services` + `shipit service list`
+- [x] Co-located tests (text, runner state, route shape, shim rendering)
+- [x] Update agent-facing docs with the new signal and how to read it

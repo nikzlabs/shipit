@@ -56,6 +56,27 @@ interface ComposeFailureRow {
   message: string;
 }
 
+/**
+ * nikzlabs/shipit#2429 — why this session's dependencies may not match its checkout.
+ *
+ * Its own local shape for the same reason {@link ComposeFailureRow} has one: the
+ * shim is compiled into the session image and must not import orchestrator
+ * modules. `message` is rendered verbatim — the orchestrator owns the wording,
+ * because it is the side that knows which rewrite moved the tree.
+ */
+interface DependencyGapRow {
+  reason: string;
+  message: string;
+}
+
+function toDependencyGap(value: unknown): DependencyGapRow | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  const message = asString(obj.message);
+  if (!message) return undefined;
+  return { reason: asString(obj.reason) || "unknown", message };
+}
+
 function toFailure(value: unknown): ComposeFailureRow | undefined {
   if (!value || typeof value !== "object") return undefined;
   const obj = value as Record<string, unknown>;
@@ -125,10 +146,21 @@ function renderFailure(failure: ComposeFailureRow): string {
  * containment rules refuse a stock compose file, so that wrong answer was the
  * first one a normal project got.
  */
-function renderTable(rows: ServiceRow[], failure?: ComposeFailureRow): string {
+function renderTable(
+  rows: ServiceRow[],
+  failure?: ComposeFailureRow,
+  dependencies?: DependencyGapRow,
+): string {
+  // nikzlabs/shipit#2429 — the dependency note is appended to EVERY rendering,
+  // including the empty ones. It is the answer to a question the table cannot
+  // answer at all: a row that reads `running` is exactly the case where the
+  // service is up and every request it serves fails on an unresolvable import.
+  const withGap = (text: string) =>
+    dependencies ? `${text}\n\nDependencies: ${dependencies.message}` : text;
+
   if (rows.length === 0) {
-    if (failure) return renderFailure(failure);
-    return "No services defined. Add them to docker-compose.yml — see /shipit-docs/compose.md.";
+    if (failure) return withGap(renderFailure(failure));
+    return withGap("No services defined. Add them to docker-compose.yml — see /shipit-docs/compose.md.");
   }
   const header = ["NAME", "STATUS", "PREVIEW", "PORT", "URL"];
   const body = rows.map((r) => [
@@ -154,7 +186,7 @@ function renderTable(rows: ServiceRow[], failure?: ComposeFailureRow): string {
   // surfaces plugin services has rows the project file never contributed. The
   // list is what was asked for, so it stays first and the reason follows it.
   if (failure) out.push(`\n${renderFailure(failure)}`);
-  return out.join("\n");
+  return withGap(out.join("\n"));
 }
 
 /** One-line summary for a mutation result. */
@@ -246,11 +278,16 @@ export async function handleServiceList(args: string[], deps: RunDeps): Promise<
   // one, so omitting the reason there would leave a scripted caller with the
   // same bare `[]` the human rendering used to give.
   const failure = toFailure(res.body.failure);
+  const dependencies = toDependencyGap(res.body.dependencies);
   success(
     deps.io,
     parsed.booleans.has("json")
-      ? JSON.stringify({ services: rows, ...(failure ? { failure } : {}) }, null, 2)
-      : renderTable(rows, failure),
+      ? JSON.stringify(
+          { services: rows, ...(failure ? { failure } : {}), ...(dependencies ? { dependencies } : {}) },
+          null,
+          2,
+        )
+      : renderTable(rows, failure, dependencies),
   );
 }
 

@@ -169,17 +169,134 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     expect(install).toHaveBeenLastCalledWith(["npm ci"]);
   });
 
-  it("stays out of sessions whose install is not content-keyable", () => {
+  it("stays out of sessions whose install is not content-keyable — but says so", () => {
     const runner = makeRunner();
     // A codegen/shell install resolves to no dep inputs → a null deps hash that
     // can never match the marker, so triggering here would reinstall from
     // scratch on every sync. #1622's documented safe default is to do nothing.
     runner.setDepReinstallInputs(["./build.sh"], []);
     const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+    const notices: string[] = [];
+    runner.onDependenciesUnverified = (m) => notices.push(m);
 
-    runner.notifyWorkspaceRewritten();
+    runner.notifyWorkspaceRewritten("rebase");
 
     expect(install).not.toHaveBeenCalled();
+    // Not re-running is a defensible choice; not SAYING so is the bug the issue
+    // reported. The gap is what the service list reads, and the notice is what
+    // reaches the transcript.
+    expect(runner.dependencyGap).toEqual({
+      reason: "not-content-keyed",
+      rewrite: "rebase",
+      commands: ["./build.sh"],
+    });
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain("a sync onto the latest base");
+  });
+
+  it("says nothing when the session declares no install at all", () => {
+    const runner = makeRunner();
+    // Nothing to be out of step WITH: there is no dependency step, so a warning
+    // here would be a warning about a problem this session cannot have.
+    runner.setDepReinstallInputs([], []);
+    const notices: string[] = [];
+    runner.onDependenciesUnverified = (m) => notices.push(m);
+
+    runner.notifyWorkspaceRewritten("rollback");
+
+    expect(runner.dependencyGap).toBeNull();
+    expect(notices).toEqual([]);
+  });
+
+  it("reports a rewrite whose re-install failed, naming the rewrite", async () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: false });
+    const notices: string[] = [];
+    runner.onDependenciesUnverified = (m) => notices.push(m);
+
+    runner.notifyWorkspaceRewritten("git-pull");
+    await vi.runAllTimersAsync();
+
+    // The gate latches `dependsOnInstall` services to `error`, which is loud —
+    // but it covers only gated services and never names the tree movement as
+    // the cause, which is the fact the reader is missing.
+    expect(runner.dependencyGap).toMatchObject({ reason: "install-failed", rewrite: "git-pull" });
+    expect(notices[0]).toContain("a git pull");
+  });
+
+  it("does not carry a rewrite into a later watcher-driven install", async () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: false });
+
+    runner.notifyWorkspaceRewritten("rebase");
+    await vi.runAllTimersAsync();
+    expect(runner.dependencyGap).toMatchObject({ rewrite: "rebase" });
+
+    // A later edit-driven reinstall has nothing to do with that rebase, so
+    // attributing its failure to one would be an invented cause.
+    await vi.advanceTimersByTimeAsync(30_000);
+    priv(runner).maybeReinstallForDepChange();
+    await vi.runAllTimersAsync();
+    expect(runner.dependencyGap).toMatchObject({ reason: "install-failed" });
+    expect(runner.dependencyGap?.rewrite).toBeUndefined();
+  });
+
+  it("reports once for a burst of the same rewrite, again for a different one", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["./build.sh"], []);
+    const notices: string[] = [];
+    runner.onDependenciesUnverified = (m) => notices.push(m);
+
+    // Two steps of the same flow are one fact; repeating it trains the reader
+    // to skip the notice.
+    runner.notifyWorkspaceRewritten("rebase");
+    runner.notifyWorkspaceRewritten("rebase");
+    expect(notices).toHaveLength(1);
+
+    runner.notifyWorkspaceRewritten("pre-turn-reset");
+    expect(notices).toHaveLength(2);
+  });
+
+  it("clears the gap once an install proves the tree is installed", async () => {
+    // The worker's content-keyed marker matching IS the dependency check, so a
+    // `{ skipped: true }` answer is positive evidence — not an install that
+    // failed to happen. Driven through a real worker response rather than a
+    // `runInstall` spy, because the clear lives inside that funnel.
+    vi.useRealTimers();
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/install" ? { skipped: true } : {}));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      const runner = makeRunner();
+      runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+      runner.setDepReinstallInputs(["./build.sh"], []);
+      runner.notifyWorkspaceRewritten("rebase");
+      expect(runner.dependencyGap).not.toBeNull();
+
+      await runner.runInstall(["./build.sh"]);
+
+      expect(runner.dependencyGap).toBeNull();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("keeps the recorded gap when the notice hook throws", () => {
+    const runner = makeRunner();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    runner.setDepReinstallInputs(["./build.sh"], []);
+    runner.onDependenciesUnverified = () => { throw new Error("sqlite is unhappy"); };
+
+    // The hook reaches SQLite and the viewer transports. Losing the state to a
+    // failure there would restore exactly the silence this removes.
+    expect(() => runner.notifyWorkspaceRewritten("rebase")).not.toThrow();
+    expect(runner.dependencyGap).toMatchObject({ reason: "not-content-keyed" });
   });
 
   it("shares the #1622 cooldown rather than stacking a second install on it", async () => {
