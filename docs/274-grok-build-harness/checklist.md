@@ -29,9 +29,10 @@ the expansion of every line, with file pointers and gotchas, is in
 - [x] `GROK_TOOL_NAMES`
 
 **3 — Install & images**
-- [x] `install-agent-clis.sh`: known set, pkg prefix, binary, and the
-      `npm rebuild @xai-official/grok` line (brotli-compressed platform
-      binary decompressed by a postinstall — the OpenCode shape)
+- [x] `install-agent-clis.sh`: known set, pkg prefix, binary. (The original
+      `npm rebuild @xai-official/grok` line assumed the OpenCode shape; it is
+      not — the postinstall installs outside node_modules. Replaced by an
+      in-place build-time decompress + direct binary link, planning#442.)
 - [x] Pinned dep in `docker/agent-cli/package.json` + lockfile
       (`@xai-official/grok@1.0.1`)
 - [x] `SHIPIT_HARNESSES` defaults unchanged — Grok ships

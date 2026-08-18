@@ -26,11 +26,22 @@ several rows below.
   (weekly stable cadence per `grok update --help`; separate `alpha` channel).
 - **An official npm package exists: `@xai-official/grok`** — the candidates.md
   "curl-only, third-party pin claim" row is obsolete. The package is
-  exact-pinnable, and its shape is exactly OpenCode's: platform binaries as
-  `optionalDependencies` (`@xai-official/grok-linux-x64`, …) with a
-  `postinstall` shim (`node bin/postinstall.js`), so under the installer's
-  blanket `--ignore-scripts` it needs a targeted **`npm rebuild
-  @xai-official/grok`** — the already-solved exception shape (recipe step 3).
+  exact-pinnable: platform binaries as `optionalDependencies`
+  (`@xai-official/grok-linux-x64`, …, brotli-compressed) with a
+  `postinstall` shim (`node bin/postinstall.js`).
+  **It is NOT the OpenCode rebuild shape, though it looks it** (planning#442,
+  found live after this doc first shipped): the postinstall decompresses the
+  payload to `$GROK_HOME/bin` (`~/.grok/bin`) — *outside* node_modules, i.e.
+  root's home at image-build time — and the `bin/grok` JS launcher's runtime
+  recovery either needs a writable install tree (in-place decompress; fails
+  in read-only `/opt/agent-cli`) or copies the 157MB binary into `$GROK_HOME`
+  per spawn (ShipIt's throwaway per-turn root). So instead of `npm rebuild`,
+  `install-agent-clis.sh` decompresses `grok.br` in place at build (0755,
+  `.br` deleted) and links `/usr/local/bin/grok` **directly at the platform
+  binary**, bypassing the launcher entirely; the installer then proves every
+  selected harness binary executes (`--version` under a scratch HOME).
+  Runtime `GROK_HOME` stays what the adapter says it is — pure config/state
+  delivery, no longer part of binary resolution.
   `bin: { grok: "bin/grok" }` matches the catalogue binary. One transitive
   dep (`@iarna/toml`). **Pin decision: `1.0.1`** (published 2026-08-11T00:30Z;
   `check-deps` compares strict milliseconds, so 1.0.1 crossed the 7-day line
