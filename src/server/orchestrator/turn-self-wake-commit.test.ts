@@ -32,6 +32,13 @@ import { executeAgentTurn } from "./turn-executor.js";
 import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
 
+// These tests run several `waitFor` polls plus real git subprocesses per case;
+// under a loaded full-suite CI runner the vitest default (5000ms) is headroom-
+// free, and it equals `waitFor`'s internal deadline, which swallowed the
+// helper's diagnostic label (see the comment on `waitFor`). 20s is generous on
+// purpose — the helper's 5s deadline is what actually bounds a hung condition.
+vi.setConfig({ testTimeout: 20_000 });
+
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
@@ -66,6 +73,11 @@ async function selfWake(agent: FakeAgent, taskId = "bg-1"): Promise<void> {
   await flush();
 }
 
+// The helper's deadline must stay strictly BELOW the file's testTimeout
+// (set right below): when the two were equal (both 5000, vitest's default),
+// vitest killed the test at the same instant this deadline expired, so CI
+// reported a bare "Test timed out in 5000ms" and the descriptive label never
+// surfaced. The gap is what makes a hang diagnosable.
 async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
