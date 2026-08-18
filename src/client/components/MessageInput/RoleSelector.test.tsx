@@ -131,6 +131,50 @@ describe("RoleSelector (wide row)", () => {
     expect(row).toHaveAttribute("aria-disabled", "true");
   });
 
+  /**
+   * req 4 — a locked role is a READOUT. The two failures below shipped together
+   * and are one mistake: `locked` was handed to the button's `disabled`, which
+   * dimmed it to half contrast while leaving Radix's menu bound to it.
+   */
+  describe("locked (req 4)", () => {
+    it("opens nothing, because the menu is not rendered at all", async () => {
+      render(
+        <RoleSelector
+          roles={[DEEP_DIVE, pinnedRole({ name: "triage" })]}
+          selectedRole="deep dive"
+          onSelectRole={vi.fn()}
+          locked
+        />,
+      );
+
+      // ABSENCE, not a disabled attribute — Radix binds the trigger on
+      // `pointerdown`, so a test for the latter passes against the bug.
+      expect(screen.queryByTestId("role-selector-menu")).toBeNull();
+      await userEvent.click(screen.getByTestId("role-selector-trigger"));
+      expect(screen.queryByTestId("role-selector-menu")).toBeNull();
+      expect(screen.queryByTestId("role-option-triage")).toBeNull();
+    });
+
+    it("keeps the pill's own contrast — it reports the session, permanently", () => {
+      render(
+        <RoleSelector roles={[DEEP_DIVE]} selectedRole="deep dive" onSelectRole={vi.fn()} locked />,
+      );
+      const trigger = screen.getByTestId("role-selector-trigger");
+
+      expect(trigger).toHaveTextContent("deep dive");
+      expect(trigger.className).not.toContain("opacity-50");
+      // Same pill, not a second appearance for the same state.
+      expect(trigger.className).toContain("bg-(--color-accent-subtle)");
+      expect(trigger.className).toContain("text-(--color-accent)");
+    });
+
+    it("goes entirely when there is no role to report", () => {
+      // The mark's only job is to offer the list; locked, it offers nothing.
+      render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} locked />);
+      expect(screen.queryByTestId("role-selector-trigger")).toBeNull();
+    });
+  });
+
   it("offers the parameters from INSIDE the list, not as a second control (req 15)", async () => {
     const onAdjustParameters = vi.fn();
     render(

@@ -169,6 +169,31 @@ describe("HarnessSelector", () => {
     expect(trigger.getAttribute("title")).toMatch(/fixed for this session/i);
   });
 
+  it("opens no menu once pinned, and stays legible while it says so", async () => {
+    // Both halves were wrong in one way: `locked` reached the trigger as
+    // `disabled` and stopped there. Radix binds the trigger on `pointerdown`, so
+    // the menu still opened onto harnesses that could not be chosen — and the
+    // dimming that came with `disabled` put the session's one permanent fact at
+    // half the contrast of every transient one.
+    const user = userEvent.setup();
+    setSessionState(makeSession({ agentId: "claude", agentPinned: true }));
+    render(
+      <HarnessSelector
+        agents={agents}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        hasActiveSession
+      />,
+    );
+
+    await user.click(screen.getByTestId("harness-trigger"));
+    // Absence, not a disabled attribute: a test for the latter passes against
+    // the bug it is meant to catch.
+    expect(screen.queryByTestId("harness-dropdown")).toBeNull();
+    expect(screen.queryByTestId("harness-option-codex")).toBeNull();
+    expect(screen.getByTestId("harness-trigger").className).not.toContain("opacity-50");
+  });
+
   // docs/260 — the icon-only `compactTrigger` variant is gone. There is no
   // longer a width at which this control renders but is too narrow for its own
   // name: below 700px of composer width the harness moves into the composer's
