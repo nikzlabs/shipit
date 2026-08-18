@@ -103,10 +103,32 @@ the expansion of every line, with file pointers and gotchas, is in
       session-id pre-assignment, `$GROK_HOME/config.toml` as the only MCP
       path, `GROK_HOME`'s real layout, the `--output-format json` envelope,
       workspace trust
-- [ ] One dogfood turn per auth mode (billing route!) — **key mode only is
-      in scope; the subscription turn is planning#435**
-- [ ] `shipit agent run` both directions
-- [ ] Event-conversion verification: the full docs/272 recipe run
+- [x] One dogfood turn per auth mode (billing route!) — **key mode only is
+      in scope; the subscription turn is planning#435**. Done 2026-08-18 in
+      two phases (first attempt blocked on egress; operator granted
+      `api.x.ai` mid-run): full tour turn completed on grok-4.6 via the
+      `xai:key` route (inner session `6305255a…`, 29s, side effects on
+      disk, $0.1247 metered), and the **billing route is proven** by a
+      canary + control pair — an invalid *stored* credential fails the turn
+      with the CLI's auth error while the valid ambient env key sits unused,
+      and restoring the stored value makes the same spawn succeed. Evidence:
+      [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
+- [ ] `shipit agent run` both directions — **blocked structurally**
+      2026-08-18: the outer install has no grok harness (and no grok role;
+      an explicit grok target is unassemblable by design — no reasoning
+      levels), and inner local mode has no `shipit` shim (planning#305).
+      Same deferral shape as docs/268's. Details in the run doc above.
+- [x] Event-conversion verification: the full docs/272 recipe run
       (tool-tour capture ✅, inventory diff, recognition matrix on persisted
       history + UI) —
-      `docs/272-harness-conversion-verification/verification-checklist.md`
+      `docs/272-harness-conversion-verification/verification-checklist.md`.
+      Ran 2026-08-18, **verdict RED, recorded**: the Step-2 inventory diff
+      found no recognition registry claims any grok tool name — the adapter
+      ships no transcript-vocabulary normalizer (planning#432 pattern) —
+      and the Step-4 live tour confirmed it in persisted history AND the
+      rendered DOM on the rehydration path (no task panel, no diff blocks,
+      no subagent card; raw-name chips). Filed as **planning#437**; the
+      matrix rows go green when it lands, with this run as the baseline to
+      diff against. Also **planning#438** (a startup-dead grok turn
+      persists no error row), observed live. Evidence:
+      [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
