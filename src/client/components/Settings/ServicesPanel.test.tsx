@@ -122,6 +122,23 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("credential-row-cred_2")).toBeInTheDocument();
   });
 
+  it("cuts neither a card's name nor a credential's label", () => {
+    // Two labels for one service differ only at their END — an ellipsis there
+    // leaves two rows reading identically, which is what a narrow panel used to
+    // draw. Both wrap now; jsdom cannot measure a clip, so the class that would
+    // cause one is what is pinned.
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "zai", billingMode: "key", via: "string", label: "GLM (Z.ai) (ZAI_API_KEY)" }),
+      route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", label: "GLM (Z.ai) (ZAI_CODING_PLAN_KEY)" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("credential-row-cred_1").querySelector(".truncate")).toBeNull();
+    expect(screen.getByTestId("credential-row-cred_2").querySelector(".truncate")).toBeNull();
+    expect(screen.getByTestId("service-card-zai:key").querySelector("h3")?.className).not.toContain(
+      "truncate",
+    );
+  });
+
   it("gives no card a way of its own to add a credential (req 17)", () => {
     // This asserted the opposite until req 17: "Add another" on a multi-
     // credential card, "Add account" on an account-backed one. Both are gone,
@@ -231,6 +248,47 @@ describe("ServicesPanel", () => {
           "add-service-support-zai-claude",
         ),
       ).toBeInTheDocument();
+    });
+
+    it("never cuts a service name, and keeps each tick in its row's own grid track", async () => {
+      // What this pins is the pair of decisions that survive a narrow window,
+      // and jsdom cannot measure either — so both are read off the contract
+      // that produces them.
+      //
+      // The window that provoked this was 484px wide with four harnesses
+      // installed: the table took 5.5rem a column first, the list was the only
+      // thing allowed to shrink, and the row the user presses ended up with a
+      // name clipped to nothing and its mode label spilling out of the button.
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      // 1. No name is drawn with an ellipsis. `truncate` anywhere inside the
+      //    row is exactly the clipping this replaced; the name wraps instead.
+      const row = screen.getByTestId("add-service-option-zai");
+      expect(row.className).toContain("flex-wrap");
+      expect(row.querySelector(".truncate")).toBeNull();
+      expect(screen.getByTestId("add-service-support-head-claude").className).not.toContain(
+        "truncate",
+      );
+
+      // 2. A row that grows keeps its ticks level, because the two containers
+      //    are subgrids over ONE set of row tracks rather than two stacks of
+      //    matching heights. The old arrangement went out of line the first
+      //    time anything wrapped.
+      const table = screen.getByTestId("add-service-support-table");
+      const list = table.parentElement?.firstElementChild as HTMLElement;
+      expect(list.className).toContain("grid-rows-subgrid");
+      expect(table.className).toContain("grid-rows-subgrid");
+      // One track per service, plus the head — read off the rows actually
+      // drawn, so adding a service to the catalogue does not fail this.
+      const rows = screen.getAllByTestId(/^add-service-option-/).length;
+      expect(table.parentElement?.style.gridTemplateRows).toBe(`repeat(${rows + 1}, auto)`);
+
+      // 3. The column's floor is the widest name, not a number measured against
+      //    today's names — `min-content` against titles that cannot break. A
+      //    literal here would start cutting the first title that outgrew it.
+      expect(table.parentElement?.style.gridTemplateColumns).toContain("minmax(min-content, 26rem)");
+      expect(row.querySelector(".whitespace-nowrap")?.textContent).toBe("GLM (Z.ai)");
     });
 
     it("carries the same vendor mark the card will carry", async () => {
