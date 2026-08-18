@@ -24,13 +24,12 @@ They are recorded here as requirements, not relitigated.
    Code's flag surface (`-p`, `--output-format streaming-json`,
    `--always-approve`, `--resume`); the adapter spawns one process per turn
    and maps its NDJSON stream, mirroring `session/agents/claude/`.
-3. **Pinned, reproducible install — a settled design, not an improvisation.**
-   `grok` is curl-installed, not npm, so it cannot ride the npm-lockfile
-   pipeline. The install design (how the exact version is acquired and baked,
-   auto-update disabled, and the id written into `installed.json` — the
-   authoritative installed-set report) is recorded in plan.md and signed off
-   before implementation. The third-party claim that the install script
-   accepts a pinned version must be verified live, not trusted.
+3. **Pinned npm install.** Grok Build installs through the existing
+   `docker/agent-cli` npm pipeline, pinned to an exact `@xai-official/grok`
+   version at least 7 days published (dependency policy), with the CLI's
+   auto-updater disabled so the pinned binary never self-replaces.
+   *(Reworded 2026-08-18 — see Resolved questions: the original text assumed
+   curl-only distribution; an official npm package exists.)*
 4. **Not default-on at launch.** Per docs/271, default-set membership
    (`DEFAULT_HARNESSES` / `HARNESS_DEFAULT`) is a separate, deliberate
    product decision; Grok Build ships installable-but-unchecked. Dogfooding
@@ -59,20 +58,35 @@ They are recorded here as requirements, not relitigated.
 
 ## Open questions
 
-Phase 0 live verification is not yet run (network access pending at time of
-writing). The following are *conditional* human calls — each opens only if
-research lands on its "no" branch; facts themselves are resolved empirically
-and recorded below, per the docs/268 precedent.
+The following is a *conditional* human call — it opens only if live
+verification lands on its "no" branch; facts themselves are resolved
+empirically and recorded below, per the docs/268 precedent.
 
-- **If the install script cannot pin a version** (req 3's third-party claim
-  fails): integrating requires an explicitly signed-off exception to the
-  dependency policy — a human call, not a recipe step.
-- **If no injectable subscription path exists** (req 6's claims fail):
-  launching metered-only (`XAI_API_KEY`) needs explicit sign-off, since
-  ShipIt is subscription-first.
-- **If no reasoning control exists** (req 8): stop and report; the
-  reviewer-default mechanism needs a design decision first.
+- **If no injectable subscription path works in practice** (req 6 — the
+  on-disk store is confirmed first-party, but an injected `auth.json`
+  authenticating a headless turn in a fresh container is unverified until a
+  credential is available): launching metered-only (`XAI_API_KEY`) needs
+  explicit sign-off, since ShipIt is subscription-first.
 
 ## Resolved questions
 
-None yet.
+- **2026-08-18 — Can the install be exact-pinned (req 3, a start-blocker)?**
+  Resolved empirically, better than expected: an **official npm package
+  `@xai-official/grok`** exists (latest 1.0.5; verified against the registry
+  — platform binaries as `optionalDependencies` + postinstall shim, the same
+  shape as `opencode-ai`), so Grok rides the standard npm-lockfile pipeline
+  with the established `npm rebuild` exception; no policy exception and no
+  bespoke curl/bake design is needed. The curl installer's pin claim also
+  verified first-party (`install.sh` accepts `bash -s X.Y.Z`), and
+  auto-update has three first-party kill switches (`--no-auto-update`,
+  config `[cli] auto_update`, `GROK_DISABLE_AUTOUPDATER`). The original
+  req 3 text and the pin-exception open question were rewritten/removed
+  accordingly.
+- **2026-08-18 — Does Grok Build expose reasoning control (req 8, a
+  start-blocker)?** Resolved empirically against CLI 1.0.5:
+  `--reasoning-effort <EFFORT>` (alias `--effort`) exists, with per-model
+  `reasoning_efforts` catalog arrays and `default_reasoning_effort` config;
+  an unsupported effort is silently ignored, so ShipIt's catalogue owns
+  validation. The "stop and report if none" branch was not taken. The exact
+  level vocabulary still needs the authenticated catalog (pending
+  credential) before `REVIEWER_DEFAULT_EFFORT` is set.
