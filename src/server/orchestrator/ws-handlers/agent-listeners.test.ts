@@ -522,6 +522,28 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
+    it("adds no row for a quota refusal — the failover owns that turn's outcome", () => {
+      // docs/150-multiple-provider-subscriptions req 14: a quota-refused turn
+      // is about to be re-run on the next account, and a turn being re-run has
+      // not ended. If no account is left, the terminal `ProviderRouteUnavailableError`
+      // carries the actionable routing message; the provider's raw refusal
+      // landing here first would pre-empt it in the transcript.
+      const { agent, runner, d } = wire();
+
+      agent.emit("event", {
+        type: "agent_result",
+        status: "error",
+        sessionId: "cli-session",
+        error: "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.",
+      } as AgentEvent);
+
+      const calls = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls;
+      const rows = calls.flatMap((c) => c[1] as { isError?: boolean }[]);
+      expect(rows.some((m) => m.isError)).toBe(false);
+      expect(d.chatHistoryManager.append).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
     it("adds no row for a user-interrupted turn", () => {
       const { agent, runner, d } = wire();
       runner.wasInterrupted = true;

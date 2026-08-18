@@ -531,6 +531,18 @@ export function wireAgentListeners(
    */
   let persistedTerminalErrorRow = false;
 
+  /**
+   * planning#438 — did this result carry a QUOTA refusal? Set in the
+   * `agent_result` detection block and read by the persistence block further
+   * down, which must stand down when it is true: a quota-refused turn is about
+   * to be failed over to the next account (the executor's docs/150 req 14 gate),
+   * and a turn that is being re-run has not ended. When no account is left, the
+   * turn ends as a `ProviderRouteUnavailableError` through the `error` handler,
+   * whose row names the routing failure and the resend that resolves it — which
+   * is the message the user can act on, not the provider's raw refusal.
+   */
+  let sawHardExhaustionThisTurn = false;
+
   // ---- MCP mid-turn crash detection (docs/088) + per-tool timing (docs/185) ----
   //
   // The CLI's init event covers cold-start liveness (ClaudeAdapter →
@@ -939,6 +951,13 @@ export function wireAgentListeners(
       const detected = normalizedError
         ? detectHardExhaustion(normalizedError)
         : detectHardExhaustionInTurnText(noticeText);
+      // planning#438 — carried to the persistence block below, which must NOT
+      // write a terminal error row for a quota refusal: the executor's docs/150
+      // req 14 gate fails this turn over to the next account, and the retry owns
+      // the user-visible outcome. If no account is left, the turn ends as a
+      // `ProviderRouteUnavailableError` through the `error` handler, which
+      // persists the routing message instead — the one the user can act on.
+      sawHardExhaustionThisTurn = detected !== null;
       const exhaustedSessionId = opts.capturedSessionId;
       if (exhaustedSessionId && deps.markSessionAccountExhausted && detected) {
         deps.markSessionAccountExhausted(
@@ -1647,6 +1666,7 @@ export function wireAgentListeners(
         && !sawAuthRequiredThisTurn
         && !missingConversationDetected
         && !persistedTerminalErrorRow
+        && !sawHardExhaustionThisTurn
       ) {
         persistedTerminalErrorRow = true;
         // Guarded like the executor's `postTurnStep` steps, and for the same
