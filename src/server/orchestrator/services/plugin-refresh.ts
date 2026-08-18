@@ -48,11 +48,14 @@ export interface PluginRefreshRow {
    */
   degraded?: string[];
   /**
-   * docs/266-plugin-install-diagnosability reqs 5, 6 — this round re-installed the version that was already
-   * live (`--force`). It needs its own field because `status` answers "did the
-   * live commit change", and for a forced re-install the honest answer to that
-   * is no: before and after are the same commit, and reporting `unchanged`
-   * would tell a consumer their retry did nothing.
+   * docs/266-plugin-install-diagnosability reqs 5, 6 — this round re-installed
+   * the version that was already live. It needs its own field because `status`
+   * answers "did the live commit change", and for a re-install the honest
+   * answer to that is no: before and after are the same commit, and reporting
+   * `unchanged` would tell a consumer their retry did nothing.
+   *
+   * docs/273-plugin-generation-rebuild — set for a rebuild ShipIt decided on
+   * itself, not only for `--force`. See where it is computed.
    */
   reinstalled?: boolean;
   /**
@@ -206,17 +209,21 @@ export async function refreshPluginRepos(
         ...(live?.manifestWarnings ?? []),
         liveInstallProblem(install, after),
       ].filter((d): d is string => typeof d === "string" && d.length > 0);
-      // A forced round that reached `activated` re-staged and re-installed the
-      // same commit. The outcome is needed as well as the two commits: for a
-      // re-install they are identical by construction, so `after !== was`
-      // cannot see it. And both halves are needed — `--force` on a repository
-      // with NOTHING live is an ordinary first activation, which must read
-      // `none → <commit>` rather than claiming it re-installed something that
-      // was never there.
-      const reinstalled = force === true
-        && outcome?.status === "activated"
-        && was !== null
-        && was === after;
+      // A round that reached `activated` on the commit that was already live
+      // re-staged and re-installed it. The outcome is needed as well as the two
+      // commits: for a re-install they are identical by construction, so
+      // `after !== was` cannot see it. And both halves are needed — a round on a
+      // repository with NOTHING live is an ordinary first activation, which must
+      // read `none → <commit>` rather than claiming it re-installed something
+      // that was never there.
+      //
+      // docs/273-plugin-generation-rebuild — no longer conditioned on `--force`.
+      // A round can now rebuild a live version because the declaration selected
+      // an export its install never covered, and that is the same event from the
+      // caller's side: the commit did not move and the plugin was nevertheless
+      // installed again. Reporting it as `unchanged` would tell a consumer that
+      // the round which just fixed their plugin did nothing.
+      const reinstalled = outcome?.status === "activated" && was !== null && was === after;
       return {
         repo: target.name,
         ref: target.ref,

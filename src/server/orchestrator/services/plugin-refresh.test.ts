@@ -327,8 +327,8 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
   });
 
   it("refuses --force without a repository name, and runs nothing", async () => {
-    // It discards a live version's writable layer; a forgotten name must not
-    // apply that to every declared repository.
+    // It re-runs an install and replaces what the last one left; a forgotten
+    // name must not apply that to every declared repository.
     writeConfig(DECLARATION);
     const before = await refreshPluginRepos("sess", workspaceDir, deps());
     expect(before.rows[0]!.status).toBe("activated");
@@ -364,5 +364,42 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
     expect(forced.rows[0]!.reinstalled).toBe(true);
     // The same version — a retry, not an upgrade.
     expect(forced.rows[0]!.after).toBe(live);
+  });
+
+  /**
+   * docs/273-plugin-generation-rebuild — the reporter never ran `--force` in
+   * the first place: they edited `shipit.yaml`, and the round that read the edit
+   * had to install. `reinstalled` is what tells them it did, because the commit
+   * cannot move for a re-install and `status` alone reads `unchanged`.
+   */
+  it("reports a rebuild ShipIt decided on itself, not only a forced one", async () => {
+    fs.writeFileSync(
+      path.join(originDir, "shipit.yaml"),
+      "exports:\n  plugins:\n    probe:\n      install: npm ci\n      cli:\n        probe: bin/probe.mjs\n",
+    );
+    await commitOnOrigin("installing-manifest");
+
+    const installed: string[] = [];
+    const withInstall = () => ({
+      ...deps(),
+      runInstall: async (job: { exports: readonly { name: string }[] }) => {
+        installed.push(job.exports.map((e) => e.name).join(","));
+        return { ok: true };
+      },
+    });
+
+    // Published while nothing selects `probe` — so nothing was installed.
+    writeConfig(DECLARATION);
+    const first = await refreshPluginRepos("sess", workspaceDir, withInstall());
+    expect(first.rows[0]!.status).toBe("activated");
+    expect(installed).toEqual([""]);
+
+    // The declaration now selects it, at the same commit.
+    writeConfig(`${DECLARATION}  use:\n    - plugin: probe\n      from: tools\n`);
+    const repaired = await refreshPluginRepos("sess", workspaceDir, withInstall(), "tools");
+
+    expect(installed).toEqual(["", "probe"]);
+    expect(repaired.rows[0]!.reinstalled).toBe(true);
+    expect(repaired.rows[0]!.after).toBe(first.rows[0]!.after);
   });
 });

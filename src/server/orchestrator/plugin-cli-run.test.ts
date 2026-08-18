@@ -1113,7 +1113,7 @@ describe("mapWorkingDir", () => {
  * generation.
  */
 describe("runPluginCommand — the consumer lease", () => {
-  const GENERATION = { sessionId: "s1", repoName: "tools", commit: COMMIT };
+  const GENERATION = { sessionId: "s1", repoName: "tools", generationId: COMMIT };
 
   afterEach(() => releaseSessionGenerationHolds("s1"));
 

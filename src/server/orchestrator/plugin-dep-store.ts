@@ -640,8 +640,8 @@ export async function livePluginStoreArtifacts(
     }
     for (const repoName of await listDirs(root)) {
       const generations = path.join(root, repoName, "generations");
-      for (const commit of await listDirs(generations)) {
-        const record = readGenerationRecordAt(path.join(generations, commit));
+      for (const generationId of await listDirs(generations)) {
+        const record = readGenerationRecordAt(path.join(generations, generationId));
         if (!record) continue;
         for (const pin of record.basePins ?? []) {
           const parsed = parsePluginBasePin(pin);

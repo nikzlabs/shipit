@@ -80,6 +80,59 @@ const RECORD_FILE = ".shipit-generation.json";
 /** A 40-hex object name — a `pin` in this shape needs no ref resolution. */
 const SHA_RE = /^[0-9a-f]{40}$/i;
 
+/**
+ * A published generation's directory name: the commit, or the commit and a
+ * build revision (docs/273-plugin-generation-rebuild).
+ *
+ * The distinction this draws is the one the prune depends on — a name in this
+ * shape is an identity a consumer can be HOLDING, and is deleted only under the
+ * lease; anything else under `generations/` is a `.staging-`/`.replaced-`
+ * leftover that nothing ever mounted.
+ */
+const GENERATION_ID_RE = /^[0-9a-f]{40}(\.[0-9a-f]{8})?$/i;
+
+/** How many hex characters a rebuild's revision suffix carries. */
+const REVISION_CHARS = 8;
+
+/**
+ * Split a generation id into the commit it was built from and the build
+ * revision, if it has one. A bare commit has none, which is what every
+ * generation published before docs/273-plugin-generation-rebuild is.
+ */
+export function splitGenerationId(generationId: string): { commit: string; revision?: string } {
+  const dot = generationId.indexOf(".");
+  return dot === -1
+    ? { commit: generationId }
+    : { commit: generationId.slice(0, dot), revision: generationId.slice(dot + 1) };
+}
+
+/**
+ * The id of the generation a record describes.
+ *
+ * `record.id` is absent on every generation published before
+ * docs/273-plugin-generation-rebuild, and those are named by their commit — so
+ * the fallback is not a guess, it is what the directory is called. Readers that
+ * have resolved the directory should prefer {@link generationIdFor}, which
+ * reads the name rather than reconstructing it.
+ */
+export function generationIdOf(record: GenerationRecord): string {
+  return record.id ?? record.commit;
+}
+
+/**
+ * The id of a generation whose DIRECTORY is already resolved — the directory's
+ * own name, which is the identity by construction (publish renames the staging
+ * tree to `generations/<id>`).
+ *
+ * Preferred over {@link generationIdOf} wherever a resolved directory is in
+ * hand: the volume a consumer mounts and the lowerdir it points at must come
+ * from one place, and a name read off the tree cannot disagree with the tree.
+ */
+export function generationIdFor(dir: string, record: GenerationRecord): string {
+  const name = path.basename(dir);
+  return GENERATION_ID_RE.test(name) ? name : generationIdOf(record);
+}
+
 /** The record written inside each generation directory. */
 export interface GenerationRecord {
   repoName: string;
@@ -95,6 +148,21 @@ export interface GenerationRecord {
   source: string;
   /** The exact commit this generation was built from (req 15). */
   commit: string;
+  /**
+   * docs/273-plugin-generation-rebuild — this generation's own identity: the
+   * directory under `generations/`, the writable layer under `work/`, and the
+   * overlay volume every consumer mounts.
+   *
+   * Usually the commit. A REBUILD of a commit that is already live gets
+   * `<commit>.<8 hex>` instead, so its checkout, layer and volume are a complete
+   * new set beside the live one rather than the live one being cleared under a
+   * running container — which is what made the documented `--force` recovery
+   * unreachable for exactly the plugins that needed it (nikzlabs/shipit#2411).
+   *
+   * Absent on records written before this existed; those are named by their
+   * commit, so {@link generationIdOf} falls back to it.
+   */
+  id?: string;
   /** What the consumer declared: `branch main`, `pin v1.2.0`, … */
   ref: string;
   /** ISO timestamp of activation. */
@@ -120,6 +188,24 @@ export interface GenerationRecord {
    * every generation was before this existed.
    */
   basePins?: string[];
+  /**
+   * docs/273-plugin-generation-rebuild req 1 — the selected exports whose
+   * `install` this generation's layer was built for.
+   *
+   * What an activation installs is decided by the SELECTION, not by the commit:
+   * only an export the consuming project selected in `plugins.use` is ever
+   * installed. So a round that resolved a smaller selection — including the
+   * empty one a `use:` entry mid-edit produces — publishes a generation that is
+   * genuinely missing an install, and without this field the next round has no
+   * way to know: it sees the declared commit already live and returns
+   * `unchanged` forever (nikzlabs/shipit#2411).
+   *
+   * Absent means "cannot say", and is read as covering everything. Every
+   * generation published before this existed is in that state, and treating
+   * unknown as uninstalled would rebuild every live plugin in every session on
+   * the first round after an upgrade — the opposite of req 15.
+   */
+  installedFor?: string[];
 }
 
 /**
@@ -128,9 +214,15 @@ export interface GenerationRecord {
  *
  * Implemented by `plugin-leases.ts`; declared here because this module is the
  * only caller and the shape belongs to the prune, not to the lease.
+ *
+ * Keyed by the GENERATION ID, not the commit (docs/273-plugin-generation-rebuild):
+ * the lease's durable half is the generation's overlay volume, and that volume
+ * is named per build — two builds of one commit are two independent trees, and
+ * a lease that could not tell them apart would refuse to delete one because the
+ * other is mounted.
  */
 export type BeginGenerationDeletion = (
-  generation: { repoName: string; commit: string },
+  generation: { repoName: string; generationId: string },
 ) => Promise<(() => void) | null>;
 
 /** What `activateGeneration` did. */
@@ -173,6 +265,13 @@ export interface PluginInstallJob {
    */
   source: string;
   commit: string;
+  /**
+   * docs/273-plugin-generation-rebuild — the build this install belongs to,
+   * which is what its writable layer, its stamp and its overlay volume are all
+   * keyed by. `<commit>` for an ordinary activation; `<commit>.<8 hex>` when
+   * this is a rebuild of a commit whose own directories are in use.
+   */
+  generationId: string;
   /** The staged checkout — NOT a published generation. */
   stagingDir: string;
   /** Only the exports this consumer selected; unselected ones are not installed. */
@@ -363,8 +462,14 @@ function generationsRoot(stateDir: string, repoName: string): string {
   return path.join(repoRoot(stateDir, repoName), "generations");
 }
 
-function generationDir(stateDir: string, repoName: string, commit: string): string {
-  return path.join(generationsRoot(stateDir, repoName), commit);
+/**
+ * A generation's directory, keyed by its ID and not its commit
+ * (docs/273-plugin-generation-rebuild). The two are the same string for an
+ * ordinary build and deliberately are not for a rebuild — passing the bare
+ * commit here would path into the copy the rebuild was made beside.
+ */
+function generationDir(stateDir: string, repoName: string, generationId: string): string {
+  return path.join(generationsRoot(stateDir, repoName), generationId);
 }
 
 /** The symlink every reader follows — the only name that means "live". */
@@ -702,7 +807,26 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     if (missing.length > 0) {
       return { status: "failed", reason: selectorError(missing), missingSelectors: missing, previous, ...warningField };
     }
-    return { status: "unchanged", generation: previous, ...warningField };
+    // docs/273-plugin-generation-rebuild req 1 — the commit is not the whole
+    // question. What an activation INSTALLS is decided by the selection, so a
+    // generation published for a smaller one is live and genuinely missing an
+    // install — and this branch is what made that terminal: the round that
+    // finally selects the export is the round that returns `unchanged`.
+    //
+    // Asked only when there is a runner to answer it. With none (local/dogfood,
+    // tests) a rebuild would install nothing, record the same empty coverage and
+    // rebuild again on the next round; there the `not-run` record and the
+    // manifest warning already say what is missing.
+    const uncovered = deps.runInstall
+      ? uncoveredInstalls(stateDir, repo.name, previous, deps.selectedExports)
+      : [];
+    if (uncovered.length === 0) {
+      return { status: "unchanged", generation: previous, ...warningField };
+    }
+    console.log(
+      `[plugins] ${repo.name}: ${commit.slice(0, 9)} is live but \`${uncovered.join("`, `")}\` `
+      + "was never installed for it — rebuilding",
+    );
   }
 
   // Cancelled before anything durable exists: a session archived mid-fetch
@@ -721,7 +845,13 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
   }
 
-  const finalDir = generationDir(stateDir, repo.name, commit);
+  // docs/273-plugin-generation-rebuild — the id this build publishes under. It
+  // starts as the commit and is only forked below, when the directories that
+  // name would use are in use by a live consumer. The staging tree keeps its own
+  // random name either way, and both live under `generations/`, so a fork is a
+  // rename to a different sibling and nothing else.
+  let generationId = commit;
+  let finalDir = generationDir(stateDir, repo.name, generationId);
   const stagingDir = `${finalDir}.staging-${crypto.randomUUID().slice(0, 8)}`;
 
   try {
@@ -759,50 +889,82 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       deps.selectedExports.some((n) => n.toLowerCase() === e.name.toLowerCase()),
     );
 
-    // **Everything from here to the rename touches THIS commit's durable
-    // artifacts, so it runs under the consumer lease** (req 15 —
-    // `plugin-leases.ts`). Two of them, and both are reachable by the same
-    // route: a project that pins back to a version it recently ran, whose
+    // **Reusing the id `<commit>` means writing over durable artifacts that a
+    // consumer may be mounted on, so that reuse runs under the consumer lease**
+    // (req 15 — `plugin-leases.ts`). Two of them, and both are reachable by the
+    // same route: a project that pins back to a version it recently ran, whose
     // generation a prune left in place precisely because a companion CLI or a
-    // plugin service was still using it.
+    // plugin service was still using it — and, since docs/266, a `--force` or a
+    // rebuild whose target IS the live version.
     //
-    //  - `work/<commit>` — install CLEARS the upper and work dirs before it
-    //    writes (`plugin-install.ts`'s `prepareLayer`, which must: a
-    //    half-populated upper from an earlier failure would otherwise be merged
-    //    in as if it had succeeded). That is the live upper layer of the volume
-    //    the consumer is running on.
-    //  - `generations/<commit>` — cleared before the staging tree is renamed
-    //    into place, which replaces the consumer's overlay lowerdir with a fresh
+    //  - `work/<id>` — install CLEARS the upper and work dirs before it writes
+    //    (`plugin-install.ts`'s `prepareLayer`, which must: a half-populated
+    //    upper from an earlier failure would otherwise be merged in as if it had
+    //    succeeded). That is the live upper layer of the volume the consumer is
+    //    running on.
+    //  - `generations/<id>` — renamed aside before the staging tree takes its
+    //    place, which replaces the consumer's overlay lowerdir with a fresh
     //    inode. docs/183's spike records the result: merged `readdir` starts
     //    coming back empty while path lookups still resolve, so the container
     //    misbehaves rather than fails.
     //
-    // Refusing instead is an ordinary failed activation — the prior version
-    // stays live (req 15) and the next round succeeds once the consumer is done.
-    // Nothing can take a NEW hold on this commit while the claim is held: the
-    // claim itself blocks them (`holdGeneration` returns null for a generation
-    // being deleted), which is what a forced round relies on.
+    // **docs/273-plugin-generation-rebuild — the id forks instead of the round
+    // failing, and a build whose target is LIVE never reuses the id at all.**
     //
-    // For an ordinary round `active` also does not name this commit — one that
-    // was already live returned `unchanged` far above. **docs/266's `force` is
-    // the exception**, and it is the case this refusal was always the answer
-    // for: there the live version IS the one being re-staged, so a consumer
-    // holding it makes the round fail cleanly rather than corrupt a live mount.
-    // What force costs when the claim IS granted is stated in its own docs: the
-    // layer is cleared before the install writes, so a forced round that then
-    // fails leaves the version live without its install output — the state the
-    // consumer was already in, now recorded in the install record.
-    const clearGeneration = deps.beginGenerationDeletion
-      ? await deps.beginGenerationDeletion({ repoName: repo.name, commit }).catch(() => null)
-      : noop;
-    if (!clearGeneration) {
-      await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-      return {
-        status: "failed",
-        reason: `the copy of ${commit.slice(0, 9)} already in this session is still in use — try again in a moment`,
-        ...withPrevious,
-        ...warningField,
-      };
+    // Two things follow from `fork()`, and they are not the same thing:
+    //
+    //  - A build of the version that is live — `--force`, or a rebuild for a
+    //    selection the live generation was never installed for — ALWAYS forks,
+    //    whatever the lease would say. Not asking is the point: a granted claim
+    //    proves nobody has the tree MOUNTED, and clearing a live layer that
+    //    nobody happens to be running is still destructive, because an install
+    //    that then fails leaves the version live with the output of its previous
+    //    install gone. req 4 is that a recovery which cannot complete leaves the
+    //    plugin exactly as it found it, and it is what the reporter watched fail:
+    //    an attempt moved their plugin from `active, usable` to `degraded, NOT
+    //    USABLE` (nikzlabs/shipit#2411).
+    //  - A REFUSED claim forks too, rather than ending the round with "still in
+    //    use". That refusal was the deadlock: what holds the version is the
+    //    plugin's own service, which is failing BECAUSE the install did not run,
+    //    and the hold is taken for a DECLARED service — so stopping it, or
+    //    setting `autostart: false`, releases nothing.
+    //
+    // A forked build owns its checkout, its layer and its volume, so it touches
+    // nothing the live version has: no lease is needed, nothing is refused, the
+    // live version keeps serving until the link swap, and a failure discards the
+    // new tree whole. The superseded one is left to the prune, which takes the
+    // lease and declines while its container still has it — costing disk until a
+    // later round, never correctness.
+    //
+    // What still reuses the id, and still needs the lease for it: a target that
+    // is NOT live. A leftover `generations/<commit>` from a crashed attempt, and
+    // a pin back to a version a prune left in place because a companion CLI or a
+    // service was using it. Reuse is what keeps the install stamp meaningful —
+    // an install that succeeded and then failed to publish re-stages under the
+    // same id and finds its own layer already built.
+    const fork = (): void => {
+      generationId = `${commit}.${crypto.randomUUID().replace(/-/g, "").slice(0, REVISION_CHARS)}`;
+      finalDir = generationDir(stateDir, repo.name, generationId);
+      console.log(
+        `[plugins] ${repo.name}: building ${commit.slice(0, 9)} beside the copy in place, as ${generationId}`,
+      );
+    };
+
+    let clearGeneration: (() => void) | null;
+    if (previous && generationIdOf(previous) === generationId) {
+      fork();
+      clearGeneration = noop;
+    } else {
+      clearGeneration = deps.beginGenerationDeletion
+        ? await deps.beginGenerationDeletion({ repoName: repo.name, generationId }).catch(() => null)
+        : noop;
+      if (!clearGeneration) {
+        fork();
+        // No claim for the forked id: nothing has ever published or mounted it,
+        // so there is nothing to exclude — the publish below finds no `finalDir`
+        // to move aside, and install creates its layer from nothing.
+        clearGeneration = noop;
+      }
     }
 
     // The lease is released once, from whichever path reaches it first — the
@@ -836,6 +998,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         const outcome = await deps.runInstall({
           stagingDir,
           commit,
+          generationId,
           repoName: repo.name,
           source,
           exports: selected,
@@ -890,11 +1053,19 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         repoName: repo.name,
         source,
         commit,
+        id: generationId,
         ref: declaredRef,
         activatedAt: new Date().toISOString(),
         exports: exportsList.map((e) => e.name),
         manifestWarnings: notInstalled ? [...manifestWarnings, notInstalled] : manifestWarnings,
         ...(basePins.length > 0 ? { basePins } : {}),
+        // docs/273-plugin-generation-rebuild req 1 — what this build's layer was
+        // installed FOR, so a later round with a wider selection can tell that
+        // the live version does not cover it. Written whatever the runtime did,
+        // including the empty list: "installed for nothing" is the state that
+        // was previously indistinguishable from "installed", and the whole point
+        // is that it is now recorded rather than inferred.
+        installedFor: installNamesFor(selected, deps.selectedExports),
       };
       // The record is written into the staging tree, so the directory that
       // becomes live is complete before it has a name anything reads.
@@ -946,11 +1117,11 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         }
         if (aside) await fsp.rm(aside, { recursive: true, force: true }).catch(() => undefined);
         // Released BEFORE the link swap, so the moment `active` names this
-        // commit a consumer can hold it. The other order leaves a window in
+        // generation a consumer can hold it. The other order leaves a window in
         // which the live generation refuses every hold. The outer `finally`
         // still covers every path that never reaches this line.
         releaseLease();
-        await swapActiveLink(stateDir, repo.name, commit);
+        await swapActiveLink(stateDir, repo.name, generationId);
         return null;
       });
       if (refusal !== null) {
@@ -960,7 +1131,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     } finally {
       releaseLease();
     }
-    await pruneOldGenerations(stateDir, repo.name, commit, deps.beginGenerationDeletion);
+    await pruneOldGenerations(stateDir, repo.name, generationId, deps.beginGenerationDeletion);
 
     console.log(`[plugins] ${repo.name}: activated ${commit.slice(0, 9)} (${declaredRef})`);
     // `notInstalled` is deliberately NOT returned as the attempt `warning` as
@@ -982,6 +1153,51 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     return { status: "failed", reason: message(err), ...withPrevious, ...warningField };
   }
+}
+
+/**
+ * docs/273-plugin-generation-rebuild req 1 — which of a selection's exports
+ * declare an `install`, in the manifest's own spelling.
+ *
+ * The unit of "was this installed?" is the export, not the command: a command
+ * that changes between two commits is a different commit and is handled by the
+ * commit test, while an export selected for the first time is a new install for
+ * the SAME commit, which is the case this exists for.
+ */
+function installNamesFor(
+  exportsList: readonly PluginExport[],
+  selected: readonly string[],
+): string[] {
+  const wanted = new Set(selected.map((n) => n.toLowerCase()));
+  return exportsList
+    .filter((e) => wanted.has(e.name.toLowerCase()) && e.install?.trim())
+    .map((e) => e.name);
+}
+
+/**
+ * docs/273-plugin-generation-rebuild req 1 — the selected exports that declare
+ * an `install` the LIVE generation was not built for.
+ *
+ * Read from the live generation's own manifest, not from the fetched one: they
+ * are the same commit, so the answer is identical, and reading the published
+ * tree costs no fetch and cannot be affected by a staging tree that does not
+ * exist yet at the moment this is asked.
+ *
+ * A record with no `installedFor` answers "nothing uncovered". It cannot say
+ * what it installed, and treating that as "installed nothing" would rebuild
+ * every plugin generation that predates the field — see the field's own
+ * docstring.
+ */
+function uncoveredInstalls(
+  stateDir: string,
+  repoName: string,
+  live: GenerationRecord,
+  selected: readonly string[],
+): string[] {
+  if (!live.installedFor) return [];
+  const covered = new Set(live.installedFor.map((n) => n.toLowerCase()));
+  const needed = installNamesFor(readGenerationManifestAt(activeLinkPath(stateDir, repoName)), selected);
+  return needed.filter((n) => !covered.has(n.toLowerCase()));
 }
 
 function missingSelectors(selected: readonly string[], available: readonly string[]): string[] {
@@ -1270,10 +1486,14 @@ const SELF_SOURCE = destinationKey({ kind: "self" });
  * it over the old one. `rename(2)` on a symlink is atomic, so a concurrent
  * reader never observes a missing `active`.
  */
-async function swapActiveLink(stateDir: string, repoName: string, commit: string): Promise<void> {
+async function swapActiveLink(
+  stateDir: string,
+  repoName: string,
+  generationId: string,
+): Promise<void> {
   const link = activeLinkPath(stateDir, repoName);
   const tmp = `${link}.tmp-${crypto.randomUUID().slice(0, 8)}`;
-  await fsp.symlink(path.join("generations", commit), tmp);
+  await fsp.symlink(path.join("generations", generationId), tmp);
   await fsp.rename(tmp, link);
 }
 
@@ -1298,16 +1518,16 @@ async function swapActiveLink(stateDir: string, repoName: string, commit: string
 async function pruneOldGenerations(
   stateDir: string,
   repoName: string,
-  keepCommit: string,
+  keepId: string,
   begin: BeginGenerationDeletion | undefined,
 ): Promise<void> {
-  let live = keepCommit;
+  let live = keepId;
   try {
     live = path.basename(await fsp.readlink(activeLinkPath(stateDir, repoName)));
   } catch {
-    // No link yet — keep the commit we just published.
+    // No link yet — keep the generation we just published.
   }
-  await dropGenerations(stateDir, repoName, new Set([keepCommit, live]), begin);
+  await dropGenerations(stateDir, repoName, new Set([keepId, live]), begin);
 }
 
 /**
@@ -1319,10 +1539,15 @@ async function pruneOldGenerations(
  * the other deleted; the lease is taken once and covers both.
  *
  * **Abandoned staging trees are outside the lease, and correctly so.** They are
- * named `<sha>.staging-<uuid>`, so they fail the object-name test below and are
- * removed unconditionally: publish RENAMES a staging tree, it never mounts one,
- * so no consumer can ever have had it. Only a published generation has an
- * identity a consumer could be holding.
+ * named `<sha>.staging-<uuid>`, so they fail the generation-id test below and
+ * are removed unconditionally: publish RENAMES a staging tree, it never mounts
+ * one, so no consumer can ever have had it. Only a published generation has an
+ * identity a consumer could be holding — and since
+ * docs/273-plugin-generation-rebuild that identity is `<sha>` OR
+ * `<sha>.<8 hex>`, which is why the test is {@link GENERATION_ID_RE} and not a
+ * bare object name. A rebuild is exactly the generation most likely to be
+ * mounted while an older one is pruned; matching only `<sha>` would have
+ * deleted it out from under its container with no lease taken at all.
  *
  * Never throws. A prune runs immediately after a publish that already succeeded,
  * so a daemon hiccup here must not turn an activated generation into a reported
@@ -1341,29 +1566,29 @@ async function dropGenerations(
   // Leftovers from a stage that never published — no identity, no consumer.
   await Promise.all(
     entries
-      .filter((name) => !keep.has(name) && !SHA_RE.test(name))
+      .filter((name) => !keep.has(name) && !GENERATION_ID_RE.test(name))
       .map((name) => fsp.rm(path.join(root, name), { recursive: true, force: true }).catch(() => undefined)),
   );
 
   const superseded = new Set(
-    [...entries, ...layers].filter((name) => SHA_RE.test(name) && !keep.has(name)),
+    [...entries, ...layers].filter((name) => GENERATION_ID_RE.test(name) && !keep.has(name)),
   );
   await Promise.all(
-    [...superseded].map(async (commit) => {
-      const done = begin ? await begin({ repoName, commit }).catch(() => null) : noop;
+    [...superseded].map(async (generationId) => {
+      const done = begin ? await begin({ repoName, generationId }).catch(() => null) : noop;
       if (!done) {
         // req 15 — the prior complete version keeps running. A consumer still
         // has this tree mounted, so it stays; the next publish's prune retries,
         // and a session that never refreshes again takes the whole state
         // directory with it when it goes.
         console.log(
-          `[plugins] ${repoName}: ${commit.slice(0, 9)} is still in use — leaving it for a later round`,
+          `[plugins] ${repoName}: ${generationId.slice(0, 9)} is still in use — leaving it for a later round`,
         );
         return;
       }
       try {
-        await fsp.rm(path.join(root, commit), { recursive: true, force: true }).catch(() => undefined);
-        await fsp.rm(path.join(workRoot, commit), { recursive: true, force: true }).catch(() => undefined);
+        await fsp.rm(path.join(root, generationId), { recursive: true, force: true }).catch(() => undefined);
+        await fsp.rm(path.join(workRoot, generationId), { recursive: true, force: true }).catch(() => undefined);
       } finally {
         done();
       }

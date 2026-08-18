@@ -165,6 +165,18 @@ already exits non-zero when a row's own status is `failed`.
 
 ## 4. `shipit plugin refresh <name> --force` (reqs 5, 6)
 
+> **Superseded in part by docs/273-plugin-generation-rebuild** (nikzlabs/shipit#2411).
+> This section's safety argument — "the deletion claim refuses, so a force
+> cannot pull a tree out from under a running container" — is sound about
+> corruption and wrong about reachability: for a plugin that declares a service
+> the claim can never be granted, because the hold is taken per DECLARED
+> fragment and a stopped container still pins its volume. So `--force` was
+> refused every time for exactly the plugins it was written for. The rejected
+> alternative below — "give a forced re-install its own generation id" — is what
+> shipped; the four keyed paths it was priced at are the four it threads
+> through. What survives here unchanged: force skips the already-live
+> short-circuit and both install shortcuts, and it needs a repository name.
+
 **It skips exactly one thing: the "already live" short-circuit.** Everything
 after that is the ordinary round — stage, install, validate, publish, swap,
 prune — so every property the subsystem already has holds unchanged.
@@ -190,6 +202,13 @@ id through the generation directory, the work directory, the install stamp and
 the overlay volume name — four keyed paths — to buy a property the deletion
 claim already provides.
 
+**That reasoning was wrong, and docs/273-plugin-generation-rebuild reverses
+it.** The claim provides the property only when it is *granted*, and the case
+`--force` exists for is precisely the one where it never is: the version is
+held by the plugin's own service, which is failing because the install is
+broken. "Refuses and changes nothing" is the right answer to a race and the
+wrong answer to a deadlock.
+
 **Force also bypasses the install runner's two shortcuts**, or it is not a
 retry: the install stamp (`recorded.stamp === stamp` → "install already done")
 and the shared dependency store's `adoptPluginDepBases` hit (mount the store's
@@ -198,6 +217,9 @@ make `--force` a no-op that reports success — the exact failure this feature
 exists to stop.
 
 **What force costs, stated because a consumer has to be able to weigh it.**
+(Also revised by docs/273-plugin-generation-rebuild: this cost is now paid only
+when the live version is *unheld*, because a rebuild beside a held one installs
+into a layer of its own and a failure discards it whole.)
 `prepareLayer` clears the writable layer before the install writes, so a forced
 round that then fails leaves the version live with its install output gone —
 or, precisely, replaced by whatever the failed attempt wrote before it died

@@ -211,7 +211,14 @@ let stagingDir: string;
 const COMMIT = "c".repeat(40);
 
 function job(exports: PluginExport[]): PluginInstallJob {
-  return { repoName: "tools", source: "acme/tools", commit: COMMIT, stagingDir, exports };
+  return {
+    repoName: "tools",
+    source: "acme/tools",
+    commit: COMMIT,
+    generationId: COMMIT,
+    stagingDir,
+    exports,
+  };
 }
 
 beforeEach(() => {
@@ -712,7 +719,7 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     const nextCommit = "e".repeat(40);
     const next = fakeDocker({ onStart: installs(nextCommit) });
     const warm = await createPluginInstallRunner({ ...runner, docker: next.docker })({
-      ...job([npmExport()]), commit: nextCommit,
+      ...job([npmExport()]), commit: nextCommit, generationId: nextCommit,
     });
 
     expect(next.containers).toHaveLength(0);
@@ -734,13 +741,13 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     const nextCommit = "e".repeat(40);
     const warm = fakeDocker({ onStart: installs(nextCommit) });
     await createPluginInstallRunner({ ...runner, docker: warm.docker })({
-      ...job([npmExport()]), commit: nextCommit,
+      ...job([npmExport()]), commit: nextCommit, generationId: nextCommit,
     });
     expect(warm.containers).toHaveLength(0);
 
     const forced = fakeDocker({ onStart: installs(nextCommit) });
     const result = await createPluginInstallRunner({ ...runner, docker: forced.docker })({
-      ...job([npmExport()]), commit: nextCommit, force: true,
+      ...job([npmExport()]), commit: nextCommit, generationId: nextCommit, force: true,
     });
 
     expect(result.ok).toBe(true);
@@ -757,7 +764,7 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     const exp = npmExport();
     fs.writeFileSync(path.join(stagingDir, "package-lock.json"), `{"lockfileVersion":4}`);
     const moved = await createPluginInstallRunner({ ...runner, docker: second.docker })({
-      ...job([exp]), commit: movedCommit,
+      ...job([exp]), commit: movedCommit, generationId: movedCommit,
     });
 
     expect(second.containers).toHaveLength(1);
@@ -802,7 +809,7 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     const otherCommit = "a".repeat(40);
     two.containers.length = 0;
     await createPluginInstallRunner({ ...runner, docker: two.docker })({
-      ...job([npmExport()]), source: "acme/other", commit: otherCommit,
+      ...job([npmExport()]), source: "acme/other", commit: otherCommit, generationId: otherCommit,
     });
 
     const sourceOf = (d: typeof one) =>

@@ -923,16 +923,16 @@ describe("resolveLiveGenerations", () => {
  * ordering, not the daemon's answer.
  */
 describe("consumer lease over a superseded generation (req 15)", () => {
-  /** A stub lease that refuses the commits in `held`. */
+  /** A stub lease that refuses the generation ids in `held`. */
   function lease(held: string[] = []) {
     const refuse = new Set(held);
     const asked: string[] = [];
     const claimed = new Set<string>();
-    const begin: BeginGenerationDeletion = async ({ commit }) => {
-      asked.push(commit);
-      if (refuse.has(commit) || claimed.has(commit)) return null;
-      claimed.add(commit);
-      return () => claimed.delete(commit);
+    const begin: BeginGenerationDeletion = async ({ generationId }) => {
+      asked.push(generationId);
+      if (refuse.has(generationId) || claimed.has(generationId)) return null;
+      claimed.add(generationId);
+      return () => claimed.delete(generationId);
     };
     return { begin, asked, claimed, refuse };
   }
@@ -1006,36 +1006,44 @@ describe("consumer lease over a superseded generation (req 15)", () => {
     expect(held.asked).not.toContain(stale);
   });
 
-  it("refuses to re-publish a commit whose previous copy is still in use, before install runs", async () => {
+  /**
+   * docs/273-plugin-generation-rebuild — this used to be "refuses to re-publish
+   * a commit whose previous copy is still in use". It no longer refuses: the
+   * build takes its own id. What must still hold is everything the refusal was
+   * protecting — the held checkout and, above all, the writable layer `install`
+   * CLEARS before it writes.
+   */
+  it("re-publishes a commit whose previous copy is in use WITHOUT touching that copy", async () => {
     await activateGeneration(repo({ branch: "main" }), deps());
     const first = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
     seedWorkLayer(first);
     fs.writeFileSync(path.join(workDir(first), "upper", "installed.txt"), "from the running version");
 
     const held = lease([first]);
-    const second = await commitFiles({ "new.txt": "x" }, "second");
+    await commitFiles({ "new.txt": "x" }, "second");
     await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: held.begin });
 
-    // The project pins back to the version it was running (req 8's exact case).
-    // Its checkout is still there and still mounted, and so is its writable
-    // layer — which `install` CLEARS before it writes, so the lease has to be
-    // taken before install, not merely before the rename.
+    // The project pins back to the version it was running (req 8's exact case),
+    // whose checkout is still there and still mounted.
     const installed: string[] = [];
     const outcome = await activateGeneration(repo({ pin: first }), {
       ...deps(),
       runInstall: async (job) => {
-        installed.push(job.commit);
+        installed.push(job.generationId);
         return { ok: true };
       },
       beginGenerationDeletion: held.begin,
     });
 
-    expect(outcome.status).toBe("failed");
-    expect(outcome.status === "failed" && outcome.reason).toContain("still in use");
-    expect(installed).toEqual([]);
+    expect(outcome.status).toBe("activated");
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    expect(live.commit).toBe(first);
+    expect(live.id).toMatch(new RegExp(`^${first}\\.[0-9a-f]{8}$`));
+    // The install ran against the NEW build, so the running copy's layer is
+    // exactly as its consumer left it.
+    expect(installed).toEqual([live.id]);
     expect(fs.existsSync(path.join(workDir(first), "upper", "installed.txt"))).toBe(true);
-    // req 15 — the prior complete version keeps running.
-    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(second);
+    expect(fs.existsSync(path.join(generationsDir(), first))).toBe(true);
     // …and nothing was left staged.
     expect(fs.readdirSync(generationsDir()).filter((n) => n.includes(".staging-"))).toEqual([]);
   });
@@ -1085,10 +1093,14 @@ describe("consumer lease over a superseded generation (req 15)", () => {
     expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(live);
   });
 
-  it("refuses a forced re-install while a consumer still holds that version", async () => {
-    // This is what makes skipping the short-circuit safe. Clearing the layer
-    // under a running plugin container is the corruption docs/183 recorded:
-    // merged readdir goes empty while lookups still resolve.
+  /**
+   * docs/273-plugin-generation-rebuild / nikzlabs/shipit#2411 — this used to
+   * assert the refusal, and the refusal was the deadlock: what holds the live
+   * version is the plugin's own service, which is failing BECAUSE the install
+   * is broken, so the documented recovery could never run. The safety it was
+   * buying is bought instead by building elsewhere, which this now asserts.
+   */
+  it("forces a re-install beside a version a consumer holds, clearing nothing", async () => {
     const held = lease();
     await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: held.begin });
     const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
@@ -1101,18 +1113,20 @@ describe("consumer lease over a superseded generation (req 15)", () => {
       ...deps(),
       beginGenerationDeletion: inUse.begin,
       runInstall: async (job) => {
-        installed.push(job.commit);
+        installed.push(job.generationId);
         return { ok: true };
       },
       force: true,
     });
 
-    expect(outcome.status).toBe("failed");
-    expect(outcome.status === "failed" && outcome.reason).toContain("still in use");
-    // Nothing was cleared, nothing was installed, and the version kept serving.
-    expect(installed).toEqual([]);
+    expect(outcome.status).toBe("activated");
+    const rebuilt = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    expect(rebuilt.commit).toBe(live);
+    expect(rebuilt.id).not.toBe(live);
+    // The layer the running container has mounted was never cleared — the
+    // corruption docs/183 recorded is what the forked id avoids.
+    expect(installed).toEqual([rebuilt.id]);
     expect(fs.existsSync(path.join(workDir(live), "upper", "installed.txt"))).toBe(true);
-    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(live);
     expect(fs.readdirSync(generationsDir()).filter((n) => n.includes(".staging-"))).toEqual([]);
   });
 
@@ -1176,5 +1190,231 @@ describe("consumer lease over a superseded generation (req 15)", () => {
     // consumer is done rather than vanishing mid-run.
     expect(fs.existsSync(path.join(generationsDir(), first))).toBe(true);
     expect(fs.existsSync(path.join(workDir(first), "upper"))).toBe(true);
+  });
+});
+
+/**
+ * docs/273-plugin-generation-rebuild — a version that is LIVE can be built
+ * again.
+ *
+ * Two defects met here (nikzlabs/shipit#2411): a generation published for a
+ * selection that installed nothing could never be repaired, because every later
+ * round saw the declared commit already live and returned `unchanged`; and the
+ * one escape hatch that did re-stage a live version had to clear the live tree,
+ * so the consumer lease refused it — permanently, since what held the version
+ * was the plugin's own service.
+ */
+describe("rebuilding a live generation (docs/273-plugin-generation-rebuild)", () => {
+  /** A manifest whose exports each declare an install command. */
+  function installingManifest(names: string[] = ["probe"]): string {
+    const entries = names
+      .map((n) => `    ${n}:\n      install: npm ci\n      cli:\n        ${n}: bin/${n}.mjs\n`)
+      .join("");
+    return `exports:\n  plugins:\n${entries}`;
+  }
+
+  /** A stub lease that refuses every id in `held`, and records what it was asked. */
+  function lease(held: string[] = []) {
+    const refuse = new Set(held);
+    const asked: string[] = [];
+    const begin: BeginGenerationDeletion = async ({ generationId }) => {
+      asked.push(generationId);
+      return refuse.has(generationId) ? null : () => undefined;
+    };
+    return { begin, asked, refuse };
+  }
+
+  const generationsDir = (): string => path.join(stateDir, "plugins", "tools", "generations");
+
+  /** Every install this round ran, as `<generationId>:<export names>`. */
+  function recordingInstall(installs: string[], ok = true) {
+    return async (job: { generationId: string; exports: readonly { name: string }[] }) => {
+      installs.push(`${job.generationId}:${job.exports.map((e) => e.name).join(",")}`);
+      return ok ? { ok: true } : { ok: false, reason: "npm ci exited 1" };
+    };
+  }
+
+  beforeEach(async () => {
+    await commitFiles({ "shipit.yaml": installingManifest() }, "installing manifest");
+  });
+
+  it("installs an export the live generation was never installed for", async () => {
+    const installs: string[] = [];
+    const runInstall = recordingInstall(installs);
+
+    // The round that publishes resolves NO selection — which is what a `use:`
+    // entry whose `from:` does not resolve yet produces, and what a repository
+    // swapped mid-session walks through.
+    const first = await activateGeneration(repo({ branch: "main" }), { ...deps([]), runInstall });
+    expect(first.status).toBe("activated");
+    // The hook is called, with nothing selected — so no install command runs
+    // and the published generation is genuinely uninstalled.
+    expect(installs).toEqual([`${readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.id}:`]);
+
+    // The declaration now selects `probe` from the same, already-live commit.
+    const second = await activateGeneration(repo({ branch: "main" }), { ...deps(["probe"]), runInstall });
+
+    expect(second.status).toBe("activated");
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    expect(installs[1]).toBe(`${live.id}:probe`);
+    expect(live.installedFor).toEqual(["probe"]);
+  });
+
+  it("still does nothing when the live generation already covers the selection", async () => {
+    const installs: string[] = [];
+    const runInstall = recordingInstall(installs);
+
+    await activateGeneration(repo({ branch: "main" }), { ...deps(["probe"]), runInstall });
+    const again = await activateGeneration(repo({ branch: "main" }), { ...deps(["probe"]), runInstall });
+
+    expect(again.status).toBe("unchanged");
+    expect(installs).toHaveLength(1);
+  });
+
+  it("leaves a generation that predates `installedFor` alone", async () => {
+    const installs: string[] = [];
+    await activateGeneration(repo({ branch: "main" }), { ...deps([]), runInstall: recordingInstall(installs) });
+
+    // A record written before the field existed cannot say what it installed,
+    // and "cannot say" must not mean "rebuild every live plugin on upgrade".
+    const live = fs.realpathSync(activeLinkPath(stateDir, "tools"));
+    const file = path.join(live, ".shipit-generation.json");
+    const legacy = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    delete legacy.installedFor;
+    fs.writeFileSync(file, JSON.stringify(legacy));
+
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall: recordingInstall(installs),
+    });
+
+    expect(outcome.status).toBe("unchanged");
+    expect(installs).toHaveLength(1); // only the round that published it
+  });
+
+  it("does not rebuild in a runtime that cannot install, which would never converge", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps([]));
+    const outcome = await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+
+    // With no runner a rebuild would install nothing, record the same empty
+    // coverage and rebuild again on the next round, for ever.
+    expect(outcome.status).toBe("unchanged");
+  });
+
+  it("builds beside a version a consumer is holding instead of refusing", async () => {
+    const installs: string[] = [];
+    const runInstall = recordingInstall(installs);
+    await activateGeneration(repo({ branch: "main" }), { ...deps(["probe"]), runInstall });
+    const commit = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+
+    // The plugin's own service is running against the live version — the exact
+    // state that made `--force` unreachable, since the service is failing
+    // BECAUSE the install is broken.
+    const held = lease([commit]);
+    const forced = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall,
+      beginGenerationDeletion: held.begin,
+      force: true,
+    });
+
+    expect(forced.status).toBe("activated");
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    // Same commit, a different build of it — published beside the one in use.
+    expect(live.commit).toBe(commit);
+    expect(live.id).toMatch(new RegExp(`^${commit}\\.[0-9a-f]{8}$`));
+    expect(installs[1]).toBe(`${live.id}:probe`);
+    // The held tree is untouched: its consumer keeps running until the service
+    // round moves it onto the new build's volume.
+    expect(fs.existsSync(path.join(generationsDir(), commit))).toBe(true);
+    expect(fs.realpathSync(activeLinkPath(stateDir, "tools"))).toBe(path.join(generationsDir(), live.id!));
+  });
+
+  it("forks the id for a live version even when the lease would allow reuse", async () => {
+    // A granted claim proves nobody has the tree MOUNTED. It does not make
+    // clearing a live layer safe: an install that then fails would leave the
+    // version live with its previous install output gone — req 4's "leaves the
+    // plugin exactly as it found it", and what the reporter watched fail.
+    const installs: string[] = [];
+    const runInstall = recordingInstall(installs);
+    const free = lease(); // refuses nothing
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]), runInstall, beginGenerationDeletion: free.begin,
+    });
+    const before = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    const askedWhileBuildingIt = [...free.asked];
+
+    // Everything the lease was asked BEFORE the install ran — the only window in
+    // which its answer could have licensed clearing the live layer.
+    let askedBeforeInstall: string[] = [];
+    const forced = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall: async (job) => {
+        askedBeforeInstall = free.asked.slice(askedWhileBuildingIt.length);
+        return recordingInstall(installs)(job);
+      },
+      beginGenerationDeletion: free.begin,
+      force: true,
+    });
+
+    expect(forced.status).toBe("activated");
+    const after = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    expect(after.commit).toBe(before.commit);
+    expect(after.id).not.toBe(before.id);
+    // The forced round never asked the lease about the live build: reuse is not
+    // a question whose answer could make it right. (It is asked about the
+    // superseded build later — that is the prune, after the swap.)
+    expect(askedBeforeInstall).toEqual([]);
+    // …and the install ran against the new build, not over the live layer.
+    expect(installs[1]).toBe(`${after.id}:probe`);
+  });
+
+  it("changes nothing when the rebuild's own install fails", async () => {
+    const installs: string[] = [];
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall: recordingInstall(installs),
+    });
+    const before = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+
+    const held = lease([before.commit]);
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall: recordingInstall(installs, false),
+      beginGenerationDeletion: held.begin,
+      force: true,
+    });
+
+    expect(outcome.status).toBe("failed");
+    // req 4 — a recovery that cannot complete leaves the plugin as it found it.
+    const after = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    expect(after.id).toBe(before.id);
+    expect(after.installedFor).toEqual(["probe"]);
+    expect(fs.readdirSync(generationsDir())).toEqual([before.id]);
+  });
+
+  it("prunes a superseded rebuild under the lease, never unconditionally", async () => {
+    const installs: string[] = [];
+    const runInstall = recordingInstall(installs);
+    await activateGeneration(repo({ branch: "main" }), { ...deps(["probe"]), runInstall });
+    const commit = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+
+    const held = lease([commit]);
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]), runInstall, beginGenerationDeletion: held.begin, force: true,
+    });
+    const rebuilt = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.id!;
+
+    // A rebuild's `<sha>.<rev>` name is an identity a container can be mounted
+    // on. Matching only a bare object name would have deleted it with no lease
+    // taken at all — the corruption the lease exists to prevent.
+    held.refuse.add(rebuilt);
+    await commitFiles({ "third.txt": "x" }, "third");
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]), runInstall, beginGenerationDeletion: held.begin,
+    });
+
+    expect(held.asked).toContain(rebuilt);
+    expect(fs.existsSync(path.join(generationsDir(), rebuilt))).toBe(true);
   });
 });

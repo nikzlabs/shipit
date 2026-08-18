@@ -56,7 +56,7 @@ interface RefreshRow {
   detail?: string;
   /** docs/266-plugin-install-diagnosability req 7 — why the version live NOW is unusable, if it is. */
   degraded: string[];
-  /** docs/266-plugin-install-diagnosability reqs 5, 6 — `--force` re-installed the version already live. */
+  /** docs/266 reqs 5, 6 — this round re-installed the version already live. */
   reinstalled: boolean;
   /** planning#416 — the last install for this repository, output included. */
   install?: InstallRecordView;
@@ -129,11 +129,12 @@ is the one thing about a plugin no other surface shows you, and the answer to
 for what the install claimed to do rather than as a complete log.
 
 --force re-runs the install for the version ALREADY live, for one named
-repository. Use it when a version is live but unusable: it discards what the
-last install left and installs again, instead of waiting for the plugin's
-author to publish a new commit. It is refused while a plugin container is still
-using that version, and if the re-install fails the version stays live without
-its install output — run \`shipit plugin status\` first.
+repository. Use it when a version is live but unusable: it installs that commit
+again instead of waiting for the plugin's author to publish a new commit. You
+do not have to stop the plugin's own service first — a version something is
+using is rebuilt beside it and swapped in when the install succeeds. A
+re-install that fails changes nothing: the version that was live stays live,
+and \`shipit plugin status\` says what the install did.
 
   shipit plugin status [repo-name] [--json]
 
@@ -293,9 +294,9 @@ async function refresh(args: string[], deps: RunDeps): Promise<void> {
   const repo = positional[0];
   const force = booleans.has("force");
   // docs/266 — refused here as well as in the service, because this is where the
-  // agent can be told what to type instead. `--force` discards a live version's
-  // install output; applying that to every declared repository because a name
-  // was left off is not a mistake to make reachable.
+  // agent can be told what to type instead. `--force` re-runs a live version's
+  // install and replaces what that install left; applying that to every declared
+  // repository because a name was left off is not a mistake to make reachable.
   if (force && !repo) {
     fail(
       deps.io,
@@ -346,8 +347,11 @@ function describe(row: RefreshRow): string {
     const live = row.after ? ` — still on ${short(row.after)}` : "";
     return `${head}: refresh failed${live}\n  ${row.detail ?? "no reason reported"}${degraded}`;
   }
-  // docs/266 — a forced re-install lands on the SAME commit, so "already at"
-  // would tell a consumer their retry did nothing.
+  // docs/266 — a re-install lands on the SAME commit, so "already at" would tell
+  // a consumer their retry did nothing. docs/273-plugin-generation-rebuild: this
+  // is no longer only a forced retry — a round that finds the live version was
+  // never installed for what the declaration now selects re-installs by itself,
+  // and reads the same way.
   if (row.reinstalled) {
     return `${head}: re-installed ${short(row.after)}${row.detail ? `\n  ${row.detail}` : ""}${degraded}`;
   }
