@@ -40,12 +40,14 @@ They are recorded here as requirements, not relitigated.
    event mapping is locked by a conformance test replaying byte-shaped
    captured lines (docs/272 conventions), and no capability flag is declared
    from documentation alone.
-6. **Auth.** Subscription auth is injected via the CLI's real on-disk token
-   store (the `~/.grok/auth.json` path and `--device-auth` flow are
-   third-party claims — verified live before wiring); API-key auth via
-   `XAI_API_KEY`. ShipIt's subscription-first ranking applies. Grok Build's
-   beta gating (SuperGrok / X Premium Plus) limits who can sign in; it does
-   not change the wiring.
+6. **Auth scope: key-billed only at launch.** API-key auth via `XAI_API_KEY`,
+   enforced structurally the way docs/268 did for OpenCode (no `account`
+   credential target, so no subscription mode joins). Subscription-mode
+   verification and wiring (device-flow login, `auth.json` injection,
+   account identity, quota) are deferred to **planning#435** — postponed
+   2026-08-18 by Nik (requires a paid SuperGrok subscription). *(Reworded
+   2026-08-18 — see Resolved questions; the original text assumed
+   subscription wiring in this feature.)*
 7. **Recipe discipline.** Every step of the docs/266 recipe is worked,
    including the full silent-sites list, and every declared
    `AgentCapabilities` flag is honest — confirmed against observed CLI
@@ -58,17 +60,17 @@ They are recorded here as requirements, not relitigated.
 
 ## Open questions
 
-The following is a *conditional* human call — it opens only if live
-verification lands on its "no" branch; facts themselves are resolved
-empirically and recorded below, per the docs/268 precedent.
-
-- **If no injectable subscription path works in practice** (req 6 — the
-  on-disk store is confirmed first-party, but an injected `auth.json`
-  authenticating a headless turn in a fresh container is unverified until a
-  credential is available): launching metered-only (`XAI_API_KEY`) needs
-  explicit sign-off, since ShipIt is subscription-first.
+None. (The reviewer-wiring and launch-model-set questions raised 2026-08-18
+are pending Nik's answers in-session; receipts land here when answered.)
 
 ## Resolved questions
+
+- **2026-08-18 — Metered-only launch (the former conditional open
+  question).** Nik postponed subscription verification (it requires a paid
+  SuperGrok subscription) and directed it be filed separately →
+  planning#435. That is the explicit sign-off for a key-billed-only launch;
+  req 6 was reworded accordingly, following the docs/268 OpenCode
+  precedent (structural exclusion via the missing `account` target).
 
 - **2026-08-18 — Can the install be exact-pinned (req 3, a start-blocker)?**
   Resolved empirically, better than expected: an **official npm package
