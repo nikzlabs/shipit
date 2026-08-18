@@ -55,6 +55,21 @@ no-levels harness refused by name).
   stays byte-identical; `shipit-docs/agent.md` is updated to describe the per-harness
   shape.
 
+## Independent review
+
+2026-08-18, ShipIt's configured reviewer (`shipit agent run --role reviewer`, review-only),
+against every numbered requirement: **all seven satisfied, no material findings.** It
+verified the two things most likely to be wrong by construction — that an *unknown* harness
+keeps `--effort` in the missing list (the filter tests `!== false`, so only a harness known
+to be level-less drops it) and that `assertHarnessCanRunSelection`'s "blame the credential"
+message is still preceded by the API-style refusal, which its docstring calls load-bearing.
+Three minor notes, all pre-existing paths rather than this diff: the shim's refusal points
+at `shipit agent params` instead of listing levels (deliberate — the shim cannot see the
+catalogue), `spawn-inventory`'s credential filtering, and a role-override refusal untested
+on a no-levels harness. The last was worth closing, since it is the sibling of the rule this
+feature adopts: `sub-agent-target.test.ts` now pins that a bare role on a level-less harness
+runs and an `--effort` override onto it is refused — one rule, reached two ways.
+
 ## Key files
 
 - `src/server/shared/types/agent-types.ts` — `explicit.reasoningEffort?`

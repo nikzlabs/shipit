@@ -607,6 +607,48 @@ describe("resolveSpawnTarget", () => {
     ).toThrow(/Unknown agent: grokk/);
   });
 
+  /**
+   * docs/275 req 3's sibling, pinned so the two stay symmetric. The explicit
+   * path's new "declares no reasoning levels" refusal was adopted FROM the role
+   * path, so a level overridden onto a no-levels role must refuse too — one
+   * rule, reached two ways. The role path's own rule predates docs/275
+   * (`roles.ts`); what was untested is that it holds for the harness this
+   * feature exists for, which is exactly where a divergence would hide.
+   */
+  it("refuses an --effort override on a role pinned to a no-levels harness (docs/275)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    const XAI_KEY = route("xai", "key");
+    const grokRole = {
+      name: "grok-hand",
+      params: {
+        kind: "pinned" as const,
+        harnessId: "grok" as never,
+        serviceId: "xai",
+        billingMode: "key" as const,
+        modelId: "grok-4.6",
+      },
+    };
+    // The bare role runs — a role on a no-levels harness is complete with one
+    // field fewer (docs/274 req 8), which is the premise docs/275 generalizes.
+    const bare = resolveSubAgentSpawnTarget(
+      { kind: "role", role: "grok-hand", overrides: {} },
+      { harnessId: "claude" },
+      { credentialStore: storeWith([XAI_KEY], {}, [grokRole]), env: {} },
+    );
+    expect(bare.harnessId).toBe("grok");
+    expect("reasoningEffort" in bare).toBe(false);
+    // Overriding a level onto it is the same false claim about the harness the
+    // explicit path refuses.
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        { kind: "role", role: "grok-hand", overrides: { reasoningEffort: "high" } },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([XAI_KEY], {}, [grokRole]), env: {} },
+      ),
+    ).toThrow(/no reasoning levels/);
+  });
+
   // docs/261 req 6 — the role resolves to a complete reviewer without the caller
   // naming anything, and req 4 picks the one furthest from the implementer: a
   // Claude session gets the GPT reviewer, on the other harness.
