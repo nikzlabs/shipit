@@ -1630,7 +1630,8 @@ export class CredentialStore {
     } else if (role.params.kind === "auto") {
       throw new Error(
         `Only the "${RESERVED_ROLE_NAME}" role may have automatic params (docs/264-agent-roles req 2); `
-          + `"${name}" must name a harness, a service, a billing mode, a model and a level.`,
+          + `"${name}" must name a harness, a service, a billing mode, a model and a level `
+          + "(or omit the level for Default).",
       );
     }
     const description = role.description?.trim();

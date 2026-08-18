@@ -634,6 +634,13 @@ function applyOverrides(
   baseKind: OverrideBaseKind,
 ): RolePinnedParams {
   const harnessId = overrides.harnessId ?? base.harnessId;
+  // Spread rather than assigned, so a Default role stays Default by the same
+  // encoding every other producer of `RolePinnedParams` uses — the ABSENCE of
+  // the key. Writing `reasoningEffort: undefined` here happened to work only
+  // because `normalize` strips it downstream; cross-agent review flagged the
+  // dependence on that as the untidy invariant it is. There is no "override
+  // back to Default" sentinel, and none is needed: naming no `--effort` already
+  // means "leave the level as the role has it".
   const reasoningEffort = overrides.reasoningEffort ?? base.reasoningEffort;
   const withEffort = reasoningEffort !== undefined ? { reasoningEffort } : {};
   if (baseKind === "ranked" && overrides.modelId !== undefined) {
