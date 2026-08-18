@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -284,6 +284,33 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     const config = fs.readFileSync(process.env.GIT_CONFIG_GLOBAL!, "utf-8");
     expect(config).not.toContain("old-token");
     expect(config).not.toContain("new-token");
+  });
+
+  /**
+   * #2432 — a credential that cannot authenticate must say so here, not two
+   * pushes later as "remote: Invalid username or token" with nothing local to
+   * explain it. Empty throws (no caller can reach it with a bug-free path);
+   * short only warns, because a length guess must never be able to lock a real
+   * token out.
+   */
+  it("refuses an empty credential rather than writing an unusable one", () => {
+    expect(() => { setGlobalCredentialHelper("   "); }).toThrow(/empty GitHub credential/);
+    expect(fs.existsSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME))).toBe(false);
+  });
+
+  it("warns — but still installs — a token too short to be a GitHub token", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      setGlobalCredentialHelper("ghp_x");
+      const message = warn.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(message).toContain("5 characters");
+      // Never the value itself — this line goes to the orchestrator log.
+      expect(message).not.toContain("ghp_x");
+    } finally {
+      warn.mockRestore();
+    }
+    const contents = fs.readFileSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME), "utf-8");
+    expect(contents).toContain("password=ghp_x");
   });
 });
 

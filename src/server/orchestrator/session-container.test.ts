@@ -20,6 +20,7 @@ import {
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
 import { allowEgressHost, clearEgressPolicy } from "./egress-policy.js";
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Mock Docker types
@@ -221,7 +222,7 @@ function buildConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
     sessionDir: TEST_SESSION_DIR,
     workspaceDir: TEST_WORKSPACE_DIR,
     sessionStateDir: path.join(TEST_SESSION_DIR, "state"),
-    credentialsDir: "/credentials",
+    credentialsDir: TEST_CREDENTIALS_DIR,
     imageName: "shipit-session-worker:test",
     memoryLimit: 512 * 1024 * 1024,
     cpuQuota: 50_000,
@@ -371,7 +372,7 @@ describe("SessionContainerManager", () => {
               `${TEST_WORKSPACE_DIR}:/workspace:rw`,
               // docs/138 — the container gets its private per-session credentials
               // subtree, never the shared root.
-              "/credentials/sessions/test-session-1:/credentials:rw",
+              `${TEST_CREDENTIALS_DIR}/sessions/test-session-1:/credentials:rw`,
             ]),
             Memory: 512 * 1024 * 1024,
             CpuQuota: 50_000,
@@ -925,7 +926,7 @@ describe("SessionContainerManager", () => {
           // and `scratchDir` default to siblings of the clone as in production.
           sessionDir: path.dirname(dir),
           workspaceDir: dir,
-          credentialsDir: "/credentials",
+          credentialsDir: TEST_CREDENTIALS_DIR,
           overlaySpecs: specs,
         }));
         // The daemon's overlay mount ENOENTs unless all three exist — create()
@@ -971,7 +972,7 @@ describe("SessionContainerManager", () => {
         sessionId: "e2e-session-1",
         sessionDir: path.dirname(dir),
         workspaceDir: dir,
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
         overlaySpecs,
       });
       await ovlManager.create(config);
@@ -1001,7 +1002,7 @@ describe("SessionContainerManager", () => {
       expect(overlaySpecs).toHaveLength(1);
       const config = ovlManager.buildConfigForWorkspace({
         sessionId: appSessionId, sessionDir: path.dirname(dir), workspaceDir: dir,
-        credentialsDir: "/credentials", overlaySpecs,
+        credentialsDir: TEST_CREDENTIALS_DIR, overlaySpecs,
       });
       const sc = await ovlManager.createStandby(config);
 
@@ -1022,7 +1023,7 @@ describe("SessionContainerManager", () => {
       expect(overlaySpecs).toEqual([]);
       const config = ovlManager.buildConfigForWorkspace({
         sessionId: "warm-off-1", sessionDir: path.dirname(dir), workspaceDir: dir,
-        credentialsDir: "/credentials", overlaySpecs,
+        credentialsDir: TEST_CREDENTIALS_DIR, overlaySpecs,
       });
       await ovlManager.createStandby(config);
       const call = mockDocker.createContainer.mock.calls.at(-1)![0];
@@ -1141,7 +1142,7 @@ describe("SessionContainerManager", () => {
         const pnpmStoreDir = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
         const config = mgr.buildConfigForWorkspace({
           sessionId: "pnpm-e2e-1", sessionDir: path.dirname(dir), workspaceDir: dir,
-          credentialsDir: "/credentials", overlaySpecs, pnpmStoreDir,
+          credentialsDir: TEST_CREDENTIALS_DIR, overlaySpecs, pnpmStoreDir,
         });
         await mgr.create(config);
         const call = mockDocker.createContainer.mock.calls.at(-1)![0];
@@ -1698,7 +1699,7 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
       sessionId: "sbx123456789",
       sessionDir: tmpDir,
       workspaceDir: path.join(tmpDir, "workspace"),
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       ...(dockerAccess !== undefined ? { dockerAccess } : {}),
     });
 

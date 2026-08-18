@@ -3,9 +3,57 @@
  * load (registered in `vitest.config.ts` under the `server` project).
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach } from "vitest";
 import { credentialStorageEnvNames } from "./src/server/shared/catalogue/index.js";
 import { CREDENTIAL_ROUTE_ENV_PREFIX } from "./src/server/shared/types/domain-types/credential-route.js";
+
+/**
+ * **No server test may write the git config the SESSION ITSELF is using.**
+ *
+ * Same CI-invisible class as the strips below, and the one that actually cost a
+ * user their session (#2432). Every ShipIt session container exports
+ * `GIT_CONFIG_GLOBAL=/credentials/.gitconfig` — the container's real, brokered
+ * git config, whose `credential.helper` is the `shipit-git-credential` shim. CI
+ * runners and developer boxes set the variable nowhere, so the suite's git
+ * writes land somewhere harmless there and on the live file in a container:
+ *
+ *   - `github-auth.test.ts`'s `createRepo` / `listOrgs` blocks build a real
+ *     `GitHubAuthManager` over a store holding the fixture token `ghp_x` and
+ *     call `checkCredentials()`, which installs it as the global credential
+ *     helper. In a container that rewrote `/credentials/.gitconfig` to `cat`
+ *     a fresh `/credentials/.git-credential-github` holding `password=ghp_x`,
+ *     replacing the brokering shim. Every later `git push` in that session
+ *     failed with "Invalid username or token" — a 5-character password is not
+ *     a GitHub token — while the `gh` shim, brokered separately, kept working.
+ *   - Any `buildApp()` whose `githubAuthManager` is real takes the same path,
+ *     and its no-token branch `--unset`s `credential.helper` outright.
+ *
+ * Per-file discipline cannot close this: it needs every present and future test
+ * touching git to remember a variable that is invisible where the suite is
+ * normally run. So the whole suite gets its own throwaway global config.
+ *
+ * **Pointed at a temp path, never deleted.** `globalCredentialFilePath()`
+ * (`orchestrator/git-config.ts`) derives the credential file from
+ * `dirname(GIT_CONFIG_GLOBAL)` and falls back to the hardcoded `/credentials`
+ * when the variable is unset — which inside a container is the live directory
+ * this exists to protect. Unsetting it would re-open the worse half of the bug.
+ *
+ * Eager, before the test modules load, because a test file can read the
+ * variable at module scope; a file that repoints it (`initGlobalGitConfig`)
+ * still wins, and restores to this path rather than to the session's.
+ */
+const testGitConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-test-gitconfig-"));
+process.env.GIT_CONFIG_GLOBAL = path.join(testGitConfigDir, ".gitconfig");
+process.on("exit", () => {
+  try {
+    fs.rmSync(testGitConfigDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort: a leftover empty temp dir is not worth failing a run over.
+  }
+});
 
 /**
  * Neutralize host-injected command-line-level git config. Some dev sandboxes
