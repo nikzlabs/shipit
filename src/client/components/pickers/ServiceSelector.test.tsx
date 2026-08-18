@@ -22,8 +22,13 @@ import type { ServiceChoice } from "./model-choice.js";
  * a bare svg query passes with the logo missing — the exact regression these
  * tests exist to catch. Every mark is drawn on Simple Icons' 24×24 grid;
  * Phosphor's glyphs are 256×256, which makes the viewBox an exact discriminator.
+ *
+ * The discriminator is unchanged; only the way it is read is. It used to be the
+ * CSS selector `svg[viewBox="0 0 24 24"]`, which jsdom 30 stopped matching —
+ * including in the negative assertion below, where a never-matching selector
+ * passes `toBeNull()` for the wrong reason. See `queryServiceMark`.
  */
-const MARK = 'svg[viewBox="0 0 24 24"]';
+import { queryServiceMark } from "../service-mark.testing.js";
 
 const services: ServiceChoice[] = [
   { serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub" },
@@ -47,7 +52,7 @@ describe("ServiceSelector marks", () => {
 
     for (const service of services) {
       const row = screen.getByTestId(`test-service-option-${service.serviceId}:${service.billingMode}`);
-      expect(row.querySelector(MARK), `no mark for ${service.serviceId}`).not.toBeNull();
+      expect(queryServiceMark(row), `no mark for ${service.serviceId}`).not.toBeNull();
       expect(row).toHaveTextContent(service.serviceName);
     }
   });
@@ -63,7 +68,7 @@ describe("ServiceSelector marks", () => {
     );
 
     const trigger = screen.getByTestId("test-service-trigger");
-    expect(trigger.querySelector(MARK)).not.toBeNull();
+    expect(queryServiceMark(trigger)).not.toBeNull();
     expect(trigger).toHaveTextContent("DeepSeek");
   });
 
@@ -83,8 +88,8 @@ describe("ServiceSelector marks", () => {
 
     const trigger = screen.getByTestId("test-service-trigger");
     expect(trigger).toHaveTextContent("gone");
-    // The caret is still there and is an svg too — hence `MARK` rather than a
-    // count, which would break the day the trigger grows another glyph.
-    expect(trigger.querySelector(MARK)).toBeNull();
+    // The caret is still there and is an svg too — hence the mark query rather
+    // than a count, which would break the day the trigger grows another glyph.
+    expect(queryServiceMark(trigger)).toBeNull();
   });
 });
