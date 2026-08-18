@@ -153,6 +153,15 @@ export interface ManagedService {
 }
 
 /**
+ * Everything a port-conflict message needs about one of the two parties: what
+ * to call it, and — through `origin` — which file its number is written in
+ * (nikzlabs/shipit#2379). A registered service satisfies it; so does a bare
+ * `{ name }`, which is how the project's own side is passed before the row for
+ * it exists.
+ */
+type PortHolder = Pick<ManagedService, "name" | "origin">;
+
+/**
  * docs/262 — project a service's origin into the shape the client sees. The
  * fragment's own service name is deliberately dropped: it is what the collision
  * message needs (it names the key to write `as` under) and not something the
@@ -1341,19 +1350,50 @@ export class ServiceManager extends EventEmitter {
    * that service, and is logged for the operator too.
    */
   private warnOnAmbiguousPreviewPorts(): void {
-    const claimedBy = new Map<number, string>();
+    const claimedBy = new Map<number, PortHolder>();
     for (const svc of this.services.values()) {
       if (svc.port === undefined) continue;
       const first = claimedBy.get(svc.port);
       if (first === undefined) {
-        claimedBy.set(svc.port, svc.name);
+        claimedBy.set(svc.port, svc);
         continue;
       }
-      const message = `${first} and ${svc.name} both preview on port ${svc.port}`
-        + ` — the preview pane can only reach ${first} there.`
-        + ` Give one of them a different port in the compose file.`;
+      const message = `${this.describePortHolder(first)} and ${this.describePortHolder(svc)}`
+        + ` both preview on port ${svc.port} — the preview pane can only reach ${first.name} there.`
+        + ` Give one of them a different port: ${this.portChangeAdvice(svc)},`
+        + ` or ${this.portChangeAdvice(first)}.`;
       this.reportPortConflict(svc.name, message);
     }
+  }
+
+  /**
+   * Name a service and say where the number it previews on is written
+   * (nikzlabs/shipit#2379).
+   *
+   * A port conflict is only actionable if the reader can find both numbers, and
+   * the two kinds of service keep theirs in different files: the project's own
+   * in its compose file, a plugin's in the consuming project's `plugins.use`
+   * entry (docs/266-plugin-service-ports req 2). A message that assumes the
+   * compose file for both sends the reader to a file that does not contain the
+   * line — the dead end #2379 reports — so every port message routes its advice
+   * through here instead of naming a file itself.
+   */
+  private describePortHolder(svc: PortHolder): string {
+    if (!svc.origin) return `this project's own service \`${svc.name}\` (\`${this.composeConfig.file}\`)`;
+    return `the plugin service \`${svc.name}\` (the \`plugins.use\` entry in \`shipit.yaml\``
+      + ` whose alias is \`${svc.origin.alias}\`)`;
+  }
+
+  /**
+   * How to move {@link describePortHolder}'s service off its port, in the file
+   * that holds it. Both files are named outright — a reader who has never
+   * written a `plugins.use` entry cannot be expected to know which file it is
+   * in, and the compose file is named on the other side of the same sentence.
+   */
+  private portChangeAdvice(svc: PortHolder): string {
+    if (!svc.origin) return `give \`${svc.name}\` a different port in \`${this.composeConfig.file}\``;
+    return `change \`port:\` for \`${svc.origin.sourceName}\` under the \`plugins.use\` entry`
+      + ` in \`shipit.yaml\` whose alias is \`${svc.origin.alias}\``;
   }
 
   /**
@@ -1369,13 +1409,30 @@ export class ServiceManager extends EventEmitter {
    * would leave the Services list one row short with no explanation anywhere.
    * It is registered `manual` so the auto-start sweep below does not flip it out
    * of `error`, and it is kept out of the generated override, so nothing starts.
+   *
+   * **The occupant is named from the current parse, and its declaration site is
+   * named with it** (nikzlabs/shipit#2379). The message used to assert "this
+   * project's own service" about whatever held the port in a map that outlives
+   * an activation, so it could name the refused service's own outgoing instance
+   * — a service the project never declared, on a port nothing was using. The
+   * caller now reads the occupant out of `parsedServices` (see `start()`), so
+   * the attribution is structurally true, and both halves of the advice point
+   * at a line that exists.
    */
   private refusePluginPortCollision(svc: PluginComposeService, projectService: string): void {
-    const message = `${svc.name} is given port ${svc.port}, which this project's own service `
-      + `${projectService} already serves on. Two services cannot preview on one port, so `
-      + `${svc.name} was not started. Change \`port:\` for \`${svc.sourceName}\` under the `
-      + `\`plugins.use\` entry whose alias is \`${svc.alias}\`, or move ${projectService} `
-      + `to another port.`;
+    const origin: ComposeServiceOrigin = {
+      kind: "plugin",
+      repo: svc.repo,
+      alias: svc.alias,
+      plugin: svc.plugin,
+      sourceName: svc.sourceName,
+      self: svc.self,
+    };
+    const occupant: PortHolder = { name: projectService };
+    const message = `${svc.name} is given port ${svc.port}. That port is already served by `
+      + `${this.describePortHolder(occupant)}. Two services cannot preview on one port, so `
+      + `${svc.name} was not started. Either ${this.portChangeAdvice({ name: svc.name, origin })}, `
+      + `or ${this.portChangeAdvice(occupant)}.`;
     // Queued, not reported here. This runs while the service map is being
     // built, and `start()` clears the log ring buffers after that — a line
     // written now would reach the live viewers and then vanish from the buffer
@@ -1389,14 +1446,7 @@ export class ServiceManager extends EventEmitter {
       status: "error",
       error: message,
       dependsOnInstall: false,
-      origin: {
-        kind: "plugin",
-        repo: svc.repo,
-        alias: svc.alias,
-        plugin: svc.plugin,
-        sourceName: svc.sourceName,
-        self: svc.self,
-      },
+      origin,
     });
   }
 
@@ -1561,20 +1611,8 @@ export class ServiceManager extends EventEmitter {
       ? []
       : this.parseProjectCompose(composePath);
 
-    // Build service map
-    this.portRefusals.clear();
-    for (const svc of parsedServices) {
-      const preview = svc.shipitPreview ?? (svc.ports?.length ? "auto" : "manual");
-      const port = svc.ports?.[0] ? extractContainerPort(svc.ports[0]) : undefined;
-      this.services.set(svc.name, {
-        name: svc.name,
-        port,
-        preview,
-        status: "stopped",
-        dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
-      });
-    }
-
+    // Build service map.
+    //
     // docs/266-plugin-service-ports req 7 — a plugin service given a port one of the project's OWN
     // services already serves is refused, and refused HERE: against
     // `parsedServices`, the parse that actually runs. The plugin resolver's
@@ -1583,15 +1621,33 @@ export class ServiceManager extends EventEmitter {
     // consumer's own now — one in the compose file, one in `plugins.use` — so a
     // refusal naming both is something the reader can act on, which re-routing
     // silently was not.
+    //
+    // `parsedServices`, and NOT `this.services` (nikzlabs/shipit#2379). Only
+    // `reconcile()` clears that map, while `start()` clears nothing, so a
+    // second `start()` without one in between reads the PREVIOUS activation's
+    // rows as occupants. Which caller does that in production was not pinned
+    // down — the report is one activation, not a trace — and it does not need
+    // to be: the map is the wrong SOURCE for this question whatever reaches it,
+    // because it answers "what did this manager last register" and the question
+    // is "what does the project's file declare now". Counting those made a
+    // plugin service clash with its own outgoing instance, and the refusal then
+    // named an occupant that is not in the project's file at all. The current
+    // parse is the only set that can honestly answer "which of the project's
+    // own services serves this port", which is exactly what the message claims,
+    // so the claim is now true by construction rather than by filtering.
+    this.portRefusals.clear();
     const projectPorts = new Map<number, string>();
-    for (const svc of this.services.values()) {
-      // Skip stale plugin services from the previous activation — they will
-      // be re-admitted (or refused) below. Without this filter, a plugin
-      // service whose port is set in `plugins.use` clashes with its own
-      // outgoing instance during a transition activation and is refused with
-      // a message blaming "this project's own service" (nikzlabs/shipit#2379).
-      if (svc.origin) continue;
-      if (svc.port !== undefined && !projectPorts.has(svc.port)) projectPorts.set(svc.port, svc.name);
+    for (const svc of parsedServices) {
+      const preview = svc.shipitPreview ?? (svc.ports?.length ? "auto" : "manual");
+      const port = svc.ports?.[0] ? extractContainerPort(svc.ports[0]) : undefined;
+      if (port !== undefined && !projectPorts.has(port)) projectPorts.set(port, svc.name);
+      this.services.set(svc.name, {
+        name: svc.name,
+        port,
+        preview,
+        status: "stopped",
+        dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
+      });
     }
     const admittedPlugins = this.pluginServices.filter((svc) => {
       const clash = svc.port !== undefined ? projectPorts.get(svc.port) : undefined;

@@ -97,6 +97,17 @@ Two checks, in the two places that can actually answer:
   is what let #2325 through, so it must not be the thing that refuses. The
   plugin service is dropped and reported, naming both.
 
+  "The parse that actually runs" is literal, and was not at first
+  ([nikzlabs/shipit#2379](https://github.com/nikzlabs/shipit/issues/2379)): the
+  occupant set was read from `this.services`, which only `reconcile()` clears,
+  so a second `start()` in one activation offered the PREVIOUS round's rows as
+  occupants — and a plugin service clashed with its own outgoing instance, on a
+  port nothing was using. It is built from `parsedServices` now, which is what
+  makes the refusal's "this project's own service" true by construction. Both
+  port messages also route their advice through `portChangeAdvice`, because the
+  two kinds of service keep their number in different files and one sentence
+  naming the compose file cannot be right for both.
+
 **A known ordering artifact, shared with the name domain.** `claimedPorts` is
 filled as each import is accepted, but a repository's services are withheld as a
 *unit* at the end (`services.filter(s => !issuesByRepo.has(s.repo))`). So an
