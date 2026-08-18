@@ -23,6 +23,10 @@ function flushFrame(): void {
 let observers: { cb: ResizeObserverCallback; targets: Element[] }[] = [];
 let observedTargets: Element[] = [];
 
+// The hook reads `performance.now()` to time the post-gesture grace window, so
+// the clock is ours to advance rather than something to wait out.
+let clock = 0;
+
 // Only an observer actually watching the content element hears about it growing —
 // so a hook that watched only the scroll container gets no callback here, and the
 // tests below fail rather than passing on a notification it would never receive.
@@ -31,6 +35,17 @@ function growContent(): void {
   act(() => {
     for (const o of observers) {
       if (content && o.targets.includes(content)) o.cb([], {} as ResizeObserver);
+    }
+  });
+}
+
+// The mobile address bar collapsing mid-scroll resizes the SCROLL CONTAINER, not
+// the content — a resize the hook cannot tell apart from the transcript growing.
+function resizeContainer(): void {
+  const scroller = document.querySelector('[data-testid="scroller"]');
+  act(() => {
+    for (const o of observers) {
+      if (scroller && o.targets.includes(scroller)) o.cb([], {} as ResizeObserver);
     }
   });
 }
@@ -75,7 +90,9 @@ beforeEach(() => {
     },
   );
   // Pin time so the settle loop terminates on height-stability, not the safety cap.
-  vi.spyOn(performance, "now").mockReturnValue(0);
+  // Tests that need the gesture grace window to expire advance `clock` by hand.
+  clock = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => clock);
 });
 
 afterEach(() => {
@@ -290,6 +307,182 @@ describe("useMessageScroll", () => {
     flushFrame();
     expect(scrollTop).toBe(1480);
     expect(rafQueue.length).toBe(0);
+  });
+
+  // A slow drag is the case the near-bottom threshold cannot cover: the thumb
+  // stays inside the 40px band for many frames, so `autoScrollRef` never flips
+  // and every auto-scroll path keeps firing underneath the gesture. A fast flick
+  // leaves the band within one frame, which is exactly why only the slow scroll
+  // got dragged back — the bug was invisible unless you scrolled gently.
+  describe("a gesture in progress outranks auto-follow", () => {
+    function mountAtBottom(): { view: ReturnType<typeof render>; div: HTMLElement; state: { height: number; scrollTop: number } } {
+      const state = { height: 2000, scrollTop: 1500 }; // 2000 - 500 clientHeight: at the bottom
+      const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
+      const div = view.getByTestId("scroller");
+      Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => state.height });
+      Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+      Object.defineProperty(div, "scrollTop", {
+        configurable: true,
+        get: () => state.scrollTop,
+        set: (v: number) => {
+          state.scrollTop = v;
+        },
+      });
+      return { view, div, state };
+    }
+
+    it("leaves a slow drag alone while it is still inside the near-bottom band", () => {
+      const { view, div, state } = mountAtBottom();
+
+      // A thumb walks the transcript up by 15px — less than BOTTOM_THRESHOLD_PX,
+      // so `isNearBottom` is still true and auto-follow is still armed.
+      act(() => {
+        div.dispatchEvent(new Event("touchmove"));
+        state.scrollTop = 1485;
+        div.dispatchEvent(new Event("scroll"));
+      });
+
+      // Streaming continues underneath the finger. None of it may move the view.
+      act(() => {
+        state.height = 2400;
+        view.rerender(<Harness messages={[{ role: "assistant", text: "hi, more tokens" }]} />);
+      });
+      flushFrame();
+      growContent();
+      expect(state.scrollTop).toBe(1485);
+
+      // Nor may the address bar collapsing, which resizes the container mid-scroll.
+      resizeContainer();
+      expect(state.scrollTop).toBe(1485);
+    });
+
+    it("keeps standing down after the finger lifts, while momentum still carries the scroll", () => {
+      const { div, state } = mountAtBottom();
+
+      act(() => {
+        div.dispatchEvent(new Event("touchmove"));
+        state.scrollTop = 1485;
+        div.dispatchEvent(new Event("scroll"));
+        div.dispatchEvent(new Event("touchend"));
+      });
+
+      // The gesture is over but the scroll is not: writing scrollTop here would
+      // kill the momentum dead.
+      state.height = 2400;
+      growContent();
+      expect(state.scrollTop).toBe(1485);
+    });
+
+    it("resumes auto-follow once the gesture and its momentum are over", () => {
+      const { div, state } = mountAtBottom();
+
+      act(() => {
+        div.dispatchEvent(new Event("touchmove"));
+        state.scrollTop = 1485;
+        div.dispatchEvent(new Event("scroll"));
+        div.dispatchEvent(new Event("touchend"));
+      });
+
+      clock = 500; // past GESTURE_GRACE_MS
+      state.height = 2400;
+      growContent();
+
+      // Still within the near-bottom band, so following the conversation is what
+      // the user asked for — the gesture only ever suspended it.
+      expect(state.scrollTop).toBe(2400);
+    });
+
+    it("stands down for a trackpad scroll too, which reports `wheel` and never `touchmove`", () => {
+      // The wheel path has no drag flag to set — `wheel` has no end event, so a
+      // sticky flag would never clear — and rides the timestamp grace alone.
+      const { view, div, state } = mountAtBottom();
+
+      act(() => {
+        div.dispatchEvent(new Event("wheel"));
+        state.scrollTop = 1485; // still inside the near-bottom band
+        div.dispatchEvent(new Event("scroll"));
+      });
+
+      act(() => {
+        state.height = 2400;
+        view.rerender(<Harness messages={[{ role: "assistant", text: "hi, more tokens" }]} />);
+      });
+      flushFrame();
+      growContent();
+
+      expect(state.scrollTop).toBe(1485);
+    });
+
+    it("hands a cancelled touch over to the grace window, not straight back to auto-follow", () => {
+      // `touchcancel` fires when the system takes the gesture away mid-drag — a
+      // notification, a system edge swipe. The scroll it started is still moving.
+      const { div, state } = mountAtBottom();
+
+      act(() => {
+        div.dispatchEvent(new Event("touchmove"));
+        state.scrollTop = 1485;
+        div.dispatchEvent(new Event("scroll"));
+        div.dispatchEvent(new Event("touchcancel"));
+      });
+
+      state.height = 2400;
+      growContent();
+      expect(state.scrollTop).toBe(1485);
+    });
+
+    it("terminates a settle loop that was already running when the gesture began", () => {
+      // The other ordering: the gesture starts BEFORE the loop in the tests above.
+      // Here the loop is mid-flight, so only `shouldContinue` can stop it.
+      let height = 100;
+      let scrollTop = 0;
+
+      const view = render(<Harness messages={[]} />);
+      const div = view.getByTestId("scroller");
+      Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+      Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+      Object.defineProperty(div, "scrollTop", {
+        configurable: true,
+        get: () => scrollTop,
+        set: (v: number) => {
+          scrollTop = v;
+        },
+      });
+
+      act(() => {
+        view.rerender(<Harness messages={[user("a very long message")]} />);
+      });
+      height = 600;
+      flushFrame(); // loop is running and still correcting a growing message
+
+      act(() => {
+        div.dispatchEvent(new Event("touchmove"));
+      });
+      scrollTop = 550; // where the finger put us
+
+      height = 900;
+      flushFrame();
+      flushFrame();
+
+      expect(scrollTop).toBe(550);
+      expect(rafQueue.length).toBe(0);
+    });
+
+    it("still anchors on a sent message, which is newer intent than the drag", () => {
+      const { view, div, state } = mountAtBottom();
+
+      act(() => {
+        div.dispatchEvent(new Event("touchmove"));
+        state.scrollTop = 1200; // dragged well clear of the bottom
+        div.dispatchEvent(new Event("scroll"));
+      });
+
+      act(() => {
+        state.height = 2400;
+        view.rerender(<Harness messages={[{ role: "assistant", text: "hi" }, user("next question")]} />);
+      });
+
+      expect(state.scrollTop).toBe(2400);
+    });
   });
 
   it("does not re-pin a message the user has scrolled away from when no new user message arrives", () => {
