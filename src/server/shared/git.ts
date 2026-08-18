@@ -10,6 +10,7 @@ import {
   resolveTreeRemoteCredential,
 } from "./git-remote-credential.js";
 import { type GitTreeUidDeps, gitSpawnOverridesForTree } from "./git-tree-uid.js";
+import { pushLfsObjects } from "./git-lfs-push.js";
 
 /** Construction-time wiring for {@link GitManager}. */
 export interface GitManagerOptions {
@@ -684,10 +685,44 @@ export class GitManager {
     console.log("[git] Renamed branch:", oldName, "→", newName);
   }
 
+  /**
+   * Upload the Git LFS objects `branch` references, immediately before the ref
+   * push that would otherwise reference them without sending them.
+   *
+   * Orchestrator-side git disables every hook (planning#384), and the git-lfs
+   * `pre-push` hook is the only thing an ordinary `git push` uses to transfer
+   * LFS objects — so without this the push sends pointers whose objects never
+   * left the machine and GitHub rejects it with `GH008`. See
+   * `git-lfs-push.ts` for the incident and for why the fix is an explicit
+   * subcommand rather than re-enabling hooks.
+   *
+   * Best-effort by construction: a failure here is logged and the ref push runs
+   * anyway (`CLAUDE.md` post-turn invariant 2 — the auto-push may not gain a new
+   * way to fail). Whatever the server then says is classified by
+   * `classifyPushFailure`, which knows GH008 is not a divergence.
+   *
+   * Deliberately NOT applied to {@link createAndPushTag}: a tag push publishes a
+   * ref to commits the branch push already delivered, so it references no object
+   * the remote lacks.
+   */
+  private async uploadLfsObjects(git: SimpleGit, remote: string, branch: string): Promise<void> {
+    const outcome = await pushLfsObjects(git, remote, branch);
+    if (outcome.status === "pushed") {
+      console.log(`[git] Uploaded Git LFS objects for ${remote}/${branch}`);
+    } else if (outcome.status === "failed") {
+      console.warn(
+        `[git] git lfs push ${remote} ${branch} failed — the ref push may be rejected `
+        + `with GH008 (unknown Git LFS object): ${outcome.detail}`,
+      );
+    }
+  }
+
   /** Push to a remote. Returns a summary string. */
   async push(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
-    await (await this.remoteGit(remote)).push(remote, currentBranch, ["--set-upstream"]);
+    const git = await this.remoteGit(remote);
+    await this.uploadLfsObjects(git, remote, currentBranch);
+    await git.push(remote, currentBranch, ["--set-upstream"]);
     const msg = `Pushed to ${remote}/${currentBranch}`;
     console.log("[git]", msg);
     return msg;
@@ -1336,7 +1371,12 @@ export class GitManager {
     const args = expectedRemoteSha
       ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
       : ["--set-upstream"];
-    await (await this.remoteGit(remote)).push(remote, branch, args);
+    const git = await this.remoteGit(remote);
+    // Same duty as the plain push: rewritten history can reference LFS objects
+    // the remote has never seen (a rebase onto a base that added assets, a
+    // reset onto a fresh base), and no hook will send them.
+    await this.uploadLfsObjects(git, remote, branch);
+    await git.push(remote, branch, args);
     const msg = `Force pushed to ${remote}/${branch}`;
     console.log("[git]", msg);
     return msg;
