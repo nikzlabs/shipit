@@ -2576,6 +2576,14 @@ export class ServiceManager extends EventEmitter {
    * statuses, the install gate, the poller and the log followers together — that
    * is `reconcile()`, which the watcher still fires. This is scoped to what
    * compose EXECUTES.
+   *
+   * That leaves one asymmetry worth naming, because it looks like an oversight
+   * and is not (review finding): a service the user deleted from the compose
+   * file stops being DECLARED here, while `this.services` keeps polling its
+   * entry until a reconcile clears it. Stale, not incoherent — and the direction
+   * matters. Dropping it from the override is what lets the survivors start at
+   * all, since compose fails the whole project load on a service left with
+   * neither an image nor a build context.
    */
   private overrideIsStaleFor(parsed: ComposeService[] | null): boolean {
     if (parsed === null) return false;
