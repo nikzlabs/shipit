@@ -29,6 +29,7 @@ import {
   adoptRunningContainer,
   isTrackedContainerRunning,
   cleanupOrphanContainers,
+  reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
@@ -95,6 +96,7 @@ export {
   adoptRunningContainer,
   isTrackedContainerRunning,
   cleanupOrphanContainers,
+  reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
@@ -1460,6 +1462,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   async cleanupOrphans(activeSessionIds: Set<string>): Promise<number> {
     return cleanupOrphanContainers(this.discoveryDeps(), activeSessionIds);
+  }
+
+  /**
+   * Stop and remove every `shipit-standby=true` container at boot — a standby
+   * holds no work and was built from the previous process's worker image, so it
+   * never survives a restart. See `reapStandbyContainers` for why the label,
+   * and not the tracking map or the session rows, is what identifies one.
+   */
+  async reapStandbyContainers(): Promise<number> {
+    return reapStandbyContainers(this.discoveryDeps());
   }
 
   /**

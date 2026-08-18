@@ -11,6 +11,7 @@ import {
   adoptRunningContainer,
   isTrackedContainerRunning,
   rediscoverContainers,
+  reapStandbyContainers,
   type DiscoveryDeps,
 } from "./container-discovery.js";
 import { overlayVolumeName } from "./overlay-volume.js";
@@ -38,12 +39,18 @@ interface FakeContainerSpec {
 }
 
 function makeFakeDocker(specs: FakeContainerSpec[]) {
+  const matchesFilter = (s: FakeContainerSpec, wanted: string | undefined): boolean => {
+    if (!wanted) return true;
+    // The standby sweep filters on the standby label; every other caller here
+    // filters on the session id.
+    if (wanted === `${CONTAINER_STANDBY_LABEL}=true`) return s.standby === true;
+    return wanted === `${CONTAINER_SESSION_ID_LABEL}=${s.sessionId}`;
+  };
   return {
     listContainers: async ({ filters }: { filters?: { label?: string[] } } = {}) => {
-      // Honor the `shipit-session-id=<sid>` label filter the helper passes.
       const wanted = filters?.label?.[0];
       return specs
-        .filter((s) => !wanted || wanted === `${CONTAINER_SESSION_ID_LABEL}=${s.sessionId}`)
+        .filter((s) => matchesFilter(s, wanted))
         .map((s) => ({
           Id: s.id,
           State: s.state,
@@ -55,6 +62,14 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
         }));
     },
     getContainer: (id: string) => ({
+      stop: async () => {
+        const spec = specs.find((s) => s.id === id);
+        if (spec) spec.state = "exited";
+      },
+      remove: async () => {
+        const at = specs.findIndex((s) => s.id === id);
+        if (at >= 0) specs.splice(at, 1);
+      },
       inspect: async () => {
         const spec = specs.find((s) => s.id === id);
         if (!spec || spec.inspectThrows) throw new Error("inspect failed");
@@ -299,6 +314,60 @@ describe("rediscoverContainers", () => {
  * "Docker could not answer" is the whole point: the caller declares a session
  * dead on the former.
  */
+describe("reapStandbyContainers", () => {
+  it("removes every standby container and spares real session containers", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c-standby", sessionId: "warm-1", state: "running", ip: "172.18.0.4", standby: true },
+      { id: "c-real", sessionId: "sess-1", state: "running", ip: "172.18.0.5" },
+    ];
+    const { deps, containers, standby } = makeDeps(specs);
+    // As boot leaves things when a previous incarnation's standby was adopted.
+    containers.set("warm-1", { id: "c-standby", sessionId: "warm-1" } as SessionContainer);
+    standby.add("warm-1");
+    containers.set("sess-1", { id: "c-real", sessionId: "sess-1" } as SessionContainer);
+
+    expect(await reapStandbyContainers(deps)).toBe(1);
+
+    // docs/113 — a real session's container is grandfathered across a deploy
+    // precisely because it may hold work in flight. Only the standby goes.
+    expect(specs.map((s) => s.id)).toEqual(["c-real"]);
+    expect(containers.has("warm-1")).toBe(false);
+    expect(standby.has("warm-1")).toBe(false);
+    expect(containers.has("sess-1")).toBe(true);
+  });
+
+  it("reaps a standby this process never tracked, and one already exited", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c-untracked", sessionId: "warm-1", state: "running", standby: true },
+      { id: "c-exited", sessionId: "warm-2", state: "exited", standby: true },
+    ];
+    const { deps } = makeDeps(specs);
+
+    // No map entries at all — the state a fresh process boots into, and the one
+    // a row-driven sweep cannot see.
+    expect(await reapStandbyContainers(deps)).toBe(2);
+    expect(specs).toEqual([]);
+  });
+
+  it("is a no-op with no standby containers", async () => {
+    const { deps } = makeDeps([
+      { id: "c-real", sessionId: "sess-1", state: "running", ip: "172.18.0.5" },
+    ]);
+    expect(await reapStandbyContainers(deps)).toBe(0);
+  });
+
+  it("resolves rather than throwing when Docker is unavailable", async () => {
+    const { deps } = makeDeps([]);
+    const broken = {
+      ...deps,
+      docker: {
+        listContainers: async () => { throw new Error("daemon down"); },
+      } as unknown as DiscoveryDeps["docker"],
+    };
+    expect(await reapStandbyContainers(broken)).toBe(0);
+  });
+});
+
 describe("isTrackedContainerRunning", () => {
   let errSpy: ReturnType<typeof vi.spyOn>;
 

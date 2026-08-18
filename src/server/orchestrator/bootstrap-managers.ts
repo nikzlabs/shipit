@@ -40,6 +40,7 @@ import {
   createWarmPool,
   runRepoMigration,
   runRemoteCredentialScrub,
+  retireWarmSessions,
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
@@ -142,6 +143,20 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     secretStore, reviewStore, egressAllowlistStore, presentStore, generateText,
     isTestMode, runtimeMode,
   } = mgrs;
+
+  // ---- Retire the previous process's warm sessions ----
+  // FIRST, before the container setup on the next line reads
+  // `sessionManager.allIds()`: with the rows already gone, its orphan sweep
+  // treats each standby as an orphan and its rediscovery never re-adopts one
+  // (which is how a standby used to survive every deploy — the idle enforcer
+  // skips standbys, so nothing else would ever have reaped it). The container
+  // itself is killed by label inside that call (`reapStandbyContainers`); what
+  // this owns is the row, the repo pointer and the clone — and clearing the
+  // pointer is what makes `scheduleStartupTasks` re-warm the pool on the new
+  // image. See `retireWarmSessions`.
+  await retireWarmSessions({
+    repoStore, sessionManager, chatHistoryManager, usageManager, presentStore,
+  });
 
   // ---- Container manager (Docker isolation) ----
   const { containerManager, dockerProxyServer } = await setupContainerManager({

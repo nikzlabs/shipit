@@ -276,6 +276,71 @@ export async function isTrackedContainerRunning(
 }
 
 // ---------------------------------------------------------------------------
+// Standby reaping (boot)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stop and remove every standby container, tracked or not. Called once at boot.
+ *
+ * A standby belongs to the process that created it: it holds no work, it was
+ * built from that process's worker image, and nothing else reaps one — the idle
+ * enforcer skips standbys deliberately (`idle-enforcer.ts`) and
+ * {@link rediscoverContainers} re-adopts them standby flag and all. So a
+ * standby used to outlive every deploy, and the next claim of that warm session
+ * was handed a grandfathered worker. Grandfathering a *real* session's
+ * container across a deploy is the docs/113 rule and stays; it exists to
+ * protect work in flight, which a standby by definition has none of.
+ *
+ * Keyed on the `shipit-standby` LABEL rather than on `standbySessionIds`, which
+ * is process memory this process has not populated yet, and rather than on the
+ * session rows, which {@link retireWarmSessions} has already dropped by the
+ * time this runs. The label is the only record of "standby" that survives with
+ * the container, so it is the only thing that can find one unconditionally.
+ *
+ * Egress sidecars sharing a reaped container's netns are left to the boot
+ * janitor's `reapOrphanEgressSidecars`, whose test is exactly "is my netns
+ * parent gone?" — which is now true for each of them.
+ *
+ * Never rejects. Returns the number of containers removed.
+ */
+export async function reapStandbyContainers(deps: DiscoveryDeps): Promise<number> {
+  let removed = 0;
+  try {
+    const containers = await deps.docker.listContainers({
+      all: true,
+      filters: { label: [`${CONTAINER_STANDBY_LABEL}=true`] },
+    });
+    for (const ci of containers) {
+      // Re-read the label at the point of removal rather than trusting the
+      // filter alone. This sweep stops and removes containers; the predicate
+      // that decides which ones deserves to be visible where the destruction
+      // happens, not only in the query that produced the list.
+      if (ci.Labels?.[CONTAINER_STANDBY_LABEL] !== "true") continue;
+      const sessionId = ci.Labels?.[CONTAINER_SESSION_ID_LABEL];
+      try {
+        const container = deps.docker.getContainer(ci.Id);
+        if (ci.State === "running") await container.stop({ t: 5 });
+        await container.remove({ force: true });
+        removed++;
+      } catch {
+        // Already gone, or removed by the orphan sweep moments ago — either
+        // way the outcome we wanted. Still drop the tracking below.
+      }
+      if (sessionId) {
+        deps.containers.delete(sessionId);
+        deps.standbySessionIds.delete(sessionId);
+      }
+    }
+  } catch {
+    // Docker may not be available.
+  }
+  if (removed > 0) {
+    console.log(`[container] Reaped ${removed} standby container(s) from the previous orchestrator process`);
+  }
+  return removed;
+}
+
+// ---------------------------------------------------------------------------
 // Orphan cleanup
 // ---------------------------------------------------------------------------
 
