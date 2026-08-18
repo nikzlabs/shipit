@@ -262,6 +262,20 @@ export interface SessionContainer {
    */
   overlayVolumeNames?: string[];
   /**
+   * nikzlabs/shipit#2426 — the (dep dir → overlay volume) pairs this container was
+   * actually created with, the authoritative answer to "what does the agent have
+   * mounted". The compose path needs BOTH halves: the volume to reference and the
+   * dep dir that decides where to nest it under a service's workspace mount.
+   *
+   * Recorded rather than re-derived. Re-deriving reads the LIVE workspace
+   * (`shipit.yaml`'s `dep-dirs`, the pnpm signals, `git check-ignore`), all of
+   * which the agent can change mid-session — and a disagreement there silently
+   * produced zero compose mounts while the agent kept its overlay, giving the two
+   * containers independent dependency trees. Absent for non-overlay sessions and
+   * for rediscovered/re-adopted containers, where what was provisioned isn't known.
+   */
+  overlayDepDirs?: { depDir: string; volumeName: string }[];
+  /**
    * docs/172 — the resolved egress containment (`ResolvedEgressConfig.contained`)
    * this container was actually created with. The egress topology is installed
    * into the netns at creation, so this is the source of truth for "what is the
@@ -511,6 +525,23 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   get dockerClient(): Docker {
     return this.docker;
+  }
+
+  /**
+   * nikzlabs/shipit#2426 — the (dep dir → overlay volume) pairs this session's
+   * agent container was created with, or `null` when nothing is known about it
+   * (no live container record — a rediscovered/re-adopted container, or a
+   * runtime that creates none).
+   *
+   * `[]` and `null` are deliberately different answers: `[]` means the container
+   * genuinely has no overlay, so a compose service that mounts the dep dir path
+   * plainly agrees with it, while `null` means we cannot say. The compose path
+   * treats only `null` as a reason to look further.
+   */
+  provisionedOverlayDepDirs(sessionId: string): { depDir: string; volumeName: string }[] | null {
+    const sc = this.containers.get(sessionId);
+    if (!sc) return null;
+    return sc.overlayDepDirs ?? [];
   }
 
   /** Boot-effective containment used when generating the Compose override. */

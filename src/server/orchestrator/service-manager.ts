@@ -528,6 +528,12 @@ export class ServiceManager extends EventEmitter {
   private services = new Map<string, ManagedService>();
   private logProcesses = new Map<string, ChildProcess>();
   private logBuffers = new Map<string, string>();
+  /**
+   * nikzlabs/shipit#2426 — per-service `--since` anchor for the NEXT log follower
+   * spawn: the instant an `up` for that service began. See
+   * {@link armLogFollowerSince} and `streamLogs`.
+   */
+  private followerSince = new Map<string, string>();
   private readonly logStore?: LogStore;
   private _started = false;
   /** docs/201 P8 — owns `docker compose` command construction + execution. */
@@ -1666,6 +1672,7 @@ export class ServiceManager extends EventEmitter {
       if (autoNames.length > 0) {
         await this.withUpInFlight(autoNames, async () => {
           await this.prepareContainedStartFn?.(autoNames);
+          this.armLogFollowerSince(autoNames);
           await this.compose.up(autoNames, this.composeLogSink(autoNames));
           await this.containServicesFn?.([...this.services.keys()]);
         });
@@ -1759,6 +1766,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight([name], async () => {
         await this.prepareContainedStartFn?.([name]);
+        this.armLogFollowerSince([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -1767,6 +1775,14 @@ export class ServiceManager extends EventEmitter {
       // that `up` to stop whatever it produced — so finishing the start here
       // would only race it back to `running`. See `stopService`.
       if (this.stoppedByUser.has(name)) return;
+      // BEFORE the network join and the poll, not after them (#2426). Both are
+      // Docker round trips the fresh container spends printing, and this spawn
+      // is what claims the `--since` anchor armed above — leaving it until last
+      // let the poll's own `onRunning` → `ensureLogFollower` claim it first,
+      // only for the unconditional respawn here to kill that follower and
+      // re-attach with no anchor at all, losing the very window the anchor
+      // exists to replay.
+      this.streamLogs(name);
       // The first manual-service start is the moment the compose network
       // actually gets created (compose materializes the network on `up`,
       // not just when the file is parsed). If this stack is all-manual,
@@ -1776,7 +1792,6 @@ export class ServiceManager extends EventEmitter {
       // freshly-started container by IP. Idempotent on subsequent starts.
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
-      this.streamLogs(name);
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
       throw err;
@@ -1806,19 +1821,24 @@ export class ServiceManager extends EventEmitter {
       if (this.stoppedByUser.has(name)) return;
       await this.withUpInFlight([name], async () => {
         await this.prepareContainedStartFn?.([name]);
+        this.armLogFollowerSince([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
       // Stopped mid-restart — see `startService` for why this returns rather
       // than finishing the bring-up.
       if (this.stoppedByUser.has(name)) return;
+      // Restart log streaming to pick up new container output — before the join
+      // and the poll, for the reason spelled out in `startService`. This is the
+      // path #2426 was filed against: a restarted service that prints its
+      // diagnostics and exits produced nothing the reporter could see, which
+      // read as "the `command:` edit was never applied".
+      this.streamLogs(name);
       // Defensive: if a previous all-manual `start()` skipped the network
       // join (see startService comment), the first restartService after
       // adoption could be the first time the orchestrator gets attached.
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
-      // Restart log streaming to pick up new container output
-      this.streamLogs(name);
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
       throw err;
@@ -1918,16 +1938,35 @@ export class ServiceManager extends EventEmitter {
     // docs/192 — durable persistence. The follower replays its `--tail` window
     // on every (re)start, which would duplicate lines in the durable store
     // across restarts. So we only replay history (`--tail 1000`, which also
-    // *seeds* the store via handleData) when the store has nothing yet;
-    // otherwise we follow only NEW lines (`--tail 0`). This keeps an earlier
-    // container's persisted history intact after the container is destroyed
-    // and a fresh one starts. (Lines emitted while the orchestrator itself was
-    // down are not backfilled — a `--since` follower is the planned follow-up.)
+    // *seeds* the store via handleData) when the store has nothing yet.
+    //
+    // Once the store IS seeded, the window is anchored by {@link armLogFollowerSince}
+    // instead (nikzlabs/shipit#2426). `--tail 0` alone loses everything the
+    // container printed between `up` returning and this spawn — a network join
+    // and a poll later — and there is nowhere left to recover it from: the ring
+    // buffer was just cleared above, the store never received those lines, and
+    // `snapshotLogs` prefers the store over a fresh `docker compose logs`. A
+    // service that prints and then exits produced NO visible output at all,
+    // which is how a reporter concluded a `command:` edit had not been applied
+    // when in fact it had. `--since <up-start>` replays exactly that gap.
+    //
+    // It cannot duplicate persisted history: the anchor is stamped immediately
+    // before each `up`, so it excludes everything an earlier follower recorded,
+    // and a follower only ever dies with its container — whose logs go with it.
+    // `--tail 1000` rides along purely to bound a container that floods the gap.
+    // With no anchor (a follower re-attached without an intervening `up`) the
+    // behavior is unchanged: follow new lines only.
     const channel = `service:${name}`;
     const seeded = this.logStore?.hasChannel(this.sessionId, channel) ?? false;
-    const tail = this.logStore && seeded ? "0" : "1000";
+    // Consumed, not just read: an anchor left behind would widen a later
+    // unrelated re-attach's window for no gain.
+    const since = this.followerSince.get(name);
+    this.followerSince.delete(name);
+    const window = this.logStore && seeded
+      ? (since ? ["--since", since, "--tail", "1000"] : ["--tail", "0"])
+      : ["--tail", "1000"];
 
-    const args = this.compose.args("logs", "-f", "--tail", tail, "--no-log-prefix", name);
+    const args = this.compose.args("logs", "-f", ...window, "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
       // planning#371 — same project file, same interpolation. See `composeSpawnEnv`.
@@ -2002,6 +2041,28 @@ export class ServiceManager extends EventEmitter {
   private ensureLogFollower(name: string): void {
     if (this.logProcesses.has(name)) return;
     this.streamLogs(name);
+  }
+
+  /**
+   * Stamp the moment an `up` begins, so the log follower that attaches after it
+   * replays the window between the two instead of starting from "now"
+   * (nikzlabs/shipit#2426). Called by EVERY path that runs `docker compose up`,
+   * immediately before the command — the initial stack start, a manual
+   * start/restart, the gated batch, a crash/OOM retry, and the secrets refresh.
+   *
+   * Uniform on purpose: a container recreated by any of them gets a follower
+   * from a different place (`onRunning` covers the automatic routes,
+   * `startService`/`restartService` spawn their own), and each one needs the
+   * same window. Stamping at the `up` rather than at the spawn is what makes the
+   * anchor exclude everything an earlier follower already persisted.
+   *
+   * Full ISO-8601 with milliseconds: `--since` is compared against daemon-side
+   * log timestamps, and second precision would let a restart replay the outgoing
+   * container's final lines.
+   */
+  private armLogFollowerSince(names: readonly string[]): void {
+    const at = new Date().toISOString();
+    for (const name of names) this.followerSince.set(name, at);
   }
 
   /**
@@ -2247,6 +2308,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight(autoNames, async () => {
         await this.prepareContainedStartFn?.(autoNames);
+        this.armLogFollowerSince(autoNames);
         await this.compose.up(autoNames, this.composeLogSink(autoNames));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -2536,6 +2598,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight([name], async () => {
         await this.prepareContainedStartFn?.([name]);
+        this.armLogFollowerSince([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -2636,6 +2699,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight(names, async () => {
         await this.prepareContainedStartFn?.(names);
+        this.armLogFollowerSince(names);
         await this.compose.up(names, this.composeLogSink(names));
         await this.containServicesFn?.([...this.services.keys()]);
       });
