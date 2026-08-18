@@ -41,6 +41,7 @@ import {
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import {
   preStampInstallMarker,
+  sortOverlayDepDirs,
   supersededSessionOverlayLayers,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
@@ -1129,7 +1130,13 @@ export async function createContainer(
     overlayVolumeNames: config.overlaySpecs?.map((s) => s.volumeName),
     // #2426 — what the compose path mounts, so it never has to re-derive
     // eligibility from a workspace that has moved on since. See the field doc.
-    overlayDepDirs: config.overlaySpecs?.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })),
+    // Sorted for the reason `sortOverlayDepDirs` documents: this list's ORDER is
+    // part of the compose override's bytes, and the adoption path records the
+    // same set from a source whose order is not ours. The two must agree, or a
+    // session alternating between created and rediscovered rewrites the override
+    // — and recreates every compose service — on each transition.
+    overlayDepDirs: config.overlaySpecs
+      && sortOverlayDepDirs(config.overlaySpecs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }))),
   };
   deps.containers.set(config.sessionId, sc);
 

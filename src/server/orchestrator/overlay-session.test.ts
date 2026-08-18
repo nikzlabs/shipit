@@ -27,6 +27,7 @@ import {
   isOverlayEligible,
   isOverlayEnabled,
   liveOverlayScopeHashes,
+  sortOverlayDepDirs,
   overlayDepDirsFromMounts,
   overlayPinSegment,
   overlayRuntimeKey,
@@ -366,6 +367,50 @@ describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
     expect(overlayDepDirsFromMounts(SID, mounts)).toEqual(
       specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })),
     );
+  });
+
+  it("orders the pairs independently of the mount table's order", () => {
+    // The override is generated FROM this list, so its order is part of the
+    // override's bytes and compose recreates a service whenever they change.
+    // Nothing documents `docker inspect`'s `Mounts` as ordered, so two inspects
+    // that merely disagreed would rewrite the override — and recreate every
+    // compose service in the fleet — on each orchestrator restart.
+    const vols = {
+      nm: overlayVolumeName(SID, "node_modules"),
+      dist: overlayVolumeName(SID, "dist"),
+      app: overlayVolumeName(SID, "packages/app/node_modules"),
+    };
+    const mount = (name: string, dest: string) => ({ Type: "volume", Name: name, Destination: dest });
+    const one = [
+      mount(vols.nm, "/workspace/node_modules"),
+      mount(vols.dist, "/workspace/dist"),
+      mount(vols.app, "/workspace/packages/app/node_modules"),
+    ];
+    const other = [one[2], one[0], one[1]];
+
+    expect(overlayDepDirsFromMounts(SID, one)).toEqual(overlayDepDirsFromMounts(SID, other));
+    expect(overlayDepDirsFromMounts(SID, one).map((p) => p.depDir))
+      .toEqual(["dist", "node_modules", "packages/app/node_modules"]);
+  });
+
+  it("agrees with the order the create path records, for the same set", () => {
+    // The two recording sites must agree, or a session alternating between
+    // created and rediscovered rewrites the override on every transition.
+    const specs = buildOverlaySpecs({
+      sessionId: SID,
+      scope: { repoUrl: "https://github.com/acme/repo.git", runtimeKey: "img|x64" },
+      // Declared in an order that is NOT sorted, as a shipit.yaml may well be.
+      depDirs: ["packages/app/node_modules", "node_modules"],
+      volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
+    });
+    const fromCreate = sortOverlayDepDirs(
+      specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })),
+    );
+    const fromMounts = overlayDepDirsFromMounts(
+      SID,
+      specs.map((s) => ({ Type: "volume", Name: s.volumeName, Destination: s.mountPath })),
+    );
+    expect(fromMounts).toEqual(fromCreate);
   });
 
   it("returns [] for a container that genuinely has no dep-dir overlay", () => {

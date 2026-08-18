@@ -278,9 +278,13 @@ describe("rediscoverContainers", () => {
     const count = await rediscoverContainers(deps, new Set(["sess-1"]), resolver);
 
     expect(count).toBe(1);
+    // Sorted by dep dir, NOT in mount-table order: this list's order is part of
+    // the compose override's bytes, so a daemon that returned the mounts in a
+    // different order would rewrite the override and recreate every compose
+    // service on each orchestrator restart.
     expect(containers.get("sess-1")?.overlayDepDirs).toEqual([
-      { depDir: "node_modules", volumeName: nm },
       { depDir: "dist", volumeName: dist },
+      { depDir: "node_modules", volumeName: nm },
     ]);
   });
 });

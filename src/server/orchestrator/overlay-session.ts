@@ -396,6 +396,28 @@ export function buildOverlaySpecs(args: {
 }
 
 /**
+ * Put a recorded overlay set in a stable order, by dep dir.
+ *
+ * The compose override is generated FROM this list, so its order is part of the
+ * override's bytes — and compose recreates a service container whenever the
+ * generated config differs from what the running one was built with. So the two
+ * sites that record the set ({@link overlayDepDirsFromMounts} and the container
+ * create path) must agree on an order, and neither may inherit one from
+ * something outside our control.
+ *
+ * That last part is why this sorts rather than trusting the input. The adoption
+ * path reads `docker inspect`'s `Mounts`, and nothing in Docker's API documents
+ * that array as ordered — the daemon builds it from a keyed collection, so the
+ * order is the daemon's to choose and to change. Left unsorted, an order that
+ * merely *differed* between two inspects would rewrite the override on every
+ * orchestrator restart and recreate every compose service in the fleet for no
+ * reason. Sorting makes the question moot instead of betting on the answer.
+ */
+export function sortOverlayDepDirs<T extends { depDir: string }>(pairs: T[]): T[] {
+  return [...pairs].sort((a, b) => (a.depDir < b.depDir ? -1 : a.depDir > b.depDir ? 1 : 0));
+}
+
+/**
  * The (dep dir → overlay volume) pairs a **live** container actually has mounted,
  * read back from its own `docker inspect` mount table.
  *
@@ -437,7 +459,7 @@ export function overlayDepDirsFromMounts(
     if (!depDir) continue;
     pairs.push({ depDir, volumeName });
   }
-  return pairs;
+  return sortOverlayDepDirs(pairs);
 }
 
 // ---------------------------------------------------------------------------
