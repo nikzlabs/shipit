@@ -24,6 +24,12 @@
  * drawn on a 256×256 grid — so a bare `svg` query passes with the logo missing,
  * which is the exact regression these tests exist to catch. Simple Icons' marks,
  * the ones `ServiceLogo` draws, are 24×24.
+ *
+ * This exists only for as long as the jsdom defect does. Delete it and go back
+ * to the plain selector once jsdom fixes cased-attribute value matching —
+ * **planning#436** tracks that, so a workaround does not quietly become
+ * permanent. `service-mark.testing.test.tsx` is what tells you the discriminator
+ * still discriminates in either direction.
  */
 
 /** The grid every `ServiceLogo` mark is drawn on. See `ServiceLogo.tsx`. */
