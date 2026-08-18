@@ -511,6 +511,38 @@ export function wireAgentListeners(
   let sawAuthRequiredThisTurn = false;
   agent.on("auth_required", () => { sawAuthRequiredThisTurn = true; });
 
+  /**
+   * planning#438 — has THIS turn already written its terminal error row? Two
+   * handlers can write one for a single death, and the grok adapter reaches
+   * both: `proc.on("error")` re-emits the OS error, and the INDEPENDENT `close`
+   * handler still synthesizes an `agent_result` carrying its own error (there is
+   * no guard between them — opencode's close handler picks one or the other, so
+   * only grok has the pair). Whichever fires first owns the row; the second
+   * stands down rather than leaving the user two bubbles for one failure.
+   *
+   * First-wins is the right way round in both orderings: the `error` event
+   * carries the OS-level cause (`spawn ENOENT`), which is more specific than the
+   * synthesized "exited with code N", and a late `error` after a result adds
+   * nothing the result did not already say.
+   *
+   * Turn-scoped by construction — `agent-execution.ts` calls
+   * `removeAllListeners()` before re-wiring a reused process, so this closure
+   * never outlives its turn.
+   */
+  let persistedTerminalErrorRow = false;
+
+  /**
+   * planning#438 — did this result carry a QUOTA refusal? Set in the
+   * `agent_result` detection block and read by the persistence block further
+   * down, which must stand down when it is true: a quota-refused turn is about
+   * to be failed over to the next account (the executor's docs/150 req 14 gate),
+   * and a turn that is being re-run has not ended. When no account is left, the
+   * turn ends as a `ProviderRouteUnavailableError` through the `error` handler,
+   * whose row names the routing failure and the resend that resolves it — which
+   * is the message the user can act on, not the provider's raw refusal.
+   */
+  let sawHardExhaustionThisTurn = false;
+
   // ---- MCP mid-turn crash detection (docs/088) + per-tool timing (docs/185) ----
   //
   // The CLI's init event covers cold-start liveness (ClaudeAdapter →
@@ -919,6 +951,13 @@ export function wireAgentListeners(
       const detected = normalizedError
         ? detectHardExhaustion(normalizedError)
         : detectHardExhaustionInTurnText(noticeText);
+      // planning#438 — carried to the persistence block below, which must NOT
+      // write a terminal error row for a quota refusal: the executor's docs/150
+      // req 14 gate fails this turn over to the next account, and the retry owns
+      // the user-visible outcome. If no account is left, the turn ends as a
+      // `ProviderRouteUnavailableError` through the `error` handler, which
+      // persists the routing message instead — the one the user can act on.
+      sawHardExhaustionThisTurn = detected !== null;
       const exhaustedSessionId = opts.capturedSessionId;
       if (exhaustedSessionId && deps.markSessionAccountExhausted && detected) {
         deps.markSessionAccountExhausted(
@@ -1600,6 +1639,67 @@ export function wireAgentListeners(
       // message. No-op off the live-steer path.
       if (runner) requeueUndeliveredSteers(runner, emitToViewers);
 
+      // planning#438 — a turn can END in an errored `agent_result` while having
+      // streamed nothing at all: grok and opencode synthesize the result when
+      // the CLI dies before producing one, and codex maps a failed
+      // `turn/completed` the same way. `receivedResult` is then true, so the
+      // executor's no-result row and the dispatch retry hook (`onNoResultExit`)
+      // both stand down — and the persist below writes only the (empty)
+      // accumulated groups. The user's message got silence on reload; the only
+      // explanation lived in the emit-only wire event. A terminal "failed" is
+      // transcript content (CLAUDE.md "Chat transcript content MUST be
+      // persisted"), so record a persisted error row in-band — the
+      // `buildTurnMessages` below folds it in via `recordedCards` at its true
+      // position. Skipped when the turn streamed any visible content (the
+      // quota promotion above can set `error` to the turn's own assistant
+      // text, which a row here would duplicate), when the user interrupted
+      // (an interrupt is not a failure, mirroring `turnErrored` below), and
+      // when the auth handler or the missing-conversation path already
+      // persisted the actionable explanation for this same death.
+      const resultError = (event as { error?: string }).error;
+      const turnHasVisibleContent =
+        (runner?.chatMessageGroups ?? []).some((g) => g.text || g.toolUse.length > 0);
+      if (
+        resultError
+        && !turnHasVisibleContent
+        && !(runner?.wasInterrupted ?? false)
+        && !sawAuthRequiredThisTurn
+        && !missingConversationDetected
+        && !persistedTerminalErrorRow
+        && !sawHardExhaustionThisTurn
+      ) {
+        persistedTerminalErrorRow = true;
+        // Guarded like the executor's `postTurnStep` steps, and for the same
+        // reason: this block sits BEFORE the turn's group persist a few lines
+        // down, so an unguarded SQLite failure here would abandon the rest of
+        // the handler and cost the turn everything it streamed — trading one
+        // missing row for the whole turn.
+        try {
+          if (runner) {
+            emitChatCard(
+              runner,
+              { type: "error", message: resultError, sessionId: usageSessionId },
+              { role: "assistant", text: `Error: ${resultError}`, isError: true },
+              { chatHistoryManager: deps.chatHistoryManager, sessionId: usageSessionId },
+            );
+          } else {
+            // No runner to record on — persist directly so the row still
+            // survives reload, and emit so an attached viewer sees it live.
+            emitToViewers({ type: "error", message: resultError });
+            deps.chatHistoryManager.append(usageSessionId, {
+              role: "assistant",
+              text: `Error: ${resultError}`,
+              isError: true,
+            });
+          }
+        } catch (err) {
+          console.error(
+            `[agent] failed to persist the terminal error row for ${usageSessionId}:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+
       // Persist each message group as a separate assistant entry so that
       // reloaded chat history shows the same message boundaries as live
       // streaming. Per-turn usage is no longer attached to the last group —
@@ -1765,11 +1865,19 @@ export function wireAgentListeners(
       );
       deps.chatHistoryManager.replaceInProgress(turnSessionId, partialMessages);
       deps.chatHistoryManager.finalizeInProgress(turnSessionId);
-      deps.chatHistoryManager.append(turnSessionId, {
-        role: "assistant",
-        text: blocked ? err.message : `Error: ${err.message}`,
-        isError: true,
-      });
+      // planning#438 — only the FIRST terminal error row for this turn is
+      // written. An errored `agent_result` may already have written one (grok
+      // emits both for a single death; see `persistedTerminalErrorRow`), and a
+      // second bubble saying the same thing is worse than none. Only the row is
+      // gated — the finalize above and the whole teardown below still run.
+      if (!persistedTerminalErrorRow) {
+        persistedTerminalErrorRow = true;
+        deps.chatHistoryManager.append(turnSessionId, {
+          role: "assistant",
+          text: blocked ? err.message : `Error: ${err.message}`,
+          isError: true,
+        });
+      }
     }
     // Clear runner state so a stuck `running=true` doesn't make this runner
     // permanently undisposable. Some adapter paths emit `error` without a
