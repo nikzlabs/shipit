@@ -291,6 +291,19 @@ export function shareTreeWithAllSessions(targetPath: string): void {
  * looking done with its contents unshared. The marker is written only after the
  * walk returns.
  *
+ * **The marker names the gid and NOT what the walk does, which is a hazard this
+ * shares with the container entrypoint's ownership sentinels** — see
+ * `HANDOFF_SCHEME` in `docker/session-worker/entrypoint.sh`, where the same
+ * shape latched a half-repaired `/dep-cache` on every deployment that had
+ * already claimed one. It is not currently WRONG here, because this function
+ * and the group+mode walk it performs shipped together, so there is no tree
+ * claimed under a version of the walk that did less. It becomes wrong the
+ * moment {@link shareOne} learns to do something new: every already-marked tree
+ * keeps the old treatment for good. If you change what the walk does, add a
+ * scheme version to this marker name too — and expect the bump to cost one
+ * synchronous re-walk of the pnpm store / each overlay base generation at the
+ * next container create, which is why it is not carried speculatively.
+ *
  * `beside` puts that bookkeeping file NEXT TO the tree rather than inside it,
  * for a tree whose contents are USER-VISIBLE. An overlay base generation is
  * mounted as the lower layer of `/workspace/<depDir>`, so a marker inside it

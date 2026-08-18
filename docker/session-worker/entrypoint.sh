@@ -111,6 +111,78 @@ chown_workspace() {
     -type f -exec chmod g+rwX {} + || true
 }
 
+# docs/272 — hand a SHARED mount (/dep-cache) to every session of its repo:
+# set the GROUP without touching the owner, make it group-writable, and set
+# setgid on its directories so an entry a later session creates inherits the
+# shared group instead of that session's own.
+#
+# Split out of the loop so the two halves can be gated differently, which is the
+# fix rather than a tidy-up. The GROUP is what the handoff is FOR — a cache whose
+# group did not change is not shared at all — so a failure there returns non-zero
+# and the caller RELEASES its claim, and the next boot retries. The MODE passes
+# are best-effort, for the same reason `chown_workspace`'s are: this script runs
+# under `set -e`, and a shared cache is written CONCURRENTLY by every session of
+# the repo — npm's `_cacache/tmp` and `_logs` churn constantly — so a file
+# another session unlinked mid-walk must not kill the boot.
+#
+# Before this split, `chmod -R g+rwX "$d"` was an unguarded simple command: one
+# vanished temp file killed the entrypoint, and because the claim had already
+# been staked (and `chown -R` had already stamped the marker with the shared
+# gid) EVERY later boot skipped the walk. The cache stayed half group-writable
+# for good, which is EACCES with no recovery for every session that did not
+# write each entry — the shape reported from production on 2026-08-18, where
+# `npm` blamed "root-owned files" on a cache that was not root-owned at all.
+share_cache_with_all_sessions() {
+  d="$1"
+  chown -R ":${WORKER_GID}" "$d" || return 1
+  chmod -R g+rwX "$d" || true
+  find "$d" -type d -exec chmod g+s {} + 2>/dev/null || true
+}
+
+# Remove handoff sentinels a completed walk has superseded — an earlier scheme
+# version, or an earlier identity. Depth-1 and prefix-exact, so nothing but a
+# sentinel is a candidate, and `rmdir` (never `rm -r`) so a name that is somehow
+# not an empty directory is left alone. Runs only AFTER the superseding walk
+# succeeded, so a tree is never left with no sentinel at all.
+#
+# POSIX sh has no `local`, so every name here is global. `chown_workspace` and
+# `share_cache_with_all_sessions` take the loop variable `d` and assign it back
+# to itself, which is harmless; this one takes three arguments and is the most
+# likely to be called with something else one day, so it deliberately avoids `d`.
+prune_stale_sentinels() {
+  tree="$1"; prefix="$2"; keep="$3"
+  for stale in "$tree/$prefix"*; do
+    [ -d "$stale" ] || continue
+    [ "$stale" = "$keep" ] && continue
+    rmdir "$stale" 2>/dev/null || true
+  done
+  # Explicit, because this is called from inside an `if` BODY (where `set -e` is
+  # live) and a loop's status is its last command's. Bookkeeping must never be
+  # able to fail a boot.
+  return 0
+}
+
+# docs/272 — the sentinel names carry a HANDOFF SCHEME version alongside the
+# identity they stamp, because the identity is not the only thing that can
+# change.
+#
+# A sentinel claims a tree ONCE and every later boot skips on it. That is right
+# while what the walk DOES is fixed, and silently wrong the moment the walk
+# learns to do something new: every tree an earlier image already claimed keeps
+# the old treatment for good — and those are the longest-running deployments,
+# i.e. exactly the ones with the most to repair. Two passes have already landed
+# that way (docs/271's workspace group-write, and the shared-cache mode pass
+# above), and neither could reach a tree whose sentinel was already in place.
+#
+# So: bump this whenever the handoff starts doing more, or differently, than it
+# did. The cost is one extra walk per tree per deployment — what the walk costs
+# on a cold tree anyway — and the alternative is a repair that reaches only new
+# sessions.
+#
+# v2: the mode passes above (`chmod -R g+rwX`, setgid on directories, and
+# `chown_workspace`'s group-write pass) now reach trees claimed under v1.
+HANDOFF_SCHEME=2
+
 # Only the writable runtime mounts + the runtime home. NEVER chown /app,
 # /opt/agent-cli, /usr/local/bin, or system dirs — those stay root-owned and
 # read-only to the worker (the shims under /usr/local/bin must stay traversable,
@@ -184,16 +256,22 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   # so the NEXT boot's check reads the handed-over value and skips.
   case "$d" in
     */dep-cache)
-      marker="$d/.shipit-gid-${WORKER_GID}"
+      marker="$d/.shipit-gid-${WORKER_GID}-v${HANDOFF_SCHEME}"
       if mkdir "$marker" 2>/dev/null || [ "$(stat -c '%g' "$marker" 2>/dev/null || true)" != "$WORKER_GID" ]; then
-        chown -R ":${WORKER_GID}" "$d"
-        chmod -R g+rwX "$d"
-        find "$d" -type d -exec chmod g+s {} + 2>/dev/null || true
+        if share_cache_with_all_sessions "$d"; then
+          prune_stale_sentinels "$d" ".shipit-gid-" "$marker"
+        else
+          # Release the claim rather than latch a half-done handoff: the marker
+          # is stamped with the shared gid by the very `chown -R` that failed, so
+          # leaving it would make every later boot skip a walk that never ran.
+          echo "shipit-entrypoint: shared-cache handoff for $d did not complete; releasing the claim so the next boot retries" >&2
+          rmdir "$marker" 2>/dev/null || true
+        fi
       fi
       continue
       ;;
   esac
-  marker="$d/.shipit-uid-${UID_GID}-${WORKER_GID}"
+  marker="$d/.shipit-uid-${UID_GID}-${WORKER_GID}-v${HANDOFF_SCHEME}"
   if mkdir "$marker" 2>/dev/null \
     || [ "$(stat -c '%u' "$marker" 2>/dev/null || true)" != "$UID_GID" ] \
     || [ "$(stat -c '%g' "$marker" 2>/dev/null || true)" != "$WORKER_GID" ]; then
@@ -201,6 +279,7 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
       */workspace) chown_workspace "$d" ;;
       *) chown -R "${UID_GID}:${WORKER_GID}" "$d" ;;
     esac
+    prune_stale_sentinels "$d" ".shipit-uid-" "$marker"
   fi
 done
 

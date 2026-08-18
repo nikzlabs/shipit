@@ -107,6 +107,19 @@ sizing is fully automatic.
   usually looks fine — which is what makes this read as intermittent.) If a
   build step's output has to be there, declare its directory in `dep-dirs`
   alongside `node_modules`.
+- **`dep-dirs` is checked after the install, not only before it.** A declared
+  directory that exists but is **empty** when the install commands finish is
+  treated as a failed install: no marker is written, and services gated on the
+  install (`x-shipit-depends-on-install`) are not started. The exit status alone
+  is not enough — an install command that ends in `|| true`, or in a fallback
+  test like `|| [ -x node_modules/.bin/vite ]`, exits 0 while having installed
+  nothing, and the gate would then open over an empty dependency tree and leave
+  the services crash-looping on a missing module. If you hit this, either the
+  install genuinely failed (read the `install_error` message and the install
+  log) or `dep-dirs` names a directory this install does not produce — narrow
+  the list. An **absent** directory is not a failure: a project that manages no
+  dependency directory at all is unaffected, and `dep-dirs: []` opts out
+  entirely.
 - When `install` is a string, it's treated as a single-element list.
 
 #### Content-keyed install skip (`install-inputs`)

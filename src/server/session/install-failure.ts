@@ -37,3 +37,34 @@ export function formatInstallFailureMessage(
     .join("\n");
   return tail ? `${base}\n${tail}` : base;
 }
+
+/**
+ * The `install_error` message for an install whose commands all exited 0 but
+ * left a declared dep dir present-and-EMPTY (docs/272 — the post-install half of
+ * the dep-dir contradiction check).
+ *
+ * The gate that starts `x-shipit-depends-on-install` services keys on the
+ * install's `ok`, and `ok` was the exit status alone. An exit status is easy to
+ * launder — the incident that prompted this ran
+ * `npm ci … || [ -x game/node_modules/.bin/vite ]`, so a failed `npm ci` exited
+ * 0, ShipIt stamped the install marker, and the gate opened over a dep tree that
+ * had never been built. The services then crash-looped on a missing module,
+ * five retries deep, with `install finished` as the only thing in the log.
+ *
+ * Naming the dirs matters more than the wording: the actionable fact is WHICH
+ * declaration the install did not satisfy, because the two ways out are fixing
+ * the install command and narrowing `agent.dep-dirs` — and only the user knows
+ * which of those is true for their repo.
+ */
+export function formatEmptyDepDirsFailureMessage(depDirs: string[]): string {
+  const list = depDirs.join(", ");
+  const plural = depDirs.length === 1 ? "" : "s";
+  return (
+    `agent.install exited 0 but left declared dep dir${plural} empty: ${list}. ` +
+    `Treating the install as failed: a dep dir that holds nothing cannot start ` +
+    `the services gated on it, and would be published as an empty shared base. ` +
+    `Either the install command did not really succeed (a "|| true"-style ` +
+    `fallback can hide a non-zero exit), or agent.dep-dirs in shipit.yaml ` +
+    `declares a directory this install does not produce.`
+  );
+}

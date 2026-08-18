@@ -98,6 +98,31 @@ function gosuPreparedDirs(source: string): string[] {
 }
 
 /**
+ * The handoff-scheme version the script currently stamps, read from the script
+ * rather than hardcoded here.
+ *
+ * docs/272 — a sentinel names the identity AND the scheme, so that bumping what
+ * the walk DOES actually reaches trees an earlier image already claimed. Reading
+ * the value means a future bump does not need an edit in every test below; a
+ * test that hardcoded it would go green while asserting the old name.
+ */
+const HANDOFF_SCHEME = (() => {
+  const m = /^HANDOFF_SCHEME=(\d+)$/m.exec(readFileSync(ENTRYPOINT, "utf8"));
+  if (!m) throw new Error("entrypoint.sh no longer defines HANDOFF_SCHEME");
+  return m[1]!;
+})();
+
+/** The per-session mount sentinel the current script would look for. */
+function uidSentinel(uid: string, gid: string): string {
+  return `.shipit-uid-${uid}-${gid}-v${HANDOFF_SCHEME}`;
+}
+
+/** The shared-mount (/dep-cache) sentinel the current script would look for. */
+function gidSentinel(gid: string): string {
+  return `.shipit-gid-${gid}-v${HANDOFF_SCHEME}`;
+}
+
+/**
  * A path no process can mkdir, root included — procfs rejects directory
  * creation. Stands in for the boot where `/` is not writable.
  */
@@ -180,6 +205,14 @@ interface RunOpts {
    * to the supplementary-group-clearing drop and say so.
    */
   usermodFails?: boolean;
+  /**
+   * Make the SHARED-mount group handoff (`chown -R :<gid>`) fail, standing in
+   * for a shared cache the walk genuinely could not repair. The stub's normal
+   * writability check can't express this: the loop already skipped every mount
+   * it cannot write, so by the time the shared branch runs, `chown` on that
+   * target always succeeds.
+   */
+  sharedChownFails?: boolean;
 }
 
 function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): RunResult {
@@ -201,6 +234,11 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
     [
       "#!/bin/sh",
       'printf "%s\\n" "$*" >> "$CHOWN_LOG"',
+      // The group-only form is the shared-mount handoff; a test can force it to
+      // fail without affecting any other chown the boot makes.
+      ...(opts.sharedChownFails
+        ? ['case "$2" in :*) echo "chown: cannot access" >&2; exit 1 ;; esac']
+        : []),
       'for a in "$@"; do target=$a; done',
       '[ -w "$target" ] && exit 0',
       "echo \"chown: changing ownership of '$target': Read-only file system\" >&2",
@@ -485,7 +523,7 @@ describe("session worker ownership sentinel", () => {
     const dir = tempDir();
     // Stand in for the restored, root-owned sentinel: the marker exists but its
     // owner (this test's uid) differs from the configured worker UID.
-    mkdirSync(join(dir, ".shipit-uid-4242-4242"));
+    mkdirSync(join(dir, uidSentinel("4242", "4242")));
 
     const result = runEntrypoint([dir], "4242");
 
@@ -504,7 +542,7 @@ describe("session worker ownership sentinel", () => {
     // could not hold — a harness bug that reported itself as a product bug on
     // exactly the machine the harness doc says to be careful about.
     const gid = String(process.getgid?.() ?? 0);
-    mkdirSync(join(dir, `.shipit-uid-${uid}-${gid}`));
+    mkdirSync(join(dir, uidSentinel(uid, gid)));
 
     const result = runEntrypoint([dir], uid, { workerGid: gid });
 
@@ -689,7 +727,7 @@ describe("host journal readability (#1917)", () => {
     // A sentinel from a boot at the same uid but a different gid. Stamping the
     // uid alone would read this as "already handed off" and skip the walk,
     // leaving every file group-owned by a gid nothing uses any more.
-    mkdirSync(join(dir, `.shipit-uid-${uid}-4242`));
+    mkdirSync(join(dir, uidSentinel(uid, "4242")));
 
     const result = runEntrypoint([dir], uid, { workerGid: "1000" });
 
@@ -719,12 +757,101 @@ describe("host journal readability (#1917)", () => {
     // exists and carries the shared gid. Without the gid-stamped sentinel this
     // walk would run once per SESSION over a multi-gigabyte cache.
     const gid = String(process.getgid?.() ?? 0);
-    mkdirSync(join(shared, `.shipit-gid-${gid}`));
+    mkdirSync(join(shared, gidSentinel(gid)));
 
     const result = runEntrypoint([shared], "2000001", { workerGid: gid });
 
     expect(result.status).toBe(0);
     expect(result.chowns).toEqual(result.prepChowns);
+  });
+
+  // --- docs/272: the sentinel stamps the handoff SCHEME, not just the identity
+  //
+  // The production shape these exist for: a shared `/dep-cache` claimed by an
+  // earlier image keeps that image's treatment for good, because the sentinel
+  // has no way to say "the walk changed". Every session of that repo then hits
+  // EACCES on cache entries another session wrote — which npm reports as
+  // "your cache folder contains root-owned files" on a cache that is not
+  // root-owned at all, sending the reader somewhere with no fix in it.
+
+  it("re-walks a shared cache whose sentinel is from a superseded handoff scheme", () => {
+    const shared = join(tempDir(), "dep-cache");
+    mkdirSync(shared);
+    const gid = String(process.getgid?.() ?? 0);
+    // The pre-docs/272 name: right gid, no scheme. Existence alone used to mean
+    // "handed off", so the mode passes added since never reached this cache.
+    mkdirSync(join(shared, `.shipit-gid-${gid}`));
+
+    const result = runEntrypoint([shared], "2000001", { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toEqual([`-R :${gid} ${shared}`, ...result.prepChowns]);
+    // And the superseded sentinel is not left behind to accumulate one dir per
+    // deployment — but only because the walk that supersedes it succeeded.
+    expect(existsSync(join(shared, `.shipit-gid-${gid}`))).toBe(false);
+    expect(existsSync(join(shared, gidSentinel(gid)))).toBe(true);
+  });
+
+  it("re-walks a per-session mount whose sentinel is from a superseded scheme", () => {
+    const dir = tempDir();
+    const uid = String(process.getuid?.() ?? 0);
+    const gid = String(process.getgid?.() ?? 0);
+    mkdirSync(join(dir, `.shipit-uid-${uid}-${gid}`));
+
+    const result = runEntrypoint([dir], uid, { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toEqual([`-R ${uid}:${gid} ${dir}`, ...result.prepChowns]);
+    expect(existsSync(join(dir, `.shipit-uid-${uid}-${gid}`))).toBe(false);
+    expect(existsSync(join(dir, uidSentinel(uid, gid)))).toBe(true);
+  });
+
+  it("releases its claim when the shared-cache handoff fails, so the next boot retries", () => {
+    const shared = join(tempDir(), "dep-cache");
+    mkdirSync(shared);
+    const gid = String(process.getgid?.() ?? 0);
+
+    const result = runEntrypoint([shared], "2000001", {
+      workerGid: gid,
+      sharedChownFails: true,
+    });
+
+    // A boot that survives is half the requirement; the other half is that it
+    // leaves NO sentinel. Keeping one would latch the failure — the marker is
+    // stamped with the shared gid by the very walk that failed, so every later
+    // boot would read it as "already handed off" and skip.
+    expect(result.status).toBe(0);
+    expect(existsSync(join(shared, gidSentinel(gid)))).toBe(false);
+    expect(result.stderr).toContain("releasing the claim");
+  });
+
+  it("keeps its claim when only the shared cache's MODE pass fails", () => {
+    // A shared cache is written concurrently by every session of its repo, so a
+    // file another session unlinks mid-walk makes `chmod -R` return non-zero
+    // routinely. That must neither kill the boot (it is a simple command under
+    // `set -e`) nor release a claim whose GROUP handoff — the part the handoff
+    // is actually for — did succeed.
+    const shared = join(tempDir(), "dep-cache");
+    mkdirSync(shared);
+    const gid = String(process.getgid?.() ?? 0);
+    // An unreadable subdirectory makes `chmod -R` report a failure and exit
+    // non-zero after descending as far as it can — the same shape as the walk
+    // losing a path another session unlinked under it, and reproducible.
+    const unreadable = join(shared, "sub");
+    mkdirSync(unreadable);
+    writeFileSync(join(unreadable, "entry"), "");
+    chmodSync(unreadable, 0o000);
+    restoreWritable.push(unreadable);
+
+    const result = runEntrypoint([shared], "2000001", { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toEqual([`-R :${gid} ${shared}`, ...result.prepChowns]);
+    expect(existsSync(join(shared, gidSentinel(gid)))).toBe(true);
+    // And the pass AFTER the failing one still ran: setgid on the cache root is
+    // what makes an entry a later session creates inherit the shared group, so
+    // an aborted handoff would be silently worse than no handoff.
+    expect(statSync(shared).mode & 0o2000).toBe(0o2000);
   });
 
   it("moves the image account onto an allocated uid so the drop keeps its groups", () => {
