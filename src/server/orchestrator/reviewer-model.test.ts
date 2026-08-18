@@ -189,13 +189,38 @@ describe("reviewerDistanceTier (req 4)", () => {
 });
 
 describe("the ShipIt-authored review effort (reqs 5, 8)", () => {
-  it("names a level every harness actually offers", async () => {
+  /**
+   * The rule this used to assert was "every harness offers levels, and the
+   * authored default is one of them". docs/274 splits it in two, because Grok
+   * Build is the first harness that offers NONE — in API-key mode the CLI drops
+   * `--reasoning-effort` before the wire, so its option list is honestly empty.
+   *
+   * What must not weaken is the half that catches a real mistake: an authored
+   * value that names a level its harness does not have. So a harness with
+   * levels is checked exactly as before, and a harness without them must say so
+   * explicitly with `null` — not by omission, which would let a forgotten entry
+   * pass as a deliberate one.
+   */
+  it("names a level every harness actually offers, or null where there are none", async () => {
     const { REVIEWER_DEFAULT_EFFORT } = await import("./reviewer-model.js");
     for (const harness of HARNESSES) {
       const options = harness.capabilities.reasoning?.options.map((o) => o.value) ?? [];
-      expect(options, `${harness.id} offers no reasoning levels`).not.toHaveLength(0);
-      expect(options).toContain(REVIEWER_DEFAULT_EFFORT[harness.id]);
+      const authored = REVIEWER_DEFAULT_EFFORT[harness.id];
+      if (options.length === 0) {
+        expect(authored, `${harness.id} offers no reasoning levels, so its default must be null`).toBeNull();
+        continue;
+      }
+      expect(options).toContain(authored);
     }
+  });
+
+  // The zero-levels case end to end: a derived reviewer on such a harness is
+  // still COMPLETE (req 5) — it simply has one field fewer, rather than being
+  // handed a level the CLI would ignore.
+  it("omits the level entirely for a harness that declares none", async () => {
+    const { REVIEWER_DEFAULT_EFFORT } = await import("./reviewer-model.js");
+    expect(REVIEWER_DEFAULT_EFFORT.grok).toBeNull();
+    expect(HARNESSES.find((h) => h.id === "grok")?.capabilities.reasoning?.options).toEqual([]);
   });
 });
 
@@ -440,8 +465,8 @@ describe("reviewer harness derivation", () => {
     const { harnessesPreferring } = await import("./non-turn-model.js");
     const all = harnessesPreferring().map((h) => h.id);
 
-    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode", "claude"]);
-    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode", "codex"]);
+    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode", "grok", "claude"]);
+    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode", "grok", "codex"]);
     // A preference, never a filter: nothing is dropped, so a model only the
     // avoided harness can run is still reachable.
     expect(harnessesPreferring("claude").map((h) => h.id).sort()).toEqual([...all].sort());

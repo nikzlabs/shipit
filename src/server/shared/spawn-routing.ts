@@ -43,6 +43,14 @@ const HARNESS_CREDENTIAL_VARS: Record<AgentId, readonly string[]> = {
     "DEEPSEEK_API_KEY",
     "OPENROUTER_API_KEY",
   ],
+  // Grok reads `XAI_API_KEY` in preference to its on-disk `~/.grok/auth.json`
+  // login (the unauthenticated CLI names both sources itself, and T3 Code
+  // picks between them on exactly this variable) — so an inherited one would
+  // silently bill a scoped-home spawn to the wrong account. `GROK_AUTH` /
+  // `GROK_AUTH_PATH` are here for the same reason one step removed: they
+  // redirect the CLI at a *different* token store, which defeats the scoped
+  // home just as thoroughly as a key would.
+  grok: ["XAI_API_KEY", "GROK_AUTH", "GROK_AUTH_PATH"],
 };
 
 /**

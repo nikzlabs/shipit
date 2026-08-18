@@ -164,7 +164,7 @@ export function RoleEditor({
           ? { kind: "auto" }
           : {
               kind: "pinned",
-              harnessId: params.harnessId as "claude" | "codex" | "opencode",
+              harnessId: params.harnessId as "claude" | "codex" | "opencode" | "grok",
               serviceId: params.serviceId,
               billingMode: params.billingMode,
               modelId: params.modelId,
@@ -474,7 +474,9 @@ function initialParams(
 ): DraftParams | undefined {
   if (role?.params.kind === "pinned") {
     const { harnessId, serviceId, billingMode, modelId, reasoningEffort } = role.params;
-    return { harnessId, serviceId, billingMode, modelId, reasoningEffort };
+    // `""` is the draft's "no level", which is what a harness declaring none
+    // stores (docs/274) — the effort control renders empty and the save omits it.
+    return { harnessId, serviceId, billingMode, modelId, reasoningEffort: reasoningEffort ?? "" };
   }
   if (role) return undefined; // the reviewer — its params are the two slot cards
   const first = models[0];

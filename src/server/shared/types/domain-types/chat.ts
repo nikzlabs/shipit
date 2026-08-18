@@ -50,8 +50,15 @@ export interface SubAgentRunTarget {
   serviceId: string;
   billingMode: BillingMode;
   modelId: string;
-  /** The harness-specific level (e.g. `"high"`), never absent since docs/261. */
-  reasoningEffort: string;
+  /**
+   * The harness-specific level (e.g. `"high"`).
+   *
+   * Absent since docs/261 only for a card written before it. Since docs/274 it
+   * is also absent for a harness that declares no levels at all — the card then
+   * names the model without a level, which is the honest rendering, because
+   * there was no level to run at.
+   */
+  reasoningEffort?: string;
 }
 
 /**

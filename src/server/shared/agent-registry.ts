@@ -29,7 +29,7 @@ const execFileAsync = promisify(execFile);
 // docs/252 phase 1 — tool names moved to their own module so the harness
 // catalogue can carry them without closing an import cycle with this file.
 // Re-exported here so existing import sites are unchanged.
-export { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "./agent-tool-names.js";
+export { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "./agent-tool-names.js";
 
 /**
  * docs/252 — the model lists are DERIVED from the service catalogue.
@@ -230,6 +230,12 @@ const AUTH_ENV_KEYS: Partial<Record<AgentId, string>> = {
   // every credential is per-service, delivered through the adapter's provider
   // block (docs/268) — so there is no one env var whose absence means
   // "not configured".
+  //
+  // grok is present for the opposite reason (docs/274): its native service is
+  // the only one it can reach, so `XAI_API_KEY` genuinely IS the one variable
+  // whose absence means "not configured" — which is also what makes the
+  // no-credential-source fallback below answer honestly for it.
+  grok: "XAI_API_KEY",
 };
 
 /**
@@ -494,9 +500,9 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     if (!nativeService) return [];
     // A native service is not enough: what this translates a probe INTO is an
     // account of a subscription, so the service must actually have a login
-    // flow. OpenCode's native service (docs/272) has none — it is a pasted key
-    // — and the `false` branch below already returns nothing for it today, so
-    // this guard changes no behaviour. It is here because the two conditions
+    // flow. Neither OpenCode's native service (docs/272) nor xAI (docs/274)
+    // has one — both are pasted keys — and the `false` branch below already
+    // returns nothing for either today, so this guard changes no behaviour. It is here because the two conditions
     // must not drift: a third probe branch added later would otherwise mint an
     // account credential for a service that has no accounts, and every turn
     // routed onto it would fail `auth_required`.
@@ -546,7 +552,9 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     }
     // opencode: no legacy probe and no canonical env key (see AUTH_ENV_KEYS),
     // so the no-credential-source fallback answers false. Real installs answer
-    // through the credential join above (docs/268).
+    // through the credential join above (docs/268). grok has no legacy probe
+    // either, but it DOES have a canonical env key, so it falls through to the
+    // env check below and answers honestly without one being written here.
     const envKey = getAuthEnvKey(id);
     if (!envKey) return false;
     const val = process.env[envKey];

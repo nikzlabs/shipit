@@ -321,7 +321,111 @@ are the reference. What transfers:
 - They present Grok as "Early Access", one built-in model row, and
   `requiresNewThreadForModelChange: true`.
 
-## Catalogue row, install design, adapter design
+## What implementation corrected (2026-08-18)
 
-Deferred until the pending items above are captured — written here before
-any implementation code, per the recipe order.
+Three Phase-0 assumptions did not survive contact with the code, and the
+corrections are recorded here rather than silently applied — each was flagged
+above as "verify at implementation", and each was wrong.
+
+- **`GROK_CONFIG` / `GROK_CONFIG_PATH` do not exist.** The adapter design said
+  MCP config would be delivered by pointing one of them at a per-turn file, with
+  a note to verify. Probed directly: both are inert (the init event reported
+  `mcp_servers: []` under each), and neither name appears in the binary — they
+  were artifacts of loose string matching, not env vars. **The only delivery
+  path is `$GROK_HOME/config.toml`** (`grok mcp add --scope user` writes exactly
+  there, and a hand-written file was verified to produce
+  `mcp_servers: [{name: "probe", status: "connected"}]`).
+
+  **That single fixed path is a concurrency hazard, and the first cut had the
+  bug.** The adapter originally wrote `$HOME/.grok/config.toml` and restored its
+  previous contents afterwards. A container can have TWO grok processes alive at
+  once — a turn, plus a `shipit agent run` sub-agent spawned *during* it — and
+  the worker builds the sub-agent's adapter through `createWorkerAgent` with no
+  scoped home (`agent-controller.ts:262`), so both resolve the same root. Under
+  the backup/restore scheme whichever finished last decided what was left on
+  disk, and the interleaving where the turn finishes first leaves ShipIt's
+  per-turn config permanently in place. **The fix removes the shared file
+  rather than locking it**: each spawn gets a throwaway `GROK_HOME` under
+  `/tmp` holding its own `config.toml`, with `sessions/` — and `auth.json`,
+  when one exists — symlinked back to the real root, so everything durable is
+  still shared and nothing mutable is. Verified live: MCP servers connect under
+  the throwaway root, session state writes through the link, and `-r` resumes a
+  conversation started under a *different* throwaway root. Cleanup is
+  `rmSync` on the directory, which does not follow symlinks.
+- **`GROK_HOME` is the `.grok` directory itself, not the home above it.**
+  Verified: `GROK_HOME=/tmp/gh` produced `/tmp/gh/config.toml`, `/tmp/gh/logs/`,
+  and the CLI reported the path back as `$GROK_HOME/config.toml`. Getting this
+  backwards points the CLI at a config root one level off its credentials, which
+  surfaces as "not authenticated" rather than as an error naming a path — hence
+  the warning in `grokHome()`'s docstring.
+- **`--output-format json` is NOT Claude's envelope**, which the session namer
+  would otherwise have assumed. Grok's is `{text, usage, total_cost_usd, …}`;
+  Claude's is `{result, usage, total_cost_usd, duration_ms}`. Reusing
+  `parseClaudeJson` would find no `result`, fall through to its "unrecognized
+  envelope" branch, and title the session with the raw JSON blob. `parseGrokJson`
+  exists for exactly that, and Grok's naming runs get a throwaway `GROK_HOME`
+  for the same reason OpenCode's get a scratch XDG root.
+
+Two more design choices settled at implementation:
+
+- **The prompt travels by `--prompt-file`, not argv.** `-p <PROMPT>` is argv,
+  which has a 128 KiB per-argument ceiling on Linux that assembled prompts
+  exceed. `--prompt-file` is first-party and was verified to run a full turn.
+- **`--rules <FILE>` carries ShipIt's system prompt, not
+  `--system-prompt-override`.** The override REPLACES Grok's own prompt, tool
+  instructions included; ShipIt's is standing instructions alongside, not a
+  replacement for the harness's operating manual.
+
+And two probes that came back negative, each of which changed what shipped:
+
+- **Workspace trust does not gate a headless run.** A never-seen git repo with a
+  fresh config root ran a full turn with no trust prompt, so Grok needs no
+  `LOCAL_WORKSPACE_TRUST` / `POST_PROVISION_CONFIG` entry (recipe step 5).
+- **`supportsImages: false` is verified, not assumed** — the flag the reviewer
+  flagged as the one worth probing. `--prompt-json` takes ACP content blocks and
+  accepts an `image` block without complaint, so the syntactic surface exists.
+  It does not carry vision: with the image data present ONLY inside the prompt
+  (generated in memory, never written to disk), a randomized colour pair and an
+  empty cwd, grok-4.6 answered `"unknown unknown"` in a single turn.
+
+  **The first two attempts said the opposite, and were wrong.** Both answered
+  the colours correctly — but a no-image **negative control** answered
+  identically, which means the model had been reaching the answer off the
+  filesystem (the probe image and its JSON were sitting in the cwd it was given)
+  rather than seeing it. The lesson is the docs/272 one: a probe without a
+  negative control proves the model got the right answer, not that it got it the
+  way you think.
+
+## The reviewer-default extension (req 8)
+
+Grok is the first harness declaring **no** reasoning levels, and
+`reviewer-model.test.ts` asserted that every harness offers some. Nik chose to
+extend the mechanism rather than invent a level (receipt in requirements.md).
+The extension, end to end:
+
+- `REVIEWER_DEFAULT_EFFORT` becomes `Record<AgentId, string | null>`, where
+  `null` means "this harness has no levels to choose from". **`null`, not an
+  omitted key**, so the record stays exhaustive and the next harness added still
+  gets a compile error instead of inheriting a default nobody chose.
+- `reasoningEffort` becomes optional on `ReviewerPin`, `ReviewerResolved`,
+  `ReviewerTarget`, `RolePinnedParams`, `RoleResolved`, `ResolvedSpawnTarget`
+  and the consult card's `SubAgentRunTarget`. Absent means "this harness has no
+  level", never "nobody chose one" — a type cannot say "required iff a sibling
+  field's harness declares levels", so both halves are enforced in
+  `reviewer-settings.ts` and `roles.ts`: naming a level on a levelless harness
+  is still refused, and omitting one on a harness that has them is still an
+  incomplete pin.
+- The guard test splits accordingly: a harness with levels is checked exactly as
+  before, and one without must say so with `null`.
+
+Req 5's "a derived reviewer is COMPLETE" is intact — a levelless harness's
+reviewer names everything there is to name, which is one field fewer. What req 5
+forbids is leaving a real choice to the CLI's own default, and there is no
+choice here to leave.
+
+**One deliberate limitation.** `SpawnTarget`'s `explicit` kind still requires
+all five parameters including the level, so a fully-explicit
+`shipit agent run` naming Grok cannot be assembled. A `--role` on Grok works
+(the role supplies the base). This is docs/264's surface rather than req 8's, and
+widening it is planning#435's if subscription mode turns out to have no levels
+either.

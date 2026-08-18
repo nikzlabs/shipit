@@ -7,7 +7,7 @@ import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
 // ---- Agent identity ----
 
-export type AgentId = "claude" | "codex" | "opencode";
+export type AgentId = "claude" | "codex" | "opencode" | "grok";
 
 /**
  * The permission modes the Claude Code adapter supports (docs/138). Single
@@ -16,6 +16,21 @@ export type AgentId = "claude" | "codex" | "opencode";
  * drift. `guarded` is the classifier-gated mode (CLI `--permission-mode auto`).
  */
 export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
+
+/**
+ * The permission modes the Grok Build adapter supports (docs/274).
+ *
+ * Deliberately its **own** constant rather than a reference to
+ * {@link CLAUDE_PERMISSION_MODES}, even though the two currently hold the same
+ * three values: what they state is not the same fact. Grok's CLI has a *wider*
+ * native set than Claude's (`default | acceptEdits | auto | dontAsk |
+ * bypassPermissions | plan`), and this list is the subset ShipIt's three-mode
+ * vocabulary maps onto — `plan` → `--permission-mode plan`, `guarded` →
+ * `--permission-mode auto` (Grok's classifier-gated mode, the same spelling
+ * Claude uses), `auto` → `--always-approve`. Sharing Claude's constant would
+ * make a later divergence in either CLI silently change the other's row.
+ */
+export const GROK_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
 
 // ---- Agent capabilities ----
 
@@ -142,19 +157,29 @@ export const REVIEWER_SLOTS: readonly ReviewerSlot[] = ["first", "second"];
  * one extra preference (avoid the implementer's), so storing it would freeze an
  * answer that has to be recomputed per review anyway.
  *
- * **`reasoningEffort` is required, and that is the type-level statement of
- * "pinning is atomic".** Editing any field of an auto-configured slot pins the
- * whole resolved tuple; a half-pinned slot — a pinned effort over a derived
- * model — is not expressible, because the alternative is a slot that silently
- * re-derives half of itself when a service is added. A reviewer that left the
- * level to the harness's own default would also fail req 5 outright.
+ * **`reasoningEffort` is present exactly when the derived harness declares
+ * levels, and that is the type-level statement of "pinning is atomic".**
+ * Editing any field of an auto-configured slot pins the whole resolved tuple; a
+ * half-pinned slot — a pinned effort over a derived model — is not expressible,
+ * because the alternative is a slot that silently re-derives half of itself when
+ * a service is added. A reviewer that left the level to the harness's own
+ * default would also fail req 5 outright.
+ *
+ * It became optional in docs/274 and the reason is narrow: Grok Build is the
+ * first harness that declares NO reasoning levels (`reasoning.options: []` — in
+ * API-key mode the CLI silently drops `--reasoning-effort`). Absent here means
+ * "this harness has no level to pin", never "the user did not choose one" —
+ * naming a level on a harness that declares none is still refused, and omitting
+ * one on a harness that declares some is still an incomplete pin. Both halves
+ * are enforced in `reviewer-settings.ts`, because a type cannot say "required
+ * iff a sibling field's harness declares levels".
  */
 export interface ReviewerPin {
   serviceId: string;
   billingMode: BillingMode;
   modelId: string;
-  /** A value from the derived harness's `reasoning.options`. */
-  reasoningEffort: string;
+  /** A value from the derived harness's `reasoning.options`; absent iff it declares none. */
+  reasoningEffort?: string;
 }
 
 /**
@@ -174,8 +199,11 @@ export interface ReviewerResolved {
   /** Derived (req 3), never stored. */
   harnessId: AgentId;
   harnessName: string;
-  /** Req 5 — the pin's level, or the harness's ShipIt-authored review default. */
-  reasoningEffort: string;
+  /**
+   * Req 5 — the pin's level, or the harness's ShipIt-authored review default.
+   * Absent only for a harness that declares no levels (docs/274).
+   */
+  reasoningEffort?: string;
   /** That level's display label on this harness, when the harness declares one. */
   reasoningLabel?: string;
 }
@@ -251,7 +279,12 @@ export const RESERVED_ROLE_NAME = "reviewer";
  * tuple, the harness included.
  *
  * Every field is required, which is req 1's "a role is complete on its own"
- * stated in the type. `harnessId` is the departure from {@link ReviewerPin},
+ * stated in the type — with `reasoningEffort` the one field whose presence
+ * follows the named harness (docs/274): a harness declaring no reasoning levels
+ * has no level for a role to carry, and refusing to define a role on it at all
+ * would be a restriction req 1 never asked for. Completeness means "names
+ * everything there is to name", which for such a harness is one field fewer.
+ * `harnessId` is the departure from {@link ReviewerPin},
  * which deliberately omits it (docs/261 req 3 derives the harness from the
  * model): a role is a *job definition*, and which agent performs the job is part
  * of the job — Claude Code driving a model and Codex driving the same model are
@@ -266,8 +299,11 @@ export interface RolePinnedParams {
   serviceId: string;
   billingMode: BillingMode;
   modelId: string;
-  /** A level the *named* harness declares — validated against that one, not a derived one. */
-  reasoningEffort: string;
+  /**
+   * A level the *named* harness declares — validated against that one, not a
+   * derived one. Absent iff that harness declares no levels at all.
+   */
+  reasoningEffort?: string;
 }
 
 /**
@@ -340,7 +376,8 @@ export interface RoleResolved {
   modelId: string;
   /** Model label, not the raw id — the same string the picker shows. */
   label: string;
-  reasoningEffort: string;
+  /** Absent for a harness that declares no reasoning levels (docs/274). */
+  reasoningEffort?: string;
   /** That level's display label on this harness, when the harness declares one. */
   reasoningLabel?: string;
 }

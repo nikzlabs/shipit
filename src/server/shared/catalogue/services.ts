@@ -269,6 +269,37 @@ const OPENCODE_GO_PRICES = {
 } as const;
 
 /**
+ * xAI's own published API rates, per million tokens, read from
+ * `docs.x.ai/docs/models` on **2026-08-18** and cross-checked against the live
+ * `GET https://api.x.ai/v1/models` response captured during the docs/274 Phase 0
+ * probe (raw capture: `/persist/grok-capture/models.json`, not in git).
+ *
+ * The API expresses each rate as an integer 10⁴× the dollars-per-million figure
+ * (`grok-4.6` → `prompt_text_token_price: 20000` = $2.00/M); the two sources
+ * agree on every row below, which is what makes the unit a checked fact rather
+ * than an inferred one.
+ *
+ * Two deliberate simplifications, both matching how the rest of this file
+ * treats the same situations:
+ * - **Long-context tier dropped.** xAI doubles every rate above a 200K-token
+ *   prompt (`long_context_threshold`). {@link ModelPrice} carries one figure per
+ *   axis, so these are the sub-200K rates — the tier a coding turn is
+ *   overwhelmingly in. A turn that crosses the threshold is under-costed, the
+ *   same way GLM's tiering is.
+ * - **`cacheWrite === input`.** xAI publishes a cached-input rate and no
+ *   cache-write rate, i.e. a cache miss is billed as ordinary input — the
+ *   DeepSeek/GLM convention. Independently corroborated by
+ *   {@link OPENROUTER_PRICES}.grok46, authored from OpenRouter's own model
+ *   endpoint, which carries the identical `cacheWrite: 2`.
+ */
+const XAI_PRICES = {
+  grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
+  grok43: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
+  // The 4.20 line bills identically whether or not it reasons.
+  grok420: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
+} as const;
+
+/**
  * What Codex's app-server assigns the GPT-5 family, which is what ShipIt
  * reports and therefore what the dial must show on the first frame. OpenAI
  * advertises larger maxima (400K for GPT-5.2/5.3-codex/5.4-mini, 1.05M for the
@@ -382,6 +413,52 @@ export const SERVICES = [
           { id: "gpt-5.5", label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
           { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", ...MODEL_IDENTITIES.gpt53codex, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
           { id: "gpt-5.2", label: "GPT-5.2", ...MODEL_IDENTITIES.gpt52, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
+        ],
+      },
+    ],
+  },
+  {
+    // docs/274 — xAI, the `grok` harness's native service, and the third
+    // first-party vendor row.
+    //
+    // KEY MODE ONLY, structurally. Grok Build has a subscription (SuperGrok /
+    // X Premium Plus, reached by `grok login --device-auth`), and it is
+    // deliberately absent here rather than declared-but-unwired: verifying it
+    // needs a paid subscription and is deferred to planning#435 (docs/274
+    // req 6). The exclusion is enforced by the harness row carrying no
+    // `account` credential target, the docs/268 OpenCode precedent — so no
+    // `via: "account"` mode can join even if one were added here by mistake.
+    //
+    // VERIFIED (docs/274 Phase 0, CLI 1.0.1, against a local HTTP recorder
+    // with a dummy key). Pointed at an arbitrary `GROK_XAI_API_BASE_URL` the
+    // CLI issues `POST <base>/chat/completions` for an explicit `-m` turn and
+    // `POST <base>/responses` for its title side-call — appending nothing, so
+    // the base URL carries its own `/v1`, the same convention the OpenAI
+    // Responses rows use. Both styles come from ONE CLI, which is why the
+    // harness row lists two.
+    id: "xai",
+    name: "xAI",
+    modes: [
+      {
+        kind: "key",
+        endpoints: {
+          [O_CC]: "https://api.x.ai/v1",
+          [O_RESP]: "https://api.x.ai/v1",
+        },
+        credentials: [{ via: "string", storageEnv: "XAI_API_KEY" }],
+        retired: [],
+        // The launch set is docs/274 req 9, not a mirror of `/v1/models`:
+        // grok-4.6 as the top model, grok-4.3, and the 4.20 reasoning /
+        // non-reasoning pair the CLI itself defaults to in key mode.
+        // Deliberately unauthored from the same live response: `grok-4.5`
+        // (superseded by 4.6), `grok-4.20-multi-agent-0309` (an orchestration
+        // product, not a coding model), `grok-build-0.1` and the
+        // `grok-imagine-*` image/video rows.
+        models: [
+          { id: "grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_CC, O_RESP], contextWindow: HALF_M, price: XAI_PRICES.grok46 },
+          { id: "grok-4.3", label: "Grok 4.3", ...MODEL_IDENTITIES.grok43, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok43 },
+          { id: "grok-4.20-0309-reasoning", label: "Grok 4.20 (reasoning)", ...MODEL_IDENTITIES.grok420Reasoning, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok420 },
+          { id: "grok-4.20-0309-non-reasoning", label: "Grok 4.20", ...MODEL_IDENTITIES.grok420NonReasoning, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok420 },
         ],
       },
     ],

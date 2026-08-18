@@ -67,9 +67,10 @@ export function readProviderAccountIdentity(
 ): ProviderAccountIdentity | null {
   if (provider === "claude") return readClaudeAccountIdentity(credentialRoot);
   if (provider === "codex") return readCodexAccountIdentity(credentialRoot);
-  // OpenCode has no provider accounts at launch (docs/268 req 5 — key-mode
-  // services only), so there is no auth.json identity to extract yet. A future
-  // login integration adds a reader here.
+  // Neither OpenCode (docs/268 req 5) nor Grok Build (docs/274 req 6) has
+  // provider accounts at launch — both are key-mode only — so there is no
+  // auth.json identity to extract yet. Grok's `~/.grok/auth.json` is real and
+  // scope-keyed, so a reader for it is planning#435's, not a gap here.
   return null;
 }
 

@@ -24,6 +24,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import * as claude from "./claude/index.js";
 import * as codex from "./codex/index.js";
 import * as opencode from "./opencode/index.js";
+import * as grok from "./grok/index.js";
 
 export interface BuildAgentRuntimeDeps {
   /** Already-constructed Claude OAuth manager from `app-di`. */
@@ -93,6 +94,7 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     ["claude", claude.prepareClaudeRunParams],
     ["codex", codex.prepareCodexRunParams],
     ["opencode", opencode.prepareOpencodeRunParams],
+    ["grok", grok.prepareGrokRunParams],
   ]);
 
   const parallelSessionsSections = new Map<AgentId, string>([
@@ -101,6 +103,10 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     // No authManagers / limitsProviders entry for OpenCode (docs/268 req 5):
     // no login integration and no quota API ship at launch.
     ["opencode", opencode.OPENCODE_PARALLEL_SESSIONS_SECTION],
+    // Same two omissions for Grok (docs/274 req 6): no `authManagers` entry
+    // (its device-flow login is planning#435) and no `limitsProviders` entry
+    // (key-billed only, so there is no quota to poll).
+    ["grok", grok.GROK_PARALLEL_SESSIONS_SECTION],
   ]);
 
   return { authManagers, limitsProviders, runParamsPreps, parallelSessionsSections };

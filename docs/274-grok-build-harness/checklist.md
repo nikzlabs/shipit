@@ -14,70 +14,99 @@ the expansion of every line, with file pointers and gotchas, is in
       extension approved 2026-08-18)
 
 **1 — Types**
-- [ ] Widen `AgentId` (+ `LoginIntegrationId`/`QuotaIntegrationId` if the
-      CLI has its own login/quota; + a per-harness permission-mode constant
-      if its mode set differs)
-- [ ] Widen the ESLint leak-guard regex + add the two folder exemptions
+- [x] Widen `AgentId` (no `LoginIntegrationId`/`QuotaIntegrationId` — key-only
+      at launch, req 6; `GROK_PERMISSION_MODES` added beside
+      `CLAUDE_PERMISSION_MODES`)
+- [x] Widen the ESLint leak-guard regex + add the two folder exemptions
       (same commit)
 
 **2 — Catalogue**
-- [ ] `HarnessDef` row (+ `ServiceDef`/`ApiStyle` for a new vendor or wire
-      format)
-- [ ] New-vendor `storageEnv` declared in the `dev` compose service's
+- [x] `HarnessDef` row (+ the xAI `ServiceDef`; no new `ApiStyle` — both of
+      Grok's are already declared)
+- [x] New-vendor `storageEnv` declared in the `dev` compose service's
       `x-shipit-secrets` block (guard-tested; never in `onboarding`) —
       for Grok: `XAI_API_KEY` on the xAI `ServiceDef`
-- [ ] `<X>_TOOL_NAMES`
+- [x] `GROK_TOOL_NAMES`
 
 **3 — Install & images**
-- [ ] `install-agent-clis.sh`: known set, pkg prefix, binary
-      (+ `npm rebuild` if native postinstall; non-npm CLI → settled design
-      decision incl. the `installed.json` report)
-- [ ] Pinned dep in `docker/agent-cli/package.json` + lockfile
-- [ ] `SHIPIT_HARNESSES` defaults (5 Dockerfiles, vps setup + prompt copy,
-      both compose files) if the default set changes
-- [ ] Dogfood opt-in: add the harness to the `SHIPIT_HARNESSES` build arg
-      of both dogfood build blocks in `docker-compose.yml` (dev +
-      onboarding), rebuild `dev`, confirm the inner UI shows it installed
-- [ ] Credential symlinks in the 3 Dockerfiles
+- [x] `install-agent-clis.sh`: known set, pkg prefix, binary, and the
+      `npm rebuild @xai-official/grok` line (brotli-compressed platform
+      binary decompressed by a postinstall — the OpenCode shape)
+- [x] Pinned dep in `docker/agent-cli/package.json` + lockfile
+      (`@xai-official/grok@1.0.1`)
+- [x] `SHIPIT_HARNESSES` defaults unchanged — Grok ships
+      installable-but-unchecked (req 4, docs/271). `deployment/vps/setup.sh`
+      gains the picker row without joining `HARNESS_DEFAULT`.
+- [x] Dogfood opt-in: `SHIPIT_HARNESSES` build arg added to BOTH dogfood
+      build blocks in `docker-compose.yml` (dev + onboarding) — required
+      precisely because Grok is not in the default set
+- [x] Credential symlinks in the 3 Dockerfiles (`/credentials/.grok`)
 
 **4 — Tables**
-- [ ] Every required `Record<AgentId, …>` table (the compiler lists them
-      once the union is widened)
-- [ ] `buildLocalAgentFactory` switch
-- [ ] The four `buildAgentRuntime` Maps + the local
-      `PARALLEL_SESSIONS_SECTIONS` map (NOT compiler-forced)
+- [x] Every required `Record<AgentId, …>` table (the compiler listed them:
+      credential paths, credential vars, tool maps, auth error, limit
+      labels, provider labels ×2, legacy paths/markers, reviewer default,
+      client harness names)
+- [x] `buildLocalAgentFactory` switch
+- [x] The four `buildAgentRuntime` Maps + the local
+      `PARALLEL_SESSIONS_SECTIONS` map (NOT compiler-forced) — Grok gets
+      `runParamsPreps` and `parallelSessionsSections`; no auth manager and no
+      limits provider (req 6)
 
 **5 — Silent sites**
-- [ ] Work the silent-sites list end to end (validators, `?? "claude"`
-      defaults, registry probes, MCP tool subset, shim help text, UI name
-      tables)
+- [x] Worked end to end: the persisted-route and DB-row validators, the
+      provider-account HTTP gate, both query-param validators, the two
+      client localStorage validators, `AUTH_ENV_KEYS`, the shim help text,
+      `SUB_AGENT_DISPLAY_NAMES`, the `RoleEditor` cast, and the egress
+      allowlists (`api.x.ai` — exact host, in all three lists)
+- [x] Audited and deliberately unchanged: the `?? "claude"` defaults (Grok is
+      not the default harness), Claude-only `--resume` recovery,
+      `token-sync-manager` stale-resume (OAuth backends only),
+      `ensureCodexHomeInitialized` (Grok creates its own root), and
+      `LOCAL_WORKSPACE_TRUST` / `POST_PROVISION_CONFIG` — **probed live: a
+      headless run on a never-seen repo needs no trust grant**
 
 **6 — Session adapter**
-- [ ] `session/agents/<id>/` (adapter + tool map + tests); register in
-      barrel, `AGENT_TOOL_MAPS`, `createWorkerAgent` + factory test
-- [ ] Token-usage normalizer if the CLI's cache figures overlap
+- [x] `session/agents/grok/` — `adapter.ts`, `stream.ts`, `config-toml.ts`,
+      `tool-map.ts` + tests; registered in the barrel, `AGENT_TOOL_MAPS` and
+      `createWorkerAgent` (factory test extended in the same commit)
+- [x] No token-usage normalizer — the CLI's figures are disjoint (verified
+      arithmetically on a real terminal event)
 
 **7 — Orchestrator folder**
-- [ ] `orchestrator/agents/<id>/` (auth manager, limits provider,
-      run-params prep, system prompt) + one entry per runtime map
-- [ ] Update the *existing* backends' prompts, shipit-docs, and the voice
-      vocabulary that name CLIs by name
+- [x] `orchestrator/agents/grok/` (run-params prep + system prompt; no auth
+      manager, no limits provider) + one entry per runtime map
+- [x] Updated the *existing* backends' prompts, shipit-docs
+      (`agent.md`, `environment.md`, `skills.md`) and the voice dictation
+      vocabulary
 
 **8 — Client**
-- [ ] Theme CSS ×2 + `index.css` + `useTheme`
-- [ ] Auth card (`ServicesPanel`) + `ProviderAccountRows` + misc UI tables
+- [x] Theme CSS ×2 (`grok.css`, `grok-light.css`) + `index.css` ×4 edits +
+      `useTheme`
+- [x] `ProviderAccountRows` label table, `ServiceLogo` xAI mark, misc UI
+      tables. No `ServicesPanel` sign-in card — Grok has no login flow at
+      launch (req 6), so the API-key row is the whole surface.
 
 **9 — Tests**
-- [ ] Extend the build-breaking parity tests (repick the installer test's
-      bogus-id fixture if it collides); sibling auth/turn integration
-      tests; client fixtures
+- [x] Extended the build-breaking parity tests (installer↔catalogue,
+      registry counts ×3, reviewer-default guard, headless valid-agents
+      message, plugin-skill roots, egress endpoints, theme count / palette /
+      contrast); added `adapter.test.ts` and `config-toml.test.ts`
 
 **10 — Verify empirically**
-- [ ] Skills-disclosure probe; stream-capture conformance test (incl. a
-      synthesized terminal result if the stream is lossy); one dogfood
-      turn per auth mode (billing route!); `shipit agent run` both
-      directions; every declared capability flag confirmed against
-      observed behavior
-- [ ] Event-conversion verification: run the docs/272 recipe (tool-tour
-      capture, inventory diff, recognition matrix on persisted history +
-      UI) — `docs/272-harness-conversion-verification/verification-checklist.md`
+- [x] Skills-disclosure probe (docs/209): `.grok/skills/` AND `.claude/skills/`
+      both disclosed, no symlink needed
+- [x] Stream-capture conformance test: the two real tool-tour captures are
+      vendored under `__fixtures__/` and replayed byte-for-byte, including a
+      truncated-stream synthesized-result case
+- [x] Live probes that changed the design: `--prompt-file`, `-s`/`-r`
+      session-id pre-assignment, `$GROK_HOME/config.toml` as the only MCP
+      path, `GROK_HOME`'s real layout, the `--output-format json` envelope,
+      workspace trust
+- [ ] One dogfood turn per auth mode (billing route!) — **key mode only is
+      in scope; the subscription turn is planning#435**
+- [ ] `shipit agent run` both directions
+- [ ] Event-conversion verification: the full docs/272 recipe run
+      (tool-tour capture ✅, inventory diff, recognition matrix on persisted
+      history + UI) —
+      `docs/272-harness-conversion-verification/verification-checklist.md`

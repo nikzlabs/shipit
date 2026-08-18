@@ -359,7 +359,10 @@ export class SessionManager {
     if (row.closed_at) info.closedAt = row.closed_at;
     if (row.model) info.model = row.model;
     if (row.reasoning_effort) info.reasoningEffort = row.reasoning_effort;
-    if (row.agent_id === "claude" || row.agent_id === "codex" || row.agent_id === "opencode") info.agentId = row.agent_id;
+    if (
+      row.agent_id === "claude" || row.agent_id === "codex"
+      || row.agent_id === "opencode" || row.agent_id === "grok"
+    ) info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
     // docs/252 — the rest of the selection triple. Read independently of
     // `model`: a row can legitimately carry a service and mode with no model yet

@@ -39,7 +39,8 @@ export async function registerMarketplaceRoutes(
     "/api/marketplaces",
     async (request) => {
       const agent =
-        request.query.agent === "codex" || request.query.agent === "claude" || request.query.agent === "opencode"
+        request.query.agent === "codex" || request.query.agent === "claude"
+        || request.query.agent === "opencode" || request.query.agent === "grok"
           ? request.query.agent
           : undefined;
       return { marketplaces: listMarketplaces(marketplaceStore, agent) };

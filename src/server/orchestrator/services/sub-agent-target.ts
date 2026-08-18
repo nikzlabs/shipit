@@ -255,8 +255,13 @@ export function parseSubAgentSpawnTarget(body: SubAgentSpawnTargetBody): SubAgen
 export interface ResolvedSpawnTarget {
   harnessId: AgentId;
   selection: ModelSelection;
-  /** Never absent: a role carries its own level, an explicit call the one it named. */
-  reasoningEffort: string;
+  /**
+   * Absent only for a harness that declares no reasoning levels (docs/274) —
+   * otherwise a role carries its own level and an explicit call the one it
+   * named. The spawn passes no effort flag when it is absent, which is what the
+   * CLI would do with a flag it silently drops anyway.
+   */
+  reasoningEffort?: string;
   /**
    * The credential this run authenticates with, present only where a **ranked**
    * reviewer settled it and the caller did not move the tuple off it.
@@ -374,13 +379,14 @@ export function resolveSpawnTarget(
       selection,
       reasoningEffort: target.reasoningEffort,
     };
+
   }
 
   const resolved = resolveRoleByName(target.role, target.overrides, implementer, deps);
   return {
     harnessId: resolved.harnessId,
     selection: { ...resolved.selection },
-    reasoningEffort: resolved.reasoningEffort,
+    ...(resolved.reasoningEffort !== undefined ? { reasoningEffort: resolved.reasoningEffort } : {}),
     roleName: resolved.roleName,
     ...(resolved.prompt ? { rolePrompt: resolved.prompt } : {}),
     ...(resolved.route ? { route: { ...resolved.route } } : {}),

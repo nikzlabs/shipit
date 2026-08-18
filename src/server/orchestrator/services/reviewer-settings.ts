@@ -121,6 +121,22 @@ export function resolveReviewerPinPatch(
   }
   const reasoning = getHarness(runnable.harnessId)?.capabilities.reasoning;
   const options = reasoning?.options ?? [];
+  // A harness with an EMPTY option set pins without a level (docs/274 req 8) —
+  // there is none to name. This used to be a 400, on the reading that a
+  // levelless reviewer is an incomplete one; with Grok Build shipping such a
+  // harness it would have refused to pin a perfectly runnable reviewer. What
+  // stays a 400 is naming a level anyway: that is a claim about the harness that
+  // is false, and silently dropping it would make the Settings screen report a
+  // pin the user did not make.
+  if (options.length === 0) {
+    if (patch.reasoningEffort !== undefined) {
+      throw new ServiceError(
+        400,
+        `${runnable.harnessId} declares no reasoning levels, so a reviewer on it cannot name one`,
+      );
+    }
+    return selectionOf(patch);
+  }
   if (patch.reasoningEffort === undefined) {
     const derived = defaultReviewerEffort(runnable.harnessId);
     if (!derived) {
@@ -245,7 +261,7 @@ function toSlotView(resolution: ReviewerSlotResolution): ReviewerSlotView {
       label: getModel(target.selection)?.label ?? target.selection.modelId,
       harnessId: target.harnessId,
       harnessName: harness?.name ?? target.harnessId,
-      reasoningEffort: target.reasoningEffort,
+      ...(target.reasoningEffort !== undefined ? { reasoningEffort: target.reasoningEffort } : {}),
       ...(reasoningLabel ? { reasoningLabel } : {}),
     },
   };
