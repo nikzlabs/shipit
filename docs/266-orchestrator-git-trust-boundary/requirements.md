@@ -86,11 +86,21 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
     per-session-uid follow-up (req 13). *(Stated by the requester on
     2026-08-16.)*
 
-    Two facts make this a mandatory path rather than an edge case, both verified
-    at `compose-generator.ts`: an egress-**contained** service *must* declare a
-    numeric, non-root `user:` that is not one of the two reserved UIDs (`:988-1002`),
-    and an explicit `user:` is never overridden by ShipIt (`:1387` only fills one
-    in when `svc.user === undefined`).
+    What makes this a mandatory path rather than an edge case, verified at
+    `compose-generator.ts` (`validateServiceSecurity` and the override's `user`
+    fill-in): an explicit `user:` is never overridden by ShipIt — the fill-in
+    applies only when `svc.user === undefined` — so a project that declares one
+    keeps it, and every consequence for ShipIt's own git follows from that.
+
+    *This paragraph used to open with a second "fact": that an egress-contained
+    service MUST declare such a `user:`. That rule was deleted by
+    [docs/271](../271-compose-workspace-writability/plan.md) (github#2374 — the
+    UID such a service needs is the session's own, which a project may not name),
+    so a contained service with no `user:` is now accepted and given the session
+    identity. Requirement 12 is unaffected and if anything stronger: a declared
+    `user:` still keeps working, and docs/271 added `group_add` so it can write
+    the workspace. Corrected 2026-08-18; line references dropped rather than
+    renumbered, since they had already rotted.*
 
 13. Per-session uids MUST be filed as a follow-up, not built here. Until they
     exist, cross-session workspace access at the shared uid is an accepted,

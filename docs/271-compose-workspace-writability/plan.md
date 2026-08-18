@@ -141,6 +141,11 @@ stated as current fact in six places, four of them load-bearing:
   back with "which a contained session requires it to declare".
 - `docs/262-plugins/plan.md` and `docs/150-non-root-session-worker/plan.md`
   repeated the premise.
+- `docs/266-orchestrator-git-trust-boundary/requirements.md` carried it as a
+  "verified at `compose-generator.ts`" claim under requirement 12 — found by the
+  independent reviewer, not by the sweep that found the other five. Requirement 12
+  itself is untouched (it is the requester's, and docs/271 only strengthened it);
+  what was corrected is the agent-written justification below it.
 
 This is the drift `CLAUDE.md` names: a comment asserting an inherited guarantee
 is a claim, not a contract. Each was corrected in place, with the superseded text
