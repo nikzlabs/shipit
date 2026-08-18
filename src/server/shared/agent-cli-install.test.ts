@@ -167,6 +167,12 @@ done
   function run(selection?: string): string {
     return execFileSync("sh", [SCRIPT], {
       encoding: "utf8",
+      // Explicit, because with no `stdio` Node captures the child's stderr AND
+      // echoes it to ours — so the failure cases below, whose whole point is
+      // that the script rejects the selection, print their expected ERROR line
+      // into the test log as if something had gone wrong. Captured stderr still
+      // reaches the thrown error's message, which is what those tests match on.
+      stdio: ["ignore", "pipe", "pipe"],
       env: {
         PATH: `${stubNpm()}:${process.env.PATH ?? ""}`,
         HOME: tmp,
