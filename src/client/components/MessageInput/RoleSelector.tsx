@@ -45,6 +45,9 @@ import type { RoleView } from "../../../server/shared/types/agent-types.js";
 /** The reserved reviewer, which is never offered to a user (req 10). */
 const RESERVED_ROLE_NAME = "reviewer";
 
+/** Why the control is locked (req 4) — the one wording, worn by trigger and wrapper alike. */
+const ROLE_LOCKED_REASON = "A role can only be chosen before the session's first message.";
+
 /**
  * **The one appearance of "a role is in force"**, worn by both layouts.
  *
@@ -62,10 +65,30 @@ const RESERVED_ROLE_NAME = "reviewer";
  *
  * Guarded by a test asserting both triggers carry this string.
  */
-export const ROLE_PILL_CLASS =
+const ROLE_PILL_BASE =
   `items-center gap-1.5 rounded-full bg-(--color-accent-subtle) px-2.5 py-1 text-xs font-medium `
-  + `text-(--color-accent) transition-colors hover:brightness-95 disabled:cursor-not-allowed `
-  + `disabled:opacity-50 ${INSET_FOCUS_RING}`;
+  + `text-(--color-accent) ${INSET_FOCUS_RING}`;
+
+export const ROLE_PILL_CLASS =
+  `${ROLE_PILL_BASE} transition-colors hover:brightness-95 disabled:cursor-not-allowed `
+  + `disabled:opacity-50`;
+
+/**
+ * The same pill once the session has locked it (req 4) — **at full contrast.**
+ *
+ * A locked role is not a control the user must wait to use; it is the READOUT of
+ * what this session runs on, and it is that for the rest of the session's life.
+ * Wearing `disabled:opacity-50` — which it did, because `locked` was passed
+ * straight to the button's `disabled` — put the one permanent fact on the row at
+ * half the contrast of every transient one, and it was reported as unreadable.
+ *
+ * `disabled:*` is therefore absent rather than overridden: the button still
+ * carries the `disabled` attribute (nothing to press), and the dimming that
+ * attribute normally brings is what does not apply. Dimming stays for the
+ * genuinely transient case — a composer disabled mid-turn — because that state
+ * ends.
+ */
+export const ROLE_PILL_LOCKED_CLASS = `${ROLE_PILL_BASE} cursor-default`;
 
 /**
  * …and its counterpart when no role is chosen: the mark alone, quiet, in the
@@ -161,20 +184,55 @@ export function RoleSelector({
   // not even an icon (req 16).
   if (roles.length === 0 && !selectedRole) return null;
 
+  /*
+    req 4 — **locked is a readout, and a readout has no menu.**
+
+    `disabled` is not the way to say that, and this is the same finding
+    `Picker.tsx` records for a picker with nothing to pick: Radix binds the
+    trigger on `pointerdown`, so a disabled button under a `DropdownMenuTrigger`
+    still opened its menu — here, a list of roles that could no longer be chosen.
+    The fix cannot be a state on the trigger; the menu has to be ABSENT. So the
+    locked pill is rendered on its own, outside `DropdownMenu`, and there is
+    nothing left for a click to open.
+
+    With no role in force there is nothing to read out either — the mark's whole
+    job is to offer the list (req 16) — so the control goes rather than sitting
+    there inert.
+  */
+  if (locked) {
+    if (!selectedRole) return null;
+    return (
+      /*
+        The `title` is on the WRAPPER, not only on the button, because Chrome
+        dispatches no mouse events to a disabled control and so shows no tooltip
+        for one — which would leave the lock stating a rule the user cannot read.
+        The button keeps its own copy for the browsers that do.
+      */
+      <span className="flex min-w-0" title={ROLE_LOCKED_REASON}>
+        <button
+          type="button"
+          disabled
+          aria-label={`Role: ${selectedRole}`}
+          title={ROLE_LOCKED_REASON}
+          data-testid="role-selector-trigger"
+          className={`flex shrink-0 ${ROLE_PILL_LOCKED_CLASS}`}
+        >
+          <BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />
+          <span className="truncate">{selectedRole}</span>
+          <LockIcon size={ICON_SIZE.XS} className="shrink-0" />
+        </button>
+      </span>
+    );
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          disabled={disabled || locked}
+          disabled={disabled}
           aria-label={selectedRole ? `Role: ${selectedRole}` : "Choose a role"}
-          title={
-            locked
-              ? "A role can only be chosen before the session's first message."
-              : selectedRole
-                ? `Role: ${selectedRole}`
-                : "Choose a role"
-          }
+          title={selectedRole ? `Role: ${selectedRole}` : "Choose a role"}
           data-testid="role-selector-trigger"
           /*
             **Not the shared `PickerTrigger`, and the difference is the point.**
@@ -200,12 +258,7 @@ export function RoleSelector({
             not jump).
           */}
           {selectedRole && <span className="truncate">{selectedRole}</span>}
-          {selectedRole
-            && (locked ? (
-              <LockIcon size={ICON_SIZE.XS} className="shrink-0" />
-            ) : (
-              <CaretDownIcon size={ICON_SIZE.XS} className="shrink-0" />
-            ))}
+          {selectedRole && <CaretDownIcon size={ICON_SIZE.XS} className="shrink-0" />}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="w-64" data-testid="role-selector-menu">
