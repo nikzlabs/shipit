@@ -1350,8 +1350,12 @@ export function toComposeService(svc: PluginComposeService): ComposeService {
     shipitPreview: svc.preview,
     dependsOnInstall: svc.self,
     // Read back off the definition so the generator does not inject the session
-    // worker uid over a `user:` the fragment declared — which a contained
-    // session requires it to declare.
+    // worker uid over a `user:` the fragment declared. docs/271 — a contained
+    // session no longer REQUIRES that declaration (github#2374: the uid a service
+    // needs is the session's own, which a project may not name), so the common
+    // case is `undefined` and the generator fills the identity in. This branch is
+    // what keeps a deliberate declaration deliberate; it is no longer describing
+    // the path most fragments take.
     ...(typeof declaredUser === "string" || typeof declaredUser === "number"
       ? { user: String(declaredUser) }
       : {}),

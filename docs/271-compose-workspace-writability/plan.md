@@ -119,6 +119,40 @@ refuses an undeclared contained service, and refuses the whole file with it. The
 comment on the `dev` service names the follow-up: drop them once the fix is
 deployed, so those services get the session identity and own their own output.
 
+## 4b. The rule outlived its deletion in six places (2026-08-18)
+
+Re-verifying github#2374 found the code fix intact and working — a live session's
+workspace is `2775`/`664` at `sessionUid:1000` — but half A's *deleted* rule still
+stated as current fact in six places, four of them load-bearing:
+
+- **`shipit-docs/plugins.md`** — the sharpest one. It told the agent that a
+  contained session refuses a service with no `user:` and to "add one". Adding one
+  is what §1 describes as the second way to have broken services, so this page
+  actively reproduced the bug for plugin fragments.
+- **`shipit-docs/compose.md`**'s empty-list troubleshooting quoted the deleted
+  refusal as the one a reader would "most often" hit — contradicting, three
+  hundred lines later, the same file's "delete that line" advice.
+- **`session-worker-uid.ts`**'s `RESERVED_EGRESS_UIDS` docstring concluded "the
+  worker-uid fallback reaches only Open services, where there is no tier to
+  escape" *from* the deleted rule. The conclusion is still true, but it now rests
+  on `sessionWorkerUid()` throwing for 911/912 rather than on a validation rule
+  that no longer exists — so the safety argument needed restating, not deleting.
+- **`plugin-compose.ts`**'s `toComposeService` justified reading the declared user
+  back with "which a contained session requires it to declare".
+- `docs/262-plugins/plan.md` and `docs/150-non-root-session-worker/plan.md`
+  repeated the premise.
+
+This is the drift `CLAUDE.md` names: a comment asserting an inherited guarantee
+is a claim, not a contract. Each was corrected in place, with the superseded text
+quoted, because the reasoning that rested on it is worth keeping.
+
+The seam that let it persist was a **missing test**: `plugin-compose.test.ts`
+covered a declared-root refusal under containment and an undeclared fragment in an
+*open* session, but never an undeclared fragment in a *contained* one — the exact
+case half A changed. That test now exists, and it asserts acceptance, since the
+failure mode is a refusal that takes the whole compose file and every one of the
+project's own services with it.
+
 ## 5. Key files
 
 - `src/server/orchestrator/session-worker-uid.ts` — `addGroupWrite`, called from
