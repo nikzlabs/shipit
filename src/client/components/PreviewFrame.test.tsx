@@ -13,10 +13,37 @@ class ResizeObserverStub {
   disconnect(): void {}
 }
 
+// jsdom has no IntersectionObserver either. `useIframeOnScreen` uses one to tell
+// a preview when its iframe element has left the ShipIt viewport — which is when
+// the browser stops giving it animation frames (nikzlabs/shipit#2418) — so the
+// stub records instances and lets a test drive the callback.
+class IntersectionObserverStub {
+  static instances: IntersectionObserverStub[] = [];
+  constructor(private readonly callback: IntersectionObserverCallback) {
+    IntersectionObserverStub.instances.push(this);
+  }
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+  report(el: Element, isIntersecting: boolean): void {
+    this.callback(
+      [{ target: el, isIntersecting } as unknown as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
+/** Tell the component that `el` has left (or re-entered) the ShipIt viewport. */
+function reportOnScreen(el: Element, isIntersecting: boolean): void {
+  for (const instance of IntersectionObserverStub.instances) instance.report(el, isIntersecting);
+}
+
 // Mock fetch so the URL-reachability poll resolves immediately in tests
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response()));
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+  IntersectionObserverStub.instances = [];
+  vi.stubGlobal("IntersectionObserver", IntersectionObserverStub);
   usePreviewStore.getState().reset();
   // Remembered slot paths deliberately survive `reset()` (they have to outlive
   // a session switch), and every test here shares the same `_:port` slot key —
@@ -769,6 +796,60 @@ describe("PreviewFrame", () => {
         visible: false,
       }, "http://localhost:5173");
     });
+  });
+
+  it("tells the page it is hidden while its iframe element is outside the ShipIt viewport", async () => {
+    // The condition the reporter could not see from inside the page
+    // (nikzlabs/shipit#2418): the slot is active and the pane is open, but the
+    // iframe element is scrolled/transformed out of the window — which is when
+    // the browser withholds animation frames from it.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    postMessage.mockClear();
+
+    act(() => reportOnScreen(iframe, false));
+
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith({
+        source: "shipit-preview",
+        type: "visibility",
+        visible: false,
+      }, "http://localhost:5173");
+    });
+
+    postMessage.mockClear();
+    act(() => reportOnScreen(iframe, true));
+
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith({
+        source: "shipit-preview",
+        type: "visibility",
+        visible: true,
+      }, "http://localhost:5173");
+    });
+  });
+
+  it("answers the ready handshake with hidden when the frame is already off screen", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    act(() => reportOnScreen(iframe, false));
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    postMessage.mockClear();
+
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "ready" },
+      source: iframe.contentWindow,
+      origin: "http://localhost:5173",
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      source: "shipit-preview",
+      type: "visibility",
+      visible: false,
+    }, "http://localhost:5173");
   });
 
   it("selector label matches selectedPort", () => {

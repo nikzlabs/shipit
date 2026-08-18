@@ -11,6 +11,7 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
+import { useIframeOnScreen } from "../../hooks/useIframeOnScreen.js";
 import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePreviewHealthPoller.js";
 import { useDeviceFrame } from "./DeviceFrame.js";
 import { PreviewToolbar, type PortInfo } from "./PreviewToolbar.js";
@@ -121,6 +122,13 @@ export function PreviewFrame({
   // for LRU eviction and `usePreviewHealthPoller` for slot creation.
   const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot } = useIframePool();
 
+  // Whether each slot's iframe element is actually inside the ShipIt window's
+  // viewport. A cross-origin iframe scrolled or transformed out of view has its
+  // rendering throttled by the browser — rAF stops — and nothing inside the page
+  // can see that (nikzlabs/shipit#2418). See `useIframeOnScreen` for the
+  // measurement this is based on.
+  const { trackIframe, offScreenSlots } = useIframeOnScreen();
+
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
 
@@ -227,6 +235,19 @@ export function PreviewFrame({
   const authBlocked = !!activeSlotKey && authBlockedSlots.has(activeSlotKey);
 
   /**
+   * Is this slot's page actually on screen? Three independent ways to not be:
+   * it isn't the slot the user selected, the whole pane is behind an overlay,
+   * or — the case the page cannot detect for itself — its iframe element sits
+   * outside the ShipIt window's viewport, which is when the browser stops
+   * delivering it animation frames altogether (nikzlabs/shipit#2418).
+   *
+   * `hideIframe` is declared further down; this is only ever *called* after
+   * render (message handler, ref callback, effect), like the closures around it.
+   */
+  const slotIsVisible = (key: string, activeKey: string | null): boolean =>
+    key === activeKey && !hideIframe && !offScreenSlots.has(key);
+
+  /**
    * Which pool slot a postMessage came from. We can't trust the message
    * contents for this — the injected script doesn't know the slot key — so
    * match `event.source` against each iframe's contentWindow.
@@ -250,7 +271,7 @@ export function PreviewFrame({
       el.contentWindow.postMessage({
         source: "shipit-preview",
         type: "visibility",
-        visible: key === activeSlotKeyRef.current && !hideIframe,
+        visible: slotIsVisible(key, activeSlotKeyRef.current),
       }, expectedOrigin);
       return "sent";
     }
@@ -558,11 +579,37 @@ export function PreviewFrame({
       el.contentWindow.postMessage({
         source: "shipit-preview",
         type: "visibility",
-        visible: key === activeSlotKey && !hideIframe,
+        visible: slotIsVisible(key, activeSlotKey),
       }, expectedOrigin);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `iframeRefs` is a ref and `drainPendingReady` is only invoked; this must fire on slot/visibility changes, not on either identity
-  }, [activeSlotKey, hideIframe, slotOrder, slots]);
+  }, [activeSlotKey, hideIframe, slotOrder, slots, offScreenSlots]);
+
+  // One stable ref callback per slot, so React attaches it once instead of
+  // detaching (`null`) and re-attaching on every render — an inline arrow has a
+  // new identity each time, and that churn cancels the element's viewport
+  // observation as fast as it is established. The callback stays current by
+  // reading the latest body out of a ref, the same latest-callback pattern
+  // `useEventListener` uses, so it never captures a stale `slots`/`hideIframe`.
+  const iframeRefCallbacks = useRef<Map<string, (el: HTMLIFrameElement | null) => void>>(new Map());
+  const attachIframeRef = useRef<(key: string, el: HTMLIFrameElement | null) => void>(() => {});
+  attachIframeRef.current = (key, el) => {
+    iframeRefs.current.set(key, el);
+    trackIframe(key, el);
+    if (el) drainPendingReady();
+    // A stable callback is only handed `null` on a real detach — an LRU
+    // eviction or this component unmounting — so this is where the per-key
+    // entry is retired rather than kept for every slot the page ever showed.
+    else iframeRefCallbacks.current.delete(key);
+  };
+  const iframeRefFor = (key: string) => {
+    let callback = iframeRefCallbacks.current.get(key);
+    if (!callback) {
+      callback = (el: HTMLIFrameElement | null) => attachIframeRef.current(key, el);
+      iframeRefCallbacks.current.set(key, callback);
+    }
+    return callback;
+  };
 
   // Determine overlay content for the main area
   let overlayContent: React.ReactNode = null;
@@ -802,10 +849,7 @@ export function PreviewFrame({
           return (
             <iframe
               key={key}
-              ref={(el) => {
-                iframeRefs.current.set(key, el);
-                if (el) drainPendingReady();
-              }}
+              ref={iframeRefFor(key)}
               src={slot.url}
               title={isActive ? "Live Preview" : "Background Preview"}
               style={deviceFrameStyle}

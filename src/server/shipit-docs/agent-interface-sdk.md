@@ -25,6 +25,19 @@ if (window.shipit?.embedded) {
 
 Use visibility to pause audio, media, animation, polling, and expensive timers. The subscription immediately receives an already-known value and returns an unsubscribe function.
 
+`visible` means **on screen in the ShipIt window**, not merely "loaded". It is false when the surface is not the selected one, when the pane is behind an overlay, and — the case a page cannot detect for itself — when the frame's element has been scrolled or clipped outside the ShipIt viewport. That last one matters for animation: a browser stops delivering `requestAnimationFrame` to a cross-origin frame whose element is out of view, and it does so silently. Inside such a page `document.hidden` stays false, an `IntersectionObserver` on your own content stays intersecting (it measures against your frame's viewport, which did not move), and no `longtask` or `long-animation-frame` entry is recorded, because frames are withheld rather than made slow. `window.shipit.visibility` is the only signal that reports the condition.
+
+So do not treat `document.hidden` as equivalent, and do not read a stalled `rAF` loop as a fault in your own drawing code. Gate the loop on visibility and it pauses on purpose instead of stalling by surprise:
+
+```ts
+let running = false;
+window.shipit?.visibility.subscribe((visible) => {
+  if (visible && !running) { running = true; requestAnimationFrame(tick); }
+  else running = visible;
+});
+function tick(t) { if (!running) return; draw(t); requestAnimationFrame(tick); }
+```
+
 ## Message behavior
 
 - The page supplies only final `text`; it cannot select a session or spoof Preview/Present provenance.
