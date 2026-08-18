@@ -107,7 +107,11 @@ export async function runRepoMigration(
  * **Warm sessions are included** (`listAllIncludingWarm`): `listAll` filters
  * `warm = 0`, and a warm row is a real pre-provisioned checkout that a later
  * claim hands to a user — skipping it left the token in the one workspace most
- * likely to be handed out next (independent review, finding 2).
+ * likely to be handed out next (independent review, finding 2). At boot there
+ * are now none left to find: {@link retireWarmSessions} runs earlier and deletes
+ * every warm row *and* its checkout, which reaches the same end more thoroughly.
+ * The clause stays because this function does not depend on that ordering — a
+ * warm row present when it runs is still scrubbed.
  *
  * Boot-only and idempotent: a clean installation reads a few tiny queries and
  * one small file per session, and rewrites nothing. It converges within one
