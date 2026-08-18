@@ -42,7 +42,7 @@ import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
 import { opencodeModelArg, opencodeProviderConfig } from "../../../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type OpencodeToolPart } from "../../../shared/opencode-stream.js";
-import { normalizeOpencodeToolCall } from "./opencode-tool-normalizer.js";
+import { normalizeOpencodeToolCall, normalizeOpencodeToolResult } from "./opencode-tool-normalizer.js";
 
 const OPENCODE_REASONING = HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning;
 
@@ -477,7 +477,9 @@ export class OpencodeAdapter
         // translate to the transcript vocabulary before anything persists.
         const { name, input } = normalizeOpencodeToolCall(part.tool ?? "unknown", rawInput);
         const isError = part.state?.status === "error";
-        const output = part.state?.output ?? "";
+        // The task wrapper would be swallowed whole by the client's skipHtml
+        // markdown (planning#434) — unwrap before anything persists.
+        const output = normalizeOpencodeToolResult(part.tool ?? "unknown", part.state?.output ?? "");
         return [
           {
             type: "agent_assistant",

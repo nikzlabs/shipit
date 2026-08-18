@@ -132,6 +132,28 @@ describe("OpencodeAdapter", () => {
     }
   });
 
+  it("unwraps the task result wrapper on the emitted tool result (planning#434 wiring)", () => {
+    // The normalizer's unwrap is covered next door; this pins the one line
+    // that connects it — mapEvent applying it to the emitted content — so
+    // dropping the call site goes red server-side, not only in the DOM test.
+    // Result shape verbatim from the 2026-08-18 docs/272 capture.
+    const taskLine = `{"type":"tool_use","timestamp":1786885657565,"sessionID":"${SESSION}","part":{"type":"tool","tool":"task","callID":"call_00_task1","state":{"status":"completed","input":{"description":"Count files in repo root","prompt":"Count the files.","subagent_type":"general"},"output":"<task id=\\"ses_8f214c2af\\" state=\\"completed\\">\\n<task_result>\\n11\\n</task_result>\\n</task>"},"id":"prt_t","sessionID":"${SESSION}","messageID":"msg_1"}}`;
+    const { adapter, child, events } = makeAdapter();
+    adapter.run(RUN_PARAMS);
+
+    child.emitStdout([taskLine]);
+
+    const toolResult = events.find((e) => e.type === "agent_tool_result");
+    expect(toolResult).toBeDefined();
+    if (toolResult?.type === "agent_tool_result") {
+      // The event type carries `unknown[]` blocks; the adapter emits the
+      // Claude-shaped tool_result block.
+      const block = toolResult.content[0] as { type: string; content: string };
+      expect(block.type).toBe("tool_result");
+      expect(block.content).toBe("11");
+    }
+  });
+
   it("REQ 4: a stream truncated before its final step_finish still terminates with a correct result", () => {
     const { adapter, child, events } = makeAdapter();
     adapter.run(RUN_PARAMS);
