@@ -107,6 +107,11 @@ function makeHarness(over: {
     steeredMessages: [],
     getTurnEventBuffer: () => [],
     lastPersistedBufferIndex: 0,
+    // nikzlabs/shipit#2429 — the reset rewrites the whole worktree from the
+    // orchestrator, so the hook has to tell the live session its config and its
+    // dependency tree may both belong to the pre-reset checkout.
+    reevaluateWorkspaceConfig: vi.fn(),
+    notifyWorkspaceRewritten: vi.fn(),
   } as unknown as PreTurnResetRunner;
 
   const deps = {
@@ -163,6 +168,18 @@ describe("applyPreTurnReset — the branch moved", () => {
     const h = makeHarness();
     await run(h);
     expect(h.emitted).toContainEqual({ type: "reset_eligible", sessionId: "s1", eligible: false });
+  });
+
+  // nikzlabs/shipit#2429 — the reset re-materializes the worktree from the
+  // orchestrator, exactly like a sync/rebase, and the turn it exists to enable
+  // starts the moment this returns. A container left on the pre-reset
+  // `node_modules` fails every request on an unresolvable import while
+  // `shipit service list` still reports the service as `running`.
+  it("tells the live session its config and dependencies were rewritten", async () => {
+    const h = makeHarness();
+    await run(h);
+    expect(h.runner.reevaluateWorkspaceConfig).toHaveBeenCalledTimes(1);
+    expect(h.runner.notifyWorkspaceRewritten).toHaveBeenCalledTimes(1);
   });
 
   it("still records the card when the turn dies before the anchor fires", async () => {
@@ -281,8 +298,11 @@ describe("applyPreTurnReset — the branch did not move", () => {
     const notice = h.appended.find((m) => m.notice === true);
     expect(notice?.text).toContain("Branch not updated to the latest base");
     expect(notice?.noticeLevel).toBe("warn");
-    // Nothing moved, so the composer control must stay as it was.
+    // Nothing moved, so the composer control must stay as it was — and #2429's
+    // rewrite hooks must not fire either: a refused reset touched no file, and
+    // re-running `agent.install` for it would be pure cost.
     expect(h.emitted.some((m) => m.type === "reset_eligible")).toBe(false);
+    expect(h.runner.notifyWorkspaceRewritten).not.toHaveBeenCalled();
   });
 
   /**

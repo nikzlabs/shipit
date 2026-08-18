@@ -365,10 +365,18 @@ worker, which writes `.shipit/.install-done` until it is recreated.)
 - Editing `shipit.yaml` or the compose file triggers stack reconciliation
   (re-read `shipit.yaml`, regenerate override, `docker compose up -d`).
 - The same re-read happens after a git operation that rewrites the working tree
-  from outside the container — **syncing/rebasing onto the base branch, or
-  rolling back to an earlier commit**. So a rebase that brings in a
-  `shipit.yaml` declaring a new `compose:` path, new services, or a different
-  `agent.install` is applied to the live session; you do not need to restart it.
+  from outside the container — **syncing/rebasing onto the base branch, rolling
+  back to an earlier commit, or resetting the branch onto the base after a
+  merge**. So a rebase that brings in a `shipit.yaml` declaring a new `compose:`
+  path, new services, or a different `agent.install` is applied to the live
+  session; you do not need to restart it.
+- **`agent.install` is re-checked after those rewrites too**, not only after an
+  edit the in-container file watcher reports. A sync that brings in a changed
+  lockfile re-runs the install and restarts the services gated on it; one that
+  does not is a fast no-op (the install marker is content-keyed on the same
+  input files). A project whose `install` is not content-keyable — a codegen
+  step or a shell script, so no `install-inputs` can be inferred and none are
+  declared — is left alone, and you re-run its install yourself after a sync.
 - A changed `agent.install` re-runs (subject to the same 30s cooldown as a
   lockfile change). Removing the `compose:` block stops the stack.
 - An invalid `shipit.yaml` (YAML syntax error, bad `compose:` shape) leaves the

@@ -38,6 +38,7 @@ import {
 } from "./services/pre-turn-reset.js";
 import { getErrorMessage } from "./validation.js";
 import { restoreLfsAfterTreeRewrite } from "./git-lfs.js";
+import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
 interface ExplicitResetPresentationDeps {
   runner: SessionRunnerInterface | undefined;
@@ -187,6 +188,14 @@ export async function registerGitRoutes(
       );
       const previous = sessionManager.get(sessionId)?.previousMergedPr;
 
+      // #2429 — a reset that MOVED the branch re-materialized the whole worktree
+      // from the orchestrator, exactly like a rebase, so the live session may now
+      // be running the wrong compose stack and the wrong dependency tree. The
+      // other outcomes (`already-at-base`, `refused`) touched nothing.
+      if (outcome.outcome === "reset") {
+        onWorkspaceRewritten(deps.runnerRegistry.get(sessionId), "reset-to-base");
+      }
+
       recordManualResetAgentNotice({
         setPendingAgentNotice: (id, notice) => sessionManager.setPendingAgentNotice(id, notice),
         runner: deps.runnerRegistry.get(sessionId),
@@ -331,14 +340,11 @@ export async function registerGitRoutes(
         );
         // A rollback rewrites the working tree from the orchestrator, so the
         // session's `shipit.yaml` / compose file may now describe a different
-        // stack. Re-read it rather than relying on the in-container file
-        // watcher to notice (same reasoning as the rebase path). Best-effort —
-        // never fail a completed rollback on a config re-read.
-        try {
-          deps.runnerRegistry.get(request.params.id)?.reevaluateWorkspaceConfig?.();
-        } catch (err) {
-          console.error("[rollback] config re-evaluation failed:", getErrorMessage(err));
-        }
+        // stack — and its lockfile a different dependency set (#2429). Re-read
+        // both rather than relying on the in-container file watcher to notice
+        // (same reasoning as the rebase path). Best-effort — never fail a
+        // completed rollback on a config re-read.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "rollback");
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -403,6 +409,12 @@ export async function registerGitRoutes(
         await restoreLfsAfterTreeRewrite(dir, "Pull", (message) =>
           console.warn(`[git-pull] ${message}`),
         );
+        // #2429 — that merge can bring in a different `shipit.yaml` and a
+        // different lockfile, exactly like a sync. Unconditional rather than
+        // gated on `pulled.success`: a pull that reports failure can still have
+        // merged (the failure may be the push, or the LFS restore), and the
+        // marker gate makes a genuine no-op free.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "git-pull");
         return pulled;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -421,10 +433,17 @@ export async function registerGitRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        return await mergeSession(
+        const merged = await mergeSession(
           sessionManager, createGitManager, dir, request.body.sourceSessionId,
           gitRemoteCredentialResolver(deps.githubAuthManager),
         );
+        // #2429 — merging a sibling session's branch rewrites this session's
+        // worktree from the orchestrator, so it can bring in that branch's
+        // `shipit.yaml` and its lockfile. Also on the conflicted path: `git.merge`
+        // aborts, and the abort checks the pre-merge tree back out through the
+        // same filter-less git — a rewrite either way.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "session-merge");
+        return merged;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -558,6 +577,12 @@ export async function registerGitRoutes(
         await restoreLfsAfterTreeRewrite(dir, "Rebase abort", (message) =>
           console.warn(`[rebase-abort] ${message}`),
         );
+        // #2429 — an abort is a tree rewrite in its own right: it checks the
+        // PRE-rebase tree back out. That matters when the aborted rebase had
+        // already replayed far enough to change a dependency input and something
+        // reinstalled against it, since the abort now reverts that file and the
+        // container holds dependencies for a tree that no longer exists.
+        onWorkspaceRewritten(runner, "rebase-abort");
         if (runner) {
           runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         }

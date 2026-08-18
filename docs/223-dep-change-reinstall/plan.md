@@ -63,15 +63,103 @@ spin an install loop. Leading-edge: fire at once when idle; a change arriving
 while a reinstall is in flight or within the window sets a pending flag and arms
 a single trailing timer, so the final lockfile state is always installed.
 
+## The watcher is not the only trigger (nikzlabs/shipit#2429)
+
+The approach above rests on one assumption — *"the filesystem watcher reports
+the files a git operation rewrites just like any edit"* — and that assumption
+holds only for a git operation run **inside** the container. It does not hold
+for the rewrites the **orchestrator** performs on the session from outside it:
+the watcher is started best-effort with a single fire-and-forget POST, and it
+watches a bind mount written to from another container, so a cross-mount event
+can be missed entirely — or the watcher was never started at all.
+
+The reported failure was an idle session ShipIt rebased onto the latest
+`origin/main` and force-pushed. The incoming commits changed `package.json` and
+the lockfile, `agent.install` never re-ran, and the container kept the pre-rebase
+`node_modules`. The dev server started fine and then failed every request with
+`Failed to resolve import "<new-dependency>"` — while `shipit service list` still
+reported the service as `running`, and a restart did not help, because the usual
+compose guard is `[ -d node_modules ] || npm ci` and the directory existed. It
+was just the wrong contents. `npm ci` by hand fixed it in seconds; the cost was
+the diagnosis.
+
+The fix says it directly instead of hoping for an inotify event. The
+orchestrator knows exactly when it rewrote the tree, which is the same reasoning
+`reevaluateWorkspaceConfig` (docs/234) already records for the *config* half of
+the same rewrite — that half was wired and this one was not.
+
+`onWorkspaceRewritten` (`workspace-rewrite.ts`) is the one call every such path
+now makes, and it fires both halves in order: the config re-read first, because
+`applyShipitConfigChange` synchronously applies an incoming `shipit.yaml`'s
+`agent.install` / `install-inputs` to the runner, so the dependency check that
+follows evaluates the *incoming* config.
+
+**The call sites are enumerated from `restoreLfsAfterTreeRewrite`**, which
+nikzlabs/shipit#2349 placed at every orchestrator-side worktree rewrite for the
+same structural reason (a rewrite the orchestrator's git performs). Every one of
+those that targets a *live session's own* workspace calls this too:
+
+| Rewrite | Where |
+|---|---|
+| Sync/rebase (clean + conflicts-resolved) | `services/rebase-driver.ts` |
+| Rebase abort | `api-routes-git.ts` |
+| Rollback (HTTP) | `api-routes-git.ts` |
+| Rewind (WS — the chat-level rollback) | `ws-handlers/rollback-handlers.ts` |
+| Git pull | `api-routes-git.ts` |
+| Merge a sibling session's branch | `api-routes-git.ts` |
+| `shipit branch reset-to-base` | `api-routes-git.ts` |
+| Post-merge pre-turn auto-reset | `pre-turn-reset-hook.ts` |
+| `shipit release prepare` (own clone only) | `api-routes-github.ts` |
+
+The two deliberate exclusions are `services/child-sessions.ts` (pinning a
+*new* workspace — no live runner, and session setup installs it from scratch)
+and a release prepare whose `resolvePrTarget` sent it at a `--repo`/`--cwd`
+clone that is not this session's.
+
+**The pre-turn-reset call site has a timing cost worth naming.** The reinstall is
+asynchronous and the turn starts as soon as the hook returns, so the agent's
+first commands can overlap the install window — gated services are held down,
+and an immediate `npm run dev` can collide with npm writing `node_modules`. The
+file-watcher path has the same shape whenever an agent edit triggers a
+reinstall; what is different here is that no human pause separates the trigger
+from the agent's first command. Awaiting instead was rejected: an install is
+minutes on a cold tree, and blocking a user's turn on one is a much larger
+change than the bug warrants. The overlap is recoverable and announces itself
+(`install_status` / `install_log`, and the services return when it lands); a
+silently stale `node_modules` is neither.
+
+**It does not diff the changed paths.** The caller knows it rewrote the tree; it
+does not have to work out what changed, because the worker's `/install` marker
+already answers that question from the same data — it is content-keyed on a hash
+of exactly these input files (docs/197), so an unchanged lockfile matches and
+returns `{ skipped: true }` in milliseconds while a changed one misses and
+reinstalls. A path diff would be a second implementation of that comparison, and
+one that has to get renames, `./` prefixes and a failed `git diff` right to avoid
+falling back into the silence it exists to remove.
+
+The gate is the same one `isDepInputChange` applies: a session with **no**
+dep-input set (a non-content-keyable install) is skipped, since its `null` deps
+hash can never match the marker and every sync would reinstall from scratch.
+That session keeps this feature's documented safe default — no auto-reinstall.
+
 ## Key files
 
 - `src/server/orchestrator/container-session-runner.ts` — `setDepReinstallInputs`,
   `isDepInputChange`, `maybeReinstallForDepChange` (throttle), `reinstallForDepChange`
   (the bracket); the `file_changes` handler calls into them; dispose clears the timer.
+  `notifyWorkspaceRewritten` is the #2429 entry point for an orchestrator-side rewrite.
+- `src/server/orchestrator/workspace-rewrite.ts` — `onWorkspaceRewritten`, the shared
+  "the orchestrator rewrote this tree" call (config re-read + dependency re-check).
+- `src/server/orchestrator/services/rebase-driver.ts`,
+  `src/server/orchestrator/api-routes-git.ts` (rebase-abort, rollback, pull,
+  session merge, `reset-to-base`), `src/server/orchestrator/api-routes-github.ts`
+  (`release prepare`), `src/server/orchestrator/ws-handlers/rollback-handlers.ts`
+  (rewind), `src/server/orchestrator/pre-turn-reset-hook.ts` — its callers.
 - `src/server/orchestrator/service-manager-setup.ts` — pushes the install commands +
   resolved dep-input set to the runner via `setDepReinstallInputs`.
 - `src/server/shared/deps-hash.ts` — `resolveDepsHashInputs` (reused, unchanged).
 - `src/server/orchestrator/container-session-runner.test.ts` — predicate + throttle unit tests.
+- `src/server/orchestrator/workspace-rewrite.test.ts` — ordering + both-halves-fail-safe.
 
 ## Edge cases
 
@@ -84,7 +172,12 @@ a single trailing timer, so the final lockfile state is always installed.
 - **`package.json`-only edit with an out-of-sync lock**: `npm ci` may fail →
   surfaces as `install_error` + gated services latched to a clear message
   (better than a silent stale preview).
-- **Non-keyable install** (`./build.sh`, codegen): no watch set → no auto-reinstall.
+- **Non-keyable install** (`./build.sh`, codegen): no watch set → no auto-reinstall,
+  on the watcher path and on the #2429 orchestrator-rewrite path alike.
+- **A rewrite that changes both `shipit.yaml` and the lockfile**: the config
+  re-read may already have requested a reinstall (a changed `agent.install`), and
+  the dependency check then asks again. The 30s cooldown coalesces the two into
+  one trailing pass rather than stacking installs.
 
 ## Out of scope
 

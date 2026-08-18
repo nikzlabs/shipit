@@ -146,7 +146,14 @@ pick up changes automatically. No need to restart dev servers after code edits.
 install reads — trigger an automatic install + service restart (throttled with
 a 30s cooldown). This covers **git operations** (`git reset`/`checkout`/`rebase`
 that change the dependency tree), not just direct edits — so a reset to a commit
-that added a dependency reinstalls and restarts the preview automatically.
+that added a dependency reinstalls and restarts the preview automatically. It
+also covers the rewrites **ShipIt itself** performs on the session from outside
+the container (syncing/rebasing onto the base, a rollback, a post-merge reset
+onto the base), which are reported directly rather than through the file
+watcher. The one case it does not cover is an `agent.install` that is not
+content-keyable — a codegen step or a shell script with no declared
+`install-inputs`; there ShipIt has no way to tell a dependency change from any
+other, and you re-run the install yourself.
 
 **Compose services**: Project services (dev servers, databases, caches) run as
 Docker Compose containers managed by ShipIt. Define them in

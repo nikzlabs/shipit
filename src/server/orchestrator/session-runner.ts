@@ -1621,6 +1621,19 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   reevaluateWorkspaceConfig?(): void;
 
   /**
+   * nikzlabs/shipit#2429 — the orchestrator rewrote this session's working tree from
+   * outside the container, so its installed dependencies may no longer match the
+   * tree on disk. Re-check them and re-run `agent.install` if they moved.
+   * Optional — implemented by container runners only.
+   *
+   * The sibling of {@link reevaluateWorkspaceConfig}, and called from the same
+   * places for the same reason: the in-container inotify watcher is what
+   * normally reports a lockfile change, and it cannot be relied on for a write
+   * the orchestrator made from another container.
+   */
+  notifyWorkspaceRewritten?(): void;
+
+  /**
    * docs/240 — connect to the session worker and, if it still has a turn in
    * flight (the orchestrator restarted mid-turn), adopt it: rebuild the agent
    * proxy + listeners, replay the turn's events from its start, and let the
