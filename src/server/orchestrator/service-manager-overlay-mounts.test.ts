@@ -16,6 +16,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { applyOverlayDepDirs } from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
+import { isOverlayEligible } from "./overlay-session.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
@@ -199,11 +200,16 @@ describe("applyOverlayDepDirs (#2426)", () => {
     });
     const { mgr, applied } = makeManager();
 
+    const ineligible = { remoteUrl: undefined, kind: "repo" } as unknown as SessionInfo;
+    // Asserted, not assumed: this test is only meaningful while the real gate
+    // rejects this session, and it is the real gate the helper consults.
+    expect(isOverlayEligible(ineligible)).toBe(false);
+
     // No remote → not overlay-eligible. The whole path must be byte-for-byte
     // unchanged for these sessions.
     await applyOverlayDepDirs(makeRunner(), mgr, {
       containerManager,
-      session: { remoteUrl: undefined, kind: "repo" } as unknown as SessionInfo,
+      session: ineligible,
       workspaceDir: "/nonexistent",
     });
 

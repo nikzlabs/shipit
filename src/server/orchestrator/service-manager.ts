@@ -1705,6 +1705,9 @@ export class ServiceManager extends EventEmitter {
       for (const svc of this.services.values()) {
         this.ensureLogFollower(svc.name);
       }
+      // Every service now has a follower, so any anchor still armed belongs to
+      // one that was already alive and has nothing to replay.
+      this.disarmLogFollowerSince([...this.services.keys()]);
 
       // AFTER the followers, which is the one ordering constraint on it: this
       // writes to a service's durable log channel, and a channel that already
@@ -2066,6 +2069,28 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * Drop any anchor the `up` did not end up needing, once the follower question
+   * is settled for these services.
+   *
+   * An anchor is claimed by the next follower SPAWN, and an `up` does not always
+   * produce one: `docker compose logs -f` follows its service across a container
+   * the `up` merely creates, so a follower that was already alive stays alive and
+   * the anchor is left armed. It would then be claimed much later, by a re-attach
+   * after some unrelated death — replaying a window the durable store already
+   * holds, i.e. duplicating history.
+   *
+   * Called AFTER the poll, never right after the `up`. The poll is where
+   * `onRunning` re-attaches a follower to a container the `up` REPLACED, and that
+   * spawn is the one the anchor exists for — a crash retry losing its restart
+   * output is the same bug as a manual restart losing it. By the time the poll has
+   * run, an anchor still sitting here means a follower survived, which is exactly
+   * the case with nothing to replay.
+   */
+  private disarmLogFollowerSince(names: readonly string[]): void {
+    for (const name of names) this.followerSince.delete(name);
+  }
+
+  /**
    * Adopt a freshly-resolved `compose:` block from `shipit.yaml`.
    *
    * `composeConfig` is read from `shipit.yaml` once, when the manager is
@@ -2319,6 +2344,7 @@ export class ServiceManager extends EventEmitter {
       // no transition ever fires. Without this the log panel goes quiet for the
       // rest of the session on nothing worse than the user saving a secret.
       for (const name of autoNames) this.ensureLogFollower(name);
+      this.disarmLogFollowerSince(autoNames);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
     }
@@ -2608,8 +2634,11 @@ export class ServiceManager extends EventEmitter {
       await this.joinSessionNetwork();
       // Status is updated by the next pollStatus pass (periodic poller).
       // Trigger a poll now so we don't wait up to pollIntervalMs to learn
-      // whether the retry succeeded.
+      // whether the retry succeeded. Its `onRunning` is also what re-attaches
+      // the follower to the container this retry replaced — the spawn that
+      // claims the anchor armed above.
       await this.poller.pollOnce();
+      this.disarmLogFollowerSince([name]);
     } catch (err) {
       // Compose itself failed — treat as a normal exit and schedule another
       // retry if install is still running.
@@ -2710,7 +2739,10 @@ export class ServiceManager extends EventEmitter {
       // Log streaming for these services is already running: `start()` streams
       // every service in the map (gated ones included) before the gate opens,
       // and `docker compose logs -f <service>` follows the service across the
-      // container's first `up`. No need to re-spawn here.
+      // container's first `up`. No need to re-spawn here — and because no spawn
+      // follows, the anchor armed above would otherwise sit armed until some
+      // unrelated later re-attach replayed a window the store already holds.
+      this.disarmLogFollowerSince(names);
     } catch (err) {
       const msg = (err as Error).message;
       for (const name of names) {

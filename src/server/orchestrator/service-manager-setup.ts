@@ -263,8 +263,18 @@ export function adoptExistingServiceManager(
         // #2426 — BEFORE the reconcile below, which regenerates the compose
         // override. The manager outlived the previous runner, so it is still
         // holding whatever that runner resolved; the container it was resolved
-        // from is gone. Where no reconcile follows, this still corrects the
-        // answer the NEXT override generation will use.
+        // from is gone.
+        //
+        // No reconcile follows in the common (containment-unchanged) case, which
+        // leaves the override on disk as the previous runner wrote it. That is
+        // safe, and for a specific reason worth stating: an overlay volume is
+        // named `shipit-<sid12>_overlay-<hash(depDir)>`
+        // (`overlay-session.ts` → `overlayVolumeName`), so the name depends on
+        // the SESSION and the dep dir, never on the container. A recreate mints
+        // a new volume under the same name, and the standing `external`
+        // reference keeps resolving. What this call fixes is the case where the
+        // previous runner resolved the WRONG SET — the set is what the next
+        // override generation picks up.
         if (deps.workspaceDir !== undefined) {
           await applyOverlayDepDirs(runner, mgr, {
             containerManager,

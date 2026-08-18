@@ -174,6 +174,53 @@ describe("ServiceManager log-follower replay window (#2426)", () => {
     await mgr.stop();
   });
 
+  it("drops an anchor no follower claimed, so a later re-attach cannot replay it", async () => {
+    const { mgr, logStore } = makeManager();
+    await mgr.start();
+    await seedChannel(logStore);
+    spawnCalls.length = 0;
+
+    // An `up` whose follower was already alive claims no anchor — the gated
+    // batch and the crash retry both end that way. Model it by arming and then
+    // letting the path settle, as `startGatedBatch` does.
+    const armed = mgr as unknown as {
+      armLogFollowerSince: (n: string[]) => void;
+      disarmLogFollowerSince: (n: string[]) => void;
+      followerSince: Map<string, string>;
+    };
+    armed.armLogFollowerSince(["web"]);
+    armed.disarmLogFollowerSince(["web"]);
+    expect(armed.followerSince.has("web")).toBe(false);
+
+    // The re-attach that eventually comes must not reach back to that `up` and
+    // re-persist lines the store already holds.
+    mgr.streamLogs("web");
+    expect(sinceOf(followerArgs("web")!)).toBeNull();
+
+    await mgr.stop();
+  });
+
+  it("keeps the anchor for the retry path, whose follower attaches at the poll", async () => {
+    const { mgr, logStore } = makeManager();
+    await mgr.start();
+    await seedChannel(logStore);
+    spawnCalls.length = 0;
+
+    // A crash retry recreates the container, so its follower is spawned by the
+    // poll's `onRunning`, AFTER the `up` — disarming any earlier would lose the
+    // restart output exactly as a manual restart used to.
+    const armed = mgr as unknown as {
+      armLogFollowerSince: (n: string[]) => void;
+      followerSince: Map<string, string>;
+    };
+    armed.armLogFollowerSince(["web"]);
+    mgr.streamLogs("web");
+
+    expect(sinceOf(followerArgs("web")!)).not.toBeNull();
+
+    await mgr.stop();
+  });
+
   it("replays full history the first time, before the store is seeded", async () => {
     const { mgr } = makeManager();
     await mgr.start();
