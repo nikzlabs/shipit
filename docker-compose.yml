@@ -277,6 +277,12 @@ services:
       # names so the Zen credential and the Go credential stay separable.
       - { name: OPENCODE_ZEN_API_KEY }
       - { name: OPENCODE_GO_KEY }
+      # docs/274 — Grok Build (xAI). `agent: true` deliberately, while the
+      # integration is in flight: the session agent drives the real `grok` CLI
+      # for stream capture and Phase 10 verification, and the key reaches it
+      # only through the agent env. Revisit (drop `agent`) once the xAI
+      # ServiceDef ships and the credential store owns delivery.
+      - { name: XAI_API_KEY, agent: true }
 
   # A ShipIt that has never been set up — for testing onboarding (docs/257).
   #

@@ -1,22 +1,17 @@
----
-title: Harness integration checklist (template)
-description: Copy this file into the new integration's docs/NNN-*/checklist.md; every line is expanded, with file pointers, in plan.md.
----
+# Grok Build harness — integration checklist
 
-# Harness integration checklist — template
-
-The whole integration, one line per step. Copy into the integration's own
-`docs/NNN-<harness>/checklist.md` and check off there; the expansion of
-every line, with file pointers and gotchas, is in
-[plan.md](../266-harness-integration-recipe/plan.md) (a path that still
-resolves after the copy). Deliberately *not* named `checklist.md` here — that
-name tracks docs/266's own branch work, and this template's boxes stay
-unchecked.
+Copied from
+[docs/266-harness-integration-recipe/integration-checklist.md](../266-harness-integration-recipe/integration-checklist.md);
+the expansion of every line, with file pointers and gotchas, is in
+[that recipe's plan.md](../266-harness-integration-recipe/plan.md).
 
 **Phase 0 — assess (before any code)**
-- [ ] Candidate passes the 13-point capability checklist; start-blockers
-      cleared or explicitly signed off (stream schema, auth injection,
-      pinnable install, reasoning levels)
+- [x] Candidate passes the 13-point capability checklist; start-blockers
+      cleared or explicitly signed off (stream schema: captured both
+      formats; auth: key-only launch signed off, subscription deferred to
+      planning#435; pinnable install: npm `@xai-official/grok@1.0.1`;
+      reasoning levels: none in key mode — reviewer-default no-levels
+      extension approved 2026-08-18)
 
 **1 — Types**
 - [ ] Widen `AgentId` (+ `LoginIntegrationId`/`QuotaIntegrationId` if the
@@ -29,7 +24,8 @@ unchecked.
 - [ ] `HarnessDef` row (+ `ServiceDef`/`ApiStyle` for a new vendor or wire
       format)
 - [ ] New-vendor `storageEnv` declared in the `dev` compose service's
-      `x-shipit-secrets` block (guard-tested; never in `onboarding`)
+      `x-shipit-secrets` block (guard-tested; never in `onboarding`) —
+      for Grok: `XAI_API_KEY` on the xAI `ServiceDef`
 - [ ] `<X>_TOOL_NAMES`
 
 **3 — Install & images**

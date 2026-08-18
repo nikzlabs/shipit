@@ -1,0 +1,124 @@
+---
+title: Grok Build harness — requirements
+description: Grok Build (xAI's `grok` CLI) as ShipIt's fourth coding-harness backend, integrated per the docs/266 recipe.
+---
+
+# Grok Build harness — requirements
+
+Requirements for integrating Grok Build as ShipIt's fourth harness, alongside
+Claude Code, Codex, and OpenCode. The integration follows
+[docs/266-harness-integration-recipe/plan.md](../266-harness-integration-recipe/plan.md);
+this doc holds what the feature must do, [plan.md](./plan.md) holds how.
+
+Source of the decisions below: the orchestrating session's spawn brief
+(2026-08-18), which settled them ahead of time from docs/266's candidate
+assessment ([candidates.md §Grok Build](../266-harness-integration-recipe/candidates.md)).
+They are recorded here as requirements, not relitigated.
+
+## Requirements
+
+1. **Fourth harness.** Grok Build (the `grok` CLI, xAI) is available as a
+   harness wherever a harness can be selected — session creation, model
+   picking, roles — on installs that include it in `SHIPIT_HARNESSES`.
+2. **Claude-shaped spawn-per-turn adapter.** Grok Build imitates Claude
+   Code's flag surface (`-p`, `--output-format streaming-json`,
+   `--always-approve`, `--resume`); the adapter spawns one process per turn
+   and maps its NDJSON stream, mirroring `session/agents/claude/`.
+3. **Pinned npm install.** Grok Build installs through the existing
+   `docker/agent-cli` npm pipeline, pinned to an exact `@xai-official/grok`
+   version at least 7 days published (dependency policy), with the CLI's
+   auto-updater disabled so the pinned binary never self-replaces.
+   *(Reworded 2026-08-18 — see Resolved questions: the original text assumed
+   curl-only distribution; an official npm package exists.)*
+4. **Not default-on at launch.** Per docs/271, default-set membership
+   (`DEFAULT_HARNESSES` / `HARNESS_DEFAULT`) is a separate, deliberate
+   product decision; Grok Build ships installable-but-unchecked. Dogfooding
+   uses the explicit `SHIPIT_HARNESSES` build arg in both dogfood compose
+   blocks (docs/266 step 3).
+5. **Stream conformance before trust.** The streaming-json event schema is
+   undocumented. Real transcripts are captured in-container, the adapter's
+   event mapping is locked by a conformance test replaying byte-shaped
+   captured lines (docs/272 conventions), and no capability flag is declared
+   from documentation alone.
+6. **Auth scope: key-billed only at launch.** API-key auth via `XAI_API_KEY`,
+   enforced structurally the way docs/268 did for OpenCode (no `account`
+   credential target, so no subscription mode joins). Subscription-mode
+   verification and wiring (device-flow login, `auth.json` injection,
+   account identity, quota) are deferred to **planning#435** — postponed
+   2026-08-18 by Nik (requires a paid SuperGrok subscription). *(Reworded
+   2026-08-18 — see Resolved questions; the original text assumed
+   subscription wiring in this feature.)*
+7. **Recipe discipline.** Every step of the docs/266 recipe is worked,
+   including the full silent-sites list, and every declared
+   `AgentCapabilities` flag is honest — confirmed against observed CLI
+   behavior, not documentation.
+8. **Reviewer wiring stays valid — via the no-levels mechanism extension.**
+   Key-mode Grok offers no reasoning-effort levels (the flag is silently
+   dropped; reasoning is a model-id choice), so Grok declares an honest
+   empty reasoning list, and the reviewer-default mechanism is extended so
+   a zero-levels harness is valid (its `REVIEWER_DEFAULT_EFFORT` entry
+   empty/absent; guard tests updated to accept that shape for exactly this
+   case). Revisit under planning#435 if subscription mode turns out to have
+   real levels. *(Reworded 2026-08-18 from the original stop-and-report
+   branch — see Resolved questions.)*
+9. **Launch model set: grok-4.6 first-class, plus grok-4.3 and the
+   key-mode defaults.** grok-4.6 ("the top model") must be probed live and
+   supported; grok-4.3 (added 2026-08-18) and the grok-4.20-0309
+   reasoning/non-reasoning pair (the CLI's own key-mode default line) ship
+   alongside it. Real prices and context windows come from the live
+   `/v1/models` API, never sentinels.
+
+## Open questions
+
+None.
+
+## Resolved questions
+
+- **2026-08-18 — Reviewer wiring with a zero-levels harness (the docs/266
+  design decision).** Asked with options; Nik chose **"Extend the mechanism
+  now"**: the reviewer-default mechanism learns to accept a harness with no
+  reasoning levels, Grok launches with an honest empty list, revisited
+  under planning#435. Req 8 reworded accordingly.
+- **2026-08-18 — Launch model set.** Asked with options (recommendation was
+  the grok-4.20 pair only); Nik answered: *"4.6 is the top model and we
+  need to probe and support it."* Recorded as req 9: grok-4.6 is
+  first-class and gets a live probe; the 4.20 pair (my recommended
+  key-mode defaults, not rejected) ships alongside. If the intent was
+  grok-4.6 *only*, strike the pair from req 9. **Amended later the same
+  day**: Nik added grok-4.3 to the set ("let's also add Grok 4.3") — and
+  the pair staying was implicitly confirmed by the follow-up being an
+  addition, not a replacement.
+
+- **2026-08-18 — Metered-only launch (the former conditional open
+  question).** Nik postponed subscription verification (it requires a paid
+  SuperGrok subscription) and directed it be filed separately →
+  planning#435. That is the explicit sign-off for a key-billed-only launch;
+  req 6 was reworded accordingly, following the docs/268 OpenCode
+  precedent (structural exclusion via the missing `account` target).
+
+- **2026-08-18 — Can the install be exact-pinned (req 3, a start-blocker)?**
+  Resolved empirically, better than expected: an **official npm package
+  `@xai-official/grok`** exists (latest 1.0.5; verified against the registry
+  — platform binaries as `optionalDependencies` + postinstall shim, the same
+  shape as `opencode-ai`), so Grok rides the standard npm-lockfile pipeline
+  with the established `npm rebuild` exception; no policy exception and no
+  bespoke curl/bake design is needed. The curl installer's pin claim also
+  verified first-party (`install.sh` accepts `bash -s X.Y.Z`), and
+  auto-update has three first-party kill switches (`--no-auto-update`,
+  config `[cli] auto_update`, `GROK_DISABLE_AUTOUPDATER`). The original
+  req 3 text and the pin-exception open question were rewritten/removed
+  accordingly.
+- **2026-08-18 — Does Grok Build expose reasoning control (req 8, a
+  start-blocker)?** Partially resolved, twice revised by evidence. The
+  `--reasoning-effort <EFFORT>` flag (alias `--effort`) exists, with
+  per-model `reasoning_efforts` catalog machinery in the binary — but
+  recorder-verified probes in **API-key mode** show the flag silently
+  dropped for every model tried (no effort field reaches the wire);
+  key-mode reasoning is selected by model id (`-reasoning` /
+  `-non-reasoning` pairs). The effort machinery appears gated on the
+  subscription catalog, so whether req 8 can be satisfied as written —
+  `REVIEWER_DEFAULT_EFFORT` naming a real level — **is pending the
+  subscription device-flow login**. If subscription mode also offers no
+  levels, the docs/266 "harness with no reasoning levels" design decision
+  applies and integration pauses at the reviewer wiring, per req 8's
+  stop-and-report branch.
