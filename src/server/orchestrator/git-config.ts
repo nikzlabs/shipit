@@ -62,10 +62,9 @@ export interface GitIdentity {
  * deploy. Every ShipIt build before planning#410 wrote `safe.directory=*` there
  * whenever `SHIPIT_SESSION_WORKER_UID` was set. Simply *stopping* writing it
  * would therefore leave the grant in place forever on any deployment that ever
- * ran such a build — fail-closed on a fresh install, silently fail-open on an
- * upgrade, which is the worst of the three possible outcomes because nothing
- * says so. So the removal is an active, unconditional, idempotent repair, run on
- * every boot.
+ * ran such a build: fail-closed on a fresh install, silently fail-OPEN on an
+ * upgrade, and nothing anywhere saying which one you have. So the removal is an
+ * active, unconditional, idempotent repair, run on every boot.
  *
  * ## Two facts about `safe.directory`, both measured
  *
