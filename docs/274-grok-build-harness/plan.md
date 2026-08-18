@@ -267,7 +267,17 @@ session-title side-call rides every run (OpenCode-class cost noise); on
   (`stop_reason`, `modelUsage`) and Grok's tool-name vocabulary
   (`GROK_TOOL_NAMES`, registry work per docs/272 — `todo_write` drives the
   task panel, `search_replace`/`write` the diff surfaces, `spawn_subagent`
-  the subagent card with result-only report).
+  the subagent card with result-only report). That registry work landed as
+  `grok-tool-normalizer.ts` (planning#437, the planning#432 pattern):
+  tool_use names and the two divergent input keys
+  (`target_file`→`file_path`, `target_directory`→`path`) translate to the
+  transcript vocabulary at the Layer A boundary; the `spawn_subagent`
+  result envelope (`SubagentCompleted`/`Text`) unwraps to the report text;
+  Grok's `todo_write merge:true` patch calls are understood by the client
+  fold (`task-list.ts`), which patches by item id instead of clearing. The
+  three interactive tools (`ask_user_question`, `enter_plan_mode`,
+  `exit_plan_mode`) deliberately stay raw until their card shapes are
+  captured (revisit under planning#435).
 - MCP: `writeMcpConfig(ctx)` renders a per-turn TOML (`[mcp_servers.<name>]`
   `command`/`args`/`env`, shape verified via `grok mcp add`) delivered via
   `GROK_CONFIG` → `{runtimeEnv, cleanup}`; **verify the CLI honors

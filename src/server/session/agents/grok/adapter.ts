@@ -52,6 +52,7 @@ import { GROK_PERMISSION_MODES } from "../../../shared/types/agent-types.js";
 import type {
   AgentId,
   AgentCapabilities,
+  AgentContentBlock,
   AgentEvent,
   AgentMcpWriteContext,
   AgentMcpWriteResult,
@@ -65,6 +66,7 @@ import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
 import { parseGrokLine, type GrokEvent } from "./stream.js";
+import { normalizeGrokToolCall, normalizeGrokToolResult } from "./grok-tool-normalizer.js";
 import { renderGrokConfigToml, type GrokMcpServer } from "./config-toml.js";
 
 const GROK_REASONING = HARNESSES.find((h) => h.id === "grok")?.capabilities.reasoning;
@@ -158,6 +160,13 @@ export class GrokAdapter
   private sawResult = false;
   private sawAnyEvent = false;
   private latestCallContextTokens: number | undefined;
+  /**
+   * This turn's tool_use id → RAW wire tool name. Grok's tool_result blocks
+   * carry only the id, so result normalization (`normalizeGrokToolResult`)
+   * needs the call side remembered. Reset per run(): the CLI is spawn-per-turn,
+   * so a result always lands in the same turn as its call.
+   */
+  private turnCallNames = new Map<string, string>();
   /** Resolved MCP servers, captured by writeMcpConfig for run() to render. */
   private pendingMcpServers: Record<string, GrokMcpServer> = {};
 
@@ -184,6 +193,7 @@ export class GrokAdapter
     this.sawResult = false;
     this.sawAnyEvent = false;
     this.latestCallContextTokens = undefined;
+    this.turnCallNames.clear();
 
     // Pre-assign rather than parse (verified live): `-s <uuid>` on a new
     // conversation is adopted verbatim and echoed on both init and result, so
@@ -503,6 +513,40 @@ export class GrokAdapter
     if (contextTokens > 0) this.latestCallContextTokens = contextTokens;
   }
 
+  /**
+   * Translate every tool_use block in an assistant envelope to the transcript
+   * vocabulary (`grok-tool-normalizer.ts`), remembering the RAW name by call id
+   * for the result side. Non-tool blocks (text, thinking) pass by reference —
+   * the wire carries block types the `AgentContentBlock` union doesn't name,
+   * and this touches only what it recognizes.
+   */
+  private normalizeToolCalls(content: AgentContentBlock[]): AgentContentBlock[] {
+    return content.map((block) => {
+      if (block?.type !== "tool_use" || typeof block.name !== "string") return block;
+      this.turnCallNames.set(block.id, block.name);
+      const { name, input } = normalizeGrokToolCall(
+        block.name,
+        typeof block.input === "object" && block.input !== null ? block.input : {},
+      );
+      return { ...block, name, input };
+    });
+  }
+
+  /** Unwrap recognized result envelopes (the subagent report — see the normalizer). */
+  private normalizeToolResults(content: AgentContentBlock[]): AgentContentBlock[] {
+    return content.map((block) => {
+      // tool_result blocks are not in the AgentContentBlock union but ride the
+      // wire and the persisted transcript unchanged — read them structurally.
+      const result = block as unknown as { type?: string; tool_use_id?: string; content?: unknown };
+      if (result?.type !== "tool_result" || typeof result.content !== "string") return block;
+      const rawName = result.tool_use_id ? this.turnCallNames.get(result.tool_use_id) : undefined;
+      if (!rawName) return block;
+      const normalized = normalizeGrokToolResult(rawName, result.content);
+      if (normalized === result.content) return block;
+      return { ...block, content: normalized } as unknown as AgentContentBlock;
+    });
+  }
+
   /** Convert one raw Grok event into the normalized AgentEvent schema. */
   private mapEvent(raw: GrokEvent): AgentEvent | null {
     switch (raw.type) {
@@ -526,7 +570,9 @@ export class GrokAdapter
         if (!raw.parent_tool_use_id) this.recordCallContext(raw.message?.usage);
         return {
           type: "agent_assistant",
-          content: raw.message?.content ?? [],
+          // Raw wire names miss every recognition registry (planning#437) —
+          // translate to the transcript vocabulary before anything persists.
+          content: this.normalizeToolCalls(raw.message?.content ?? []),
           ...(raw.parent_tool_use_id ? { parentToolUseId: raw.parent_tool_use_id } : {}),
         };
 
@@ -537,7 +583,9 @@ export class GrokAdapter
         // would set it.
         return {
           type: "agent_tool_result",
-          content: raw.message?.content ?? [],
+          // The subagent envelope would render as raw JSON where the report
+          // belongs — unwrap before anything persists (planning#437).
+          content: this.normalizeToolResults(raw.message?.content ?? []),
           ...(raw.parent_tool_use_id ? { parentToolUseId: raw.parent_tool_use_id } : {}),
         };
 

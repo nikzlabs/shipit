@@ -87,22 +87,37 @@ function applyTaskCall(
 ): boolean {
   const input = tool.input;
 
-  // Legacy declarative form — the call carries the whole list, so it replaces
-  // whatever came before it. Ids are positional because `TodoWrite` had none.
+  // Declarative form — the call carries the whole list, so it replaces
+  // whatever came before it. Ids are the items' own when they carry one (Grok's
+  // `todo_write` does), positional otherwise (Claude's legacy `TodoWrite` had
+  // none). One extension to pure replacement: Grok patches with
+  // `merge: true` calls whose items name an id and only the fields that changed
+  // (usually `{id, status}`, no `content`) — those patch the matching row
+  // instead of clearing the list. The fold sees the whole transcript, so the
+  // full-list call that introduced the row is always in scope to patch.
   if (tool.name === "TodoWrite") {
     if (!Array.isArray(input.todos)) return false;
-    tasks.clear();
+    const merge = input.merge === true;
+    if (!merge) tasks.clear();
+    let changed = !merge;
     input.todos.forEach((entry, n) => {
       const todo = entry as Record<string, unknown>;
-      const id = `todo-${n}`;
+      const id = text(todo?.id) ?? `todo-${n}`;
+      const existing = tasks.get(id);
+      // A patch for a row we never saw introduced (compacted away) has no
+      // subject to show — same stance as `TaskUpdate` below: an id alone
+      // renders as a blank line, so skip it.
+      const subject = text(todo?.content) ?? existing?.subject;
+      if (subject === undefined) return;
       tasks.set(id, {
         id,
-        subject: text(todo?.content) ?? "",
-        ...activeFormOf(todo?.activeForm),
-        status: statusOf(todo?.status) ?? "pending",
+        subject,
+        ...activeFormOf(todo?.activeForm ?? existing?.activeForm),
+        status: statusOf(todo?.status) ?? existing?.status ?? "pending",
       });
+      changed = true;
     });
-    return true;
+    return changed;
   }
 
   if (tool.name === "TaskCreate") {
