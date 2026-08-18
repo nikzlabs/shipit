@@ -103,30 +103,32 @@ the expansion of every line, with file pointers and gotchas, is in
       session-id pre-assignment, `$GROK_HOME/config.toml` as the only MCP
       path, `GROK_HOME`'s real layout, the `--output-format json` envelope,
       workspace trust
-- [ ] One dogfood turn per auth mode (billing route!) — **key mode only is
-      in scope; the subscription turn is planning#435**. Attempted
-      2026-08-18, **blocked at the network boundary**: the outer deployment
-      predates the merge, so `api.x.ai` is not in the enforced egress
-      allowlist and every dogfood grok turn aborts at the CLI's `/models`
-      preflight. Spawn, routing (`xai/key`), `-s` pre-assignment and `-r`
-      resume all observed working up to the wire; billing-route canary ran
-      but is inconclusive (both arms failed on egress). Evidence:
+- [x] One dogfood turn per auth mode (billing route!) — **key mode only is
+      in scope; the subscription turn is planning#435**. Done 2026-08-18 in
+      two phases (first attempt blocked on egress; operator granted
+      `api.x.ai` mid-run): full tour turn completed on grok-4.6 via the
+      `xai:key` route (inner session `6305255a…`, 29s, side effects on
+      disk, $0.1247 metered), and the **billing route is proven** by a
+      canary + control pair — an invalid *stored* credential fails the turn
+      with the CLI's auth error while the valid ambient env key sits unused,
+      and restoring the stored value makes the same spawn succeed. Evidence:
       [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
-      Rerun after the outer redeploys onto the merged code.
 - [ ] `shipit agent run` both directions — **blocked structurally**
       2026-08-18: the outer install has no grok harness (and no grok role;
       an explicit grok target is unassemblable by design — no reasoning
       levels), and inner local mode has no `shipit` shim (planning#305).
       Same deferral shape as docs/268's. Details in the run doc above.
-- [ ] Event-conversion verification: the full docs/272 recipe run
+- [x] Event-conversion verification: the full docs/272 recipe run
       (tool-tour capture ✅, inventory diff, recognition matrix on persisted
       history + UI) —
       `docs/272-harness-conversion-verification/verification-checklist.md`.
-      Steps 1–2 ran 2026-08-18 and **Step 2 went RED**: no recognition
-      registry claims any grok tool name — the adapter ships no
-      transcript-vocabulary normalizer (planning#432 pattern), so the task
-      panel, diff blocks and subagent card would all fail — filed as
-      **planning#437** (also planning#438, silent transcript on startup
-      death). Step 4 (matrix on history + DOM) blocked by the egress issue
-      above; run it after planning#437 lands. Evidence:
+      Ran 2026-08-18, **verdict RED, recorded**: the Step-2 inventory diff
+      found no recognition registry claims any grok tool name — the adapter
+      ships no transcript-vocabulary normalizer (planning#432 pattern) —
+      and the Step-4 live tour confirmed it in persisted history AND the
+      rendered DOM on the rehydration path (no task panel, no diff blocks,
+      no subagent card; raw-name chips). Filed as **planning#437**; the
+      matrix rows go green when it lands, with this run as the baseline to
+      diff against. Also **planning#438** (a startup-dead grok turn
+      persists no error row), observed live. Evidence:
       [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
