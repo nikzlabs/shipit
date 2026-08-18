@@ -58,6 +58,7 @@ import {
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
 import {
   ComposeCli,
@@ -1502,16 +1503,25 @@ export class ServiceManager extends EventEmitter {
    * 1. Parse and validate the compose file
    * 2. Generate the override file
    * 3. Start auto services via `docker compose up -d`
+   *
+   * @param opts.sweepStaleContainers Run the broad pre-start label sweep
+   *   ({@link ComposeCli.killStaleContainers}). Defaults to `true` — the right
+   *   answer for a COLD start, where every container carrying this session's
+   *   label is by definition left over from a previous orchestrator run or a
+   *   previous agent-container incarnation. {@link reconcile} passes `false`;
+   *   see the note there for why.
    */
-  async start(): Promise<void> {
+  async start(opts: { sweepStaleContainers?: boolean } = {}): Promise<void> {
     this._disposed = false;
     await this.ensureSessionNetworkModeFn?.(Boolean(this.containServicesFn));
     // Kill any stale compose containers left over from a previous orchestrator
     // run (e.g. ShipIt restart). Uses label filter — no compose files needed.
-    try {
-      await this.compose.killStaleContainers();
-    } catch {
-      // Best-effort cleanup
+    if (opts.sweepStaleContainers ?? true) {
+      try {
+        await this.compose.killStaleContainers();
+      } catch {
+        // Best-effort cleanup
+      }
     }
 
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
@@ -2043,6 +2053,25 @@ export class ServiceManager extends EventEmitter {
   /**
    * Reconcile the compose stack after a config change.
    * Re-parses the compose file, regenerates the override, and runs `up -d`.
+   *
+   * **Without the pre-start stale-container sweep**, deliberately. The sweep is
+   * `docker rm -f` over every container labelled with this session id — and on a
+   * reconcile of a RUNNING stack, that set is the session's own healthy preview
+   * containers. They were force-removed with no SIGTERM at all, so every edit to
+   * `docker-compose.yml` or `shipit.yaml` killed the preview with exit 137 and
+   * the user got a crash they had to wait out. `upWithConflictRecovery`'s
+   * docstring already records this exact over-aggressiveness being found once
+   * before (efa1ec150 / docs/127-restart-agent); the surgical conflict recovery
+   * was added in response, but the sweep was never taken off this path, so the
+   * original behaviour stayed live until it was re-diagnosed against a841e147.
+   *
+   * A reconcile does not need it. Compose owns the transition from the old
+   * definition to the new one: it recreates the services whose config changed,
+   * leaves the untouched ones running, and `--remove-orphans` drops containers
+   * the project no longer declares. The one case the sweep was covering here —
+   * a container whose name blocks the create because compose won't adopt it —
+   * is exactly what `upWithConflictRecovery` handles, by id, without touching
+   * the working stack.
    */
   async reconcile(): Promise<void> {
     // Kill orphaned log processes before clearing state — if a service was
@@ -2085,7 +2114,7 @@ export class ServiceManager extends EventEmitter {
     // to reading as an empty project. `start()` clears it on the one path where
     // no parse will happen at all (`noProjectCompose`), which is the case this
     // was reaching for. Review finding.
-    await this.start();
+    await this.start({ sweepStaleContainers: false });
   }
 
   /**
@@ -2625,14 +2654,42 @@ export class ServiceManager extends EventEmitter {
       // after this `up` (e.g. the gate released before deps finished landing),
       // handleNonZeroExit restarts it with backoff instead of latching to
       // `error`. Cleared once it reaches `running`. See docs/137.
+      //
+      // Set here rather than in the batch below, and so BEFORE the queue: both
+      // this and the status are what the user sees while the op waits its turn.
+      // A reconcile queued ahead of us clears the set (`start()` does), which
+      // costs the window and is the right answer anyway — that reconcile
+      // restarted the service against a freshly-read definition, so there is no
+      // half-landed install left to recover from (review finding).
       this.postGateServices.add(name);
     }
-    void this.startGatedBatch(names);
+    // Through the session's stack queue, like the first `start()` and both
+    // reconciles. The gate opening is driven by `agent.install` finishing, which
+    // a session activation deliberately runs CONCURRENTLY with the plugin-service
+    // reconcile — so "the gate opens in the middle of a reconcile's `docker
+    // compose up`" is the common case, not a corner. Unserialized, the two
+    // compose invocations collided on the same containers: compose failed
+    // mid-recreate with "removal of container … is already in progress", the
+    // just-started container was force-removed (exit 137), and the service
+    // walked to `stopped` 30s later when the poller gave up on it — a dead
+    // preview on every activation. Diagnosed live against a841e147.
+    void serializeStackOp(this.sessionId, () => this.startGatedBatch(names));
   }
 
-  /** Bring up a batch of gated services and wire up their post-start plumbing. */
-  private async startGatedBatch(names: string[]): Promise<void> {
+  /**
+   * Bring up a batch of gated services and wire up their post-start plumbing.
+   *
+   * Runs on the stack queue, so `names` is decided BEFORE this runs and can go
+   * stale: a reconcile queued ahead of us rebuilds the service map from a fresh
+   * read of the compose file, and a service that release named may be gone from
+   * it (renamed, removed, or a plugin service the round withdrew). Re-read the
+   * map here rather than handing compose a service it no longer knows — an
+   * `up <gone>` fails the whole batch and would latch the survivors to `error`.
+   */
+  private async startGatedBatch(requested: string[]): Promise<void> {
     if (this._disposed) return;
+    const names = requested.filter(n => this.services.has(n));
+    if (names.length === 0) return;
     try {
       await this.withUpInFlight(names, async () => {
         await this.prepareContainedStartFn?.(names);

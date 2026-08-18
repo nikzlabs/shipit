@@ -20,6 +20,7 @@ import { isOverlayEligible } from "./overlay-session.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 import type { PluginComposeService } from "./plugin-compose.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -159,7 +160,14 @@ export function adoptExistingServiceManager(
         if (containmentChanged) {
           await policyTransition;
           await deps.resetSessionNetwork?.();
-          await mgr.reconcile();
+          // On the stack queue, like every other reconcile. This is the one
+          // that was left off it: the adopted stack is deliberately still
+          // RUNNING (`preserveComposeOnDispose`), and the new container's
+          // `agent.install` is in flight alongside — so this reconcile's
+          // `compose up` can land in the middle of the install gate's release,
+          // which is exactly the collision the queue exists to prevent
+          // (review finding).
+          await serializeStackOp(runner.sessionId, () => mgr.reconcile());
         }
         await containerManager.connectToNetwork(runner.sessionId, networkName);
       })
@@ -173,7 +181,7 @@ export function adoptExistingServiceManager(
     void (async () => {
       await policyTransition;
       await deps.resetSessionNetwork?.();
-      await mgr.reconcile();
+      await serializeStackOp(runner.sessionId, () => mgr.reconcile());
     })().catch((error: unknown) => {
       mgr.emit("stack_error", error instanceof Error ? error : new Error(getErrorMessage(error)));
     });
@@ -1042,35 +1050,6 @@ async function resolvePluginServicesInto(
     console.error(`[plugins:${sessionId}] service resolution failed:`, getErrorMessage(err));
     return { changed: false, count: 0 };
   }
-}
-
-/**
- * Per-session serial queue for operations that rebuild a session's compose
- * stack — today the first `start()` and any plugin-service reconcile.
- *
- * Neither is reentrant, and the two genuinely race: plugin activation is
- * fire-and-forget, so a repository that finishes fetching while the first
- * `docker compose up` is still running settles right in the middle of it. Left
- * unserialized, that round would set the new services, see a manager that has
- * not finished starting, and either reconcile into an in-flight start or skip —
- * and skipping means the services it just resolved reach nothing until some
- * later round happens to change them again.
- *
- * Chained rather than joined, for the reason `plugin-generations.ts` gives its
- * own queue: every trigger must run against the state it was given, in order,
- * and the last one always wins. A failing link never poisons the next.
- */
-const stackOps = new Map<string, Promise<unknown>>();
-
-function serializeStackOp<T>(sessionId: string, op: () => Promise<T>): Promise<T> {
-  const previous = stackOps.get(sessionId) ?? Promise.resolve();
-  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: run `op` whether the previous entry settled or rejected
-  const next = previous.then(op, op);
-  const tail: Promise<unknown> = next.catch(() => undefined).finally(() => {
-    if (stackOps.get(sessionId) === tail) stackOps.delete(sessionId);
-  });
-  stackOps.set(sessionId, tail);
-  return next;
 }
 
 export function applyShipitConfigChange(
