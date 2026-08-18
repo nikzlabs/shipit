@@ -37,6 +37,7 @@ import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
+import { onWorkspaceRewritten } from "../workspace-rewrite.js";
 
 // Hand the whole session workspace (worktree + `.git`) back after the driver's
 // git ops (planning#146). A rebase rewrites BOTH, and because the driver
@@ -327,24 +328,24 @@ export function buildBranchSyncAgentNotice(opts: {
  * A rebase rewrites the whole working tree from the ORCHESTRATOR, outside the
  * session container — so the newly-checked-out `shipit.yaml` / compose file can
  * declare services, an install step, or a compose path the running session
- * knows nothing about.
+ * knows nothing about, and the newly-checked-out lockfile can name dependencies
+ * the container's `node_modules` has never held (nikzlabs/shipit#2429).
  *
- * The session's compose stack is otherwise re-evaluated only when the
- * in-container inotify watcher reports a config file changed, which is the
- * wrong signal for this: it is started best-effort (a single fire-and-forget
- * POST per runner) and watches a bind mount the orchestrator wrote to from
- * another container. When it misses the write — or was never started — the
- * user rebases onto the latest base and the new service simply never appears.
+ * The session's compose stack and its dependency tree are otherwise
+ * re-evaluated only when the in-container inotify watcher reports the file
+ * changed, which is the wrong signal for this: it is started best-effort (a
+ * single fire-and-forget POST per runner) and watches a bind mount the
+ * orchestrator wrote to from another container. When it misses the write — or
+ * was never started — the user rebases onto the latest base and the new service
+ * simply never appears, or the dev server starts fine and then fails every
+ * request on an import it cannot resolve.
  *
  * The orchestrator knows exactly when it rewrote the tree, so it says so
- * directly. Best-effort: a config re-read must never fail a completed rebase.
+ * directly. See `workspace-rewrite.ts` for both halves; best-effort throughout,
+ * since neither may fail a rebase that already landed.
  */
-function reevaluateSessionConfig(runner: SessionRunnerInterface): void {
-  try {
-    runner.reevaluateWorkspaceConfig?.();
-  } catch (err) {
-    console.error("[rebase] config re-evaluation failed:", getErrorMessage(err));
-  }
+function reevaluateSessionAfterRewrite(runner: SessionRunnerInterface): void {
+  onWorkspaceRewritten(runner, "rebase");
 }
 
 /**
@@ -466,7 +467,7 @@ export async function runRebaseFlow(
 
     // 5. Clean rebase — go straight to force push.
     if (result.status === "clean") {
-      reevaluateSessionConfig(runner);
+      reevaluateSessionAfterRewrite(runner);
       const forcePushed = await tryForcePush(deps);
       // The card is unconditional here: the branch WAS rewritten, on whichever
       // trigger, and the transcript is the only surface that still says so
@@ -567,7 +568,7 @@ export async function runRebaseFlow(
     }
 
     // 7. Force push after successful resolution.
-    reevaluateSessionConfig(runner);
+    reevaluateSessionAfterRewrite(runner);
     const forcePushed = await tryForcePush(deps);
     // Unconditional for the same reason as the clean path — and with more force.
     // An automatic rebase that resolved conflicts and force-pushed is exactly the

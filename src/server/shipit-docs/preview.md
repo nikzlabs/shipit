@@ -164,7 +164,10 @@ install reads — re-runs `agent.install`. This fires for **git operations**
 (`git reset`/`checkout`/`rebase` that pull in a different dependency tree) just
 as it does for direct edits, so resetting the branch to a commit that added a
 dependency recovers the preview automatically instead of leaving it 500'ing on
-an unresolved import. Gated services are torn down while install re-runs and
+an unresolved import. The same applies to the tree rewrites **ShipIt** performs
+on an idle session — a sync/rebase onto the base, a rollback, a post-merge reset
+— which are reported directly instead of through the in-container file watcher.
+Gated services are torn down while install re-runs and
 restarted once it completes — so expect a brief preview blink. That's
 intentional: the dependency tree changed, so the service relaunches against the
 fresh `node_modules`. Reinstalls are throttled to one per 30s.

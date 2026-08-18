@@ -38,6 +38,7 @@ import {
 } from "./services/pre-turn-reset.js";
 import { getErrorMessage } from "./validation.js";
 import { restoreLfsAfterTreeRewrite } from "./git-lfs.js";
+import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
 interface ExplicitResetPresentationDeps {
   runner: SessionRunnerInterface | undefined;
@@ -187,6 +188,14 @@ export async function registerGitRoutes(
       );
       const previous = sessionManager.get(sessionId)?.previousMergedPr;
 
+      // #2429 — a reset that MOVED the branch re-materialized the whole worktree
+      // from the orchestrator, exactly like a rebase, so the live session may now
+      // be running the wrong compose stack and the wrong dependency tree. The
+      // other outcomes (`already-at-base`, `refused`) touched nothing.
+      if (outcome.outcome === "reset") {
+        onWorkspaceRewritten(deps.runnerRegistry.get(sessionId), "reset-to-base");
+      }
+
       recordManualResetAgentNotice({
         setPendingAgentNotice: (id, notice) => sessionManager.setPendingAgentNotice(id, notice),
         runner: deps.runnerRegistry.get(sessionId),
@@ -331,14 +340,11 @@ export async function registerGitRoutes(
         );
         // A rollback rewrites the working tree from the orchestrator, so the
         // session's `shipit.yaml` / compose file may now describe a different
-        // stack. Re-read it rather than relying on the in-container file
-        // watcher to notice (same reasoning as the rebase path). Best-effort —
-        // never fail a completed rollback on a config re-read.
-        try {
-          deps.runnerRegistry.get(request.params.id)?.reevaluateWorkspaceConfig?.();
-        } catch (err) {
-          console.error("[rollback] config re-evaluation failed:", getErrorMessage(err));
-        }
+        // stack — and its lockfile a different dependency set (#2429). Re-read
+        // both rather than relying on the in-container file watcher to notice
+        // (same reasoning as the rebase path). Best-effort — never fail a
+        // completed rollback on a config re-read.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "rollback");
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {

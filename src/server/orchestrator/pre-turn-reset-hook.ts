@@ -47,6 +47,7 @@ import {
   type InProgressPersister,
 } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
 /**
  * Everything the hook needs: the re-arm deps (session manager, PR poller, git,
@@ -57,7 +58,8 @@ export interface PreTurnResetHookDeps extends ReArmDeps {
   getAutoResetMergedBranch: () => boolean;
 }
 
-/** The runner surface the hook touches — emit + the card-recording state. */
+/** The runner surface the hook touches — emit + the card-recording state, plus
+ * the two optional #2429 hooks a tree rewrite has to fire. */
 export type PreTurnResetRunner = Pick<
   SessionRunnerInterface,
   | "emitMessage"
@@ -67,6 +69,8 @@ export type PreTurnResetRunner = Pick<
   | "steeredMessages"
   | "getTurnEventBuffer"
   | "lastPersistedBufferIndex"
+  | "reevaluateWorkspaceConfig"
+  | "notifyWorkspaceRewritten"
 >;
 
 export interface PreTurnResetHookResult {
@@ -133,6 +137,17 @@ export async function applyPreTurnReset(args: {
   let card: BranchAutoResetCard | null = null;
 
   if (reset.moved) {
+    // #2429 — the reset re-materialized the whole worktree from the
+    // orchestrator, so the compose stack and the dependency tree this container
+    // is running may both belong to the pre-reset checkout. Ahead of the
+    // bookkeeping below because the turn this reset exists to enable starts as
+    // soon as this function returns, and the reinstall is asynchronous — every
+    // millisecond of head start is one the agent does not spend on a stale
+    // `node_modules`. Before the card, not after: this cannot throw
+    // (`onWorkspaceRewritten` swallows both halves), so it cannot displace the
+    // durable record the block below exists to guarantee.
+    onWorkspaceRewritten(runner, "pre-turn-reset");
+
     card = {
       cardId: `branch-reset-${randomUUID()}`,
       base: reset.base!,

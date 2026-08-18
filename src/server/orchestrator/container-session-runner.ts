@@ -1992,6 +1992,56 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
+   * nikzlabs/shipit#2429 — the orchestrator rewrote the working tree from outside the
+   * container (a sync/rebase, a rollback, a reset onto the base). Re-check this
+   * session's dependencies against the tree that is now on disk.
+   *
+   * ## Why the watcher was not enough
+   *
+   * #1622 already re-runs `agent.install` when a dependency input file changes,
+   * driven by the in-container file watcher — and for an agent edit or a git op
+   * the agent ran, that is the right signal. It is not a signal for a rewrite the
+   * ORCHESTRATOR made: the watcher is started best-effort with a single
+   * fire-and-forget POST, and it watches a bind mount written to from another
+   * container, so a cross-mount event can be missed entirely. That is exactly the
+   * reasoning {@link reevaluateWorkspaceConfig} already records for the config
+   * half; the dependency half had the same hole and no such call.
+   *
+   * The reported failure is what that hole costs. An idle session was rebased onto
+   * a base that added two npm dependencies; `node_modules` kept the pre-rebase
+   * tree, and the dev server started fine and then failed every request with
+   * `Failed to resolve import`. Nothing said the tree and its dependencies were
+   * out of step — `shipit service list` reported the service as `running`, and
+   * restarting it did not help, because the usual compose guard is
+   * `[ -d node_modules ] || npm ci` and the directory existed. It was just the
+   * wrong contents.
+   *
+   * ## Why it does not compare paths itself
+   *
+   * The caller knows it rewrote the tree; it does not have to work out WHAT
+   * changed. Asking unconditionally is both simpler and stricter than a
+   * diff-the-changed-paths comparison, because the worker's `/install` marker
+   * gate answers the same question with the same data: the marker is content-keyed
+   * on a hash of exactly these input files (docs/197), so an unchanged lockfile
+   * matches and returns `{ skipped: true }` in milliseconds, while a changed one
+   * misses and reinstalls. A path diff would be a second implementation of that
+   * comparison, and one that has to get renames, `./` prefixes and a failed `git
+   * diff` right to avoid falling back into the silence it exists to remove.
+   *
+   * Gated on {@link _depReinstallInputs} being non-empty, which is the same gate
+   * {@link isDepInputChange} applies: a session whose install is not
+   * content-keyable (a codegen step, a shell script) has a `null` deps hash that
+   * can never match, so triggering here would reinstall from scratch on every
+   * sync. That session keeps today's behaviour — no auto-reinstall — which is
+   * #1622's documented safe default.
+   */
+  notifyWorkspaceRewritten(): void {
+    if (this._disposed) return;
+    if (this._depReinstallInputs.length === 0) return;
+    this.maybeReinstallForDepChange();
+  }
+
+  /**
    * True when a changed path means this session's configuration moved.
    *
    * The conventional names ({@link CONFIG_FILES}) are only half of it. A repo's

@@ -142,6 +142,73 @@ describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622
 });
 
 /**
+ * nikzlabs/shipit#2429 — a tree the ORCHESTRATOR rewrote (sync/rebase, rollback,
+ * reset onto the base) has to re-check its dependencies without waiting for an
+ * in-container inotify event that may never arrive.
+ *
+ * The reported failure was a rebase that brought in two new npm dependencies:
+ * the container kept the pre-rebase `node_modules`, the dev server started
+ * fine, and every request then failed on `Failed to resolve import` while
+ * `shipit service list` still reported the service as `running`.
+ */
+describe("ContainerSessionRunner — dependency re-check after an orchestrator tree rewrite (#2429)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("re-runs the recorded install without being told which paths moved", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+
+    runner.notifyWorkspaceRewritten();
+
+    // Unconditional by design: the worker's content-keyed install marker is the
+    // comparison, so an unchanged lockfile is a millisecond skip inside
+    // `runInstall` rather than a path diff reimplemented here.
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(install).toHaveBeenLastCalledWith(["npm ci"]);
+  });
+
+  it("stays out of sessions whose install is not content-keyable", () => {
+    const runner = makeRunner();
+    // A codegen/shell install resolves to no dep inputs → a null deps hash that
+    // can never match the marker, so triggering here would reinstall from
+    // scratch on every sync. #1622's documented safe default is to do nothing.
+    runner.setDepReinstallInputs(["./build.sh"], []);
+    const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+
+    runner.notifyWorkspaceRewritten();
+
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("shares the #1622 cooldown rather than stacking a second install on it", async () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+
+    // A rebase fires this, and the watcher may then also report the same write.
+    runner.notifyWorkspaceRewritten();
+    priv(runner).maybeReinstallForDepChange();
+    expect(install).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(install).toHaveBeenCalledTimes(2);
+  });
+
+  it("does nothing once the runner is disposed", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+    (runner as unknown as { _disposed: boolean })._disposed = true;
+
+    runner.notifyWorkspaceRewritten();
+
+    expect(install).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * planning#280 — an in-flight sub-agent spawn must not vanish with its container.
  *
  * The incident: a backgrounded Codex consult was running when the user hit
