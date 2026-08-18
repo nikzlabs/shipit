@@ -15,10 +15,12 @@ per-session-uid follow-up outstanding.** All four open questions were answered o
 [checklist.md](./checklist.md) for exactly what landed and why each remaining
 piece was split out — planning#403 (E2), planning#405 (per-session uids).
 
-"Built but not armed" is E2's whole shape: the CI-side guard is on, and removing
-`safe.directory=*` is behind `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by default.
-Arming it is an operator decision to be taken against a running deployment after
-E1 has been observed there — not something a merge should do. §2 (E2) says why.
+**E2 is complete as of 2026-08-18 (planning#410).** "Built but not armed" was
+its shape for two days: the CI-side guard on, and removing `safe.directory=*`
+behind `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by default, so that arming was an
+operator decision taken against a running deployment rather than something a
+merge did. It soaked armed on production and both halves — the switch and the
+grant — are now deleted. §2 (E2) says why it took that route.
 
 **planning#384 is not closed by that work**, and the checklist says so in those
 words. The drop removes root, the Docker socket and the credential store from
@@ -214,7 +216,8 @@ every missed call site into a loud refusal instead of a silent execution
 yet. It is enumeration-free (req 3): the guard is "is this tree mine", not "is
 this key dangerous".
 
-*Built 2026-08-16 (planning#403), in two pieces with different risk.*
+*Built 2026-08-16 (planning#403), in two pieces with different risk; completed
+2026-08-18 (planning#410) with E2c below.*
 
 **E2a — the CI-side guard, on by default.**
 `git-hooks-guard-coverage.test.ts` already failed the build when a raw git
@@ -284,6 +287,38 @@ write: the gitconfig lives in the persistent credentials volume, so it actively
 `--unset-all`s the entry an earlier boot wrote. The intended end state is still
 deletion — of both the switch and the write — once it has run armed in
 production.
+
+**E2c — both halves deleted (planning#410, 2026-08-18).** Production soaked
+armed and the switch is gone, so fail-closed is simply how ShipIt works: no
+`safe.directory` grant exists anywhere in the orchestrator, in any scope.
+
+Two things deliberately survive the deletion, and both are load-bearing:
+
+- **The `--unset-all`, now unconditional.** The paragraph above is the reason:
+  the gitconfig is persistent state in a named volume and `initGlobalGitConfig`
+  never truncates it, so every deployment that ran a pre-#410 build with a
+  worker uid set has `safe.directory=*` on disk *right now*. "Stop writing it"
+  would leave those fail-open forever with nothing anywhere saying so — the
+  silent-degradation class, in the one place req 7 is about. So the removal is a
+  repair the orchestrator performs at every boot, not a write it declines to
+  make. `git-config.test.ts` pins it against an on-disk fixture rather than
+  against an old build, so the test cannot drift with the code.
+- **The scanner rule** (`git-hooks-guard-coverage.test.ts`), tightened. It
+  outlives both halves — it is what stops a future call site re-granting the key
+  one `-c safe.directory=*` at a time. Previously it let the policy owner name
+  the key in any `config --global` form, which would still have admitted a
+  reintroduced grant in the one file allowed to mention it. It now demands the
+  `--unset-all` form there too, so "nothing grants `safe.directory`" is a rule
+  with no exceptions rather than one with a trusted module.
+
+**The residual, stated rather than hidden.** The soak did not reach two surfaces
+armed: a claim on a repository with **no existing cache** (the fresh
+`clone --bare` at `repo-git.ts:148,160`), and merged-session reset / rebase /
+CI-fix / conflict remediation plus the release flow. Both are audited in
+[arming-runbook.md](./arming-runbook.md), and both have been exposed on
+production since it was armed — deleting the switch adds no exposure. What it
+removes is the cheap rollback: an env line plus a redeploy becomes a revert plus
+a rebuild.
 
 **What the audit found before arming it** (2026-08-16, planning#403). Three
 orchestrator-side git paths could reach a session workspace without dropping,
@@ -848,9 +883,12 @@ Sequence:
    and the environment is not a durable channel. The secret was split out of
    the one config instead.
 3. Remove `safe.directory=*`; replace with nothing. Any survivor fails loudly.
-   *Built as `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by default — see §2 (E2b) for
-   why the removal is a switch an operator arms rather than something a merge
-   does, and for the three sites the pre-arming audit found and fixed.*
+   *Shipped in two steps: first as `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by
+   default, then as a plain deletion once it had soaked armed on production
+   (planning#410, 2026-08-18). See §2 (E2b) for why the removal went through a
+   switch an operator arms rather than something a merge does, and for the three
+   sites the pre-arming audit found and fixed; §2 (E2c) for what survives the
+   deletion and why.*
 4. Drop the `core.hooksPath` override on the session-workspace path only, and
    add the bounded-hook-then-`--no-verify` fallback with its persisted notice
    (E4, reqs 9 and 10). Last, because it is the only step that adds a way for

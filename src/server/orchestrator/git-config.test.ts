@@ -11,7 +11,6 @@ import {
   writeContainerGitConfig,
   CONTAINER_CREDENTIAL_HELPER,
   FALLBACK_CONTAINER_GIT_IDENTITY,
-  gitStrictOwnership,
   GLOBAL_CREDENTIAL_FILENAME,
 } from "./git-config.js";
 
@@ -445,19 +444,24 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
   });
 });
 
-// docs/150 §7 addendum — the planning#33 activation blocker. When the session
-// worker runs as an unprivileged uid, an orchestrator git that RAN AS ROOT over
-// a worker-owned worktree was refused with "detected dubious ownership" unless
-// `safe.directory` was configured in the (trusted) global git config.
+// docs/266-orchestrator-git-trust-boundary E2 (planning#403, closed by
+// planning#410) — ShipIt grants no `safe.directory`, ever.
 //
-// planning#412 — stated in the past tense because since
-// docs/266-orchestrator-git-trust-boundary E1 a correct call site drops to the
-// tree's owner and never meets that refusal. What `safe.directory=*` still
-// suppresses is the refusal on an INCORRECT site — one that failed to drop and
-// so is still root against a tree untrusted code can write. That is why arming
-// `SHIPIT_GIT_STRICT_OWNERSHIP` (which removes the `*`) is the point of the
-// gating these tests pin; see `git-config.ts`'s own docstring.
-describe("git-config: safe.directory gating (planning#33)", () => {
+// History, because the shape of these tests is a reaction to it. docs/150 §7
+// (planning#33) added `safe.directory=*` to the orchestrator's global config
+// because root git over a worker-owned worktree was refused with "detected
+// dubious ownership". docs/266 E1 removed the cause: a correct call site now
+// drops to the uid that owns the tree and never meets that refusal. What the
+// `*` still suppressed was the refusal on an INCORRECT site — one that failed
+// to drop and so is still root against a tree untrusted code can write — which
+// is precisely the signal req 7 wants. It shipped as a switch, soaked armed in
+// production, and both halves are now deleted.
+//
+// So there is no gating left to pin. What is left to pin is the REPAIR, and it
+// is the half a plain "stop writing it" would silently get wrong: the gitconfig
+// lives in a persistent volume and is never truncated, so an upgrade from any
+// pre-planning#410 build still has the grant on disk.
+describe("git-config: no safe.directory is granted (docs/266 E2, planning#410)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
   let origUid: string | undefined;
@@ -489,78 +493,56 @@ describe("git-config: safe.directory gating (planning#33)", () => {
     }
   };
 
-  it("adds safe.directory=* when SHIPIT_SESSION_WORKER_UID is set", () => {
+  // The worker uid is what USED to gate the write, so it is the case that would
+  // regress if anyone reintroduced the grant.
+  it("writes none when SHIPIT_SESSION_WORKER_UID is set", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     initGlobalGitConfig(tmpDir);
-    expect(readSafeDirs()).toContain("*");
+    expect(readSafeDirs()).toEqual([]);
   });
 
-  it("does NOT add safe.directory when the flag is unset (legacy root worker)", () => {
+  it("writes none when SHIPIT_SESSION_WORKER_UID is unset (root worker)", () => {
     delete process.env.SHIPIT_SESSION_WORKER_UID;
     initGlobalGitConfig(tmpDir);
-    expect(readSafeDirs()).not.toContain("*");
+    expect(readSafeDirs()).toEqual([]);
   });
 
-  it("is idempotent — repeated init does not duplicate the entry", () => {
+  // The upgrade path, and the only case that has ever mattered in production.
+  // `initGlobalGitConfig` never truncates the file and `/credentials` is a named
+  // docker volume, so a deployment that ran any pre-planning#410 build with a
+  // worker uid set has `safe.directory=*` persisted — and it stays there, and
+  // stays fail-OPEN, unless boot actively removes it. Written with a raw `git
+  // config` rather than by running an old build, so the fixture is the on-disk
+  // state itself and cannot drift with the code.
+  it("removes a grant an older build persisted", () => {
+    const configPath = path.join(tmpDir, ".gitconfig");
+    process.env.GIT_CONFIG_GLOBAL = configPath;
+    execSync(`git config --file ${configPath} --add safe.directory "*"`);
+    expect(readSafeDirs()).toContain("*");
+
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    initGlobalGitConfig(tmpDir);
+    expect(readSafeDirs()).toEqual([]);
+  });
+
+  // A `--unset-all` on a key with several values must clear all of them; and a
+  // named path is as much a grant as `*` is.
+  it("removes every entry, not just the first, and not just `*`", () => {
+    const configPath = path.join(tmpDir, ".gitconfig");
+    process.env.GIT_CONFIG_GLOBAL = configPath;
+    execSync(`git config --file ${configPath} --add safe.directory "*"`);
+    execSync(`git config --file ${configPath} --add safe.directory /workspace`);
+    expect(readSafeDirs()).toHaveLength(2);
+
+    initGlobalGitConfig(tmpDir);
+    expect(readSafeDirs()).toEqual([]);
+  });
+
+  it("is idempotent — repeated init leaves the key absent and does not throw", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     initGlobalGitConfig(tmpDir);
     initGlobalGitConfig(tmpDir);
-    expect(readSafeDirs().filter((d) => d === "*")).toHaveLength(1);
-  });
-
-  // docs/266-orchestrator-git-trust-boundary E2 (planning#403) — the fail-closed half. With the switch armed the
-  // `*` is gone, so a call site that failed to drop to the tree's owner is
-  // refused by git instead of running as root against a tree untrusted code can
-  // write (req 7).
-  describe("SHIPIT_GIT_STRICT_OWNERSHIP", () => {
-    let origStrict: string | undefined;
-
-    beforeEach(() => {
-      origStrict = process.env.SHIPIT_GIT_STRICT_OWNERSHIP;
-    });
-
-    afterEach(() => {
-      if (origStrict !== undefined) process.env.SHIPIT_GIT_STRICT_OWNERSHIP = origStrict;
-      else delete process.env.SHIPIT_GIT_STRICT_OWNERSHIP;
-    });
-
-    it("writes no safe.directory when armed, even with a worker uid set", () => {
-      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
-      process.env.SHIPIT_GIT_STRICT_OWNERSHIP = "1";
-      initGlobalGitConfig(tmpDir);
-      expect(readSafeDirs()).toEqual([]);
-    });
-
-    // The config file lives in the persistent credentials volume, so arming the
-    // switch on a deployment that has been running is the ONLY case that
-    // matters in production — and it is the one a plain "stop writing it" would
-    // silently get wrong.
-    it("removes an entry an earlier boot wrote", () => {
-      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
-      initGlobalGitConfig(tmpDir);
-      expect(readSafeDirs()).toContain("*");
-
-      process.env.SHIPIT_GIT_STRICT_OWNERSHIP = "1";
-      initGlobalGitConfig(tmpDir);
-      expect(readSafeDirs()).toEqual([]);
-    });
-
-    it("restores the entry when the switch is turned back off", () => {
-      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
-      process.env.SHIPIT_GIT_STRICT_OWNERSHIP = "1";
-      initGlobalGitConfig(tmpDir);
-      delete process.env.SHIPIT_GIT_STRICT_OWNERSHIP;
-      initGlobalGitConfig(tmpDir);
-      expect(readSafeDirs()).toContain("*");
-    });
-
-    it("is off unless the value is exactly 1", () => {
-      for (const value of ["", "0", "true", "yes"]) {
-        expect(gitStrictOwnership({ SHIPIT_GIT_STRICT_OWNERSHIP: value })).toBe(false);
-      }
-      expect(gitStrictOwnership({})).toBe(false);
-      expect(gitStrictOwnership({ SHIPIT_GIT_STRICT_OWNERSHIP: "1" })).toBe(true);
-    });
+    expect(readSafeDirs()).toEqual([]);
   });
 });
 

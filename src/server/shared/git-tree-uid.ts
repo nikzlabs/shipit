@@ -56,17 +56,18 @@
  * nothing. `shared/session-identity.ts` owns that lookup; the fallback below is
  * for paths that belong to no session.
  *
- * **That fail-closed half is built but not armed.** `git-config.ts` still
- * writes `safe.directory=*` by default, which is precisely what suppresses that
- * refusal, so a call site that fails to drop silently runs as root exactly as
- * before. `SHIPIT_GIT_STRICT_OWNERSHIP=1` removes the `*` and turns that into a
- * loud `fatal: detected dubious ownership` (docs/266-orchestrator-git-trust-boundary E2, planning#403). It is a
- * switch rather than a deletion because arming it turns every missed site into
- * a hard failure at once, on the post-turn commit path, and this module is
- * inert unless the process is root — so it cannot be exercised for real
- * anywhere but a production orchestrator. Sequence: land the drop, observe it
- * in production, then arm this. Until it is armed the coverage here is real,
- * and enforced at CI (below), but not enforced by git at runtime.
+ * **That fail-closed half is live** (docs/266-orchestrator-git-trust-boundary E2,
+ * planning#403/#410). `git-config.ts` grants no `safe.directory`, so a call site
+ * that fails to drop is refused by git itself with a loud
+ * `fatal: detected dubious ownership` rather than running as root against a tree
+ * untrusted code can write. It got there in two steps rather than one, because
+ * removing the grant turns every missed site into a hard failure at once, on the
+ * post-turn commit path — and this module is inert unless the process is root,
+ * so it cannot be exercised for real anywhere but a production orchestrator. The
+ * sequence was: land the drop, observe it in production, remove the grant behind
+ * a switch, soak it armed, then delete the switch. **A green local run still
+ * proves nothing about it** for the same reason the sequence existed; the CI
+ * coverage below is what holds at review time, and git is what holds at runtime.
  *
  * ## When this returns null (i.e. no drop)
  *

@@ -243,8 +243,9 @@ export async function forkSession(
   // uid, then clone with the drop resolved from the SOURCE tree. Measured
   // against git 2.39.5 with the ownership check armed: `git clone --local` on a
   // foreign source fails `detected dubious ownership in repository at
-  // '<src>/.git'` — so once docs/266-orchestrator-git-trust-boundary E2 removes `safe.directory=*`, the old
-  // shape does not merely run as root, it stops working.
+  // '<src>/.git'` — so with docs/266-orchestrator-git-trust-boundary E2's
+  // `safe.directory=*` removal shipped, the old shape does not merely run as
+  // root, it stops working.
   //
   // Hand over `newWorkspaceDir` and NOT its parent `newSessionDir`: removing or
   // renaming a directory ENTRY is governed by the parent directory's

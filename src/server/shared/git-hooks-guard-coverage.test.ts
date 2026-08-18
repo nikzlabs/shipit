@@ -24,10 +24,10 @@
  * construction — but a raw `spawn`/`execFile` bypasses that choke point
  * entirely, and the two sites this rule caught when it was written
  * (`git-lfs.ts`'s `runGit`, `git.ts`'s `getFileBufferAtCommit`) were both
- * running as root inside a session workspace. Once docs/266-orchestrator-git-trust-boundary E2 removes
- * `safe.directory=*` such a site does not merely run as root: git refuses it
- * outright, on paths as load-bearing as session provisioning. Catching it at CI
- * is the whole point.
+ * running as root inside a session workspace. With docs/266-orchestrator-git-trust-boundary E2's
+ * `safe.directory=*` removal shipped, such a site does not merely run as root:
+ * git refuses it outright, on paths as load-bearing as session provisioning.
+ * Catching it at CI is the whole point.
  *
  * The simple-git half of the same problem is covered by ESLint
  * (`no-restricted-imports` on the `simple-git` default export), which is why
@@ -896,8 +896,8 @@ describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266-orchest
       "A bare `safeSimpleGit()` runs as ROOT and has no tree to resolve a uid from —",
       "it is the only orchestrator git shape with no ownership predicate.",
       "Its destination is left root-owned, and the next `safeSimpleGit(<destination>)`",
-      "drops to that path's session uid and meets a tree it does not own: EACCES today,",
-      "`fatal: detected dubious ownership` once SHIPIT_GIT_STRICT_OWNERSHIP is armed.",
+      "drops to that path's session uid and meets a tree it does not own —",
+      "`fatal: detected dubious ownership`, because ShipIt grants no safe.directory.",
       "Both known instances of this bug had exactly that shape (repo-git.ts's",
       "cloneFromCache, plugin-generations.ts's checkoutCommit) and neither was visible",
       "at runtime: the drop is inert unless the process is root, so tests pass either way.",
@@ -1348,7 +1348,17 @@ describe("git spawn coverage: what counts as a git spawn (planning#409)", () => 
  * for an exclusion, the exclusion is wrong.
  */
 describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestrator-git-trust-boundary E2)", () => {
-  /** The one module that owns the policy — {@link applySafeDirectoryPolicy}. */
+  /**
+   * The one module that owns the policy — `git-config.ts`'s
+   * `removeSafeDirectoryGrant`.
+   *
+   * It names the key in order to `--unset-all` it, which is the opposite of a
+   * grant: the gitconfig lives in a persistent volume and pre-planning#410
+   * builds wrote `safe.directory=*` into it, so boot has to actively remove one.
+   * This rule stays scoped to that module rather than being tightened to "nobody
+   * anywhere", because the removal has to live somewhere and the line below
+   * still constrains WHAT it may do there.
+   */
   const POLICY_OWNER = path.join("orchestrator", "git-config.ts");
 
   /**
@@ -1373,7 +1383,30 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
    */
   const PASSES_SAFE_DIRECTORY = /["'`]safe\.directory|safe\.directory\s*=/;
 
-  it("only git-config.ts names safe.directory, and nothing passes it on a command line", () => {
+  /**
+   * The single form the policy owner may use — `--unset-all`, the REMOVAL.
+   *
+   * planning#410 deleted the grant, so "nobody grants `safe.directory`" is now
+   * true without exception and the rule says so. Before, this only demanded the
+   * `config --global` scope, which would still have passed a
+   * `["config", "--global", "safe.directory", "*"]` reintroducing the grant in
+   * the one file allowed to name the key at all.
+   *
+   * **Its limit, named rather than left for the next reader to discover.** This
+   * reads a line for a literal, so a `const UNSET = "--unset-all"` spread into
+   * the argv would not match and the line would be reported as a grant. That
+   * direction is fail-CLOSED — a false offender, a red build, and someone looks
+   * — which is why it is a limit rather than a hole. The fail-open direction
+   * needs BOTH `--unset-all` and `safe.directory` behind indirection, and then
+   * `PASSES_SAFE_DIRECTORY` never matches the line either, so the gap belongs to
+   * the pre-existing "name assembled at runtime" class that rule already
+   * documents rather than to this one. Pinned below, both directions, so the
+   * shape is known-and-excluded instead of never-considered — the failure mode
+   * this file's own header calls out.
+   */
+  const isTheRemoval = (line: string): boolean => line.includes('"--unset-all"');
+
+  it("nothing grants safe.directory, and only git-config.ts may even name it", () => {
     const offenders: string[] = [];
     let scanned = 0;
 
@@ -1382,12 +1415,17 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
       const src = stripComments(fs.readFileSync(file, "utf-8"));
       scanned++;
       if (rel.endsWith(POLICY_OWNER)) {
-        // Even here, only the `git config --global` form is allowed: the point
-        // of the policy living in the global config is that it is the scope the
-        // untrusted side cannot reach, and a `-c` would defeat its own purpose.
+        // Even here, only the `git config --global --unset-all` form is allowed.
+        // The scope matters because the global config is what the untrusted side
+        // cannot reach, so a `-c` would defeat its own purpose; the `--unset-all`
+        // matters because after planning#410 there is no legitimate grant left to
+        // write, in any scope, from anywhere.
         for (const line of src.split("\n")) {
-          if (PASSES_SAFE_DIRECTORY.test(line) && !line.includes('"config", "--global"')) {
-            offenders.push(`${rel} — safe.directory outside the \`config --global\` write: ${line.trim()}`);
+          if (!PASSES_SAFE_DIRECTORY.test(line)) continue;
+          if (!line.includes('"config", "--global"')) {
+            offenders.push(`${rel} — safe.directory outside the \`config --global\` removal: ${line.trim()}`);
+          } else if (!isTheRemoval(line)) {
+            offenders.push(`${rel} — grants safe.directory instead of removing it: ${line.trim()}`);
           }
         }
         continue;
@@ -1405,10 +1443,12 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
       "everything ShipIt itself supplies (system/global files, the command line,",
       "the config env protocols) and never the repository's own config. So a `-c",
       "safe.directory=...` anywhere in ShipIt's own code silences exactly the",
-      "`detected dubious ownership` refusal docs/266-orchestrator-git-trust-boundary E2 exists to arm (req 7).",
+      "`detected dubious ownership` refusal docs/266-orchestrator-git-trust-boundary E2 armed (req 7).",
       "The refusal is the signal that a git call site failed to drop to the tree's",
       "owner. Fix the call site with gitSpawnOverridesForTree — never the refusal.",
-      `Only ${POLICY_OWNER}'s \`git config --global\` write may name the key.`,
+      `Only ${POLICY_OWNER}'s \`git config --global --unset-all\` may name the key,`,
+      "and only to remove a grant a pre-planning#410 build persisted into the",
+      "credentials volume. Nothing may write one.",
     ].join("\n")).toEqual([]);
   });
 
@@ -1453,6 +1493,27 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
 
     expect(PASSES_SAFE_DIRECTORY.test('["-c", "safe.directory=*", "status"]')).toBe(true);
     expect(PASSES_SAFE_DIRECTORY.test('["config", "--global", "safe.directory", "*"]')).toBe(true);
+
+    // The grant/removal split inside the policy owner (planning#410). The first
+    // line is the shape that was legal before the switch was deleted and must
+    // not become legal again; the second is the only shape left.
+    expect(isTheRemoval('["config", "--global", "safe.directory", "*"]')).toBe(false);
+    expect(isTheRemoval('["config", "--global", "--replace-all", "safe.directory", "*"]')).toBe(false);
+    expect(isTheRemoval('["config", "--global", "--unset-all", "safe.directory"]')).toBe(true);
+
+    // The indirection limit, pinned in BOTH directions so it is known-and-
+    // excluded rather than never-considered (independent review, planning#410).
+    //
+    // Hiding `--unset-all` behind a const makes the real removal look like a
+    // grant. Safe because the direction is fail-CLOSED: a false offender is a
+    // red build naming the line, not a silenced refusal.
+    expect(isTheRemoval('["config", "--global", UNSET_ALL, "safe.directory"]')).toBe(false);
+    // Hiding the KEY as well is the only fail-open spelling — and it escapes the
+    // outer rule first, so this predicate is never consulted. Safe because of
+    // the SHAPE: `PASSES_SAFE_DIRECTORY` matches a quoted or `=`-joined key, so
+    // a key assembled at runtime reaches neither rule. That is the pre-existing
+    // class its own docstring names, not a gap this tightening introduced.
+    expect(PASSES_SAFE_DIRECTORY.test('["config", "--global", UNSET_ALL, KEY]')).toBe(false);
 
     // Safe because of the SHAPE: text after `//` is a comment, and a comment
     // cannot pass an argument to a git process — true of every comment, not a

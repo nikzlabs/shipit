@@ -549,7 +549,7 @@ describe("per-remote credential (RepoGit credential option)", () => {
     });
     expect(cleaned).toEqual({
       PATH: "/usr/bin",
-      // Kept on purpose — identity, `safe.directory`, and no interactive editor.
+      // Kept on purpose — identity, URL rewrites, and no interactive editor.
       GIT_CONFIG_GLOBAL: "/credentials/.gitconfig",
       GIT_EDITOR: "true",
     });
