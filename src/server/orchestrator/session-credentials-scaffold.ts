@@ -29,7 +29,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
-import { writeContainerGitConfig } from "./git-config.js";
+import { GLOBAL_CREDENTIAL_FILENAME, writeContainerGitConfig } from "./git-config.js";
 import { chownTreeToSessionWorker, sealDirMode } from "./session-worker-uid.js";
 
 /** Subdirectory under the credentials root that holds per-session subtrees. */
@@ -290,6 +290,18 @@ export function ensureSessionCredentialsScaffold(credentialsRoot: string, sessio
   }
   // Generate a token-free gitconfig (identity + brokering credential helper).
   writeSessionGitConfig(credentialsRoot, sessionId);
+  // #2432 — and take away anything an orchestrator-shaped writer left INSIDE
+  // the sandbox. Nothing on the session side ever creates this file: the
+  // container's credential is brokered per request by `shipit-git-credential`,
+  // and the only code that writes one is `setGlobalCredentialHelper`, which
+  // derives its path from `GIT_CONFIG_GLOBAL` — a variable every session
+  // container exports as `/credentials/.gitconfig`. So a copy here means
+  // orchestrator code ran in the sandbox (the server test suite did, which is
+  // the bug) and wrote a credential file the freshly-regenerated gitconfig
+  // above no longer points at. Leaving it would abandon a stale secret in a
+  // directory the agent can traverse, and would make the next investigation
+  // start from the same confusing artifact.
+  fs.rmSync(path.join(dir, GLOBAL_CREDENTIAL_FILENAME), { force: true });
   // Hand the freshly-written subtree to the unprivileged worker user (docs/150).
   chownSessionCredentialsTree(credentialsRoot, sessionId);
 }

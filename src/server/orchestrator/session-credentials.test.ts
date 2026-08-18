@@ -110,6 +110,28 @@ describe("session-credentials", () => {
     });
   });
 
+  /**
+   * #2432 — a session that ran the server test suite in-box had its brokered
+   * `/credentials/.gitconfig` rewritten to `cat` a `.git-credential-github`
+   * holding a 5-character fixture token, and could not push again. The suite
+   * hole is closed in `server-test-setup.ts`; this is the repair for the
+   * sessions already carrying the artifact, which runs on every container
+   * create. The regenerated gitconfig no longer references the file, so what is
+   * left is a stale credential sitting where the agent can reach it.
+   */
+  it("scaffold removes a credential file orchestrator code left in the sandbox", () => {
+    const dir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(dir, { recursive: true });
+    const stray = path.join(dir, ".git-credential-github");
+    fs.writeFileSync(stray, "username=x-access-token\npassword=ghp_x\n");
+
+    ensureSessionCredentialsScaffold(root, sid);
+
+    expect(fs.existsSync(stray)).toBe(false);
+    expect(fs.readFileSync(path.join(dir, ".gitconfig"), "utf-8"))
+      .toContain("/usr/local/bin/shipit-git-credential");
+  });
+
   it("scaffold seeds only the shared .gitconfig — no agent creds", () => {
     ensureSessionCredentialsScaffold(root, sid);
     const dir = perSessionCredentialsDir(root, sid);

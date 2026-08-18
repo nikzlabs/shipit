@@ -20,6 +20,9 @@
  * passing and the strip unverified again — the same shape as the bug.
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect } from "vitest";
 import { credentialStorageEnvNames } from "./catalogue/index.js";
 import { CREDENTIAL_ROUTE_ENV_PREFIX } from "./types/domain-types/credential-route.js";
@@ -59,5 +62,36 @@ describe("server test environment is hermetic", () => {
 
   it("sees no credential from the preceding test", () => {
     expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  /**
+   * The pin for the throwaway `GIT_CONFIG_GLOBAL` (#2432).
+   *
+   * A session container points that variable at `/credentials/.gitconfig`, the
+   * live brokered config; the suite's git writes went straight into it, swapped
+   * the `shipit-git-credential` helper for a `cat` of a fixture token and left
+   * the session unable to push for the rest of its life. Both halves are
+   * asserted because the failure modes are opposite: pointing it somewhere real
+   * breaks the session, and unsetting it sends
+   * `git-config.ts`'s `globalCredentialFilePath()` to its hardcoded
+   * `/credentials` fallback — the same directory, by a different route.
+   */
+  it("gives the suite its own throwaway global git config", () => {
+    const configPath = process.env.GIT_CONFIG_GLOBAL;
+    expect(
+      configPath,
+      "GIT_CONFIG_GLOBAL is unset, so `globalCredentialFilePath()` falls back to /credentials — "
+        + "the session's own credential directory",
+    ).toBeDefined();
+    // Compared through realpath: macOS resolves os.tmpdir() to /private/var/…,
+    // so a raw prefix check would fail there for a path that IS in the temp dir.
+    const realTmp = fs.realpathSync(os.tmpdir());
+    const realConfigDir = fs.realpathSync(path.dirname(configPath!));
+    expect(
+      realConfigDir.startsWith(realTmp + path.sep) || realConfigDir === realTmp,
+      `GIT_CONFIG_GLOBAL points at ${configPath} — outside the temp dir, so a test's `
+        + "`git config --global` write lands on a real config (in a session container, the "
+        + "brokered /credentials/.gitconfig)",
+    ).toBe(true);
   });
 });

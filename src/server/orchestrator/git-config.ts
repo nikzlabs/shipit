@@ -161,6 +161,15 @@ function applySafeDirectoryPolicy(): void {
 export const GLOBAL_CREDENTIAL_FILENAME = ".git-credential-github";
 
 /**
+ * Below this, a string cannot be any GitHub credential — the shortest live
+ * format (`ghp_` + 36) is 40 characters, and a GitHub App installation token
+ * (`ghs_…`) longer still. Used only to WARN (see {@link setGlobalCredentialHelper}),
+ * never to refuse: the cost of being wrong about a future format is a session
+ * that cannot push at all.
+ */
+const MIN_PLAUSIBLE_GITHUB_TOKEN_LENGTH = 20;
+
+/**
  * Where {@link GLOBAL_CREDENTIAL_FILENAME} lives, derived from the same
  * credentials directory `GIT_CONFIG_GLOBAL` points into.
  *
@@ -594,6 +603,30 @@ export function setGlobalCredentialHelper(token: string): void {
   // an unreadable `GIT_CONFIG_GLOBAL` is silently ignored, but an unreadable
   // `include.path` is a hard `fatal: unable to access` on *every* git command.
   // So the token could not be pulled in by an include.
+  // #2432 — say something about a credential that cannot possibly authenticate,
+  // because the alternative is a generic remote-side error with nothing local to
+  // explain it. The session that hit this got `password=ghp_x` written here and
+  // then "remote: Invalid username or token" on every push, with the file
+  // present, the helper firing, and no ShipIt log line anywhere.
+  //
+  // The two cases are deliberately not treated alike. **Empty throws**: it is
+  // never a credential, and every caller already screens for it
+  // (`GitHubAuthManager.setToken` trims and rejects, `CredentialStore` returns
+  // null for blank), so this can only fire on a new caller with a bug and should
+  // fire loudly. **Implausibly short only warns**: the shortest GitHub token
+  // shape in use is far longer than this, but refusing on a length guess would
+  // trade a confusing push failure for a total one the moment GitHub ships a
+  // format we did not predict. A line naming the length — never the value — is
+  // enough to end the search.
+  if (!token.trim()) {
+    throw new Error("setGlobalCredentialHelper: refusing to install an empty GitHub credential");
+  }
+  if (token.trim().length < MIN_PLAUSIBLE_GITHUB_TOKEN_LENGTH) {
+    console.warn(
+      `[git-config] installing a GitHub credential of ${token.trim().length} characters — too short `
+        + "for any GitHub token format, so git will fail with \"Invalid username or token\"",
+    );
+  }
   const credentialPath = globalCredentialFilePath();
   writeRootOnlyCredentialFile(credentialPath, token);
   // `2>/dev/null` on the `cat`, but a LOUD line when the file is not there at
