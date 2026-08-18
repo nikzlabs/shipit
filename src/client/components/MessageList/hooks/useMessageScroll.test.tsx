@@ -392,6 +392,81 @@ describe("useMessageScroll", () => {
       expect(state.scrollTop).toBe(2400);
     });
 
+    it("stands down for a trackpad scroll too, which reports `wheel` and never `touchmove`", () => {
+      // The wheel path has no drag flag to set — `wheel` has no end event, so a
+      // sticky flag would never clear — and rides the timestamp grace alone.
+      const { view, div, state } = mountAtBottom();
+
+      act(() => {
+        div.dispatchEvent(new Event("wheel"));
+        state.scrollTop = 1485; // still inside the near-bottom band
+        div.dispatchEvent(new Event("scroll"));
+      });
+
+      act(() => {
+        state.height = 2400;
+        view.rerender(<Harness messages={[{ role: "assistant", text: "hi, more tokens" }]} />);
+      });
+      flushFrame();
+      growContent();
+
+      expect(state.scrollTop).toBe(1485);
+    });
+
+    it("hands a cancelled touch over to the grace window, not straight back to auto-follow", () => {
+      // `touchcancel` fires when the system takes the gesture away mid-drag — a
+      // notification, a system edge swipe. The scroll it started is still moving.
+      const { div, state } = mountAtBottom();
+
+      act(() => {
+        div.dispatchEvent(new Event("touchmove"));
+        state.scrollTop = 1485;
+        div.dispatchEvent(new Event("scroll"));
+        div.dispatchEvent(new Event("touchcancel"));
+      });
+
+      state.height = 2400;
+      growContent();
+      expect(state.scrollTop).toBe(1485);
+    });
+
+    it("terminates a settle loop that was already running when the gesture began", () => {
+      // The other ordering: the gesture starts BEFORE the loop in the tests above.
+      // Here the loop is mid-flight, so only `shouldContinue` can stop it.
+      let height = 100;
+      let scrollTop = 0;
+
+      const view = render(<Harness messages={[]} />);
+      const div = view.getByTestId("scroller");
+      Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+      Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+      Object.defineProperty(div, "scrollTop", {
+        configurable: true,
+        get: () => scrollTop,
+        set: (v: number) => {
+          scrollTop = v;
+        },
+      });
+
+      act(() => {
+        view.rerender(<Harness messages={[user("a very long message")]} />);
+      });
+      height = 600;
+      flushFrame(); // loop is running and still correcting a growing message
+
+      act(() => {
+        div.dispatchEvent(new Event("touchmove"));
+      });
+      scrollTop = 550; // where the finger put us
+
+      height = 900;
+      flushFrame();
+      flushFrame();
+
+      expect(scrollTop).toBe(550);
+      expect(rafQueue.length).toBe(0);
+    });
+
     it("still anchors on a sent message, which is newer intent than the drag", () => {
       const { view, div, state } = mountAtBottom();
 

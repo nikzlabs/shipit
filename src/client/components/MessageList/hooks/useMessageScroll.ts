@@ -50,13 +50,21 @@ function now(): number {
  * `autoScrollRef` cannot answer this. It only flips once the user crosses
  * BOTTOM_THRESHOLD_PX, and a SLOW drag — a thumb walking back through the
  * transcript on a phone — stays inside that band for many frames. Every
- * auto-scroll path fires during those frames: a streamed token re-pins through
- * the layout effect, and on mobile the URL bar collapsing during the scroll
- * resizes the container, which the observer reads as content growth. So a slow
- * scroll got dragged back to the bottom while a fast flick, which leaves the
- * band within a single frame, did not. A live gesture is authoritative over all
- * of them — "we must never fight a user's scroll" has to hold before the
- * threshold is crossed, not only after.
+ * auto-scroll path fires during those frames, so a slow scroll got dragged back
+ * to the bottom while a fast flick, which leaves the band within a single frame,
+ * did not. A live gesture is authoritative over all of them — "we must never
+ * fight a user's scroll" has to hold before the threshold is crossed, not only
+ * after.
+ *
+ * Mobile makes that band wider than it looks, which is why the threshold cannot
+ * be the whole answer. The address bar collapses as the user scrolls, and that
+ * GROWS the container's `clientHeight` — so `scrollHeight - scrollTop -
+ * clientHeight` shrinks with no scrolling and no content growth at all. A user
+ * who had deliberately moved 60px clear of the bottom lands back inside the
+ * threshold, re-arming auto-follow at a position they chose. The same resize
+ * reaches the observer, which cannot tell it apart from the transcript growing.
+ * Widening BOTTOM_THRESHOLD_PX would not have helped: the address bar moves the
+ * boundary by its own height, whatever we set it to.
  *
  * Takes refs rather than closing over them so it can sit at module scope, out of
  * the `[]`-dependency effect's reach.
@@ -161,6 +169,12 @@ export function useMessageScroll(
       cancelSettleRef.current?.();
     };
 
+    // `wheel` deliberately gets the timestamp and NOT the drag flag below: it has
+    // no end event, so a sticky flag set here would never clear and would suppress
+    // auto-follow for the rest of the session. A trackpad emits `wheel` densely
+    // enough through a gesture to keep refreshing the stamp; a discrete mouse
+    // notch is a scroll that genuinely finished, so re-arming after it is right.
+    //
     // The drag flag comes from `touchmove`, not `touchstart`: a bare tap on the
     // transcript scrolls nothing, and letting it suppress auto-follow would strand
     // a streaming message for the whole grace window over a stray thumb.
