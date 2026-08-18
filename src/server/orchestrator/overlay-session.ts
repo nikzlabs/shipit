@@ -311,6 +311,15 @@ export function supersededSessionOverlayLayers(
 }
 
 /**
+ * Container path the workspace mounts at, and therefore the parent every dep-dir
+ * overlay nests under (`/workspace/<dep-dir>`). Named once so
+ * {@link buildOverlaySpecs} (which composes the mount target) and
+ * {@link overlayDepDirsFromMounts} (which reads it back off a live container)
+ * cannot drift apart.
+ */
+export const CONTAINER_WORKSPACE_PATH = "/workspace";
+
+/**
  * Build **N** overlay specs — one per declared dep dir — for an eligible session.
  * Pure: given the base `(repo, runtime)` scope, the dep dirs (from `agent.dep-dirs`),
  * and the daemon-host mountpoint of the workspace **state** volume (where the
@@ -368,7 +377,7 @@ export function buildOverlaySpecs(args: {
       upperdir: path.join(sessionOverlayDir, "upper"),
       workdir: path.join(sessionOverlayDir, "work"),
       depDir,
-      mountPath: path.posix.join("/workspace", depDir),
+      mountPath: path.posix.join(CONTAINER_WORKSPACE_PATH, depDir),
       scope: { repoUrl: scope.repoUrl, runtimeKey: scope.runtimeKey, depDir },
       scopeHash,
       generation,
@@ -384,6 +393,73 @@ export function buildOverlaySpecs(args: {
         : {}),
     };
   });
+}
+
+/**
+ * Put a recorded overlay set in a stable order, by dep dir.
+ *
+ * The compose override is generated FROM this list, so its order is part of the
+ * override's bytes — and compose recreates a service container whenever the
+ * generated config differs from what the running one was built with. So the two
+ * sites that record the set ({@link overlayDepDirsFromMounts} and the container
+ * create path) must agree on an order, and neither may inherit one from
+ * something outside our control.
+ *
+ * That last part is why this sorts rather than trusting the input. The adoption
+ * path reads `docker inspect`'s `Mounts`, and nothing in Docker's API documents
+ * that array as ordered — the daemon builds it from a keyed collection, so the
+ * order is the daemon's to choose and to change. Left unsorted, an order that
+ * merely *differed* between two inspects would rewrite the override on every
+ * orchestrator restart and recreate every compose service in the fleet for no
+ * reason. Sorting makes the question moot instead of betting on the answer.
+ */
+export function sortOverlayDepDirs<T extends { depDir: string }>(pairs: T[]): T[] {
+  return [...pairs].sort((a, b) => (a.depDir < b.depDir ? -1 : a.depDir > b.depDir ? 1 : 0));
+}
+
+/**
+ * The (dep dir → overlay volume) pairs a **live** container actually has mounted,
+ * read back from its own `docker inspect` mount table.
+ *
+ * This is the answer for a container the orchestrator did not create — one
+ * rediscovered after a restart, or re-adopted by the inverse-leak reconciler
+ * (`container-discovery.ts`). Those paths have no `overlaySpecs` to record, and
+ * the alternative — re-deriving from the live workspace — is exactly what
+ * `SessionContainer.overlayDepDirs` exists to avoid: `shipit.yaml`'s `dep-dirs`,
+ * the pnpm signals and `git check-ignore` can all have moved since the container
+ * was built, and a disagreement there yields zero compose mounts while the agent
+ * keeps its overlay. The mount table cannot disagree with itself: it IS what the
+ * agent has mounted.
+ *
+ * So `[]` from here is as authoritative as `[]` from the create path — this
+ * container genuinely has no dep-dir overlay (a pnpm repo, a session that was
+ * ineligible at create time, a container from before the feature).
+ *
+ * A mount qualifies on both halves of how it was built (`buildOverlaySpecs` +
+ * `container-lifecycle.ts`): a **volume** named for this session's overlay set
+ * (`shipit-<sid12>_overlay…`), nested strictly under the workspace mount, whose
+ * dep dir is the remainder of the destination path. The workspace volume itself
+ * (same prefix-free name, destination exactly `/workspace`) and the pnpm store
+ * bind (`/workspace/.pnpm-store`, not an overlay volume) both fail it.
+ */
+export function overlayDepDirsFromMounts(
+  sessionId: string,
+  mounts: readonly { Type?: string; Name?: string; Destination?: string }[] | undefined,
+): { depDir: string; volumeName: string }[] {
+  const overlayPrefix = overlayVolumeName(sessionId);
+  const workspacePrefix = `${CONTAINER_WORKSPACE_PATH}/`;
+  const pairs: { depDir: string; volumeName: string }[] = [];
+  for (const mount of mounts ?? []) {
+    if (mount.Type !== "volume") continue;
+    const volumeName = mount.Name;
+    if (!volumeName?.startsWith(overlayPrefix)) continue;
+    const destination = mount.Destination;
+    if (!destination?.startsWith(workspacePrefix)) continue;
+    const depDir = destination.slice(workspacePrefix.length);
+    if (!depDir) continue;
+    pairs.push({ depDir, volumeName });
+  }
+  return sortOverlayDepDirs(pairs);
 }
 
 // ---------------------------------------------------------------------------

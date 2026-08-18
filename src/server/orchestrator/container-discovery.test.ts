@@ -10,8 +10,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   adoptRunningContainer,
   isTrackedContainerRunning,
+  rediscoverContainers,
   type DiscoveryDeps,
 } from "./container-discovery.js";
+import { overlayVolumeName } from "./overlay-volume.js";
 import {
   CONTAINER_SESSION_ID_LABEL,
   CONTAINER_STANDBY_LABEL,
@@ -31,6 +33,8 @@ interface FakeContainerSpec {
   inspectThrows?: boolean;
   /** When set, `inspect` rejects with an error carrying this HTTP status. */
   inspectStatus?: number;
+  /** Mount table `docker inspect` reports for this container (#2426). */
+  mounts?: { Type: string; Name?: string; Destination: string }[];
 }
 
 function makeFakeDocker(specs: FakeContainerSpec[]) {
@@ -62,6 +66,7 @@ function makeFakeDocker(specs: FakeContainerSpec[]) {
           NetworkSettings: {
             Networks: spec.ip ? { [NETWORK]: { IPAddress: spec.ip } } : {},
           },
+          ...(spec.mounts ? { Mounts: spec.mounts } : {}),
         };
       },
     }),
@@ -130,6 +135,50 @@ describe("adoptRunningContainer", () => {
     expect(containers.get("sess-1")?.workerBuildId).toBe("worker-sha");
   });
 
+  it("records the dep-dir overlays the adopted container actually has (#2426)", async () => {
+    const { deps, containers } = makeDeps([
+      {
+        id: "c1",
+        sessionId: "sess-1",
+        state: "running",
+        ip: "172.18.0.4",
+        mounts: [
+          { Type: "volume", Name: "shipit_workspace", Destination: "/workspace" },
+          {
+            Type: "volume",
+            Name: overlayVolumeName("sess-1", "node_modules"),
+            Destination: "/workspace/node_modules",
+          },
+        ],
+      },
+    ]);
+
+    await adoptRunningContainer(deps, "sess-1", resolver);
+
+    // Absent, this reads as an authoritative "no overlay"
+    // (`provisionedOverlayDepDirs` → `[]`) and every compose service in the
+    // session gets the plain `node_modules` the agent's install never writes to.
+    expect(containers.get("sess-1")?.overlayDepDirs).toEqual([
+      { depDir: "node_modules", volumeName: overlayVolumeName("sess-1", "node_modules") },
+    ]);
+  });
+
+  it("records an empty overlay set for a container that has none", async () => {
+    const { deps, containers } = makeDeps([
+      {
+        id: "c1",
+        sessionId: "sess-1",
+        state: "running",
+        ip: "172.18.0.4",
+        mounts: [{ Type: "volume", Name: "shipit_workspace", Destination: "/workspace" }],
+      },
+    ]);
+
+    await adoptRunningContainer(deps, "sess-1", resolver);
+
+    expect(containers.get("sess-1")?.overlayDepDirs).toEqual([]);
+  });
+
   it("returns false and adopts nothing when the resolver yields no workspaceDir", async () => {
     const { deps, containers } = makeDeps([
       { id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4" },
@@ -189,6 +238,54 @@ describe("adoptRunningContainer", () => {
 
     expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(false);
     expect(containers.has("sess-1")).toBe(false);
+  });
+});
+
+/**
+ * `rediscoverContainers` — the restart path, and where the #2426 overlay
+ * regression was measured: an orchestrator restart re-adopted every agent
+ * container without its dep-dir overlays, so `provisionedOverlayDepDirs`
+ * answered `[]` ("definitely no overlay") and 0 of 35 compose service
+ * containers on the host got an overlay mount.
+ */
+describe("rediscoverContainers", () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it("carries the container's dep-dir overlays into the rediscovered record", async () => {
+    const nm = overlayVolumeName("sess-1", "node_modules");
+    const dist = overlayVolumeName("sess-1", "dist");
+    const { deps, containers } = makeDeps([
+      {
+        id: "c1",
+        sessionId: "sess-1",
+        state: "running",
+        ip: "172.18.0.4",
+        mounts: [
+          { Type: "volume", Name: "shipit_workspace", Destination: "/workspace" },
+          { Type: "volume", Name: nm, Destination: "/workspace/node_modules" },
+          { Type: "volume", Name: dist, Destination: "/workspace/dist" },
+        ],
+      },
+    ]);
+
+    const count = await rediscoverContainers(deps, new Set(["sess-1"]), resolver);
+
+    expect(count).toBe(1);
+    // Sorted by dep dir, NOT in mount-table order: this list's order is part of
+    // the compose override's bytes, so a daemon that returned the mounts in a
+    // different order would rewrite the override and recreate every compose
+    // service on each orchestrator restart.
+    expect(containers.get("sess-1")?.overlayDepDirs).toEqual([
+      { depDir: "dist", volumeName: dist },
+      { depDir: "node_modules", volumeName: nm },
+    ]);
   });
 });
 

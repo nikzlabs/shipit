@@ -50,9 +50,14 @@ function makeDocker(existing: string[]) {
   };
 }
 
-function makeManager() {
+function makeManager(opts: { changed?: boolean } = {}) {
   const applied: { depDir: string; volumeName: string }[][] = [];
-  const mgr = { setOverlayDepDirs: (v: { depDir: string; volumeName: string }[]) => { applied.push(v); } };
+  const mgr = {
+    setOverlayDepDirs: (v: { depDir: string; volumeName: string }[]) => {
+      applied.push(v);
+      return opts.changed ?? false;
+    },
+  };
   return { mgr: mgr as unknown as ServiceManager, applied };
 }
 
@@ -135,6 +140,7 @@ describe("applyOverlayDepDirs (#2426)", () => {
   it("applies an authoritative empty answer, so a stale overlay is not kept", async () => {
     const containerManager = makeContainerManager({ provisioned: [], existingVolumes: [] });
     const { mgr, applied } = makeManager();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     await applyOverlayDepDirs(makeRunner(), mgr, {
       containerManager, session: SESSION, workspaceDir: "/nonexistent",
@@ -144,6 +150,48 @@ describe("applyOverlayDepDirs (#2426)", () => {
     // overlay", so a manager adopted from an earlier container must drop what it
     // was holding.
     expect(applied).toEqual([[]]);
+    // …and it SAYS so. This was the one silent branch, which is how a fleet-wide
+    // "no compose service has an overlay mount" regression survived a deploy
+    // with nothing in the orchestrator log to grep for.
+    expect(logSpy.mock.calls.flat().join(" ")).toContain("no dependency overlay");
+    logSpy.mockRestore();
+  });
+
+  it("reports an unresolvable answer instead of returning silently", async () => {
+    // Unknown container AND a re-derivation that found nothing: not "no
+    // overlay", but "cannot say" — the case that leaves compose services and
+    // the agent on possibly different dependency trees.
+    const containerManager = makeContainerManager({ provisioned: null, existingVolumes: [] });
+    const { mgr } = makeManager();
+    const { lines, broadcastLog } = makeLog();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await applyOverlayDepDirs(makeRunner(), mgr, {
+      containerManager, session: SESSION, workspaceDir: "/nonexistent", broadcastLog,
+    });
+
+    expect(lines.some((l) => l.includes("could not tell which dependency overlays"))).toBe(true);
+  });
+
+  it("reports whether the manager's set actually changed", async () => {
+    const provisioned = [{ depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" }];
+    const args = {
+      provisioned,
+      existingVolumes: provisioned.map((p) => p.volumeName),
+    };
+
+    // The return value is what the `restartAgent` adoption path reconciles on:
+    // nothing else rewrites the compose override, so an unchanged set must NOT
+    // cost the stack a reconcile and a changed one must not be dropped.
+    const unchanged = makeManager({ changed: false });
+    expect(await applyOverlayDepDirs(makeRunner(), unchanged.mgr, {
+      containerManager: makeContainerManager(args), session: SESSION, workspaceDir: "/nonexistent",
+    })).toBe(false);
+
+    const changed = makeManager({ changed: true });
+    expect(await applyOverlayDepDirs(makeRunner(), changed.mgr, {
+      containerManager: makeContainerManager(args), session: SESSION, workspaceDir: "/nonexistent",
+    })).toBe(true);
   });
 
   it("falls back to re-derivation only when the container is unknown", async () => {

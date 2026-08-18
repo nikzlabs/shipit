@@ -111,6 +111,21 @@ describe("ServiceManager", () => {
     expect(mgr.started).toBe(false);
   });
 
+  it("reports whether setOverlayDepDirs changed the set (#2426)", () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(dir);
+    const pairs = [{ depDir: "node_modules", volumeName: "shipit-abc_overlay-aaaa" }];
+
+    // The adoption path reconciles on this answer, so an identical re-point must
+    // read as unchanged (no stack restart on every agent restart) and a real
+    // change must not be swallowed (the override on disk is otherwise stale).
+    expect(mgr.setOverlayDepDirs(pairs)).toBe(true);
+    expect(mgr.setOverlayDepDirs([...pairs])).toBe(false);
+    expect(mgr.setOverlayDepDirs([])).toBe(true);
+    expect(mgr.setOverlayDepDirs([])).toBe(false);
+  });
+
   it("detaches stale egress before up and contains the service after up", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    user: \"1001:1001\"\n    x-shipit-preview: manual\n");

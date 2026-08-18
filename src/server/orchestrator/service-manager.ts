@@ -894,9 +894,18 @@ export class ServiceManager extends EventEmitter {
    * (the populator is async — it inspects the workspace state volume) and set
    * before the first `start()`, so both override-generation paths pick it up.
    * `[]` (the default / flag-off case) leaves the override byte-for-byte unchanged.
+   *
+   * Returns whether the set actually CHANGED, for the same reason
+   * {@link setPluginServices} does: the override is written by `start()` /
+   * `reconcile()`, so a caller that re-points an already-running manager at a
+   * different set (the `restartAgent` adoption path) has to reconcile for it to
+   * reach the stack — and must NOT reconcile when the answer is identical, which
+   * is the common case.
    */
-  setOverlayDepDirs(overlayDepDirs: OverlayDepDirVolume[]): void {
+  setOverlayDepDirs(overlayDepDirs: OverlayDepDirVolume[]): boolean {
+    const changed = JSON.stringify(this.overlayDepDirs) !== JSON.stringify(overlayDepDirs);
     this.overlayDepDirs = overlayDepDirs;
+    return changed;
   }
 
   /**

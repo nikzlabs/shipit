@@ -73,7 +73,9 @@ export function handleStackError(
  *
  * Idempotent, and safe to call again on the adoption path: a new agent container
  * means a newly-created overlay volume set, and the manager that outlived the old
- * runner is still holding the old answer.
+ * runner is still holding the old answer. Returns whether the manager's set
+ * actually CHANGED — on a live stack that is the caller's signal to reconcile,
+ * since nothing but `start()`/`reconcile()` rewrites the override.
  *
  * Exported for `service-manager-overlay-mounts.test.ts` — driving it through
  * `setupServiceManager` would need a whole container runtime to reach four lines
@@ -88,11 +90,11 @@ export async function applyOverlayDepDirs(
     workspaceDir: string;
     broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   },
-): Promise<void> {
+): Promise<boolean> {
   const { containerManager, session, workspaceDir, broadcastLog } = deps;
   // A pure env+session pre-gate, so flag-off / ineligible sessions leave the
   // override and the compose start timing byte-for-byte unchanged.
-  if (!containerManager || !session || !isContainerRunner(runner) || !isOverlayEligible(session)) return;
+  if (!containerManager || !session || !isContainerRunner(runner) || !isOverlayEligible(session)) return false;
 
   const warn = (text: string): void => {
     console.warn(`[overlay:${runner.sessionId}] ${text}`);
@@ -103,7 +105,7 @@ export async function applyOverlayDepDirs(
     // Orders us after container creation — the volumes are created just before
     // the container. `dispose()` also resolves it, hence the `disposed` re-check.
     await runner.whenWorkerReady();
-    if (runner.disposed) return;
+    if (runner.disposed) return false;
 
     const provisioned = containerManager.provisionedOverlayDepDirs(runner.sessionId);
     const pairs = provisioned ?? (await containerManager.prepareOverlaySpecs({
@@ -117,9 +119,30 @@ export async function applyOverlayDepDirs(
     // it is applied as-is. `[]` from the fallback is a guess, and clobbering a
     // manager that already holds a good answer with a guess is the failure this
     // whole function exists to prevent.
+    //
+    // Both branches SAY so. The empty return used to be the only silent one, and
+    // that is how a fleet-wide "0 of 35 compose services got an overlay mount"
+    // regression survived a deploy with not one line to grep for: every other
+    // branch here warns, so the log read exactly like a fleet with no overlay
+    // sessions on it.
     if (pairs.length === 0) {
-      if (provisioned) mgr.setOverlayDepDirs([]);
-      return;
+      if (provisioned) {
+        mgr.setOverlayDepDirs([]);
+        // Not a `warn`: legitimately empty for a pnpm repo (`prepareOverlaySpecs`
+        // skips those by design) or a container built before the feature, and
+        // those sessions must not get a scary Logs entry on every activation.
+        console.log(
+          `[overlay:${runner.sessionId}] agent container has no dependency overlay — ` +
+          `compose services use the plain workspace directories`,
+        );
+      } else {
+        warn(
+          `could not tell which dependency overlays the agent container has (no container ` +
+          `record, and re-derivation found none) — compose services may see different ` +
+          `dependency directories than the agent.`,
+        );
+      }
+      return false;
     }
 
     const docker = containerManager.dockerClient;
@@ -134,12 +157,13 @@ export async function applyOverlayDepDirs(
         );
       }
     }
-    mgr.setOverlayDepDirs(usable);
+    return mgr.setOverlayDepDirs(usable);
   } catch (err) {
     warn(
       `could not resolve the dependency overlay (${getErrorMessage(err)}) — compose ` +
       `services may see different dependency directories than the agent.`,
     );
+    return false;
   }
 }
 
@@ -266,27 +290,41 @@ export function adoptExistingServiceManager(
         // holding whatever that runner resolved; the container it was resolved
         // from is gone.
         //
-        // No reconcile follows in the common (containment-unchanged) case, which
-        // leaves the override on disk as the previous runner wrote it. That is
-        // safe, and for a specific reason worth stating: an overlay volume is
-        // named `shipit-<sid12>_overlay-<hash(depDir)>`
-        // (`overlay-session.ts` → `overlayVolumeName`), so the name depends on
-        // the SESSION and the dep dir, never on the container. A recreate mints
-        // a new volume under the same name, and the standing `external`
-        // reference keeps resolving. What this call fixes is the case where the
-        // previous runner resolved the WRONG SET — the set is what the next
-        // override generation picks up.
+        // An UNCHANGED set needs no reconcile, and for a specific reason worth
+        // stating: an overlay volume is named
+        // `shipit-<sid12>_overlay-<hash(depDir)>` (`overlay-session.ts` →
+        // `overlayVolumeName`), so the name depends on the SESSION and the dep
+        // dir, never on the container. A recreate mints a new volume under the
+        // same name, and the standing `external` reference keeps resolving — the
+        // override the previous runner wrote is still correct.
+        //
+        // A CHANGED set does need one, which that reasoning does not cover: the
+        // override is written by `start()`/`reconcile()` and by nothing else, so
+        // re-pointing the manager alone leaves the stale file on disk and every
+        // later `compose up` — the install gate releasing, a user pressing start
+        // — keeps handing compose the old mounts. A service container freezes
+        // its mount set at CREATE time, so those `up`s see an unchanged config
+        // and merely `start` the container that has the wrong mounts, forever.
+        let overlayChanged = false;
         if (deps.workspaceDir !== undefined) {
-          await applyOverlayDepDirs(runner, mgr, {
+          overlayChanged = await applyOverlayDepDirs(runner, mgr, {
             containerManager,
             session: deps.session,
             workspaceDir: deps.workspaceDir,
             broadcastLog,
           });
+          if (overlayChanged) {
+            console.log(
+              `[overlay:${runner.sessionId}] dependency overlay mounts changed for the new ` +
+              `agent container — reconciling so compose services pick them up`,
+            );
+          }
         }
         if (containmentChanged) {
           await policyTransition;
           await deps.resetSessionNetwork?.();
+        }
+        if (containmentChanged || overlayChanged) {
           // On the stack queue, like every other reconcile. This is the one
           // that was left off it: the adopted stack is deliberately still
           // RUNNING (`preserveComposeOnDispose`), and the new container's
