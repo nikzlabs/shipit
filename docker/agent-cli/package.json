@@ -7,7 +7,7 @@
     "@anthropic-ai/claude-code": "2.1.227",
     "@openai/codex": "0.147.0",
     "opencode-ai": "1.18.18",
-    "@xai-official/grok": "1.0.1",
+    "@xai-official/grok": "1.0.5",
     "@playwright/mcp": "0.0.79"
   }
 }
