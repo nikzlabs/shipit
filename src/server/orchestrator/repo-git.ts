@@ -341,8 +341,9 @@ export class RepoGit {
    */
   async cloneFromCache(sessionDir: string, remoteUrl?: string): Promise<void> {
     // docs/272-shared-cache-ownership req 4 — the source must be ShipIt's own
-    // before root reads it, or git refuses the repository once armed. One `lstat`
-    // when it already is.
+    // before root reads it, or git refuses the repository outright. Not "once
+    // armed": ShipIt grants no `safe.directory` (planning#410), so the refusal is
+    // unconditional. One `lstat` when it already is.
     ensureSharedTreeOwnedByShipIt(this.repoDir, "session clone from bare cache");
     // git clone --local creates hardlinks for objects on the same volume
     await safeSimpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);

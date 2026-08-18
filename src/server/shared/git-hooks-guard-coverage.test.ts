@@ -1391,6 +1391,18 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
    * `config --global` scope, which would still have passed a
    * `["config", "--global", "safe.directory", "*"]` reintroducing the grant in
    * the one file allowed to name the key at all.
+   *
+   * **Its limit, named rather than left for the next reader to discover.** This
+   * reads a line for a literal, so a `const UNSET = "--unset-all"` spread into
+   * the argv would not match and the line would be reported as a grant. That
+   * direction is fail-CLOSED — a false offender, a red build, and someone looks
+   * — which is why it is a limit rather than a hole. The fail-open direction
+   * needs BOTH `--unset-all` and `safe.directory` behind indirection, and then
+   * `PASSES_SAFE_DIRECTORY` never matches the line either, so the gap belongs to
+   * the pre-existing "name assembled at runtime" class that rule already
+   * documents rather than to this one. Pinned below, both directions, so the
+   * shape is known-and-excluded instead of never-considered — the failure mode
+   * this file's own header calls out.
    */
   const isTheRemoval = (line: string): boolean => line.includes('"--unset-all"');
 
@@ -1488,6 +1500,20 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestr
     expect(isTheRemoval('["config", "--global", "safe.directory", "*"]')).toBe(false);
     expect(isTheRemoval('["config", "--global", "--replace-all", "safe.directory", "*"]')).toBe(false);
     expect(isTheRemoval('["config", "--global", "--unset-all", "safe.directory"]')).toBe(true);
+
+    // The indirection limit, pinned in BOTH directions so it is known-and-
+    // excluded rather than never-considered (independent review, planning#410).
+    //
+    // Hiding `--unset-all` behind a const makes the real removal look like a
+    // grant. Safe because the direction is fail-CLOSED: a false offender is a
+    // red build naming the line, not a silenced refusal.
+    expect(isTheRemoval('["config", "--global", UNSET_ALL, "safe.directory"]')).toBe(false);
+    // Hiding the KEY as well is the only fail-open spelling — and it escapes the
+    // outer rule first, so this predicate is never consulted. Safe because of
+    // the SHAPE: `PASSES_SAFE_DIRECTORY` matches a quoted or `=`-joined key, so
+    // a key assembled at runtime reaches neither rule. That is the pre-existing
+    // class its own docstring names, not a gap this tightening introduced.
+    expect(PASSES_SAFE_DIRECTORY.test('["config", "--global", UNSET_ALL, KEY]')).toBe(false);
 
     // Safe because of the SHAPE: text after `//` is a comment, and a comment
     // cannot pass an argument to a git process — true of every comment, not a
