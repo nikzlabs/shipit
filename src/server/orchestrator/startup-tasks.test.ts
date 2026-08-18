@@ -1,4 +1,7 @@
 /**
+ * Boot sweeps that run over the state a PREVIOUS orchestrator process left
+ * behind: the remote-credential scrub, and warm-session retirement.
+ *
  * docs/262 req 19 — the boot sweep that removes remote credentials an EARLIER
  * build stored. Strip-on-write covers every row written from now on; these
  * cover the rows and checkouts an existing installation already has, which is
@@ -18,7 +21,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionManager } from "./sessions.js";
-import { runRemoteCredentialScrub } from "./startup-tasks.js";
+import { runRemoteCredentialScrub, retireWarmSessions } from "./startup-tasks.js";
 import { repoUrlToHash } from "./git-utils.js";
 
 /** How an older build named a per-repo directory: sha256 of the URL as typed. */
@@ -236,5 +239,94 @@ describe("runRemoteCredentialScrub", () => {
     expect(result.workspaces).toBe(0);
     expect(result.repoRows).toBe(1);
     expect(sessionManager.get("s1")?.remoteUrl).toBe(CLEAN);
+  });
+});
+
+/**
+ * Warm sessions do not survive an orchestrator restart. What the boot orphan
+ * sweep acts on is the session ROW: it stops and removes every container whose
+ * session is not in `allIds()`, so "the row is gone" is exactly "the standby
+ * container gets killed". These tests pin that property (plus the disk reclaim)
+ * at the unit level; `integration_tests/standby-container.test.ts` pins the
+ * end-to-end effect on a real boot.
+ */
+describe("retireWarmSessions", () => {
+  /** A session tree as it is on disk: checkout, overlay upper, state, uploads. */
+  function makeSessionTree(id: string): string {
+    const root = path.join(tmpDir, "sessions", id);
+    for (const sub of ["workspace", "overlay", "state", "uploads"]) {
+      fs.mkdirSync(path.join(root, sub), { recursive: true });
+      fs.writeFileSync(path.join(root, sub, "f"), "x");
+    }
+    return path.join(root, "workspace");
+  }
+
+  function seedWarm(id: string, repoUrl?: string): string {
+    const workspaceDir = makeSessionTree(id);
+    sessionManager.track(id, "Warm session", workspaceDir);
+    sessionManager.setWarm(id, true);
+    if (repoUrl) {
+      sessionManager.setRemoteUrl(id, repoUrl);
+      repoStore.setWarmSessionId(repoUrl, id);
+    }
+    return workspaceDir;
+  }
+
+  it("retires the pool session, clears the repo pointer and reclaims the clone", async () => {
+    repoStore.add(CLEAN);
+    repoStore.setReady(CLEAN);
+    const workspaceDir = seedWarm("warm-1", CLEAN);
+
+    const retired = await retireWarmSessions({ repoStore, sessionManager });
+
+    expect(retired).toBe(1);
+    // The row is gone — which is what makes its standby container an orphan
+    // for `cleanupOrphanContainers`, and what lets the re-warm loop re-warm.
+    expect(sessionManager.get("warm-1")).toBeUndefined();
+    expect(sessionManager.allIds()).not.toContain("warm-1");
+    expect(repoStore.get(CLEAN)?.warmSessionId).toBeUndefined();
+    // Checkout AND the overlay upper — the expensive half every hand-rolled
+    // reclaim has historically orphaned. `uploads/` is durable and survives.
+    const root = path.dirname(workspaceDir);
+    expect(fs.existsSync(workspaceDir)).toBe(false);
+    expect(fs.existsSync(path.join(root, "overlay"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "state"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "uploads"))).toBe(true);
+  });
+
+  // The other `warm = 1` shape: a session a user claimed but never sent a
+  // message in, so no repo points at it. Its standby container is adopted at
+  // boot and then skipped by the idle enforcer forever, so it needs retiring
+  // for the same reason the pool one does.
+  it("retires a claimed-but-ungraduated warm session no repo points at", async () => {
+    repoStore.add(CLEAN);
+    repoStore.setReady(CLEAN);
+    seedWarm("warm-pool", CLEAN);
+    seedWarm("warm-orphan");
+
+    const retired = await retireWarmSessions({ repoStore, sessionManager });
+
+    expect(retired).toBe(2);
+    expect(sessionManager.allIds()).toEqual([]);
+  });
+
+  it("leaves real sessions alone", async () => {
+    const workspaceDir = makeSessionTree("real-1");
+    sessionManager.track("real-1", "Fix the thing", workspaceDir);
+    seedWarm("warm-1");
+
+    const retired = await retireWarmSessions({ repoStore, sessionManager });
+
+    expect(retired).toBe(1);
+    expect(sessionManager.get("real-1")).toBeDefined();
+    expect(fs.existsSync(workspaceDir)).toBe(true);
+  });
+
+  it("is a no-op with no warm sessions, and never rejects on a gone checkout", async () => {
+    sessionManager.track("warm-gone", "Warm session", path.join(tmpDir, "reclaimed"));
+    sessionManager.setWarm("warm-gone", true);
+
+    expect(await retireWarmSessions({ repoStore, sessionManager })).toBe(1);
+    expect(await retireWarmSessions({ repoStore, sessionManager })).toBe(0);
   });
 });

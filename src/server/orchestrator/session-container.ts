@@ -29,6 +29,7 @@ import {
   adoptRunningContainer,
   isTrackedContainerRunning,
   cleanupOrphanContainers,
+  reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
@@ -95,6 +96,7 @@ export {
   adoptRunningContainer,
   isTrackedContainerRunning,
   cleanupOrphanContainers,
+  reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
@@ -1460,6 +1462,18 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   async cleanupOrphans(activeSessionIds: Set<string>): Promise<number> {
     return cleanupOrphanContainers(this.discoveryDeps(), activeSessionIds);
+  }
+
+  /**
+   * Stop and remove every UNCLAIMED `shipit-standby=true` container at boot — a
+   * standby holds no work and was built from the previous process's worker
+   * image, so it never survives a restart. `activeSessionIds` is load-bearing:
+   * the label is immutable after create, so a claimed session's container still
+   * carries it and only the session row tells the two apart. See
+   * `reapStandbyContainers`.
+   */
+  async reapStandbyContainers(activeSessionIds: Set<string>): Promise<number> {
+    return reapStandbyContainers(this.discoveryDeps(), activeSessionIds);
   }
 
   /**

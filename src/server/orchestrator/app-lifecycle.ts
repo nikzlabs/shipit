@@ -107,6 +107,7 @@ export {
   runRepoMigration,
   runRemoteCredentialScrub,
   runMcpOAuthStartupRefresh,
+  retireWarmSessions,
   scheduleStartupTasks,
   handleContainerExited,
   setupContainerHealthMonitoring,
@@ -264,6 +265,25 @@ export async function setupContainerManager(
     } else {
       throw new Error("Docker is not available (is /var/run/docker.sock mounted?)");
     }
+  }
+
+  // A standby container never survives the process that made it. `bootstrapManagers`
+  // has already retired the warm session rows (`retireWarmSessions`), so on the
+  // production path above the orphan sweep has usually removed these already —
+  // this is what makes the guarantee independent of that. It runs OUTSIDE the
+  // branch on purpose: an injected container manager (tests, and any future
+  // caller supplying its own) skips every sweep in that branch, and "warm
+  // containers die on restart" must not be a property only the production
+  // wiring has. Reaping by label also catches the standby that rediscovery
+  // could not adopt — no IP, no resolvable workspace — which the row-driven
+  // sweeps cannot see at all.
+  //
+  // The session set is passed because the label is create-time and immutable: a
+  // CLAIMED standby's container still carries it, and only the row says the
+  // session is someone's now. Re-read here rather than reusing `activeIds`
+  // above, which the injected-manager path never computes.
+  if (containerManager) {
+    await containerManager.reapStandbyContainers(new Set(sessionManager.allIds()));
   }
 
   // ---- Docker API proxy (optional, for Docker-enabled sessions) ----

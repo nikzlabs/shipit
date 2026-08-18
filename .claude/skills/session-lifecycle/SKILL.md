@@ -21,7 +21,7 @@ This skill covers session creation, warm-up, activation, switching, and graduati
 
 1. **Standalone session** — no repo, fresh git repo initialized in the session directory. Created via `POST /api/sessions`.
 2. **Repo-backed session** — its own independent local clone cut from the per-remote bare cache (`git clone --local`, hardlinked objects), checked out on a unique branch off the default branch. Created via warm pool or `claim-session`.
-3. **Warm session** — a repo-backed session pre-created in the background (clone-from-cache + metadata, and — on `withStandby` re-warms with idle headroom — a pre-booted **standby container**). Invisible in the sidebar until the user sends their first message ("graduated"). When no standby exists, the container is created on-demand when the WebSocket connects.
+3. **Warm session** — a repo-backed session pre-created in the background: clone-from-cache + metadata plus, where there is idle headroom, a pre-booted **standby container**. Invisible in the sidebar until the user sends their first message ("graduated"). Where no standby exists, the container is created on-demand when the WebSocket connects. A warm session never survives an orchestrator restart — see "Restart" below.
 
 ## Session Creation
 
@@ -71,7 +71,7 @@ Client                          Server
   |                               |     YES -> clear warmSessionId
   |                               |     refreshCloneToLatestMain (git fetch)
   |                               |     re-warm next session (FIRE-AND-FORGET,
-  |                               |       withStandby -- not awaited; docs/144)
+  |                               |       with standby -- not awaited; docs/144)
   |<- {sessionId, fetchDurationMs}-  (returns after refresh; re-warm runs async)
   |                               |
   |  store pendingWsMessage       |
@@ -97,7 +97,7 @@ endpoint short-circuits to avoid creating abandoned sessions.
 1. `createSessionDirFull("Warm session")`
 2. Clone from bare cache + fetch real remote + `checkout -b` (branch from latest)
 3. Configure credentials
-4. Fire-and-forget re-warm of the next session (`withStandby`)
+4. Fire-and-forget re-warm of the next session (clone + standby + pre-install)
 5. Return session ID + `fetchDurationMs` to client (no container created on this path)
 
 The container is created on-demand when the WebSocket connects (`activateSession`
@@ -120,43 +120,80 @@ Two mechanisms prevent cascade during rapid "New Session" clicks:
 
 ### Warm-Up Sequence
 
-Warm-up always creates the session clone + metadata. It **may additionally pre-boot a
-standby container** — `warmSessionForRepo(repoUrl, { withStandby: true })`. The
-standby is created (via `containerManager.createStandby`) only when `withStandby`
-is set AND there is idle-container headroom (`realCount < maxIdleContainers`).
-The runner factory `claimStandby`s it on activation, so a warm hit reconnects to
-an already-running worker instead of building one — see the `session-containers`
-skill.
+Warm-up creates the session clone + metadata **and** pre-boots a **standby
+container** (`containerManager.createStandby`), on which it then pre-runs
+`agent.install`. The runner factory `claimStandby`s that container on
+activation, so a warm hit reconnects to an already-running, already-installed
+worker instead of building one — see the `session-containers` skill.
 
 ```
-warmSessionForRepo(repoUrl, { withStandby? }):
+warmSessionForRepo(repoUrl):
   1. Check repo.status === "ready", no existing warm session, no warming in progress
   2. createSessionDir("Warm session")
   3. sessionManager.setWarm(appSessionId, true); setRemoteUrl(...)
   4. Remove workspace subdir (clone needs it absent)
   5. cloneFromCache + fetchAndResolveDefaultBranch + checkout -b (real-remote
      fetch so the branch is cut from genuine latest — see W2)
-  6. Configure git credentials
+  6. Configure git credentials; materialize LFS; hand the tree back to the worker uid
   7. repoStore.setWarmSessionId(repoUrl, appSessionId)
-  8. if withStandby && headroom: containerManager.createStandby(...) [fire-and-forget]
+  8. createStandby(...) + runPreInstall(...) [fire-and-forget], gated on: the OOM
+     breaker not tripped, idle headroom (realCount < maxIdleContainers), and —
+     for the pre-install only — the remote being trusted (docs/178)
   9. sseBroadcast("repo_warm_ready", ...)
 ```
 
-**Who passes `withStandby`:** the claim re-warm (`claim-session`) and graduation
-(`send-message`) — i.e. when a warm session is consumed and the pool replenishes.
-The **initial** warm of a freshly-added repo and **startup** re-warms do NOT pass
-it, so those warm sessions are container-less until a WebSocket connects (runner
-factory falls to the fresh-create path). The claim re-warm is **fire-and-forget**
-(not awaited) so it never sits on the claiming user's critical path — see
+There is deliberately **no caller-side opt-out**: every path that warms a repo
+wants the standby and the pre-install, and a "warm but no standby" state is what
+made docs/148 silently regress. A runtime with no containers expresses that by
+passing `containerManager: null`. Callers are the initial warm of a freshly
+added repo, the startup re-warm, the claim re-warm (`claim-session`) and
+graduation (`send-message`). The claim re-warm is **fire-and-forget** (not
+awaited) so it never sits on the claiming user's critical path — see
 `docs/144-session-switch-latency`.
 
-### Startup Validation + Re-Warm
+### Restart: Warm Sessions Do Not Survive It
 
-On server restart, the startup sequence (deferred via `setTimeout(0)`) validates existing warm sessions and creates new ones where needed. Startup re-warms are container-less (they call `warmSessionForRepo()` without `withStandby`) — the standby/container is created on-demand when a WebSocket connects. (A stale warm session whose clone vanished does have its old standby container destroyed before re-warming, if one was tracked.)
+A standby belongs to the process that created it. It holds no work and runs that
+process's worker image, and nothing else would ever reap one — the idle enforcer
+skips standbys deliberately, and `rediscoverContainers` re-adopts them standby
+flag and all. So a standby used to outlive every deploy, and the next claim
+handed the user a grandfathered worker carrying a pre-install and an overlay base
+built under the image the deploy replaced. (Grandfathering a **real** session's
+container across a deploy is the opposite call and it stands — docs/113 exists to
+protect work in flight, which a standby has none of.)
 
-1. **Validate**: For each repo with a `warmSessionId` and `status: "ready"`, check that the warm session's clone directory still exists on disk. If missing, destroy any tracked standby container, clear `warmSessionId`, and re-warm (clone-from-cache + metadata only).
+Boot therefore retires the whole warm tier, in this order:
 
-2. **Re-warm**: For repos that have no warm session at all, create a fresh warm session via `warmSessionForRepo()` (clone-from-cache + metadata only — no standby).
+1. **`retireWarmSessions`** (`startup-tasks.ts`), called from `bootstrapManagers`
+   **before** `setupContainerManager`: deletes every `warm = 1` row — the pool
+   session a repo points at, and any claimed-but-never-graduated draft — clears
+   each repo's `warmSessionId`, and reclaims the clone + overlay
+   (`reclaimRegenerableSessionDirs`, which preserves `uploads/`). The ordering is
+   the point: with the rows gone, the container sweeps on the next line treat
+   each standby as an orphan and rediscovery cannot re-adopt one.
+2. **`reapStandbyContainers(activeSessionIds)`** (`container-discovery.ts`),
+   called from `setupContainerManager`: stops and removes every
+   `shipit-standby=true` container **whose session is no longer tracked**. It
+   runs outside the Docker-available branch so an injected container manager
+   gets the same guarantee.
+
+   The live-session set is not a refinement — it is what stops the sweep
+   destroying live sessions. The label is set at create time and Docker cannot
+   change one afterwards, so `claimStandby` only drops the in-process flag: a
+   claimed, graduated session keeps a `shipit-standby=true` container for that
+   container's whole life. Label means "was born a standby", never "is one
+   now"; the session row is what separates them, cleanly, because step 1 has
+   already deleted every warm row. For the same reason `rediscoverContainers`
+   does not restore the standby flag from the label.
+3. **Re-warm**: `scheduleStartupTasks` (deferred via `setTimeout(0)`) then finds
+   every ready repo without a `warmSessionId` and calls `warmSessionForRepo`,
+   rebuilding the pool — fresh clone, fresh standby, fresh pre-install — on the
+   new image. Its zombie sweep and stale-clone validation loop normally find
+   nothing now; they remain for the rows retirement cannot recognise (a zombie
+   whose warm flag was already cleared, identifiable only by its title).
+
+Guards: `startup-tasks.test.ts`, `container-discovery.test.ts`,
+`integration_tests/standby-container.test.ts`.
 
 ### Graduation
 
