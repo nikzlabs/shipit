@@ -13,17 +13,7 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ServiceSelector } from "./ServiceSelector.js";
 import type { ServiceChoice } from "./model-choice.js";
-
-/**
- * A brand mark, told apart from the glyphs a row already had.
- *
- * `querySelector("svg")` is NOT good enough here and cross-backend review said
- * so: the selected row carries a checkmark and every trigger carries a caret, so
- * a bare svg query passes with the logo missing — the exact regression these
- * tests exist to catch. Every mark is drawn on Simple Icons' 24×24 grid;
- * Phosphor's glyphs are 256×256, which makes the viewBox an exact discriminator.
- */
-const MARK = 'svg[viewBox="0 0 24 24"]';
+import { queryVendorMark } from "../vendor-mark-test-helpers.js";
 
 const services: ServiceChoice[] = [
   { serviceId: "anthropic", serviceName: "Anthropic", billingMode: "sub" },
@@ -47,7 +37,7 @@ describe("ServiceSelector marks", () => {
 
     for (const service of services) {
       const row = screen.getByTestId(`test-service-option-${service.serviceId}:${service.billingMode}`);
-      expect(row.querySelector(MARK), `no mark for ${service.serviceId}`).not.toBeNull();
+      expect(queryVendorMark(row), `no mark for ${service.serviceId}`).not.toBeNull();
       expect(row).toHaveTextContent(service.serviceName);
     }
   });
@@ -63,7 +53,7 @@ describe("ServiceSelector marks", () => {
     );
 
     const trigger = screen.getByTestId("test-service-trigger");
-    expect(trigger.querySelector(MARK)).not.toBeNull();
+    expect(queryVendorMark(trigger)).not.toBeNull();
     expect(trigger).toHaveTextContent("DeepSeek");
   });
 
@@ -83,8 +73,9 @@ describe("ServiceSelector marks", () => {
 
     const trigger = screen.getByTestId("test-service-trigger");
     expect(trigger).toHaveTextContent("gone");
-    // The caret is still there and is an svg too — hence `MARK` rather than a
-    // count, which would break the day the trigger grows another glyph.
-    expect(trigger.querySelector(MARK)).toBeNull();
+    // The caret is still there and is an svg too — hence the viewBox check
+    // rather than a count, which would break the day the trigger grows another
+    // glyph.
+    expect(queryVendorMark(trigger)).toBeNull();
   });
 });

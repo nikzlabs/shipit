@@ -5,6 +5,7 @@ import { HarnessSelector, ModelSelector } from "./ModelPicker.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { AgentOption } from "../agent-types.js";
 import type { SessionInfo } from "../../server/shared/types.js";
+import { queryVendorMark } from "./vendor-mark-test-helpers.js";
 
 afterEach(cleanup);
 
@@ -328,7 +329,7 @@ describe("ModelSelector", () => {
     // carrying Phosphor checkmarks (256×256), so a bare svg query would pass
     // with the mark missing.
     const header = screen.getByTestId("model-group-mode-sub").parentElement;
-    expect(header?.querySelector('svg[viewBox="0 0 24 24"]')).not.toBeNull();
+    expect(header && queryVendorMark(header)).not.toBeNull();
     expect(header).toHaveTextContent("Anthropic");
   });
 

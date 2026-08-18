@@ -14,6 +14,7 @@ import type { CredentialRoute } from "../../../server/shared/types.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
+import { queryVendorMark } from "../vendor-mark-test-helpers.js";
 
 const route = (over: Partial<CredentialRoute> & Pick<CredentialRoute, "id" | "serviceId" | "billingMode" | "via">): CredentialRoute => ({
   label: over.id,
@@ -242,7 +243,7 @@ describe("ServicesPanel", () => {
       const row = screen.getByTestId("add-service-option-anthropic");
       // The mark's 24×24 grid rather than any `svg` — Phosphor's glyphs are
       // 256×256, so this cannot pass on a tick from the support table.
-      expect(row.querySelector('svg[viewBox="0 0 24 24"]')).not.toBeNull();
+      expect(queryVendorMark(row)).not.toBeNull();
       expect(row).toHaveTextContent("Anthropic");
     });
 
