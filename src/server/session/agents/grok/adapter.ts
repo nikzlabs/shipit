@@ -22,19 +22,27 @@
  *    stream. Verified: a new conversation adopts the caller's UUID and both the
  *    init and result events carry it back, so ShipIt never has to race the
  *    first event to learn what to resume.
- *  - **MCP config has exactly one delivery path: `$GROK_HOME/config.toml`.**
- *    There is no `--mcp-config` flag and no config-pointing env var — probed
- *    directly: `GROK_CONFIG` and `GROK_CONFIG_PATH` are both inert (the init
- *    event reported `mcp_servers: []` under each), and neither name appears in
- *    the binary. Writing the file into the config root works
- *    (`mcp_servers: [{name: "probe", status: "connected"}]`), so that is what
- *    this adapter does — and it rewrites only that ONE file, because
- *    `auth.json` and `sessions/` are its neighbours.
+ *  - **MCP config has exactly one delivery path: `$GROK_HOME/config.toml`**,
+ *    so this adapter gives every spawn a config root of its OWN. There is no
+ *    `--mcp-config` flag and no config-pointing env var — probed directly:
+ *    `GROK_CONFIG` and `GROK_CONFIG_PATH` are both inert (the init event
+ *    reported `mcp_servers: []` under each), and neither name appears in the
+ *    binary. That single fixed path is a problem, because a container can have
+ *    TWO grok processes alive at once — a turn, plus a `shipit agent run`
+ *    sub-agent spawned during it — and the worker builds the sub-agent's
+ *    adapter with no scoped home, so both resolve the same root. Sharing one
+ *    mutable `config.toml` between them means whichever finishes last decides
+ *    what is left on disk. So each spawn writes into a throwaway root and
+ *    symlinks `sessions/` (and `auth.json`, when there is one) back to the real
+ *    one. Verified live: MCP servers connect, session state writes through the
+ *    link, and `-r` resumes a conversation started under a *different*
+ *    throwaway root.
  */
 
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { killChild } from "../../../shared/kill-child.js";
@@ -112,7 +120,9 @@ export class GrokAdapter
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    // Mirrors the catalogue row (docs/274): image INPUT unobserved, so false.
+    // Mirrors the catalogue row (docs/274), where the live probe is recorded:
+    // the image content block is accepted and its content does not reach the
+    // model. Verified false, not merely unobserved.
     supportsImages: false,
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
@@ -138,9 +148,8 @@ export class GrokAdapter
   private stderrBuffer = "";
   private promptPath: string | null = null;
   private systemPromptPath: string | null = null;
-  /** The config.toml this adapter wrote, and what (if anything) was there before. */
-  private configPath: string | null = null;
-  private configBackup: string | null = null;
+  /** This turn's throwaway config root, removed wholesale at turn end. */
+  private spawnHome: string | null = null;
   private resultKillTimer: NodeJS.Timeout | null = null;
   private interruptKillTimer: NodeJS.Timeout | null = null;
   private watchdog: NodeJS.Timeout | null = null;
@@ -219,7 +228,7 @@ export class GrokAdapter
       // `--system-prompt-override` would replace it, discarding Grok's own tool
       // instructions along with it. ShipIt's prompt is standing instructions,
       // not a replacement for the harness's operating manual.
-      this.systemPromptPath = `/tmp/grok-system-prompt-${Date.now()}.md`;
+      this.systemPromptPath = `/tmp/grok-system-prompt-${randomUUID()}.md`;
       try {
         fs.writeFileSync(this.systemPromptPath, params.systemPrompt);
         args.push("--rules", this.systemPromptPath);
@@ -235,14 +244,13 @@ export class GrokAdapter
     // scrub deletes the very variable the delivery writes.
     const scopedHome = this.resolveHome?.();
     const home = resolveAgentHome(scopedHome);
-    const configRoot = grokHome(home);
+    const configRoot = this.makeSpawnHome(grokHome(home));
     const spawnEnv: Record<string, string> = {
       ...(process.env as Record<string, string>),
       HOME: home,
-      // Stated explicitly rather than left to derive from HOME: this is the
-      // directory holding auth.json, sessions/ and the config.toml written
-      // below, and a silent disagreement between the two reads as an auth
-      // failure rather than as a path error.
+      // This turn's own config root — NOT `$HOME/.grok`, which two concurrent
+      // spawns would fight over (see the header). It carries this turn's
+      // `config.toml` and links back to the real root for everything durable.
       GROK_HOME: configRoot,
       // The pinned binary must never self-replace (dependency policy). Belt
       // and braces with `--no-auto-update` above: the flag covers this
@@ -263,8 +271,17 @@ export class GrokAdapter
     // `GROK_AUTH_PATH` redirect it at a different token store entirely — any
     // one of them inherited from the worker would silently bill the wrong
     // account. Scrub them all, then deliver exactly one.
-    scrubHarnessEnvCredentials(spawnEnv, "grok");
+    //
+    // **Gated on there being a credential to deliver**, which is Claude's rule
+    // (`claude/process.ts` scrubs only under a scoped home) reached from the
+    // other direction. Scrubbing unconditionally looked stricter and was a
+    // trap: an unrouted spawn would have its ambient key removed and nothing
+    // put back, so it fails at the CLI with an auth error that names no cause.
+    // Every catalogue selection Grok can run carries routing (one service, key
+    // mode), so this branch is the manual/dogfood path — where "use the key in
+    // my environment" is the only thing an unrouted spawn could mean.
     if (params.serviceRouting) {
+      scrubHarnessEnvCredentials(spawnEnv, "grok");
       const routing = params.serviceRouting;
       const secret = process.env[routing.credentialSourceEnv];
       if (!secret || routing.credentialTarget.kind !== "env") {
@@ -284,7 +301,7 @@ export class GrokAdapter
 
     // The prompt is a file, not argv (see the header). Written before the
     // config so a failure here leaves no config.toml behind to restore.
-    this.promptPath = `/tmp/grok-prompt-${Date.now()}.txt`;
+    this.promptPath = `/tmp/grok-prompt-${randomUUID()}.txt`;
     try {
       fs.writeFileSync(this.promptPath, params.prompt);
     } catch (err) {
@@ -294,8 +311,6 @@ export class GrokAdapter
       return;
     }
     args.push("--prompt-file", this.promptPath);
-
-    this.writeConfigToml(configRoot);
 
     console.log(
       "[grok] spawning:", "grok", args.join(" ").slice(0, 200),
@@ -366,25 +381,51 @@ export class GrokAdapter
   }
 
   /**
-   * Write the per-turn `config.toml` into the config root, preserving whatever
-   * was there so the turn does not permanently own a file it shares with the
-   * user's own settings.
+   * Build this turn's throwaway config root and return the path to use as
+   * `GROK_HOME`.
    *
-   * This file is the ONLY MCP delivery path (see the header). Failure is
-   * warned and not fatal: a turn with no MCP servers is a degraded turn, while
-   * a turn refused for a config write is no turn at all.
+   * It holds this turn's `config.toml` — the only way to deliver MCP servers —
+   * and symlinks the two things that must OUTLIVE the turn back to the real
+   * root: `sessions/`, without which `-r` could not resume, and `auth.json`
+   * when one exists (key mode has none; subscription mode will, planning#435).
+   * Everything else the CLI writes there (logs, caches, its bundled docs) is
+   * genuinely per-run and goes away with the directory.
+   *
+   * Falls back to the real root if any of this fails. That is the honest
+   * degradation: a turn that runs against the shared root might race a
+   * concurrent spawn over one file, while a turn refused for a mkdir is no turn
+   * at all.
    */
-  private writeConfigToml(configRoot: string): void {
-    const target = path.join(configRoot, "config.toml");
+  private makeSpawnHome(realRoot: string): string {
     try {
-      fs.mkdirSync(configRoot, { recursive: true });
-      this.configBackup = fs.existsSync(target) ? fs.readFileSync(target, "utf-8") : null;
-      fs.writeFileSync(target, renderGrokConfigToml(this.pendingMcpServers));
-      this.configPath = target;
+      fs.mkdirSync(realRoot, { recursive: true });
+      const spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-home-"));
+      // Created rather than assumed: on a cold credentials tree the directory
+      // does not exist yet, and a dangling link would fail the CLI's own mkdir.
+      const sessions = path.join(realRoot, "sessions");
+      fs.mkdirSync(sessions, { recursive: true });
+      fs.symlinkSync(sessions, path.join(spawnHome, "sessions"));
+      const auth = path.join(realRoot, "auth.json");
+      if (fs.existsSync(auth)) fs.symlinkSync(auth, path.join(spawnHome, "auth.json"));
+      fs.writeFileSync(path.join(spawnHome, "config.toml"), renderGrokConfigToml(this.pendingMcpServers));
+      this.spawnHome = spawnHome;
+      return spawnHome;
     } catch (err) {
-      console.warn(`[grok] could not write ${target}: ${String(err)} — the turn runs without MCP servers`);
-      this.configPath = null;
-      this.configBackup = null;
+      console.warn(`[grok] could not build a per-spawn config root under ${realRoot}: ${String(err)} — falling back to the shared one`);
+      this.spawnHome = null;
+      try {
+        // Write-then-rename, because this is the shared root: two spawns that
+        // both reached this fallback would otherwise interleave their writes
+        // and leave a half-written config. `rename` within one filesystem is
+        // atomic, so the loser overwrites the winner wholesale instead — the
+        // same content either way, since both render the same server set.
+        const staging = path.join(realRoot, `.config.toml.${randomUUID()}`);
+        fs.writeFileSync(staging, renderGrokConfigToml(this.pendingMcpServers));
+        fs.renameSync(staging, path.join(realRoot, "config.toml"));
+      } catch (writeErr) {
+        console.warn(`[grok] and could not write its config.toml either: ${String(writeErr)} — the turn runs without MCP servers`);
+      }
+      return realRoot;
     }
   }
 
@@ -641,19 +682,17 @@ export class GrokAdapter
     }
     this.promptPath = null;
     this.systemPromptPath = null;
-    // Restore rather than delete: this file is shared with whatever the user's
-    // own config root held, and a turn that removed it would silently take
-    // their settings with it.
-    if (this.configPath) {
+    // The whole throwaway root goes, config and links together. `rmSync` does
+    // not follow symlinks, so the real `sessions/` and `auth.json` are
+    // untouched — which is the property the whole arrangement rests on.
+    if (this.spawnHome) {
       try {
-        if (this.configBackup === null) fs.unlinkSync(this.configPath);
-        else fs.writeFileSync(this.configPath, this.configBackup);
+        fs.rmSync(this.spawnHome, { recursive: true, force: true });
       } catch {
         /* ignore */
       }
     }
-    this.configPath = null;
-    this.configBackup = null;
+    this.spawnHome = null;
   }
 
   /**

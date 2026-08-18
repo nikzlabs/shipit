@@ -334,10 +334,24 @@ above as "verify at implementation", and each was wrong.
   were artifacts of loose string matching, not env vars. **The only delivery
   path is `$GROK_HOME/config.toml`** (`grok mcp add --scope user` writes exactly
   there, and a hand-written file was verified to produce
-  `mcp_servers: [{name: "probe", status: "connected"}]`). So the adapter writes
-  that one file per turn and **restores its previous contents afterwards** — it
-  is shared with the user's own settings, and it sits beside `auth.json` and
-  `sessions/`, which are never touched.
+  `mcp_servers: [{name: "probe", status: "connected"}]`).
+
+  **That single fixed path is a concurrency hazard, and the first cut had the
+  bug.** The adapter originally wrote `$HOME/.grok/config.toml` and restored its
+  previous contents afterwards. A container can have TWO grok processes alive at
+  once — a turn, plus a `shipit agent run` sub-agent spawned *during* it — and
+  the worker builds the sub-agent's adapter through `createWorkerAgent` with no
+  scoped home (`agent-controller.ts:262`), so both resolve the same root. Under
+  the backup/restore scheme whichever finished last decided what was left on
+  disk, and the interleaving where the turn finishes first leaves ShipIt's
+  per-turn config permanently in place. **The fix removes the shared file
+  rather than locking it**: each spawn gets a throwaway `GROK_HOME` under
+  `/tmp` holding its own `config.toml`, with `sessions/` — and `auth.json`,
+  when one exists — symlinked back to the real root, so everything durable is
+  still shared and nothing mutable is. Verified live: MCP servers connect under
+  the throwaway root, session state writes through the link, and `-r` resumes a
+  conversation started under a *different* throwaway root. Cleanup is
+  `rmSync` on the directory, which does not follow symlinks.
 - **`GROK_HOME` is the `.grok` directory itself, not the home above it.**
   Verified: `GROK_HOME=/tmp/gh` produced `/tmp/gh/config.toml`, `/tmp/gh/logs/`,
   and the CLI reported the path back as `$GROK_HOME/config.toml`. Getting this
@@ -362,10 +376,25 @@ Two more design choices settled at implementation:
   instructions included; ShipIt's is standing instructions alongside, not a
   replacement for the harness's operating manual.
 
-And one probe that came back negative, which is why no hook was added:
-**workspace trust does not gate a headless run.** A never-seen git repo with a
-fresh config root ran a full turn with no trust prompt, so Grok needs no
-`LOCAL_WORKSPACE_TRUST` / `POST_PROVISION_CONFIG` entry (recipe step 5).
+And two probes that came back negative, each of which changed what shipped:
+
+- **Workspace trust does not gate a headless run.** A never-seen git repo with a
+  fresh config root ran a full turn with no trust prompt, so Grok needs no
+  `LOCAL_WORKSPACE_TRUST` / `POST_PROVISION_CONFIG` entry (recipe step 5).
+- **`supportsImages: false` is verified, not assumed** — the flag the reviewer
+  flagged as the one worth probing. `--prompt-json` takes ACP content blocks and
+  accepts an `image` block without complaint, so the syntactic surface exists.
+  It does not carry vision: with the image data present ONLY inside the prompt
+  (generated in memory, never written to disk), a randomized colour pair and an
+  empty cwd, grok-4.6 answered `"unknown unknown"` in a single turn.
+
+  **The first two attempts said the opposite, and were wrong.** Both answered
+  the colours correctly — but a no-image **negative control** answered
+  identically, which means the model had been reaching the answer off the
+  filesystem (the probe image and its JSON were sitting in the cwd it was given)
+  rather than seeing it. The lesson is the docs/272 one: a probe without a
+  negative control proves the model got the right answer, not that it got it the
+  way you think.
 
 ## The reviewer-default extension (req 8)
 

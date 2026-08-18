@@ -294,10 +294,18 @@ export const HARNESSES = [
       // the previous turn's facts. ShipIt additionally PRE-ASSIGNS the id with
       // `-s <uuid>` on the first turn rather than parsing one out.
       supportsResume: true,
-      // Honest per docs/274 req 7: `image_gen`/`image_edit` are OUTPUT tools;
-      // an image *input* turn was never observed. The OpenCode precedent — a
-      // wrong `true` surfaces as broken attachments at runtime, not a type
-      // error — applies. Flip after a live probe.
+      // VERIFIED false, not assumed (docs/274 req 7). `--prompt-json` accepts
+      // an ACP image content block without complaint, so the syntactic surface
+      // exists — but with the image data present ONLY inside the prompt (never
+      // written to disk) and a randomized colour pair, grok-4.6 answered
+      // "unknown unknown" in a single turn. The block is accepted and its
+      // content does not reach the model as vision.
+      //
+      // The probe is recorded because the FIRST two attempts appeared to
+      // succeed and were wrong: the model had reached the answer off the
+      // filesystem, which a no-image negative control exposed by answering
+      // identically. `image_gen`/`image_edit` in the tool list are OUTPUT
+      // tools and say nothing about input.
       supportsImages: false,
       // `--system-prompt-override` replaces the prompt, `--rules` appends.
       supportsSystemPrompt: true,

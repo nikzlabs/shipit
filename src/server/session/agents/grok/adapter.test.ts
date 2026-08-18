@@ -202,7 +202,8 @@ describe("GrokAdapter — spawn shape", () => {
       expect(h.env[off], off).toBe("0");
     }
     expect(h.env.GROK_DISABLE_AUTOUPDATER).toBe("1");
-    expect(h.env.GROK_HOME).toBe(path.join(h.home, ".grok"));
+    // A per-spawn root, not `$HOME/.grok` — see the config-root suite below.
+    expect(h.env.GROK_HOME).toMatch(/grok-home-/);
     h.child.close(0);
   });
 });
@@ -402,7 +403,7 @@ describe("GrokAdapter — the paths a capture cannot show", () => {
   });
 });
 
-describe("GrokAdapter — the config.toml it borrows", () => {
+describe("GrokAdapter — the per-spawn config root", () => {
   let home: string;
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-config-test-"));
@@ -411,72 +412,113 @@ describe("GrokAdapter — the config.toml it borrows", () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  it("writes the MCP servers into $GROK_HOME/config.toml and restores it after", () => {
-    const configRoot = path.join(home, ".grok");
-    fs.mkdirSync(configRoot, { recursive: true });
-    const target = path.join(configRoot, "config.toml");
-    const preexisting = '[ui]\ntheme = "mine"\n';
-    fs.writeFileSync(target, preexisting);
+  const start = (adapter: GrokAdapter, child: FakeChild, captured: { env: Record<string, string> }): void => {
+    adapter.run({ prompt: "p", cwd: "/workspace" });
+    void child;
+    void captured;
+  };
 
+  function build(): { adapter: GrokAdapter; child: FakeChild; env: () => Record<string, string> } {
     const child = new FakeChild();
+    const captured: { env: Record<string, string> } = { env: {} };
     const adapter = new GrokAdapter({
       resolveHome: () => home,
-      spawnFn: () => child as unknown as ChildProcess,
+      spawnFn: (_c, _a, opts) => {
+        captured.env = (opts.env ?? {}) as Record<string, string>;
+        return child as unknown as ChildProcess;
+      },
     });
+    return { adapter, child, env: () => captured.env };
+  }
+
+  it("points GROK_HOME at a throwaway root, never at the shared one", () => {
+    const { adapter, child, env } = build();
+    start(adapter, child, { env: {} });
+    const spawnHome = env().GROK_HOME;
+    // The whole point: two concurrent spawns must not share one config.toml.
+    expect(spawnHome).not.toBe(path.join(home, ".grok"));
+    expect(fs.existsSync(path.join(spawnHome, "config.toml"))).toBe(true);
+    child.close(0);
+  });
+
+  it("writes the MCP servers into that root's config.toml", () => {
+    const { adapter, child, env } = build();
     adapter.writeMcpConfig({
       servers: [],
       shipitBridge: { tsxBin: "/usr/bin/tsx", bridgePath: "/opt/bridge.ts" },
       onServerFailed: () => undefined,
     });
     adapter.run({ prompt: "p", cwd: "/workspace" });
-
-    const during = fs.readFileSync(target, "utf8");
-    expect(during).toContain("[mcp_servers.\"shipit\"]");
-    expect(during).toContain("[mcp_servers.\"playwright\"]");
-
+    const toml = fs.readFileSync(path.join(env().GROK_HOME, "config.toml"), "utf8");
+    expect(toml).toContain('[mcp_servers."shipit"]');
+    expect(toml).toContain('[mcp_servers."playwright"]');
     child.close(0);
-    // The user's own config is theirs. A turn that kept the file would take
-    // their settings with it.
-    expect(fs.readFileSync(target, "utf8")).toBe(preexisting);
   });
 
-  it("removes the file entirely when the config root had none", () => {
-    const child = new FakeChild();
-    const adapter = new GrokAdapter({
-      resolveHome: () => home,
-      spawnFn: () => child as unknown as ChildProcess,
-    });
-    adapter.run({ prompt: "p", cwd: "/workspace" });
-    const target = path.join(home, ".grok", "config.toml");
-    expect(fs.existsSync(target)).toBe(true);
+  it("symlinks sessions/ back to the real root, so -r can still resume", () => {
+    const { adapter, child, env } = build();
+    start(adapter, child, { env: {} });
+    const link = path.join(env().GROK_HOME, "sessions");
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(link)).toBe(fs.realpathSync(path.join(home, ".grok", "sessions")));
     child.close(0);
-    expect(fs.existsSync(target)).toBe(false);
   });
 
-  it("keeps auth.json and sessions/ untouched", () => {
+  it("symlinks auth.json when there is one, and omits the link when there is not", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+
+    const keyMode = build();
+    keyMode.adapter.run({ prompt: "p", cwd: "/workspace" });
+    // Key mode has no auth.json; a dangling link would be worse than none.
+    expect(fs.existsSync(path.join(keyMode.env().GROK_HOME, "auth.json"))).toBe(false);
+    keyMode.child.close(0);
+
+    fs.writeFileSync(path.join(configRoot, "auth.json"), '{"scope":{"key":"secret"}}');
+    const subMode = build();
+    subMode.adapter.run({ prompt: "p", cwd: "/workspace" });
+    const link = path.join(subMode.env().GROK_HOME, "auth.json");
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(link, "utf8")).toBe('{"scope":{"key":"secret"}}');
+    subMode.child.close(0);
+  });
+
+  it("removes the throwaway root at turn end WITHOUT following its symlinks", () => {
     const configRoot = path.join(home, ".grok");
     fs.mkdirSync(path.join(configRoot, "sessions"), { recursive: true });
+    fs.writeFileSync(path.join(configRoot, "sessions", "conversation.json"), "{}");
     fs.writeFileSync(path.join(configRoot, "auth.json"), '{"scope":{"key":"secret"}}');
 
-    const child = new FakeChild();
-    const adapter = new GrokAdapter({
-      resolveHome: () => home,
-      spawnFn: () => child as unknown as ChildProcess,
-    });
+    const { adapter, child, env } = build();
     adapter.run({ prompt: "p", cwd: "/workspace" });
+    const spawnHome = env().GROK_HOME;
     child.close(0);
 
+    expect(fs.existsSync(spawnHome)).toBe(false);
+    // The durable state is what the links point AT. A cleanup that followed
+    // them would delete this session's resume history and its credentials.
+    expect(fs.existsSync(path.join(configRoot, "sessions", "conversation.json"))).toBe(true);
     expect(fs.readFileSync(path.join(configRoot, "auth.json"), "utf8")).toBe('{"scope":{"key":"secret"}}');
-    expect(fs.existsSync(path.join(configRoot, "sessions"))).toBe(true);
+  });
+
+  it("gives two concurrent spawns two different roots", () => {
+    // The container case this design exists for: a turn and a `shipit agent
+    // run` sub-agent alive at the same time, both built with the same home.
+    const first = build();
+    first.adapter.run({ prompt: "turn", cwd: "/workspace" });
+    const second = build();
+    second.adapter.run({ prompt: "consult", cwd: "/workspace" });
+
+    expect(first.env().GROK_HOME).not.toBe(second.env().GROK_HOME);
+    // And one finishing must not disturb the other's config.
+    first.child.close(0);
+    expect(fs.existsSync(path.join(second.env().GROK_HOME, "config.toml"))).toBe(true);
+    second.child.close(0);
   });
 
   it("surfaces the init event's per-server MCP status", () => {
-    const child = new FakeChild();
+    const { adapter, child } = build();
     const statuses: unknown[] = [];
-    const adapter = new GrokAdapter({
-      resolveHome: () => home,
-      spawnFn: () => child as unknown as ChildProcess,
-    });
     adapter.on("mcp_status", (s) => statuses.push(s));
     adapter.run({ prompt: "p", cwd: "/workspace" });
     child.emitStdout([
