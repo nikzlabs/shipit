@@ -233,6 +233,41 @@ describe("ServicesPanel", () => {
       ).toBeInTheDocument();
     });
 
+    it("never cuts a service name, and keeps each tick in its row's own grid track", async () => {
+      // What this pins is the pair of decisions that survive a narrow window,
+      // and jsdom cannot measure either — so both are read off the contract
+      // that produces them.
+      //
+      // The window that provoked this was 484px wide with four harnesses
+      // installed: the table took 5.5rem a column first, the list was the only
+      // thing allowed to shrink, and the row the user presses ended up with a
+      // name clipped to nothing and its mode label spilling out of the button.
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      // 1. No name is drawn with an ellipsis. `truncate` anywhere inside the
+      //    row is exactly the clipping this replaced; the name wraps instead.
+      const row = screen.getByTestId("add-service-option-zai");
+      expect(row.className).toContain("flex-wrap");
+      expect(row.querySelector(".truncate")).toBeNull();
+      expect(screen.getByTestId("add-service-support-head-claude").className).not.toContain(
+        "truncate",
+      );
+
+      // 2. A row that grows keeps its ticks level, because the two containers
+      //    are subgrids over ONE set of row tracks rather than two stacks of
+      //    matching heights. The old arrangement went out of line the first
+      //    time anything wrapped.
+      const table = screen.getByTestId("add-service-support-table");
+      const list = table.parentElement?.firstElementChild as HTMLElement;
+      expect(list.className).toContain("grid-rows-subgrid");
+      expect(table.className).toContain("grid-rows-subgrid");
+      // One track per service, plus the head — read off the rows actually
+      // drawn, so adding a service to the catalogue does not fail this.
+      const rows = screen.getAllByTestId(/^add-service-option-/).length;
+      expect(table.parentElement?.style.gridTemplateRows).toBe(`repeat(${rows + 1}, auto)`);
+    });
+
     it("carries the same vendor mark the card will carry", async () => {
       // The row the user picks and the card they come back to are the same
       // service, so they show the same thing. The row keeps its name too — the

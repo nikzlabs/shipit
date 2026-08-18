@@ -484,7 +484,10 @@ export function SupportedModelsDialog({
                 <span className="flex w-3 shrink-0 justify-center">
                   <ServiceLogo service={service} />
                 </span>
-                <span className="truncate">{service.name}</span>
+                {/* Wraps inside the nav's fixed width rather than cutting: the
+                    name is the whole row, so a clipped one is a row you cannot
+                    read. */}
+                <span className="min-w-0 break-words">{service.name}</span>
               </button>
             ))}
           </nav>

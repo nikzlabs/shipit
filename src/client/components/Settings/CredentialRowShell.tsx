@@ -78,7 +78,15 @@ export function CredentialRowShell({
             <DotsSixVerticalIcon size={ICON_SIZE.SM} />
           </span>
         )}
-        <span className="min-w-0 flex-1 truncate text-xs text-(--color-text-primary)">{label}</span>
+        {/*
+          **The label wraps; it is never cut.** It is the only thing naming
+          which credential this row is — "Anthropic (ANTHROPIC_AUTH_TOKEN)" and
+          "Anthropic (ANTHROPIC_API_KEY)" differ at the end, so an ellipsis
+          there leaves two rows reading identically. A narrow panel takes a
+          second line rather than the name; the quota and the `⋯` keep their
+          places on the first, being `shrink-0`.
+        */}
+        <span className="min-w-0 flex-1 break-words text-xs text-(--color-text-primary)">{label}</span>
         {status && (
           <span
             className={`shrink-0 text-[11px] ${
