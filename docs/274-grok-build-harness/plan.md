@@ -135,8 +135,20 @@ several rows below.
 3. **Reasoning-effort vocabulary**: the authenticated catalog's
    `reasoning_efforts` per model → `capabilities.reasoning` +
    `REVIEWER_DEFAULT_EFFORT`.
-4. **API style at a redirected endpoint**: point `GROK_XAI_API_BASE_URL` at
-   a local recorder and observe the wire shape.
+4. ~~API style at a redirected endpoint~~ **Resolved 2026-08-18 with a
+   dummy key at a local recorder** (auth is checked server-side, so the
+   request shape needed no real credential): the CLI speaks the **OpenAI
+   Responses API** — `POST <base>/responses`, `input` message arrays,
+   `include: ["reasoning.encrypted_content"]`, `reasoning: {summary: …}`,
+   `stream` + `Accept: text/event-stream`, `tools`/`tool_choice` — i.e. the
+   catalogue's existing `openai-responses` style (Codex's). Auth:
+   `Authorization: Bearer <key>`; model both in the body and an
+   `x-grok-model-override` header, plus `x-grok-session-id`/`x-grok-conv-id`/
+   `x-grok-client-mode: headless` headers. Side facts: `GET /models` and
+   `GET /api-key` probes precede the turn; a **session-title side-call**
+   (`grok-4.5`) rides every run (OpenCode-class cost noise); on 5xx the CLI
+   **retries with no stdout** (bound with `GROK_MAX_RETRIES`). Raw log:
+   `/persist/grok-capture/recorder.log`.
 5. **Session resume, `-s` pre-assignment, `--max-turns`, images, AGENTS.md
    reading, skills disclosure probe** — live behavior.
 6. **Auth.json injection**: verify a pasted/injected `auth.json` (or
