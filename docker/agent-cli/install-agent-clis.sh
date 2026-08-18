@@ -13,7 +13,10 @@
 #
 # The pinned install itself is unchanged (docs/141): one committed manifest,
 # `npm ci` against the committed lockfile, `--ignore-scripts` for the whole tree
-# and a targeted `npm rebuild` for the one package that ships a native binary.
+# and a targeted `npm rebuild` for each package whose postinstall materializes
+# its binary inside the tree. Grok's postinstall does NOT (planning#442) — it
+# installs to $GROK_HOME outside node_modules — so its binary is decompressed
+# in place by this script instead of rebuilt; see the grok block below.
 # Deselected harnesses are PRUNED after that install rather than excluded from it,
 # because npm has no supported way to omit an arbitrary dependency from `npm ci`
 # and splitting the manifest per CLI would fork the Renovate/contract-test flow
@@ -78,6 +81,19 @@ harness_bin() {
   esac
 }
 
+# What BIN_DIR/<bin> points at. Default: the npm-generated `.bin` shim. Grok is
+# the exception (planning#442): its shim is a JS launcher whose job is to
+# install or decompress the real binary at runtime, which either fails (read-
+# only install tree) or costs a 157MB copy per spawn (throwaway $GROK_HOME).
+# The grok block above already decompressed the binary in place, so PATH points
+# straight at it and the launcher is never involved.
+harness_link_target() {
+  case "$1" in
+    grok) echo "$AGENT_CLI_DIR/node_modules/@xai-official/grok-$(node -p 'process.platform + "-" + process.arch')/bin/grok" ;;
+    *) echo "$AGENT_CLI_DIR/node_modules/.bin/$(harness_bin "$1")" ;;
+  esac
+}
+
 contains() {
   needle="$1"
   shift
@@ -135,12 +151,34 @@ if contains opencode $selected; then
   npm rebuild opencode-ai
 fi
 
-# @xai-official/grok is the third of the same shape (docs/274): the published
-# package ships the platform binary brotli-compressed as an optionalDependency
-# and its postinstall decompresses it into place, so under the `--ignore-scripts`
-# blanket the linked `bin/grok` has nothing to run. Only when selected.
+# @xai-official/grok is NOT the same shape, though it looks it (planning#442).
+# Its postinstall decompresses the platform package's brotli payload to
+# $GROK_HOME/bin (default ~/.grok/bin) — OUTSIDE node_modules — which at image
+# build time is root's home: 157MB of dead weight the runtime uid cannot see.
+# And the `.bin/grok` JS launcher's own recovery paths both need a writable
+# directory the runtime doesn't have or shouldn't pay for: its last-resort
+# in-place decompress fails in the root-owned read-only install tree, and its
+# preferred bootstrap would copy the 157MB binary into the adapter's throwaway
+# per-spawn $GROK_HOME on every turn. So no `npm rebuild` here: decompress the
+# payload in place ourselves and link PATH straight at the real binary (see
+# harness_link_target), so the launcher never runs. The .br is deleted —
+# nothing reads it after this step and it would ship 46MB of dead weight.
 if contains grok $selected; then
-  npm rebuild @xai-official/grok
+  node -e '
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const zlib = require("node:zlib");
+    const dir = path.join(process.cwd(), "node_modules",
+      `@xai-official/grok-${process.platform}-${process.arch}`, "bin");
+    const br = path.join(dir, "grok.br");
+    const raw = path.join(dir, "grok");
+    if (!fs.existsSync(raw)) {
+      fs.writeFileSync(raw, zlib.brotliDecompressSync(fs.readFileSync(br)));
+    }
+    fs.chmodSync(raw, 0o755);
+    fs.rmSync(br, { force: true });
+    console.log(`[install-agent-clis] decompressed ${raw}`);
+  '
 fi
 
 # Prune the deselected harnesses, bins first so a failed rm can't leave a dangling
@@ -158,12 +196,31 @@ done
 # of the request.
 for harness in $selected; do
   bin="$(harness_bin "$harness")"
-  if [ ! -x "$AGENT_CLI_DIR/node_modules/.bin/$bin" ]; then
-    echo "ERROR: $harness selected but $AGENT_CLI_DIR/node_modules/.bin/$bin is missing after install." >&2
+  target="$(harness_link_target "$harness")"
+  if [ ! -x "$target" ]; then
+    echo "ERROR: $harness selected but $target is missing after install." >&2
     exit 1
   fi
-  ln -sf "$AGENT_CLI_DIR/node_modules/.bin/$bin" "$BIN_DIR/$bin"
+  ln -sf "$target" "$BIN_DIR/$bin"
 done
+
+# Prove each selected binary EXECUTES, not merely that its link resolves.
+# planning#442 shipped because the old existence check passed while grok's real
+# binary was still an undecompressed brotli blob. Scratch HOME (and GROK_HOME,
+# which grok prefers over HOME) so a CLI's first-run state cannot land in the
+# image layer — the build runs as root, and root's dotfiles are invisible to
+# the runtime uid anyway.
+verify_home="$(mktemp -d)"
+for harness in $selected; do
+  bin="$(harness_bin "$harness")"
+  if ! out="$(HOME="$verify_home" GROK_HOME="$verify_home/.grok" timeout 120 "$BIN_DIR/$bin" --version 2>&1)"; then
+    echo "ERROR: $harness installed but '$bin --version' does not execute:" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  echo "[install-agent-clis] verified $bin --version: $(printf '%s' "$out" | head -n 1)"
+done
+rm -rf "$verify_home"
 
 # playwright-mcp is not a harness — it is the browser MCP server every session
 # gets — so it is installed and linked regardless of the selection.

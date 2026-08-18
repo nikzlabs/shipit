@@ -24,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HARNESSES } from "./catalogue/harnesses.js";
@@ -139,14 +140,29 @@ describe("install-agent-clis.sh behaviour", () => {
   let binDir: string;
   let report: string;
 
+  /** The platform suffix the installer computes for grok's payload package. */
+  const PLATFORM = `${process.platform}-${process.arch}`;
+
   /**
    * A stub `npm` that materializes what the real one would: every harness
    * package, its platform-specific optional dependencies (the reason the script
    * prunes by prefix rather than by exact name), and the `.bin` shims.
+   *
+   * Grok is materialized in its REAL published shape (planning#442): the
+   * platform package carries only a brotli `grok.br`, and the `.bin/grok` shim
+   * is a launcher whose runtime install dance ShipIt must never depend on — the
+   * stub's shim fails loudly, so a regression that links or executes it turns
+   * the build red instead of passing on launcher behaviour.
+   *
+   * `breakBin` overwrites one harness's shim with a failing script — the
+   * "installed but does not execute" shape the exec verification must catch.
    */
-  function stubNpm(): string {
+  function stubNpm(opts?: { breakBin?: string }): string {
     const dir = path.join(tmp, "stub-bin");
     fs.mkdirSync(dir, { recursive: true });
+    const grokBr = zlib
+      .brotliCompressSync(Buffer.from(`#!/bin/sh\necho "grok 9.9.9 (stub)"\n`))
+      .toString("base64");
     const npm = path.join(dir, "npm");
     fs.writeFileSync(npm, `#!/bin/sh
 set -eu
@@ -154,17 +170,22 @@ set -eu
 mkdir -p node_modules/@anthropic-ai/claude-code node_modules/@anthropic-ai/claude-code-linux-x64
 mkdir -p node_modules/@openai/codex node_modules/@openai/codex-linux-x64
 mkdir -p node_modules/opencode node_modules/opencode-linux-x64
+mkdir -p node_modules/@xai-official/grok/bin "node_modules/@xai-official/grok-${PLATFORM}/bin"
 mkdir -p node_modules/@playwright/mcp node_modules/.bin
 for b in claude codex opencode playwright-mcp; do
   printf '#!/bin/sh\\necho %s\\n' "$b" > "node_modules/.bin/$b"
   chmod 0755 "node_modules/.bin/$b"
 done
+printf '#!/bin/sh\\necho "the grok launcher must never run" >&2\\nexit 1\\n' > node_modules/.bin/grok
+chmod 0755 node_modules/.bin/grok
+printf '%s' "${grokBr}" | base64 -d > "node_modules/@xai-official/grok-${PLATFORM}/bin/grok.br"
+${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.breakBin}"` : ""}
 `);
     fs.chmodSync(npm, 0o755);
     return dir;
   }
 
-  function run(selection?: string): string {
+  function run(selection?: string, opts?: { breakBin?: string }): string {
     return execFileSync("sh", [SCRIPT], {
       encoding: "utf8",
       // Explicit, because with no `stdio` Node captures the child's stderr AND
@@ -174,7 +195,7 @@ done
       // reaches the thrown error's message, which is what those tests match on.
       stdio: ["ignore", "pipe", "pipe"],
       env: {
-        PATH: `${stubNpm()}:${process.env.PATH ?? ""}`,
+        PATH: `${stubNpm(opts)}:${process.env.PATH ?? ""}`,
         HOME: tmp,
         AGENT_CLI_DIR: agentCliDir,
         BIN_DIR: binDir,
@@ -226,9 +247,40 @@ done
     expect(exists(path.join(agentCliDir, "node_modules/.bin/claude"))).toBe(false);
     expect(exists(path.join(agentCliDir, "node_modules/@anthropic-ai/claude-code"))).toBe(false);
     expect(exists(path.join(agentCliDir, "node_modules/@anthropic-ai/claude-code-linux-x64"))).toBe(false);
+    // Grok too — its packages live under a scope prefix (docs/274), and a
+    // deselected grok must leave neither the shim nor the payload behind.
+    expect(exists(path.join(binDir, "grok"))).toBe(false);
+    expect(exists(path.join(agentCliDir, "node_modules/.bin/grok"))).toBe(false);
+    expect(exists(path.join(agentCliDir, "node_modules/@xai-official/grok"))).toBe(false);
+    expect(exists(path.join(agentCliDir, `node_modules/@xai-official/grok-${PLATFORM}`))).toBe(false);
     // The selected one is untouched.
     expect(exists(path.join(agentCliDir, "node_modules/@openai/codex"))).toBe(true);
     expect(exists(path.join(binDir, "codex"))).toBe(true);
+  });
+
+  it("grok: decompresses the payload in place and links PATH at the binary, not the launcher (planning#442)", () => {
+    run("grok");
+    expect(declared()).toEqual(["grok"]);
+    const rawBinary = path.join(agentCliDir, `node_modules/@xai-official/grok-${PLATFORM}/bin/grok`);
+    // The link target is the decompressed platform binary itself. The `.bin`
+    // launcher's runtime install dance (copy 157MB into $GROK_HOME per spawn,
+    // or decompress into the read-only install tree) must never be on the path.
+    expect(fs.readlinkSync(path.join(binDir, "grok"))).toBe(rawBinary);
+    // Decompressed 0755 (root-owned at build time, so world-execute is what
+    // makes it runnable by the session uid), brotli source removed.
+    expect(fs.statSync(rawBinary).mode & 0o777).toBe(0o755);
+    expect(exists(`${rawBinary}.br`)).toBe(false);
+    // And it genuinely executes — the payload round-tripped the compression.
+    expect(execFileSync(path.join(binDir, "grok"), ["--version"], { encoding: "utf8" }))
+      .toContain("grok 9.9.9");
+  });
+
+  it("fails the build when a selected harness's binary does not execute", () => {
+    // The planning#442 shape: every existence check passes (the shim is there,
+    // executable, linked) but running it fails. The old symlink-only
+    // verification shipped exactly this as a green build.
+    expect(() => run("claude", { breakBin: "claude" })).toThrow(/'claude --version' does not execute/);
+    expect(exists(report)).toBe(false);
   });
 
   it("normalizes case, spacing and order", () => {
