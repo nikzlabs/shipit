@@ -27,7 +27,8 @@
  * browser does not throttle for either); ShipIt's own hiding of background
  * slots is already carried by the active-slot half of the visibility signal.
  */
-import { useRef, useState } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: tear down a browser observer on unmount (external system sync)
+import { useEffect, useRef, useState } from "react";
 
 export interface IframeOnScreenTracker {
   /**
@@ -96,6 +97,17 @@ export function useIframeOnScreen(): IframeOnScreenTracker {
     keyForElement.current.set(el, key);
     ensureObserver()?.observe(el);
   };
+
+  // Unmounting detaches every iframe ref, so each element is unobserved on the
+  // way out already — this closes the observer itself rather than leaving it for
+  // the collector to notice along with the rest of the unmounted tree.
+  // eslint-disable-next-line no-restricted-syntax -- tear down a browser observer on unmount
+  useEffect(() => () => {
+    observer.current?.disconnect();
+    observer.current = null;
+    keyForElement.current.clear();
+    elementForKey.current.clear();
+  }, []);
 
   return { trackIframe, offScreenSlots };
 }
