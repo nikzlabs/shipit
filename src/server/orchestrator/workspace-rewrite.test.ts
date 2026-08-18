@@ -25,6 +25,21 @@ describe("onWorkspaceRewritten", () => {
     expect(calls).toEqual(["config", "deps"]);
   });
 
+  it("tells the dependency check WHICH rewrite moved the tree", () => {
+    const deps = vi.fn();
+    const runner: WorkspaceRewriteRunner = {
+      reevaluateWorkspaceConfig: () => {},
+      notifyWorkspaceRewritten: deps,
+    };
+
+    onWorkspaceRewritten(runner, "rollback");
+
+    // A re-check that cannot happen has to report a cause, and the label is the
+    // only thing that carries one — the runner has no other way to know whether
+    // it was a sync, a rollback or a post-merge reset (nikzlabs/shipit#2429).
+    expect(deps).toHaveBeenCalledWith("rollback");
+  });
+
   it("still re-checks dependencies when the config re-read throws", () => {
     const deps = vi.fn();
     vi.spyOn(console, "error").mockImplementation(() => {});

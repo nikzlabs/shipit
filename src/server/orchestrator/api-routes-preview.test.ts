@@ -20,6 +20,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { registerPreviewRoutes } from "./api-routes-preview.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { ManagedService, ServiceManager } from "./service-manager.js";
+import type { DependencyGap } from "./dependency-staleness.js";
 
 const SESSION = "s1";
 
@@ -28,7 +29,7 @@ interface FakeManager {
   projectComposeFailure: { kind: "refused" | "malformed"; message: string } | null;
 }
 
-async function appWith(fake: FakeManager | null): Promise<FastifyInstance> {
+async function appWith(fake: FakeManager | null, gap: DependencyGap | null = null): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   const mgr = fake
     ? ({
@@ -38,7 +39,9 @@ async function appWith(fake: FakeManager | null): Promise<FastifyInstance> {
     : undefined;
   await registerPreviewRoutes(app, {
     sessionManager: { get: () => undefined },
-    runnerRegistry: { get: () => undefined },
+    // nikzlabs/shipit#2429 — the dependency gap is a fact about the session's
+    // INSTALL, so it is sourced from the runner rather than the manager.
+    runnerRegistry: { get: () => (gap ? { dependencyGap: gap } : undefined) },
     serviceManagers: new Map(mgr ? [[SESSION, mgr]] : []),
     broadcastLog: () => {},
   } as unknown as ApiDeps);
@@ -52,11 +55,16 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function listServices(fake: FakeManager | null): Promise<{
+async function listServices(fake: FakeManager | null, gap: DependencyGap | null = null): Promise<{
   statusCode: number;
-  body: { services?: unknown[]; failure?: { kind: string; message: string }; error?: string };
+  body: {
+    services?: unknown[];
+    failure?: { kind: string; message: string };
+    dependencies?: { reason: string; message: string };
+    error?: string;
+  };
 }> {
-  app = await appWith(fake);
+  app = await appWith(fake, gap);
   const res = await app.inject({ method: "GET", url: `/api/sessions/${SESSION}/services` });
   return { statusCode: res.statusCode, body: res.json() };
 }
@@ -99,6 +107,41 @@ describe("GET /api/sessions/:id/services", () => {
     expect(statusCode).toBe(200);
     expect(body).not.toHaveProperty("failure");
     expect(body.services).toHaveLength(1);
+  });
+
+  /**
+   * nikzlabs/shipit#2429 — the same argument as `failure`, one layer down. A service
+   * row that reads `running` is exactly the case the reporter hit: the service
+   * was up and every request it served failed on an unresolvable import,
+   * because ShipIt had rebased the tree under a `node_modules` it did not
+   * re-install.
+   */
+  it("carries the dependency gap alongside a service that reads as healthy", async () => {
+    const { body } = await listServices(
+      {
+        services: [
+          { name: "dev", preview: "auto", status: "running", dependsOnInstall: false, port: 5173 },
+        ],
+        projectComposeFailure: null,
+      },
+      { reason: "not-content-keyed", rewrite: "rebase", commands: ["./setup.sh"] },
+    );
+
+    expect(body.services).toHaveLength(1);
+    expect(body.dependencies?.reason).toBe("not-content-keyed");
+    // Rendered prose, not the raw label — the consumer is an agent shim that
+    // prints it verbatim, so the orchestrator owns the wording.
+    expect(body.dependencies?.message).toContain("a sync onto the latest base");
+  });
+
+  it("omits `dependencies` when the installed tree is believed current", async () => {
+    const { body } = await listServices({
+      services: [
+        { name: "web", preview: "auto", status: "running", dependsOnInstall: false, port: 5173 },
+      ],
+      projectComposeFailure: null,
+    });
+    expect(body).not.toHaveProperty("dependencies");
   });
 
   it("still 404s when the session has no compose stack at all", async () => {

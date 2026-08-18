@@ -377,6 +377,15 @@ worker, which writes `.shipit/.install-done` until it is recreated.)
   input files). A project whose `install` is not content-keyable — a codegen
   step or a shell script, so no `install-inputs` can be inferred and none are
   declared — is left alone, and you re-run its install yourself after a sync.
+- **When ShipIt cannot re-check, or the re-check fails, it says so** rather than
+  leaving you to diagnose it. Both cases post a `[System]` note in chat and add a
+  `Dependencies:` line to `shipit service list` (and to `GET
+  /api/sessions/:id/services` as a `dependencies` field). Read that line before
+  you read an unresolvable-import error as a code fault: a service can report
+  `running` while every request it serves fails, and restarting it does not help
+  because the usual compose guard is `[ -d node_modules ] || npm ci` and the
+  directory exists — it just holds the pre-rewrite contents. Declaring
+  `agent.install-inputs` lets ShipIt do the check itself instead.
 - A changed `agent.install` re-runs (subject to the same 30s cooldown as a
   lockfile change). Removing the `compose:` block stops the stack.
 - An invalid `shipit.yaml` (YAML syntax error, bad `compose:` shape) leaves the

@@ -57,6 +57,11 @@ import {
   installWithheldNotice,
   recordWithheldCommands,
 } from "./agent-install-gate.js";
+import {
+  dependencyGapNotice,
+  dependencyGapSummary,
+  type DependencyGap,
+} from "./dependency-staleness.js";
 
 // ---------------------------------------------------------------------------
 // Barrel re-exports for backwards compatibility
@@ -213,6 +218,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * listening.
    */
   onInstallWithheld?: (message: string) => void;
+
+  /**
+   * nikzlabs/shipit#2429 — report unverified dependencies into the chat transcript.
+   *
+   * Wired exactly like {@link onInstallWithheld}, and optional for the same
+   * reason: whether the gap is RECORDED must not depend on whether anyone is
+   * listening. A runner built without the wiring still carries the gap on
+   * {@link dependencyGap}, which is what the service list reads.
+   */
+  onDependenciesUnverified?: (message: string) => void;
 
   /**
    * When `true`, the runner's "disposed" lifecycle hook in
@@ -1690,6 +1705,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Resolver for the in-flight install promise — fulfilled when the worker
    * SSE stream delivers `install_done` or `install_error`, or when the
    * worker reports the install was skipped (marker present).
+   *
+   * Also governs the dependency-gap lifecycle (nikzlabs/shipit#2429): a second
+   * concurrent caller JOINS this promise rather than re-entering `runInstall`,
+   * so it never reaches `clearDependencyGap` itself. That is not a hole — the
+   * first caller clears the gap on the runner, which is the state both of them
+   * (and the service list) read.
    */
   private _installComplete: Promise<{ ok: boolean }> | null = null;
   private _resolveInstallComplete: ((result: { ok: boolean }) => void) | null = null;
@@ -1729,6 +1750,28 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _lastDepReinstallAt = 0;
   private _depReinstallPending = false;
   private _depReinstallTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * nikzlabs/shipit#2429 — this session's unverified-dependency state, or `null` when
+   * the installed tree is believed to match the checkout. See
+   * `dependency-staleness.ts` for the two ways a rewrite ends here.
+   *
+   * Held on the runner rather than the `ServiceManager` because it is a fact
+   * about the session's INSTALL, not about its compose stack: a session with no
+   * compose file can be just as stale, and the manager is torn down and rebuilt
+   * on a container recreate while this must survive until an install clears it.
+   */
+  private _dependencyGap: DependencyGap | null = null;
+
+  /**
+   * The unverified-dependency state, for the surfaces that report it: the
+   * services route and the `shipit service list` bridge. `null` is the healthy
+   * answer, not "unknown" — a gap is only ever set from positive evidence that a
+   * re-check did not happen or did not succeed.
+   */
+  get dependencyGap(): DependencyGap | null {
+    return this._dependencyGap;
+  }
 
   /**
    * Run agent.install commands on the session worker. Returns a promise that
@@ -1858,6 +1901,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     await this._workerReady;
     if (this._disposed) {
+      // Reports `ok` without having installed anything, so a dependency gap is
+      // neither recorded nor cleared here (nikzlabs/shipit#2429). Both are right: this
+      // runner is being torn down, and its replacement runs `setupServiceManager`
+      // → `runInstall` against a fresh container, so there is no state for a gap
+      // to describe and none to carry forward.
       this.signalInstallComplete();
       return { ok: true };
     }
@@ -1902,6 +1950,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       }) as { skipped?: boolean; started?: boolean; ok?: boolean };
       this._installPostIssued = true;
       if (result.skipped) {
+        // The worker's content-keyed marker matched, which IS the dependency
+        // check — the installed tree provably matches this checkout, so any gap
+        // we were carrying is answered (nikzlabs/shipit#2429).
+        this.clearDependencyGap();
         this.emitMessage({
           type: "install_status",
           sessionId: this.sessionId,
@@ -1920,7 +1972,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // real event); if the install already settled and the event was
       // lost, it resolves the gate deterministically.
       void this.resyncInstallStateAfterReconnect();
-      return await completion;
+      const outcome = await completion;
+      // An install that ran and succeeded is the same proof a marker skip is.
+      if (outcome.ok) this.clearDependencyGap();
+      return outcome;
     } catch (err) {
       this.emitMessage({
         type: "install_status",
@@ -2032,13 +2087,84 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * {@link isDepInputChange} applies: a session whose install is not
    * content-keyable (a codegen step, a shell script) has a `null` deps hash that
    * can never match, so triggering here would reinstall from scratch on every
-   * sync. That session keeps today's behaviour — no auto-reinstall — which is
-   * #1622's documented safe default.
+   * sync. That session keeps #1622's documented safe default of no
+   * auto-reinstall — but it does NOT keep the silence. Not re-running is a
+   * defensible choice; not saying so is the bug this issue reported, so that
+   * path records a {@link DependencyGap} instead of returning quietly.
+   *
+   * @param rewrite the caller label `onWorkspaceRewritten` was given (`rebase`,
+   *                `rollback`, …) — carried only so the report can name what
+   *                moved the tree.
    */
-  notifyWorkspaceRewritten(): void {
+  notifyWorkspaceRewritten(rewrite?: string): void {
     if (this._disposed) return;
-    if (this._depReinstallInputs.length === 0) return;
+    // No install declared at all: there is no dependency step to be out of step
+    // with the tree, so there is nothing to re-run and nothing to report.
+    if (this._depReinstallCommands.length === 0) return;
+    if (this._depReinstallInputs.length === 0) {
+      this.recordDependencyGap({
+        reason: "not-content-keyed",
+        commands: [...this._depReinstallCommands],
+        ...(rewrite ? { rewrite } : {}),
+      });
+      return;
+    }
+    this._lastRewriteLabel = rewrite;
     this.maybeReinstallForDepChange();
+  }
+
+  /**
+   * The rewrite that armed the in-flight dependency re-check, so a FAILED
+   * re-install can name what moved the tree rather than reporting a bare install
+   * failure. Cleared as it is consumed: a later watcher-driven reinstall must
+   * not inherit a rewrite it had nothing to do with.
+   */
+  private _lastRewriteLabel: string | undefined;
+
+  /**
+   * Record that this session's dependencies are unverified, and say so once.
+   *
+   * Idempotent against a burst: two rewrites of the same kind back to back (a
+   * rebase driver step followed by the pre-turn reset of the same branch) are
+   * one fact, and repeating the notice would train the reader to skip it. A
+   * DIFFERENT rewrite, or a gap that changes reason, is a new fact and is
+   * reported again.
+   *
+   * The record is set BEFORE the notice is emitted, and the emit is contained:
+   * the hook reaches SQLite and the viewer transports, and a failure there must
+   * not cost us the state that the service list reads — that would restore
+   * exactly the silence this is removing.
+   */
+  private recordDependencyGap(gap: DependencyGap): void {
+    const prev = this._dependencyGap;
+    this._dependencyGap = gap;
+    if (prev?.reason === gap.reason && prev?.rewrite === gap.rewrite) return;
+    console.warn(
+      `[container-runner:${this.sessionId}] dependencies unverified after ${gap.rewrite ?? "a dependency change"} (${gap.reason})`,
+    );
+    try {
+      this.onDependenciesUnverified?.(dependencyGapNotice(gap));
+    } catch (err) {
+      console.error(
+        `[container-runner:${this.sessionId}] could not report unverified dependencies:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  /**
+   * An install completed with positive evidence that the tree on disk is
+   * installed — it ran and succeeded, or the worker's content-keyed marker
+   * matched and it was skipped. Either way whatever gap we were carrying is
+   * answered.
+   *
+   * Only those two outcomes clear it. A withheld install (docs/271) did not run,
+   * and the "worker restarted, we cannot tell" resync synthesizes a completion
+   * from no evidence at all; treating either as proof would clear a gap that is
+   * still real.
+   */
+  private clearDependencyGap(): void {
+    this._dependencyGap = null;
   }
 
   /**
@@ -2120,6 +2246,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private async reinstallForDepChange(): Promise<void> {
     const mgr = this._serviceManager;
     console.log(`[container-runner:${this.sessionId}] dependency input changed — reinstalling`);
+    // Consumed here, not read here: whatever happens to this install, the NEXT
+    // one must not inherit this rewrite as its cause.
+    const rewrite = this._lastRewriteLabel;
+    this._lastRewriteLabel = undefined;
     mgr?.setInstallRunning(true);
     let res: { ok: boolean } = { ok: true };
     try {
@@ -2128,6 +2258,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       res = { ok: false };
     } finally {
       mgr?.setInstallRunning(false, { failed: !res.ok });
+    }
+    // nikzlabs/shipit#2429 — a failed re-install leaves the tree and its dependencies
+    // out of step just as surely as never running one. The gate latches
+    // `dependsOnInstall` services to `error`, which is the loud half, but it
+    // covers only gated services and never names the tree movement as the cause
+    // — which is the fact the person reading the failure is missing.
+    if (!res.ok) {
+      this.recordDependencyGap({
+        reason: "install-failed",
+        commands: [...this._depReinstallCommands],
+        ...(rewrite ? { rewrite } : {}),
+      });
     }
   }
 
@@ -2661,6 +2803,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           // Add them to docker-compose.yml" — advice for a project that has no
           // stack, given to one whose stack was declined.
           const failure = mgr.projectComposeFailure;
+          // nikzlabs/shipit#2429 — and the same for unverified dependencies. This is the
+          // surface the issue named: a service reported `running` while every
+          // request failed on an unresolvable import, and the list was the one
+          // place that could have connected the two and did not.
+          const gap = this._dependencyGap;
           result = {
             services: mgr.getServices().map(s => ({
               name: s.name,
@@ -2671,6 +2818,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               error: s.error,
             })),
             ...(failure ? { failure } : {}),
+            ...(gap ? { dependencies: { reason: gap.reason, message: dependencyGapSummary(gap) } } : {}),
           };
           break;
         }

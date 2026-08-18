@@ -13,6 +13,7 @@ import type { AgentProcess, AgentId, TerminalProcess, AgentRunParams, SessionInf
 import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, PermissionMode, ClaudeContentBlockToolUse, SkillInfo } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
+import type { DependencyGap } from "./dependency-staleness.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
@@ -1630,8 +1631,18 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * places for the same reason: the in-container inotify watcher is what
    * normally reports a lockfile change, and it cannot be relied on for a write
    * the orchestrator made from another container.
+   *
+   * @param rewrite the caller label (`rebase`, `rollback`, …), carried so a
+   *                re-check that cannot happen can name what moved the tree.
    */
-  notifyWorkspaceRewritten?(): void;
+  notifyWorkspaceRewritten?(rewrite?: string): void;
+
+  /**
+   * nikzlabs/shipit#2429 — this session's unverified-dependency state, or `null` when
+   * the installed tree is believed to match the checkout. Optional — container
+   * runners only, and read by the surfaces that report it (the services route).
+   */
+  readonly dependencyGap?: DependencyGap | null;
 
   /**
    * docs/240 — connect to the session worker and, if it still has a turn in

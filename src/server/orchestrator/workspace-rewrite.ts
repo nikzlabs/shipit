@@ -64,7 +64,9 @@ export function onWorkspaceRewritten(
     console.error(`[${label}] config re-evaluation failed:`, getErrorMessage(err));
   }
   try {
-    runner.notifyWorkspaceRewritten?.();
+    // The label rides along: a re-check that cannot happen has to name what
+    // moved the tree, or its report is a fact with no cause attached.
+    runner.notifyWorkspaceRewritten?.(label);
   } catch (err) {
     console.error(`[${label}] dependency re-check failed:`, getErrorMessage(err));
   }
