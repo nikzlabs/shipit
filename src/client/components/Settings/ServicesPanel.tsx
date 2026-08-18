@@ -1020,11 +1020,21 @@ function StringCredentialRow({
  * left. With four harnesses installed on a 484px-wide window that remainder was
  * *negative* — the service name was squeezed to nothing, the mode label spilled
  * out of the button it sits in, and the row the user presses had no readable
- * name at all. `13rem` is the width at which a row still reads with its name on
- * one line and the modes wrapped under it; below the pair's total the whole grid
- * scrolls sideways (see `STEP_1_SCROLLER`) instead of crushing a column.
+ * name at all.
+ *
+ * **The floor is `min-content`, which is the widest name — not a number chosen
+ * to hold today's names.** The name spans are `whitespace-nowrap`, so a row's
+ * minimum contribution is exactly its mark, its gap and its whole title (or its
+ * mode label, whichever is wider), and the column can never be sized below the
+ * longest of them. A service named something longer than "Vercel AI Gateway"
+ * widens the floor by itself, with nothing here to update — which is the part a
+ * literal could not do: `13rem` was measured against the eight services that
+ * exist, and would have started cutting the first title that outgrew it.
+ *
+ * Below the pair's total the whole grid scrolls sideways (see
+ * `STEP_1_SCROLLER`) rather than crushing a column.
  */
-const STEP_1_LIST_COLUMN = "minmax(13rem, 26rem)";
+const STEP_1_LIST_COLUMN = "minmax(min-content, 26rem)";
 
 /**
  * One column of step 1's support table, shared by the heads and the cells so the
@@ -1745,11 +1755,18 @@ function AddServiceDialog({
                         already a bordered list, and a box inside a box is chrome
                         the step does not need.
                       */}
-                      <span className="flex min-w-0 items-center gap-2">
+                      <span className="flex items-center gap-2">
                         <span className="flex w-3 shrink-0 justify-center">
                           <ServiceLogo service={s} />
                         </span>
-                        <span className="min-w-0 break-words">{s.name}</span>
+                        {/*
+                          `whitespace-nowrap` is what makes the column's
+                          `min-content` floor mean "the longest title": a name
+                          that cannot break is a minimum the grid must honour,
+                          so the title is never cut and never split across two
+                          lines either. The modes wrap under it instead.
+                        */}
+                        <span className="whitespace-nowrap">{s.name}</span>
                       </span>
                       <span className="shrink-0 text-(--color-text-tertiary)">
                         {s.modes.map((m) => MODE_LABEL[m.kind]).join(" · ")}

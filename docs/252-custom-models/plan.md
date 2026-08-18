@@ -3648,11 +3648,15 @@ So, in the code as it stands:
   `100vw - 2rem`. It is applied `md:` and up, so the fullscreen mobile dialog is untouched. It is
   *stated* rather than left to shrink-to-fit, because a `fixed` dialog sizes to its content and
   step 1's rows wrap, which collapses what they ask for to about their longest word.
-- **The names never truncate.** The row wraps: the modes drop under the name, and the name itself
-  wraps before it is ever cut. Same for the harness heads, and for the credential rows and card
-  titles in the panel behind — `Anthropic (ANTHROPIC_AUTH_TOKEN)` and
-  `Anthropic (ANTHROPIC_API_KEY)` differ only at the end, so an ellipsis there leaves two rows
-  reading identically.
+- **The names never truncate, and the column's floor is the names themselves.** The list column is
+  `minmax(min-content, 26rem)` and the titles are `whitespace-nowrap`, so the smallest the column
+  can ever be is the widest title — a service named something longer than "Vercel AI Gateway"
+  widens it with nothing to update. The floor was briefly a measured `13rem`, which is the same
+  mistake one layer down: a number true of the eight services that exist, and wrong for the first
+  one that outgrows it. What gives instead is the mode label, which drops under the name. Harness
+  heads, credential rows and card titles in the panel behind wrap for the same reason —
+  `Anthropic (ANTHROPIC_AUTH_TOKEN)` and `Anthropic (ANTHROPIC_API_KEY)` differ only at the end,
+  so an ellipsis there leaves two rows reading identically.
 - **A window too narrow for the pair scrolls it sideways as one unit**, with the list column
   `sticky left-0`. A tick is only an answer beside the question it is about, so the names are the
   one thing that must not leave; dropping the table on a narrow screen, or crushing a column,

@@ -283,6 +283,12 @@ describe("ServicesPanel", () => {
       // drawn, so adding a service to the catalogue does not fail this.
       const rows = screen.getAllByTestId(/^add-service-option-/).length;
       expect(table.parentElement?.style.gridTemplateRows).toBe(`repeat(${rows + 1}, auto)`);
+
+      // 3. The column's floor is the widest name, not a number measured against
+      //    today's names — `min-content` against titles that cannot break. A
+      //    literal here would start cutting the first title that outgrew it.
+      expect(table.parentElement?.style.gridTemplateColumns).toContain("minmax(min-content, 26rem)");
+      expect(row.querySelector(".whitespace-nowrap")?.textContent).toBe("GLM (Z.ai)");
     });
 
     it("carries the same vendor mark the card will carry", async () => {
