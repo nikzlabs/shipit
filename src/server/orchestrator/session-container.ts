@@ -1465,13 +1465,15 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
-   * Stop and remove every `shipit-standby=true` container at boot — a standby
-   * holds no work and was built from the previous process's worker image, so it
-   * never survives a restart. See `reapStandbyContainers` for why the label,
-   * and not the tracking map or the session rows, is what identifies one.
+   * Stop and remove every UNCLAIMED `shipit-standby=true` container at boot — a
+   * standby holds no work and was built from the previous process's worker
+   * image, so it never survives a restart. `activeSessionIds` is load-bearing:
+   * the label is immutable after create, so a claimed session's container still
+   * carries it and only the session row tells the two apart. See
+   * `reapStandbyContainers`.
    */
-  async reapStandbyContainers(): Promise<number> {
-    return reapStandbyContainers(this.discoveryDeps());
+  async reapStandbyContainers(activeSessionIds: Set<string>): Promise<number> {
+    return reapStandbyContainers(this.discoveryDeps(), activeSessionIds);
   }
 
   /**

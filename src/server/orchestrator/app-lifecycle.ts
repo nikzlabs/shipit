@@ -277,8 +277,13 @@ export async function setupContainerManager(
   // wiring has. Reaping by label also catches the standby that rediscovery
   // could not adopt — no IP, no resolvable workspace — which the row-driven
   // sweeps cannot see at all.
+  //
+  // The session set is passed because the label is create-time and immutable: a
+  // CLAIMED standby's container still carries it, and only the row says the
+  // session is someone's now. Re-read here rather than reusing `activeIds`
+  // above, which the injected-manager path never computes.
   if (containerManager) {
-    await containerManager.reapStandbyContainers();
+    await containerManager.reapStandbyContainers(new Set(sessionManager.allIds()));
   }
 
   // ---- Docker API proxy (optional, for Docker-enabled sessions) ----

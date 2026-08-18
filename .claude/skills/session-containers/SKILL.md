@@ -72,10 +72,16 @@ A standby is a normal session container pre-created by the warm pool and tagged
 - **`createStandby(config)`** — `create()` + standby label + track. Called from
   `warmSessionForRepo(...)` when there's idle headroom (there is no opt-out
   parameter — see the `session-lifecycle` skill).
-- **`reapStandbyContainers()`** — boot-only: stops and removes every
-  `shipit-standby=true` container, because a standby never outlives the process
-  that created it. Keyed on the label, not on `standbySessionIds` (empty at
-  boot) or on the session rows (already retired by then).
+- **`reapStandbyContainers(activeSessionIds)`** — boot-only: stops and removes
+  every `shipit-standby=true` container **whose session is no longer tracked**,
+  because a standby never outlives the process that created it.
+- **The standby label is set at create time and Docker cannot change it**, so
+  `claimStandby` can only drop the in-process flag: a claimed, graduated,
+  entirely ordinary session keeps a `shipit-standby=true` container for that
+  container's whole life. The label means "was born a standby", never "is one
+  now" — which is why the reap takes the live session set (a label-only sweep
+  would destroy live sessions on every restart, breaking docs/113) and why
+  `rediscoverContainers` does NOT restore the flag from it.
 - **`claimStandby(sessionId)`** — drops the standby flag and returns the
   container so the runner factory reuses it (cases 1 & 2). After claiming it's
   an ordinary container.
@@ -203,12 +209,19 @@ are not treated as orphans.
 
 **Warm sessions are the deliberate exception.** `retireWarmSessions` runs
 *before* this, deleting every `warm = 1` row, so a standby container from the
-previous process is an orphan by construction here and gets stopped and removed
-— and rediscovery cannot re-adopt one. `reapStandbyContainers()` then runs after
-both phases as the unconditional backstop (it finds a standby the row-driven
-sweeps cannot: one whose adoption would have failed, and one in a runtime with
-an injected container manager, which skips both phases below). See the
-`session-lifecycle` skill for why a standby must not survive a deploy.
+previous process is an orphan by construction here and gets stopped and removed.
+`reapStandbyContainers(activeSessionIds)` then runs after both phases as the
+backstop for what they cannot see — a standby whose adoption would have failed,
+and a runtime with an injected container manager, which skips both phases below.
+See the `session-lifecycle` skill for why a standby must not survive a deploy.
+
+**Rediscovery adopts a labelled container as an ordinary one.** Retirement
+guarantees every id in `activeSessionIds` is a live non-warm session, so a
+surviving `shipit-standby=true` label there means "was claimed". Restoring the
+flag from it marked real sessions standby, and `isStandby` gates behaviour:
+`restart-turn-reattach.ts` skips standbys (so an adopted session's in-flight
+turn was never reattached) and so does the idle enforcer (so its container was
+never disposed).
 
 ```
 containerManager.cleanupOrphans(activeSessionIds):

@@ -226,13 +226,20 @@ describe("adoptRunningContainer", () => {
     expect(containers.get("sess-1")?.id).toBe("already-here");
   });
 
-  it("re-adds a standby-labeled container to the standby set", async () => {
-    const { deps, standby } = makeDeps([
+  // The standby label is set at create time and Docker cannot change one
+  // afterwards, so a CLAIMED session's container carries it for life. Restoring
+  // the flag from it marked live sessions standby — and `isStandby` gates real
+  // behaviour: `restart-turn-reattach.ts` skips standbys, so the adopted
+  // session's in-flight turn was never reattached, and the idle enforcer skips
+  // them, so its container was never disposed.
+  it("does not mark a claimed session standby just because the label survived", async () => {
+    const { deps, standby, containers } = makeDeps([
       { id: "c1", sessionId: "sess-1", state: "running", ip: "172.18.0.4", standby: true },
     ]);
 
     expect(await adoptRunningContainer(deps, "sess-1", resolver)).toBe(true);
-    expect(standby.has("sess-1")).toBe(true);
+    expect(containers.has("sess-1")).toBe(true);
+    expect(standby.has("sess-1")).toBe(false);
   });
 
   it("returns false (and logs a breadcrumb) when inspect throws", async () => {
@@ -315,7 +322,7 @@ describe("rediscoverContainers", () => {
  * dead on the former.
  */
 describe("reapStandbyContainers", () => {
-  it("removes every standby container and spares real session containers", async () => {
+  it("removes every unclaimed standby container and spares real session containers", async () => {
     const specs: FakeContainerSpec[] = [
       { id: "c-standby", sessionId: "warm-1", state: "running", ip: "172.18.0.4", standby: true },
       { id: "c-real", sessionId: "sess-1", state: "running", ip: "172.18.0.5" },
@@ -326,7 +333,9 @@ describe("reapStandbyContainers", () => {
     standby.add("warm-1");
     containers.set("sess-1", { id: "c-real", sessionId: "sess-1" } as SessionContainer);
 
-    expect(await reapStandbyContainers(deps)).toBe(1);
+    // `retireWarmSessions` has already deleted the warm row, so only the real
+    // session is live.
+    expect(await reapStandbyContainers(deps, new Set(["sess-1"]))).toBe(1);
 
     // docs/113 — a real session's container is grandfathered across a deploy
     // precisely because it may hold work in flight. Only the standby goes.
@@ -334,6 +343,21 @@ describe("reapStandbyContainers", () => {
     expect(containers.has("warm-1")).toBe(false);
     expect(standby.has("warm-1")).toBe(false);
     expect(containers.has("sess-1")).toBe(true);
+  });
+
+  // The regression this sweep can most easily cause. `createStandby` sets the
+  // label at create time, Docker cannot change a label afterwards, and
+  // `claimStandby` only drops the in-process flag — so an ordinary graduated
+  // session runs a container labelled `shipit-standby=true` for its whole life.
+  // Reaping on the label alone would destroy live sessions on every restart.
+  it("spares a CLAIMED standby — the label outlives the claim, the session row decides", async () => {
+    const specs: FakeContainerSpec[] = [
+      { id: "c-claimed", sessionId: "sess-graduated", state: "running", ip: "172.18.0.4", standby: true },
+    ];
+    const { deps } = makeDeps(specs);
+
+    expect(await reapStandbyContainers(deps, new Set(["sess-graduated"]))).toBe(0);
+    expect(specs.map((s) => s.id)).toEqual(["c-claimed"]);
   });
 
   it("reaps a standby this process never tracked, and one already exited", async () => {
@@ -345,7 +369,7 @@ describe("reapStandbyContainers", () => {
 
     // No map entries at all — the state a fresh process boots into, and the one
     // a row-driven sweep cannot see.
-    expect(await reapStandbyContainers(deps)).toBe(2);
+    expect(await reapStandbyContainers(deps, new Set())).toBe(2);
     expect(specs).toEqual([]);
   });
 
@@ -353,7 +377,7 @@ describe("reapStandbyContainers", () => {
     const { deps } = makeDeps([
       { id: "c-real", sessionId: "sess-1", state: "running", ip: "172.18.0.5" },
     ]);
-    expect(await reapStandbyContainers(deps)).toBe(0);
+    expect(await reapStandbyContainers(deps, new Set(["sess-1"]))).toBe(0);
   });
 
   it("resolves rather than throwing when Docker is unavailable", async () => {
@@ -364,7 +388,7 @@ describe("reapStandbyContainers", () => {
         listContainers: async () => { throw new Error("daemon down"); },
       } as unknown as DiscoveryDeps["docker"],
     };
-    expect(await reapStandbyContainers(broken)).toBe(0);
+    expect(await reapStandbyContainers(broken, new Set())).toBe(0);
   });
 });
 

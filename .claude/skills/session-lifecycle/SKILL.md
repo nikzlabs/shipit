@@ -171,12 +171,20 @@ Boot therefore retires the whole warm tier, in this order:
    (`reclaimRegenerableSessionDirs`, which preserves `uploads/`). The ordering is
    the point: with the rows gone, the container sweeps on the next line treat
    each standby as an orphan and rediscovery cannot re-adopt one.
-2. **`reapStandbyContainers`** (`container-discovery.ts`), called from
-   `setupContainerManager`: stops and removes every `shipit-standby=true`
-   container, keyed on the **label** — the only record of "standby" that survives
-   with the container once the rows and the tracking map are gone. It runs
-   outside the Docker-available branch so an injected container manager gets the
-   same guarantee.
+2. **`reapStandbyContainers(activeSessionIds)`** (`container-discovery.ts`),
+   called from `setupContainerManager`: stops and removes every
+   `shipit-standby=true` container **whose session is no longer tracked**. It
+   runs outside the Docker-available branch so an injected container manager
+   gets the same guarantee.
+
+   The live-session set is not a refinement — it is what stops the sweep
+   destroying live sessions. The label is set at create time and Docker cannot
+   change one afterwards, so `claimStandby` only drops the in-process flag: a
+   claimed, graduated session keeps a `shipit-standby=true` container for that
+   container's whole life. Label means "was born a standby", never "is one
+   now"; the session row is what separates them, cleanly, because step 1 has
+   already deleted every warm row. For the same reason `rediscoverContainers`
+   does not restore the standby flag from the label.
 3. **Re-warm**: `scheduleStartupTasks` (deferred via `setTimeout(0)`) then finds
    every ready repo without a `warmSessionId` and calls `warmSessionForRepo`,
    rebuilding the pool — fresh clone, fresh standby, fresh pre-install — on the
