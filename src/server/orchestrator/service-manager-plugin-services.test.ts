@@ -269,38 +269,123 @@ describe("plugin services in the compose stack", () => {
     }
   });
 
-  it("does not refuse a plugin service whose port was the previous activation's own (nikzlabs/shipit#2379)", async () => {
-	    // A plugin service registered in a previous start() call is still in
-	    // the services map with origin set. The port clash check must skip
-	    // entries with origin — they are plugin services, not the project's own.
-	    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-	    try {
-	      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
-	      const upCalls: string[][] = [];
-	      const mgr = createManager(workspaceDir, {
-	        composeRunner: async (args) => {
-	          if (args.includes("up")) upCalls.push(args.filter((a) => !a.startsWith("-") && a !== "compose"));
-	        },
-	      });
-	      // First start: the plugin is admitted and registered with origin.
-	      mgr.setPluginServices([pluginService({ name: "probe", port: 4310 })]);
-	      await mgr.start();
-	      expect(mgr.getService("probe")?.status).not.toBe("error");
-	      expect(mgr.getService("probe")?.origin).toBeDefined();
-	      upCalls.length = 0;
+  it("does not count a plugin service's own outgoing instance as an occupant (nikzlabs/shipit#2379)", async () => {
+    // `start()` runs twice with no `reconcile()` between — the reported way in
+    // is a `shipit.yaml` save whose reconcile wins the stack queue ahead of the
+    // session's first start — so the previous activation's rows are still in
+    // the services map. The occupant set is read from the current PARSE, so the
+    // outgoing instance of the same service is not one of them.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+      const mgr = createManager(workspaceDir);
+      mgr.setPluginServices([pluginService({ port: 4310 })]);
+      await mgr.start();
+      expect(mgr.getService("probe")?.status).not.toBe("error");
+      expect(mgr.getService("probe")?.origin).toBeDefined();
 
-	      // Second start without reconcile: stale plugin entry from the first
-	      // start is still in the map. Without the #2379 fix it clashes with
-	      // itself and is refused as "this project's own service".
-	      mgr.setPluginServices([pluginService({ name: "probe", port: 4310 })]);
-	      await mgr.start();
-	      expect(mgr.getService("probe")?.status).not.toBe("error");
-	      expect(mgr.getService("probe")?.error).toBeUndefined();
-	      await mgr.stop();
-	    } finally {
-	      warn.mockRestore();
-	    }
-	  });
+      mgr.setPluginServices([pluginService({ port: 4310 })]);
+      await mgr.start();
+
+      const again = mgr.getService("probe");
+      expect(again?.status).not.toBe("error");
+      expect(again?.error).toBeUndefined();
+      expect(again?.port).toBe(4310);
+      expect(readOverride(workspaceDir).services.probe).toBeDefined();
+      await mgr.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not count a project service the compose file no longer declares (nikzlabs/shipit#2379)", async () => {
+    // The same map outlives the same second `start()` for the project's own
+    // rows. An occupant read from it could be a service the current file does
+    // not contain, which makes "move it to another port" a line that is not
+    // there to edit.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['4310:4310']\n");
+      const mgr = createManager(workspaceDir);
+      mgr.setPluginServices([]);
+      await mgr.start();
+      expect(mgr.getService("web")?.port).toBe(4310);
+
+      // `web` is dropped from the file and the plugin takes the number.
+      fs.writeFileSync(
+        path.join(workspaceDir, "docker-compose.yml"),
+        "services:\n  api:\n    image: node:20\n    ports: ['3000:3000']\n",
+      );
+      mgr.setPluginServices([pluginService({ port: 4310 })]);
+      await mgr.start();
+
+      expect(mgr.getService("probe")?.status).not.toBe("error");
+      expect(mgr.getService("probe")?.error).toBeUndefined();
+      await mgr.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("names the occupant and where each port is written (nikzlabs/shipit#2379)", async () => {
+    // Both halves of the advice have to point at a line that exists. The
+    // plugin's number is in `plugins.use`, the project's is in the compose
+    // file, and the message that used to send the reader to the compose file
+    // for both is the dead end #2379 reports.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+      const mgr = createManager(workspaceDir);
+      mgr.setPluginServices([pluginService({ sourceName: "server", alias: "probe", port: 5173 })]);
+      await mgr.start();
+
+      const error = mgr.getService("probe")?.error ?? "";
+      // The occupant is named as the project's own, WITH the file holding it.
+      expect(error).toContain("this project's own service `web` (`docker-compose.yml`)");
+      // The plugin side points at the override key, under the fragment's own
+      // service name — not at the alias, and not at the compose file.
+      expect(error).toContain("change `port:` for `server` under the `plugins.use` entry in `shipit.yaml` whose alias is `probe`");
+      // The project side points at the compose file, not at `plugins.use`.
+      expect(error).toContain("give `web` a different port in `docker-compose.yml`");
+      await mgr.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("tells each side of an ambiguous preview port where its own number lives", async () => {
+    // `warnOnAmbiguousPreviewPorts` reaches a plugin service too, and "give one
+    // of them a different port in the compose file" is the same dead end there:
+    // a plugin service has no line in that file.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+      const mgr = createManager(workspaceDir);
+      const logs: { name: string; text: string }[] = [];
+      mgr.on("service_log", (name: string, text: string) => logs.push({ name, text }));
+      // Registered directly: the admission check above refuses this pair, so
+      // the warning only ever sees a pair that reached the map some other way.
+      mgr.setPluginServices([]);
+      await mgr.start();
+      mgr.getService("web")!.port = 5173;
+      (mgr as unknown as { warnOnAmbiguousPreviewPorts(): void }).warnOnAmbiguousPreviewPorts();
+      expect(logs).toEqual([]);
+
+      mgr.setPluginServices([pluginService({ sourceName: "server", alias: "probe", port: 4310 })]);
+      await mgr.start();
+      mgr.getService("probe")!.port = 5173;
+      (mgr as unknown as { warnOnAmbiguousPreviewPorts(): void }).warnOnAmbiguousPreviewPorts();
+
+      const text = logs.map((l) => l.text).join("");
+      expect(text).toContain("this project's own service `web` (`docker-compose.yml`)");
+      expect(text).toContain("the plugin service `probe` (the `plugins.use` entry in `shipit.yaml` whose alias is `probe`)");
+      expect(text).toContain("change `port:` for `server` under the `plugins.use` entry in `shipit.yaml` whose alias is `probe`");
+      expect(text).toContain("give `web` a different port in `docker-compose.yml`");
+      await mgr.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
 	  describe("a plugin that ignores the port it was given (docs/266-plugin-service-ports req 8)", () => {
     /** Reach the one-shot probe without waiting out its real delays. */
