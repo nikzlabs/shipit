@@ -92,9 +92,41 @@ the same rewrite — that half was wired and this one was not.
 now makes, and it fires both halves in order: the config re-read first, because
 `applyShipitConfigChange` synchronously applies an incoming `shipit.yaml`'s
 `agent.install` / `install-inputs` to the runner, so the dependency check that
-follows evaluates the *incoming* config. Its four callers are the sync/rebase
-driver, the rollback route, the explicit `shipit branch reset-to-base`, and the
-pre-turn auto-reset of a merged branch.
+follows evaluates the *incoming* config.
+
+**The call sites are enumerated from `restoreLfsAfterTreeRewrite`**, which
+nikzlabs/shipit#2349 placed at every orchestrator-side worktree rewrite for the
+same structural reason (a rewrite the orchestrator's git performs). Every one of
+those that targets a *live session's own* workspace calls this too:
+
+| Rewrite | Where |
+|---|---|
+| Sync/rebase (clean + conflicts-resolved) | `services/rebase-driver.ts` |
+| Rebase abort | `api-routes-git.ts` |
+| Rollback (HTTP) | `api-routes-git.ts` |
+| Rewind (WS — the chat-level rollback) | `ws-handlers/rollback-handlers.ts` |
+| Git pull | `api-routes-git.ts` |
+| Merge a sibling session's branch | `api-routes-git.ts` |
+| `shipit branch reset-to-base` | `api-routes-git.ts` |
+| Post-merge pre-turn auto-reset | `pre-turn-reset-hook.ts` |
+| `shipit release prepare` (own clone only) | `api-routes-github.ts` |
+
+The two deliberate exclusions are `services/child-sessions.ts` (pinning a
+*new* workspace — no live runner, and session setup installs it from scratch)
+and a release prepare whose `resolvePrTarget` sent it at a `--repo`/`--cwd`
+clone that is not this session's.
+
+**The pre-turn-reset call site has a timing cost worth naming.** The reinstall is
+asynchronous and the turn starts as soon as the hook returns, so the agent's
+first commands can overlap the install window — gated services are held down,
+and an immediate `npm run dev` can collide with npm writing `node_modules`. The
+file-watcher path has the same shape whenever an agent edit triggers a
+reinstall; what is different here is that no human pause separates the trigger
+from the agent's first command. Awaiting instead was rejected: an install is
+minutes on a cold tree, and blocking a user's turn on one is a much larger
+change than the bug warrants. The overlap is recoverable and announces itself
+(`install_status` / `install_log`, and the services return when it lands); a
+silently stale `node_modules` is neither.
 
 **It does not diff the changed paths.** The caller knows it rewrote the tree; it
 does not have to work out what changed, because the worker's `/install` marker
@@ -119,8 +151,10 @@ That session keeps this feature's documented safe default — no auto-reinstall.
 - `src/server/orchestrator/workspace-rewrite.ts` — `onWorkspaceRewritten`, the shared
   "the orchestrator rewrote this tree" call (config re-read + dependency re-check).
 - `src/server/orchestrator/services/rebase-driver.ts`,
-  `src/server/orchestrator/api-routes-git.ts` (rollback + `reset-to-base`),
-  `src/server/orchestrator/pre-turn-reset-hook.ts` — its four callers.
+  `src/server/orchestrator/api-routes-git.ts` (rebase-abort, rollback, pull,
+  session merge, `reset-to-base`), `src/server/orchestrator/api-routes-github.ts`
+  (`release prepare`), `src/server/orchestrator/ws-handlers/rollback-handlers.ts`
+  (rewind), `src/server/orchestrator/pre-turn-reset-hook.ts` — its callers.
 - `src/server/orchestrator/service-manager-setup.ts` — pushes the install commands +
   resolved dep-input set to the runner via `setDepReinstallInputs`.
 - `src/server/shared/deps-hash.ts` — `resolveDepsHashInputs` (reused, unchanged).

@@ -16,5 +16,7 @@
 - [x] Wire the sync/rebase driver (clean + conflicts-resolved paths)
 - [x] Wire the rollback route and `shipit branch reset-to-base`
 - [x] Wire the pre-turn auto-reset of a merged branch
+- [x] Sweep the remaining `restoreLfsAfterTreeRewrite` sites: rebase abort, git
+      pull, session merge, rewind (WS), `release prepare` (own clone only)
 - [x] Unit tests (runner gate + helper ordering/fail-safety + the four call sites)
 - [x] Update agent-facing docs (shipit-yaml.md, environment.md, preview.md)

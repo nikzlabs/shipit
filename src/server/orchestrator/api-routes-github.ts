@@ -53,6 +53,7 @@ import { parseGitHubRemote } from "./git-utils.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition } from "./pr-target.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { assessMergeAutoPublish } from "./release-autopublish-check.js";
+import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
 /**
  * docs/214 — read the release-branch fields from a workspace's shipit.yaml.
@@ -397,6 +398,17 @@ export async function registerGitHubRoutes(
           ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
         });
+
+        // nikzlabs/shipit#2429 — `prepare` re-materializes the worktree from the
+        // orchestrator (a `checkout -B` onto the release branch, plus the
+        // cherry-picks or the `--from` merge-override), so it can leave the live
+        // session on a tree whose lockfile the container never installed. Gated
+        // on the target being the session's OWN clone: `resolvePrTarget` sends a
+        // `--repo`/`--cwd` release at a different one, whose dependencies are
+        // not this session's to reinstall.
+        if (gitDir === dir) {
+          onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "release-prepare");
+        }
 
         // Drive the release poller directly off the result (server-side, no
         // agent-echoed marker — docs/214).

@@ -409,6 +409,12 @@ export async function registerGitRoutes(
         await restoreLfsAfterTreeRewrite(dir, "Pull", (message) =>
           console.warn(`[git-pull] ${message}`),
         );
+        // #2429 — that merge can bring in a different `shipit.yaml` and a
+        // different lockfile, exactly like a sync. Unconditional rather than
+        // gated on `pulled.success`: a pull that reports failure can still have
+        // merged (the failure may be the push, or the LFS restore), and the
+        // marker gate makes a genuine no-op free.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "git-pull");
         return pulled;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -427,10 +433,17 @@ export async function registerGitRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        return await mergeSession(
+        const merged = await mergeSession(
           sessionManager, createGitManager, dir, request.body.sourceSessionId,
           gitRemoteCredentialResolver(deps.githubAuthManager),
         );
+        // #2429 — merging a sibling session's branch rewrites this session's
+        // worktree from the orchestrator, so it can bring in that branch's
+        // `shipit.yaml` and its lockfile. Also on the conflicted path: `git.merge`
+        // aborts, and the abort checks the pre-merge tree back out through the
+        // same filter-less git — a rewrite either way.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "session-merge");
+        return merged;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -564,6 +577,12 @@ export async function registerGitRoutes(
         await restoreLfsAfterTreeRewrite(dir, "Rebase abort", (message) =>
           console.warn(`[rebase-abort] ${message}`),
         );
+        // #2429 — an abort is a tree rewrite in its own right: it checks the
+        // PRE-rebase tree back out. That matters when the aborted rebase had
+        // already replayed far enough to change a dependency input and something
+        // reinstalled against it, since the abort now reverts that file and the
+        // container holds dependencies for a tree that no longer exists.
+        onWorkspaceRewritten(runner, "rebase-abort");
         if (runner) {
           runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         }
