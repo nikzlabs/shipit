@@ -113,11 +113,19 @@ the expansion of every line, with file pointers and gotchas, is in
       with the CLI's auth error while the valid ambient env key sits unused,
       and restoring the stored value makes the same spawn succeed. Evidence:
       [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
-- [ ] `shipit agent run` both directions — **blocked structurally**
-      2026-08-18: the outer install has no grok harness (and no grok role;
-      an explicit grok target is unassemblable by design — no reasoning
-      levels), and inner local mode has no `shipit` shim (planning#305).
-      Same deferral shape as docs/268's. Details in the run doc above.
+- [ ] `shipit agent run` both directions — **blocked on planning#442**
+      (grok binary missing at runtime). The original structural blockers
+      cleared 2026-08-18 ~16:00Z (outer redeployed with grok in the
+      installed set; role `Grok` exists) and target resolution now proves
+      out end to end in BOTH directions — the inbound one-shot resolved
+      role `Grok` → xai:key grok-4.6 (runs `8d65173d…`, `91acc84f…`) and
+      an outbound grok-pinned child session (`556b60ca…`, via
+      `shipit session create --role Grok`) resolved identically — but the
+      grok CLI dies at startup before any event, so neither consult
+      executed. planning#438's silence reproduces on the consult surface;
+      planning#443 (marker reader drops grok) found while tracing the
+      spawn path. Rerun the recipe once planning#442 lands. Evidence:
+      [docs/272 run 2026-08-18-1600](../272-harness-conversion-verification/runs/2026-08-18-1600-grok-1.0.1-agent-run.md).
 - [x] Event-conversion verification: the full docs/272 recipe run
       (tool-tour capture ✅, inventory diff, recognition matrix on persisted
       history + UI) —
