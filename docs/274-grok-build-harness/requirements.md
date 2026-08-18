@@ -83,10 +83,16 @@ empirically and recorded below, per the docs/268 precedent.
   req 3 text and the pin-exception open question were rewritten/removed
   accordingly.
 - **2026-08-18 — Does Grok Build expose reasoning control (req 8, a
-  start-blocker)?** Resolved empirically against CLI 1.0.5:
-  `--reasoning-effort <EFFORT>` (alias `--effort`) exists, with per-model
-  `reasoning_efforts` catalog arrays and `default_reasoning_effort` config;
-  an unsupported effort is silently ignored, so ShipIt's catalogue owns
-  validation. The "stop and report if none" branch was not taken. The exact
-  level vocabulary still needs the authenticated catalog (pending
-  credential) before `REVIEWER_DEFAULT_EFFORT` is set.
+  start-blocker)?** Partially resolved, twice revised by evidence. The
+  `--reasoning-effort <EFFORT>` flag (alias `--effort`) exists, with
+  per-model `reasoning_efforts` catalog machinery in the binary — but
+  recorder-verified probes in **API-key mode** show the flag silently
+  dropped for every model tried (no effort field reaches the wire);
+  key-mode reasoning is selected by model id (`-reasoning` /
+  `-non-reasoning` pairs). The effort machinery appears gated on the
+  subscription catalog, so whether req 8 can be satisfied as written —
+  `REVIEWER_DEFAULT_EFFORT` naming a real level — **is pending the
+  subscription device-flow login**. If subscription mode also offers no
+  levels, the docs/266 "harness with no reasoning levels" design decision
+  applies and integration pauses at the reviewer wiring, per req 8's
+  stop-and-report branch.

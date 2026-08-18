@@ -124,31 +124,76 @@ several rows below.
   system prompt; `--system-prompt-override` replaces it
   (`supportsSystemPrompt`).
 
-### Still pending — requires a credential (the Phase 0 remainder)
+### Captured-stream findings (real key-mode tool-tour, CLI 1.0.1, 2026-08-18)
 
-1. **Stream schema capture** (req 5): real turns under `--output-format
-   streaming-json` AND `streaming-messages-json`, tool-tour prompt, kept
-   raw with provenance → pick the adapter's format and lock with a
-   conformance test.
-2. **Token/usage telemetry**: whether the terminal event carries token
-   counts, and whether cache figures overlap (normalizer or not).
-3. **Reasoning-effort vocabulary**: the authenticated catalog's
-   `reasoning_efforts` per model → `capabilities.reasoning` +
-   `REVIEWER_DEFAULT_EFFORT`.
-4. ~~API style at a redirected endpoint~~ **Resolved 2026-08-18 with a
-   dummy key at a local recorder** (auth is checked server-side, so the
-   request shape needed no real credential): the CLI speaks the **OpenAI
-   Responses API** — `POST <base>/responses`, `input` message arrays,
-   `include: ["reasoning.encrypted_content"]`, `reasoning: {summary: …}`,
-   `stream` + `Accept: text/event-stream`, `tools`/`tool_choice` — i.e. the
-   catalogue's existing `openai-responses` style (Codex's). Auth:
-   `Authorization: Bearer <key>`; model both in the body and an
-   `x-grok-model-override` header, plus `x-grok-session-id`/`x-grok-conv-id`/
-   `x-grok-client-mode: headless` headers. Side facts: `GET /models` and
-   `GET /api-key` probes precede the turn; a **session-title side-call**
-   (`grok-4.5`) rides every run (OpenCode-class cost noise); on 5xx the CLI
-   **retries with no stdout** (bound with `GROK_MAX_RETRIES`). Raw log:
-   `/persist/grok-capture/recorder.log`.
+Raw captures with provenance:
+`/persist/grok-capture/capture-2026-08-18-1017-{streaming-json,streaming-messages-json}.ndjson`
+(tool-tour prompt per docs/272 Step 1, sandbox repo, `XAI_API_KEY` mode,
+model `grok-4.20-0309-non-reasoning` — the key-mode default).
+
+- **`streaming-messages-json` is Claude Code's stream-json wire, near
+  verbatim** — the adapter format of choice. Observed: `system/init`
+  (`session_id`, `model`, `cwd`, `permissionMode`, `tools`, `apiKeySource`),
+  `assistant`/`user` envelopes holding Anthropic Messages objects
+  (`tool_use` / `tool_result` content blocks, per-message `usage`), terminal
+  `result` with `subtype: "success"`, `is_error`, `duration_ms`,
+  `duration_api_ms`, `num_turns`, `total_cost_usd`, `usage`
+  (incl. `server_tool_use`), `session_id`, `uuid`, plus xAI extras
+  `stop_reason` and `modelUsage`. The Claude adapter's mapping should apply
+  with minor extension.
+- **`streaming-json` (ACP-flavored) vocabulary**, for reference:
+  `available_commands` (commands + tools) → `text` deltas ×N → `tool_call`
+  (`toolCallId`, `toolName`, `kind`: read/write/edit/execute/search/task/
+  plan/list/background_task_action, `status: pending`, `rawInput`) →
+  `tool_call_update` (`status: in_progress|completed`, `rawOutput`) →
+  `plan` (todo entries with `content`/`priority`/`status`) → `usage`
+  per step → terminal `end` (`stopReason`, `sessionId`, `requestId`,
+  `usage`, `num_turns`, `total_cost_usd`, `modelUsage`).
+- **Token semantics are disjoint — no normalizer.** Verified arithmetically
+  on the terminal event: `input + cache_read + cache_creation + output +
+  reasoning = total` (29623+88128+0+857+0 = 118608). Cost arrives as
+  `total_cost_usd` (+ `_ticks`).
+- **Tool vocabulary (`GROK_TOOL_NAMES` input, 25 advertised):**
+  `run_terminal_command, read_file, search_replace, list_dir, grep,
+  kill_command_or_subagent, todo_write, get_command_or_subagent_output,
+  spawn_subagent, scheduler_create, scheduler_delete, scheduler_list,
+  monitor, search_tool, use_tool, workflow, enter_plan_mode,
+  exit_plan_mode, ask_user_question, web_search, image_gen, image_edit,
+  image_to_video, …` (full list in the `system/init` capture).
+- **Reasoning control, revised (req 8 — now the one open Phase 0 thread):**
+  in key mode, `--reasoning-effort` is **silently dropped for every model
+  probed** (grok-4.20-0309-reasoning, grok-4.6 — recorder-verified: the
+  request body has no effort field at all); reasoning is selected by *model
+  id* (`-reasoning` / `-non-reasoning` pairs), and `api.x.ai/v1/models`
+  metadata carries no effort fields. The binary's `reasoning_efforts`
+  catalog machinery therefore appears **subscription-catalog-gated**
+  (cli-chat-proxy `/rest/modes`). Whether Grok offers real effort levels —
+  and thus whether `REVIEWER_DEFAULT_EFFORT` can name one, or the
+  reviewer-default mechanism needs the docs/266 "no-levels" design decision
+  first — is now **pending the subscription (device-flow) login**.
+- **Wire routing detail:** with an explicit `-m`, the main turn goes to
+  `POST /chat/completions` (openai-chat-completions); the title side-call
+  (and possibly catalog-default turns) uses `POST /responses`
+  (openai-responses, `reasoning: {summary}` only). Both styles observed
+  from one CLI — catalogue `styles` must list both, endpoint per style.
+### API style (resolved 2026-08-18, recorder-verified with a dummy key)
+
+Auth is checked server-side, so the request shape needed no real
+credential. The CLI speaks **two** OpenAI styles (see the routing detail
+above): `POST /chat/completions` (`stream` + `stream_options:
+{include_usage}`) for explicit `-m` turns, and `POST /responses` (`input`
+arrays, `include: ["reasoning.encrypted_content"]`, `reasoning:
+{summary}`) for the title side-call / catalog-default path. Auth:
+`Authorization: Bearer <key>`; model also in an `x-grok-model-override`
+header, plus `x-grok-session-id` / `x-grok-conv-id` /
+`x-grok-client-mode: headless` headers. Side facts: `GET /models` and
+`GET /api-key` preflights precede the turn (an explicit `-m` **aborts
+without any POST if `/models` fails** — recorder must answer it); a
+session-title side-call rides every run (OpenCode-class cost noise); on
+5xx the CLI retries with no stdout (bound with `GROK_MAX_RETRIES`).
+
+### Still pending (the Phase 0 remainder)
+
 5. **Session resume, `-s` pre-assignment, `--max-turns`, images, AGENTS.md
    reading, skills disclosure probe** — live behavior.
 6. **Auth.json injection**: verify a pasted/injected `auth.json` (or
