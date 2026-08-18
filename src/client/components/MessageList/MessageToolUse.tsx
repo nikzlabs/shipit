@@ -65,7 +65,11 @@ export function MessageToolElement({
     // Skill — stays compact. An in-context skill invocation emits no nested
     // events and a trivial tool_result (the skill's content arrives as its own
     // top-level message), so there is no work timeline or report to disclose.
-    const skillName = (tool.input.skill as string) ?? "unknown";
+    // The OpenCode adapter normalizes new calls to Claude's `skill` key; the
+    // `name` fallback reads rows persisted before that fix (same rationale as
+    // the `Task`-row gate above).
+    const skillName =
+      (tool.input.skill as string) ?? (tool.input.name as string) ?? "unknown";
     const args = tool.input.args ? (tool.input.args as string) : "";
     return (
       <div data-testid="subagent-skill" className="border-l-2 border-(--color-success)/40 pl-3">

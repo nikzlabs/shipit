@@ -100,6 +100,17 @@ describe("normalizeOpencodeToolCall — surface treatments (the planning#432 rec
     expect(inputKeyTreatment(name, "command", input)).toBe("head");
   });
 
+  it("skill carries its name in the client's key, not the wire's", () => {
+    // OpenCode's skill tool names the skill in `input.name` (Schema.Struct({
+    // name })); the client's Skill card and the projection keep-list read
+    // Claude's `input.skill` — an untranslated `name` rendered "Skill:
+    // unknown" and would be dropped by inputKeyTreatment's default.
+    const { name, input } = normalizeOpencodeToolCall("skill", { name: "commit" });
+    expect(name).toBe("Skill");
+    expect(input).toEqual({ skill: "commit" });
+    expect(inputKeyTreatment(name, "skill", input)).toBe("keep");
+  });
+
   it("passes unknown names through untouched, camelCase keys and all", () => {
     // MCP and future tools: renaming keys on a tool we don't know would
     // corrupt its modal display, so the call must come back as-is.

@@ -31,6 +31,9 @@
  *   - `edit`/`write`/`read`: the name plus the camelCase→snake_case key
  *     renames make `diffStatsFor` (`DIFF_BODY_KEYS`) and the `file_path`
  *     summary work unchanged.
+ *   - `skill` → `Skill`: OpenCode names the skill in `input.name`, while the
+ *     client's Skill card reads `input.skill` — the per-tool rename keeps the
+ *     name off the projection's drop list and out of the `unknown` fallback.
  *
  * Unknown names — MCP tools included — pass through untouched, input and all:
  * renaming keys on a tool we don't know would corrupt its modal display.
@@ -65,6 +68,19 @@ const INPUT_KEY_RENAMES: Record<string, string> = {
   filePath: "file_path",
   oldString: "old_string",
   newString: "new_string",
+};
+
+/**
+ * Per-tool input renames that are semantic, not orthographic — they must NOT
+ * leak onto sibling tools. OpenCode's `skill` tool names the skill in
+ * `input.name` (verified against `packages/opencode/src/tool/skill.ts`:
+ * `Schema.Struct({ name: Schema.String })`), while the client's Skill card and
+ * `inputKeyTreatment`'s keep-list read Claude's `input.skill`. Without the
+ * rename every OpenCode skill call rendered `Skill: unknown`, and the `name`
+ * key would have been dropped by the projection's keep-list.
+ */
+const TOOL_INPUT_RENAMES: Record<string, Record<string, string>> = {
+  skill: { name: "skill" },
 };
 
 /**
@@ -121,14 +137,15 @@ export function normalizeOpencodeToolCall(
 ): { name: string; input: Record<string, unknown> } {
   const transcriptName = OPENCODE_TRANSCRIPT_TOOL_NAMES[name];
   if (!transcriptName) return { name, input };
-  if (!Object.keys(input).some((key) => key in INPUT_KEY_RENAMES)) {
+  const renames = { ...INPUT_KEY_RENAMES, ...(TOOL_INPUT_RENAMES[name] ?? {}) };
+  if (!Object.keys(input).some((key) => key in renames)) {
     return { name: transcriptName, input };
   }
   // Rebuilt rather than mutated, preserving key order — the tool-call modal
   // renders `Object.keys(input)` as-is.
   const renamed: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
-    renamed[INPUT_KEY_RENAMES[key] ?? key] = value;
+    renamed[renames[key] ?? key] = value;
   }
   return { name: transcriptName, input: renamed };
 }
