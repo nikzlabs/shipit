@@ -182,8 +182,14 @@ export function applyRoleToSession(
     billingMode: params.billingMode,
     modelId: params.modelId,
   });
-  // `null` is the store's "no level", which is what a harness declaring none
-  // resolves to (docs/274 req 8).
+  // `null` is the store's "no level", and it CLEARS the session's — which is how
+  // a role at `Default` applies: the row holds no level, turn time passes no
+  // flag, and the harness runs at its own. A harness declaring no levels at all
+  // resolves to the same thing (docs/274 req 8).
+  //
+  // Passing `undefined` through would be a no-op instead, leaving whatever level
+  // the session already carried — a substitution req 7 forbids, and the exact
+  // bug the composer's own "Default" pick already avoids this way.
   deps.sessionManager.setReasoning(sessionId, params.reasoningEffort ?? null);
   deps.sessionManager.setRoleName(sessionId, role.name);
 }

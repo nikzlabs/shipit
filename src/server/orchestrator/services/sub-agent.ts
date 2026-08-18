@@ -365,7 +365,9 @@ export async function runSubAgent(
       `[sub-agent] reviewer session=${sessionId} slot=${r.slot} source=${r.source} `
       + `tier=${r.tier} basis=${r.tierBasis} harness=${subAgentId} `
       + `model=${resolvedTarget.selection.serviceId}/${resolvedTarget.selection.billingMode}/`
-      + `${resolvedTarget.selection.modelId} effort=${resolvedTarget.reasoningEffort ?? "none"}`,
+      // `default`, not `none`: `none` is a real level Codex declares, so it
+      // would not be readable as "no flag was passed" in a log line.
+      + `${resolvedTarget.selection.modelId} effort=${resolvedTarget.reasoningEffort ?? "default"}`,
     );
   }
 
@@ -497,7 +499,8 @@ export async function runSubAgent(
     + `target=${requested} depth=${depth} promptBytes=${promptBytes} `
     + `route=${route?.kind ?? "default"}:${accountId ?? "-"} `
     + `model=${subSelection.serviceId}/${subSelection.billingMode}/${spawnModel} `
-    + `effort=${reasoningEffort ?? "none"} spawnsThisTurn=${runner.subAgentSpawnsThisTurn}`,
+    // `default` rather than `none` — see the reviewer log line above.
+    + `effort=${reasoningEffort ?? "default"} spawnsThisTurn=${runner.subAgentSpawnsThisTurn}`,
   );
 
   // §7 / planning#280 — the DURABLE in-flight record. Emitted `pending` at spawn time
@@ -536,9 +539,9 @@ export async function runSubAgent(
       serviceId: subSelection.serviceId,
       billingMode: subSelection.billingMode,
       modelId: subSelection.modelId,
-      // Omitted — not null — for a harness that declares no levels (docs/274):
-      // the field is optional on the card and an absent one renders as "no
-      // level", which is what actually happened.
+      // Omitted — not null — for Default (docs/264 req 1), which includes a
+      // harness that declares no levels (docs/274). The card records that no
+      // flag was passed, which is the fact; the client renders the absence.
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     },
     status: "pending",
@@ -629,12 +632,14 @@ export async function runSubAgent(
       prompt,
       spawnId,
       depth,
-      // docs/261 reqs 5 + 7 — present whenever the harness HAS levels: the
-      // reasoning level is part of what a reviewer IS and part of what an
-      // explicit call must name. The one "pass no flag" case left is docs/274's
-      // harness that declares none, where there is no flag to pass. The
-      // RESOLVED model, so what runs and what is recorded are the same by
-      // construction.
+      // docs/261 reqs 5 + 7 — a reviewer and an explicit call both name a level.
+      // docs/264 req 1 adds the case that does not: a **role at Default**, where
+      // absent means "pass no flag" and the harness uses its own level — which
+      // covers docs/274's harness that declares none, since there is no flag to
+      // pass there either. `AgentSpawnOptions.reasoningEffort` has always read
+      // an absent value that way, so this passes straight through. Spread rather
+      // than assigned, so Default stays the ABSENCE of the key. The RESOLVED
+      // model, so what runs and what is recorded are the same by construction.
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       model: spawnModel,
       ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),

@@ -45,9 +45,15 @@ function describeRun(card: SubAgentConsultCardData): { subject: string; attribut
   const runOn = card.runOn;
   if (!runOn) return { subject: harness, attribution: null };
 
+  // An absent level is **Default** — the run passed no reasoning flag (a role at
+  // Default, docs/264 req 1). It is a level the user chose, so the card names it
+  // rather than dropping the segment.
   const reasoning = getHarness(card.subAgentId)?.capabilities.reasoning;
-  const effort = reasoning?.options.find((o) => o.value === runOn.reasoningEffort)?.label
-    ?? runOn.reasoningEffort;
+  const effort =
+    runOn.reasoningEffort === undefined
+      ? "Default"
+      : (reasoning?.options.find((o) => o.value === runOn.reasoningEffort)?.label
+        ?? runOn.reasoningEffort);
   return {
     subject: getModel(runOn)?.label ?? runOn.modelId,
     attribution: [

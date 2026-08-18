@@ -256,8 +256,9 @@ function parseRoleParams(raw: unknown, name: string): RoleParams {
     throw new ServiceError(400, `roles["${name}"].params.kind must be "pinned" or "auto"`);
   }
   const { harnessId, serviceId, billingMode, modelId, reasoningEffort } = value;
-  // Every field required, because req 1 says a role is complete on its own —
-  // and the harness among them, because req 6 says it is never re-derived.
+  // Every field required EXCEPT the level, because req 1 says a role is complete
+  // on its own — and the harness among them, because req 6 says it is never
+  // re-derived. The level is complete at `Default` too; see below.
   if (typeof harnessId !== "string" || !harnessId) {
     throw new ServiceError(400, `roles["${name}"].params.harnessId is required`);
   }
@@ -270,8 +271,16 @@ function parseRoleParams(raw: unknown, name: string): RoleParams {
   if (typeof modelId !== "string" || !modelId) {
     throw new ServiceError(400, `roles["${name}"].params.modelId is required`);
   }
-  if (typeof reasoningEffort !== "string" || !reasoningEffort) {
-    throw new ServiceError(400, `roles["${name}"].params.reasoningEffort is required`);
+  // **The one optional parameter** (docs/264 req 1's resolved question): absent
+  // means `Default`, the level the named harness runs at when ShipIt passes no
+  // flag. A present value must still be a non-blank string — `""` is a client
+  // that meant Default and encoded it wrong, and accepting it would store a
+  // level no harness declares.
+  if (reasoningEffort !== undefined && (typeof reasoningEffort !== "string" || !reasoningEffort)) {
+    throw new ServiceError(
+      400,
+      `roles["${name}"].params.reasoningEffort must be a non-empty string, or omitted for Default`,
+    );
   }
   return {
     kind: "pinned",
@@ -284,7 +293,7 @@ function parseRoleParams(raw: unknown, name: string): RoleParams {
     serviceId,
     billingMode,
     modelId,
-    reasoningEffort,
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
   };
 }
 

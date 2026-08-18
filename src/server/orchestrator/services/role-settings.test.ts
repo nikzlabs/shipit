@@ -276,6 +276,25 @@ describe("applyRoleWrites — params are refused at SAVE, naming the parameter (
     expect(byName.get("deep-dive")?.params).toMatchObject({ reasoningEffort: "max" });
   });
 
+  it("accepts an OMITTED level — Default is a level a role may name (req 1)", () => {
+    const { reasoningEffort: _dropped, ...atDefault } = PINNED;
+    const { byName } = apply({ "deep-dive": write({ params: atDefault }) });
+    const params = byName.get("deep-dive")?.params;
+    expect(params).toMatchObject({ harnessId: "claude", modelId: "deepseek-v4-flash" });
+    // Stored as the ABSENCE of the key, so a round-trip through the credential
+    // store's JSON cannot turn Default into a level.
+    expect(params && "reasoningEffort" in params).toBe(false);
+  });
+
+  it("refuses a BLANK level — a client that meant Default and encoded it wrong", () => {
+    // `""` is not Default, and accepting it would store a level no harness
+    // declares. The message names the parameter and how to say Default.
+    const err = refusal(() =>
+      apply({ "deep-dive": write({ params: { ...PINNED, reasoningEffort: "" } }) }),
+    );
+    expect(err.message).toContain("reasoningEffort");
+  });
+
   it("accepts the OTHER harness for the same model — the dual-harness choice a role can express", () => {
     const { byName } = apply({
       "deep-dive": write({ params: { ...PINNED, harnessId: "codex", reasoningEffort: "high" } }),

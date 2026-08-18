@@ -25,6 +25,13 @@ instead (req 2).
    harness, the service, the billing mode, the model and the reasoning level. A role is complete
    on its own: starting one needs nothing added to it.
 
+   **`Default` is one of the reasoning levels a role can name**, and it means what it already
+   means in the composer's own picker: run at whatever level the role's harness runs at when
+   ShipIt passes no reasoning flag. A role at `Default` is complete — starting it still needs
+   nothing added — so this is not an exception to this requirement. The role editor offers the
+   same set of levels the composer offers for the same harness, and it offers them in the same
+   order.
+
 2. **The reviewer is a role, and it is the one role whose params ShipIt resolves.** Asking for a
    review and asking for any other role are the same action: name the role. What sets the
    reviewer apart is not its kind but its params — they are **automatic** rather than pinned, so
@@ -201,6 +208,33 @@ other agent settings already do.
 _None._
 
 ## Resolved questions
+
+- 2026-08-18 — **May a role's reasoning level be `Default`, as it can be in the composer?**
+  **Chosen: yes.** Req 1 amended in the same change.
+
+  The human, on finding the role editor's level picker offering a different option set from the
+  composer's: *"when I pick the effort directly in the input field, I see the default. So for me
+  as the user, it is the role. It is the default role that the current harness provides."*
+
+  **The agent argued the wrong side first, and the shape of the error is worth keeping.** It read
+  `Default` as "the absence of a level" and therefore as incompatible with req 1's *complete unit*
+  — but that is the **storage encoding** (no flag ⇒ no value), not the thing the user picks. In
+  the composer, `Default` is a listed, selectable, labelled option and has been since docs/217. A
+  requirement about what a role *is* was being decided by how the level happened to be stored.
+
+  Neither req 1 nor req 7 actually forbade it. A role at `Default` needs nothing added at the
+  moment of use, which is all req 1 asks (and req 4 restates). ShipIt substitutes nothing for it,
+  which is all req 7 asks — it passes no flag, which is precisely what the role says to do.
+
+  **The reviewer keeps the strict rule, and that is not an inconsistency.** docs/261 req 5 leaves
+  `ReviewerPin.reasoningEffort` required because ShipIt derives the reviewer's harness *per
+  review*: `Default` there would name no harness and could mean a different level on each run. A
+  pinned role names its harness (req 6), so its `Default` is unambiguous.
+
+  Two consequences fell out and are part of the change: a **new** role now opens at `Default`
+  rather than at whichever level the harness declared first (a new Claude role opened on "Low", a
+  new Codex one on "None" — an arbitrary answer to a question nobody had been asked), and a
+  harness declaring **no** levels can now carry a role at all.
 
 - 2026-08-15 — **When only the model is overridden, may ShipIt move the service and billing mode to
   wherever that model lives?** **Chosen: no — refuse, naming the parameter.** Put to the human as a

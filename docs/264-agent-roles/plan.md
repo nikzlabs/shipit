@@ -47,11 +47,27 @@ tuple.
 
 ```
 role   = { name, description?, prompt?, params }
-params = { kind: "pinned", harnessId, serviceId, billingMode, modelId, reasoningEffort }
+params = { kind: "pinned", harnessId, serviceId, billingMode, modelId, reasoningEffort? }
        | { kind: "auto" }                                    // the shipped reviewer — reqs 2, 7
 ```
 
-Every field of a `pinned` tuple is required, the harness included (reqs 1, 6).
+Every field of a `pinned` tuple is required except the level, the harness
+included (reqs 1, 6).
+
+**`reasoningEffort` is optional, and absent means `Default`** (req 1's
+2026-08-18 resolved question) — run at whatever level the named harness runs at
+when ShipIt passes no reasoning flag, which is what an absent level already
+means in `AgentSpawnOptions` and in the composer's picker. The absence *is* the
+value: it is never written as `undefined` or `""`, so it survives the credential
+store's JSON round-trip, and `role-settings.ts` refuses a blank rather than
+reading it as Default. A new role opens at `Default`, and a level that the
+newly-chosen harness does not declare drops to `Default` rather than to that
+harness's first level.
+
+`ReviewerPin.reasoningEffort` stays **required** (docs/261 req 5), and the
+asymmetry is load-bearing: ShipIt derives the reviewer's harness per review, so
+`Default` there would name no harness and could mean a different level each run.
+A pinned role names its harness (req 6), so its `Default` is unambiguous.
 
 - **`name`** — **any name the user types, with only uniqueness enforced.** No token shape, no
   case rule, no length rule beyond what storage needs; a name that needs quoting on a command line
