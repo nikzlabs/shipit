@@ -50,6 +50,7 @@ import {
   resolveWorkerBaseDigest as resolveWorkerBaseDigestFn,
   resolveWorkerNodeVersion as resolveWorkerNodeVersionFn,
   prepareOverlaySpecs as prepareOverlaySpecsFn,
+  resolveSiblingOverlayDepDirs as resolveSiblingOverlayDepDirsFn,
   preparePnpmStore as preparePnpmStoreFn,
   type OverlayProvisionerDeps,
 } from "./container-overlay-provisioner.js";
@@ -1704,6 +1705,26 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     requireProvisioned?: boolean;
   }): Promise<DepDirOverlaySpec[]> {
     return prepareOverlaySpecsFn(this.overlayDeps(), opts);
+  }
+
+  /**
+   * #2426 — the overlay pairs a SIBLING container (a plugin companion CLI's
+   * invocation container) should nest under its copy of the working tree.
+   *
+   * Reads this session's agent-container record and only falls back to
+   * re-derivation when there is none; see `resolveSiblingOverlayDepDirs` for the
+   * reasoning. The `provisioned` argument is supplied here rather than by the
+   * caller so the record lookup and the fallback cannot be wired up out of step.
+   */
+  async resolveSiblingOverlayDepDirs(opts: {
+    sessionId: string;
+    workspaceDir: string;
+    session: Pick<SessionInfo, "remoteUrl" | "kind">;
+  }): Promise<{ depDir: string; volumeName: string }[]> {
+    return resolveSiblingOverlayDepDirsFn(this.overlayDeps(), {
+      ...opts,
+      provisioned: this.provisionedOverlayDepDirs(opts.sessionId),
+    });
   }
 
   /**

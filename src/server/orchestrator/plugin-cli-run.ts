@@ -179,15 +179,23 @@ export interface PluginCliDeps {
    * container. Absent in dev, in local mode and in tests — all places where
    * there is no overlay and nothing to nest.
    *
-   * **It re-derives from `shipit.yaml`; it does not read back what the agent
-   * container actually mounted** — nothing exposes that, and the creation-time
-   * specs are not kept anywhere a later call can reach. So editing
-   * `agent.dep-dirs` mid-session makes this answer and the container's mounts
-   * disagree until the container is recreated (an edit to `dep-dirs` takes
-   * effect next session by design — docs/183). Re-deriving is still the better
-   * of the two: it CONVERGES on the container's next recreate, where a value
-   * frozen once per session would stay wrong for good. Reviewed and accepted
-   * rather than overlooked (independent review, this branch).
+   * **It reads back what the agent container actually mounted** (#2426), and
+   * re-derives from `shipit.yaml` only when there is no container record to
+   * read. That reverses an earlier decision here, so the reversal is recorded
+   * rather than quietly made: this doc used to state that re-derivation was
+   * reviewed and accepted because nothing exposed the container's mounts, and
+   * because a value resolved once would "stay wrong for good" while a
+   * re-derivation at least converges on the container's next recreate.
+   *
+   * Both halves of that premise have expired. `provisionedOverlayDepDirs`
+   * exposes the mounts, and it is scoped to the CONTAINER rather than the
+   * session — a recreate rebuilds it from the new specs, so it converges on
+   * precisely the event the old argument relied on, while ALSO agreeing with
+   * the agent in between. The live workspace does not: flipping the pnpm
+   * signals mid-session (a `pnpm-lock.yaml` lands) makes the re-derivation
+   * answer `[]` for a session whose agent container still holds live overlays,
+   * which restores the empty `/project/node_modules` this whole mechanism
+   * exists to remove. See `resolveSiblingOverlayDepDirs`.
    */
   overlayDepDirs?: () => Promise<readonly { depDir: string; volumeName: string }[]>;
   timeoutMs?: number;
