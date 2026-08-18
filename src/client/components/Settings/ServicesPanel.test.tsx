@@ -122,6 +122,23 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("credential-row-cred_2")).toBeInTheDocument();
   });
 
+  it("cuts neither a card's name nor a credential's label", () => {
+    // Two labels for one service differ only at their END — an ellipsis there
+    // leaves two rows reading identically, which is what a narrow panel used to
+    // draw. Both wrap now; jsdom cannot measure a clip, so the class that would
+    // cause one is what is pinned.
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "zai", billingMode: "key", via: "string", label: "GLM (Z.ai) (ZAI_API_KEY)" }),
+      route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", label: "GLM (Z.ai) (ZAI_CODING_PLAN_KEY)" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("credential-row-cred_1").querySelector(".truncate")).toBeNull();
+    expect(screen.getByTestId("credential-row-cred_2").querySelector(".truncate")).toBeNull();
+    expect(screen.getByTestId("service-card-zai:key").querySelector("h3")?.className).not.toContain(
+      "truncate",
+    );
+  });
+
   it("gives no card a way of its own to add a credential (req 17)", () => {
     // This asserted the opposite until req 17: "Add another" on a multi-
     // credential card, "Add account" on an account-backed one. Both are gone,

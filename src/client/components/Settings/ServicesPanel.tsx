@@ -1065,6 +1065,13 @@ function addServiceDialogWidth(step1: boolean, harnessCount: number): string {
  * only information next to the name it is about, so the alternative — dropping
  * the table on a narrow screen, or letting a column crush — loses either the
  * answer or the question.
+ *
+ * **`overflow-x` only, and it must stay that way.** The vertical scroll belongs
+ * to the dialog, one level up. Adding `overflow-y` here — or a child that scrolls
+ * vertically — puts the sticky column inside two scrolling ancestors, which is
+ * the Chromium configuration where `position: sticky` quietly stops sticking:
+ * the names would scroll away under the ticks with nothing in the layout to say
+ * why.
  */
 const STEP_1_SCROLLER = "overflow-x-auto";
 
@@ -1812,7 +1819,9 @@ function AddServiceDialog({
                 className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 data-testid={`add-service-mode-${m.kind}`}
               >
-                <span className="truncate">{MODE_LABEL[m.kind]}</span>
+                {/* Wraps, like the service names one step earlier: the label is
+                    what the button is, and the count beside it is `shrink-0`. */}
+                <span className="min-w-0 break-words">{MODE_LABEL[m.kind]}</span>
                 <span className="shrink-0 text-(--color-text-tertiary)">
                   {m.models.length} model{m.models.length === 1 ? "" : "s"}
                 </span>
