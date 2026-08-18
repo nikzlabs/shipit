@@ -61,11 +61,12 @@ They are recorded here as requirements, not relitigated.
    case). Revisit under planning#435 if subscription mode turns out to have
    real levels. *(Reworded 2026-08-18 from the original stop-and-report
    branch — see Resolved questions.)*
-9. **Launch model set: grok-4.6 first-class, plus the key-mode defaults.**
-   grok-4.6 ("the top model") must be probed live and supported; the
-   grok-4.20-0309 reasoning/non-reasoning pair (the CLI's own key-mode
-   default line) ships alongside it. Real prices and context windows come
-   from the live `/v1/models` API, never sentinels.
+9. **Launch model set: grok-4.6 first-class, plus grok-4.3 and the
+   key-mode defaults.** grok-4.6 ("the top model") must be probed live and
+   supported; grok-4.3 (added 2026-08-18) and the grok-4.20-0309
+   reasoning/non-reasoning pair (the CLI's own key-mode default line) ship
+   alongside it. Real prices and context windows come from the live
+   `/v1/models` API, never sentinels.
 
 ## Open questions
 
@@ -83,7 +84,10 @@ None.
   need to probe and support it."* Recorded as req 9: grok-4.6 is
   first-class and gets a live probe; the 4.20 pair (my recommended
   key-mode defaults, not rejected) ships alongside. If the intent was
-  grok-4.6 *only*, strike the pair from req 9.
+  grok-4.6 *only*, strike the pair from req 9. **Amended later the same
+  day**: Nik added grok-4.3 to the set ("let's also add Grok 4.3") — and
+  the pair staying was implicitly confirmed by the follow-up being an
+  addition, not a replacement.
 
 - **2026-08-18 — Metered-only launch (the former conditional open
   question).** Nik postponed subscription verification (it requires a paid

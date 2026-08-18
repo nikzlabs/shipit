@@ -218,9 +218,10 @@ session-title side-call rides every run (OpenCode-class cost noise); on
 
 - `id: "grok"`, `name: "Grok Build"`, `binary: "grok"`. New vendor
   `ServiceDef` **xai** with `storageEnv: "XAI_API_KEY"` (already declared in
-  the dev compose `x-shipit-secrets`); models per req 9: `grok-4.6`,
-  `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning` — context
-  1M (4.20 pair; 4.6 per API), prices translated from the live `/v1/models`
+  the dev compose `x-shipit-secrets`); models per req 9: `grok-4.6` (500k
+  ctx, premium tier), `grok-4.3` (1M ctx, budget tier — added by Nik
+  2026-08-18), and `grok-4.20-0309-reasoning` / `-non-reasoning` (1M ctx,
+  budget tier, the key-mode defaults) — prices translated from the live `/v1/models`
   price fields against xAI's published pricing page at implementation time
   (`catalogue.test.ts` rejects sentinels; raw capture in
   `/persist/grok-capture/models.json`).
