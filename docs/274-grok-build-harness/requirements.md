@@ -52,18 +52,38 @@ They are recorded here as requirements, not relitigated.
    including the full silent-sites list, and every declared
    `AgentCapabilities` flag is honest — confirmed against observed CLI
    behavior, not documentation.
-8. **Reviewer wiring stays valid.** Grok Build declares reasoning levels it
-   actually offers, and `REVIEWER_DEFAULT_EFFORT` names one of them
-   (`reviewer-model.test.ts` constraint). If live verification finds no
-   reasoning control at all, integration stops for a reviewer-default design
-   decision before any recipe step (docs/266 Phase 0 blocker semantics).
+8. **Reviewer wiring stays valid — via the no-levels mechanism extension.**
+   Key-mode Grok offers no reasoning-effort levels (the flag is silently
+   dropped; reasoning is a model-id choice), so Grok declares an honest
+   empty reasoning list, and the reviewer-default mechanism is extended so
+   a zero-levels harness is valid (its `REVIEWER_DEFAULT_EFFORT` entry
+   empty/absent; guard tests updated to accept that shape for exactly this
+   case). Revisit under planning#435 if subscription mode turns out to have
+   real levels. *(Reworded 2026-08-18 from the original stop-and-report
+   branch — see Resolved questions.)*
+9. **Launch model set: grok-4.6 first-class, plus the key-mode defaults.**
+   grok-4.6 ("the top model") must be probed live and supported; the
+   grok-4.20-0309 reasoning/non-reasoning pair (the CLI's own key-mode
+   default line) ships alongside it. Real prices and context windows come
+   from the live `/v1/models` API, never sentinels.
 
 ## Open questions
 
-None. (The reviewer-wiring and launch-model-set questions raised 2026-08-18
-are pending Nik's answers in-session; receipts land here when answered.)
+None.
 
 ## Resolved questions
+
+- **2026-08-18 — Reviewer wiring with a zero-levels harness (the docs/266
+  design decision).** Asked with options; Nik chose **"Extend the mechanism
+  now"**: the reviewer-default mechanism learns to accept a harness with no
+  reasoning levels, Grok launches with an honest empty list, revisited
+  under planning#435. Req 8 reworded accordingly.
+- **2026-08-18 — Launch model set.** Asked with options (recommendation was
+  the grok-4.20 pair only); Nik answered: *"4.6 is the top model and we
+  need to probe and support it."* Recorded as req 9: grok-4.6 is
+  first-class and gets a live probe; the 4.20 pair (my recommended
+  key-mode defaults, not rejected) ships alongside. If the intent was
+  grok-4.6 *only*, strike the pair from req 9.
 
 - **2026-08-18 — Metered-only launch (the former conditional open
   question).** Nik postponed subscription verification (it requires a paid
