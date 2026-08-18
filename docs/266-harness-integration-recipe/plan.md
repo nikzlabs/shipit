@@ -173,6 +173,15 @@ are **silent**: no compile error and no existing test fails if you miss them.
 - New vendor → new `ServiceDef` in `catalogue/services.ts` (real prices and
   context windows; `catalogue.test.ts` rejects sentinels). New wire format →
   new `ApiStyle` member (`catalogue/types.ts:28`).
+- A new `ServiceDef`'s `storageEnv` name(s) must also be declared in the
+  `dev` compose service's `x-shipit-secrets` block (`docker-compose.yml`) —
+  that block is what injects an outer-Settings key into dogfood sessions, so
+  a missing name makes the service untestable in dogfood. Guard-tested:
+  `scripts/seed-inner-credentials.test.ts` fails the build naming the
+  missing key — do it in the same commit as the `ServiceDef`, not at test
+  time. **Never** add a service credential to the `onboarding` block: exact
+  membership is asserted there, because an injected key is adopted at boot
+  and permanently stamps the fresh instance as onboarded (docs/257).
 - `catalogue.test.ts` harness invariants (≥1 style, ≥1 credential target,
   native service exists, every joined model resolves style + endpoint) must
   pass.

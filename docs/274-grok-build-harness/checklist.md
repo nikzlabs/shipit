@@ -20,6 +20,9 @@ the expansion of every line, with file pointers and gotchas, is in
 **2 — Catalogue**
 - [ ] `HarnessDef` row (+ `ServiceDef`/`ApiStyle` for a new vendor or wire
       format)
+- [ ] New-vendor `storageEnv` declared in the `dev` compose service's
+      `x-shipit-secrets` block (guard-tested; never in `onboarding`) —
+      for Grok: `XAI_API_KEY` on the xAI `ServiceDef`
 - [ ] `<X>_TOOL_NAMES`
 
 **3 — Install & images**
