@@ -34,10 +34,16 @@ function makeRunner(): ContainerSessionRunner {
 function priv(runner: ContainerSessionRunner): {
   isDepInputChange(paths: string[]): boolean;
   maybeReinstallForDepChange(): void;
+  /** Stands in for the worker's SSE `install_done` / `install_error`. */
+  signalInstallComplete(ok?: boolean): void;
+  /** True once `runInstall` has armed the completion promise. */
+  _installInFlight: boolean;
 } {
   return runner as unknown as {
     isDepInputChange(paths: string[]): boolean;
     maybeReinstallForDepChange(): void;
+    signalInstallComplete(ok?: boolean): void;
+    _installInFlight: boolean;
   };
 }
 
@@ -282,6 +288,68 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
       await runner.runInstall(["./build.sh"]);
 
       expect(runner.dependencyGap).toBeNull();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("clears the gap when the install actually ran and succeeded", async () => {
+    // The sibling of the marker-skip case, and a DIFFERENT code path: the POST
+    // returns `{ started: true }` and the outcome arrives later over SSE, so the
+    // clear hangs off the awaited completion rather than the response.
+    vi.useRealTimers();
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      // `running: true` on the status probe keeps the reconnect resync from
+      // synthesizing its own completion, so this test drives the real one.
+      res.end(JSON.stringify(req.url === "/install" ? { started: true } : { running: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      const runner = makeRunner();
+      runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+      runner.setDepReinstallInputs(["./build.sh"], []);
+      runner.notifyWorkspaceRewritten("rebase");
+      expect(runner.dependencyGap).not.toBeNull();
+
+      const install = runner.runInstall(["./build.sh"]);
+      // Stand in for the worker's `install_done`, which the SSE stream would
+      // normally deliver.
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      priv(runner).signalInstallComplete(true);
+
+      expect(await install).toEqual({ ok: true });
+      expect(runner.dependencyGap).toBeNull();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("keeps a gap that a FAILED install did not answer", async () => {
+    // The mirror of the test above, and the reason the clear cannot simply hang
+    // off "an install finished": a failed one is exactly when the gap is real.
+    vi.useRealTimers();
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/install" ? { started: true } : { running: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      const runner = makeRunner();
+      runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+      runner.setDepReinstallInputs(["./build.sh"], []);
+      runner.notifyWorkspaceRewritten("rebase");
+
+      const install = runner.runInstall(["./build.sh"]);
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      priv(runner).signalInstallComplete(false);
+
+      expect(await install).toEqual({ ok: false });
+      expect(runner.dependencyGap).toMatchObject({ reason: "not-content-keyed" });
     } finally {
       server.close();
     }

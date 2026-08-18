@@ -1705,6 +1705,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * Resolver for the in-flight install promise — fulfilled when the worker
    * SSE stream delivers `install_done` or `install_error`, or when the
    * worker reports the install was skipped (marker present).
+   *
+   * Also governs the dependency-gap lifecycle (nikzlabs/shipit#2429): a second
+   * concurrent caller JOINS this promise rather than re-entering `runInstall`,
+   * so it never reaches `clearDependencyGap` itself. That is not a hole — the
+   * first caller clears the gap on the runner, which is the state both of them
+   * (and the service list) read.
    */
   private _installComplete: Promise<{ ok: boolean }> | null = null;
   private _resolveInstallComplete: ((result: { ok: boolean }) => void) | null = null;
@@ -1895,6 +1901,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
     await this._workerReady;
     if (this._disposed) {
+      // Reports `ok` without having installed anything, so a dependency gap is
+      // neither recorded nor cleared here (nikzlabs/shipit#2429). Both are right: this
+      // runner is being torn down, and its replacement runs `setupServiceManager`
+      // → `runInstall` against a fresh container, so there is no state for a gap
+      // to describe and none to carry forward.
       this.signalInstallComplete();
       return { ok: true };
     }

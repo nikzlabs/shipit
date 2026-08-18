@@ -182,6 +182,11 @@ is the loud half. It is still reported here because that covers only gated
 services and never names the tree movement as the cause — which is the fact the
 person reading the failure is missing.
 
+The notice is deduped on `(reason, rewrite)`, not on reason alone. Deduping on
+reason would mean a rollback days after the first notice is silent — the same
+class of failure this removes — and `pre-turn-reset`, the one label that could
+repeat on its own, fires once per merged branch rather than once per turn.
+
 Auto-reinstalling the non-keyable case instead was rejected: its `null` deps hash
 can never match the marker, so every rewrite would mean a full codegen/build from
 scratch. Deferring is defensible; the notice is what makes it honest, and the

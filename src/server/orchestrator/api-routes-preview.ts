@@ -56,7 +56,10 @@ export async function registerPreviewRoutes(
     // `failure` does: a service row cannot explain a failure whose cause is that
     // the tree moved under an install that did not re-run. Sourced from the
     // RUNNER, not the manager, because it is a fact about the session's install
-    // rather than about its compose stack.
+    // rather than about its compose stack. A session with a manager but no live
+    // runner reports no gap, which is the right answer rather than a tolerated
+    // one: the gap describes what a RUNNING container has installed, and the
+    // next start installs against the tree as it now stands.
     const gap = deps.runnerRegistry.get(request.params.id)?.dependencyGap ?? null;
     return {
       services: mgr.getServices(),
