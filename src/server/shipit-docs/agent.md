@@ -22,8 +22,11 @@ you supply is the name:
 If the role you need does not exist, say so — the user creates it in Settings.
 And if repository policy hands you a **complete target** (a command naming every
 parameter it runs on), pass it through **unchanged**: that is a different
-invocation and it stays available. What you may never do is assemble one
-yourself.
+invocation and it stays available. A complete target names the harness, the
+service, the billing mode, the model, and `--effort` exactly where the harness
+declares reasoning levels — a harness that declares none has no `--effort` to
+name, and naming one there is refused. What you may never do is assemble a
+complete target yourself.
 
 ## When to use it
 
@@ -155,6 +158,10 @@ chose, not a gap: the role runs at whatever level its harness runs at when no
 the same rule as every other parameter, and only a level the user asked for is
 yours to relay.
 
+A harness listed with **no reasoning levels** takes no `--effort` at all: it has
+no such parameter, a complete target on it is the other four flags, and naming a
+level there is refused rather than dropped.
+
 Both take `--json`. Neither is an invitation to assemble a target from scratch: a
 role plus an override does the same job in less.
 
@@ -172,7 +179,8 @@ one-shot run does not: **a parent to complete a partial call from.**
 | Path | What it runs on |
 |---|---|
 | `shipit agent run --role NAME` | the role, with anything you overrode |
-| `shipit agent run` (no role) | **refused** — a one-shot run has nothing to complete itself from |
+| `shipit agent run` (no role, complete target) | exactly what the call names — reserved for a target the user or repository policy handed you |
+| `shipit agent run` (no role, partial) | **refused**, naming the missing flags — a one-shot run has nothing to complete itself from |
 | `shipit session create --role NAME` | the role, resolved once at creation; the child then routes like any other session |
 | `shipit session create` (no role) | **inherited from you**, with any parameter you named overriding it |
 

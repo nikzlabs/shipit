@@ -90,9 +90,11 @@ export interface RoleOverrides {
  *    overridden (req 10). Available to both commands. The role supplies
  *    everything the caller did not name; for the shipped reviewer ShipIt
  *    resolves the params instead (req 2).
- *  - **`explicit`** — no base at all, so the call must name all five itself.
- *    Available to both commands. Kept implemented for a repository that holds a
- *    complete target of its own (req 15), and no longer the shape ShipIt teaches.
+ *  - **`explicit`** — no base at all, so the call must name every parameter the
+ *    named harness has: the four identity flags always, the reasoning level
+ *    exactly where the harness declares levels (docs/275 req 2). Available to
+ *    both commands. Kept implemented for a repository that holds a complete
+ *    target of its own (req 15), and no longer the shape ShipIt teaches.
  *  - **`inherit`** — the **parent session** is the base (`shipit session create`
  *    only, because a one-shot run has no parent). This is the shipped
  *    `--model X` form docs/261 req 10 guarantees, and it is now one of the
@@ -120,8 +122,14 @@ export type SpawnTarget =
       serviceId: string;
       billingMode: BillingMode;
       modelId: string;
-      /** The reasoning level — part of the call, never the harness's default. */
-      reasoningEffort: string;
+      /**
+       * The reasoning level — part of the call, never the harness's default,
+       * wherever the harness declares levels. A harness that declares none has
+       * no level parameter at all (docs/275 req 2), so the field is absent
+       * there — and only there: `resolveSpawnTarget` refuses an omission on a
+       * level-having harness and a named level on a level-less one.
+       */
+      reasoningEffort?: string;
     }
   | { kind: "inherit"; overrides: RoleOverrides };
 

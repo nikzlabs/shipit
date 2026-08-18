@@ -3265,6 +3265,11 @@ describe("runShim — agent run", () => {
   // docs/261 req 7 — the refusal the whole design exists for. A half-specified
   // call used to be completed from a stored per-harness default the caller could
   // not see; now it names what is missing and runs nothing.
+  //
+  // docs/275 — the local missing list covers the four flags the shim can judge
+  // without the catalogue. Whether `--effort` is required is a per-harness fact
+  // (a harness may declare no levels), so the shim states the condition and the
+  // server owns the answer.
   it("refuses an incomplete explicit call, naming every missing flag", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
@@ -3272,12 +3277,37 @@ describe("runShim — agent run", () => {
       "agent", "run", "--agent", "codex", "--model", "gpt-5.6-sol", "--prompt-file", file,
     ]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--service");
-    expect(out.stderr).toContain("--billing-mode");
-    expect(out.stderr).toContain("--effort");
+    expect(out.stderr).toContain("missing --service, --billing-mode");
+    expect(out.stderr).toContain("--effort is also required where the harness declares reasoning levels");
     // and it points at the path that needs no parameters at all
     expect(out.stderr).toContain("--role reviewer");
     expect(out.calls).toHaveLength(0);
+  });
+
+  // docs/275 req 2 — a four-flag call is complete on a harness that declares no
+  // reasoning levels, so the shim must not demand `--effort` locally: the
+  // payload posts with the key absent and the server validates per harness.
+  it("posts a role-less call without --effort, leaving the key absent (docs/275)", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run([
+      "agent", "run",
+      "--agent", "grok", "--service", "xai", "--billing-mode", "key",
+      "--model", "grok-4.6", "--prompt-file", file,
+    ], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "ok", truncated: false, durationMs: 10, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({
+      agentId: "grok",
+      serviceId: "xai",
+      billingMode: "key",
+      modelId: "grok-4.6",
+    });
+    expect(out.calls[0].body).not.toHaveProperty("reasoningEffort");
   });
 
   it("refuses a billing mode that is neither sub nor key", async () => {

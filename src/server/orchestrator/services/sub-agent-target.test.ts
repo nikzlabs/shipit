@@ -145,6 +145,96 @@ describe("parseSubAgentSpawnTarget — the explicit path (docs/261 req 7)", () =
   });
 });
 
+/**
+ * docs/275 — completeness is per-harness: `--effort` is part of a complete call
+ * exactly where the harness declares reasoning levels. Grok declares none
+ * (docs/274 req 8, `capabilities.reasoning.options: []`), so a four-flag call
+ * naming it is complete — the shape the docs/274 Phase 10 run found
+ * unassemblable. Against the REAL catalogue, deliberately: whether grok has
+ * levels is a statement about that catalogue, and a fixture could disagree
+ * with what ShipIt does.
+ */
+describe("parseSpawnTarget — a harness with no reasoning levels (docs/275)", () => {
+  /** A complete grok call: the four identity flags, no effort to name. */
+  const GROK_FULL = {
+    agentId: "grok",
+    serviceId: "xai",
+    billingMode: "key",
+    modelId: "grok-4.6",
+  };
+
+  it("accepts the four identity flags as a complete call (req 2)", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(parseSubAgentSpawnTarget(GROK_FULL)).toEqual({
+      kind: "explicit",
+      harnessId: "grok",
+      serviceId: "xai",
+      billingMode: "key",
+      modelId: "grok-4.6",
+    });
+  });
+
+  it("still refuses an incomplete call, without asking for --effort (req 4)", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    const body: Record<string, unknown> = { ...GROK_FULL };
+    delete body.modelId;
+    try {
+      parseSubAgentSpawnTarget(body);
+      throw new Error("expected a refusal");
+    } catch (err) {
+      const message = (err as ServiceError).message;
+      expect(message).toContain("--model");
+      // The one flag this harness cannot take must not be demanded of it.
+      expect(message).not.toContain("--effort");
+    }
+  });
+
+  it("refuses a blank --effort as an empty value rather than reading it as absence (req 3)", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(() => parseSubAgentSpawnTarget({ ...GROK_FULL, reasoningEffort: "  " })).toThrow(
+      /--effort was given an empty value/,
+    );
+  });
+
+  it("lets a named effort ride through to resolution, which owns the refusal", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(parseSubAgentSpawnTarget({ ...GROK_FULL, reasoningEffort: "high" })).toEqual({
+      kind: "explicit",
+      harnessId: "grok",
+      serviceId: "xai",
+      billingMode: "key",
+      modelId: "grok-4.6",
+      reasoningEffort: "high",
+    });
+  });
+
+  it("reads the complete four-flag call as explicit even over a parent (req 5)", async () => {
+    // One parser, both commands: on `session create` this used to fall into the
+    // inherit path, where a parent's effort could be completed onto a harness
+    // that cannot take one.
+    const { parseSpawnTarget } = await import("./sub-agent-target.js");
+    expect(parseSpawnTarget(GROK_FULL, { parentBase: true })).toEqual({
+      kind: "explicit",
+      harnessId: "grok",
+      serviceId: "xai",
+      billingMode: "key",
+      modelId: "grok-4.6",
+    });
+  });
+
+  it("keeps the conservative five-flag message when no harness is named at all", async () => {
+    // With no `--agent` there is nothing to consult for effort's existence, and
+    // the caller's first problem is the missing harness anyway.
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    try {
+      parseSubAgentSpawnTarget({ serviceId: "xai" });
+      throw new Error("expected a refusal");
+    } catch (err) {
+      expect((err as ServiceError).message).toContain("--effort");
+    }
+  });
+});
+
 describe("parseSpawnTarget — the role path with overrides (docs/264-agent-roles reqs 10, 13, 18)", () => {
   it("accepts a role on its own, with nothing overridden", async () => {
     const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
@@ -425,6 +515,138 @@ describe("resolveSpawnTarget", () => {
         { credentialStore: storeWith([]) },
       ),
     ).toThrow(/ludicrous/);
+  });
+
+  // docs/275 req 2 — the motivating acceptance case: a fully-specified grok
+  // target validates end to end, with no effort to name because none exists.
+  // This is what unblocks the docs/274 Phase 10 "`shipit agent run` both
+  // directions" item without requiring a configured grok role.
+  it("resolves a complete target on a harness that declares no levels (docs/275)", async () => {
+    const { parseSubAgentSpawnTarget, resolveSubAgentSpawnTarget } = await import(
+      "./sub-agent-target.js"
+    );
+    const resolved = resolveSubAgentSpawnTarget(
+      parseSubAgentSpawnTarget({
+        agentId: "grok",
+        serviceId: "xai",
+        billingMode: "key",
+        modelId: "grok-4.6",
+      }),
+      { harnessId: "claude" },
+      { credentialStore: storeWith([]) },
+    );
+    expect(resolved.harnessId).toBe("grok");
+    expect(resolved.selection).toEqual({
+      serviceId: "xai",
+      billingMode: "key",
+      modelId: "grok-4.6",
+    });
+    // The absence of the KEY, not an undefined value: absence is what makes the
+    // spawn pass no reasoning flag (`AgentSpawnOptions` reads it that way).
+    expect("reasoningEffort" in resolved).toBe(false);
+  });
+
+  // docs/275 req 3 — the role path's shipped rule, adopted: a level named on a
+  // harness that declares none is a claim that is false about the harness, and
+  // dropping it would run something other than what was asked for.
+  it("refuses an effort named on a harness that declares no levels (docs/275)", async () => {
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        {
+          kind: "explicit",
+          harnessId: "grok",
+          serviceId: "xai",
+          billingMode: "key",
+          modelId: "grok-4.6",
+          reasoningEffort: "high",
+        },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([]) },
+      ),
+    ).toThrow(/declares no reasoning levels/);
+  });
+
+  // docs/275 req 4 — widening completeness must not open a gap on the harnesses
+  // that DO declare levels: an omission there is still an incomplete call, even
+  // when the target arrives hand-built rather than through the parse edge.
+  it("refuses an omitted effort on a harness that declares levels (docs/275)", async () => {
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        {
+          kind: "explicit",
+          harnessId: "codex",
+          serviceId: "openai",
+          billingMode: "sub",
+          modelId: "gpt-5.6-sol",
+        },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([]) },
+      ),
+    ).toThrow(/must name --effort/);
+  });
+
+  // docs/275 — a typo'd harness is named as what it is, instead of falling into
+  // the API-style message (which blames a coherence problem the caller does not
+  // have).
+  it("refuses an unknown harness by name (docs/275)", async () => {
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        {
+          kind: "explicit",
+          harnessId: "grokk" as never,
+          serviceId: "xai",
+          billingMode: "key",
+          modelId: "grok-4.6",
+        },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([]) },
+      ),
+    ).toThrow(/Unknown agent: grokk/);
+  });
+
+  /**
+   * docs/275 req 3's sibling, pinned so the two stay symmetric. The explicit
+   * path's new "declares no reasoning levels" refusal was adopted FROM the role
+   * path, so a level overridden onto a no-levels role must refuse too — one
+   * rule, reached two ways. The role path's own rule predates docs/275
+   * (`roles.ts`); what was untested is that it holds for the harness this
+   * feature exists for, which is exactly where a divergence would hide.
+   */
+  it("refuses an --effort override on a role pinned to a no-levels harness (docs/275)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    const XAI_KEY = route("xai", "key");
+    const grokRole = {
+      name: "grok-hand",
+      params: {
+        kind: "pinned" as const,
+        harnessId: "grok" as never,
+        serviceId: "xai",
+        billingMode: "key" as const,
+        modelId: "grok-4.6",
+      },
+    };
+    // The bare role runs — a role on a no-levels harness is complete with one
+    // field fewer (docs/274 req 8), which is the premise docs/275 generalizes.
+    const bare = resolveSubAgentSpawnTarget(
+      { kind: "role", role: "grok-hand", overrides: {} },
+      { harnessId: "claude" },
+      { credentialStore: storeWith([XAI_KEY], {}, [grokRole]), env: {} },
+    );
+    expect(bare.harnessId).toBe("grok");
+    expect("reasoningEffort" in bare).toBe(false);
+    // Overriding a level onto it is the same false claim about the harness the
+    // explicit path refuses.
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        { kind: "role", role: "grok-hand", overrides: { reasoningEffort: "high" } },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([XAI_KEY], {}, [grokRole]), env: {} },
+      ),
+    ).toThrow(/no reasoning levels/);
   });
 
   // docs/261 req 6 — the role resolves to a complete reviewer without the caller

@@ -111,6 +111,8 @@ function makeDeps(opts: {
   credentialRoutes?: { id: string; serviceId: string; billingMode: "sub" | "key"; via: string; status: string; priority: number; isPrimary: boolean; label: string; createdAt: number; updatedAt: number }[];
   /** docs/264-agent-roles req 8 — standing instructions stored on the role being started. */
   rolePrompt?: string;
+  /** docs/275 — override the registry's eligible set where a test spawns a harness the default rows don't cover. */
+  eligibleModels?: { serviceId: string; serviceName: string; billingMode: string; modelId: string; label: string }[];
 }) {
   const session: FakeSession | null =
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
@@ -213,7 +215,7 @@ function makeDeps(opts: {
             // docs/261 req 7 — and it is what an EXPLICIT call is checked
             // against: a harness told to run a model no credential of its own
             // offers is refused rather than rerouted.
-            eligibleModels: [
+            eligibleModels: opts.eligibleModels ?? [
               {
                 serviceId: "openai",
                 serviceName: "OpenAI",
@@ -802,10 +804,11 @@ describe("runSubAgent — happy path", () => {
     );
   });
 
-  // Neither field has an "omit it" branch any more. A reviewer's level is part
-  // of what a reviewer IS (req 5) and an explicit call must name one (req 7), so
-  // a spawn that passed no `--effort` flag — the old unset-default behaviour —
-  // is no longer reachable.
+  // The model has no "omit it" branch any more, and the effort's absence is a
+  // FACT rather than an unset default: a reviewer's level is part of what a
+  // reviewer IS (req 5), an explicit call on a level-having harness must name
+  // one (req 7), and only a harness that declares no levels runs with the key
+  // absent — because there is no flag to pass there (docs/275 req 2, below).
   it("always passes a model and an effort — there is no unset default left", async () => {
     const { deps, runner } = makeDeps({});
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
@@ -813,6 +816,44 @@ describe("runSubAgent — happy path", () => {
     const arg = calls[0][0];
     expect(arg.reasoningEffort).toBe("high");
     expect(arg.model).toBe("gpt-5.6-sol");
+  });
+
+  /**
+   * docs/275 req 2 — the motivating acceptance case, through the whole service:
+   * a fully-specified target on a harness that declares no reasoning levels
+   * (grok, docs/274 req 8) validates and spawns, with `reasoningEffort` absent
+   * from the spawn options — the absence of the KEY is what makes the adapter
+   * pass no reasoning flag. This is the plumbing the docs/274 Phase 10
+   * "`shipit agent run` both directions" item was structurally blocked on.
+   */
+  it("spawns a complete target on a no-levels harness with the effort key absent (docs/275)", async () => {
+    const { deps, runner } = makeDeps({
+      eligibleModels: [{
+        serviceId: "xai", serviceName: "xAI", billingMode: "key",
+        modelId: "grok-4.6", label: "Grok 4.6",
+      }],
+      credentialRoutes: [{
+        id: "xai-key", serviceId: "xai", billingMode: "key", via: "string",
+        status: "ready", priority: 0, isPrimary: true, label: "test", createdAt: 0, updatedAt: 0,
+      }],
+    });
+    const res = await runSubAgent(deps, "s1", {
+      target: {
+        kind: "explicit",
+        harnessId: "grok",
+        serviceId: "xai",
+        billingMode: "key",
+        modelId: "grok-4.6",
+      },
+      prompt: "review",
+      depth: 0,
+    });
+    expect(res.status).toBe("success");
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    expect(arg.agentId).toBe("grok");
+    expect(arg.model).toBe("grok-4.6");
+    expect("reasoningEffort" in arg).toBe(false);
   });
 
   /**

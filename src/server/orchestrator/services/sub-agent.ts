@@ -632,11 +632,12 @@ export async function runSubAgent(
       prompt,
       spawnId,
       depth,
-      // docs/261 reqs 5 + 7 — a reviewer and an explicit call both name a level.
-      // docs/264 req 1 adds the case that does not: a **role at Default**, where
-      // absent means "pass no flag" and the harness uses its own level — which
-      // covers docs/274's harness that declares none, since there is no flag to
-      // pass there either. `AgentSpawnOptions.reasoningEffort` has always read
+      // docs/261 reqs 5 + 7 — a reviewer and an explicit call both name a level
+      // wherever the harness declares levels. Two cases legitimately do not: a
+      // **role at Default** (docs/264 req 1), and an **explicit call on a
+      // harness that declares none** (docs/275 req 2 — docs/274's Grok). In
+      // both, absent means "pass no flag" and the harness uses its own level.
+      // `AgentSpawnOptions.reasoningEffort` has always read
       // an absent value that way, so this passes straight through. Spread rather
       // than assigned, so Default stays the ABSENCE of the key. The RESOLVED
       // model, so what runs and what is recorded are the same by construction.

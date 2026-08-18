@@ -193,7 +193,10 @@ each — read it rather than naming a model from memory.
 **Name no role and YOU are the base.** This is the shipped behaviour and it is
 unchanged: the child inherits your harness, model and reasoning level, and any
 parameter you *did* name overrides that. Set one only when the user asks for a
-specific backend or model — e.g. "do this part with Codex".
+specific backend or model — e.g. "do this part with Codex". (A call that names
+**every** parameter is a complete target with nothing left to inherit — it is
+validated as such, exactly as on `shipit agent run`; `--effort` belongs to it
+only where the named harness declares reasoning levels.)
 
 Inheritance is per-parameter, and the rules are deliberately not a role's:
 
