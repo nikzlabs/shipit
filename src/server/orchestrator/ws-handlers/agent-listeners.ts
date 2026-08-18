@@ -1600,6 +1600,52 @@ export function wireAgentListeners(
       // message. No-op off the live-steer path.
       if (runner) requeueUndeliveredSteers(runner, emitToViewers);
 
+      // planning#438 — a turn can END in an errored `agent_result` while having
+      // streamed nothing at all: grok and opencode synthesize the result when
+      // the CLI dies before producing one, and codex maps a failed
+      // `turn/completed` the same way. `receivedResult` is then true, so the
+      // executor's no-result row and the dispatch retry hook (`onNoResultExit`)
+      // both stand down — and the persist below writes only the (empty)
+      // accumulated groups. The user's message got silence on reload; the only
+      // explanation lived in the emit-only wire event. A terminal "failed" is
+      // transcript content (CLAUDE.md "Chat transcript content MUST be
+      // persisted"), so record a persisted error row in-band — the
+      // `buildTurnMessages` below folds it in via `recordedCards` at its true
+      // position. Skipped when the turn streamed any visible content (the
+      // quota promotion above can set `error` to the turn's own assistant
+      // text, which a row here would duplicate), when the user interrupted
+      // (an interrupt is not a failure, mirroring `turnErrored` below), and
+      // when the auth handler or the missing-conversation path already
+      // persisted the actionable explanation for this same death.
+      const resultError = (event as { error?: string }).error;
+      const turnHasVisibleContent =
+        (runner?.chatMessageGroups ?? []).some((g) => g.text || g.toolUse.length > 0);
+      if (
+        resultError
+        && !turnHasVisibleContent
+        && !(runner?.wasInterrupted ?? false)
+        && !sawAuthRequiredThisTurn
+        && !missingConversationDetected
+      ) {
+        if (runner) {
+          emitChatCard(
+            runner,
+            { type: "error", message: resultError, sessionId: usageSessionId },
+            { role: "assistant", text: `Error: ${resultError}`, isError: true },
+            { chatHistoryManager: deps.chatHistoryManager, sessionId: usageSessionId },
+          );
+        } else {
+          // No runner to record on — persist directly so the row still
+          // survives reload, and emit so an attached viewer sees it live.
+          emitToViewers({ type: "error", message: resultError });
+          deps.chatHistoryManager.append(usageSessionId, {
+            role: "assistant",
+            text: `Error: ${resultError}`,
+            isError: true,
+          });
+        }
+      }
+
       // Persist each message group as a separate assistant entry so that
       // reloaded chat history shows the same message boundaries as live
       // streaming. Per-turn usage is no longer attached to the last group —

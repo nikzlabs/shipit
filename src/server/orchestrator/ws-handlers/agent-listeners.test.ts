@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { DatabaseManager } from "../../shared/database.js";
+import { ChatHistoryManager } from "../chat-history.js";
 import { SessionRunner } from "../session-runner.js";
 import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
 import { AGENT_NOT_AUTHENTICATED_MESSAGE } from "./agent-auth-handler.js";
@@ -414,6 +416,121 @@ describe("wireAgentListeners", () => {
       agent.emit("event", { type: "agent_result" } as AgentEvent);
 
       expect(marked).toEqual([]);
+      runner.dispose({ force: true });
+    });
+  });
+
+  describe("errored result with no streamed content persists an error row (planning#438)", () => {
+    // The shape of a CLI that died at startup: grok/opencode synthesize the
+    // terminal result from process exit, codex maps a failed `turn/completed`
+    // — either way an `agent_result` arrives carrying `error` with zero
+    // stream events before it. `receivedResult` is then true downstream, so
+    // the executor's no-result row and the dispatch retry both stand down;
+    // the listener itself must leave the persisted explanation.
+    const startupDeath = {
+      type: "agent_result",
+      status: "error",
+      sessionId: "cli-session",
+      error: "Grok exited with code 1 before producing a result",
+    } as AgentEvent;
+    const errorRow = {
+      role: "assistant",
+      text: "Error: Grok exited with code 1 before producing a result",
+      isError: true,
+    };
+
+    function wire(d = deps()) {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      runner.running = true;
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, d };
+    }
+
+    it("records a persisted, finalized error row for a CLI startup death", () => {
+      const { agent, runner, d } = wire();
+
+      agent.emit("event", startupDeath);
+
+      const calls = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      const finalRows = calls[calls.length - 1][1] as unknown[];
+      expect(finalRows).toContainEqual(expect.objectContaining(errorRow));
+      expect(d.chatHistoryManager.finalizeInProgress).toHaveBeenCalledWith("session-1");
+      runner.dispose({ force: true });
+    });
+
+    it("the error row survives a reload — real history round-trip", () => {
+      // Same emission, but through a REAL ChatHistoryManager: what `load`
+      // returns is exactly what `GET /history` rehydrates after a page
+      // reload, which is the surface the silent-empty-turn bug lived on.
+      const d = deps();
+      d.chatHistoryManager = new ChatHistoryManager(new DatabaseManager(":memory:")) as never;
+      const { agent, runner } = wire(d);
+
+      agent.emit("event", startupDeath);
+
+      const loaded = (d.chatHistoryManager as unknown as ChatHistoryManager).load("session-1");
+      const row = loaded.find((m) => m.isError);
+      expect(row).toMatchObject(errorRow);
+      // Finalized — not an in_progress row the next turn's replaceInProgress
+      // would delete.
+      expect(row?.inProgress).toBeUndefined();
+      runner.dispose({ force: true });
+    });
+
+    it("adds no row when the turn streamed visible content", () => {
+      const { agent, runner, d } = wire();
+
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "text", text: "Partial progress before the crash." }],
+      } as AgentEvent);
+      agent.emit("event", {
+        type: "agent_result",
+        status: "error",
+        sessionId: "cli-session",
+        error: "API Error: 500",
+      } as AgentEvent);
+
+      const calls = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls;
+      const finalRows = calls[calls.length - 1][1] as { isError?: boolean }[];
+      expect(finalRows.some((m) => m.isError)).toBe(false);
+      expect(d.chatHistoryManager.append).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
+    it("adds no row when the same turn already failed authentication", () => {
+      // The auth handler owns the persisted, actionable explanation on that
+      // path (agent-auth-handler.ts); a second generic row would duplicate it.
+      const { agent, runner, d } = wire();
+
+      agent.emit("auth_required");
+      agent.emit("event", startupDeath);
+
+      const calls = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls;
+      const rows = calls.flatMap((c) => c[1] as { isError?: boolean; text?: string }[]);
+      expect(rows.filter((m) => m.isError && m.text === errorRow.text)).toHaveLength(0);
+      runner.dispose({ force: true });
+    });
+
+    it("adds no row for a user-interrupted turn", () => {
+      const { agent, runner, d } = wire();
+      runner.wasInterrupted = true;
+
+      agent.emit("event", startupDeath);
+
+      const calls = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls;
+      const rows = calls.flatMap((c) => c[1] as { isError?: boolean }[]);
+      expect(rows.some((m) => m.isError)).toBe(false);
       runner.dispose({ force: true });
     });
   });
