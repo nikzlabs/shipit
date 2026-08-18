@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { nativeServiceForHarness, selectionExists } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
+import { buildAgentRerouteNotice } from "./agent-reroute-notice.js";
 import {
   conformSelectionToAgent,
   describeSelectionMove,
@@ -595,6 +596,11 @@ export async function registerRoutes(
       // carries none (docs/142 Problem C; quick-session regression).
       let perConnectionAgentId: AgentId;
       let selectedModel: string | undefined;
+      // planning#389 — set when the reconciliation below moves an unpinned session
+      // off the harness the browser explicitly asked for. Delivered on the first
+      // turn (see the persist block), never emitted from here, so it costs nothing
+      // on the overwhelmingly common connect where nothing is rerouted.
+      let agentRerouteNotice: string | undefined;
       // docs/252 phase 8 (req 13) — resolve a retired model to its successor
       // BEFORE anything else reads the row. Without this the self-heals below
       // see an id no harness lists and drop the session onto `models[0]`, which
@@ -626,6 +632,12 @@ export async function registerRoutes(
         // pick. The product rule (docs/142 C): the model is the user's only real
         // control, so the **model is authoritative** — derive the agent that
         // owns it. This is the server-side guard against the Opus→gpt-5.5 switch.
+        //
+        // …and it applies only where the two genuinely CONFLICT. docs/252 made a
+        // harness pick a real control of its own for any model more than one
+        // harness can speak, so "authoritative" cannot mean "the model re-decides
+        // the harness every connect" any more; it means the model wins the cases
+        // where the pair cannot both be honoured. See the membership guard below.
         const model = selectedModel;
         // docs/272-user-selectable-roles reqs 8, 13 — **a role's harness is never re-derived**,
         // and this is the one place that would have done it behind the user's
@@ -642,11 +654,77 @@ export async function registerRoutes(
         // user chose. Nothing to derive, so nothing is derived — which is
         // docs/264 req 6's rule reaching the one path that predates it.
         const roleDecidesHarness = !!session.roleName;
-        const modelOwner = model && !roleDecidesHarness
+        // planning#389 / docs/252 — MEMBERSHIP, not the single "owner" the
+        // registry-order lookup above answers with. That ambiguity is not only the
+        // role's problem: `deepseek-v4-flash` carries three API styles, so ALL
+        // three harnesses list it and the derived owner is always Claude Code. A
+        // harness that was actually NAMED and can actually run the model is not
+        // the stale-key case this guard is for — deriving there discarded the
+        // user's own pick, persisted it two blocks down, and pinned it write-once
+        // on the first turn while the composer went on displaying the harness they
+        // chose (the client applies this same tie-break in `newSessionAgentId`, so
+        // screen and session disagreed with nothing to tell). Reproduced
+        // 2026-08-18: a session created on OpenCode with `deepseek-v4-flash` ran
+        // its whole life on Claude Code.
+        //
+        // The candidates are the harnesses somebody actually NAMED, in the same
+        // precedence `perConnectionAgentId` is built with above — the session's own
+        // row first, the query param second — since both are choices and only
+        // `defaultAgentId` is a fallback. Ordered rather than "the first one only",
+        // because the row and the param disagree exactly when the user has just
+        // moved the model: a session row still naming Claude Code, a browser asking
+        // for OpenCode, and a model only OpenCode can run is a pick to honour, not
+        // a pair to derive an unrelated third harness from.
+        //
+        // "Can run it" includes the install, exactly as `newSessionAgentId` has it:
+        // a browser key outlives a deployment that dropped the harness, and
+        // honouring one of those would pin a session whose first turn cannot start.
+        //
+        // The two sibling copies of this rule were already corrected — the client's
+        // `newSessionAgentId` (docs/166) and `createHeadlessSession`'s
+        // `explicitAgentRunsModel` (planning#304/#389). This connect handler was
+        // the third and the one that never got the fix.
+        const namedAgents = [session.agentId, requestedAgent].filter(
+          (id): id is AgentId => !!id,
+        );
+        // Gated on the role too: under a role NOTHING is reconciled, so this must
+        // not become a second way to move the harness. The role's own harness is
+        // already `session.agentId`, so honouring it would be a no-op in the case
+        // that matters — but a role whose model its harness cannot run would fall
+        // through to the query param and move the session, which is precisely what
+        // docs/272 reqs 8, 13 forbid.
+        const honouredAgent = model && !roleDecidesHarness
+          ? namedAgents.find((id) => {
+              const info = agentRegistry.get(id);
+              return info?.installed && info.capabilities.models.includes(model);
+            })
+          : undefined;
+        const modelOwner = model && !roleDecidesHarness && !honouredAgent
           ? agentRegistry.list().find((a) => a.capabilities.models.includes(model))
           : undefined;
+        if (honouredAgent) {
+          perConnectionAgentId = honouredAgent;
+        }
         if (modelOwner) {
           perConnectionAgentId = modelOwner.id;
+          // planning#389 — what is left for the derivation is the case docs/142
+          // Problem C is really about: a named harness that shares NO API style
+          // with the model. Rerouting is still the answer here (a WS upgrade
+          // cannot refuse with a 400 the way `createHeadlessSession` does without
+          // taking the session's whole channel down, and the stale `vibe-agent-id`
+          // it was written for is the majority of this input) — but it must not be
+          // SILENT. planning#389 measured the cost of silence on the headless path:
+          // a user asked for Codex, got Claude, and was billed $0.14 with
+          // `pending_agent_notice` left NULL. So the reroute now leaves the
+          // sentence for the first turn to deliver.
+          //
+          // Only when it contradicts a harness the BROWSER explicitly asked for.
+          // A reroute that lands on the requested harness is the client's own rule
+          // agreeing with the server's, which is the ordinary "user changed the
+          // model, so the harness followed" path and has nothing to announce.
+          if (model && requestedAgent && requestedAgent !== modelOwner.id) {
+            agentRerouteNotice = buildAgentRerouteNotice(requestedAgent, modelOwner.id, model);
+          }
         } else {
           const agentInfo = agentRegistry.get(perConnectionAgentId);
           if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
@@ -663,6 +741,21 @@ export async function registerRoutes(
       // `session.agentId` is immutable.
       if (!session.agentPinned && perConnectionAgentId !== session.agentId) {
         try { sessionManager.setAgentId(sessionId, perConnectionAgentId); } catch { /* ignore */ }
+        // planning#389 — gated on the same condition as the write, so the sentence
+        // is recorded exactly when the persisted harness actually CHANGES. On the
+        // next connect the session's own row names the new harness, which can run
+        // the model, so nothing is derived and nothing is re-recorded: one notice
+        // per reroute, not one per reconnect.
+        //
+        // APPENDS rather than sets — docs/221's slot is last-write-wins because
+        // every writer described the same fact (where the branch now points), and
+        // "your harness changed" is a different fact; overwriting a branch-movement
+        // or LFS notice with it would lose one of the two.
+        if (agentRerouteNotice) {
+          try {
+            sessionManager.appendPendingAgentNotice(sessionId, agentRerouteNotice);
+          } catch { /* ignore */ }
+        }
       }
       if (selectedModel && selectedModel !== sessionModel) {
         // docs/252 — persist the SELECTION. The browser's seed carries the
