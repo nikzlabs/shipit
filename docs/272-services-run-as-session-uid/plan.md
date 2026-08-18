@@ -158,16 +158,49 @@ bumping it is the supported way to make a handoff change reach existing trees.
 The superseded sentinel is pruned once the walk that supersedes it succeeds, so a
 tree does not accumulate one marker per deployment.
 
-**A half-done handoff latched.** The shared-cache branch staked its claim, then
-ran `chown -R` followed by an unguarded `chmod -R g+rwX` inside the `if` body,
-under `set -e`. A shared cache is written concurrently by every session of its
-repo — npm's `_cacache/tmp` and `_logs` churn constantly — so a path that
-vanished mid-walk killed the boot *after* the `chown` had already stamped the
-marker with the shared gid, and every later boot then read that marker as "handed
-off" and skipped. The two halves are now split by what they mean: the GROUP is
-what the handoff is for, so its failure releases the claim and the next boot
-retries; the MODE passes are best-effort, exactly as `chown_workspace`'s already
-were.
+**The writability probe locked root out of the repair, self-latchingly.** This is
+the root cause, and it was found by inspecting a live production session rather
+than by reading the code — the code reads as correct.
+
+`[ -w "$d" ] || continue` guards the loop. Its comment says `test -w` is the right
+probe "even though we are still root here", because access(2) reports EROFS
+regardless of privilege. That is true and it is not the whole rule: **root passes
+W_OK on a directory it does not own only via CAP_DAC_OVERRIDE, and the session
+container drops it.** Measured on the production host, `/proc/1/status` gives a
+bounding set of CHOWN, FOWNER, KILL, SETGID, SETUID and nothing else. So root's
+access is decided by the `other` class like anyone else's.
+
+`/dep-cache` is `0755` owned by the uid that first claimed it — 1000, from before
+docs/270 made the uid per-session — so `other` is `r-x`, root fails the probe, and
+the branch that would repair the cache is never reached. **The state that locks
+root out was created by the handoff's own first run**, so the fault is
+self-latching: docs/270's group + setgid pass and docs/271's group write have
+never executed on any deployment that ever claimed a cache under the old scheme.
+
+Observed exactly so, on 2026-08-18, from inside a live session: `/dep-cache`
+`0755 1000:1000` throughout, carrying the pre-docs/270 `.shipit-uid-1000` marker
+dated Jun 26 and **no `.shipit-gid-*` marker at all** — the docs/270 branch had
+never so much as staked its claim. A `touch` into it from the session's own uid
+(2000088, gid 1000) is denied, which is the reported `EACCES`.
+
+The absent marker is also what refutes the first explanation written here, that a
+`chmod -R` failing under `set -e` had latched a half-finished walk: that story
+requires a marker on disk, and there is none. It is recorded rather than deleted
+because it is the explanation the code alone supports, and the next reader will
+reach for it too.
+
+So the shared-cache branch now runs **before** the probe. It needs no write
+permission to decide anything: `stat` reads (root has `r-x`), and the walk needs
+CAP_CHOWN and CAP_FOWNER rather than write permission — both retained. The
+sentinel is written **as the worker** through `gosu`, after the walk, for the same
+reason the `/credentials` prep already is: root cannot create it, and the uid the
+walk has just made group-writable can. Writing it after rather than claiming
+before gives up the concurrent-boot claim (two sessions may both walk, idempotent,
+once) and buys a sentinel that can only exist if the thing it records actually
+happened — which removes the release-the-claim path entirely.
+
+The mode passes are additionally best-effort now, matching `chown_workspace`'s
+own, so a path another session unlinks mid-walk cannot kill a boot.
 
 **And an install's outcome is no longer its exit status.** `emptyDepDirsContradictingMarker`
 was applied only when deciding whether to TRUST a marker. It is now applied when
@@ -179,8 +212,9 @@ manages no dependency directory is not a failed install.
 
 ### Key files (follow-on)
 
-- `docker/session-worker/entrypoint.sh` — `HANDOFF_SCHEME`,
-  `share_cache_with_all_sessions`, `prune_stale_sentinels`.
+- `docker/session-worker/entrypoint.sh` — the shared-cache branch moved ahead of
+  the `[ -w ]` probe, `HANDOFF_SCHEME`, `share_cache_with_all_sessions`,
+  `prune_stale_sentinels`.
 - `src/server/session/install-controller.ts` — the post-install dep-dir check and
   `finishInstallFailed`.
 - `src/server/session/install-failure.ts` — `formatEmptyDepDirsFailureMessage`.

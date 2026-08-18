@@ -774,6 +774,51 @@ describe("host journal readability (#1917)", () => {
   // "your cache folder contains root-owned files" on a cache that is not
   // root-owned at all, sending the reader somewhere with no fix in it.
 
+  // Running as root defeats a 0555 stand-in, exactly as it does for the :ro
+  // test above — access(2) grants W_OK to root on a permission-bound dir *when
+  // it has CAP_DAC_OVERRIDE*, which a root test runner does and a session
+  // container does not. CI runs unprivileged, so the guard holds there.
+  it.skipIf(isRoot)("hands off a shared cache it cannot WRITE, which is the whole fault", () => {
+    // The production root cause, in one fixture. `[ -w "$d" ] || continue` was
+    // written on the premise that root passes W_OK for every read-write mount.
+    // It does not: that needs CAP_DAC_OVERRIDE, and the session container drops
+    // it (measured bounding set: CHOWN, FOWNER, KILL, SETGID, SETUID). A
+    // /dep-cache chowned away from root by the handoff's OWN first run is then
+    // `other`-class `r-x` to root, so the probe skipped it on every later boot
+    // and the branch that would repair it was never reached — self-latching, and
+    // it silently disabled docs/270's group+setgid pass and docs/271's group
+    // write on every deployment that had ever claimed a cache.
+    //
+    // The walk needs CAP_CHOWN and CAP_FOWNER, not write permission, so being
+    // unable to write the directory must NOT stop it.
+    const shared = join(tempDir(), "dep-cache");
+    mkdirSync(shared);
+    const gid = String(process.getgid?.() ?? 0);
+    chmodSync(shared, 0o555);
+    restoreWritable.push(shared);
+
+    const result = runEntrypoint([shared], "2000001", { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toEqual([`-R :${gid} ${shared}`, ...result.prepChowns]);
+  });
+
+  it("writes the shared sentinel as the WORKER, never as root", () => {
+    // Root cannot create it: no CAP_DAC_OVERRIDE, and a shared cache is not
+    // root-owned. Only the uid the walk has just made group-writable can, which
+    // is also why the sentinel can only be written AFTER the walk rather than
+    // claimed before it.
+    const shared = join(tempDir(), "dep-cache");
+    mkdirSync(shared);
+    const gid = String(process.getgid?.() ?? 0);
+
+    const result = runEntrypoint([shared], "2000001", { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.gosuPreps).toContain(`2000001:${gid} mkdir ${join(shared, gidSentinel(gid))}`);
+    expect(existsSync(join(shared, gidSentinel(gid)))).toBe(true);
+  });
+
   it("re-walks a shared cache whose sentinel is from a superseded handoff scheme", () => {
     const shared = join(tempDir(), "dep-cache");
     mkdirSync(shared);
@@ -806,7 +851,7 @@ describe("host journal readability (#1917)", () => {
     expect(existsSync(join(dir, uidSentinel(uid, gid)))).toBe(true);
   });
 
-  it("releases its claim when the shared-cache handoff fails, so the next boot retries", () => {
+  it("writes no sentinel when the shared-cache handoff fails, so the next boot retries", () => {
     const shared = join(tempDir(), "dep-cache");
     mkdirSync(shared);
     const gid = String(process.getgid?.() ?? 0);
@@ -817,12 +862,12 @@ describe("host journal readability (#1917)", () => {
     });
 
     // A boot that survives is half the requirement; the other half is that it
-    // leaves NO sentinel. Keeping one would latch the failure — the marker is
-    // stamped with the shared gid by the very walk that failed, so every later
-    // boot would read it as "already handed off" and skip.
+    // leaves NO sentinel. A sentinel is a record that the handoff HAPPENED, so
+    // it is written only after the walk returns — one that latched a failure
+    // would make every later boot skip a walk that never ran.
     expect(result.status).toBe(0);
     expect(existsSync(join(shared, gidSentinel(gid)))).toBe(false);
-    expect(result.stderr).toContain("releasing the claim");
+    expect(result.stderr).toContain("did not complete");
   });
 
   it("keeps its claim when only the shared cache's MODE pass fails", () => {

@@ -149,12 +149,21 @@ share_cache_with_all_sessions() {
 # `share_cache_with_all_sessions` take the loop variable `d` and assign it back
 # to itself, which is harmless; this one takes three arguments and is the most
 # likely to be called with something else one day, so it deliberately avoids `d`.
+#
+# A fourth argument of `worker` removes them AS THE WORKER, for a tree root
+# cannot write: no CAP_DAC_OVERRIDE, and a shared cache is not root-owned. Root
+# would silently fail every `rmdir` there and the superseded markers would
+# accumulate one per deployment.
 prune_stale_sentinels() {
-  tree="$1"; prefix="$2"; keep="$3"
+  tree="$1"; prefix="$2"; keep="$3"; as_worker="${4:-}"
   for stale in "$tree/$prefix"*; do
     [ -d "$stale" ] || continue
     [ "$stale" = "$keep" ] && continue
-    rmdir "$stale" 2>/dev/null || true
+    if [ "$as_worker" = "worker" ]; then
+      gosu "${UID_GID}:${WORKER_GID}" rmdir "$stale" 2>/dev/null || true
+    else
+      rmdir "$stale" 2>/dev/null || true
+    fi
   done
   # Explicit, because this is called from inside an `if` BODY (where `set -e` is
   # live) and a loop's status is its last command's. Bookkeeping must never be
@@ -218,14 +227,82 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
     */workspace) [ "${SHIPIT_SKIP_WORKSPACE_CHOWN:-0}" = "1" ] && continue ;;
   esac
   mkdir -p "$d"
+
+  # docs/272 — the SHARED cache is handled BEFORE the writability probe below,
+  # and that ordering is the fix rather than a preference.
+  #
+  # The probe's own comment says `test -w` is right "even though we are still
+  # root here", because access(2) reports EROFS regardless of privilege. That is
+  # true and it is not the whole rule: root passes W_OK on a directory it does
+  # not own only by way of **CAP_DAC_OVERRIDE**, and this container drops it —
+  # measured on the production host, the bounding set is CHOWN, FOWNER, KILL,
+  # SETGID, SETUID and nothing else. So root's access to a mount is decided by
+  # the `other` class like anyone else's.
+  #
+  # `/dep-cache` is 0755 and owned by the uid that first claimed it — 1000, from
+  # before docs/270 made the uid per-session. `other` is `r-x`. So root fails the
+  # probe, `continue` fires, and the branch that would repair the cache is never
+  # reached. It cannot recover on its own either: the state that locks root out
+  # was created by the handoff's OWN first run, so the fault is self-latching and
+  # every improvement since — docs/270's group + setgid, docs/271's group write —
+  # has been unreachable on every deployment that ever claimed a cache under the
+  # old scheme. Observed exactly so in production on 2026-08-18: `/dep-cache`
+  # 0755 `1000:1000` throughout, carrying the pre-docs/270 `.shipit-uid-1000`
+  # marker and no `.shipit-gid-*` marker at all, on a host where every session
+  # runs at its own uid with gid 1000 and therefore cannot write the cache.
+  #
+  # Skipping the probe for this branch is safe because the branch no longer needs
+  # write permission to decide anything: `stat` only reads (the `r-x` root does
+  # have), the walk itself needs CAP_CHOWN and CAP_FOWNER rather than write
+  # permission, and both are in the bounding set. A genuinely read-only mount
+  # simply fails the walk's `chown -R`, which is a logged retry and not a boot
+  # failure. See `share_cache_with_all_sessions`.
+  case "$d" in
+    */dep-cache)
+      marker="$d/.shipit-gid-${WORKER_GID}-v${HANDOFF_SCHEME}"
+      # Already handed off under THIS scheme and gid → nothing to do. Stat-only,
+      # so it works without write permission.
+      if [ "$(stat -c '%g' "$marker" 2>/dev/null || true)" = "$WORKER_GID" ]; then
+        continue
+      fi
+      if share_cache_with_all_sessions "$d"; then
+        # The sentinel is written AS THE WORKER, and only AFTER the walk. Root
+        # cannot create it — no CAP_DAC_OVERRIDE, and the cache is not root-owned
+        # — while the uid the walk has just made group-writable can. This is the
+        # same reason the `/credentials` prep further down runs through gosu.
+        #
+        # Writing it after the walk rather than claiming before it does lose the
+        # concurrent-boot claim: two sessions booting together may both walk. That
+        # is idempotent and costs one duplicated pass on the first boot after this
+        # change, which is the price of a sentinel that can only be written once
+        # the thing it records has actually happened. A failed walk now simply
+        # writes nothing and is retried, which replaces the release-the-claim path
+        # this branch used to need.
+        gosu "${UID_GID}:${WORKER_GID}" mkdir "$marker" 2>/dev/null || true
+        prune_stale_sentinels "$d" ".shipit-gid-" "$marker" worker
+      else
+        echo "shipit-entrypoint: shared-cache handoff for $d did not complete; it will be retried on the next boot" >&2
+      fi
+      continue
+      ;;
+  esac
+
   # A read-only mount (/uploads) can neither hold the sentinel nor be chowned, so
   # there is nothing to hand off — skip it before the sentinel logic runs. This
   # MUST stay ahead of the ownership check below: that check treats a missing
   # sentinel as "handoff not done" and falls through to `chown -R`, which then
   # fails EROFS and, under `set -e`, kills the entrypoint. The sentinel can never
-  # exist on a :ro mount, so every boot would take that path. `test -w` is the
-  # right probe even though we are still root here: access(2) reports EROFS for
-  # W_OK regardless of privilege, so a read-only mount reads as non-writable.
+  # exist on a :ro mount, so every boot would take that path.
+  #
+  # `test -w` remains the probe for the PER-SESSION mounts below, and the reason
+  # it is sound here is narrower than the reason first written down. It is not
+  # that root passes W_OK on every read-write mount — without CAP_DAC_OVERRIDE it
+  # does not (see the shared-cache branch above). It is that these mounts are
+  # created root-owned by the orchestrator and are handed to the session by this
+  # very walk, so on the boot where the walk is owed, root still owns them and
+  # passes. Once handed over, a later boot fails the probe and skips — which is
+  # the correct outcome there, because the sentinel says the handoff is done.
+  # Do NOT reuse this reasoning for a tree ShipIt does not create root-owned.
   [ -w "$d" ] || continue
   # Atomic-claim the chown via `mkdir` of a UID-stamped sentinel: on warm reuse
   # the walk is skipped (large node_modules trees), and for the shared /dep-cache
@@ -255,21 +332,6 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   # `mkdir` creates the marker as root, and the walk that follows chowns it too,
   # so the NEXT boot's check reads the handed-over value and skips.
   case "$d" in
-    */dep-cache)
-      marker="$d/.shipit-gid-${WORKER_GID}-v${HANDOFF_SCHEME}"
-      if mkdir "$marker" 2>/dev/null || [ "$(stat -c '%g' "$marker" 2>/dev/null || true)" != "$WORKER_GID" ]; then
-        if share_cache_with_all_sessions "$d"; then
-          prune_stale_sentinels "$d" ".shipit-gid-" "$marker"
-        else
-          # Release the claim rather than latch a half-done handoff: the marker
-          # is stamped with the shared gid by the very `chown -R` that failed, so
-          # leaving it would make every later boot skip a walk that never ran.
-          echo "shipit-entrypoint: shared-cache handoff for $d did not complete; releasing the claim so the next boot retries" >&2
-          rmdir "$marker" 2>/dev/null || true
-        fi
-      fi
-      continue
-      ;;
   esac
   marker="$d/.shipit-uid-${UID_GID}-${WORKER_GID}-v${HANDOFF_SCHEME}"
   if mkdir "$marker" 2>/dev/null \
