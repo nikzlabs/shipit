@@ -154,9 +154,17 @@ quoted, because the reasoning that rested on it is worth keeping.
 The seam that let it persist was a **missing test**: `plugin-compose.test.ts`
 covered a declared-root refusal under containment and an undeclared fragment in an
 *open* session, but never an undeclared fragment in a *contained* one — the exact
-case half A changed. That test now exists, and it asserts acceptance, since the
-failure mode is a refusal that takes the whole compose file and every one of the
-project's own services with it.
+case half A changed. Both halves now exist: acceptance when a worker uid is
+available (asserted as acceptance, since the failure mode is a refusal that takes
+the whole compose file and every one of the project's own services with it), and
+the surviving refusal when there is none.
+
+Both set `SHIPIT_SESSION_WORKER_UID` explicitly, and that is the point rather than
+housekeeping. The first version of the acceptance test only *read* the ambient
+variable — which a session container sets and CI does not — so it passed locally,
+failed in CI, and demonstrated nothing in either place. A test for behaviour that
+is gated on an environment variable has to own that variable, or the environment
+decides what the test means.
 
 ## 5. Key files
 
