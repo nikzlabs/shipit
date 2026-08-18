@@ -143,6 +143,29 @@ describe("install outcome — declared dep dirs must actually hold something", (
     expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(true);
   });
 
+  it("fails when ANY declared dep dir is empty, even with the others populated", async () => {
+    // The design choice, made explicit: the check is `empty.length > 0`, so one
+    // empty declaration fails the whole install. That is the incident's own
+    // shape (`game/node_modules` and `tools/debug/node_modules` were both
+    // declared) and the conservative reading — a gated service may depend on
+    // either directory, and ShipIt cannot tell which. The escape hatch is the
+    // declaration itself: a repo that does not produce a directory should not
+    // name it in `agent.dep-dirs`.
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - mkdir -p node_modules/pkg tools/node_modules\n" +
+        "  dep-dirs:\n    - node_modules\n    - tools/node_modules\n",
+    );
+    register(workspaceDir, stateDir);
+
+    const result = await runInstall(["mkdir -p node_modules/pkg tools/node_modules"]);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("tools/node_modules");
+    // And it names ONLY the offender, so the message points at the declaration
+    // to fix rather than at the whole list.
+    expect(result.message).not.toContain(" node_modules,");
+  });
+
   it("succeeds when a declared dep dir is ABSENT, not empty", async () => {
     // A repo whose install manages no dep dir at all — the default
     // `node_modules` on a project that never creates one. The skip path treats

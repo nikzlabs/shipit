@@ -187,3 +187,35 @@ manages no dependency directory is not a failed install.
 - `src/server/orchestrator/session-worker-uid.ts` — `shareTreeOnce` carries the
   same one-shot hazard and is not wrong today; the docstring says when it becomes
   wrong and what it would cost to rotate.
+
+### What the follow-on does NOT close
+
+**Copy-up preserves the lower file's OWNER, and group-write does not buy
+`chmod`.** `shareTreeWithAllSessions` hands a published overlay base generation
+over by GROUP — it must, since a base is shared by every session in its scope
+and chowning it to one session's uid would EACCES every other. Under per-session
+uids that means no session owns any base file. Group-write covers `write`,
+`unlink` and `rename` (the last two are governed by the directory), so the
+ordinary install path is fine: `npm ci` removes and re-extracts each package, and
+a file created in the upper is owned by the session that created it.
+
+What it does not cover is any operation that requires OWNERSHIP rather than
+permission — `chmod` and `utimes` with explicit times — on a file that copied up
+from the base. A postinstall step or a patcher that edits an inherited dependency
+and then marks it executable will EPERM for every session that is not the
+publishing one.
+
+This was reported alongside the incident above as the cause, and it is not: the
+failing route was `npm ci`, which never chmods a lower file. It is left open
+deliberately rather than fixed on speculation, and it has no cheap fix — the
+options are per-uid bases (which defeats sharing) or idmapped mounts.
+
+**The orchestrator-side twin of the sentinel is NOT scheme-versioned.**
+`shareTreeOnce` (`session-worker-uid.ts`), which shares the pnpm store and each
+overlay base generation, claims its tree with a gid-stamped marker and has the
+same one-shot shape. It is not wrong today — it and the group+mode walk it
+performs shipped together, so no tree is claimed under a version of the walk that
+did less — so it is deliberately left alone rather than bumped, because rotating
+it costs a synchronous multi-gigabyte re-walk at container create. Read §6 as
+fixing the entrypoint's sentinels only; the asymmetry is intended, and the
+condition under which it stops being safe is recorded on that function.
