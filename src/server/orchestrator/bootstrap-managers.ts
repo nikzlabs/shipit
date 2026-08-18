@@ -759,20 +759,18 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           // docs/183 — the overlay dep dirs this session's agent container
           // attaches, so `/project` (and `/plugin` under `repo: self`) hold the
           // dependencies `agent.install` produced rather than the empty mount
-          // point they are on the volume. `requireProvisioned` for the reason
-          // the compose path passes it: the volumes are created with the agent
-          // container, and referencing one that does not exist fails the whole
-          // run rather than degrading.
+          // point they are on the volume. #2426 — resolved from the agent
+          // container's RECORD, falling back to re-derivation only when there is
+          // no record to read; see `resolveSiblingOverlayDepDirs` for why the
+          // record wins and what changed to make it available here.
           overlayDepDirs: async () => {
             const live = sessionManager.get(sessionId);
             if (!live || !isOverlayEligible(live)) return [];
-            const specs = await containerManager.prepareOverlaySpecs({
+            return containerManager.resolveSiblingOverlayDepDirs({
               sessionId,
               workspaceDir,
               session: live,
-              requireProvisioned: true,
             });
-            return specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }));
           },
           ...(containerManager.workspaceVolumeName
             ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
