@@ -558,12 +558,28 @@ const OVERLAY_TMP_GRACE_MS = 60 * 60 * 1000; // 1 hour
  * so it never appears in a repo-url-keyed set — a naive extension would delete every
  * live base on the first run.
  *
- * If the docker queries fail, `liveMountedOverlayBaseGenerations` returns an empty
- * set: the sweep then relies solely on `resumableScopeHashes`, which still protects
- * every current-runtime base. The only thing lost on a docker failure is the
- * protection for an old-runtime base of a still-running old-image container — and
- * the sweep is fire-and-forget, retried next pass, so a transient failure just
- * defers that one reclaim.
+ * **If the live-mount reading is INCOMPLETE, the whole sweep is skipped** (planning#439).
+ * It used to proceed on the empty set `liveMountedOverlayBaseGenerations` returned on
+ * any docker failure, justified by "`resumableScopeHashes` still protects every
+ * current-runtime base". That justification was wrong twice over, and both halves
+ * corrupted running sessions on prod:
+ *
+ *   - The union protects a scope's *directory*, and `currentGen` protects only the
+ *     *pointer's* generation. NOTHING protects a SUPERSEDED generation a running
+ *     container still pins — and the session that publishes generation N+1 is by
+ *     construction the session still mounted on N, so this fires by design rather
+ *     than by rare race. One failed probe deleted `8769b50c…/g272` under six running
+ *     containers at once, with g269–g271 equally exposed.
+ *   - `resumableScopeHashes` is built from the non-warm session set, so a WARM-POOL
+ *     session's scope has no second line of defence at all: the same failed probe
+ *     took the whole `45dab20e664868ce` scope dir out from under a warm container
+ *     that had been up 23 minutes.
+ *
+ * Neither failure surfaces as an error in the affected session — its dep dir just
+ * loses every file that lived only in the lower layer, mid-turn. Deferring a reclaim
+ * costs disk until the next pass (this runs per session activation and hourly);
+ * deleting a live lowerdir costs a corrupted, un-selfrepairable session. So an
+ * unreadable live set means "sweep nothing", never "nothing is mounted".
  */
 async function sweepOrphanedOverlayBases(
   stateDir: string,
@@ -581,7 +597,17 @@ async function sweepOrphanedOverlayBases(
 
   // The exact `<hash>/g<N>` generations a running container pins right now, and the
   // scope hashes derived from them — unioned with the resumable-session bases.
-  const liveGenKeys = await liveMountedOverlayBaseGenerations(runDocker);
+  const live = await liveMountedOverlayBaseGenerations(runDocker);
+  if (!live.complete) {
+    // Fail CLOSED: an incomplete reading is indistinguishable from "nothing is
+    // mounted", and BOTH arms below (whole-scope removal, superseded-generation
+    // reaping) treat an absent key as a licence to delete. See the header.
+    console.warn(
+      "[disk-janitor] overlay live-mount check incomplete — skipping the overlay-base sweep this pass",
+    );
+    return 0;
+  }
+  const liveGenKeys = live.keys;
   const liveScopeHashes = new Set(resumableScopeHashes);
   for (const key of liveGenKeys) liveScopeHashes.add(key.split("/")[0]);
 
@@ -679,6 +705,73 @@ async function sweepStaleBaseGenerations(
 }
 
 /**
+ * The result of the live-mount probe: the `<hash>/g<N>` keys it read, AND whether
+ * that reading can be trusted. The second field is not decoration — an incomplete
+ * set is byte-identical to "nothing is mounted", which is a licence to delete.
+ */
+interface LiveOverlayMounts {
+  /** Base generations pinned as a `lowerdir` by a RUNNING container, as `<hash>/g<N>`. */
+  keys: Set<string>;
+  /**
+   * True when every running container and every overlay volume was read (a target
+   * that disappeared mid-scan counts as read — it pins nothing). False when any
+   * reading was lost, which makes `keys` a LOWER BOUND rather than the live set.
+   */
+  complete: boolean;
+}
+
+/**
+ * A container/volume named in one batch that is gone by the time the next command
+ * runs. Routine on a busy host — a session container exits between `docker ps` and
+ * `docker container inspect` — and NOT a gap in the reading: something that no
+ * longer exists pins no lowerdir.
+ */
+const DOCKER_VANISHED_RE = /no such (container|volume|object)/i;
+
+/**
+ * `docker <verb> inspect` over many names, tolerant of ones that vanish mid-scan.
+ *
+ * The batch form exits non-zero if ANY named target is gone — **even though it
+ * printed valid output for every survivor** — and that output is then reachable
+ * only by parsing the rejection message. This function retries one target at a
+ * time instead: a vanished target fails alone and is skipped, and only a failure
+ * we cannot explain clears `complete`.
+ *
+ * Reading the batch's partial stdout out of the error string would be the cheaper
+ * fix and is deliberately not done: it couples the sweep to `defaultRunDocker`'s
+ * message format, and a misparse here deletes live data.
+ */
+async function inspectTolerantOfVanished(
+  runDocker: (args: string[]) => Promise<string>,
+  baseArgs: string[],
+  names: string[],
+  kind: string,
+): Promise<{ out: string; complete: boolean }> {
+  try {
+    return { out: await runDocker([...baseArgs, ...names]), complete: true };
+  } catch (err) {
+    console.warn(
+      `[disk-janitor] batched docker ${kind} inspect failed (overlay live-mount check),` +
+      " re-reading individually:",
+      getMessage(err),
+    );
+  }
+  const lines: string[] = [];
+  let complete = true;
+  for (const name of names) {
+    try {
+      lines.push(await runDocker([...baseArgs, name]));
+    } catch (err) {
+      const message = getMessage(err);
+      if (DOCKER_VANISHED_RE.test(message)) continue; // exited mid-scan — pins nothing.
+      console.warn(`[disk-janitor] docker ${kind} inspect failed for ${name}:`, message);
+      complete = false;
+    }
+  }
+  return { out: lines.join("\n"), complete };
+}
+
+/**
  * planning#195 — enumerate the overlay base generations currently pinned as a
  * `lowerdir` by a RUNNING session-worker container. This is the deterministic
  * "is this base live?" signal that replaces the old 30-day age proxy.
@@ -695,13 +788,14 @@ async function sweepStaleBaseGenerations(
  * must not keep an obsolete scope alive. Idle sessions' current-runtime bases are
  * covered by the resumable-session union in the caller.
  *
- * Returns a set of `<hash>/g<N>` keys (one per mounted base generation). Any docker
- * failure resolves to an empty set; the caller treats that conservatively (it still
- * protects current-runtime bases via the resumable-session union).
+ * A failed reading is reported as `complete: false`, NEVER as an empty set: this
+ * probe is the only protection a superseded-but-mounted generation has, and (since
+ * the union is built from non-warm sessions) the only protection a warm-pool
+ * session's scope has at all. See `sweepOrphanedOverlayBases`.
  */
 async function liveMountedOverlayBaseGenerations(
   runDocker: (args: string[]) => Promise<string>,
-): Promise<Set<string>> {
+): Promise<LiveOverlayMounts> {
   const keys = new Set<string>();
 
   let psOut: string;
@@ -709,60 +803,44 @@ async function liveMountedOverlayBaseGenerations(
     psOut = await runDocker(["ps", "-q"]);
   } catch (err) {
     console.warn("[disk-janitor] docker ps failed (overlay live-mount check):", getMessage(err));
-    return keys;
+    return { keys, complete: false };
   }
   const ids = psOut.split("\n").map((s) => s.trim()).filter(Boolean);
-  if (ids.length === 0) return keys;
+  if (ids.length === 0) return { keys, complete: true };
 
-  let inspectOut: string;
-  try {
-    inspectOut = await runDocker([
-      "container", "inspect",
-      "--format", "{{range .Mounts}}{{println .Name}}{{end}}",
-      ...ids,
-    ]);
-  } catch (err) {
-    console.warn(
-      "[disk-janitor] docker container inspect failed (overlay live-mount check):",
-      getMessage(err),
-    );
-    return keys;
-  }
+  const mounts = await inspectTolerantOfVanished(
+    runDocker,
+    ["container", "inspect", "--format", "{{range .Mounts}}{{println .Name}}{{end}}"],
+    ids,
+    "container",
+  );
   // Overlay volume names match the per-session pattern (overlay-volume.ts); only
   // session-worker agent containers mount them, so this filter selects exactly
   // the live overlay mounts without needing a label filter on `docker ps`.
   const OVERLAY_VOL_RE = /^shipit-[a-f0-9-]{12}_overlay/;
   const volNames = new Set(
-    inspectOut.split("\n").map((s) => s.trim()).filter((n) => OVERLAY_VOL_RE.test(n)),
+    mounts.out.split("\n").map((s) => s.trim()).filter((n) => OVERLAY_VOL_RE.test(n)),
   );
-  if (volNames.size === 0) return keys;
+  if (volNames.size === 0) return { keys, complete: mounts.complete };
 
-  let volOut: string;
-  try {
-    volOut = await runDocker([
-      "volume", "inspect",
-      "--format", "{{.Options.o}}",
-      ...volNames,
-    ]);
-  } catch (err) {
-    console.warn(
-      "[disk-janitor] docker volume inspect failed (overlay live-mount check):",
-      getMessage(err),
-    );
-    return keys;
-  }
+  const vols = await inspectTolerantOfVanished(
+    runDocker,
+    ["volume", "inspect", "--format", "{{.Options.o}}"],
+    [...volNames],
+    "volume",
+  );
   // `o` is `lowerdir=…/overlay-base/<hash>/g<N>,upperdir=…,workdir=…`. The scope
   // hash (16 hex) + generation appear only in the `overlay-base/` lowerdir segment;
   // the upper/work dirs live under `sessions/<id>/overlay/`, never `overlay-base/`.
   const GEN_RE = /overlay-base\/([0-9a-f]{16})\/g(\d+)/g;
-  for (const line of volOut.split("\n")) {
+  for (const line of vols.out.split("\n")) {
     GEN_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = GEN_RE.exec(line)) !== null) {
       keys.add(`${m[1]}/g${m[2]}`);
     }
   }
-  return keys;
+  return { keys, complete: mounts.complete && vols.complete };
 }
 
 /**

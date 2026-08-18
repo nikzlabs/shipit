@@ -309,12 +309,22 @@ export async function startStartupMonitors(
           // Resolved at sweep time (not boot) so each reflects the current session
           // set / runtime; both return an empty/null live-set under the
           // `OVERLAY_DEP_STORE` kill switch, keeping their sweeps inert when off.
+          //
+          // `listAllIncludingWarm`, NOT `listAll` (planning#439). Every other "all
+          // sessions" caller means the non-warm set, because a warm row is a
+          // pre-provisioned shell rather than someone's work — but disk liveness
+          // is not about whose work it is. A warm session has a running container
+          // that mounts overlay lowerdirs and plugin bases exactly like any
+          // other, and `warm = 0` filtered it out of the only union that could
+          // vouch for it: on prod a warm session's whole base scope was deleted
+          // out from under its live container, corrupting its dep dir silently.
           liveOverlayScopeHashes: () =>
-            liveOverlayScopeHashes(sessionManager.listAll(), depDirsForSession),
+            liveOverlayScopeHashes(sessionManager.listAllIncludingWarm(), depDirsForSession),
           // docs/262 req 28 — a declared plugin repository is in no repo store
           // and its bases are in no session's dep-dir scope, so both sweeps
           // would read every artifact plugins depend on as an orphan.
-          livePluginStoreArtifacts: () => livePluginStoreArtifacts(sessionManager.listAll()),
+          livePluginStoreArtifacts: () =>
+            livePluginStoreArtifacts(sessionManager.listAllIncludingWarm()),
           pnpmStoreRuntimeHash: () =>
             isOverlayEnabled() ? pnpmStoreHash(overlayRuntimeKey()) : null,
         });

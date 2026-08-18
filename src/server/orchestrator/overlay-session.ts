@@ -407,6 +407,13 @@ export function buildOverlaySpecs(args: {
  * resolver is injected so this stays pure and unit-testable; it is only consulted
  * when the feature is on (the kill-switch gate short-circuits first, so no config
  * reads happen when the store is killed off).
+ *
+ * **`sessions` MUST include warm-pool rows** (`listAllIncludingWarm`, planning#439).
+ * This function cannot enforce that — it filters what it is handed — and the
+ * default `listAll()` drops them, which is right for "whose work is this" and
+ * wrong here: a warm session's container mounts a base like any other, and a
+ * warm scope has NO other protection (the running-container probe is the only
+ * one, and a docker hiccup used to blank it).
  */
 export function liveOverlayScopeHashes(
   sessions: SessionInfo[],
