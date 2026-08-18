@@ -178,7 +178,14 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 - **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`.
 - **Update shipit-docs when changing agent-facing behavior** — when changing platform behavior visible to the agent inside session containers (preview config, shipit.yaml schema, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. These docs are baked into the session worker image at `/shipit-docs/` and are the agent's primary reference for the platform.
 
-## Code conventions
+## Responding in chat
+
+**End every substantive chat reply with a `Next steps` markdown list.** Each item names the step and opens with exactly one marker, so what is blocked on a human is never ambiguous:
+
+- **`[needs you]`** — manual work only the user can do (merge a PR, supply a credential, change a setting, make a decision). Name *precisely* what is needed, not just that something is.
+- **`[ready]`** — the agent can do it now; nothing manual blocks it. If it isn't started, say what it waits for (usually the user's go-ahead).
+
+When nothing remains, write `Next steps: none`. Pure Q&A replies (a question answered, no work in flight) don't need the list.
 
 - **ESM throughout** — `"type": "module"` in package.json. Use `.js` extensions in relative imports (e.g., `import { foo } from "./bar.js"`).
 - **Type imports** — use `import type { X } from "./path.js"` for type-only imports.
