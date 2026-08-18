@@ -250,6 +250,7 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
     // Grok too — its packages live under a scope prefix (docs/274), and a
     // deselected grok must leave neither the shim nor the payload behind.
     expect(exists(path.join(binDir, "grok"))).toBe(false);
+    expect(exists(path.join(agentCliDir, "node_modules/.bin/grok"))).toBe(false);
     expect(exists(path.join(agentCliDir, "node_modules/@xai-official/grok"))).toBe(false);
     expect(exists(path.join(agentCliDir, `node_modules/@xai-official/grok-${PLATFORM}`))).toBe(false);
     // The selected one is untouched.
