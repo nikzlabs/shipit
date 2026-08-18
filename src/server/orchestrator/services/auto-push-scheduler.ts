@@ -88,6 +88,26 @@
  * remote at all was reported as a divergence. The session branch was never
  * even the target.
  *
+ * ## …and the same misreport again, from the other side (2026-08-18)
+ *
+ * Session b77e02fe, `nicolasalt/reward-tag`: two turns' commits stayed local,
+ * both announced as *"Auto-push rejected: branch has diverged from remote"*.
+ * There was no divergence — `git ls-remote` showed the remote tip still at
+ * ShipIt's own last successful push, and `git merge-base --is-ancestor` exited
+ * 0. What actually happened is that the orchestrator's hook-less push sent Git
+ * LFS pointers without uploading their objects, and GitHub answered
+ * `GH008: unknown Git LFS object` — a rejection ending, once again, in
+ * `error: failed to push some refs`. The remedy the notice named (rebase) could
+ * not touch it, and the raw stderr reached no surface an operator could read.
+ *
+ * Two fixes came out of that, one per defect. The upload is now explicit
+ * (`shared/git-lfs-push.ts`). And the reading of a push failure is a
+ * CLASSIFICATION (`services/git.ts` `classifyPushFailure`) that refuses to
+ * assign a class on git's summary line: `failed to push some refs` alone now
+ * means `unknown`, which is reported verbatim instead of being interpreted.
+ * Every push failure is logged with its class and its full message here, before
+ * any branch decides what to make of it.
+ *
  * So the auto-push has no business running mid-rebase, exactly as the auto-COMMIT
  * side already concluded (`shared/git.ts` consults `isRebaseInProgress()` and
  * refuses). Two checks, deliberately asymmetric, because the two signals are not
@@ -132,7 +152,7 @@ import type { LogSource } from "../../shared/types.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { pushToOrigin, isGitAuthError } from "../git-utils.js";
-import { isNonFastForwardError } from "./git.js";
+import { classifyPushFailure, isNonFastForwardError, isRewriteWindowPushFailure } from "./git.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { agentLogAppend } from "../log-emit.js";
 import { getErrorMessage } from "../validation.js";
@@ -554,19 +574,29 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       // see fresh data on their next visit via forceRefreshSession).
       deps.notifyAutoPush?.(sessionId);
     } catch (err) {
-      if (isNonFastForwardError(err)) {
-        // …but is the rejection OURS, and still in flight? Two shapes reach
-        // here: a rebase that started between the pre-push check and the push,
-        // and — the one only the flag can see — the seconds between `git rebase
-        // --continue` finishing and the driver's own force-push publishing the
-        // rewritten history. Both are healed by the flow that caused them and
-        // are nothing for the user to act on, so retry rather than warn. The
-        // generic flag is safe HERE and nowhere earlier: this push has already
-        // failed, so consulting it can only delay a warning, never a push.
+      // The raw failure, named and complete, BEFORE any branch decides what to
+      // make of it. In the 2026-08-18 LFS incident the stderr git actually
+      // produced (`GH008: unknown Git LFS object`) reached no surface an
+      // operator could read — only the interpretation did, and it was wrong.
+      const failure = classifyPushFailure(err);
+      console.error(
+        `[auto-push] ${sessionId}: push failed [${failure}]: ${getErrorMessage(err)}`,
+      );
+      // Is the rejection OURS, and still in flight? Two shapes reach here: a
+      // rebase that started between the pre-push check and the push, and — the
+      // one only the flag can see — the seconds between `git rebase --continue`
+      // finishing and the driver's own force-push publishing the rewritten
+      // history. Both are healed by the flow that caused them and are nothing
+      // for the user to act on, so retry rather than warn. The generic flag is
+      // safe HERE and nowhere earlier: this push has already failed, so
+      // consulting it can only delay a warning, never a push.
+      if (isRewriteWindowPushFailure(err)) {
         const rewriting =
           deps.getRunner(sessionId)?.systemTurnInProgress === true
           || await rebaseInProgress(git, sessionId);
         if (rewriting && await deferForRewrite(git, sessionId)) return;
+      }
+      if (isNonFastForwardError(err)) {
         deferrals.delete(sessionId);
         // Branch has diverged. Three surfaces, three different jobs:
         //   - `report` — the log ring (durable, replayed to a late viewer) and
@@ -658,11 +688,27 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         );
         return;
       }
+      if (failure === "lfs") {
+        // The remote has the pointers' commits but not the objects. ShipIt now
+        // uploads them itself before every push (`shared/git-lfs-push.ts`), so
+        // reaching here means that upload failed — name LFS rather than let the
+        // reader read `pre-receive hook declined` as branch protection.
+        report(
+          sessionId,
+          "Auto-push rejected: the remote refused the push because its Git LFS objects were not "
+          + "uploaded (GH008). The commit stays in this session's local history. Run "
+          + "`git lfs push origin HEAD` in the terminal, then push again. "
+          + `Git said: ${errMsg}`,
+        );
+        return;
+      }
       report(
         sessionId,
         errMsg.includes("workflow")
           ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
-          : `Auto-push failed: ${errMsg}`,
+          // The class is in the user-visible line too: it is what tells a reader
+          // whether the message below is a divergence, a credential, or neither.
+          : `Auto-push failed (${failure}): ${errMsg}`,
       );
     }
   }

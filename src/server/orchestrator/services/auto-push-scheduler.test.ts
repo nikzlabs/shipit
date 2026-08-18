@@ -558,7 +558,12 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
       getCurrentBranch: vi.fn()
         .mockImplementationOnce(async () => "shipit/feature")
         .mockImplementationOnce(async () => { throw new Error("git is unhappy"); }),
-      push: vi.fn(async () => { throw new Error("failed to push some refs"); }),
+      // A real rejection, marker and all. The bare summary line
+      // ("failed to push some refs") deliberately no longer classifies as a
+      // divergence — see `classifyPushFailure`.
+      push: vi.fn(async () => {
+        throw new Error(" ! [rejected] shipit/feature -> shipit/feature (fetch first)\nerror: failed to push some refs");
+      }),
     });
     createAutoPushScheduler(deps).schedule(git, "s1");
 

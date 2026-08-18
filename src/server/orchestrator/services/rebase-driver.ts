@@ -31,7 +31,7 @@ import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { releaseQueuedTurn } from "../queue-drain.js";
-import { isNonFastForwardError } from "./git.js";
+import { classifyPushFailure, isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
@@ -674,7 +674,13 @@ async function tryForcePush(
     return true;
   } catch (err) {
     const errMsg = getErrorMessage(err);
-    console.error("[rebase] force push failed:", errMsg);
+    // The class rides the log line for the same reason it does in
+    // `auto-push-scheduler.ts`: it is what an operator reading `docker logs`
+    // needs to tell "the remote moved" apart from "the credential is dead" or
+    // "the LFS objects never went up" — and until 2026-08-18 the raw stderr of a
+    // rejected push was recorded nowhere at all.
+    const failure = classifyPushFailure(err);
+    console.error(`[rebase] force push failed [${failure}]:`, errMsg);
     if (isNonFastForwardError(err)) {
       runner.emitMessage({
         type: "git_push_rejected",
@@ -682,9 +688,11 @@ async function tryForcePush(
         message: "Force push rejected — remote moved since the last fetch. Try rebasing again.",
       });
     } else {
-      const text = errMsg.includes("workflow")
-        ? "Force push failed: your GitHub token needs the `workflow` scope to push GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
-        : `Force push failed: ${errMsg}`;
+      const text = failure === "lfs"
+        ? "Force push rejected: the remote refused it because its Git LFS objects were not uploaded (GH008). Run `git lfs push origin HEAD` in the terminal, then push again."
+        : errMsg.includes("workflow")
+          ? "Force push failed: your GitHub token needs the `workflow` scope to push GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
+          : `Force push failed (${failure}): ${errMsg}`;
       runner.emitMessage({ type: "github_push_result", success: false, message: text });
       runner.emitMessage(agentLogAppend("server", text));
     }
