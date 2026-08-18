@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { SubagentCall } from "./SubagentCall.js";
+// Deliberate client→session coupling (test-only): the alternative is a
+// hand-kept copy of the normalizer's output, the planning#337 anti-pattern. No
+// lint boundary blocks this today; the module is dependency-free pure TS.
 import { normalizeOpencodeToolResult } from "../../server/session/agents/opencode/opencode-tool-normalizer.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { ToolUseBlock, ToolResultBlock, SubagentEvent } from "./MessageList.js";

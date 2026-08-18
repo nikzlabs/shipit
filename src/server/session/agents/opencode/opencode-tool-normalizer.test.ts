@@ -147,6 +147,27 @@ describe("normalizeOpencodeToolResult — the task wrapper (planning#434)", () =
     ).toBe(report);
   });
 
+  it("unwraps an error-state wrapper the same way — is_error styling is carried by the result block, not the tags", () => {
+    // A wrapped error that does NOT match the regex renders raw in the error
+    // panel (`<pre>`, no markdown) — visible degradation, which is the
+    // intended pass-through stance, not a bug to blank out.
+    expect(
+      normalizeOpencodeToolResult(
+        "task",
+        '<task id="ses_1" state="error">\n<task_result>\nboom\n</task_result>\n</task>',
+      ),
+    ).toBe("boom");
+  });
+
+  it("strips the wrapper's own newlines symmetrically under CRLF", () => {
+    expect(
+      normalizeOpencodeToolResult(
+        "task",
+        '<task id="ses_1" state="completed">\r\n<task_result>\r\nhi\r\n</task_result>\r\n</task>',
+      ),
+    ).toBe("hi");
+  });
+
   it("passes an unrecognized shape through untouched — the safe direction for a CLI format change", () => {
     expect(normalizeOpencodeToolResult("task", "plain text, no wrapper")).toBe(
       "plain text, no wrapper",

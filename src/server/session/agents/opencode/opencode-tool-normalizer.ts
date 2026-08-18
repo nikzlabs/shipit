@@ -97,14 +97,18 @@ const TASK_RESULT_WRAPPER =
  * already the result block's `tool_use_id`, and error state is `is_error`.
  * Takes the RAW wire tool id (`task`), matching {@link normalizeOpencodeToolCall}'s
  * input side; every other tool's output passes through by reference.
+ *
+ * Applied at the adapter's `tool_use` mapping — the only place this wire
+ * surfaces tool results (OpenCode has no nested/parent-scoped result events).
+ * If a nested-results path ever appears, it needs its own call site.
  */
 export function normalizeOpencodeToolResult(name: string, output: string): string {
   if (name !== "task") return output;
   const match = TASK_RESULT_WRAPPER.exec(output);
   if (!match) return output;
-  // Strip exactly the one newline the wrapper adds on each side — a report
-  // that opens with indentation (a markdown code block) keeps it.
-  return match[1].replace(/^\n/, "").replace(/\n$/, "");
+  // Strip exactly the one newline the wrapper adds on each side (CRLF-safe) —
+  // a report that opens with indentation (a markdown code block) keeps it.
+  return match[1].replace(/^\r?\n/, "").replace(/\r?\n$/, "");
 }
 
 /**
