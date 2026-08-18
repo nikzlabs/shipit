@@ -143,6 +143,46 @@ several rows below.
    `GROK_AUTH_PATH`) authenticates a headless turn in a fresh container, and
    what identity/plan surfaces for `provider-account-identity.ts`.
 
+## Prior art: T3 Code's Grok integration (read 2026-08-18)
+
+[pingdotgg/t3code](https://github.com/pingdotgg/t3code) (clone at
+`/persist/refs/t3code`) drives Grok Build in production; its
+`apps/server/src/provider/{Drivers/GrokDriver,Layers/GrokProvider,acp/GrokAcpSupport,acp/XAiAcpExtension}.ts`
+are the reference. What transfers:
+
+- **They implement no login flow at all.** Auth is either `XAI_API_KEY` in
+  the env or the CLI's own cached login from a prior `grok login`
+  (`GrokAcpCliProbe.test.ts` states this as the operating assumption). This
+  validates ShipIt's design: user runs the device-code flow once, the cached
+  `~/.grok/auth.json` is then portable — inject it via the credential
+  symlinks; `XAI_API_KEY` is the metered mode. No bespoke OAuth code.
+- **The Grok agent's ACP `authenticate` advertises two method ids** —
+  `xai.api_key` and `cached_token` — and T3 picks by "is `XAI_API_KEY`
+  set". In `-p` headless the CLI resolves the same two sources implicitly
+  (our unauth probe named both).
+- **`GROK_OAUTH2_REFERRER`** env tags the OAuth flow with the integrating
+  product (they send `t3code`).
+- **They drive `grok agent stdio` (ACP), not `-p`** — evidence that the ACP
+  surface is what xAI supports for integrators. ShipIt's Claude-shaped plan
+  stays `-p --output-format streaming-json` ("NDJSON of the agent native ACP
+  session updates"), so their quirk handling predicts our stream:
+  - A private `_x.ai/session/prompt_complete` notification (carries
+    `stopReason`, optional `agentResult`) exists because the standard prompt
+    response can fail to arrive — T3 races the two. Expect the same
+    unreliable-terminal-event class OpenCode had; plan for a synthesized
+    result path and lock it in the conformance test.
+  - `stopReason` can be missing entirely (they flag it); observed vocabulary
+    `cancelled | end_turn | max_tokens | max_turn_requests | refusal`.
+  - `x.ai/ask_user_question` (sometimes wrapped in `{method, params}`)
+    carries structured questions/options/multiSelect — Grok's user-question
+    surface, relevant to the docs/272 recognition matrix.
+  - The authenticated model catalog arrives typed on session setup
+    (`SessionModelState`: `availableModels`, `currentModelId`) — likely
+    where the per-model `reasoning_efforts` vocabulary surfaces;
+    `session/set_model` switches models mid-session.
+- They present Grok as "Early Access", one built-in model row, and
+  `requiresNewThreadForModelChange: true`.
+
 ## Catalogue row, install design, adapter design
 
 Deferred until the pending items above are captured — written here before
