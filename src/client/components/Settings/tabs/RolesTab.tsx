@@ -300,7 +300,7 @@ function RoleRow({
                 <BillingModePill billingMode={resolved.billingMode} />
                 <span>
                   · {resolved.label}, running on {resolved.harnessName} at{" "}
-                  {resolved.reasoningLabel ?? resolved.reasoningEffort}
+                  {resolved.reasoningLabel ?? resolved.reasoningEffort ?? "Default"}
                 </span>
               </>
             ) : (
@@ -316,7 +316,8 @@ function RoleRow({
                   </span>
                   <BillingModePill billingMode={stored.billingMode} />
                   <span>
-                    · {stored.modelId}, on {stored.harnessId} at {stored.reasoningEffort}
+                    · {stored.modelId}, on {stored.harnessId} at{" "}
+                    {stored.reasoningEffort ?? "Default"}
                   </span>
                 </>
               )

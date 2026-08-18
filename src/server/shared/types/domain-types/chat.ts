@@ -41,22 +41,30 @@ export interface CompactionCard {
  * to the id, which is a worse label but never a wrong one (the rule
  * `client/utils/service-label.ts` already follows).
  *
- * All four are required, because req 3 makes `(service, billing mode, model)`
- * what identifies a model at all — the same id is reachable through a vendor and
- * through a gateway at different prices — and req 5 makes the reasoning level
- * part of the reviewer rather than a separate decision.
+ * The first three are required, because req 3 makes `(service, billing mode,
+ * model)` what identifies a model at all — the same id is reachable through a
+ * vendor and through a gateway at different prices.
  */
 export interface SubAgentRunTarget {
   serviceId: string;
   billingMode: BillingMode;
   modelId: string;
   /**
-   * The harness-specific level (e.g. `"high"`).
+   * The harness-specific level (e.g. `"high"`), or **absent for `Default`** —
+   * the run passed no reasoning flag and the harness used its own level.
    *
-   * Absent since docs/261 only for a card written before it. Since docs/274 it
-   * is also absent for a harness that declares no levels at all — the card then
-   * names the model without a level, which is the honest rendering, because
-   * there was no level to run at.
+   * Three ways it is absent, and the card renders them alike because they *are*
+   * alike — no flag was passed:
+   *
+   *  - a card written before docs/261, when the field did not exist;
+   *  - a harness that declares no levels at all (docs/274), where there was no
+   *    level to run at;
+   *  - a role at `Default` (docs/264 req 1), which is the general case the other
+   *    two fall under.
+   *
+   * The card records what the run actually ran on, and "no flag was passed" is
+   * that fact; naming a level here would mean resolving the harness's own
+   * default, which ShipIt does not know. Renders as "Default".
    */
   reasoningEffort?: string;
 }

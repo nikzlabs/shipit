@@ -256,10 +256,13 @@ export interface ResolvedSpawnTarget {
   harnessId: AgentId;
   selection: ModelSelection;
   /**
-   * Absent only for a harness that declares no reasoning levels (docs/274) —
-   * otherwise a role carries its own level and an explicit call the one it
-   * named. The spawn passes no effort flag when it is absent, which is what the
-   * CLI would do with a flag it silently drops anyway.
+   * Absent ⇒ `Default`: pass no reasoning flag and let the harness use its own
+   * level, which is what the CLI would do with a flag it silently drops anyway.
+   *
+   * An **explicit** call always carries one — `--effort` is among the flags a
+   * complete explicit target must name. Only the **role** path can leave it
+   * absent: because the role itself is at Default (docs/264 req 1), which
+   * includes the harness that declares no levels at all (docs/274).
    */
   reasoningEffort?: string;
   /**

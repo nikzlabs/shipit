@@ -125,7 +125,12 @@ export interface ResolvedRoleTarget {
   readonly roleName: string;
   readonly harnessId: AgentId;
   readonly selection: Readonly<ModelSelection>;
-  /** Absent iff the named harness declares no reasoning levels (docs/274). */
+  /**
+   * Absent ⇒ the role runs at `Default`: the spawn passes no reasoning flag and
+   * the harness uses its own level, which is what `AgentSpawnOptions` has always
+   * meant by an absent level. Includes the docs/274 req 8 case, where the named
+   * harness declares no levels and Default is the only possibility.
+   */
   readonly reasoningEffort?: string;
   /** The role's standing instructions (req 8), when it carries any. */
   readonly prompt?: string;
@@ -330,31 +335,44 @@ export function checkRolePinnedParams(
   // Against the level set of the harness the role NAMES. This is the one step
   // that differs from `resolveReviewerPinPatch`, and it differs in the direction
   // that matters — see this module's header.
-  const options = harness.capabilities.reasoning?.options ?? [];
-  // A harness declaring NO levels takes a role with no level — it is complete
-  // with one field fewer (docs/274 req 8). Naming one anyway stays a refusal,
-  // and it is the same refusal as before: the claim is false about the harness.
-  // What changed is only which side of it the empty set falls on. Before Grok
-  // Build this branch rejected every role on such a harness, because none
-  // existed to reject.
-  if (options.length === 0) {
-    if (params.reasoningEffort !== undefined) {
+  //
+  // **An absent level is `Default`, and Default is always valid** (docs/264
+  // req 1's 2026-08-18 resolved question) — every harness has a level it runs at
+  // when passed no flag, so there is nothing to check it against and nothing
+  // that can retire out from under it.
+  //
+  // **That subsumes docs/274 req 8 rather than replacing it.** That rule reached
+  // the same optionality from the other end: a harness declaring NO levels takes
+  // a role with no level, because it is complete with one field fewer. Such a
+  // role is at Default — the only thing it can be. The difference is only that
+  // absent is now legal on every harness, not just that one, so the empty set no
+  // longer needs a branch of its own.
+  //
+  // Naming a level on a harness that declares none stays a refusal, exactly as
+  // docs/274 left it: the claim is false about the harness. It now carries the
+  // remedy, which is the thing the user actually has to do.
+  if (params.reasoningEffort !== undefined) {
+    const options = harness.capabilities.reasoning?.options ?? [];
+    if (options.length === 0) {
       return {
         ok: false,
         kind: "catalogue",
         field: "reasoningEffort",
-        message: `${harness.name} declares no reasoning levels, so a role on it cannot name one.`,
+        message:
+          `${harness.name} declares no reasoning levels, so a role on it cannot name one. `
+          + "Use the Default level.",
       };
     }
-  } else if (!options.some((option) => option.value === params.reasoningEffort)) {
-    return {
-      ok: false,
-      kind: "catalogue",
-      field: "reasoningEffort",
-      message:
-        `"${params.reasoningEffort ?? ""}" is not a reasoning level ${harness.name} offers. `
-        + `Valid levels: ${options.map((o) => o.value).join(", ")}.`,
-    };
+    if (!options.some((option) => option.value === params.reasoningEffort)) {
+      return {
+        ok: false,
+        kind: "catalogue",
+        field: "reasoningEffort",
+        message:
+          `"${params.reasoningEffort}" is not a reasoning level ${harness.name} offers. `
+          + `Valid levels: ${options.map((o) => o.value).join(", ")}, or Default.`,
+      };
+    }
   }
   // **The credential check goes LAST, after every catalogue check has passed.**
   // Ordering is load-bearing here rather than incidental: `credential` reports
@@ -383,7 +401,14 @@ export function checkRolePinnedParams(
   return { ok: true, params: normalize(params) };
 }
 
-/** The checked tuple, rebuilt field by field so nothing a caller passed rides along. */
+/**
+ * The checked tuple, rebuilt field by field so nothing a caller passed rides
+ * along.
+ *
+ * The level is spread conditionally rather than copied: `Default` is stored as
+ * the **absence** of the key, so writing `reasoningEffort: undefined` would put
+ * an explicit `undefined` into the JSON the credential store serializes.
+ */
 function normalize(params: RolePinnedParams): RolePinnedParams {
   return {
     kind: "pinned",
@@ -913,9 +938,16 @@ function describe(params: RolePinnedParams): RoleResolved {
     modelId: params.modelId,
   };
   const harness = getHarness(params.harnessId);
-  const reasoningLabel = harness?.capabilities.reasoning?.options.find(
-    (option) => option.value === params.reasoningEffort,
-  )?.label;
+  // Both absent for a role at Default — the client renders "Default" from the
+  // absence, exactly as the composer's picker does. Naming the level here would
+  // mean resolving the harness's own default, which ShipIt does not know and
+  // must not guess (req 7).
+  const reasoningLabel =
+    params.reasoningEffort === undefined
+      ? undefined
+      : harness?.capabilities.reasoning?.options.find(
+          (option) => option.value === params.reasoningEffort,
+        )?.label;
   return {
     harnessId: params.harnessId,
     harnessName: harness?.name ?? params.harnessId,
@@ -924,7 +956,9 @@ function describe(params: RolePinnedParams): RoleResolved {
     serviceName: getService(params.serviceId)?.name ?? params.serviceId,
     modelId: params.modelId,
     label: getModel(selection)?.label ?? params.modelId,
-    reasoningEffort: params.reasoningEffort,
+    ...(params.reasoningEffort !== undefined
+      ? { reasoningEffort: params.reasoningEffort }
+      : {}),
     ...(reasoningLabel ? { reasoningLabel } : {}),
   };
 }

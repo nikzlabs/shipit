@@ -278,19 +278,40 @@ export const RESERVED_ROLE_NAME = "reviewer";
  * docs/264-agent-roles reqs 1, 6 — a role whose params the **user** pinned: the complete
  * tuple, the harness included.
  *
- * Every field is required, which is req 1's "a role is complete on its own"
- * stated in the type — with `reasoningEffort` the one field whose presence
- * follows the named harness (docs/274): a harness declaring no reasoning levels
- * has no level for a role to carry, and refusing to define a role on it at all
- * would be a restriction req 1 never asked for. Completeness means "names
- * everything there is to name", which for such a harness is one field fewer.
- * `harnessId` is the departure from {@link ReviewerPin},
- * which deliberately omits it (docs/261 req 3 derives the harness from the
- * model): a role is a *job definition*, and which agent performs the job is part
- * of the job — Claude Code driving a model and Codex driving the same model are
- * different agents. Stored and frozen, never re-derived per run, so a role whose
- * harness is uninstalled reports that it cannot run rather than quietly running
- * on another one.
+ * `harnessId` is the departure from {@link ReviewerPin}, which deliberately
+ * omits it (docs/261 req 3 derives the harness from the model): a role is a *job
+ * definition*, and which agent performs the job is part of the job — Claude Code
+ * driving a model and Codex driving the same model are different agents. Stored
+ * and frozen, never re-derived per run, so a role whose harness is uninstalled
+ * reports that it cannot run rather than quietly running on another one.
+ *
+ * **`reasoningEffort` is optional, and absent means `Default`** — the level the
+ * named harness runs at when ShipIt passes no flag, exactly as it already means
+ * in {@link AgentSpawnOptions} and in the composer's own picker
+ * (`ReasoningSelector.tsx`, where `Default` has been a listed, selectable option
+ * since docs/217).
+ *
+ * This does not weaken req 1's "a role is complete on its own". `Default` is a
+ * choice the user makes and ShipIt records, not a blank: starting such a role
+ * still needs nothing added to it (req 4), and ShipIt still substitutes nothing
+ * (req 7) — it passes no flag, which is what the role says to do. What made the
+ * level *look* required was the storage encoding (no flag ⇒ no value), and an
+ * editor built on that encoding offered a different option list from the
+ * composer for the same knob. See docs/264 req 1's resolved question.
+ *
+ * **This subsumes docs/274 req 8 rather than competing with it.** That rule
+ * reached the same optionality from the other end — a harness declaring no
+ * reasoning levels has no level for a role to carry, and refusing to define a
+ * role on it at all would be a restriction req 1 never asked for. Such a role is
+ * at `Default`, because `Default` is the only thing it can be; the difference is
+ * that absent is now legal on *every* harness, not only that one. What docs/274
+ * kept as a refusal is kept: naming a level on a harness that declares none is
+ * still false about the harness.
+ *
+ * Contrast {@link ReviewerPin}, where the level stays required: ShipIt derives
+ * the reviewer's harness **per review**, so `Default` there would name no
+ * harness and could mean a different level on each run. A pinned role names its
+ * harness (req 6), so its `Default` is unambiguous.
  */
 export interface RolePinnedParams {
   kind: "pinned";
@@ -301,7 +322,9 @@ export interface RolePinnedParams {
   modelId: string;
   /**
    * A level the *named* harness declares — validated against that one, not a
-   * derived one. Absent iff that harness declares no levels at all.
+   * derived one. Absent ⇒ `Default`: pass no flag, and let the harness use its
+   * own level. Always legal, including on a harness that declares no levels at
+   * all (docs/274 req 8), where it is the only possibility.
    */
   reasoningEffort?: string;
 }
@@ -376,7 +399,7 @@ export interface RoleResolved {
   modelId: string;
   /** Model label, not the raw id — the same string the picker shows. */
   label: string;
-  /** Absent for a harness that declares no reasoning levels (docs/274). */
+  /** Absent ⇒ the role runs at `Default` (see {@link RolePinnedParams}). */
   reasoningEffort?: string;
   /** That level's display label on this harness, when the harness declares one. */
   reasoningLabel?: string;

@@ -216,3 +216,22 @@ see it: the rule is stated in one phase and violated by another phase's layer in
       ShipIt's own working state for a ranking it performs, a pinned role is five choices the user
       made and can see. A regression test pins **both** sides, so the reviewer's relocation is not
       "fixed" away by the next reader
+
+- [x] **`Default` is a reasoning level a role can name** (req 1's 2026-08-18 resolved question).
+      The composer's picker has offered `Default` since docs/217; the role editor offered only the
+      harness's declared levels, so the same knob showed two different option sets. The level is
+      now optional end to end — absent means "pass no flag", which is what
+      `AgentSpawnOptions.reasoningEffort` has always meant — and the editor renders the composer's
+      list, `Default` first
+
+      Encoded as the **absence** of the key, never `undefined` or `""`, so it survives the
+      credential store's JSON round-trip; `role-settings.ts` refuses a blank rather than reading it
+      as Default. `applyRoleToSession` passes `null` to `setReasoning` for a Default role, because
+      `null` clears the session row and `undefined` is a no-op that would leave the session running
+      at a level the role does not name
+
+      Two arbitrary behaviours fell out with it: a **new** role opened on the harness's first
+      declared level (Claude → "Low", Codex → "None") and now opens on `Default`; a level the
+      newly-chosen harness does not declare dropped to that harness's first level and now drops to
+      `Default`. `ReviewerPin` stays required — docs/261 req 5 derives its harness per review, so
+      `Default` there would name no harness

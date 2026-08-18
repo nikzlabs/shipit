@@ -149,6 +149,12 @@ and the models each can run with the service and billing mode that serve them â€
 so you never name a model from memory that this install does not have. A role
 that cannot run right now is still listed, with the reason.
 
+A role's reasoning level may read as **`Default`**. That is a level the user
+chose, not a gap: the role runs at whatever level its harness runs at when no
+`--effort` flag is passed. Do not "complete" it with an `--effort` of your own â€”
+the same rule as every other parameter, and only a level the user asked for is
+yours to relay.
+
 Both take `--json`. Neither is an invitation to assemble a target from scratch: a
 role plus an override does the same job in less.
 

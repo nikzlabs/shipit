@@ -96,7 +96,11 @@ export function listRolesForAgent(deps: RoleDeps): AgentRoleListing[] {
           runsOn: [
             role.resolved.harnessName,
             role.resolved.label,
-            role.resolved.reasoningLabel ?? role.resolved.reasoningEffort,
+            // Both absent ⇒ the role is at **Default** (docs/264 req 1): it runs
+            // at whatever level its harness runs at with no flag. Named rather
+            // than dropped — the agent reads this to decide whether it needs an
+            // override at all, and a missing segment reads as "unknown".
+            role.resolved.reasoningLabel ?? role.resolved.reasoningEffort ?? "Default",
           ].join(" · "),
         }
       : {}),

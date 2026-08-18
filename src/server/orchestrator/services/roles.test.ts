@@ -152,6 +152,47 @@ describe("checkRolePinnedParams — the level follows the harness the ROLE names
   });
 
   /**
+   * docs/264 req 1's resolved question — `Default` is a level a role may name,
+   * and it is the one level that needs no harness to validate it.
+   */
+  it("accepts an absent level on EITHER harness — Default needs no declaration", async () => {
+    const { checkRolePinnedParams } = await import("./roles.js");
+    const deps = {
+      credentialStore: storeWith({ routes: [DEEPSEEK_KEY] }),
+      env: EMPTY_ENV,
+      isInstalled: ALL_INSTALLED,
+    };
+    const { reasoningEffort: _dropped, ...atDefault } = DEEPSEEK_ON_CLAUDE;
+    expect(checkRolePinnedParams({ kind: "pinned", ...atDefault }, deps).ok).toBe(true);
+    expect(
+      checkRolePinnedParams({ kind: "pinned", ...atDefault, harnessId: "codex" }, deps).ok,
+    ).toBe(true);
+  });
+
+  it("keeps the level ABSENT through the check, rather than filling one in (req 7)", async () => {
+    const { checkRolePinnedParams } = await import("./roles.js");
+    const { reasoningEffort: _dropped, ...atDefault } = DEEPSEEK_ON_CLAUDE;
+    const result = checkRolePinnedParams(
+      { kind: "pinned", ...atDefault },
+      { credentialStore: storeWith({ routes: [DEEPSEEK_KEY] }), env: EMPTY_ENV, isInstalled: ALL_INSTALLED },
+    );
+    expect(result.ok).toBe(true);
+    // Not `reasoningEffort: undefined` either: Default is stored as the absence
+    // of the key, and `normalize` is what has to preserve that.
+    if (result.ok) expect("reasoningEffort" in result.params).toBe(false);
+  });
+
+  it("still refuses a level the named harness does not declare, and says Default is available", async () => {
+    const { checkRolePinnedParams } = await import("./roles.js");
+    const result = checkRolePinnedParams(
+      { kind: "pinned", ...DEEPSEEK_ON_CLAUDE, harnessId: "codex", reasoningEffort: "max" },
+      { credentialStore: storeWith({ routes: [DEEPSEEK_KEY] }), env: EMPTY_ENV, isInstalled: ALL_INSTALLED },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("Default");
+  });
+
+  /**
    * The bullet this file exists for: the validator must NOT be
    * `resolveReviewerPinPatch`.
    *
@@ -388,6 +429,32 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
     expect(target.prompt).toBe("Check requirements.");
     expect(target.roleName).toBe("deep-dive");
     expect(target.overridden).toBe(false);
+  });
+
+  it("resolves a role at Default to a target with NO level — pass no flag (req 1)", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const { reasoningEffort: _dropped, ...atDefault } = DEEPSEEK_ON_CLAUDE;
+    const role = pinnedRole("deep-dive", atDefault);
+    const target = resolveRoleByName("deep-dive", {}, CLAUDE_IMPLEMENTER, deps([role]));
+    expect(target.harnessId).toBe("claude");
+    // The absence has to survive to the spawn: `AgentSpawnOptions` reads an
+    // absent level as "no flag", so anything filled in here would run the role
+    // at a level the user did not choose.
+    expect("reasoningEffort" in target).toBe(false);
+  });
+
+  it("lets a caller override a Default role onto a real level (req 10)", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const { reasoningEffort: _dropped, ...atDefault } = DEEPSEEK_ON_CLAUDE;
+    const role = pinnedRole("deep-dive", atDefault);
+    const target = resolveRoleByName(
+      "deep-dive",
+      { reasoningEffort: "max" },
+      CLAUDE_IMPLEMENTER,
+      deps([role]),
+    );
+    expect(target.reasoningEffort).toBe("max");
+    expect(target.overridden).toBe(true);
   });
 
   it("freezes the target and its selection", async () => {
