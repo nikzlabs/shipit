@@ -6,9 +6,12 @@ the expansion of every line, with file pointers and gotchas, is in
 [that recipe's plan.md](../266-harness-integration-recipe/plan.md).
 
 **Phase 0 — assess (before any code)**
-- [ ] Candidate passes the 13-point capability checklist; start-blockers
-      cleared or explicitly signed off (stream schema, auth injection,
-      pinnable install, reasoning levels)
+- [x] Candidate passes the 13-point capability checklist; start-blockers
+      cleared or explicitly signed off (stream schema: captured both
+      formats; auth: key-only launch signed off, subscription deferred to
+      planning#435; pinnable install: npm `@xai-official/grok@1.0.1`;
+      reasoning levels: none in key mode — reviewer-default no-levels
+      extension approved 2026-08-18)
 
 **1 — Types**
 - [ ] Widen `AgentId` (+ `LoginIntegrationId`/`QuotaIntegrationId` if the

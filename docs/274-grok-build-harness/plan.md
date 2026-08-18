@@ -192,13 +192,93 @@ without any POST if `/models` fails** — recorder must answer it); a
 session-title side-call rides every run (OpenCode-class cost noise); on
 5xx the CLI retries with no stdout (bound with `GROK_MAX_RETRIES`).
 
-### Still pending (the Phase 0 remainder)
+### Phase 0 closing probes (all live, key mode, 2026-08-18)
 
-5. **Session resume, `-s` pre-assignment, `--max-turns`, images, AGENTS.md
-   reading, skills disclosure probe** — live behavior.
-6. **Auth.json injection**: verify a pasted/injected `auth.json` (or
-   `GROK_AUTH_PATH`) authenticates a headless turn in a fresh container, and
-   what identity/plan surfaces for `provider-account-identity.ts`.
+- **grok-4.6 tool-tour (req 9)**: clean success in `streaming-messages-json`
+  — identical schema to the 4.20 capture, all seven tour surfaces driven
+  (`todo_write, read_file, write, search_replace, run_terminal_command,
+  grep, spawn_subagent, list_dir`), side effects verified on disk,
+  `modelUsage` keyed `grok-4.6`, $0.0865. Capture:
+  `capture-2026-08-18-grok-4.6-messages.ndjson`. Nuance: the subagent's
+  internals are NOT streamed (no event ever carried a non-null
+  `parent_tool_use_id`); only the spawn's tool_result returns — the
+  transcript shows the report, not child events.
+- **Resume verified**: `-r <id>` re-inits with the SAME `session_id` and
+  recalls turn facts. **Pre-assignment verified**: `-s <uuid>` on a new
+  conversation adopts the caller's UUID (init + result both carry it) — the
+  adapter pre-assigns ids instead of parsing them out.
+- **AGENTS.md read; skills auto-disclosed from BOTH `.grok/skills/` and
+  `.claude/skills/`** (docs/209 probe: all three markers surfaced, no
+  tools). No symlink needed; `skillsDirName: ".grok"`.
+- **Auth.json injection + account identity** — deferred to planning#435
+  with the rest of subscription mode (req 6). **Images** — unprobed;
+  `supportsImages: false` until observed (OpenCode precedent).
+
+## Catalogue row (recipe step 2)
+
+- `id: "grok"`, `name: "Grok Build"`, `binary: "grok"`. New vendor
+  `ServiceDef` **xai** with `storageEnv: "XAI_API_KEY"` (already declared in
+  the dev compose `x-shipit-secrets`); models per req 9: `grok-4.6`,
+  `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning` — context
+  1M (4.20 pair; 4.6 per API), prices translated from the live `/v1/models`
+  price fields against xAI's published pricing page at implementation time
+  (`catalogue.test.ts` rejects sentinels; raw capture in
+  `/persist/grok-capture/models.json`).
+- `styles: ["openai-chat-completions", "openai-responses"]` — both observed
+  from one CLI; chat-completions first (the explicit `-m` path the adapter
+  always drives). `spawn.endpoint`: env `GROK_XAI_API_BASE_URL`.
+- `spawn.credential`: `{ kind: "env", name: "XAI_API_KEY" }`, **no
+  `account` target** (req 6 — structurally excludes subscription modes,
+  docs/268 precedent). `spawn.model`: flag `-m`.
+- Capabilities (each grounded above): `supportsResume: true`,
+  `supportsImages: false` (unprobed), `supportsSystemPrompt: true`
+  (`--system-prompt-override`; wire-verify at implementation),
+  `reasoning: []` (req 8 — with the reviewer-default no-levels extension),
+  `supportsReview: false` at launch (unexercised as reviewer),
+  `supportsSteering: false` (one-shot argv prompt), `startsOwnTurns:
+  false`, `supportsCompaction: false` (config-driven autocompact only; no
+  on-demand trigger found), `skillsDirName: ".grok"`,
+  `skillInvocationPrefix: "/"`. Permission modes: Grok's set
+  (`default|acceptEdits|auto|dontAsk|bypassPermissions|plan`) differs from
+  Claude's → per-harness constant (recipe step 1), though headless runs
+  `--always-approve` regardless.
+
+## Adapter design (`session/agents/grok/`, Claude-shaped)
+
+- Spawn per turn: `grok -p <prompt> --output-format streaming-messages-json
+  --always-approve --no-auto-update -m <modelId> [-s <newUuid> | -r
+  <resumeId>] --cwd <workspace>` (prompt as argv, spawn array, no shell).
+  ShipIt **pre-assigns** the session UUID via `-s` on first turn, resumes
+  with `-r` after.
+- Env: `resolveAgentHome()` (`grokHome()` helper on `GROK_HOME` —
+  relocation verified) → `scrubEnvAuthForScopedHome` → `applyServiceRouting`
+  (order per `claude/process.ts`), plus `GROK_DISABLE_AUTOUPDATER=1`,
+  `DISABLE_TELEMETRY=1`, `DISABLE_ERROR_REPORTING=1`,
+  `GROK_OAUTH2_REFERRER=shipit`, and harness-compat toggles: Claude
+  **skills/rules stay on** (native `.claude/skills` disclosure, AGENTS.md),
+  Claude **mcps/hooks/agents/sessions off** and all Cursor/Codex compat
+  off (`GROK_<VENDOR>_<AREA>_ENABLED=0`) — ShipIt owns MCP config and hook
+  surfaces.
+- Event mapping: the stream is Claude's stream-json near verbatim →
+  `mapEvent` mirrors `claude/adapter.ts` (system/init → `agent_init`;
+  assistant/user envelopes pass through; terminal `result` → `agent_result`
+  with disjoint tokens + `total_cost_usd`), extended for xAI extras
+  (`stop_reason`, `modelUsage`) and Grok's tool-name vocabulary
+  (`GROK_TOOL_NAMES`, registry work per docs/272 — `todo_write` drives the
+  task panel, `search_replace`/`write` the diff surfaces, `spawn_subagent`
+  the subagent card with result-only report).
+- MCP: `writeMcpConfig(ctx)` renders a per-turn TOML (`[mcp_servers.<name>]`
+  `command`/`args`/`env`, shape verified via `grok mcp add`) delivered via
+  `GROK_CONFIG` → `{runtimeEnv, cleanup}`; **verify the CLI honors
+  `GROK_CONFIG` early at implementation** (strings-sourced, not yet
+  exercised). MCP tool subset for the shipit bridge: adapter's own list.
+- Failure discipline (from observed behavior): on upstream 5xx the CLI
+  retries with **no stdout** — keep Claude's warn-only watchdog narration;
+  bound with `GROK_MAX_RETRIES` if turn-length pathology shows up. The
+  title side-call cost noise is accepted (no disable switch found).
+  Interrupt/kill paths follow Claude's contract; conformance fixtures
+  replay the real captures including a truncated-stream synthesized-result
+  case.
 
 ## Prior art: T3 Code's Grok integration (read 2026-08-18)
 
