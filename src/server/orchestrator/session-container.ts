@@ -271,8 +271,15 @@ export interface SessionContainer {
    * (`shipit.yaml`'s `dep-dirs`, the pnpm signals, `git check-ignore`), all of
    * which the agent can change mid-session — and a disagreement there silently
    * produced zero compose mounts while the agent kept its overlay, giving the two
-   * containers independent dependency trees. Absent for non-overlay sessions and
-   * for rediscovered/re-adopted containers, where what was provisioned isn't known.
+   * containers independent dependency trees.
+   *
+   * A container the orchestrator did NOT create (rediscovered after a restart,
+   * or re-adopted by the inverse-leak reconciler) has no `overlaySpecs` to record,
+   * so `container-discovery.ts` reads the same pairs back off the container's own
+   * `docker inspect` mount table (`overlayDepDirsFromMounts`) — still the
+   * container, still not a re-derivation. Absent only where no record is built at
+   * all, which {@link SessionContainerManager.provisionedOverlayDepDirs} reports
+   * as the `null` "cannot say".
    */
   overlayDepDirs?: { depDir: string; volumeName: string }[];
   /**
@@ -530,8 +537,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /**
    * nikzlabs/shipit#2426 — the (dep dir → overlay volume) pairs this session's
    * agent container was created with, or `null` when nothing is known about it
-   * (no live container record — a rediscovered/re-adopted container, or a
-   * runtime that creates none).
+   * (no live container record at all — a session whose container has gone away,
+   * or a runtime that creates none).
    *
    * `[]` and `null` are deliberately different answers: `[]` means the container
    * genuinely has no overlay, so a compose service that mounts the dep dir path

@@ -27,6 +27,7 @@ import {
   isOverlayEligible,
   isOverlayEnabled,
   liveOverlayScopeHashes,
+  overlayDepDirsFromMounts,
   overlayPinSegment,
   overlayRuntimeKey,
   resolveOverlayScope,
@@ -336,6 +337,69 @@ describe("buildOverlaySpecs", () => {
     expect(after.orchDirs?.upperdir).not.toBe(before.orchDirs?.upperdir);
     // …but the scope dir is stable, so the reset can find what it supersedes.
     expect(after.orchDirs?.sessionScopeDir).toBe(before.orchDirs?.sessionScopeDir);
+  });
+});
+
+describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
+  const SID = "f0d898c7-1db5-4914-af35-78911563838b";
+
+  /** The workspace + state mounts every session container carries. */
+  const BASE_MOUNTS = [
+    { Type: "volume", Name: "shipit_workspace", Destination: "/workspace" },
+    { Type: "bind", Source: "/host/uploads", Destination: "/uploads" },
+  ];
+
+  it("reads back exactly what buildOverlaySpecs put on the container", () => {
+    const specs = buildOverlaySpecs({
+      sessionId: SID,
+      scope: { repoUrl: "https://github.com/acme/repo.git", runtimeKey: "img|x64" },
+      depDirs: ["node_modules", "packages/app/node_modules"],
+      volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
+    });
+    // The mount table Docker reports for a container created from those specs —
+    // `container-lifecycle.ts` pushes `{Type: volume, Source: volumeName, Target: mountPath}`.
+    const mounts = [
+      ...BASE_MOUNTS,
+      ...specs.map((s) => ({ Type: "volume", Name: s.volumeName, Destination: s.mountPath })),
+    ];
+
+    expect(overlayDepDirsFromMounts(SID, mounts)).toEqual(
+      specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })),
+    );
+  });
+
+  it("returns [] for a container that genuinely has no dep-dir overlay", () => {
+    // Authoritative, not "unknown": the mount table IS what the agent has, so a
+    // pnpm repo / pre-feature container correctly reports no overlay.
+    expect(overlayDepDirsFromMounts(SID, BASE_MOUNTS)).toEqual([]);
+    expect(overlayDepDirsFromMounts(SID, undefined)).toEqual([]);
+  });
+
+  it("ignores the workspace volume, the pnpm store, and another session's volumes", () => {
+    const mounts = [
+      ...BASE_MOUNTS,
+      // The pnpm store lives UNDER /workspace but is not an overlay volume
+      // (`PNPM_STORE_CONTAINER_PATH`); mounting it as a dep dir would hand
+      // compose a bogus `.pnpm-store` overlay.
+      { Type: "bind", Source: "/state/pnpm-store/abc", Destination: "/workspace/.pnpm-store" },
+      // A volume whose name matches another session's overlay set.
+      {
+        Type: "volume",
+        Name: overlayVolumeName("99998888777766665555", "node_modules"),
+        Destination: "/workspace/node_modules",
+      },
+    ];
+    expect(overlayDepDirsFromMounts(SID, mounts)).toEqual([]);
+  });
+
+  it("ignores an overlay volume mounted outside the workspace", () => {
+    // Not a dep dir under the workspace mount, so there is no `<service-target>/<dep-dir>`
+    // for a compose service to nest — the pair would be meaningless.
+    const mounts = [
+      { Type: "volume", Name: overlayVolumeName(SID, "node_modules"), Destination: "/workspace" },
+      { Type: "volume", Name: overlayVolumeName(SID, "vendor"), Destination: "/elsewhere/vendor" },
+    ];
+    expect(overlayDepDirsFromMounts(SID, mounts)).toEqual([]);
   });
 });
 

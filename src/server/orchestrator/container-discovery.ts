@@ -13,6 +13,7 @@ import {
 } from "./session-container.js";
 import { cleanupSessionDockerResources } from "./container-lifecycle.js";
 import { getContainerFreshness } from "./container-freshness.js";
+import { overlayDepDirsFromMounts } from "./overlay-session.js";
 import { setWorkerAuthToken, workerTokenFromContainerEnv } from "./worker-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -118,6 +119,12 @@ export async function rediscoverContainers(
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
+          // #2426 — read the dep-dir overlays back off the container's OWN mount
+          // table. Left absent, `provisionedOverlayDepDirs` reports `[]` — an
+          // authoritative "this container has no overlay" — and every compose
+          // service in the session silently gets the plain `node_modules` while
+          // the agent's install goes into the overlay. See the field's doc.
+          overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
         });
         if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
           deps.standbySessionIds.add(sessionId);
@@ -195,6 +202,10 @@ export async function adoptRunningContainer(
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
+          // #2426 — see rediscoverContainers: the overlay set is read back off
+          // the adopted container's own mounts, never re-derived from a
+          // workspace that has moved on since it was built.
+          overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
         });
         if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
           deps.standbySessionIds.add(sessionId);
