@@ -68,6 +68,46 @@ const INPUT_KEY_RENAMES: Record<string, string> = {
 };
 
 /**
+ * OpenCode's `task` result wraps the subagent's report in XML-ish tags,
+ * straight from the CLI (verified 1.18.15, docs/272-harness-conversion-verification
+ * runs 2026-08-18):
+ *
+ *     <task id="ses_…" state="completed">
+ *     <task_result>
+ *     …the report…
+ *     </task_result>
+ *     </task>
+ *
+ * The client renders the report as markdown with `skipHtml`, and in CommonMark
+ * the `<task …>` line opens an HTML block that runs to the next blank line —
+ * so the whole wrapper, report included, was dropped and the panel rendered
+ * empty (planning#434). Anchored full-match: a shape this regex does not
+ * recognize passes through untouched, the safe direction — a future CLI change
+ * re-shows a wrapper visibly rather than corrupting a report. Greedy inner, so
+ * a report that itself contains `</task_result>` keeps it (the match takes the
+ * LAST closing pair).
+ */
+const TASK_RESULT_WRAPPER =
+  /^\s*<task\b[^>]*>\s*<task_result>([\s\S]*)<\/task_result>\s*<\/task>\s*$/;
+
+/**
+ * Normalize one OpenCode tool result at the same Layer A boundary the name
+ * normalization lives at, so the persisted content IS the subagent's report.
+ * The wrapper's `id`/`state` attributes are dropped knowingly: the call id is
+ * already the result block's `tool_use_id`, and error state is `is_error`.
+ * Takes the RAW wire tool id (`task`), matching {@link normalizeOpencodeToolCall}'s
+ * input side; every other tool's output passes through by reference.
+ */
+export function normalizeOpencodeToolResult(name: string, output: string): string {
+  if (name !== "task") return output;
+  const match = TASK_RESULT_WRAPPER.exec(output);
+  if (!match) return output;
+  // Strip exactly the one newline the wrapper adds on each side — a report
+  // that opens with indentation (a markdown code block) keeps it.
+  return match[1].replace(/^\n/, "").replace(/\n$/, "");
+}
+
+/**
  * Normalize one OpenCode tool call to the transcript vocabulary. Returns the
  * arguments unchanged (same references) for unknown tool names.
  */

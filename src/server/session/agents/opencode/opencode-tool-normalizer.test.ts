@@ -24,6 +24,7 @@ import {
 } from "../../../shared/transcript-slice-tools.js";
 import {
   normalizeOpencodeToolCall,
+  normalizeOpencodeToolResult,
   OPENCODE_TRANSCRIPT_TOOL_NAMES,
 } from "./opencode-tool-normalizer.js";
 
@@ -112,5 +113,53 @@ describe("normalizeOpencodeToolCall — surface treatments (the planning#432 rec
     const input = { filePath: "/w/a.ts", oldString: "a", newString: "b" };
     normalizeOpencodeToolCall("edit", input);
     expect(input).toEqual({ filePath: "/w/a.ts", oldString: "a", newString: "b" });
+  });
+});
+
+describe("normalizeOpencodeToolResult — the task wrapper (planning#434)", () => {
+  // Verbatim result shape from OpenCode CLI 1.18.15 (docs/272 run 2026-08-18):
+  // the wrapper is one blank-line-free CommonMark HTML block, which the
+  // client's skipHtml markdown drops WHOLE — report included.
+  const WRAPPED =
+    '<task id="ses_8f214c2af" state="completed">\n<task_result>\n11\n</task_result>\n</task>';
+
+  it("unwraps the CLI's wrapper so the persisted content IS the report", () => {
+    expect(normalizeOpencodeToolResult("task", WRAPPED)).toBe("11");
+  });
+
+  it("keeps a multi-line report intact, markdown and all", () => {
+    const report = "## Findings\n\n- one\n- two";
+    expect(
+      normalizeOpencodeToolResult(
+        "task",
+        `<task id="ses_1" state="completed">\n<task_result>\n${report}\n</task_result>\n</task>`,
+      ),
+    ).toBe(report);
+  });
+
+  it("keeps a literal </task_result> inside the report — the match takes the LAST closing pair", () => {
+    const report = "the CLI emits </task_result> before closing";
+    expect(
+      normalizeOpencodeToolResult(
+        "task",
+        `<task id="ses_1" state="completed">\n<task_result>\n${report}\n</task_result>\n</task>`,
+      ),
+    ).toBe(report);
+  });
+
+  it("passes an unrecognized shape through untouched — the safe direction for a CLI format change", () => {
+    expect(normalizeOpencodeToolResult("task", "plain text, no wrapper")).toBe(
+      "plain text, no wrapper",
+    );
+    expect(normalizeOpencodeToolResult("task", "<task_result>orphan, no outer tag")).toBe(
+      "<task_result>orphan, no outer tag",
+    );
+    expect(normalizeOpencodeToolResult("task", `prose before ${WRAPPED}`)).toBe(
+      `prose before ${WRAPPED}`,
+    );
+  });
+
+  it("does not touch other tools' output, even wrapper-shaped output", () => {
+    expect(normalizeOpencodeToolResult("bash", WRAPPED)).toBe(WRAPPED);
   });
 });
