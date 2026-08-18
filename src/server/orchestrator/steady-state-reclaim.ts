@@ -652,6 +652,15 @@ async function sweepOrphanedOverlayBases(
  *     right now (e.g. a container created before the last publish advanced the
  *     pointer; it keeps mounting the older generation until it exits).
  * Everything else has no live mount and is reclaimable immediately — no age delay.
+ *
+ * KNOWN GAP (planning#440, deliberately not fixed here): `docker ps` lists RUNNING
+ * containers, but a session's overlay volume is created — pinning the pointer's
+ * generation at that moment — before its container starts. A publish landing in
+ * that window supersedes a generation nothing can yet observe as mounted, and this
+ * deletes it. Rarer than the fail-open probe planning#439 fixed (it needs a
+ * concurrent same-scope publish inside a seconds-long window, not merely a docker
+ * hiccup) and it needs a different mechanism: an in-flight claim like the one
+ * plugin bases already have (`plugin-dep-store.ts` `liveInFlightScopes`).
  * Crash-orphaned `.tmp-*` copies get the short `OVERLAY_TMP_GRACE_MS` window instead
  * (they're never mounted, but an in-flight publish may be writing one).
  */
