@@ -2324,6 +2324,63 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     ]);
   });
 
+  /**
+   * nikzlabs/shipit#2426 — the case above, written the way almost every Node
+   * compose file writes it. `- /app/node_modules` is an ANONYMOUS volume: the
+   * canonical idiom for stopping a `.:/app` host bind from clobbering the
+   * container's dependencies. It has no source, and the short-form parser used
+   * to report no target either, so the de-duplication that promises "the daemon
+   * never sees a duplicate target" skipped it and the service ended up declaring
+   * two mounts at `/app/node_modules`. An anonymous volume winning that contest
+   * is #2426 in full: a second, private dependency tree nothing on the agent
+   * side can reach.
+   */
+  it("drops an anonymous volume at a dep dir rather than declaring two mounts there", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [".:/app", "/app/node_modules"] }],
+      { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
+    );
+    const vols = overrideDoc(override).services.web.volumes ?? [];
+    expect(vols.filter((v) => (isObj(v) ? v.target : v) === "/app/node_modules")).toEqual([
+      { type: "volume", source: NM.volumeName, target: "/app/node_modules" },
+    ]);
+    // The workspace mount it was shielding is untouched.
+    expect(vols).toContainEqual(expect.objectContaining({ source: "shipit-workspace", target: "/app" }));
+  });
+
+  it("keeps an anonymous volume that is not at a dep dir", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [".:/app", "/app/.cache"] }],
+      { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
+    );
+    expect(overrideDoc(override).services.web.volumes ?? []).toContain("/app/.cache");
+  });
+
+  /**
+   * nikzlabs/shipit#2426 — `./game/:/app` is the same mount as `./game:/app` to
+   * compose, but the raw `"game/"` subdir it used to yield is not a path
+   * segment, so no dep dir under `game/` matched and the service silently got
+   * the plain directory instead of the agent's overlay. Silent divergence
+   * through a trailing slash.
+   */
+  it("nests dep-dir overlays through a subdir mount written with a trailing slash", () => {
+    const override = generateComposeOverride(
+      [{ name: "game", volumes: ["./game/:/app"] }],
+      {
+        ...baseOpts,
+        workspaceSubpath: "s/w",
+        overlayDepDirs: [{ depDir: "game/node_modules", volumeName: "vol-game" }],
+      },
+    );
+    const vols = overrideDoc(override).services.game.volumes ?? [];
+    expect(vols).toContainEqual({ type: "volume", source: "vol-game", target: "/app/node_modules" });
+    // ...and the workspace mount itself no longer carries the trailing slash
+    // into the volume subpath handed to the daemon.
+    expect(vols).toContainEqual(
+      expect.objectContaining({ target: "/app", volume: { subpath: "s/w/game" } }),
+    );
+  });
+
   // docs/262 / nikzlabs/shipit#2298 — a plugin service's mounts are ShipIt's own,
   // already rewritten onto the workspace volume with a subpath, so the
   // relative-source matcher above never saw them and every dep dir reached a

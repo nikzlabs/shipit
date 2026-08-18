@@ -545,6 +545,24 @@ export class ServiceManager extends EventEmitter {
   private overlayDepDirs: OverlayDepDirVolume[];
   /** docs/262 — plugin services this session surfaces (set lazily; see setPluginServices). */
   private pluginServices: PluginComposeService[] = [];
+  /**
+   * #2426 — the project's parsed compose services the override on disk was
+   * generated from, serialized for comparison. `null` before the first
+   * {@link writeOverrideFor}. Read by {@link overrideIsStaleFor} to tell a
+   * compose edit that must reach the override from the far commoner case of an
+   * unchanged file, which must rewrite nothing.
+   */
+  private _overrideProjectServices: string | null = null;
+  /**
+   * #2426 — the plugin services admitted into the override on disk.
+   *
+   * Carried forward verbatim by a mid-session override refresh rather than
+   * re-derived, because admission is a decision {@link start} makes: a plugin
+   * service is refused when it collides with a project port, and re-running that
+   * against a half-changed picture would re-emit refusals nobody asked for. The
+   * plugin set changes only via `setPluginServices`, whose caller reconciles.
+   */
+  private _overrideAdmittedPlugins: PluginComposeService[] = [];
   /** Port refusals from this start, held until the log followers are up. */
   private pendingPortRefusals: { service: string; message: string }[] = [];
   /**
@@ -1624,20 +1642,7 @@ export class ServiceManager extends EventEmitter {
         },
       });
     }
-    const overrideServices = [...parsedServices, ...admittedPlugins.map(toComposeService)];
-
-    // Resolve secrets BEFORE generating the override — the override references
-    // per-service env files via `env_file:` and compose detects the file at
-    // `up` time. We always sync the env files (even when no secrets are
-    // declared) so stale files from a previous compose definition are cleared.
-    // docs/262 req 23 — the plugin services go in too: their declared
-    // credentials are delivered by the same pass, and the pass sweeps the files
-    // of plugin services it is not told about.
-    await this.secrets.sync(parsedServices, admittedPlugins);
-
-    // Generate override
-    const overrideContent = generateComposeOverride(overrideServices, this.buildOverrideOptions());
-    writeComposeOverride(this.overrideDir, overrideContent);
+    await this.writeOverrideFor(parsedServices, admittedPlugins);
 
     // Mark auto services as starting (silently — _startupComplete is false)
     const autoServices = [...this.services.values()].filter(s => s.preview === "auto");
@@ -2355,6 +2360,13 @@ export class ServiceManager extends EventEmitter {
         this.buildOverrideOptions(),
       );
       writeComposeOverride(this.overrideDir, overrideContent);
+      // #2426 — the override on disk now reflects THIS parse, so say so, or
+      // `overrideIsStaleFor` would call for a rewrite on the next `up` and
+      // recreate every service whose config that changed. Only the
+      // project half is recorded: this path deliberately uses `pluginServices`
+      // rather than the admitted set (see `writeOverrideFor`), so it is not
+      // evidence about what was admitted.
+      this._overrideProjectServices = JSON.stringify(parsedServices);
     }
 
     if (!this._started) return;
@@ -2485,14 +2497,93 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * Generate and write the compose override, and record what it was built from.
+   *
+   * The single writer, so the mid-session refresh in {@link withUpInFlight}
+   * cannot drift from `start()` in either the inputs it feeds the generator or
+   * the order it feeds them in. Secrets are resolved BEFORE the generator runs — the override
+   * references per-service env files via `env_file:` and compose detects the
+   * file at `up` time. The sync always runs (even with no secrets declared) so
+   * stale files from a previous compose definition are cleared; docs/262 req 23
+   * puts the plugin services through it too, since their declared credentials
+   * are delivered by the same pass and the pass sweeps the files of plugin
+   * services it is not told about.
+   */
+  private async writeOverrideFor(
+    projectServices: ComposeService[],
+    admittedPlugins: PluginComposeService[],
+  ): Promise<void> {
+    await this.secrets.sync(projectServices, admittedPlugins);
+    const overrideServices = [...projectServices, ...admittedPlugins.map(toComposeService)];
+    writeComposeOverride(
+      this.overrideDir,
+      generateComposeOverride(overrideServices, this.buildOverrideOptions()),
+    );
+    this._overrideProjectServices = JSON.stringify(projectServices);
+    this._overrideAdmittedPlugins = admittedPlugins;
+  }
+
+  /**
    * Refuse to run `docker compose up` against a project compose file that no
    * longer passes validation — see {@link parseProjectCompose} for why it can
    * change under us. Throws the `ComposeValidationError` verbatim, so the
    * caller reports the real reason on the service it was starting.
+   *
+   * Returns the parse so {@link overrideIsStaleFor} and the refresh it gates can
+   * use it rather than read the file a second time; `null` when this project has
+   * no compose file of its own and there is nothing to validate.
    */
-  private assertProjectComposeStillValid(): void {
-    if (this.noProjectCompose) return;
-    this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+  private assertProjectComposeStillValid(): ComposeService[] | null {
+    if (this.noProjectCompose) return null;
+    return this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+  }
+
+  /**
+   * nikzlabs/shipit#2426 — has the compose file changed since the GENERATED
+   * override was written? True means {@link withUpInFlight} regenerates it
+   * before the `up`.
+   *
+   * The pre-`up` re-parse above was already happening and its result was thrown
+   * away, which is the exact point where "the edit was never applied" became
+   * true. `docker compose up` re-reads the user's file every time, so a
+   * `command:` edit does land — but the override is written by
+   * `start()`/`reconcile()` and by nothing else, and compose merges it OVER the
+   * user's file. So every field the override derives — a service's `volumes:`
+   * (which is where the workspace mount and its nested dep-dir overlays live),
+   * `env_file:` from `x-shipit-secrets`, the user's named volumes — kept
+   * whatever it held at the last full start, through any number of `shipit
+   * service restart` cycles. Editing `.:/app` to `./game:/app` and restarting
+   * left the service on the old mount; removing a service from the file left the
+   * override declaring one with no image, which fails the whole project load.
+   *
+   * The config-file watcher's `reconcile()` was the only thing that refreshed
+   * it, and that is a best-effort inotify over a bind mount — so whether an edit
+   * took effect depended on whether an event arrived before the user hit
+   * restart. Regenerating from the parse that just succeeded makes the answer
+   * unconditional, without a second read of the file.
+   *
+   * **This gate exists because the refresh runs before EVERY `up`** — a manual
+   * start, a restart, a crash/OOM retry, the install-gate release. An unchanged
+   * file must not rewrite the override: compose recreates a container whenever
+   * its config differs from what the running one was built with, so an
+   * idempotent rewrite that merely reordered a key would recreate every service
+   * in the stack on every retry. Being a synchronous predicate is part of that —
+   * it keeps the unchanged case not just write-free but tick-for-tick identical
+   * to before (see {@link withUpInFlight}).
+   *
+   * **What this deliberately does NOT do is rebuild the service map.** Adding or
+   * removing a service, or changing its preview mode or ports, has to move
+   * statuses, the install gate, the poller and the log followers together — that
+   * is `reconcile()`, which the watcher still fires. This is scoped to what
+   * compose EXECUTES.
+   */
+  private overrideIsStaleFor(parsed: ComposeService[] | null): boolean {
+    if (parsed === null) return false;
+    // Never before the first `start()` has written an override: there is nothing
+    // to be stale against, and `start()` is about to generate one from this very
+    // parse anyway.
+    if (this._overrideProjectServices === null) return false;
+    return JSON.stringify(parsed) !== this._overrideProjectServices;
   }
 
   /**
@@ -2505,7 +2596,17 @@ export class ServiceManager extends EventEmitter {
     // BEFORE the bookkeeping below, so a refused `up` leaves no in-flight
     // exemption behind. Every `compose up` in this class goes through here,
     // which is what makes this the one place the check has to live.
-    this.assertProjectComposeStillValid();
+    //
+    // Synchronous, and it has to stay that way: the bookkeeping below is what
+    // makes an `up` visible to a concurrent `stopService`, and every caller
+    // reaches it without yielding, so an `await` here would open a window in
+    // which an `up` is running and nothing knows it is (`service-manager.test.ts`
+    // → "waits out every overlapping up"). #2426's override refresh is therefore
+    // split in two around it: the decision is taken here, synchronously, and only
+    // the WRITE — which happens on a compose edit and on no other `up` in the
+    // session's life — runs after the bookkeeping and costs a tick.
+    const parsed = this.assertProjectComposeStillValid();
+    const staleParse = this.overrideIsStaleFor(parsed) ? parsed : null;
     for (const name of names) {
       this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
       // A new container is on its way, so the address we hold describes the
@@ -2522,6 +2623,14 @@ export class ServiceManager extends EventEmitter {
     // service from reconciliation for the rest of the session.
     let settled: Promise<void> | undefined;
     try {
+      // #2426 — inside the try, so a failure to rewrite the override releases
+      // the exemption taken above rather than stranding it for the session.
+      if (staleParse) {
+        console.log(
+          `[compose:${this.sessionId}] compose file changed since the override was generated — regenerating`,
+        );
+        await this.writeOverrideFor(staleParse, this._overrideAdmittedPlugins);
+      }
       const call = fn();
       // Never rejects — `stopService` awaits this only to sequence itself after
       // the call, and the caller of `withUpInFlight` still gets the real rejection.
