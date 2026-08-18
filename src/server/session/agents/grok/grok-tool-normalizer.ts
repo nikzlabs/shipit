@@ -39,6 +39,13 @@
  *   - `search_replace` → `Edit`, `write` → `Write`: the bodies already use
  *     `DIFF_BODY_KEYS` spellings, so the rename alone makes `diffStatsFor` and
  *     the DiffBlock work unchanged.
+ *   - `list_dir` → `Glob` is the loosest of the set, knowingly: Claude's `Glob`
+ *     matches a pattern where Grok's tool enumerates one directory, so the
+ *     transcript says "Glob" for a listing. It is what the canonical model
+ *     already asserts (both sides are `glob`), and Claude's vocabulary has no
+ *     directory-listing name to prefer. If a `list_directory` canonical is ever
+ *     added, both tool maps change and the coherence guard forces this row to
+ *     follow — which is the mechanism working, not a gap to pre-empt here.
  *
  * Three advertised tools with canonical mappings are DELIBERATELY not here:
  * `ask_user_question`, `enter_plan_mode`, `exit_plan_mode`. Their transcript
