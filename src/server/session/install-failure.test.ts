@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  formatEmptyDepDirsFailureMessage,
   formatInstallFailureMessage,
   INSTALL_STDERR_TAIL_BYTES,
 } from "./install-failure.js";
@@ -35,6 +36,22 @@ describe("formatInstallFailureMessage", () => {
   it("ignores blank/whitespace-only trailing lines", () => {
     const msg = formatInstallFailureMessage("npm install", 1, "boom\n\n   \n");
     expect(msg).toBe('Command "npm install" exited with code 1\nboom');
+  });
+
+  it("names every empty dep dir, and both ways out of the failure", () => {
+    // The message is the ONLY thing that reaches a human on this path — the
+    // install log shows a command that exited 0. Which declaration was not
+    // satisfied is the actionable fact, because the two fixes (repair the
+    // install / narrow `agent.dep-dirs`) are told apart only by the repo.
+    const msg = formatEmptyDepDirsFailureMessage(["game/node_modules", "tools/debug/node_modules"]);
+    expect(msg).toContain("game/node_modules");
+    expect(msg).toContain("tools/debug/node_modules");
+    expect(msg).toContain("agent.dep-dirs");
+    expect(msg).toContain("dep dirs empty");
+  });
+
+  it("reads as singular for one dir", () => {
+    expect(formatEmptyDepDirsFailureMessage(["node_modules"])).toContain("dep dir empty");
   });
 
   it("bounds the retained tail to a sane size", () => {
