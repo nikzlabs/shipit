@@ -133,7 +133,8 @@ RUN mkdir -p /workspace /credentials /root/.local/share \
  && ln -s /credentials/.claude /root/.claude \
  && ln -sf /credentials/.claude.json /root/.claude.json \
  && ln -s /credentials/.codex /root/.codex \
- && ln -s /credentials/.local/share/opencode /root/.local/share/opencode
+ && ln -s /credentials/.local/share/opencode /root/.local/share/opencode \
+ && ln -s /credentials/.grok /root/.grok
 VOLUME /workspace
 VOLUME /credentials
 

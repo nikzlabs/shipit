@@ -125,7 +125,8 @@ export interface ResolvedRoleTarget {
   readonly roleName: string;
   readonly harnessId: AgentId;
   readonly selection: Readonly<ModelSelection>;
-  readonly reasoningEffort: string;
+  /** Absent iff the named harness declares no reasoning levels (docs/274). */
+  readonly reasoningEffort?: string;
   /** The role's standing instructions (req 8), when it carries any. */
   readonly prompt?: string;
   /**
@@ -330,21 +331,28 @@ export function checkRolePinnedParams(
   // that differs from `resolveReviewerPinPatch`, and it differs in the direction
   // that matters — see this module's header.
   const options = harness.capabilities.reasoning?.options ?? [];
+  // A harness declaring NO levels takes a role with no level — it is complete
+  // with one field fewer (docs/274 req 8). Naming one anyway stays a refusal,
+  // and it is the same refusal as before: the claim is false about the harness.
+  // What changed is only which side of it the empty set falls on. Before Grok
+  // Build this branch rejected every role on such a harness, because none
+  // existed to reject.
   if (options.length === 0) {
-    return {
-      ok: false,
-      kind: "catalogue",
-      field: "reasoningEffort",
-      message: `${harness.name} declares no reasoning levels, so a role on it cannot name one.`,
-    };
-  }
-  if (!options.some((option) => option.value === params.reasoningEffort)) {
+    if (params.reasoningEffort !== undefined) {
+      return {
+        ok: false,
+        kind: "catalogue",
+        field: "reasoningEffort",
+        message: `${harness.name} declares no reasoning levels, so a role on it cannot name one.`,
+      };
+    }
+  } else if (!options.some((option) => option.value === params.reasoningEffort)) {
     return {
       ok: false,
       kind: "catalogue",
       field: "reasoningEffort",
       message:
-        `"${params.reasoningEffort}" is not a reasoning level ${harness.name} offers. `
+        `"${params.reasoningEffort ?? ""}" is not a reasoning level ${harness.name} offers. `
         + `Valid levels: ${options.map((o) => o.value).join(", ")}.`,
     };
   }
@@ -383,7 +391,7 @@ function normalize(params: RolePinnedParams): RolePinnedParams {
     serviceId: params.serviceId,
     billingMode: params.billingMode,
     modelId: params.modelId,
-    reasoningEffort: params.reasoningEffort,
+    ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
   };
 }
 
@@ -602,6 +610,7 @@ function applyOverrides(
 ): RolePinnedParams {
   const harnessId = overrides.harnessId ?? base.harnessId;
   const reasoningEffort = overrides.reasoningEffort ?? base.reasoningEffort;
+  const withEffort = reasoningEffort !== undefined ? { reasoningEffort } : {};
   if (baseKind === "ranked" && overrides.modelId !== undefined) {
     const located = locateModel(overrides.modelId, overrides, harnessId, deps);
     if (!located) {
@@ -611,7 +620,7 @@ function applyOverrides(
           + `${overrides.serviceId ? ` on ${overrides.serviceId}` : ""}.`,
       );
     }
-    return { kind: "pinned", harnessId, ...located, reasoningEffort };
+    return { kind: "pinned", harnessId, ...located, ...withEffort };
   }
   const substituted: RolePinnedParams = {
     kind: "pinned",
@@ -619,7 +628,7 @@ function applyOverrides(
     serviceId: overrides.serviceId ?? base.serviceId,
     billingMode: overrides.billingMode ?? base.billingMode,
     modelId: overrides.modelId ?? base.modelId,
-    reasoningEffort,
+    ...withEffort,
   };
   if (baseKind === "role" && overrides.modelId !== undefined) {
     refuseModelAwayFromRolesService(substituted, overrides);
@@ -745,7 +754,7 @@ function freezeTarget(
     roleName: role.name,
     harnessId: params.harnessId,
     selection: Object.freeze(selection),
-    reasoningEffort: params.reasoningEffort,
+    ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
     ...(role.prompt ? { prompt: role.prompt } : {}),
     overridden,
     ...(routeStillApplies && chosen

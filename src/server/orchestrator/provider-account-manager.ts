@@ -49,6 +49,7 @@ const PROVIDER_LABEL: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
+  grok: "Grok Build",
 };
 
 /**
@@ -63,6 +64,9 @@ const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly LegacyCredentialPath[]> 
   // OpenCode is new in docs/268 — no install ever held pre-account OpenCode
   // credentials, so there is nothing to migrate and nothing to alias.
   opencode: [],
+  // Same for Grok Build (docs/274): no install predates its row, so there are
+  // no pre-account credentials to migrate.
+  grok: [],
 };
 
 interface LegacyCredentialPath {
@@ -93,6 +97,7 @@ const LEGACY_CREDENTIAL_MARKERS: Record<AgentId, readonly string[]> = {
   ],
   codex: [path.join(".codex", "auth.json")],
   opencode: [],
+  grok: [],
 };
 
 export interface ProviderRoute {

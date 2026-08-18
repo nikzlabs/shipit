@@ -9,17 +9,18 @@
  * — its npm package and its binary — or the image can never install it.
  * `agent-cli-install.test.ts` fails the build if the two disagree.
  *
- * What is NOT here: Cursor CLI and Grok Build. The survey in
- * `docs/252-custom-models/catalogue.md` records what they appear to need — and
+ * What is NOT here: Cursor CLI. The survey in
+ * `docs/252-custom-models/catalogue.md` records what it appears to need — and
  * already paid for itself by making `styles` a set and giving `SpawnShape` a
- * config-file variant — but neither is a harness ShipIt runs, neither has an
- * honest `capabilities` block to declare, and req 14 governs what an install
- * actually has. OpenCode graduated from that survey to a row via
- * `docs/268-opencode-harness` (empirical findings in its plan.md).
+ * config-file variant — but it is not a harness ShipIt runs, it has no honest
+ * `capabilities` block to declare, and req 14 governs what an install actually
+ * has. OpenCode and Grok Build both graduated from that survey to rows, via
+ * `docs/268-opencode-harness` and `docs/274-grok-build-harness` (empirical
+ * findings in each plan.md).
  */
 
-import { CLAUDE_PERMISSION_MODES } from "../types/agent-types.js";
-import { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "../agent-tool-names.js";
+import { CLAUDE_PERMISSION_MODES, GROK_PERMISSION_MODES } from "../types/agent-types.js";
+import { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "../agent-tool-names.js";
 import type { HarnessDef } from "./types.js";
 
 export const HARNESSES = [
@@ -246,6 +247,88 @@ export const HARNESSES = [
       // compaction trigger, so the `/compact` composer path cannot work.
       supportsCompaction: false,
       skillsDirName: ".opencode",
+      skillInvocationPrefix: "/",
+    },
+  },
+  {
+    // docs/274 — the fourth harness. Grok Build imitates Claude Code's flag
+    // surface closely enough that the adapter is the Claude shape (spawn per
+    // turn, NDJSON on stdout), which is what made this integration small.
+    id: "grok",
+    name: "Grok Build",
+    binary: "grok",
+    // xAI is a real native service for this CLI — but note it carries no
+    // account machinery either (no ShipIt-side login flow, no OAuth heal), the
+    // same caveat OpenCode's row spells out above. Grok's subscription is real
+    // and reached by the CLI's OWN `grok login --device-auth`; wiring it is
+    // planning#435, and until then `nativeService` here means "whose models
+    // and whose bill", not "whose account system".
+    nativeService: "xai",
+    // VERIFIED (docs/274 Phase 0, CLI 1.0.1, against a local HTTP recorder).
+    // ONE CLI, TWO styles: an explicit `-m` turn goes to
+    // `POST <base>/chat/completions` with `stream_options: {include_usage}`,
+    // while the session-title side-call rides `POST <base>/responses`. The
+    // adapter always passes `-m`, so chat-completions is the path a turn
+    // actually takes and is listed first; `openai-responses` is here because
+    // dropping it would make the catalogue claim an endpoint the CLI reaches
+    // is unreachable. Neither base URL takes a suffix from the CLI, so xAI's
+    // endpoints carry their own `/v1`.
+    styles: ["openai-chat-completions", "openai-responses"],
+    spawn: {
+      credential: {
+        string: { kind: "env", name: "XAI_API_KEY" },
+        // Deliberately NO `account` target (docs/274 req 6), the docs/268
+        // precedent: the eligibility join then structurally excludes every
+        // `via: "account"` mode, so no subscription can be selected for a
+        // harness whose subscription path is unverified. Flipping this on is
+        // planning#435's first line, not a config change.
+        account: undefined,
+      },
+      // `grok -p … -m <modelId>`. Verified forwarded verbatim: the id also
+      // appears in an `x-grok-model-override` request header.
+      model: { kind: "flag", flag: "-m" },
+      endpoint: { kind: "env", name: "GROK_XAI_API_BASE_URL" },
+    },
+    capabilities: {
+      // Verified live: `-r <id>` re-inits with the SAME session_id and recalls
+      // the previous turn's facts. ShipIt additionally PRE-ASSIGNS the id with
+      // `-s <uuid>` on the first turn rather than parsing one out.
+      supportsResume: true,
+      // Honest per docs/274 req 7: `image_gen`/`image_edit` are OUTPUT tools;
+      // an image *input* turn was never observed. The OpenCode precedent — a
+      // wrong `true` surfaces as broken attachments at runtime, not a type
+      // error — applies. Flip after a live probe.
+      supportsImages: false,
+      // `--system-prompt-override` replaces the prompt, `--rules` appends.
+      supportsSystemPrompt: true,
+      supportsPermissionModes: true,
+      supportedPermissionModes: GROK_PERMISSION_MODES,
+      toolNames: [...GROK_TOOL_NAMES],
+      // EMPTY, and honest (docs/274 req 8). `--reasoning-effort` exists in the
+      // CLI's help and the binary carries per-model `reasoning_efforts`
+      // machinery — but in API-key mode the flag is SILENTLY DROPPED for every
+      // model probed (recorder-verified: no effort field reaches the wire).
+      // Reasoning in key mode is a model-id choice instead, which is why the
+      // 4.20 pair ships as two catalogue rows. Declaring a level ShipIt cannot
+      // deliver would put a control on screen that does nothing. The effort
+      // machinery appears gated on the subscription catalog; re-probe under
+      // planning#435. This is the first harness with no levels, which is why
+      // `reviewer-model.ts` had to learn the case (docs/274 req 8).
+      reasoning: { label: "Reasoning", options: [] },
+      // Unexercised as a reviewer at launch.
+      supportsReview: false,
+      // One-shot spawn per turn, prompt as argv — no mid-turn steering channel.
+      supportsSteering: false,
+      // The process exits at turn end; it cannot start a turn ShipIt never
+      // asked for.
+      startsOwnTurns: false,
+      // Autocompact is config-driven only; no on-demand trigger found, so the
+      // `/compact` composer path cannot work.
+      supportsCompaction: false,
+      // Verified live (docs/209 probe): Grok auto-discloses skills from BOTH
+      // `.grok/skills/` and `.claude/skills/` via its claude-compat layer, so
+      // no symlink is needed — but its OWN directory is the one to declare.
+      skillsDirName: ".grok",
       skillInvocationPrefix: "/",
     },
   },

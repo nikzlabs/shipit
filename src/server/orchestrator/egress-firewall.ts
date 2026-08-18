@@ -52,6 +52,8 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "openrouter.ai",
   "ai-gateway.vercel.sh",
   "opencode.ai",
+  // docs/274 — xAI inference, the `grok` harness's native service.
+  "api.x.ai",
   // Package registries
   "registry.npmjs.org",
   "registry.yarnpkg.com",

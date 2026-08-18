@@ -308,7 +308,106 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
         try { fs.rmSync(dataHome, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     }
+    case "grok": {
+      // Same one-shot shape as the turn path (docs/274), with two deliberate
+      // differences from it.
+      //
+      // (1) The prompt rides argv (`-p`): naming prompts are far below the argv
+      // ceiling that pushes the turn path onto `--prompt-file`, and a temp file
+      // per naming run buys nothing.
+      //
+      // (2) `--output-format json`, NOT the turn's `streaming-messages-json` —
+      // and its envelope is NOT Claude's, which is the trap here. Grok's JSON
+      // envelope is `{text, usage, total_cost_usd, …}` where Claude's is
+      // `{result, usage, total_cost_usd, duration_ms}`; verified live against
+      // CLI 1.0.1. Reusing `parseClaudeJson` would find no `result`, fall
+      // through to its "unrecognized envelope" branch, and title the session
+      // with the raw JSON blob — a silent, very visible failure. Hence
+      // `parseGrokJson`.
+      //
+      // Naming gets a THROWAWAY config root rather than the home's `.grok`, the
+      // same call OpenCode makes above and for the first of its two reasons:
+      // `~/.grok` is a credentials symlink in every image, naming spawns with
+      // `namingHome`, and a dangling link would fail every naming run silently.
+      // Grok launches key-mode only (req 6), so naming authenticates from the
+      // env and has nothing to read from that root.
+      const args = ["-p", prompt, "--output-format", "json", "--always-approve", "--no-auto-update"];
+      if (model) args.push("-m", model);
+      const grokHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-naming-home-"));
+      const extraEnv: Record<string, string> = {
+        GROK_HOME: grokHomeDir,
+        GROK_DISABLE_AUTOUPDATER: "1",
+        GROK_TELEMETRY_ENABLED: "0",
+        DISABLE_TELEMETRY: "1",
+        GROK_ERROR_REPORTING: "0",
+        DISABLE_ERROR_REPORTING: "1",
+      };
+      if (serviceRouting) extraEnv.GROK_XAI_API_BASE_URL = serviceRouting.baseUrl;
+      try {
+        const raw = await callCli("grok", args, target, extraEnv);
+        if (raw.text === null) return raw;
+        const parsed = parseGrokJson(raw.text);
+        if (!parsed.usage) return { ...raw, text: parsed.text };
+        // Grok's envelope carries no duration, so the wall clock stands.
+        return {
+          text: parsed.text,
+          usage: { ...parsed.usage, durationMs: raw.usage?.durationMs ?? 0 },
+        };
+      } finally {
+        try { fs.rmSync(grokHomeDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+    }
   }
+}
+
+/**
+ * Reduce a `grok -p --output-format json` envelope to naming's two needs.
+ *
+ * Shaped like {@link parseClaudeJson} and deliberately NOT it: Grok's answer is
+ * on `text` where Claude's is on `result`, and Grok reports no `duration_ms` at
+ * all. An unrecognized envelope degrades to treating stdout as the text, the
+ * same fallback every other parser here takes.
+ */
+function parseGrokJson(stdout: string): { text: string | null; usage?: SessionNameUsage } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return { text: stdout };
+  }
+  if (typeof parsed !== "object" || parsed === null) return { text: stdout };
+  const envelope = parsed as {
+    text?: unknown;
+    total_cost_usd?: unknown;
+    usage?: {
+      input_tokens?: unknown;
+      output_tokens?: unknown;
+      cache_read_input_tokens?: unknown;
+      cache_creation_input_tokens?: unknown;
+    };
+  };
+  const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const usage: SessionNameUsage = {
+    durationMs: 0,
+    ...(num(envelope.total_cost_usd) !== undefined ? { costUsd: num(envelope.total_cost_usd) } : {}),
+    ...(num(envelope.usage?.input_tokens) !== undefined ? { inputTokens: num(envelope.usage?.input_tokens) } : {}),
+    ...(num(envelope.usage?.output_tokens) !== undefined ? { outputTokens: num(envelope.usage?.output_tokens) } : {}),
+    ...(num(envelope.usage?.cache_read_input_tokens) !== undefined
+      ? { cacheReadTokens: num(envelope.usage?.cache_read_input_tokens) }
+      : {}),
+    ...(num(envelope.usage?.cache_creation_input_tokens) !== undefined
+      ? { cacheCreateTokens: num(envelope.usage?.cache_creation_input_tokens) }
+      : {}),
+  };
+  const text = typeof envelope.text === "string" ? envelope.text : null;
+  const hasTelemetry =
+    usage.costUsd !== undefined
+    || usage.inputTokens !== undefined
+    || usage.outputTokens !== undefined;
+  // No `text` field at all means this is not Grok's envelope — hand back the
+  // raw stdout rather than a null title, matching the other parsers.
+  if (text === null) return { text: stdout };
+  return hasTelemetry ? { text, usage } : { text };
 }
 
 /**

@@ -6,6 +6,10 @@ const AUTH_ERROR: Record<AgentId, string> = {
   claude: "Claude is not authenticated. Sign in to Claude or add ANTHROPIC_API_KEY in Settings → Agents.",
   codex: "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings → Agents.",
   opencode: "OpenCode has no usable credential. Add an API key for a service OpenCode can run in Settings → Agents.",
+  // No "sign in to" half, deliberately: Grok launches key-billed only
+  // (docs/274 req 6), so pointing at a sign-in that does not exist would be
+  // the wrong instruction. Revisit with planning#435.
+  grok: "Grok Build is not authenticated. Add XAI_API_KEY in Settings → Agents.",
 };
 
 export function agentAuthenticationError(agentId: AgentId): string {

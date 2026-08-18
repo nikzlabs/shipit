@@ -50,7 +50,7 @@ a reviewer you picked. Relaying it sets the distance guarantee aside (see
 the user's call. The line is between a value they said and a value you supplied —
 the second is you choosing a reviewer, whatever it is dressed up as.
 
-**Never reach for the raw `codex` / `claude` / `opencode` CLI to do this.** Per-agent
+**Never reach for the raw `codex` / `claude` / `opencode` / `grok` CLI to do this.** Per-agent
 credential isolation mounts only *your* pinned agent's credentials in this
 container, so invoking the other backend's bare CLI fails with **401
 Unauthorized**. `shipit agent run` is the only authenticated path — it brokers

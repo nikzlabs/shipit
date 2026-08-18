@@ -28,12 +28,17 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
-      # Harnesses are not named here: the images default to the approved set
-      # (install-agent-clis' DEFAULT_HARNESSES, docs/271), which today is every
-      # shipped harness — what the inner instance wants so it can exercise all of
-      # them. Naming a set here would also have to match the `onboarding` build
-      # block below — both name the same image tag, so whichever built last would
-      # silently win a disagreement.
+      args:
+        # NAMED here, and it has to be (docs/274, recipe step 3). The images
+        # default to the approved set (install-agent-clis' DEFAULT_HARNESSES,
+        # docs/271), and that set is deliberately NOT every shipped harness:
+        # Grok Build ships installable-but-unchecked, so an unnamed build would
+        # show it as "Not installed" in the inner UI and it could not be
+        # dogfooded at all. This was found the hard way with OpenCode.
+        #
+        # Must stay identical to the `onboarding` block below — both name the
+        # same image tag, so whichever builds last silently wins a disagreement.
+        SHIPIT_HARNESSES: claude,codex,opencode,grok
     image: shipit-dogfood:local
     # NO `user:` — ShipIt fills in this session's own identity, and that is the
     # only arrangement in which this service actually works.
@@ -333,8 +338,11 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
-      # Must match the `dev` build block above — same image tag. Neither names
-      # harnesses; see the note there.
+      args:
+        # Must match the `dev` build block above — same image tag, so a
+        # disagreement is decided by build order rather than by intent. See the
+        # note there for why the set is named at all.
+        SHIPIT_HARNESSES: claude,codex,opencode,grok
     image: shipit-dogfood:local
     # No `user:`, same reason as `dev` above — see the note there.
     command: >

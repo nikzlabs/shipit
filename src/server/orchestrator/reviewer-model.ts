@@ -111,13 +111,24 @@ import {
  * ShipIt's answer, not the harness's — which is why it lives here rather than in
  * the catalogue's harness rows. `reviewer-model.test.ts` asserts each value is
  * one that harness actually offers.
+ *
+ * **`null` is the fourth honest answer, added in docs/274: "this harness has no
+ * levels to choose from."** Grok Build declares `reasoning.options: []` (in
+ * API-key mode `--reasoning-effort` is silently dropped at the wire), so there
+ * is no level to name and inventing one would put a control on screen that
+ * changes nothing. It is `null` rather than an omitted key deliberately — the
+ * `Record<AgentId, …>` stays exhaustive, so the next harness added still gets a
+ * compile error here instead of silently inheriting a default nobody chose.
  */
-export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string> = {
+export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string | null> = {
   claude: "high",
   codex: "high",
   // `high` exists on essentially every reasoning-capable model OpenCode
   // routes (docs/268 Phase 0) and is in the harness's declared option list.
   opencode: "high",
+  // Not "we did not decide" — there is nothing to decide (docs/274 req 8).
+  // Re-probe under planning#435 if subscription mode turns out to have levels.
+  grok: null,
 };
 
 /** Where a slot's answer came from — req 8's visible state. */
@@ -144,8 +155,12 @@ export interface ReviewerTarget {
   /** Derived (req 3), never stored — and preferring a harness that is not the implementer's. */
   readonly harnessId: AgentId;
   readonly selection: Readonly<ModelSelection>;
-  /** Complete (req 5): the pin's level, or this harness's ShipIt-authored default. */
-  readonly reasoningEffort: string;
+  /**
+   * Complete (req 5): the pin's level, or this harness's ShipIt-authored
+   * default. Absent only when the harness declares no levels at all (docs/274)
+   * — "complete" then means the tuple names everything there is to name.
+   */
+  readonly reasoningEffort?: string;
   /** The service's display name, for the Settings row and the consult card. */
   readonly serviceName: string;
   /** The credential this review authenticates with. Never absent — an unroutable target is not a target. */
@@ -600,6 +615,9 @@ function buildTarget(
         candidate.route,
       )
     : undefined;
+  // A pinned level wins; otherwise the harness's authored default. Both can be
+  // absent, and only for a harness declaring no levels — see `defaultEffortFor`.
+  const effort = plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId);
   return Object.freeze({
     slot: plan.slot,
     source: plan.source,
@@ -613,7 +631,7 @@ function buildTarget(
     // Req 5 — a derived reviewer is COMPLETE. The level follows the harness that
     // was actually derived, so a slot that bent away from the implementer runs
     // at that harness's default rather than at the other one's.
-    reasoningEffort: plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId),
+    ...(effort !== undefined ? { reasoningEffort: effort } : {}),
     serviceName: getService(candidate.selection.serviceId)?.name ?? candidate.selection.serviceId,
     route: Object.freeze({ ...candidate.route }),
     // `serviceRouting` is built fresh by `serviceRoutingForSelection` and is
@@ -626,11 +644,18 @@ function buildTarget(
 /**
  * This harness's ShipIt-authored review level, falling back to its own first
  * declared option if {@link REVIEWER_DEFAULT_EFFORT} ever names one it dropped.
- * A reviewer with no level would violate req 5, so there is no "omit it" branch.
+ *
+ * `undefined` for a harness that declares **no** levels, and that is not the
+ * "omit it" branch req 5 rules out. Req 5 forbids leaving the level to the
+ * CLI's own default when there is a level to choose; a harness with an empty
+ * option set offers no choice at all, so there is nothing ShipIt could have
+ * decided and nothing the CLI could have decided differently. Every other
+ * harness still gets a level — the fallback below is unchanged.
  */
-function defaultEffortFor(harnessId: AgentId): string {
+function defaultEffortFor(harnessId: AgentId): string | undefined {
   const options = getHarness(harnessId)?.capabilities.reasoning?.options ?? [];
+  if (options.length === 0) return undefined;
   const authored = REVIEWER_DEFAULT_EFFORT[harnessId];
-  if (options.some((option) => option.value === authored)) return authored;
-  return options[0]?.value ?? authored;
+  if (authored !== null && options.some((option) => option.value === authored)) return authored;
+  return options[0]?.value;
 }

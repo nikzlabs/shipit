@@ -1,6 +1,7 @@
 export { ClaudeAdapter } from "./claude/adapter.js";
 export { CodexAdapter } from "./codex/adapter.js";
 export { OpencodeAdapter } from "./opencode/adapter.js";
+export { GrokAdapter } from "./grok/adapter.js";
 export { AgentRegistry, ALLOWED_ENV_KEYS, isAllowedAgentEnvKey } from "./agent-registry.js";
 export { canonicalizeTool, agentToolName } from "./tool-map.js";
 export type {

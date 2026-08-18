@@ -25,6 +25,7 @@ import { loadPrompt, fillPromptTokens } from "./load-prompt.js";
 import { CLAUDE_PARALLEL_SESSIONS_SECTION } from "./agents/claude/system-prompt.js";
 import { CODEX_PARALLEL_SESSIONS_SECTION } from "./agents/codex/system-prompt.js";
 import { OPENCODE_PARALLEL_SESSIONS_SECTION } from "./agents/opencode/system-prompt.js";
+import { GROK_PARALLEL_SESSIONS_SECTION } from "./agents/grok/system-prompt.js";
 
 /**
  * Per-agent "Parallel sessions" prompt fragments, keyed so the builder
@@ -43,6 +44,7 @@ const PARALLEL_SESSIONS_SECTIONS: ReadonlyMap<AgentId, string> = new Map([
   ["claude", CLAUDE_PARALLEL_SESSIONS_SECTION],
   ["codex", CODEX_PARALLEL_SESSIONS_SECTION],
   ["opencode", OPENCODE_PARALLEL_SESSIONS_SECTION],
+  ["grok", GROK_PARALLEL_SESSIONS_SECTION],
 ]);
 
 export interface AgentSystemInstructionOptions {

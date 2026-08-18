@@ -11,6 +11,10 @@ ShipIt surfaces two kinds of skill directories under the workspace:
 - `<workspace>/.opencode/skills/<name>/SKILL.md` — OpenCode agent skills,
   `/`-invoked like Claude's. OpenCode also natively reads `.claude/skills/`,
   so on an OpenCode session both directories' skills are disclosed.
+- `<workspace>/.grok/skills/<name>/SKILL.md` — Grok Build agent skills,
+  `/`-invoked like Claude's. Grok also natively reads `.claude/skills/`
+  (verified, docs/274), so on a Grok session both directories' skills are
+  disclosed.
 - `<workspace>/<agent-dir>/skills/<plugin>__<skill>/SKILL.md` — skills the user
   installed from a marketplace via **Settings → Skills → Discover**
   (docs/149). These have a sentinel `.shipit-installed.json` file next to the
@@ -59,6 +63,7 @@ Look at the workspace at chat time, not at a memory of an earlier state:
 
 - `ls .claude/skills/` shows every Claude skill the agent will see at next spawn.
 - `ls .codex/skills/` shows every Codex project skill ShipIt exposes today.
+- `ls .grok/skills/` shows every Grok Build project skill ShipIt exposes today.
 - Each `<agent-dir>/skills/<dir>/SKILL.md` carries `name:` frontmatter that's
   the canonical invocation token (it's `name:` that matters, not the
   directory name — that's how plugin namespacing with `:` works inside a

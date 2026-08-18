@@ -34,7 +34,7 @@ INSTALL_REPORT="${SHIPIT_AGENTS_INSTALL_REPORT:-/opt/shipit/agents/installed.jso
 # src/server/shared/catalogue/harnesses.ts — guarded by
 # src/server/orchestrator/agent-cli-install.test.ts, which fails the build when a
 # harness is added to the catalogue without an install mapping here.
-KNOWN_HARNESSES="claude codex opencode"
+KNOWN_HARNESSES="claude codex opencode grok"
 
 # The harnesses an install gets when SHIPIT_HARNESSES says nothing. A SEPARATE,
 # hand-maintained list — deliberately NOT derived from KNOWN_HARNESSES (docs/271).
@@ -58,6 +58,11 @@ harness_pkg_prefix() {
     # (opencode-linux-x64, …), so the prefix "opencode" covers the shim AND
     # every platform payload for the prune (docs/268).
     opencode) echo "opencode" ;;
+    # @xai-official/grok is the same shape as opencode-ai: platform binaries as
+    # sibling packages under the same scope (@xai-official/grok-linux-x64, …),
+    # so the scope+name prefix covers the shim AND every platform payload for
+    # the prune (docs/274).
+    grok) echo "@xai-official/grok" ;;
     *) return 1 ;;
   esac
 }
@@ -68,6 +73,7 @@ harness_bin() {
     claude) echo "claude" ;;
     codex) echo "codex" ;;
     opencode) echo "opencode" ;;
+    grok) echo "grok" ;;
     *) return 1 ;;
   esac
 }
@@ -127,6 +133,14 @@ fi
 # verified, docs/268). Only when selected.
 if contains opencode $selected; then
   npm rebuild opencode-ai
+fi
+
+# @xai-official/grok is the third of the same shape (docs/274): the published
+# package ships the platform binary brotli-compressed as an optionalDependency
+# and its postinstall decompresses it into place, so under the `--ignore-scripts`
+# blanket the linked `bin/grok` has nothing to run. Only when selected.
+if contains grok $selected; then
+  npm rebuild @xai-official/grok
 fi
 
 # Prune the deselected harnesses, bins first so a failed rm can't leave a dangling

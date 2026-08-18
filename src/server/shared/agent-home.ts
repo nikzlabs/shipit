@@ -33,6 +33,26 @@ export function codexHome(): string {
 }
 
 /**
+ * Grok Build's config root (docs/274).
+ *
+ * **`GROK_HOME` is the `.grok` directory itself, not the home above it** —
+ * verified live: with `GROK_HOME=/tmp/gh` the CLI wrote `/tmp/gh/config.toml`,
+ * `/tmp/gh/logs/`, `/tmp/gh/sessions/`, and reported the path back as
+ * `$GROK_HOME/config.toml`. That is the opposite of what the name suggests, and
+ * getting it backwards points the CLI at a config root one level off its
+ * credentials — which fails as "not authenticated" rather than as an error
+ * naming a path.
+ *
+ * Takes the spawn's resolved HOME rather than reading {@link agentHome} itself,
+ * because a spawn under an account-scoped home must land in THAT home's `.grok`
+ * — resolving globally here would send every account's session to one config
+ * root and one `auth.json`.
+ */
+export function grokHome(home: string): string {
+  return process.env.GROK_HOME || `${home}/.grok`;
+}
+
+/**
  * Per-spawn HOME override for an agent CLI (docs/150-multiple-provider-subscriptions req 19).
  *
  * The process-global {@link agentHome} is correct inside a session container,

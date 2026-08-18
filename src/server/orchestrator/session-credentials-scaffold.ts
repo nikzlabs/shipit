@@ -51,6 +51,11 @@ export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   // under ~/.local/share/opencode (docs/270). The nested path means any
   // symlinking step must create `~/.local/share` first.
   opencode: [".local/share/opencode"],
+  // Grok's config root doubles as its credential store: `~/.grok/auth.json`
+  // (0600, scope-keyed) sits beside config.toml, sessions and logs, and the
+  // whole tree relocates together via `GROK_HOME` (verified live, docs/274).
+  // One directory, so one entry — the same shape as `.codex`.
+  grok: [".grok"],
 };
 
 /**

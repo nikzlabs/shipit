@@ -9,6 +9,7 @@
 @import "./themes/claude.css";
 @import "./themes/codex.css";
 @import "./themes/opencode.css";
+@import "./themes/grok.css";
 @import "./themes/warm-light.css";
 @import "./themes/cool-light.css";
 @import "./themes/solarized.css";
@@ -16,10 +17,11 @@
 @import "./themes/claude-light.css";
 @import "./themes/codex-light.css";
 @import "./themes/opencode-light.css";
+@import "./themes/grok-light.css";
 @import "./themes/high-contrast.css";
 
 /* Class-based dark mode for Tailwind v4 — includes all dark-like themes */
-@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .opencode, .opencode *, .solarized, .solarized *, .high-contrast, .high-contrast *));
+@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .opencode, .opencode *, .grok, .grok *, .solarized, .solarized *, .high-contrast, .high-contrast *));
 
 /* App-shell height. The default is the CSS dynamic viewport; `useAppViewportHeight`
    overwrites it with a measured pixel value on every resize/resume, because an
@@ -64,7 +66,7 @@
    theme's darker override — the chip stayed pale teal-400 on light surfaces.
    Keeping the bright value scoped to the dark-theme classes (which only match a
    dark <html>) makes it win for dark themes and stay out of the light ones. */
-.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .solarized, .high-contrast {
+.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .solarized, .high-contrast {
   --color-sandbox: #2dd4bf;
 }
 
@@ -113,7 +115,7 @@
      a near-black base separates less than a dark hue over a near-white one. */
   --repo-band-mix: 7%;
 }
-.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .solarized, .high-contrast {
+.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .solarized, .high-contrast {
   --repo-band-mix: 10%;
   --repo-color-0: #e09a6a;
   --repo-color-1: #dcb980;

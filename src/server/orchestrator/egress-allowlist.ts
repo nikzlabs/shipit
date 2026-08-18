@@ -61,6 +61,12 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   // billing modes. NOT ".opencode.ai": the suffix would also open the console,
   // and inference is what a session needs.
   "opencode.ai",
+  // docs/274 — xAI's inference endpoint, the `grok` harness's native service.
+  // EXACT host, never ".x.ai": the suffix would also open `auth.x.ai` and the
+  // marketing site, and inference is what a session needs. (When planning#435
+  // wires the device-flow login, `auth.x.ai` is the entry that adds — as its
+  // own exact host, with the login flow to justify it.)
+  "api.x.ai",
 
   // --- Git host ---
   // ShipIt only authenticates against GitHub today (see docs/172 Gap 2). The
@@ -130,6 +136,7 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   "openrouter.ai",
   "ai-gateway.vercel.sh",
   "opencode.ai",
+  "api.x.ai",
 ];
 
 /**

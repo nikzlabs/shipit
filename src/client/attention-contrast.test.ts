@@ -49,7 +49,7 @@ describe("attention switch contrast", () => {
   const files = fs.readdirSync(themesDir).filter((f) => f.endsWith(".css"));
 
   it("finds every theme", () => {
-    expect(files.length).toBe(16);
+    expect(files.length).toBe(18);
   });
 
   for (const file of files) {

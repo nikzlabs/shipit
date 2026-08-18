@@ -294,7 +294,8 @@ RUN mkdir -p /workspace /credentials /home/shipit /home/shipit/.local/share \
  && ln -sf /credentials/.claude.json /home/shipit/.claude.json \
  && ln -s /credentials/.codex /home/shipit/.codex \
  && ln -s /credentials/.local/share/opencode /home/shipit/.local/share/opencode \
- && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex /home/shipit/.local/share/opencode \
+ && ln -s /credentials/.grok /home/shipit/.grok \
+ && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex /home/shipit/.local/share/opencode /home/shipit/.grok \
  && chown shipit:shipit /home/shipit/.local /home/shipit/.local/share
 
 # docs/150 — the worker's runtime HOME. AGENT_HOME is the single source of truth

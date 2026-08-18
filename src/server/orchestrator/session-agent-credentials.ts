@@ -109,7 +109,7 @@ export function readSessionResidentRoute(
     if (!parsed || typeof parsed !== "object") return {};
     const out: Partial<Record<AgentId, RecordedResidentRoute>> = {};
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (key !== "claude" && key !== "codex" && key !== "opencode") continue;
+      if (key !== "claude" && key !== "codex" && key !== "opencode" && key !== "grok") continue;
       const route = value as { kind?: unknown; id?: unknown };
       if (
         (route?.kind === "account" || route?.kind === "reserved" || route?.kind === "string")

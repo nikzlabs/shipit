@@ -182,7 +182,9 @@ export function applyRoleToSession(
     billingMode: params.billingMode,
     modelId: params.modelId,
   });
-  deps.sessionManager.setReasoning(sessionId, params.reasoningEffort);
+  // `null` is the store's "no level", which is what a harness declaring none
+  // resolves to (docs/274 req 8).
+  deps.sessionManager.setReasoning(sessionId, params.reasoningEffort ?? null);
   deps.sessionManager.setRoleName(sessionId, role.name);
 }
 
