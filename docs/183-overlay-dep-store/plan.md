@@ -245,7 +245,14 @@ where it accrues:
    live scope are reaped on the same mount check (keep `g0`, the pointer's current generation, and any
    generation a running container still pins); only crash-orphaned `.tmp-*` copies keep a short fixed
    grace window (an in-flight publish may be mid-write). The live-set (`liveOverlayScopeHashes`) still
-   enumerates **per `(session, dep-dir)`** for the current runtime (see the "Changed → GC" item).
+   enumerates **per `(session, dep-dir)`** for the current runtime (see the "Changed → GC" item), and
+   **must be built from `listAllIncludingWarm()`**: a warm-pool session's container mounts a base like
+   any other, but `listAll()` filters `warm = 0`, which left warm scopes with the mount check as their
+   only protection (planning#439). The mount check itself **fails closed** — a reading it cannot
+   complete skips the whole sweep for that pass rather than resolving to an empty set. Failing open
+   there deleted a generation under six running containers on prod: the empty set is indistinguishable
+   from "nothing is mounted", and the session that publishes generation N+1 is by construction the one
+   still mounted on N, so the superseded-but-pinned case is the norm rather than a rare race.
 2. **Per-session overlay volumes — `shipit-<id>_overlayN`** (N per session). Removed on container
    teardown (`destroyContainer` → `removeOverlayVolume` for each); crash-orphans swept by the
    `^shipit-([a-f0-9-]{12})_` prefix regex (`sweepOrphanSessionVolumes`), which already matches every

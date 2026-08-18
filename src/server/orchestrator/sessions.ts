@@ -787,9 +787,15 @@ export class SessionManager {
 
   /**
    * docs/255 — literally every session row, warm pool included, most recently
-   * used first. Only the Ops inventory's `--include-warm` uses this: every other
-   * "all sessions" caller means {@link listAll}'s non-warm set, because a warm
-   * row is a pre-provisioned shell rather than someone's work.
+   * used first. Most "all sessions" callers mean {@link listAll}'s non-warm set,
+   * because a warm row is a pre-provisioned shell rather than someone's work.
+   *
+   * Two kinds of caller need this one instead: the Ops inventory's
+   * `--include-warm`, and **disk-reclaim liveness** (planning#439) — a warm
+   * session runs a container that mounts overlay bases and plugin artifacts
+   * exactly like any other, so excluding it from a live-set means deleting a
+   * live mount's backing directory. "Whose work is this" and "what is on disk
+   * right now" are different questions; only the first one skips warm rows.
    */
   listAllIncludingWarm(): SessionInfo[] {
     const rows = this.db.prepare(

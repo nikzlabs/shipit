@@ -8,8 +8,8 @@ import {
 } from "./app-lifecycle.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
-import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
-import { livePluginStoreArtifacts } from "./plugin-dep-store.js";
+import { isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
+import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-liveness-sources.js";
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
@@ -306,15 +306,15 @@ export async function startStartupMonitors(
           credentialsDir,
           cacheDays: coldArtifactRetentionDays,
           paceMs: escalationPaceMs,
-          // Resolved at sweep time (not boot) so each reflects the current session
-          // set / runtime; both return an empty/null live-set under the
-          // `OVERLAY_DEP_STORE` kill switch, keeping their sweeps inert when off.
-          liveOverlayScopeHashes: () =>
-            liveOverlayScopeHashes(sessionManager.listAll(), depDirsForSession),
-          // docs/262 req 28 — a declared plugin repository is in no repo store
-          // and its bases are in no session's dep-dir scope, so both sweeps
-          // would read every artifact plugins depend on as an orphan.
-          livePluginStoreArtifacts: () => livePluginStoreArtifacts(sessionManager.listAll()),
+          // Both resolve at sweep time (not boot) so each reflects the current
+          // session set / runtime, and both return an empty/null live-set under
+          // the `OVERLAY_DEP_STORE` kill switch, keeping their sweeps inert when
+          // off. They live in `disk-liveness-sources.ts` rather than inline here
+          // because WHICH session set they enumerate is a correctness property
+          // that was wrong in production (planning#439) and is untestable as a
+          // closure in this function.
+          liveOverlayScopeHashes: overlayLiveScopeSource(sessionManager),
+          livePluginStoreArtifacts: pluginLiveArtifactSource(sessionManager),
           pnpmStoreRuntimeHash: () =>
             isOverlayEnabled() ? pnpmStoreHash(overlayRuntimeKey()) : null,
         });
