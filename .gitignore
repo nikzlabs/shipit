@@ -81,3 +81,9 @@ android-overlay-test/.idea/
 # under `repo: self`; the write probe cleans up after itself but belt+braces.
 test-plugin/.install-stamp.json
 test-plugin/.probe-write-test
+
+# Temporary reproduction harness for nikzlabs/shipit#2418 — the game is fetched,
+# never committed. Remove with the harness (repro-2418/README.md).
+repro-2418/reward-tag/
+repro-2418/.npm-cache/
+repro-2418/.home/
