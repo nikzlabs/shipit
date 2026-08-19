@@ -246,13 +246,23 @@ export async function createPluginOverlay(docker: Docker, spec: PluginOverlaySpe
  * doing it here would delete the install output this volume exists to expose.
  *
  * **Serialized per volume name, which is not optional** (review finding).
- * `createOverlayVolume` deliberately REMOVES an existing volume of the same
- * name before creating it, so that a crash-stale one cannot wire a session to
- * the wrong lowerdir. That is right for its own caller and fatal here: two
- * first-consumers of one generation — a service and a CLI, exactly the pair
+ * `createOverlayVolume` REMOVES an existing volume of the same name whose driver
+ * opts disagree with the spec, so that a crash-stale one cannot wire a session to
+ * the wrong lowerdir. That is right for its own caller and would be fatal here:
+ * two first-consumers of one generation — a service and a CLI, exactly the pair
  * this helper exists for — both see "missing", and the second one deletes the
  * volume the first just created, or gets a 409 because the first has already
  * attached it. The queue makes the check-then-create one step.
+ *
+ * **The `volumeExists` skip is existence-only on purpose, and it is safe because
+ * the NAME carries the generation.** `pluginOverlayVolumeName(session, repo,
+ * generationId)` changes whenever the checkout does, and the pinned dep bases are
+ * read out of that generation's own immutable record — so there is no way for a
+ * live volume of this name to hold opts other than the ones this spec computes.
+ * That is why the 2026-08-19 dep-dir defect (a same-named volume left naming a
+ * superseded generation) has no counterpart here, and why this path deliberately
+ * does not ask `createOverlayVolume` to release holders: the volume is SHARED
+ * between a plugin service and a CLI container by design.
  */
 const ensureQueues = new Map<string, Promise<void>>();
 export async function ensurePluginRuntimeOverlay(

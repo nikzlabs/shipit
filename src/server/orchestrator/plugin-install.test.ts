@@ -123,6 +123,7 @@ function fakeDocker(opts: {
   // reads its mountpoint).
   const deleted = new Set<string>();
   const live = new Set<string>();
+  const volumeOpts = new Map<string, Record<string, string>>();
   const networksCreated: string[] = [];
 
   const notFound = (): never => {
@@ -145,6 +146,12 @@ function fakeDocker(opts: {
       createdVolumes.push(spec);
       deleted.delete(spec.Name);
       live.add(spec.Name);
+      // `createOverlayVolume` re-inspects after creating and throws unless the
+      // driver opts come back as the ones it asked for (Docker silently returns
+      // the pre-existing volume when the name is taken — the 2026-08-19 ops
+      // finding), so the double has to remember them. A name it already holds is
+      // NOT overwritten, which is what makes `heldVolume` model the real bug.
+      if (!volumeOpts.has(spec.Name)) volumeOpts.set(spec.Name, spec.DriverOpts ?? {});
     },
     listVolumes: async () => ({
       Volumes: [...live].filter((n) => !deleted.has(n)).map((Name) => ({ Name })),
@@ -152,7 +159,10 @@ function fakeDocker(opts: {
     getVolume: (name: string) => ({
       inspect: async () => {
         if (deleted.has(name)) notFound();
-        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+        return {
+          Mountpoint: `/var/lib/docker/volumes/${name}/_data`,
+          Options: volumeOpts.get(name),
+        };
       },
       remove: async () => {
         removedVolumes.push(name);
@@ -161,6 +171,7 @@ function fakeDocker(opts: {
         if (opts.heldVolume) return;
         live.delete(name);
         deleted.add(name);
+        volumeOpts.delete(name);
       },
     }),
     listContainers: async () => [],

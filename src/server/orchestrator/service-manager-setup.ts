@@ -157,7 +157,30 @@ export async function applyOverlayDepDirs(
         );
       }
     }
-    return mgr.setOverlayDepDirs(usable);
+    const changed = mgr.setOverlayDepDirs(usable);
+    // The ops finding of 2026-08-19 — the set is not the only thing that can make
+    // the running stack wrong. When the base generation rotated, container creation
+    // removed the Compose siblings holding the old volumes so they could be
+    // recreated over the new generation (`releaseOverlayVolumeHolders`). The set is
+    // unchanged by that (the volume name is keyed on session + dep dir), so
+    // `changed` says no reconcile is needed — but the service containers are gone,
+    // and a container freezes its mounts at create time, so only a reconcile can
+    // bring them back over the generation the agent is now on.
+    const recreated = containerManager.consumeOverlayVolumesRecreated(runner.sessionId);
+    if (recreated) {
+      // Said in the session's own Logs panel, not just orchestrator stdout: the
+      // reconcile below brings back auto and install-gated services, but a
+      // `manual` service the user had started stays stopped, and "my dev server
+      // vanished on restart" with no explanation anywhere is the worse half of
+      // this trade. The alternative was leaving it running against an upper layer
+      // that no longer exists on the host, where its writes ENOENT.
+      warn(
+        `the dependency base advanced, so the compose services holding the previous ` +
+        `overlay were recreated over the new one. Services set to start automatically ` +
+        `come back on their own; a manually-started service needs starting again.`,
+      );
+    }
+    return changed || recreated;
   } catch (err) {
     warn(
       `could not resolve the dependency overlay (${getErrorMessage(err)}) — compose ` +
