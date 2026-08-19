@@ -436,14 +436,25 @@ granularity for one thing: within the subscription, `grok-4.6` offers `xhigh`
 and `grok-4.5` does not, so a mode-level list would have to be the intersection
 and drop a level the user pays for.
 
-But it is **not sufficient**, and `reviewer-model.test.ts` is what found it. A
-`ModelDef` is per *(service, mode, model)* — **not per harness**. Grok can also
-run gateway rows (`x-ai/grok-4.6` at OpenRouter and Vercel, plus DeepSeek and
-GLM via chat-completions), and those rows are *shared with Claude, Codex and
-OpenCode*, which do honour levels there. So there is no value of
-`reasoningEfforts` on a shared row that is right for all four harnesses: `[]`
-would strip levels from the three that have them, and absent leaks Grok's
-vocabulary onto rows where the flag is dropped.
+But it is **not sufficient on its own**, and `reviewer-model.test.ts` is what
+found it. A `ModelDef` is per *(service, mode, model)* — **not per harness**.
+Grok can also run gateway rows (`x-ai/grok-4.6` at OpenRouter and Vercel, plus
+DeepSeek and GLM via chat-completions), and those rows are *shared with Claude,
+Codex and OpenCode*, which do honour levels there.
+
+**Precisely when that bites is worth stating, because the obvious reading
+overstates it** (caught in review). Today a shared row leaves `reasoningEfforts`
+absent, every harness falls back to its own vocabulary, and every answer is
+already correct — Grok's is `[]`, Claude's is Claude's. The per-model field is
+not wrong; it is simply not the thing carrying that case. The insufficiency
+appears the moment Grok's vocabulary becomes **non-empty**: a shared row then
+has no value that is right for all four harnesses at once — `[]` strips levels
+from the three that have them, and absent leaks Grok's four onto rows where the
+flag is dropped.
+
+That is the whole argument for why the vocabulary and the harness×mode axis have
+to land in the *same* change, and why writing the four levels down now — with
+the mechanism looking finished — would be the actual mistake.
 
 **The axis that actually holds the fact is harness × billing mode**, because
 that is where the real gate is — the CLI honours the flag when the *subscription

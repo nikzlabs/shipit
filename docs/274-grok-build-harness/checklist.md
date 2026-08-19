@@ -153,3 +153,49 @@ the expansion of every line, with file pointers and gotchas, is in
       SubagentCall card with an unwrapped report, one-word icon labels).
       Evidence:
       [docs/272 run 2026-08-18-1616](../272-harness-conversion-verification/runs/2026-08-18-1616-grok-1.0.1.md).
+
+**11 — Subscription mode (planning#435)**
+- [x] Device-code login verified live (2026-08-19): `grok login --device-auth`
+      completes and writes a scope-keyed `~/.grok/auth.json` (0600). Required an
+      egress grant first — the container reaches `auth.x.ai` for the flow AND
+      for the ~6h token refresh.
+- [x] The open reasoning question settled: subscription mode **does** honour
+      `--reasoning-effort`, wire-verified with a negative control. Receipt and
+      evidence in requirements.md; req 14 supersedes req 8's key-mode finding.
+- [x] Egress: `auth.x.ai` + `cli-chat-proxy.grok.com` in all three lists, exact
+      hosts. `accounts.x.ai` deliberately excluded (the user's browser loads it,
+      not the container).
+- [x] Reasoning-resolution mechanism: `ModelDef.reasoningEfforts` +
+      `reasoningOptionsFor()` / `selectionHonoursEffort()`, with the
+      `[] ≠ absent` distinction and a build-breaking invariant that a row may
+      only narrow its harness's vocabulary. `reviewer-model.test.ts`'s guard
+      rewritten to ask the resolver rather than the harness list — it had been
+      passing only because grok's vocabulary was empty too.
+- [x] Latent eligibility hole closed pre-emptively: `carriers` now restricts
+      **account** credentials too, in both join sites. Without it, giving grok
+      an `account` target offers it a ChatGPT subscription (a guaranteed 401,
+      the docs/268 class).
+- [ ] **The `xai-oauth` auth manager** — the device flow driven from inside
+      ShipIt (req 11), on the Codex device-auth precedent. Everything below is
+      downstream of it, and `catalogue.test.ts` rightly refuses a login id no
+      manager implements, so they land together: the xAI `sub` mode, the
+      `LoginIntegrationId` member, grok's `account` credential target, and
+      grok's reasoning vocabulary + the harness×mode axis it needs.
+- [ ] Credential injection into a fresh container (req 12) **and surviving
+      token expiry mid-session** (req 13) — the token lives ~6h with a
+      refresh_token, so a one-time file copy does not satisfy req 13.
+- [ ] Account identity + plan on the row (req 15). `auth.json` carries
+      `user_id` (uuid, `=== principal_id`) as the stable external id, `email`
+      as the label, plus `team_id` and `auth_mode: "oidc"`.
+- [ ] Quota (req 16) — expected to take the documented **no-reader** route
+      `catalogue/types.ts` calls for: `/v1/usage`, `/v1/rate-limits`,
+      `/v1/subscription` and `/v1/me` all 404 with a valid token, and
+      `/v1/settings` carries no plan or usage field.
+- [ ] ServicesPanel device-code sign-in UX (req 11).
+- [ ] Wire a UI consumer for `reasoningOptionsFor` — flagged in review as
+      staged-but-unconsumed. Nothing currently prevents the subscription picker
+      from reading `capabilities.reasoning.options` directly and reintroducing
+      the dishonesty req 14 forbids.
+- [ ] One subscription-mode dogfood turn with the billing route verified
+      through the scrub/shaping path — the Phase 10 item key mode cannot cover.
+      Blocked on planning#444.
