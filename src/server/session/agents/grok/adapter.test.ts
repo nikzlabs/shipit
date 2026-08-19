@@ -25,7 +25,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { ChildProcess } from "node:child_process";
-import { GrokAdapter } from "./adapter.js";
+import { GrokAdapter, resolveGrokBinary } from "./adapter.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "__fixtures__");
@@ -458,6 +458,95 @@ describe("GrokAdapter — the paths a capture cannot show", () => {
   });
 });
 
+/**
+ * planning#444 second half — WHICH grok a spawn runs.
+ *
+ * `@xai-official/grok` ships two programs called `grok`: the npm `.bin` shim is
+ * a JS launcher that bootstraps ~157MB into `$GROK_HOME` when it finds no binary
+ * there, and the platform package's `bin/grok` is the real CLI. Every image
+ * prepends `/opt/agent-cli/node_modules/.bin` to `PATH`, AHEAD of the
+ * `/usr/local/bin` link the installer creates — so a bare-name spawn got the
+ * launcher (measured live: `command -v grok` answered the `.bin` path). Combined
+ * with this adapter's fresh per-spawn `GROK_HOME`, that is a 157MB bootstrap per
+ * TURN, written into the per-session credentials volume.
+ *
+ * The installer now unlinks the shim; this pins the adapter's own half, so an
+ * image built before that change still spawns the real binary.
+ */
+describe("GrokAdapter — which binary a spawn resolves to (planning#444)", () => {
+  let root: string;
+  let npmBin: string;
+  let realBin: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "grok-path-test-"));
+    // The production shape, in order: the npm launcher first, the real link second.
+    npmBin = path.join(root, "opt/agent-cli/node_modules/.bin");
+    realBin = path.join(root, "usr/local/bin");
+    for (const dir of [npmBin, realBin]) fs.mkdirSync(dir, { recursive: true });
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const put = (dir: string): string => {
+    const p = path.join(dir, "grok");
+    fs.writeFileSync(p, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    return p;
+  };
+
+  it("skips a node_modules/.bin candidate even when PATH puts it first", () => {
+    put(npmBin);
+    const real = put(realBin);
+    expect(resolveGrokBinary([npmBin, realBin].join(path.delimiter))).toBe(real);
+  });
+
+  it("resolves an absolute path, never the bare name, when one is available", () => {
+    const real = put(realBin);
+    const resolved = resolveGrokBinary([realBin, npmBin].join(path.delimiter));
+    expect(path.isAbsolute(resolved)).toBe(true);
+    expect(resolved).toBe(real);
+  });
+
+  it("falls back to the bare name rather than refusing to spawn", () => {
+    // A launcher-only install is still worse than no turn at all, so the bare
+    // name stays the floor — with a warning, which is the part that was missing.
+    put(npmBin);
+    expect(resolveGrokBinary([npmBin].join(path.delimiter))).toBe("grok");
+    expect(resolveGrokBinary("")).toBe("grok");
+  });
+
+  it("ignores a non-executable candidate", () => {
+    fs.writeFileSync(path.join(realBin, "grok"), "not executable", { mode: 0o644 });
+    const other = path.join(root, "other-bin");
+    fs.mkdirSync(other);
+    const real = put(other);
+    expect(resolveGrokBinary([realBin, other].join(path.delimiter))).toBe(real);
+  });
+
+  it("the adapter spawns what the resolver picked", () => {
+    const real = put(realBin);
+    const prevPath = process.env.PATH;
+    process.env.PATH = [npmBin, realBin].join(path.delimiter);
+    try {
+      const child = new FakeChild();
+      let cmd = "";
+      const adapter = new GrokAdapter({
+        spawnFn: (c) => {
+          cmd = c;
+          return child as unknown as ChildProcess;
+        },
+      });
+      adapter.run({ prompt: "p", cwd: "/workspace" });
+      expect(cmd).toBe(real);
+      expect(cmd).not.toContain(`node_modules${path.sep}.bin`);
+      child.close(0);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
 describe("GrokAdapter — the per-spawn config root", () => {
   let home: string;
   beforeEach(() => {
@@ -473,17 +562,35 @@ describe("GrokAdapter — the per-spawn config root", () => {
     void captured;
   };
 
-  function build(): { adapter: GrokAdapter; child: FakeChild; env: () => Record<string, string> } {
+  function build(): {
+    adapter: GrokAdapter;
+    child: FakeChild;
+    env: () => Record<string, string>;
+    cmd: () => string;
+    spawned: () => boolean;
+  } {
     const child = new FakeChild();
-    const captured: { env: Record<string, string> } = { env: {} };
+    const captured: { env: Record<string, string>; cmd: string; spawned: boolean } = {
+      env: {},
+      cmd: "",
+      spawned: false,
+    };
     const adapter = new GrokAdapter({
       resolveHome: () => home,
-      spawnFn: (_c, _a, opts) => {
+      spawnFn: (cmd, _a, opts) => {
         captured.env = (opts.env ?? {}) as Record<string, string>;
+        captured.cmd = cmd;
+        captured.spawned = true;
         return child as unknown as ChildProcess;
       },
     });
-    return { adapter, child, env: () => captured.env };
+    return {
+      adapter,
+      child,
+      env: () => captured.env,
+      cmd: () => captured.cmd,
+      spawned: () => captured.spawned,
+    };
   }
 
   it("points GROK_HOME at a throwaway root, never at the shared one", () => {
@@ -569,6 +676,82 @@ describe("GrokAdapter — the per-spawn config root", () => {
     first.child.close(0);
     expect(fs.existsSync(path.join(second.env().GROK_HOME, "config.toml"))).toBe(true);
     second.child.close(0);
+  });
+
+  /**
+   * planning#444 — THE regression guard. Every session image symlinks
+   * `~/.grok` at `/credentials/.grok`, and key-billed Grok writes no credential
+   * material, so nothing created the target: the link DANGLED in every session
+   * container. `mkdirSync(realRoot, {recursive: true})` through a dangling
+   * symlink throws, and the old `catch` returned that same dangling path as
+   * `GROK_HOME` — the CLI then died at its own session creation with
+   * `duration_ms: 0`, before any stream event.
+   *
+   * These build the shape literally (a symlink whose target does not exist), so
+   * a fallback that ever again hands the CLI an unopenable root fails here.
+   */
+  describe("when the shared config root is a DANGLING symlink (planning#444)", () => {
+    /** The container shape: `<home>/.grok` -> a target nothing ever created. */
+    function danglingGrokHome(): string {
+      const missing = path.join(home, "credentials-that-do-not-exist", ".grok");
+      fs.symlinkSync(missing, path.join(home, ".grok"));
+      return missing;
+    }
+
+    it("never hands the CLI the path that just failed", () => {
+      const missing = danglingGrokHome();
+      const { adapter, child, env, spawned } = build();
+      adapter.run({ prompt: "p", cwd: "/workspace" });
+
+      // The turn still starts — the old behaviour started it too, but pointed
+      // at a root the CLI could not open.
+      expect(spawned()).toBe(true);
+      const spawnHome = env().GROK_HOME;
+      expect(spawnHome).not.toBe(path.join(home, ".grok"));
+      expect(spawnHome).not.toBe(missing);
+      // And the root it DID get is genuinely usable: a real directory, with the
+      // `sessions` dir whose absence is what killed the CLI, and this turn's
+      // MCP config.
+      expect(fs.statSync(spawnHome).isDirectory()).toBe(true);
+      expect(fs.statSync(path.join(spawnHome, "sessions")).isDirectory()).toBe(true);
+      expect(fs.existsSync(path.join(spawnHome, "config.toml"))).toBe(true);
+      child.close(0);
+    });
+
+    it("narrates the degradation instead of swallowing it", () => {
+      danglingGrokHome();
+      const { adapter, child } = build();
+      const logs: string[] = [];
+      adapter.on("log", (_channel, line) => logs.push(line));
+      adapter.run({ prompt: "p", cwd: "/workspace" });
+
+      // A silent fallback is what made this cost a process watcher to diagnose.
+      expect(logs.join("\n")).toMatch(/config root/i);
+      expect(logs.join("\n")).toMatch(/resume/i);
+      child.close(0);
+    });
+
+    it("does not create anything inside the credentials tree it could not open", () => {
+      const missing = danglingGrokHome();
+      const { adapter, child } = build();
+      adapter.run({ prompt: "p", cwd: "/workspace" });
+
+      // Repairing the tree belongs to the orchestrator and the entrypoint: it is
+      // per-session and uid-sensitive (docs/150, docs/270), so an adapter running
+      // as the session uid must not conjure directories inside it.
+      expect(fs.existsSync(missing)).toBe(false);
+      expect(fs.existsSync(path.dirname(missing))).toBe(false);
+      child.close(0);
+    });
+
+    it("still cleans the throwaway root up at turn end", () => {
+      danglingGrokHome();
+      const { adapter, child, env } = build();
+      adapter.run({ prompt: "p", cwd: "/workspace" });
+      const spawnHome = env().GROK_HOME;
+      child.close(0);
+      expect(fs.existsSync(spawnHome)).toBe(false);
+    });
   });
 
   it("surfaces the init event's per-server MCP status", () => {

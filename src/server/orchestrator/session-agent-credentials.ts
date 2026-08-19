@@ -23,6 +23,7 @@ import { AGENT_TOKEN_FILES, SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.
 import {
   AGENT_CREDENTIAL_PATHS,
   SHARED_CREDENTIAL_PATHS,
+  agentCredentialDirs,
   chownSessionCredentialsTree,
   copyCredentialPath,
   perSessionCredentialsDir,
@@ -379,6 +380,27 @@ function provisionAgentCredentialsFromRoot(
       removeProviderSubtreeForReplacement(dir, rel);
     }
     copyCredentialPath(sourceRoot, dir, rel);
+  }
+  // planning#444 — and materialize whatever the copy did not, so the image's
+  // `~/.<agent>` symlink resolves even for a key-billed harness with no
+  // credential material on disk. See `agentCredentialDirs` for why a dangling
+  // link is a startup failure rather than a harmless absence.
+  //
+  // Per path rather than around the loop: one unwritable entry must not cost the
+  // others, and it must never skip the chown below — the whole subtree has just
+  // been rewritten and the container's boot-time chown has long since run.
+  //
+  // **This loop MUST stay above `chownSessionCredentialsTree`.** It creates the
+  // directories as the orchestrator (root), so a chown that ran first would
+  // leave them root-owned inside a subtree sealed 0700 to the session's uid —
+  // unreadable to the very CLI they exist for, and the failure would look
+  // exactly like the dangling link this replaces.
+  for (const rel of agentCredentialDirs(agentId)) {
+    try {
+      fs.mkdirSync(path.join(dir, rel), { recursive: true });
+    } catch (err) {
+      console.warn(`[session-credentials] could not materialize ${rel} for ${agentId}:`, err);
+    }
   }
   // Normalize the copied config (e.g. Claude's onboarding + workspace trust)
   // before the chown, so the file it may create is handed over too.

@@ -11,7 +11,7 @@ import {
   writeSessionAccountMarker,
   writeSessionResidentRoute,
 } from "./session-agent-credentials.js";
-import { AGENT_CREDENTIAL_PATHS } from "./session-credentials-scaffold.js";
+import { AGENT_CREDENTIAL_PATHS, agentCredentialDirs } from "./session-credentials-scaffold.js";
 import type { AgentId } from "../shared/types/agent-types.js";
 
 /**
@@ -202,6 +202,70 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
       expect(readSessionResidentRoute(root, "nope")).toEqual({});
       fs.writeFileSync(path.join(root, "sessions", SESSION, ".shipit-resident-route.json"), "not-json");
       expect(readSessionResidentRoute(root, SESSION)).toEqual({});
+    });
+  });
+
+  /**
+   * planning#444 — a key-billed harness has nothing to copy, and the image's
+   * `~/.<agent>` symlink is created unconditionally. So a provisioning pass that
+   * only ever COPIES leaves the link dangling, and a dangling symlink is not a
+   * harmless absence: it is an existing directory entry, so the CLI's own
+   * `mkdir` fails and the harness dies at startup. Grok hit this after OpenCode
+   * hit the same shape (docs/270), which is why the guard is written against
+   * the whole `AgentId` union rather than against grok.
+   */
+  describe("credential directories exist even with nothing to copy", () => {
+    it("materializes every declared credential DIR for every agent", () => {
+      const allAgentIds = Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[];
+      for (const agentId of allAgentIds) {
+        // No source subtree anywhere — the key-billed shape.
+        provisionProviderAccountCredentials(root, SESSION, agentId, `acct_${agentId}`);
+        for (const rel of agentCredentialDirs(agentId)) {
+          const dir = path.join(sessionDir(), rel);
+          expect(fs.existsSync(dir), `${agentId}: ${rel} was not created`).toBe(true);
+          expect(fs.statSync(dir).isDirectory(), `${agentId}: ${rel} is not a directory`).toBe(true);
+        }
+      }
+    });
+
+    it("never treats a FILE-shaped declared path as a directory, for any agent", () => {
+      // An empty directory where the CLI expects a file is worse than the
+      // dangling link this fixes: the CLI would parse a directory as its user
+      // config and fail every turn. `.claude.json` is the only such path today,
+      // and asserting that one name would pin nothing for the NEXT one — the
+      // deny-list is exactly the kind of table a later edit forgets.
+      //
+      // So the check is mechanical: a declared path whose final segment carries
+      // an extension (a dot after the leading dot that makes it hidden) is
+      // file-shaped, and must have been excluded. `.claude` and `.grok` are
+      // hidden directories, not extensions; `.local/share/opencode` has neither.
+      const looksLikeAFile = (rel: string): boolean => {
+        const leaf = rel.split("/").pop() ?? rel;
+        return leaf.replace(/^\./, "").includes(".");
+      };
+      for (const agentId of Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[]) {
+        for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
+          if (!looksLikeAFile(rel)) continue;
+          expect(
+            agentCredentialDirs(agentId),
+            `'${rel}' is file-shaped but would be created as a directory — add it to AGENT_CREDENTIAL_FILES`,
+          ).not.toContain(rel);
+        }
+      }
+      // And the known one, named, so the assertion above cannot go vacuous.
+      expect(AGENT_CREDENTIAL_PATHS.claude).toContain(".claude.json");
+      expect(agentCredentialDirs("claude")).not.toContain(".claude.json");
+      provisionProviderAccountCredentials(root, SESSION, "claude", "acct_a");
+      const claudeJson = path.join(sessionDir(), ".claude.json");
+      if (fs.existsSync(claudeJson)) {
+        expect(fs.statSync(claudeJson).isDirectory()).toBe(false);
+      }
+    });
+
+    it("does not overwrite a subtree that WAS copied", () => {
+      seedAccount("acct_a", "tok-a");
+      provisionProviderAccountCredentials(root, SESSION, "claude", "acct_a");
+      expect(sessionToken()).toContain("tok-a");
     });
   });
 });

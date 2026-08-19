@@ -59,6 +59,45 @@ export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
 };
 
 /**
+ * The entries of {@link AGENT_CREDENTIAL_PATHS} that are FILES rather than
+ * directories, and so must never be created empty.
+ *
+ * A deny-list rather than an allow-list, because directory is the norm — a new
+ * harness's credential root is one, and the default that matters is the one a
+ * forgotten edit lands on. `.claude.json` is the single exception: the CLI's own
+ * user config, a JSON document the scaffold writes through
+ * `ensureClaudeUserConfigDefaults`.
+ */
+const AGENT_CREDENTIAL_FILES: ReadonlySet<string> = new Set([".claude.json"]);
+
+/**
+ * The credential paths for `agentId` that must EXIST as directories after
+ * provisioning, whether or not there was anything to copy into them
+ * (planning#444).
+ *
+ * The session-worker image symlinks each of these into the runtime home
+ * unconditionally (`~/.grok` -> `/credentials/.grok`, and so on), while
+ * {@link copyCredentialPath} returns early when the source does not exist. For a
+ * subscription-billed harness those two always agree, because a login left a real
+ * subtree to copy. For a **key-billed** harness they do not: the credential
+ * travels as an env var, nothing is ever written to disk, and the symlink is left
+ * DANGLING — which is not the harmless absence it looks like. A dangling symlink
+ * is an existing directory entry, so `mkdir(2)` on it returns EEXIST and Node's
+ * recursive form turns that into ENOENT; either way the CLI cannot create its own
+ * config root and dies at startup. OpenCode hit it first (docs/270), Grok hit it
+ * again (planning#444), and both were diagnosed from scratch because the shape
+ * was fixed for one harness rather than for the class.
+ *
+ * So: materialize the directory for every declared path, for every agent. An
+ * empty directory is not credential material, so this does not weaken the
+ * docs/138 isolation guarantee — a Claude session's container still has no Codex
+ * *credentials* on disk.
+ */
+export function agentCredentialDirs(agentId: AgentId): readonly string[] {
+  return AGENT_CREDENTIAL_PATHS[agentId].filter((rel) => !AGENT_CREDENTIAL_FILES.has(rel));
+}
+
+/**
  * Shared, non-agent-sensitive config copied verbatim into every session's
  * credentials dir regardless of agent.
  *

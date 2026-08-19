@@ -125,6 +125,40 @@ describe("every image installs the CLIs through the shared script", () => {
     expect(instructions(dockerfile)).toMatch(/^ARG SHIPIT_HARNESSES=$/m);
   });
 
+  it.each(CLI_IMAGES)("%s puts the npm .bin dir AHEAD of /usr/local/bin on PATH (planning#444)", (dockerfile) => {
+    // Not an aspiration — the PREMISE the installer's grok block rests on, pinned
+    // so it cannot drift silently. Because `.bin` wins a bare-name lookup, a
+    // `.bin/<harness>` entry that is a DIFFERENT PROGRAM from its /usr/local/bin
+    // link is the one that runs. That is how grok spawned the npm launcher (a
+    // ~157MB bootstrap into $GROK_HOME, per turn) despite /usr/local/bin/grok
+    // pointing straight at the real binary.
+    //
+    // If this assertion ever fails, the ordering was changed: re-check whether
+    // the grok shim deletion is still the right remedy, rather than deleting
+    // this test. The other harnesses' links point INTO `.bin`, so the prepend is
+    // load-bearing for them and this is not a suggestion to reorder it.
+    // Composed rather than pattern-matched on one line. The session-worker
+    // images set PATH FIVE times (npm-global, the agent CLIs, Java, the Android
+    // SDK, Gradle), each prepending through `${PATH}`, so an assertion about a
+    // single line proves nothing about the order the container actually gets —
+    // it would just happen to read whichever line came first in the file.
+    // Replay them in order against a base that contains /usr/local/bin, exactly
+    // as Docker would, and ask the question that matters about the RESULT.
+    const lines = [...instructions(dockerfile).matchAll(/^ENV PATH=(?:"([^"]*)"|(\S+))$/gm)]
+      .map((m) => m[1] ?? m[2]!);
+    expect(lines.length, `${dockerfile} sets no ENV PATH`).toBeGreaterThan(0);
+    const composed = lines.reduce(
+      // eslint-disable-next-line no-template-curly-in-string -- Dockerfile syntax being parsed, not a JS template
+      (acc, line) => line.replaceAll("${PATH}", acc),
+      "/usr/local/bin:/usr/bin:/bin",
+    );
+    const npmBin = composed.split(":").indexOf("/opt/agent-cli/node_modules/.bin");
+    const usrLocal = composed.split(":").indexOf("/usr/local/bin");
+    expect(npmBin, `${dockerfile} never puts the agent-cli .bin dir on PATH`).toBeGreaterThanOrEqual(0);
+    expect(usrLocal).toBeGreaterThanOrEqual(0);
+    expect(npmBin).toBeLessThan(usrLocal);
+  });
+
   it.each(CLI_IMAGES)("%s runs install-agent-clis rather than its own npm ci", (dockerfile) => {
     const src = instructions(dockerfile);
     expect(src).toContain("COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis");
@@ -273,6 +307,45 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
     // And it genuinely executes — the payload round-tripped the compression.
     expect(execFileSync(path.join(binDir, "grok"), ["--version"], { encoding: "utf8" }))
       .toContain("grok 9.9.9");
+  });
+
+  it("grok: removes the launcher shim, so PATH cannot resolve to it (planning#444)", () => {
+    run("grok");
+    // Linking $BIN_DIR at the real binary was never sufficient: every image
+    // prepends `$AGENT_CLI_DIR/node_modules/.bin` to PATH, AHEAD of $BIN_DIR, so
+    // `grok` by name found the launcher — verified in a live container, where
+    // `command -v grok` answered `/opt/agent-cli/node_modules/.bin/grok`. The
+    // launcher then bootstraps ~157MB into $GROK_HOME, and ShipIt hands every
+    // spawn a fresh throwaway one, so that is a per-TURN cost.
+    expect(exists(path.join(agentCliDir, "node_modules/.bin/grok"))).toBe(false);
+    // The other harnesses keep theirs — their $BIN_DIR links point INTO `.bin`,
+    // which is what the PATH prepend is for. This fix is one divergent shim, not
+    // a reordering that would change resolution for all of them.
+    run();
+    for (const id of defaultHarnesses()) {
+      const binary = HARNESSES.find((h) => (h.id as string) === id)?.binary;
+      expect(exists(path.join(agentCliDir, `node_modules/.bin/${binary!}`)), id).toBe(true);
+    }
+  });
+
+  it("grok: resolves to the real binary under the images' own PATH order (planning#444)", () => {
+    run("grok");
+    // The assertion the bug needed and nobody had: not "the link exists" but
+    // "a bare-name lookup, under the PATH every image actually sets, lands on
+    // the real binary". The stub's launcher exits 1 with a loud message, so a
+    // regression that leaves it resolvable turns this red rather than passing on
+    // launcher behaviour.
+    const containerPath = `${path.join(agentCliDir, "node_modules/.bin")}${path.delimiter}${binDir}`;
+    // `/bin/sh` by absolute path, deliberately: the whole point is to hand the
+    // shell ONLY the two directories the images put on PATH, so a `grok` that
+    // happens to be installed on the machine running the suite cannot answer the
+    // lookup and make a regression look green.
+    const sh = (script: string): string =>
+      execFileSync("/bin/sh", ["-c", script], { encoding: "utf8", env: { PATH: containerPath } });
+    const resolved = sh("command -v grok").trim();
+    expect(resolved).toBe(path.join(binDir, "grok"));
+    expect(resolved).not.toContain("node_modules");
+    expect(sh("grok --version")).toContain("grok 9.9.9");
   });
 
   it("fails the build when a selected harness's binary does not execute", () => {
