@@ -477,12 +477,6 @@ export async function runSubAgent(
   // the pending card below is the durable one.
   runner.emitMessage({ type: "sub_agent_spawn", sessionId, spawnId, subAgentId });
 
-  // docs/252 phase 3 — with the route now scoped to the sub-agent's own
-  // selection, this says whether the consult needs shaping: an account-delivered
-  // credential is the CLI's own login and is left alone, a string-delivered one
-  // is materialized and the endpoint set alongside it.
-  const subServiceRouting = serviceRoutingForSelection(subAgentId, subSelection, route, deps.credentialStore);
-
   console.log(
     `[sub-agent] accepted session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
     + `target=${requested} depth=${depth} promptBytes=${promptBytes} `
@@ -624,31 +618,59 @@ export async function runSubAgent(
     // this fix exists to end. Nothing between here and the spawn needs
     // credentials, so the only thing the move changes is what cleans up.
     provisionAttempt();
-    const spawn = () => runner.spawnSubAgent({
-      agentId: subAgentId,
-      prompt,
-      spawnId,
-      depth,
-      // docs/261 reqs 5 + 7 — a reviewer and an explicit call both name a level
-      // wherever the harness declares levels. Two cases legitimately do not: a
-      // **role at Default** (docs/264 req 1), and an **explicit call on a
-      // harness that declares none** (docs/275 req 2 — docs/274's Grok). In
-      // both, absent means "pass no flag" and the harness uses its own level.
-      // `AgentSpawnOptions.reasoningEffort` has always read
-      // an absent value that way, so this passes straight through. Spread rather
-      // than assigned, so Default stays the ABSENCE of the key. The RESOLVED
-      // model, so what runs and what is recorded are the same by construction.
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      model: spawnModel,
-      ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
-    });
+    // docs/252 phase 3 — with the route scoped to the sub-agent's own
+    // selection, this says whether the consult needs shaping: an
+    // account-delivered credential is the CLI's own login and is left alone, a
+    // string-delivered one is materialized and the endpoint set alongside it.
+    //
+    // planning#344 — computed PER ATTEMPT, from the route that attempt runs
+    // on, rather than once before the first spawn. A stored string credential
+    // is delivered under its own per-route variable (`credentialRouteEnvName`),
+    // so a failover that moved the run onto the group's next credential must
+    // re-shape or the retry would authenticate with the credential the loop
+    // just benched while attributing the run to the one it moved to — exactly
+    // the confusion phase 5's per-route names exist to prevent. For a run that
+    // never fails over, this is the same call it always was.
+    const spawn = () => {
+      const subServiceRouting = serviceRoutingForSelection(
+        subAgentId,
+        subSelection,
+        route,
+        deps.credentialStore,
+      );
+      return runner.spawnSubAgent({
+        agentId: subAgentId,
+        prompt,
+        spawnId,
+        depth,
+        // docs/261 reqs 5 + 7 — a reviewer and an explicit call both name a level
+        // wherever the harness declares levels. Two cases legitimately do not: a
+        // **role at Default** (docs/264 req 1), and an **explicit call on a
+        // harness that declares none** (docs/275 req 2 — docs/274's Grok). In
+        // both, absent means "pass no flag" and the harness uses its own level.
+        // `AgentSpawnOptions.reasoningEffort` has always read
+        // an absent value that way, so this passes straight through. Spread rather
+        // than assigned, so Default stays the ABSENCE of the key. The RESOLVED
+        // model, so what runs and what is recorded are the same by construction.
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        model: spawnModel,
+        ...(subServiceRouting !== undefined ? { serviceRouting: subServiceRouting } : {}),
+      });
+    };
     let result = await spawn();
 
     // docs/150-multiple-provider-subscriptions reqs 7, 14, 20 — one-shot reviews use the same persisted hard-
-    // exhaustion signal and structured account router as ordinary turns. One
-    // fallback is bounded by the connected subscription set: every account is
-    // attempted at most once. API-key routes never enter this branch because
-    // only account routes are benched or accepted as fallbacks.
+    // exhaustion signal and structured router as ordinary turns. One fallback
+    // is bounded by the credential group: every route in it is attempted at
+    // most once. planning#344 widened this from account routes to the
+    // string-delivered subscription shape (docs/252 req 12): the bench goes
+    // through the failing row's own store method, and the re-select is the
+    // SAME `selectRouteForSelection` walk that picked the first credential —
+    // so the user's group order and the benched-entry skip behave exactly as
+    // they did before the run started, and exactly as a primary turn on the
+    // same group already does (docs/252 phase 5). Metered keys still never
+    // fail over: the store's bench refuses a `key` row, the loop reads that
+    // null as "nothing was benched", and the run keeps its original error.
     // A limit hit mid-consult arrives the same two ways a primary turn's does:
     // as the run's error, or — when the CLI reports it as an ordinary assistant
     // message and still ends the turn successfully — as the run's final text.
@@ -662,31 +684,43 @@ export async function runSubAgent(
         ? detectHardExhaustion(run.error)
         : detectHardExhaustionInTurnText(run.text));
 
-    const attemptedAccountIds = new Set(accountId ? [accountId] : []);
+    const attemptedRouteIds = new Set(route ? [route.id] : []);
     let exhausted = detectExhaustion(result);
-    while (exhausted && accountId && deps.providerAccountManager) {
-      const failedAccountId = accountId;
-      // planning#342 — bench and re-select within the group the failing
-      // credential actually belongs to, read from the row itself rather than
-      // from the harness. Deriving it from `subAgentId` would ask about the
-      // harness's own vendor, which is a different question the moment a
-      // consult's default model names another service's subscription — and it
-      // would bench nothing while offering a fallback from the wrong group.
-      const subAgentService =
-        deps.credentialStore.getCredentialRoute(failedAccountId)?.serviceId
-        ?? accountServiceForHarness(subAgentId);
-      deps.providerAccountManager.markAccountExhausted(
-        subAgentService,
-        failedAccountId,
-        exhaustionLockoutUntil(exhausted),
-      );
-      const fallback = deps.providerAccountManager.selectAccountForTurn(subAgentService, {
-        exclude: [...attemptedAccountIds],
-      });
+    while (exhausted && route && deps.providerAccountManager) {
+      const failedRoute = route;
+      const benchedUntil = exhaustionLockoutUntil(exhausted);
+      if (failedRoute.kind === "account") {
+        // planning#342 — bench within the group the failing credential
+        // actually belongs to, read from the row itself rather than from the
+        // harness. Deriving it from `subAgentId` would ask about the
+        // harness's own vendor, which is a different question the moment a
+        // consult's default model names another service's subscription — and it
+        // would bench nothing while offering a fallback from the wrong group.
+        const subAgentService =
+          deps.credentialStore.getCredentialRoute(failedRoute.id)?.serviceId
+          ?? accountServiceForHarness(subAgentId);
+        deps.providerAccountManager.markAccountExhausted(
+          subAgentService,
+          failedRoute.id,
+          benchedUntil,
+        );
+      } else if (!deps.credentialStore.markCredentialRouteExhausted(failedRoute.id, benchedUntil)) {
+        // docs/252 req 12 — nothing was benched, so there is no failover to
+        // run: the store refuses a metered `key` row (no subscription window
+        // to exhaust) and an env-delivered id has no row to carry the stamp.
+        // The same rule the primary path's `markSessionAccountExhausted`
+        // states by delegating to the store; this run ends on its original
+        // error.
+        break;
+      }
+      const fallback = selectRouteForSelection(subAgentId, subSelection, {
+        credentialStore: deps.credentialStore,
+        providerAccountManager: deps.providerAccountManager,
+      }, { exclude: [...attemptedRouteIds] });
       if (!fallback.ok) {
         console.warn(
           `[sub-agent] account-fallback-exhausted session=${sessionId} spawn=${spawnId} `
-          + `agent=${subAgentId} benched=${failedAccountId} reason=${fallback.reason}`,
+          + `agent=${subAgentId} benched=${failedRoute.id} reason=${fallback.reason}`,
         );
         if (fallback.reason === "all_exhausted") {
           result = {
@@ -696,16 +730,22 @@ export async function runSubAgent(
         }
         break;
       }
-      if (fallback.route.kind !== "account") break;
+      // The env-delivered branch of the string walk (and a `key` group's
+      // always-first row) names a route `exclude` cannot hide, so a fallback
+      // that is a route already attempted is the walk saying there is nothing
+      // new — not a reason to spawn on it again.
+      if (attemptedRouteIds.has(fallback.route.id)) break;
       console.warn(
         `[sub-agent] account-fallback session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
-        + `benched=${failedAccountId} next=${fallback.route.id}`,
+        + `benched=${failedRoute.id} next=${fallback.route.id}`,
       );
       if (provisioned && credentialsDir) {
-        try {
-          syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedAccountId);
-        } catch {
-          // Best-effort, matching the terminal sync below.
+        if (failedRoute.kind === "account") {
+          try {
+            syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedRoute.id);
+          } catch {
+            // Best-effort, matching the terminal sync below.
+          }
         }
         // The bare wipe, NOT `releaseSubAgentCredentials`: this failover swaps
         // one borrowed account for another inside the SAME borrow, and ending
@@ -717,8 +757,8 @@ export async function runSubAgent(
         removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
       }
       route = fallback.route;
-      accountId = route.id;
-      attemptedAccountIds.add(accountId);
+      accountId = route.kind === "account" ? route.id : undefined;
+      attemptedRouteIds.add(route.id);
       provisionAttempt();
       result = await spawn();
       exhausted = detectExhaustion(result);
