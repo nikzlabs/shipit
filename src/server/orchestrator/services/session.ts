@@ -173,6 +173,32 @@ async function materializeLfsAndChown(workspaceDir: string, repoUrl: string | un
   if (result.status === "materialized") handWorkspaceBackToWorker(workspaceDir);
 }
 
+/**
+ * The half of the unarchive decision that drops the previous pull request.
+ * Structural, not incidental: unarchive cuts a NEW branch off the default
+ * branch, so nothing about the old PR survives — not its live snapshot, not the
+ * merge record, not the breadcrumb. All three are cleared HERE, in one place,
+ * because they are one decision and were previously two: the route nulled
+ * `pr_status` and nobody nulled `merged_at`, leaving a merge record attached to
+ * a branch that had never had a PR (see `SessionManager.clearPriorPrRecord`).
+ */
+function clearPriorPrState(
+  sessionManager: SessionManager,
+  prStatusPoller: UnarchivePrStatusPoller | undefined,
+  sessionId: string,
+): void {
+  // Merge record + breadcrumb + merged-tip anchor (DB).
+  sessionManager.clearPriorPrRecord(sessionId);
+  // Live snapshot (DB + poller memory), and the SSE removal that drops the
+  // stale PR card from connected clients.
+  prStatusPoller?.clearPersisted(sessionId);
+}
+
+/** The one poller capability `unarchiveSession` needs. */
+export interface UnarchivePrStatusPoller {
+  clearPersisted(sessionId: string): void;
+}
+
 /** Unarchive (restore) a session, recreating clone if needed. */
 export async function unarchiveSession(
   sessionManager: SessionManager,
@@ -181,6 +207,7 @@ export async function unarchiveSession(
   githubAuthManager: GitHubAuthManager,
   repoStore: RepoStore,
   sessionId: string,
+  prStatusPoller?: UnarchivePrStatusPoller,
 ): Promise<{ session: SessionInfo; sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
   if (!session || (session.diskTier !== "evicted" && !session.userArchived)) {
@@ -281,6 +308,12 @@ export async function unarchiveSession(
 
     sessionManager.setBranch(sessionId, newBranch);
   }
+
+  // Unconditional, mirroring the `clearPersisted` call this replaces: a session
+  // with no remote can never have had a PR, so there is nothing to distinguish.
+  // Runs BEFORE the reads below so the returned session + list (which the route
+  // broadcasts over SSE) already show the session un-merged.
+  clearPriorPrState(sessionManager, prStatusPoller, sessionId);
 
   sessionManager.unarchive(sessionId);
   const updated = sessionManager.get(sessionId);

@@ -114,11 +114,12 @@ export async function registerSessionCrudRoutes(
           deps.githubAuthManager,
           deps.repoStore,
           request.params.id,
+          // Dropping the previous PR — snapshot AND merge record — is part of
+          // the unarchive itself, not a step the route performs afterwards.
+          // Threading the poller in is what keeps the two halves from drifting
+          // apart again (`clearPriorPrState` in services/session.ts).
+          deps.prStatusPoller,
         );
-        // Clear the persisted PR snapshot — unarchive starts a fresh branch,
-        // so the previous PR no longer applies. Also drops the stale row from
-        // the SSE `getAllStatuses()` snapshot for new clients.
-        deps.prStatusPoller?.clearPersisted(request.params.id);
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return result;
       } catch (err) {
