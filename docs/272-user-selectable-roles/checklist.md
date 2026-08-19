@@ -23,6 +23,7 @@ Implementation to-do for this branch. See [`plan.md`](./plan.md).
 - [x] `?role=` on connect; `set_role` from the composer
 - [x] Quick capture carries the role
 - [x] The same mark in Settings → Roles
+- [x] A locked role keeps the model and reasoning controls, in both layouts (req 4, second half)
 
 ## Verification
 

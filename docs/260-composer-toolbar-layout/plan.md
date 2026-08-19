@@ -132,7 +132,18 @@ So the state is extracted into hooks used by both:
 ## What the narrow row gives up
 
 - The context ring shows without its token-count and cost figures (req 15); both remain in the menu's Context row, which opens the usage modal as before.
-- The permission mode is not stated in the row. See the requirements' receipt for the trade and how to reverse it.
+- The permission mode is not stated in the row. See the requirements' receipt for the trade and how to reverse it. **One surface is exempt: quick capture on a desktop viewport keeps the mode control in the row (req 19)** — see below.
+
+## The one control quick capture takes back (req 19)
+
+The overlay's composer is under 700 px because its panel is `max-w-2xl` (672 px), and it is that width on a 1400 px window as much as on a 900 px one. So the measurement that means "space is scarce" in the chat panel — where the user chose the width by dragging the split — carries none of that meaning here, and the fold cost this surface the one control it most needs before its first message.
+
+`modeInRow` (`MessageInput.tsx`) is therefore **not** a width test: it is `surface === "overlay" && !isMobile`. The viewport is what says whether there is room beside a fixed-width panel, and below 768 px there is not — which is the ordinary narrow case the fold was designed for, so the overlay folds there exactly as it does today.
+
+Two consequences worth stating:
+
+- **The menu drops its Mode row** (`modeInRow` on `ComposerSettingsMenu`) rather than showing it as well. One setting, one control — two places to change it would have to agree about which is the real one.
+- **The control is placed before the settings anchor**, not after it. The anchor is the group's one elastic item, and req 8's clipping depends on it staying last so it truncates before anything is cut at the mic's edge.
 
 Everything else keeps its accessible name (req 9): the anchor's `aria-label` names the model and the fact that it opens settings, and each menu row is a normal, labelled item.
 

@@ -45,8 +45,20 @@ import type { RoleView } from "../../../server/shared/types/agent-types.js";
 /** The reserved reviewer, which is never offered to a user (req 10). */
 const RESERVED_ROLE_NAME = "reviewer";
 
-/** Why the control is locked (req 4) — the one wording, worn by trigger and wrapper alike. */
-const ROLE_LOCKED_REASON = "A role can only be chosen before the session's first message.";
+/**
+ * Why the control is locked (req 4) — the one wording, worn by trigger and
+ * wrapper alike.
+ *
+ * **It names what is still changeable, not only what is not**, in the shape
+ * `lockedHarnessReason` already uses ("Models stay switchable"). The first
+ * sentence alone was read as "this session's settings are frozen", which is what
+ * the parameters vanishing at the same moment appeared to confirm — and they no
+ * longer do (see `roleParamsRevealed`). A lock that states only a prohibition
+ * makes the user guess how far it reaches.
+ */
+const ROLE_LOCKED_REASON =
+  "A role can only be chosen before the session's first message. "
+  + "The model and reasoning level it set stay changeable.";
 
 /**
  * **The one appearance of "a role is in force"**, worn by both layouts.

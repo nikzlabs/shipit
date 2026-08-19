@@ -167,6 +167,15 @@ Two consequences fell out of fixing it, and both are simplifications:
   on the way out. Leaving a role happens when a parameter *moves*, and only the server knows whether
   one did — re-selecting the harness a role already set is not a change (req 15). Clearing it at the
   call sites re-implemented that comparison and got it wrong in the one case the rule exists for.
+
+  **It follows it only until that session starts** (`agentPinned`), which is where req 12's own
+  words put the bound: the seed is the role the user last *selected*, and a role can only be
+  selected before the first turn (req 4). Unbounded, it read every later answer as a selection —
+  nudging the model in a week-old session cleared the role the user had picked for everything they
+  start next, and an agent-spawned child running some role would have made that role the user's
+  default. Neither is something the user selected. Before the first turn the write stays
+  load-bearing in both directions, because there the seed is the display *and* the `?role=` the next
+  connect applies.
 - **Picking a role writes the three pickers' seeds from the role's resolved params**
   (`utils/role-seed.ts`). Without it, "Adjust parameters…" brought back controls showing whatever
   the seeds held from some earlier session — the role's own values were nowhere on screen, which is
@@ -191,6 +200,27 @@ than today, not more (req 5).
 3. **A role is selected** — the harness, model and reasoning selectors are **replaced** by the
    role's name. Clicking it opens the list of roles (req 14), like every other control in the row
    opens what it chooses between.
+
+**And a fourth, which is state 3 after the session's first turn: the role locks and the parameters
+come back.** `roleParamsRevealed` is true whenever the role is locked, so no one has to ask for
+them — the reveal exists to say "you have just decided these", and at the first turn that sentence
+stops being true while the controls stay useful. What the row then shows is the locked role pill,
+the locked harness readout, and a live model and reasoning picker: exactly the controls a session
+that never took a role has, plus the name.
+
+This is the shape reported as broken. A locked pill has no menu (below), and "Adjust parameters…"
+lives *inside* that menu — so a role-started session lost its model and reasoning controls at the
+first turn and never got them back, while an identical hand-configured session kept both. Nothing
+server-side was wrong: `set_model` and `set_reasoning` were reachable the whole time, and
+`leaveRoleOnParameterChange` clears the role when one of them moves whether the session is pinned or
+not. It was the composer refusing to draw them. The fix is that one condition, and both layouts read
+it from the same place — `ComposerSettingsMenu` takes `roleParamsRevealed` as a prop rather than
+recomputing it, which is why the narrow menu is fixed by the same line.
+
+**The lock still means what it says**: no role can be selected after the first turn (req 4). The
+server refuses `set_role` on `agentPinned` and that is unchanged — the pill stays a readout with no
+menu, and its tooltip now names what is still changeable rather than only what is not, because a
+lock with no such sentence is what made "I cannot adjust the parameters" the natural reading.
 
 **"Adjust parameters…" is a footer inside that list** (req 15), not a second control. Choosing it
 brings the three controls back beside the role name; the role stays in force until one of them

@@ -53,7 +53,8 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
         : s,
     ),
   );
-  // docs/272-user-selectable-roles req 12 — **the seed follows the session's role.**
+  // docs/272-user-selectable-roles req 12 — **the seed follows the session's role
+  // until that session starts, and not after.**
   //
   // The seed decides what the NEXT new session starts on, and leaving a role is
   // not an act of its own: it happens when a parameter moves, and only the
@@ -63,9 +64,29 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
   // out, which re-implemented that comparison and got it wrong in exactly the
   // case the rule exists for.
   //
+  // **The bound is `agentPinned`**, and it is where req 12's own words put it:
+  // the seed is "the role the user last SELECTED", and a role can only be
+  // selected before the first turn (req 4). Past that point this session's role
+  // is no longer an answer to "what should the next new session be" — nudging the
+  // model in a week-old session would otherwise clear the role the user picked
+  // for everything they start next, and a child session started by an agent on
+  // some role would silently make that role the user's default. Neither is
+  // something the user selected.
+  //
+  // Before the first turn the write is load-bearing in both directions, so it
+  // stays: on `/{repo}/new` the seed IS the composer's display (no session row
+  // exists for a warm session), and it is also the `?role=` the next connect
+  // applies — which overrides the harness, model and reasoning. A seed left
+  // naming a role the user has just moved away from would put it back.
+  //
   // Only for the session the user is looking at: a background session's
   // selection change says nothing about what the next new session should be.
-  if (session.sessionId === data.sessionId) saveRoleName(data.roleName ?? undefined);
+  const started = !!useSessionStore
+    .getState()
+    .sessions.find((s) => s.id === data.sessionId)?.agentPinned;
+  if (session.sessionId === data.sessionId && !started) {
+    saveRoleName(data.roleName ?? undefined);
+  }
   // The server has answered. Say so unconditionally — the composer's optimistic
   // pick has to be dropped whether the answer was "yes" or "no", and a REFUSED
   // pick leaves the session row exactly as it was, so "the row now matches"
