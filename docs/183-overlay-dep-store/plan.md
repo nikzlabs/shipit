@@ -433,16 +433,23 @@ impostor behind would make the next attempt reuse it. `createContainerForRunner`
 so a genuinely transient loss self-heals and a standing one surfaces in the health strip.
 
 **The plugin runtime overlay has the same exposure and is NOT covered by this** (review finding,
-2026-08-19). `ensurePluginRuntimeOverlay` (`plugin-overlay.ts`) skips on `volumeExists` — existence
-only — and a plain impostor satisfies that, so unlike the dep-dir path it would never repair itself on
-any restart. Its docstring argues the skip is safe because "the NAME carries the generation", but that
-argument is about *stale opts* and does not reach a volume that stopped existing. Two facts make it
-worth a look on its own rather than a one-line change here: `plugin-install.ts` builds a spec with the
-**same** `pluginOverlayVolumeName(session, repo, generationId)` but a different lowerdir stack
-(`job.stagingDir`, no dep bases) from the one `ensurePluginRuntimeOverlay` computes (the published
-generation plus pinned bases) — so tightening the skip to an opts match would change which volume a
-runtime mount gets, and whether that is a fix or a regression depends on how staging is promoted
-(docs/262, docs/273). Deliberately left alone here; #2495 is the dep-dir path.
+2026-08-19; tracked as planning#451). `ensurePluginRuntimeOverlay` (`plugin-overlay.ts`) skips on
+`volumeExists` — existence only — and a plain impostor satisfies that, so unlike the dep-dir path it
+never repairs itself: not on a restart, not on the next create. It latches for the life of the
+generation. Its docstring argues the skip is safe because "the NAME carries the generation", which is
+right about *stale opts* and does not reach a volume that stopped existing and came back as something
+else.
+
+What it is NOT is the install-time volume leaking into a runtime mount. That looks live — `plugin-install.ts`
+builds a spec with the **same** `pluginOverlayVolumeName(session, repo, generationId)` but a different
+lowerdir stack (`job.stagingDir`, no dep bases) — and it is closed: install removes that volume before
+publishing and treats a failed removal as an install failure rather than a warning
+(`plugin-install.ts:429-443`, `removePluginOverlay`), so a published generation never has one alive.
+The remaining decision is narrower and belongs to planning#451: tightening the skip to an opts match
+makes the shared service+CLI path throw on a mismatch (`createPluginOverlay` deliberately does not
+release holders, so the removal 409s), which is a loud failure where there is now a silent plain mount
+— the right direction, but a real change to a path with no observed failure. Left alone here; #2495 is
+the dep-dir path.
 
 The dep-dir check is deliberately **trigger-independent**: it does not care what removed the volume, only that what
 the container was built with is not what we created. The trigger itself is **not** identified. Two
