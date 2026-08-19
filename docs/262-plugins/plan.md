@@ -1209,6 +1209,26 @@ instead of a repeat.
   installer: kilobytes of markdown, no dangling-link failure mode, and
   re-copying is what makes a refresh take effect.
 
+  **A materialized skill reaches the agent and stops there** (req 22, amended
+  2026-08-19). Materializing into the project-skill root got the user's `/`
+  menu for free, and that was wrong in both halves: the entries were listed
+  under their on-disk names — a namespace plus a collision hash, unusable as a
+  command — and a plugin's instructions are not commands the user chose to
+  have. `scanSkillsDir` (`shared/skill-scan.ts`) therefore skips them, and the
+  test is the **ownership marker's content**, never the `plugins--` prefix: the
+  prefix is a name anyone may use, and hiding on it would remove a skill the
+  user wrote. The constants and the two pure predicates moved to
+  `shared/plugin-skill-marker.ts` for that reason — the scan cannot import
+  `session/` and the client cannot import `node:fs`, so the writer, the scan
+  and the transcript row now share one definition of what ShipIt owns. The
+  in-file `user-invocable: false` opt-out was rejected as the mechanism: it is
+  the *plugin author's* switch, and stamping it into somebody's SKILL.md means
+  hoping every current and future harness reads that field as "hide from the
+  menu" rather than "do not load" — which would silently break req 22 itself.
+  Where the agent runs one, the transcript labels it `<alias>/<skill>`
+  (`pluginSkillLabel`, bound to `namespacedName` by a round-trip test), the
+  same label the plugin card carries.
+
   **Containment is checked with `realpath`, on both sides, before anything is
   written.** The manifest's own validation is lexical — it rejects `..` and
   absolute paths in the declared `skills:` value and says nothing about what any

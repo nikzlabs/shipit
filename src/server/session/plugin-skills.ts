@@ -38,20 +38,18 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { HARNESSES } from "../shared/catalogue/harnesses.js";
 import { parsePluginExports, type PluginExport } from "../shared/plugin-repos.js";
+import {
+  markerClaimsOwnership,
+  PLUGIN_SKILL_MARKER,
+  PLUGIN_SKILL_MARKER_ID,
+  PLUGIN_SKILL_PREFIX,
+} from "../shared/plugin-skill-marker.js";
 import { getErrorMessage } from "../shared/utils.js";
 
-/**
- * Prefix of every directory this module owns. A single namespace, so stale
- * cleanup can identify its own output without a per-directory marker, and one
- * that cannot collide with the marketplace installer's `<plugin>__<skill>`.
- */
-export const PLUGIN_SKILL_PREFIX = "plugins--";
-
-/** Written into each materialized skill so nothing else is ever overwritten. */
-export const PLUGIN_SKILL_MARKER = ".shipit-plugin-skill.json";
-
-/** Value the marker must carry — presence of the FILE is not proof of ownership. */
-export const PLUGIN_SKILL_MARKER_ID = "shipit-plugin-skill-v1";
+// The namespace and the ownership marker live in `shared/` (see that module):
+// the orchestrator's skill scan and the client's transcript rows must recognize
+// what this module writes, and neither of them may import `session/`.
+export { PLUGIN_SKILL_MARKER, PLUGIN_SKILL_MARKER_ID, PLUGIN_SKILL_PREFIX };
 
 /** Name of the managed block written into `.git/info/exclude`. */
 export const PLUGIN_SKILL_EXCLUDE_BLOCK = "shipit plugin skills";
@@ -579,11 +577,7 @@ function ownershipOf(p: string): "ours" | "absent" | "foreign" {
   const marker = path.join(p, PLUGIN_SKILL_MARKER);
   try {
     if (!fs.lstatSync(marker).isFile()) return "foreign";
-    const parsed: unknown = JSON.parse(fs.readFileSync(marker, "utf-8"));
-    const id = parsed && typeof parsed === "object"
-      ? (parsed as Record<string, unknown>).marker
-      : undefined;
-    return id === PLUGIN_SKILL_MARKER_ID ? "ours" : "foreign";
+    return markerClaimsOwnership(fs.readFileSync(marker, "utf-8")) ? "ours" : "foreign";
   } catch {
     return "foreign";
   }
