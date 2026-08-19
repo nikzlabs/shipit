@@ -567,3 +567,40 @@ services:
     volumes:
       - .:/workspace
     x-shipit-preview: auto
+
+  # TEMPORARY, with `reward-tag` above — REMOVE BOTH BEFORE MERGING.
+  #
+  # The same game, built for production and served as static files, on a port of
+  # its own. It exists to produce the condition the first phone run did not have:
+  # a SECOND live preview slot. ShipIt's iframe pool keeps every (session, port)
+  # the user has visited mounted and merely hidden — and `visibility: hidden`
+  # does NOT stop a page rendering (measured: a hidden sibling drew 1709 frames
+  # in 30 s). So once this port has been visited once, a second Three.js context
+  # is drawing behind the one on screen for the rest of the session.
+  #
+  # That is the hypothesis this service is here to test, and the reason it is
+  # this service rather than the game's React tools: only a second WebGL context
+  # can contend for the GPU, which is the one contention path a container with
+  # software rendering cannot reproduce.
+  #
+  # `auto` so the port simply appears in the preview selector — the pool slot is
+  # created by VISITING it, which is the step that has to be easy on a phone.
+  reward-tag-prod:
+    image: node:24
+    working_dir: /workspace/repro-2418/reward-tag/game
+    # No `prepare.sh`: the `reward-tag` service owns fetching and installing, and
+    # two npm installs racing in one node_modules is how this harness broke the
+    # first time. This waits for that work instead of repeating it.
+    command: >
+      sh -c "
+      while [ ! -d node_modules/three ]; do echo '[#2418] prod: waiting for the game install…'; sleep 2; done &&
+      npm run build &&
+      exec npx vite preview --host 0.0.0.0 --port 4173
+      "
+    ports:
+      - "4173:4173"
+    environment:
+      HOME: /workspace/repro-2418/.home
+    volumes:
+      - .:/workspace
+    x-shipit-preview: auto

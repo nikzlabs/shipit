@@ -425,6 +425,12 @@
     let autoState = "armed";
     async function autoCapture() {
       if (autoState !== "armed" || warming() || !burstNow()) return;
+      // A background preview slot must not report. ShipIt keeps every port the
+      // user has visited mounted and merely hidden, so a second copy of this
+      // page can be running behind the one on screen — and a hidden copy has no
+      // business narrating stalls nobody is looking at. `current` is `null`
+      // before the host's first message, which is "not known yet", not "hidden".
+      if (window.shipit?.visibility?.current === false) return;
       // Moved out of "armed" BEFORE the await, or the 500 ms tick re-enters and
       // sends the same burst several times.
       autoState = "sending";

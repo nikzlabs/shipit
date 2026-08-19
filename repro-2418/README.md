@@ -27,6 +27,31 @@ The first attempt at this ran for 49 s with someone watching and came back
 the automatic capture exists: a watched pot is the wrong instrument for a fault
 that arrives when nobody is looking.
 
+## The second preview, and why it is here
+
+That clean run had **one** preview open. The reporter's own session has several
+services, and ShipIt's iframe pool keeps every `(session, port)` the user has
+visited **mounted and merely hidden** — `visibility: hidden`, which does not stop
+a page rendering. Measured: a hidden sibling drew **1709 frames in 30 s**.
+
+So `reward-tag-prod` (port 4173) serves the same game built for production. It is
+here to produce the condition the clean run lacked: a second Three.js context
+drawing behind the one on screen. Only a second **WebGL** context can contend for
+the GPU, and GPU contention is the one path a container with software rendering
+cannot reproduce — so this has to be tested on the phone.
+
+Two runs, and the first is already done:
+
+| | What | Result |
+|---|---|---|
+| **A** | Only the game preview ever opened | already run — `clean`, 49 s, no stalls |
+| **B** | Visit the `reward-tag-prod` port once, switch back to the game, leave it | to do |
+
+Visiting a port is what creates its pool slot; after that the slot stays alive for
+the session whether or not it is on screen. The background copy carries the
+profiler too, but it will not report: it sees `window.shipit.visibility` as false
+and stays quiet, so only the preview actually on screen ever sends.
+
 The first six seconds are not measured. Booting the game — shaders, ground
 textures, building the world — blocks the main thread by design, and counting it
 would answer "the thread is blocked" on every run.
