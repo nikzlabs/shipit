@@ -271,6 +271,38 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    * account never legitimately reaches `ready`.
    */
   private credentialBaselineMtime = 0;
+  /**
+   * Whether the in-flight flow has already emitted its terminal
+   * `complete`/`failed` pair. Reset at flow start, claimed by whichever
+   * completion check fires first (see {@link claimTerminalOutcome}).
+   */
+  private terminalEmitted = false;
+  /**
+   * Monotonic id of the current flow. A killed PTY's `onExit` fires
+   * *asynchronously*, so a handler can run after a later flow has already
+   * started; each handler captures the generation it was registered under and
+   * bails when it no longer matches (see {@link startOAuthFlow}).
+   */
+  private flowGeneration = 0;
+
+  /**
+   * Claim the flow's single terminal emission. Returns `true` to the first
+   * caller only.
+   *
+   * The success path has two independent detectors — the credentials poll and
+   * the process-exit handler — and the poll's own `kill()` makes the second one
+   * run right after the first. Both used to emit, and the duplicate was worse
+   * than noise: {@link clearActiveScope} runs after the first emit, so the
+   * second arrived with `getActiveAccountId() === null` and the SSE wiring
+   * treated it as an account-less sign-in (no row marked ready, an unscoped
+   * `agent_auth_complete`, and an unscoped token re-push across every pinned
+   * session).
+   */
+  private claimTerminalOutcome(): boolean {
+    if (this.terminalEmitted) return false;
+    this.terminalEmitted = true;
+    return true;
+  }
 
   get authenticated(): boolean {
     return this._authenticated;
@@ -558,6 +590,10 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     }
 
     console.log("[auth] Starting OAuth flow (node-pty)...");
+    // Bump first: the PTY killed above exits asynchronously, so its `onExit`
+    // still has to be able to recognize itself as stale.
+    const generation = ++this.flowGeneration;
+    this.terminalEmitted = false;
     this.outputBuffer = "";
     this.authUrlEmitted = false;
     this.wizardEnterCount = 0;
@@ -685,6 +721,13 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
 
     this.proc.onExit(({ exitCode }) => {
       console.log("[auth] OAuth process exited with code", exitCode);
+      if (generation !== this.flowGeneration) {
+        // A previous flow's PTY exiting after a newer flow started. Reporting
+        // here would steal the live flow's terminal event (and its account
+        // scope) for a process that is not the one running.
+        console.log("[auth] Ignoring exit of a superseded login process");
+        return;
+      }
       this.emitDiagnosticLog(exitCode === 0 ? "info" : "warn", "shipit", `Claude login process exited with code ${exitCode}.`);
       this.proc = null;
 
@@ -699,6 +742,15 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
           this.emitProgress("waiting_for_code", "Authentication link detected. Waiting for authorization code.");
           this.emitAuthUrl(url);
         }
+      }
+
+      // The credentials poll detects success first and `kill()`s the CLI, so
+      // this exit is usually that kill's echo. The flow's outcome is already
+      // reported (and its account scope already cleared), so there is nothing
+      // left to say — see {@link claimTerminalOutcome}.
+      if (!this.claimTerminalOutcome()) {
+        console.log("[auth] Login process exited after the flow already reported its outcome");
+        return;
       }
 
       // Check if *fresh* credentials were written by this flow. A pre-existing
@@ -825,11 +877,12 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       attempts++;
       if (this.hasFreshCredentials()) {
         console.log("[auth] Fresh credentials detected on disk after code submission");
+        this.clearCredentialsPoll();
+        if (!this.claimTerminalOutcome()) return;
         this.emitProgress("complete", "Claude sign-in completed.");
         this.emitDiagnosticLog("info", "shipit", "Fresh Claude credentials detected on disk.");
         if (!this.activeCredentialDir) this._authenticated = true;
         this.lastPendingDetails = null;
-        this.clearCredentialsPoll();
         // kill() tears down the PTY/timers but deliberately leaves the active
         // scope intact so the emit below still reports the right account.
         this.kill();
@@ -839,10 +892,11 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       } else if (attempts >= 60) {
         // Give up after 30 seconds (60 × 500ms)
         console.log("[auth] Credentials poll timed out — no fresh credentials written to", configDir);
+        this.clearCredentialsPoll();
+        if (!this.claimTerminalOutcome()) return;
         this.emitProgress("failed", "Timed out waiting for Claude credentials.");
         this.emitDiagnosticLog("error", "shipit", "Credentials poll timed out after 30 seconds.");
         this.lastPendingDetails = null;
-        this.clearCredentialsPoll();
         this.emit("auth_failed");
         this.emit("failed", { reason: "timeout", message: "Credentials poll timed out after 30s" });
         this.clearActiveScope();

@@ -311,4 +311,53 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     expect(readToken(sessionRoot("sess-unmarked"))).toBe("stale-sess-unmarked");
     expect(accounts.get("anthropic", x.id)?.status).toBe("ready");
   });
+
+  // The mirror of the test above: a `complete` that names NO account writes
+  // nothing at all. It used to fall through to the flat re-push for every
+  // pinned session — no marker check, source `<credentialsRoot>/.claude/…`,
+  // which no account-scoped path ever refreshes — so one duplicate emission
+  // (the Claude auth manager's poll+exit double `complete`, fixed in
+  // `auth-manager.ts`) copied an unrelated, ageing token over the per-session
+  // copy of every pinned session, including sessions marked for another
+  // account and the session whose fresh token had just been delivered.
+  it("re-pushes nothing when a completed sign-in names no account", async () => {
+    const sessionRoot = (sessionId: string): string =>
+      path.join(credentialsDir, "sessions", sessionId);
+    const tokenFile = (root: string): string => path.join(root, ".claude", ".credentials.json");
+    const writeToken = (root: string, token: string): void => {
+      fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+      fs.writeFileSync(
+        tokenFile(root),
+        JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 3_600_000, accessToken: token } }),
+      );
+    };
+    const readToken = (root: string): string =>
+      (JSON.parse(fs.readFileSync(tokenFile(root), "utf-8")) as {
+        claudeAiOauth: { accessToken: string };
+      }).claudeAiOauth.accessToken;
+
+    const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
+    const y = accounts.create("anthropic", "Account Y");
+
+    // What the flat re-push would have copied: a token at the credentials root
+    // belonging to nobody the router knows about.
+    writeToken(credentialsDir, "flat-root-token");
+
+    sessionManager.track("sess-marked", "Marked session");
+    sessionManager.setAgentId("sess-marked", "claude");
+    sessionManager.setAgentPinned("sess-marked");
+    writeToken(sessionRoot("sess-marked"), "own-y");
+    writeSessionAccountMarker(credentialsDir, "sess-marked", "claude", y.id);
+
+    sessionManager.track("sess-unmarked", "Pre-260 session");
+    sessionManager.setAgentId("sess-unmarked", "claude");
+    sessionManager.setAgentPinned("sess-unmarked");
+    writeToken(sessionRoot("sess-unmarked"), "own-unmarked");
+
+    // No `start()` — the manager reports a completion with no active scope.
+    authManager.emit("complete");
+
+    expect(readToken(sessionRoot("sess-marked"))).toBe("own-y");
+    expect(readToken(sessionRoot("sess-unmarked"))).toBe("own-unmarked");
+  });
 });
