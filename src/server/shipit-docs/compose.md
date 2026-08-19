@@ -402,18 +402,26 @@ Add `--json` to any subcommand for a machine-readable object.
 ### An empty list has two different meanings
 
 `list` prints "No services defined" only when the project genuinely declares
-none. If ShipIt read the compose file and **declined** it — a rule in
-`compose.md` the file does not satisfy, most often the numeric non-root `user:`
-a contained service needs — the list says so instead, and quotes the rule and
-the fix:
+none. If ShipIt read the compose file and **declined** it — a rule on this page
+the file does not satisfy — the list says so instead, and quotes the rule and the
+fix:
 
 ```
 ShipIt refused this project's compose file, so none of its services are defined:
 
-  Service `web`: contained services must declare a numeric, non-root `user:` …
+  Service `web`: `user: 2000145` is inside 2000000-2999999, the UID range ShipIt
+  reserves for per-session identities …
 
 Edit the compose file `shipit.yaml` declares to satisfy that rule — see /shipit-docs/compose.md.
 ```
+
+Read the quoted rule rather than assuming which one fired. A refusal naming
+`user:` is about a `user:` the file **declares** — root, a reserved egress UID, or
+one in the per-session range. **An absent `user:` is not a refusal**, in a
+contained session or an open one; ShipIt fills the session's own identity in, and
+that is the arrangement the section above tells you to prefer. If you are looking
+at a compose file that declares a `user:` only to satisfy a refusal, deleting the
+line is the fix, not editing the number.
 
 Do not add a second compose file in response — the one that exists needs the
 named line changed, and it is whatever path `compose.file` in `shipit.yaml`

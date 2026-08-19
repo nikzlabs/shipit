@@ -16,5 +16,11 @@
       `group_add` injection, worktree modes, entrypoint modes.
 - [x] Verify live: the dogfood `dev` service starts and its inner orchestrator
       serves again.
+- [x] Follow-up (github#2374 re-verification): correct the four surfaces that
+      kept asserting the deleted rule — `shipit-docs/plugins.md` (which told the
+      agent to *add* the harmful `user:`), `shipit-docs/compose.md`'s empty-list
+      troubleshooting, `session-worker-uid.ts`'s `RESERVED_EGRESS_UIDS` reasoning,
+      `plugin-compose.ts`'s `toComposeService` comment, plus `docs/262` and
+      `docs/150`. Added the missing contained-plugin acceptance test.
 - [ ] After this ships: drop the `user: "1000:1000"` lines from this repo's
       `docker-compose.yml` (see plan.md §4).

@@ -1093,10 +1093,14 @@ the single parse site, `sessionWorkerUid()`, which throws
 `ReservedWorkerUidError`, plus an unconditional `assertWorkerUidNotReserved()`
 as the FIRST statement of `buildApp` (ahead of `initializeManagers`, so a boot
 about to be refused cannot migrate the database or write credentials on its way
-out). Compose services are not a third such surface: a contained service must
-declare its own non-reserved numeric `user:`, checked against the same two
-constants at `compose-generator.ts:850`, so the worker-uid fallback there
-reaches only Open services.
+out). Compose services are reached by the variable too, contained ones included,
+and the boot refusal above is what makes that safe: the fill-in resolves through
+`sessionWorkerUid()`, which throws on a reserved value rather than returning one.
+*(This paragraph used to say compose services were "not a third such surface"
+because a contained service had to declare its own non-reserved numeric `user:`.
+[docs/271](../271-compose-workspace-writability/plan.md) deleted that requirement
+— github#2374 — so the premise is gone while the conclusion stands on the
+refusal instead. Corrected 2026-08-18.)*
 
 A reserved value is **not** degraded to `null` the way other invalid input is:
 the entrypoint reads the same raw variable, so the orchestrator would act

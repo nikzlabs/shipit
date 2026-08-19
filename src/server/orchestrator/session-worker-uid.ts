@@ -54,13 +54,31 @@ import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
  * `plugin-install.ts:470`). They break together, so the refusal lives here at the
  * single parse site rather than on either of them.
  *
- * Compose services are NOT a third such surface, though the fallback at
- * `compose-generator.ts:1164` also reads this variable: a *contained* service
- * must declare its own numeric, non-root, non-reserved `user:` — checked against
- * these same two constants at `compose-generator.ts:850`, which throws during
- * validation (`compose-generator.ts:415`) before any override is generated. So
- * the worker-uid fallback reaches only Open services, where there is no tier to
- * escape.
+ * Compose services ARE reached by this variable too — including contained ones —
+ * and the conclusion below is what keeps that safe. *(This paragraph used to say
+ * the opposite: that a contained service had to declare its own `user:`, so the
+ * fill-in "reaches only Open services, where there is no tier to escape."
+ * docs/271 deleted that requirement — github#2374 is the report of what it cost —
+ * and the claim survived the fix in four places, which is the drift `CLAUDE.md`
+ * warns about: a comment asserting an inherited guarantee is a claim, not a
+ * contract. Corrected 2026-08-18 rather than dropped, because the safety argument
+ * rests on it.)*
+ *
+ * The fill-in at {@link identityForSession} → `compose-generator.ts`
+ * (`entry.user = ${workerUid}:${workerGid}`) now supplies the session identity to
+ * any service that declares no `user:`, contained or not. That cannot emit a
+ * reserved uid: every path to it resolves through {@link sessionWorkerUid}, which
+ * THROWS {@link ReservedWorkerUidError} for 911/912 rather than returning one, and
+ * {@link assertWorkerUidNotReserved} refuses the boot before any session exists.
+ * So the tier-escape hazard is closed at this parse site for compose services by
+ * the same refusal that closes it for the agent and plugin containers — not by a
+ * validation rule demanding a declaration, which is what the old text claimed and
+ * what turned out to be unimplementable (`compose-generator.ts`'s
+ * `validateServiceSecurity`: a project may not name a uid in the session range,
+ * so the uid a service needs is the one it was forbidden to declare).
+ *
+ * A *declared* `user:` is still checked, and still refused for root, for either
+ * reserved uid, and for anything inside the per-session range.
  */
 export const RESERVED_EGRESS_UIDS: readonly number[] = [EGRESS_RESOLVER_UID, EGRESS_PROXY_UID];
 

@@ -640,8 +640,14 @@ instead of a repeat.
 
   **A fragment is validated exactly as the project's own compose file is in that
   session** — the same `validateServiceSecurity`, contained-egress rules
-  included (docs/263), so a plugin must declare a numeric non-root `user:` in a
-  Contained session like everything else there. Three things are added at the
+  included (docs/263). That parity is the durable point; the rule it was
+  originally stated through is not. This used to read "so a plugin must declare a
+  numeric non-root `user:` in a Contained session like everything else there",
+  which [docs/271](../271-compose-workspace-writability/plan.md) deleted
+  (github#2374): ShipIt fills the session identity in for an undeclared service,
+  which satisfies the rule better than a declaration can, and a *declared* wrong
+  `user:` is still refused — for a fragment exactly as for the project's own file.
+  Three things are added at the
   plugin edge, each because the project's own laxity is not the plugin's to
   inherit: **never the Docker socket**, whatever `compose.docker-socket` says;
   **every `$` escaped on the way out**, because Compose interpolates from the
