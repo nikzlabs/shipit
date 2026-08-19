@@ -10,7 +10,8 @@ interface AllSessionsDialogProps {
   onClose: () => void;
   sessions: SessionInfo[];
   repos: RepoInfo[];
-  currentRepoUrl: string | undefined;
+  /** Repo the filter starts on — the repo the dialog was opened from. */
+  initialRepoUrl: string | undefined;
   onFetch: () => void;
   onResume: (sessionId: string) => void;
   onUnarchive: (sessionId: string) => Promise<void>;
@@ -31,7 +32,7 @@ export function AllSessionsDialog({
   onClose,
   sessions,
   repos,
-  currentRepoUrl,
+  initialRepoUrl,
   onFetch,
   onResume,
   onUnarchive,
@@ -65,7 +66,7 @@ export function AllSessionsDialog({
   const prevOpenRef = useRef(false);
   if (open && !prevOpenRef.current) {
     setQuery("");
-    setSelectedRepo(currentRepoUrl ?? ALL_REPOS);
+    setSelectedRepo(initialRepoUrl ?? ALL_REPOS);
     setActioningId(null);
     queueMicrotask(() => {
       onFetch();
