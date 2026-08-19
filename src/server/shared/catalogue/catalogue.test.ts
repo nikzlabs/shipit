@@ -15,6 +15,7 @@ import {
   allServices,
   catalogueEntriesForHarness,
   getHarness,
+  getService,
   reasoningOptionsFor,
   selectionHonoursEffort,
   catalogueContextWindows,
@@ -1451,6 +1452,34 @@ describe("credentials", () => {
       // the expectation.
       expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude"]);
       expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex"]);
+    });
+
+    it("restricts an account credential to the harnesses that can present it", () => {
+      // planning#435. `carriers` used to be read for `via: "string"` only, which
+      // was safe only while every account-bearing service had exactly ONE
+      // harness speaking its style. Grok breaks that: it speaks
+      // `openai-responses`, so the moment it carries an `account` target the
+      // style join alone would offer it a ChatGPT subscription — a guaranteed
+      // 401, the same class as docs/268's Anthropic-on-OpenCode hole.
+      //
+      // This pins the DECLARATION rather than the refusal, deliberately: with
+      // no second account-bearing harness in the catalogue yet, every harness
+      // the clause would exclude is already excluded for lacking an `account`
+      // target, so a behavioural assertion would pass with the clause deleted.
+      // The refusal becomes testable in the change that gives Grok its account
+      // target, and this is what stops the declaration being dropped meanwhile.
+      const chatgpt = getService("openai")?.modes
+        .find((m) => m.kind === "sub")
+        ?.credentials.find((c) => c.via === "account");
+      expect(chatgpt?.carriers).toEqual(["codex"]);
+
+      // Anthropic deliberately has NONE — see the row's comment. Adding one
+      // deletes the only real-catalogue pair where "selected service" and
+      // "harness vendor" differ, which `service-routing.test.ts` exists to pin.
+      const anthropic = getService("anthropic")?.modes
+        .find((m) => m.kind === "sub")
+        ?.credentials.find((c) => c.via === "account");
+      expect(anthropic?.carriers).toBeUndefined();
     });
 
     it("keeps every declared login backed by a manager key", () => {

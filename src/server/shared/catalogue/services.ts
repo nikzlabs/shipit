@@ -320,13 +320,25 @@ export const SERVICES = [
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
         quota: "anthropic-oauth-usage",
         credentials: [
-          // `carriers` for the same reason OpenAI's row below carries one: an
-          // OAuth account is a login to Anthropic's account system, not a
-          // portable secret. No harness other than Claude Code speaks
-          // `anthropic-messages` today, so the style join already covers it —
-          // stated anyway, because that is exactly the accident-of-the-moment
-          // that let planning#435's hole open on the OpenAI row.
-          { via: "account", login: "anthropic-oauth", carriers: ["claude"] },
+          // **Deliberately NO `carriers`**, unlike OpenAI's row below, and the
+          // asymmetry is the point rather than an oversight (planning#435).
+          //
+          // OpenAI's is load-bearing: Grok speaks `openai-responses`, so once it
+          // carries an `account` target the style join alone would offer a
+          // ChatGPT subscription on Grok. Nothing speaks `anthropic-messages`
+          // but Claude Code, so the join already settles this row — and the
+          // widening it guards against is ALREADY caught, visibly, by
+          // `catalogue.test.ts`'s login fan-out assertion, which pins
+          // `["claude"]` precisely so a second anthropic-messages harness shows
+          // up as a failing test to review.
+          //
+          // Adding it "for symmetry" is not free: it makes `(anthropic, sub)`
+          // on Codex refuse at `harnessCanCarry`, which deletes the only pair in
+          // the real catalogue where "the selected service" and "the harness's
+          // vendor" give different answers — the exact axis
+          // `service-routing.test.ts` exists to pin (planning#342). That test is
+          // worth more than a redundant declaration.
+          { via: "account", login: "anthropic-oauth" },
           // `claude-env-oauth`: a subscription delivered as an env-supplied
           // OAuth token — quota-bearing, and ranked above the metered key route.
           // It is why `via` (delivery) and `kind` (billing) are separate axes.
