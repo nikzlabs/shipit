@@ -1391,8 +1391,10 @@ export function syncAgentTokenBack(
   // `sessionOwnRoute` and is unaffected, since it is publishing to the very
   // account whose copy is on disk.
   if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
-    console.warn(
-      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to the flat root: `
+    logWriteBackOutcome(
+      "refused",
+      { sessionId, agentId, target: "flat-root", holder: undefined, reason: "borrow-in-flight" },
+      `refusing ${agentId} token write-back for ${sessionId} to the flat root: `
         + `the subtree is lent to a sub-agent`,
     );
     return;
@@ -1410,8 +1412,10 @@ export function syncAgentTokenBack(
   // duplicate quarantine would then demand a reconnect of both.
   const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
   if (holder !== undefined) {
-    console.warn(
-      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to the flat root: `
+    logWriteBackOutcome(
+      "refused",
+      { sessionId, agentId, target: "flat-root", holder, reason: "subtree-holds-account" },
+      `refusing ${agentId} token write-back for ${sessionId} to the flat root: `
         + `the subtree holds account ${holder}`,
     );
     return;
@@ -1472,6 +1476,35 @@ export interface ProviderTokenWriteBackOptions {
   sessionOwnRoute?: boolean;
 }
 
+/**
+ * One COUNTABLE line per write-back outcome that is not an ordinary publish.
+ *
+ * The prose is unchanged from what these paths have always printed, because an
+ * incident was diagnosed by grepping it (`refusing claude token write-back for
+ * … the subtree holds no recorded account`) and a runbook that stops matching
+ * is worse than no structure at all. The `key=value` prefix is what is new: an
+ * operator can count `write-back=repaired` against `write-back=refused
+ * reason=…` instead of eyeballing sentences, and `reason` says which of the
+ * rules fired rather than leaving it to be inferred from the wording.
+ *
+ * What a repair count does and does not measure (planning#445): it counts marker
+ * losses **that a rotation happened to land on**, which is the population that
+ * matters — a lost marker with no rotation behind it costs nothing. A loss
+ * whose session simply stops rotating is invisible here and shows up instead as
+ * the next turn's `[credentials] <session> account subtree replaced for <id>`
+ * heal (`session-agent-env.ts`). Count both to see the whole shape.
+ */
+function logWriteBackOutcome(
+  outcome: "repaired" | "refused",
+  fields: { sessionId: string; agentId: AgentId; target: string; holder: string | undefined; reason: string },
+  prose: string,
+): void {
+  console.warn(
+    `[session-credentials] write-back=${outcome} session=${fields.sessionId} agent=${fields.agentId} `
+      + `target=${fields.target} holder=${fields.holder ?? "none"} reason=${fields.reason} — ${prose}`,
+  );
+}
+
 export function syncProviderAccountTokenBack(
   credentialsRoot: string,
   sessionId: string,
@@ -1487,8 +1520,10 @@ export function syncProviderAccountTokenBack(
   // duration of a borrow, which is also what makes the missing-marker repair
   // below safe.
   if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
-    console.warn(
-      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
+    logWriteBackOutcome(
+      "refused",
+      { sessionId, agentId, target: `account:${accountId}`, holder: undefined, reason: "borrow-in-flight" },
+      `refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
         + `the subtree is lent to a sub-agent`,
     );
     return;
@@ -1497,15 +1532,22 @@ export function syncProviderAccountTokenBack(
   if (holder !== accountId) {
     const repairable = holder === undefined && opts?.sessionOwnRoute === true;
     if (!repairable) {
-      console.warn(
-        `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
+      logWriteBackOutcome(
+        "refused",
+        {
+          sessionId, agentId, target: `account:${accountId}`, holder,
+          reason: holder === undefined ? "no-recorded-account" : "other-account",
+        },
+        `refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
           + `the subtree holds ${holder ?? "no recorded account"}`,
       );
       return;
     }
-    console.warn(
-      `[session-credentials] repairing lost ${agentId} account marker for ${sessionId}: recording `
-        + `${accountId} (the session's own turn route, no borrow in flight) and publishing its rotation`,
+    logWriteBackOutcome(
+      "repaired",
+      { sessionId, agentId, target: `account:${accountId}`, holder, reason: "lost-marker" },
+      `repairing lost ${agentId} account marker for ${sessionId}: recording ${accountId} `
+        + `(the session's own turn route, no borrow in flight) and publishing its rotation`,
     );
     writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
   }

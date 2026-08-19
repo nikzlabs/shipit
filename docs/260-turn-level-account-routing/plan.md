@@ -358,6 +358,16 @@ that account, so `holder !== accountId` refuses exactly as before, and a
 borrow's own write-back passes no `sessionOwnRoute` and can never repair its way
 into another account's root.
 
+**Counting it in production.** Every write-back outcome that is not an ordinary
+publish prints one `key=value` record — `write-back=repaired … reason=lost-marker`
+and `write-back=refused … reason=borrow-in-flight | no-recorded-account |
+other-account | subtree-holds-account` — with the original sentence kept verbatim
+after it, because the incident was diagnosed by grepping that sentence. A repair
+count measures marker losses **that a rotation landed on**, which is the
+population that costs anything; a loss whose session simply stops rotating shows
+up instead as the next turn's `[credentials] <session> account subtree replaced
+for <id>` heal. Count both to see the whole shape.
+
 **Where the borrow opens matters as much as what it records.** Both callers used
 to provision *before* their `try`, so a provisioning failure (ENOSPC, a source
 root deleted between route resolution and copy) threw past every cleanup — and

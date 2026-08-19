@@ -572,6 +572,50 @@ describe("session-credentials", () => {
       expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
     });
 
+    /**
+     * The repair and the refusals are the only signal an operator has for how
+     * often a marker goes missing in production, so the countable part of the
+     * line is behavior, not decoration. The prose is pinned too: the incident
+     * was diagnosed by grepping "refusing … token write-back", and a runbook
+     * that stops matching is worse than no structure at all.
+     */
+    it("logs each outcome as a countable record, keeping the greppable prose", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // The write-back also chowns and seals the subtree, which can warn on its
+      // own — pick the write-back's line rather than whatever warned last.
+      const lastWriteBackLine = (): string =>
+        warn.mock.calls
+          .map((c) => String(c[0]))
+          .filter((line) => line.includes("write-back="))
+          .at(-1) ?? "";
+      try {
+        writeClaudeToken(accountA(), "A", 12_000);
+        provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+        writeSessionAccountMarker(root, sid, "claude", null);
+        rotateInSession();
+        syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+        const repair = lastWriteBackLine();
+        expect(repair).toContain("write-back=repaired");
+        expect(repair).toContain(`session=${sid}`);
+        expect(repair).toContain("agent=claude");
+        expect(repair).toContain("target=account:acct-a");
+        expect(repair).toContain("reason=lost-marker");
+
+        // A refusal is countable by the rule that fired, and still carries the
+        // sentence the incident was grepped by.
+        writeSessionAccountMarker(root, sid, "claude", "acct-b");
+        syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+        const refusal = lastWriteBackLine();
+        expect(refusal).toContain("write-back=refused");
+        expect(refusal).toContain("holder=acct-b");
+        expect(refusal).toContain("reason=other-account");
+        expect(refusal).toContain(`refusing claude token write-back for ${sid} to account acct-a`);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("still refuses a caller that is publishing a BORROWED account", () => {
       writeClaudeToken(accountA(), "A", 12_000);
       provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
