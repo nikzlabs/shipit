@@ -32,6 +32,8 @@ import {
   chownSessionCredentialsTree,
   perSessionCredentialsDir,
   readSessionAccountMarker,
+  subtreeBorrowInFlight,
+  writeSessionAccountMarker,
 } from "./session-credentials-scaffold.js";
 
 /**
@@ -1376,7 +1378,25 @@ export function sessionTokenIsAheadOfSource(
  * FAILED to refresh (same/older expiry) can never clobber a fresher source
  * token. No-op for agents without a registered token file. (docs/142 A)
  */
-export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+export function syncAgentTokenBack(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  opts?: ProviderTokenWriteBackOptions,
+): void {
+  // planning#312 — the marker is written after the borrow's copy lands, so for an
+  // instant the subtree holds the borrowed account's bearer under the session's
+  // own (or no) marker. A session-route caller refuses for the whole borrow
+  // instead of trusting the marker alone; the borrow's own write-back passes no
+  // `sessionOwnRoute` and is unaffected, since it is publishing to the very
+  // account whose copy is on disk.
+  if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
+    console.warn(
+      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to the flat root: `
+        + `the subtree is lent to a sub-agent`,
+    );
+    return;
+  }
   // The same identity-before-ordering rule as the account write-back below, in
   // the direction that looks like it cannot be wrong and is worse when it is: a
   // session on a reserved/legacy route still gets same-harness background work,
@@ -1414,24 +1434,80 @@ export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, a
  * afterwards authenticating as the same subscription.
  *
  * So identity is checked before ordering: the subtree's own marker says whose
- * copy is on disk, and a write-back may only publish to that account. A marker
- * that names nothing is equally a refusal — every account-routed turn writes one
- * (`ensureSessionAccountCredentials`), so its absence means no account turn has
- * happened here and there is nothing of that account's to publish.
+ * copy is on disk, and a write-back may only publish to that account.
+ *
+ * A marker that names a DIFFERENT account is always a refusal. A marker that
+ * names NOTHING is the ambiguous case, and treating it as a refusal outright
+ * was itself an incident (planning#312): a rotation refused is a rotation
+ * DROPPED, and the token it was carrying has already invalidated the source's
+ * copy upstream, so the account dies — the refresher then fails every tick,
+ * the CLI eventually erases the source file, and the user is made to sign in
+ * again. So absence is resolved rather than assumed, and only two readings
+ * exist:
+ *
+ *   - **A borrow is in flight** ({@link subtreeBorrowInFlight}). The subtree is
+ *     lent out, so nothing in it is the session's to publish — an absent marker
+ *     there is a flat-route borrow saying exactly that. Refuse; and a
+ *     session-route caller refuses for the WHOLE borrow whatever the marker
+ *     says, because the borrow writes its marker after its copy lands and a
+ *     failed provision can leave that gap open indefinitely.
+ *   - **No borrow is in flight, and the caller is publishing the SESSION'S OWN
+ *     turn route** (`sessionOwnRoute`, set only by the turn-end sync-back and
+ *     the mid-turn publisher, both armed from the route the turn resolved).
+ *     Then the copy on disk is that account's — an account-routed turn cannot
+ *     have spawned otherwise — and the missing marker is the defect, not the
+ *     subtree. Repair it and publish.
+ *
+ * Note what this does NOT relax: a borrowed account's marker still names that
+ * account, so `holder !== accountId` refuses it exactly as before, and a
+ * borrow's own write-back (which passes no `sessionOwnRoute`) can never repair
+ * its way into another account's root.
  */
+export interface ProviderTokenWriteBackOptions {
+  /**
+   * The caller's `accountId` is the SESSION'S own resolved turn route, not an
+   * account borrowed for a sub-agent. Only such a caller may repair a lost
+   * marker; see the refusal rules above.
+   */
+  sessionOwnRoute?: boolean;
+}
+
 export function syncProviderAccountTokenBack(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
   accountId: string,
+  opts?: ProviderTokenWriteBackOptions,
 ): void {
-  const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
-  if (holder !== accountId) {
+  // A borrow in flight settles the question before the marker is consulted, and
+  // in the direction the marker cannot: the borrow writes its marker AFTER its
+  // copy lands, so for an instant the subtree holds the borrower's bearer under
+  // the session's own marker — and a provisioning failure can leave that state
+  // indefinitely. A session-route caller therefore publishes nothing for the
+  // duration of a borrow, which is also what makes the missing-marker repair
+  // below safe.
+  if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
     console.warn(
       `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
-        + `the subtree holds ${holder ?? "no recorded account"}`,
+        + `the subtree is lent to a sub-agent`,
     );
     return;
+  }
+  const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
+  if (holder !== accountId) {
+    const repairable = holder === undefined && opts?.sessionOwnRoute === true;
+    if (!repairable) {
+      console.warn(
+        `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
+          + `the subtree holds ${holder ?? "no recorded account"}`,
+      );
+      return;
+    }
+    console.warn(
+      `[session-credentials] repairing lost ${agentId} account marker for ${sessionId}: recording `
+        + `${accountId} (the session's own turn route, no borrow in flight) and publishing its rotation`,
+    );
+    writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
   }
   syncAgentTokenBackToRoot(
     credentialsRoot,

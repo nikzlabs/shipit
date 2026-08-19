@@ -1188,9 +1188,15 @@ export function finalizeSessionAgentEnvironment(
         args.sessionId,
         args.agentId,
         route.providerRouteId,
+        // `sessionOwnRoute` — both branches above resolve the SESSION'S route
+        // (the turn's own capture, or failing that the subtree's own marker),
+        // never an account borrowed for a sub-agent. planning#312: that is the
+        // caller class allowed to repair a marker lost mid-turn rather than
+        // drop the rotation, which for a rotating token kills the source.
+        { sessionOwnRoute: true },
       );
     } else if (route?.providerRouteId !== "claude-env-oauth") {
-      syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId);
+      syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId, { sessionOwnRoute: true });
     }
   } catch (err) {
     console.warn("[credentials] token sync-back failed:", getErrorMessage(err));

@@ -26,6 +26,7 @@
  * `token-sync-manager.ts`, and repo-memory sharing in `repo-memory-manager.ts`.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
@@ -232,7 +233,85 @@ export function writeSessionAccountMarker(
   } else {
     current[agentId] = accountId;
   }
-  fs.writeFileSync(path.join(dir, SESSION_ACCOUNT_MARKER), JSON.stringify(current));
+  // Temp + rename, for the reason `atomicCopyFile` uses it one module over: a
+  // plain `writeFileSync` truncates first, and every reader here treats an
+  // unparseable file as `{}` — "the subtree holds no recorded account". A
+  // reader landing inside that truncation window therefore does not merely
+  // retry later; `syncProviderAccountTokenBack` DROPS the rotation it was
+  // called with, and with rotating refresh tokens a dropped rotation kills the
+  // source credential permanently (planning#312).
+  const file = path.join(dir, SESSION_ACCOUNT_MARKER);
+  const tmp = `${file}.tmp-${process.pid}-${randomUUID()}`;
+  fs.writeFileSync(tmp, JSON.stringify(current));
+  fs.renameSync(tmp, file);
+}
+
+/**
+ * The SUBTREE BORROW LEDGER — which sessions currently have their credential
+ * subtree lent out to a sub-agent, and whose account the borrow displaced.
+ *
+ * Process-local by design, and the one piece of state in this otherwise pure
+ * filesystem module. It exists because {@link SESSION_ACCOUNT_MARKER} alone
+ * cannot answer two questions a borrow makes urgent:
+ *
+ *   - **What do we put back?** The borrow overwrites the marker with its own
+ *     account, so the session's own account has to be captured before the
+ *     overwrite. Both call sites did that themselves, reading the marker some
+ *     lines earlier — and a read that returns `undefined` (a concurrent borrow
+ *     had it cleared, a torn read before the atomic write above) silently
+ *     turned the restore into a no-op, stranding the session with NO marker and
+ *     refusing every write-back after it. Capturing inside the borrow closes
+ *     the window to zero, and a second borrow taken while one is outstanding
+ *     inherits the first's captured account instead of capturing the borrowed
+ *     one.
+ *   - **Is an absent marker a LOSS or a flat borrow?** A borrow on a legacy
+ *     (no-account) route writes `null`, so absence is ambiguous on disk. The
+ *     write-back's marker repair needs to tell those apart, and a ledger entry
+ *     spanning the whole borrow — provision through wipe — says so exactly.
+ *
+ * Process-local is also the correct durability: a restart means no borrow is in
+ * flight (the spawns died with it), and a subtree left holding borrowed
+ * credentials still carries the borrowed account's MARKER, so the next turn's
+ * `ensureSessionAccountCredentials` reprovisions it.
+ */
+const outstandingBorrows = new Map<string, string | undefined>();
+
+const borrowKey = (sessionId: string, agentId: AgentId): string => `${sessionId}:${agentId}`;
+
+/**
+ * Record that `agentId`'s subtree in `sessionId` is about to be lent out,
+ * capturing the account it displaces. Called by `provisionSubAgentCredentials`
+ * immediately before it overwrites the marker. Re-entrant: a nested or
+ * concurrent borrow keeps the account the FIRST one displaced, which is the
+ * session's own.
+ */
+export function beginSubtreeBorrow(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+  const key = borrowKey(sessionId, agentId);
+  if (outstandingBorrows.has(key)) return;
+  outstandingBorrows.set(key, readSessionAccountMarker(credentialsRoot, sessionId)[agentId]);
+}
+
+/**
+ * End the borrow and report the account it displaced — what the caller must
+ * reprovision to put the session back on its own credentials. `undefined` when
+ * the subtree held no account of its own (a legacy/flat session, or a
+ * cross-provider borrow of a harness this session never ran).
+ */
+export function endSubtreeBorrow(sessionId: string, agentId: AgentId): string | undefined {
+  const key = borrowKey(sessionId, agentId);
+  const displaced = outstandingBorrows.get(key);
+  outstandingBorrows.delete(key);
+  return displaced;
+}
+
+/** Is a borrow of this session's `agentId` subtree in flight right now? */
+export function subtreeBorrowInFlight(sessionId: string, agentId: AgentId): boolean {
+  return outstandingBorrows.has(borrowKey(sessionId, agentId));
+}
+
+/** Drop every recorded borrow. Test cleanup only. */
+export function clearSubtreeBorrows(): void {
+  outstandingBorrows.clear();
 }
 
 /**

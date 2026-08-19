@@ -332,7 +332,15 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const restored: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
       provisionSubAgentCredentials: () => calls.push("provision"),
-      removeSubAgentCredentials: () => calls.push("wipe"),
+      // docs/260 — the restore uses the credential subtree's own account
+      // MARKER, not session.providerRoute* (the row records no route any more).
+      // planning#312 — and the borrow reports it on release, having captured it
+      // when it overwrote the marker; a caller that re-reads the marker itself
+      // is the shape that lost it.
+      releaseSubAgentCredentials: () => {
+        calls.push("wipe");
+        return "acct_marker";
+      },
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
       provisionProviderAccountCredentials: (
@@ -341,10 +349,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
         calls.push("restore");
         restored.push(accountId);
       },
-      // docs/260 — the restore reads the credential subtree's own account
-      // MARKER, not session.providerRoute* (the row records no route any
-      // more). Seed it with the account the session's subtree held.
-      readSessionAccountMarker: () => ({ claude: "acct_marker" }),
     }));
     // The runner has to BE a ContainerSessionRunner for the window to open —
     // local mode provisions nothing, by design (docs/138).
@@ -381,13 +385,16 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const calls: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
       provisionSubAgentCredentials: () => calls.push("provision"),
-      removeSubAgentCredentials: () => calls.push("wipe"),
+      // docs/260 — the wipe path reports the account to restore; `undefined`
+      // means the subtree held none, which is fine: the wipe is what this test
+      // pins.
+      releaseSubAgentCredentials: () => {
+        calls.push("wipe");
+        return undefined;
+      },
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
       provisionProviderAccountCredentials: () => calls.push("restore"),
-      // docs/260 — read on the wipe path; an empty marker means no account to
-      // restore, which is fine: the wipe is what this test pins.
-      readSessionAccountMarker: () => ({}),
     }));
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
