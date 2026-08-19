@@ -11,7 +11,6 @@ import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
-import { useIframeOnScreen } from "../../hooks/useIframeOnScreen.js";
 import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePreviewHealthPoller.js";
 import { useDeviceFrame } from "./DeviceFrame.js";
 import { PreviewToolbar, type PortInfo } from "./PreviewToolbar.js";
@@ -125,13 +124,6 @@ export function PreviewFrame({
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
 
-  // Whether each slot's iframe element is actually inside the ShipIt window's
-  // viewport. A cross-origin iframe scrolled or transformed out of view has its
-  // rendering throttled by the browser — rAF stops — and nothing inside the page
-  // can see that (nikzlabs/shipit#2418). See `useIframeOnScreen` for the
-  // measurement this is based on.
-  const { trackIframe, offScreenSlots } = useIframeOnScreen(activeSlotKey);
-
   // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
 
@@ -235,19 +227,6 @@ export function PreviewFrame({
   const authBlocked = !!activeSlotKey && authBlockedSlots.has(activeSlotKey);
 
   /**
-   * Is this slot's page actually on screen? Three independent ways to not be:
-   * it isn't the slot the user selected, the whole pane is behind an overlay,
-   * or — the case the page cannot detect for itself — its iframe element sits
-   * outside the ShipIt window's viewport, which is when the browser stops
-   * delivering it animation frames altogether (nikzlabs/shipit#2418).
-   *
-   * `hideIframe` is declared further down; this is only ever *called* after
-   * render (message handler, ref callback, effect), like the closures around it.
-   */
-  const slotIsVisible = (key: string, activeKey: string | null): boolean =>
-    key === activeKey && !hideIframe && !offScreenSlots.has(key);
-
-  /**
    * Which pool slot a postMessage came from. We can't trust the message
    * contents for this — the injected script doesn't know the slot key — so
    * match `event.source` against each iframe's contentWindow.
@@ -271,7 +250,7 @@ export function PreviewFrame({
       el.contentWindow.postMessage({
         source: "shipit-preview",
         type: "visibility",
-        visible: slotIsVisible(key, activeSlotKeyRef.current),
+        visible: key === activeSlotKeyRef.current && !hideIframe,
       }, expectedOrigin);
       return "sent";
     }
@@ -579,37 +558,11 @@ export function PreviewFrame({
       el.contentWindow.postMessage({
         source: "shipit-preview",
         type: "visibility",
-        visible: slotIsVisible(key, activeSlotKey),
+        visible: key === activeSlotKey && !hideIframe,
       }, expectedOrigin);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `iframeRefs` is a ref and `drainPendingReady` is only invoked; this must fire on slot/visibility changes, not on either identity
-  }, [activeSlotKey, hideIframe, slotOrder, slots, offScreenSlots]);
-
-  // One stable ref callback per slot, so React attaches it once instead of
-  // detaching (`null`) and re-attaching on every render — an inline arrow has a
-  // new identity each time, and that churn cancels the element's viewport
-  // observation as fast as it is established. The callback stays current by
-  // reading the latest body out of a ref, the same latest-callback pattern
-  // `useEventListener` uses, so it never captures a stale `slots`/`hideIframe`.
-  const iframeRefCallbacks = useRef<Map<string, (el: HTMLIFrameElement | null) => void>>(new Map());
-  const attachIframeRef = useRef<(key: string, el: HTMLIFrameElement | null) => void>(() => {});
-  attachIframeRef.current = (key, el) => {
-    iframeRefs.current.set(key, el);
-    trackIframe(key, el);
-    if (el) drainPendingReady();
-    // A stable callback is only handed `null` on a real detach — an LRU
-    // eviction or this component unmounting — so this is where the per-key
-    // entry is retired rather than kept for every slot the page ever showed.
-    else iframeRefCallbacks.current.delete(key);
-  };
-  const iframeRefFor = (key: string) => {
-    let callback = iframeRefCallbacks.current.get(key);
-    if (!callback) {
-      callback = (el: HTMLIFrameElement | null) => attachIframeRef.current(key, el);
-      iframeRefCallbacks.current.set(key, callback);
-    }
-    return callback;
-  };
+  }, [activeSlotKey, hideIframe, slotOrder, slots]);
 
   // Determine overlay content for the main area
   let overlayContent: React.ReactNode = null;
@@ -844,27 +797,25 @@ export function PreviewFrame({
           // looking at, costing the visible one 9.5–13.5% of its frames in a
           // matched A/B at both 60 Hz and 120 Hz.
           //
-          // **The one thing this costs is focus inside the frame**, and it is a
-          // real cost knowingly accepted rather than an oversight: measured, a
-          // genuine browser tab switch DOES restore the focused element, so this
-          // deviates from the "it feels like keeping tabs open" promise this
-          // pool is built on (docs/089). Everything else a person would notice
-          // survives — no reload, typed text, inner and document scroll, and the
-          // caret offset — so a preview you were typing in comes back whole
-          // except that you must tap the field to resume. The design owner was
-          // shown the measurement and took that trade deliberately.
+          // **The one thing this costs is focus inside the frame**, knowingly:
+          // measured, a genuine browser tab switch DOES restore the focused
+          // element, so this deviates from the "it feels like keeping tabs open"
+          // promise this pool is built on (docs/089). Everything else a person
+          // would notice survives — no reload, typed text, inner and document
+          // scroll, and the caret offset — so a preview you were typing in comes
+          // back whole except that you must tap the field to resume. The design
+          // owner was shown the measurement and took that trade.
           //
           // The alternative that keeps focus is `invisible` plus a parking
           // transform (`translateY(-200vh)`), which throttles equally well. It
-          // was dropped for two reasons once focus was off the table: it needs
-          // two properties doing two different jobs, and it silently depends on
-          // that constant always clearing the viewport — a future layout that
-          // puts this pane under a transformed or scrolled ancestor would stop
-          // it throttling with nothing to notice. `display: none` cannot fail
-          // that way, and it removes the frame from the tab order and the
-          // accessibility tree without a second property.
+          // was dropped once focus was off the table: two properties doing two
+          // jobs, and a silent dependency on that constant always clearing the
+          // viewport — a future layout placing this pane under a transformed or
+          // scrolled ancestor would stop it throttling with nothing to notice.
+          // `display: none` cannot fail that way, and it drops the frame from
+          // the tab order and the accessibility tree without a second property.
           //
-          // None of this replaces the docs/146 visibility contract: nothing here
+          // This does not replace the docs/146 visibility contract: nothing here
           // stops **audio**, which is exactly why that cooperative protocol
           // exists. Rendering and audio are separate axes.
           const hidden = !isActive || hideIframe;
@@ -884,7 +835,10 @@ export function PreviewFrame({
           return (
             <iframe
               key={key}
-              ref={iframeRefFor(key)}
+              ref={(el) => {
+                iframeRefs.current.set(key, el);
+                if (el) drainPendingReady();
+              }}
               src={slot.url}
               title={isActive ? "Live Preview" : "Background Preview"}
               style={deviceFrameStyle}
