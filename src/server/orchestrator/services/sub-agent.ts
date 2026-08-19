@@ -78,7 +78,7 @@ import { projectConsultCardForWire } from "../transcript-projection.js";
 import {
   provisionSubAgentCredentials,
   provisionProviderAccountCredentials,
-  readSessionAccountMarker,
+  releaseSubAgentCredentials,
   removeSubAgentCredentials,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
@@ -459,16 +459,6 @@ export async function runSubAgent(
   const provisioned = isContainer && !!deps.credentialsDir;
   const credentialsDir = deps.credentialsDir;
 
-  // The account the session's OWN subtree holds, read BEFORE the borrow
-  // overwrites it. A same-harness consult borrows that subtree and now records
-  // itself on the marker (`provisionSubAgentCredentials`), so reading it in the
-  // `finally` would find the consult's own account and restore that — leaving
-  // the session pointed at someone else's credentials, which is the outcome the
-  // restore exists to prevent.
-  const borrowedFromAccountId = provisioned && credentialsDir
-    ? readSessionAccountMarker(credentialsDir, sessionId)[subAgentId]
-    : undefined;
-
   const provisionAttempt = (): void => {
     if (provisioned && credentialsDir) {
       console.log(
@@ -477,7 +467,6 @@ export async function runSubAgent(
       provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, accountId);
     }
   };
-  provisionAttempt();
 
   const spawnId = randomUUID();
   const cardId = randomUUID();
@@ -627,6 +616,14 @@ export async function runSubAgent(
   };
 
   try {
+    // The borrow opens INSIDE the try, so the `finally` below always closes it
+    // (planning#445). Opening it earlier meant a provisioning failure — ENOSPC, a
+    // source root deleted between route resolution and copy — threw past every
+    // cleanup: the borrow stayed open for the process's life, and a subtree left
+    // lent out refuses the session's own write-backs, which is the very state
+    // this fix exists to end. Nothing between here and the spawn needs
+    // credentials, so the only thing the move changes is what cleans up.
+    provisionAttempt();
     const spawn = () => runner.spawnSubAgent({
       agentId: subAgentId,
       prompt,
@@ -710,6 +707,13 @@ export async function runSubAgent(
         } catch {
           // Best-effort, matching the terminal sync below.
         }
+        // The bare wipe, NOT `releaseSubAgentCredentials`: this failover swaps
+        // one borrowed account for another inside the SAME borrow, and ending
+        // it here would discard the session's own account — the thing the
+        // `finally` restores — and let the re-provision below capture the
+        // cleared marker instead (planning#445). The borrow deliberately stays
+        // open across the gap, which is also what keeps a session-route
+        // write-back refusing while the subtree has no marker at all.
         removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
       }
       route = fallback.route;
@@ -860,17 +864,20 @@ export async function runSubAgent(
         // Best-effort: a failed sync-back at worst makes the next provision
         // start from a slightly older token, which heals on its own refresh.
       }
-      removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
-      console.log(
-        `[sub-agent] wipe-credentials session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
-        + `account=${accountId ?? "flat"}`,
-      );
       // A same-provider consult temporarily borrows the session's provider
       // subtree while the primary is blocked waiting for it. Put the account it
-      // borrowed FROM back before the primary resumes — captured above, because
-      // the borrow itself now owns the marker for its duration. Cross-provider
-      // runs touched a different subtree, so there is nothing to restore.
-      const restoreAccountId = borrowedFromAccountId;
+      // borrowed FROM back before the primary resumes — captured by the borrow
+      // itself, at the instant it overwrote the marker (planning#445): reading
+      // it here would find the consult's own account, and reading it before the
+      // spawn (what this used to do) could race a concurrent borrow's cleared
+      // window and restore nothing, stranding the session with no marker and
+      // every later rotation refused. Cross-provider runs touched a different
+      // subtree, so there is nothing to restore.
+      const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, subAgentId);
+      console.log(
+        `[sub-agent] wipe-credentials session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
+        + `account=${accountId ?? "flat"} restore=${restoreAccountId ?? "none"}`,
+      );
       if (subAgentId === session.agentId && restoreAccountId) {
         provisionProviderAccountCredentials(
           credentialsDir,
@@ -1115,6 +1122,12 @@ export function sweepSubAgentCredentialsOnSignOut(
   if (!deps.credentialsDir) return;
   for (const session of deps.sessionManager.list()) {
     if (session.agentId === agentId) continue; // it's the pinned agent here — leave it
+    // The bare wipe again, and here it is not even a borrow being ended: this
+    // sweeps a CROSS-PROVIDER subtree the session's own turns never use, so the
+    // ledger holds nothing for this key and there is nothing to restore. A run
+    // in flight closes its own borrow in its `finally` (planning#445) — do not
+    // "tidy" this into `releaseSubAgentCredentials`, which would take that
+    // record away from the run that still needs it.
     removeSubAgentCredentials(deps.credentialsDir, session.id, agentId);
   }
 }

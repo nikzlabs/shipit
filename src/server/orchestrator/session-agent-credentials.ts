@@ -24,8 +24,10 @@ import {
   AGENT_CREDENTIAL_PATHS,
   SHARED_CREDENTIAL_PATHS,
   agentCredentialDirs,
+  beginSubtreeBorrow,
   chownSessionCredentialsTree,
   copyCredentialPath,
+  endSubtreeBorrow,
   perSessionCredentialsDir,
   readSessionAccountMarker,
   writeSessionAccountMarker,
@@ -448,8 +450,17 @@ function provisionAgentCredentialsFromRoot(
  * `ensureSessionAccountCredentials` reprovision — where a stale "match" used to
  * let the session spawn on the borrowed account's token.
  *
- * Callers must therefore read the marker they intend to restore BEFORE calling
- * this, not after.
+ * **The account it displaces is captured HERE**, into the borrow ledger, rather
+ * than by each caller reading the marker some lines earlier (planning#445). The
+ * displaced account is what {@link releaseSubAgentCredentials} hands back for
+ * the restore, and a capture that reads `undefined` loses it — leaving the
+ * session with no marker at all and every later write-back refused, which for a
+ * rotating refresh token is not a delay but the permanent death of the source
+ * credential. Two things made a caller-side read return `undefined` on a
+ * session that plainly had an account: a torn read of the then non-atomic
+ * marker write, and a second borrow starting inside the window where the first
+ * had already cleared it. Capturing at the instant of overwrite closes the
+ * first; the ledger's re-entrancy closes the second.
  */
 export function provisionSubAgentCredentials(
   credentialsRoot: string,
@@ -460,8 +471,36 @@ export function provisionSubAgentCredentials(
   const sourceRoot = accountId
     ? providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)
     : credentialsRoot;
+  // Before the copy, not just before the marker write: the copy is what makes
+  // the subtree the borrower's, and the ledger entry is what tells a concurrent
+  // write-back that an absent marker means "borrowed", not "lost".
+  beginSubtreeBorrow(credentialsRoot, sessionId, subAgentId);
   provisionAgentCredentialsFromRoot(credentialsRoot, sessionId, subAgentId, sourceRoot, true);
   writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, accountId ?? null);
+}
+
+/**
+ * Close a borrow: wipe the borrowed credentials ({@link
+ * removeSubAgentCredentials}) and report the account the borrow displaced, so
+ * the caller can put the session back on its own credentials.
+ *
+ * This is the call every borrow's `finally` makes. The bare wipe is still
+ * exported for the two callers that are not ending a borrow — an account
+ * failover, which wipes and immediately re-borrows, and the sign-out sweep,
+ * which wipes another session's subtree it never borrowed — and neither may
+ * clear the ledger entry the in-flight borrow still needs.
+ *
+ * Ordering is load-bearing: the wipe runs while the ledger entry is still in
+ * place, so a write-back racing the wipe sees "a borrow is in flight" rather
+ * than an absent marker it might repair.
+ */
+export function releaseSubAgentCredentials(
+  credentialsRoot: string,
+  sessionId: string,
+  subAgentId: AgentId,
+): string | undefined {
+  removeSubAgentCredentials(credentialsRoot, sessionId, subAgentId);
+  return endSubtreeBorrow(sessionId, subAgentId);
 }
 
 /**
@@ -485,6 +524,10 @@ export function provisionSubAgentCredentials(
  * token that is no longer there, and tell revocation to hunt a copy that is
  * already gone. Callers that restore the session's own account afterwards write
  * it back as part of reprovisioning.
+ *
+ * A caller ENDING a borrow wants {@link releaseSubAgentCredentials} instead —
+ * this one deliberately leaves the borrow ledger alone, for the failover that
+ * wipes and re-borrows in the same window.
  */
 export function removeSubAgentCredentials(
   credentialsRoot: string,

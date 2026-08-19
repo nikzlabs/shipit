@@ -153,9 +153,14 @@ export function startTokenWriteBackWatch(opts: StartTokenWriteBackWatchOptions):
       // recursive chown of the session credentials tree.
       if (!sessionTokenIsAheadOfSource(credentialsDir, sessionId, agentId, accountId)) return;
       if (accountId) {
-        syncProviderAccountTokenBack(credentialsDir, sessionId, agentId, accountId);
+        // `sessionOwnRoute` — the watch is armed by the turn's own pre-spawn
+        // step from the route that turn resolved, so this account is the
+        // session's, never a borrowed one. That is what lets the write-back
+        // repair a lost marker instead of dropping the rotation (planning#445);
+        // a borrow in flight still refuses, from its own marker.
+        syncProviderAccountTokenBack(credentialsDir, sessionId, agentId, accountId, { sessionOwnRoute: true });
       } else {
-        syncAgentTokenBack(credentialsDir, sessionId, agentId);
+        syncAgentTokenBack(credentialsDir, sessionId, agentId, { sessionOwnRoute: true });
       }
       console.log(
         `[token-publish] published mid-turn ${agentId} token rotation from ${sessionId}${accountId ? ` (account ${accountId})` : ""}`,

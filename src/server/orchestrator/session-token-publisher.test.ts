@@ -23,7 +23,11 @@ import {
   stopAllTokenWriteBackWatches,
   hasTokenWriteBackWatch,
 } from "./session-token-publisher.js";
-import { provisionSubAgentCredentials, writeSessionAccountMarker } from "./session-credentials.js";
+import {
+  clearSubtreeBorrows,
+  provisionSubAgentCredentials,
+  writeSessionAccountMarker,
+} from "./session-credentials.js";
 
 /** Fast enough that a test settles quickly, slow enough not to spin. */
 const FAST = { pollIntervalMs: 15, debounceMs: 5 } as const;
@@ -86,6 +90,10 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
   afterEach(() => {
     stopAllTokenWriteBackWatches();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    // A test that borrows the subtree leaves the borrow outstanding in the
+    // process-local ledger; real callers release it in their `finally`, and a
+    // leaked one would make the next test's session-route publish refuse.
+    clearSubtreeBorrows();
   });
 
   it("publishes a rotation to the source mid-turn, without waiting for turn end", async () => {
@@ -185,6 +193,31 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
 
     expect(readExpiry(accountSourceFile("acct-b"))).toBe(1_000);
     expect(readExpiry(accountSourceFile("acct-a"))).toBe(2_000_000_000_000);
+  });
+
+  /**
+   * planning#445 — the production incident, end to end. The session's marker went
+   * missing mid-turn (a borrow whose restore captured nothing), so every
+   * publish this watch attempted was refused with "the subtree holds no
+   * recorded account". A refused publish is a DROPPED rotation, and the token
+   * it dropped had already invalidated the source's copy upstream: the account
+   * failed every refresher tick afterwards and the user was made to sign in
+   * again every day or two. The publisher runs on the turn's own route, so it
+   * can repair the marker and publish instead.
+   */
+  it("publishes a rotation after the subtree's marker went missing mid-turn", async () => {
+    writeToken(accountSourceFile("acct-b"), 1_000);
+    writeToken(sessionFile(), 1_000);
+    markSubtreeAccount("s1", "acct-b");
+
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", accountId: "acct-b", ...FAST,
+    });
+
+    markSubtreeAccount("s1", null); // the marker is lost, with no borrow in flight
+    writeToken(sessionFile(), 2_000_000_000_000); // the CLI rotates
+
+    await waitFor(() => readExpiry(accountSourceFile("acct-b")) === 2_000_000_000_000);
   });
 
   it("stops publishing after the watch is stopped", async () => {

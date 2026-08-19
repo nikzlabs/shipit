@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,7 @@ import {
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
+  releaseSubAgentCredentials,
   removeSubAgentCredentials,
   readSessionAccountMarker,
   writeSessionAccountMarker,
@@ -24,6 +25,7 @@ import {
   repoMemoryDir,
   provisionRepoMemory,
   chownSessionCredentialsTree,
+  clearSubtreeBorrows,
 } from "./session-credentials.js";
 
 /**
@@ -51,6 +53,9 @@ describe("session-credentials", () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
+    // The borrow ledger is process-local, so a test that provisions a borrow
+    // without releasing it would otherwise leak into the next one.
+    clearSubtreeBorrows();
   });
 
   it("computes the per-session dir and POSIX subpath", () => {
@@ -458,6 +463,229 @@ describe("session-credentials", () => {
     syncProviderAccountTokenBack(root, sid, "claude", "acct-a");
     expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
       .toBe("A-ROTATED");
+  });
+
+  /**
+   * planning#445 — the incident the borrow ledger exists for.
+   *
+   * Losing the marker is not a cosmetic bookkeeping error: every write-back
+   * afterwards is refused, and a refused write-back DROPS a rotation whose
+   * token has already invalidated the source's copy upstream. The account then
+   * fails every refresher tick, the CLI erases the source file about an hour
+   * later, and the user is made to sign in again — which is how a reconnect
+   * interval of a week or more became one of a day or two.
+   */
+  describe("a borrow never loses the session's own account", () => {
+    const seedTwoAccounts = () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+    };
+
+    it("restores the session's account after an ordinary borrow", () => {
+      seedTwoAccounts();
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b"); // the session runs on B
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // a consult borrows A
+
+      expect(releaseSubAgentCredentials(root, sid, "claude")).toBe("acct-b");
+    });
+
+    /**
+     * The exact shape that stranded the account in production. The second
+     * borrow's own pre-read of the marker returns `undefined` — the first
+     * borrow's wipe has already cleared it — so a caller that captured the
+     * account itself restored nothing and left the subtree with NO marker.
+     * The ledger's re-entrancy makes the outer borrow's capture the answer for
+     * both.
+     */
+    it("survives a borrow taken while the marker reads as absent", () => {
+      seedTwoAccounts();
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
+
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // borrow 1
+      removeSubAgentCredentials(root, sid, "claude"); // its wipe: the marker is now absent
+      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
+
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // borrow 2, into that window
+      expect(releaseSubAgentCredentials(root, sid, "claude")).toBe("acct-b");
+    });
+
+    it("reports no account to restore for a session that never had one", () => {
+      seedTwoAccounts();
+      fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a");
+
+      expect(releaseSubAgentCredentials(root, sid, "claude")).toBeUndefined();
+    });
+
+    /**
+     * The marker write is temp + rename, so a reader can only ever observe the
+     * old value or the new one. The old in-place `writeFileSync` truncated
+     * first, and a reader landing in that window parsed nothing and reported
+     * "no recorded account" — the same permanent refusal a genuinely lost
+     * marker causes, from a write that was working perfectly.
+     */
+    it("never exposes an empty marker mid-write", () => {
+      seedTwoAccounts();
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
+
+      const observed: (string | undefined)[] = [];
+      const realRename = fs.renameSync;
+      const spy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+        // Mid-write: the temp file holds the new value, the marker still holds
+        // the old one. A concurrent reader must see an account either way.
+        observed.push(readSessionAccountMarker(root, sid).claude);
+        realRename(from, to);
+      });
+      try {
+        writeSessionAccountMarker(root, sid, "claude", "acct-a");
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(observed).toEqual(["acct-b"]);
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+      // And no temp file left behind in the subtree the container mounts.
+      const leftovers = fs.readdirSync(perSessionCredentialsDir(root, sid)).filter((f) => f.includes(".tmp-"));
+      expect(leftovers).toEqual([]);
+    });
+  });
+
+  /**
+   * planning#445 — an absent marker is resolved, not assumed. The write-back
+   * may repair one it can prove is lost, and only then; a dropped rotation
+   * kills the source credential, so "refuse and move on" is the expensive
+   * branch, not the safe one.
+   */
+  describe("write-back marker repair", () => {
+    const rotateInSession = () => writeClaudeToken(perSessionCredentialsDir(root, sid), "ROTATED", 15_000);
+    const accountA = () => path.join(root, "provider-accounts", "claude", "acct-a");
+
+    it("repairs a lost marker for the session's own turn route and publishes the rotation", () => {
+      writeClaudeToken(accountA(), "A", 12_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      writeSessionAccountMarker(root, sid, "claude", null); // the marker went missing
+      rotateInSession();
+
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("ROTATED");
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+    });
+
+    /**
+     * The repair and the refusals are the only signal an operator has for how
+     * often a marker goes missing in production, so the countable part of the
+     * line is behavior, not decoration. The prose is pinned too: the incident
+     * was diagnosed by grepping "refusing … token write-back", and a runbook
+     * that stops matching is worse than no structure at all.
+     */
+    it("logs each outcome as a countable record, keeping the greppable prose", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // The write-back also chowns and seals the subtree, which can warn on its
+      // own — pick the write-back's line rather than whatever warned last.
+      const lastWriteBackLine = (): string =>
+        warn.mock.calls
+          .map((c) => String(c[0]))
+          .filter((line) => line.includes("write-back="))
+          .at(-1) ?? "";
+      try {
+        writeClaudeToken(accountA(), "A", 12_000);
+        provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+        writeSessionAccountMarker(root, sid, "claude", null);
+        rotateInSession();
+        syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+        const repair = lastWriteBackLine();
+        expect(repair).toContain("write-back=repaired");
+        expect(repair).toContain(`session=${sid}`);
+        expect(repair).toContain("agent=claude");
+        expect(repair).toContain("target=account:acct-a");
+        expect(repair).toContain("reason=lost-marker");
+
+        // A refusal is countable by the rule that fired, and still carries the
+        // sentence the incident was grepped by.
+        writeSessionAccountMarker(root, sid, "claude", "acct-b");
+        syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+        const refusal = lastWriteBackLine();
+        expect(refusal).toContain("write-back=refused");
+        expect(refusal).toContain("holder=acct-b");
+        expect(refusal).toContain("reason=other-account");
+        expect(refusal).toContain(`refusing claude token write-back for ${sid} to account acct-a`);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("still refuses a caller that is publishing a BORROWED account", () => {
+      writeClaudeToken(accountA(), "A", 12_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      writeSessionAccountMarker(root, sid, "claude", null);
+      rotateInSession();
+
+      // No `sessionOwnRoute`: this is the borrow's own write-back, and it has
+      // no standing to say whose copy is on disk.
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a");
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
+      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
+    });
+
+    /**
+     * The cross-account guarantee, in the one case the repair could have
+     * weakened it: a borrow on a legacy/flat route records NO account, so the
+     * absent marker is truthful and the subtree holds someone else's bearer.
+     * The ledger says a borrow is in flight, and the write-back refuses.
+     */
+    it("refuses while a flat-route borrow holds the subtree", () => {
+      writeClaudeToken(accountA(), "A", 12_000);
+      writeClaudeToken(root, "FLAT", 1_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      provisionSubAgentCredentials(root, sid, "claude"); // legacy route: marker cleared
+      rotateInSession();
+
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
+      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
+
+      // And once the borrow ends, the same call repairs and publishes.
+      expect(releaseSubAgentCredentials(root, sid, "claude")).toBe("acct-a");
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      writeSessionAccountMarker(root, sid, "claude", null);
+      rotateInSession();
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("ROTATED");
+    });
+
+    /**
+     * The borrow writes its marker AFTER its copy lands, so a marker that
+     * agrees with the session's route is not by itself proof that the token
+     * under it is the session's. For the duration of a borrow a session-route
+     * caller publishes nothing, whatever the marker says.
+     */
+    it("refuses a session-route publish for the whole borrow, marker agreement included", () => {
+      writeClaudeToken(accountA(), "A", 1_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // a consult borrows the same account
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a"); // marker agrees
+      rotateInSession();
+
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
+      releaseSubAgentCredentials(root, sid, "claude");
+    });
+
+    it("still refuses when the marker names a different account", () => {
+      writeClaudeToken(accountA(), "A", 1_000);
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b"); // the subtree is B's
+      rotateInSession();
+
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
+    });
   });
 
   it("syncAgentTokenBack does NOT clobber a fresher source (failed-refresh race guard)", () => {

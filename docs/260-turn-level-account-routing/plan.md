@@ -289,8 +289,9 @@ The close is identity before ordering, on the record that already exists:
 
 - **The borrow states what is on disk.** `provisionSubAgentCredentials` writes
   the account marker, and `removeSubAgentCredentials` clears it — the marker
-  describes the copy, so it travels with the copy. Callers therefore read the
-  account they intend to restore *before* provisioning, not after.
+  describes the copy, so it travels with the copy. The account to restore is
+  captured by the borrow itself (see the follow-up below; callers used to read
+  it before provisioning, which is what raced).
 - **`syncProviderAccountTokenBack` refuses any write the marker does not
   agree with**, so the guarantee is at the single write rather than at each of
   its four call sites. An absent marker is equally a refusal: every
@@ -299,15 +300,85 @@ The close is identity before ordering, on the record that already exists:
   carries the mirror rule — a subtree that names any account may not publish to
   the flat root.
 
-**Known gap: concurrent same-harness borrows.** The marker is one file with a
-read-modify-write, so two background spawns overlapping on one session and one
-harness can each capture the *other's* account as the one to restore, and the
-session's subtree ends up holding a third party's copy. It is bounded rather
-than fixed, deliberately: no cross-account credential can be published while it
-is true (the write-back only ever publishes to the account the marker names),
-and the next turn's identity check reprovisions before anything spawns — so the
-worst case is a subtree that is briefly wrong and never read. A lock would buy
-nothing that the fail-closed reprovision does not already give.
+**The concurrent-borrow gap was not bounded, and it cost an account
+(2026-08-19, planning#445).** This section used to close by arguing that
+overlapping same-harness borrows are safe to leave: each could capture the
+other's account as the one to restore, but "no cross-account credential can be
+published while it is true, and the next turn's identity check reprovisions."
+That reasoning only ever considered the marker being *wrong*. The state the
+overlap actually produces is the marker being *gone* — a borrow whose capture
+read `undefined` restores nothing and clears it — and an absent marker was
+itself a refusal, so it did not fail closed. It failed permanently:
+
+> A refused write-back is a DROPPED rotation. Anthropic's refresh token is
+> single-use, so the token that was refused had already invalidated the
+> source's copy upstream. The account then failed every refresher tick as
+> `unknown_failure`, the CLI erased the source `.credentials.json` about an
+> hour later, and the refresher latched `missing_credentials` and stopped
+> scheduling — an account that can only be recovered by signing in again.
+
+A stranded rotation is *a* way to kill the source, demonstrated here; it is not
+the only one. PR #2476 pinned a second, independent path to a poisoned account
+root — an unscoped sign-in `complete` repushes the FLAT token into pinned
+session subtrees, and a subtree whose marker names account Y then passes the
+identity check while holding bytes that are not Y's, so the ordinary turn-end
+write-back publishes a foreign bearer into Y's root on freshness alone. That is
+the shape to remember when reading anything below: **the marker records which
+account a subtree was provisioned for, not whose bytes are in it.** The repair
+added here keys on provenance the marker cannot lose (the turn's own resolved
+route, plus "not lent out"), and it inherits the freshness compare's blindness
+to ownership exactly as every other write-back path does.
+
+Three changes, each aimed at one half of that:
+
+- **The marker write is atomic** (temp + rename). Every reader treats an
+  unparseable file as "no recorded account", so the in-place `writeFileSync`'s
+  truncation window was a second, borrow-independent way to read a loss that
+  had not happened.
+- **The borrow captures what it displaces, in a process-local ledger**
+  (`beginSubtreeBorrow` / `endSubtreeBorrow`, `session-credentials-scaffold.ts`),
+  at the instant `provisionSubAgentCredentials` overwrites the marker, and
+  `releaseSubAgentCredentials` hands it back for the restore. Callers no longer
+  read the marker themselves — the contract "read the account to restore before
+  provisioning" was implemented twice and raced both times. The ledger is
+  re-entrant, so a borrow taken while another is outstanding inherits the
+  first's captured account: the overlap this section used to accept now
+  resolves to the session's own account rather than to nothing.
+- **A write-back on the session's own turn route repairs a lost marker rather
+  than dropping the rotation** (`{ sessionOwnRoute: true }`, passed only by the
+  turn-end sync-back and the mid-turn publisher). Absence is no longer assumed
+  to mean "no account turn has run here"; the ledger distinguishes a flat-route
+  borrow (refuse — the subtree is lent out) from a marker that went missing
+  (record it and publish). Such a caller also refuses for the *whole* duration
+  of a borrow whatever the marker says, because the borrow writes its marker
+  after its copy lands.
+
+The identity guarantee is unchanged: a borrowed account's marker still names
+that account, so `holder !== accountId` refuses exactly as before, and a
+borrow's own write-back passes no `sessionOwnRoute` and can never repair its way
+into another account's root.
+
+**Counting it in production.** Every write-back outcome that is not an ordinary
+publish prints one `key=value` record — `write-back=repaired … reason=lost-marker`
+and `write-back=refused … reason=borrow-in-flight | no-recorded-account |
+other-account | subtree-holds-account` — with the original sentence kept verbatim
+after it, because the incident was diagnosed by grepping that sentence. A repair
+count measures marker losses **that a rotation landed on**, which is the
+population that costs anything; a loss whose session simply stops rotating shows
+up instead as the next turn's `[credentials] <session> account subtree replaced
+for <id>` heal. Count both to see the whole shape.
+
+**Where the borrow opens matters as much as what it records.** Both callers used
+to provision *before* their `try`, so a provisioning failure (ENOSPC, a source
+root deleted between route resolution and copy) threw past every cleanup — and
+after the ledger existed, that left the subtree recorded as lent out for the
+process's lifetime, refusing the session's own write-backs forever. That is the
+incident's own symptom reached from a second direction, so the provision now
+happens as the first statement inside each caller's `try`. Nothing between the
+old and new positions needs credentials; the only thing that changed is what
+cleans up. The two bare-wipe call sites are deliberate and must stay bare: the
+account failover swaps one borrowed account for another *within* one borrow, and
+the sign-out sweep wipes a cross-provider subtree it never borrowed.
 
 A crash mid-borrow now leaves a marker that *disagrees* with the session's
 route, which makes the next turn's identity check reprovision — where a stale
@@ -462,6 +533,7 @@ plus, at most, the running-turn wait message.
 | Attempt loop | `turn-executor.ts`, `ws-handlers/agent-listeners.ts`, `ws-handlers/agent-rate-limits.ts` |
 | Env-prep / provisioning | `session-agent-env.ts`, `token-sync-manager.ts`, `session-credentials.ts` |
 | Subtree account marker (§4b) | `session-credentials-scaffold.ts` (definition — the token sync reads it without a cycle), `session-agent-credentials.ts` (re-export + writers), `session-token-publisher.ts`, `services/sub-agent.ts`, `services/non-turn-work.ts` |
+| Borrow ledger + marker repair (§4b, planning#445) | `session-credentials-scaffold.ts` (`beginSubtreeBorrow`/`endSubtreeBorrow`/`subtreeBorrowInFlight`), `session-agent-credentials.ts` (`releaseSubAgentCredentials`), `token-sync-manager.ts` (`sessionOwnRoute`) |
 | Process identity / capture | `ws-handlers/agent-execution.ts`, `runner-registry-factory.ts`, `bootstrap-managers.ts`, `session/agent-controller.ts` + `shared/types/agent-types.ts` (worker status route echo), `usage.ts` + `shared/database.ts` (attribution column) |
 | Dispatched / warm-up entry points | `dispatched-turn.ts`, `resident-spawn-guard.ts`, `services/github-ci-fix.ts`, `wake-session.ts`, `services/headless-sessions.ts`, `services/child-sessions.ts`, `services/sub-agent.ts` |
 | String-credential surface | `service-routing.ts` (`stringSelectionFor`), `services/credential-routes.ts`, `api-routes-bootstrap.ts`, `components/Settings/ServicesPanel.tsx` |
