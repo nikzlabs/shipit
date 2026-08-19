@@ -1,6 +1,6 @@
 
 ---
-issue: roadmap#SHI-331
+issue: planning#447
 title: Persistent Preview Iframes
 description: One iframe per (session, port) kept alive across switches, re-entering at the route it was last on.
 ---
