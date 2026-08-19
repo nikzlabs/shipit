@@ -1,6 +1,6 @@
 # Preview System
 
-HTML served through an active Preview receives the [Agent Interface SDK](./agent-interface-sdk.md). It exposes `window.shipit.agent.sendMessage()` plus cooperative visibility state. Use visibility to suspend audio, animation, polling, and timers when hidden. A background slot stays **mounted** — its document, DOM and scroll position survive, so returning to it is instant — but it is hidden with `display: none`, so the browser stops giving it animation frames. Timers and **audio** keep running, which is what the visibility signal is for.
+HTML served through an active Preview receives the [Agent Interface SDK](./agent-interface-sdk.md). It exposes `window.shipit.agent.sendMessage()` plus cooperative visibility state. Use visibility to suspend audio, animation, polling, and timers when hidden. A preview that is not on screen — a background port, or the whole pane sitting behind another tab — stays **mounted**, so its document, DOM and scroll position survive and returning to it is instant, but it is hidden with `display: none` and the browser stops giving it animation frames. Timers and **audio** keep running, which is what the visibility signal is for.
 
 The preview pane shows a live view of the running application. It updates
 automatically as you edit files.

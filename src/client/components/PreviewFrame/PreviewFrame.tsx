@@ -67,6 +67,22 @@ interface PreviewFrameProps {
   /** Called when the user asks the agent to set a preview up for this repo. */
   onSendComposeHintToAgent?: () => void;
   onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
+  /**
+   * Whether this pane is actually ON SCREEN, as opposed to merely mounted.
+   *
+   * The pane is deliberately kept mounted behind the other right-panel tabs and
+   * behind the mobile Chat tab, so returning to it is instant. But a preview
+   * that is not on screen must stop rendering AND be told it is hidden, or it
+   * keeps a WebGL canvas drawing and its audio playing behind the Files tree
+   * (nikzlabs/shipit#2418, second site). `PreviewFrame` cannot work this out for
+   * itself: the class that hides it is applied by an ancestor, and
+   * `visibility: hidden` is invisible to geometry — an `IntersectionObserver`
+   * on the iframe reports it as intersecting.
+   *
+   * Defaults to `true` so the signal can only ever *remove* visibility: a caller
+   * that does not pass it gets exactly the previous behavior.
+   */
+  paneVisible?: boolean;
 }
 
 export function PreviewFrame({
@@ -81,6 +97,7 @@ export function PreviewFrame({
   onSendCrashToAgent,
   onSendComposeHintToAgent,
   onAgentInterfaceMessage,
+  paneVisible = true,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -548,8 +565,12 @@ export function PreviewFrame({
   // A concrete host the user could switch to, when one exists (docs/254-local-bind-and-tailnet-access req 8).
   const suggestedWildcardHost = cannotSubdomainPreview ? suggestWildcardHost(apiHost) : null;
 
-  // When not running, hide the iframe behind the overlay (but keep DOM element alive)
-  const hideIframe = !isRunning && !showStarting;
+  // When not running, hide the iframe behind the overlay (but keep DOM element
+  // alive) — and likewise whenever this pane is not the one on screen. Both
+  // reasons feed the same flag because both have the same two consequences: the
+  // slot is given `display: none`, which is what actually stops it rendering,
+  // and every mounted page is told `visible: false`.
+  const hideIframe = (!isRunning && !showStarting) || !paneVisible;
 
   // Keep every mounted page informed when its ShipIt surface becomes visible
   // or hidden. Background slots remain alive by design, so CSS alone is not a

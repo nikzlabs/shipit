@@ -10,6 +10,9 @@ import {
 } from "react";
 /* eslint-enable no-restricted-imports */
 import { Dialog, DialogContent } from "./components/ui/dialog.js";
+// The mobile Chat/Workspace rule, from the component that implements it — so
+// "is the preview on screen?" has one definition rather than two that drift.
+import { mobileChatInFront } from "./components/MobileContentPanels.js";
 import { TooltipProvider } from "./components/ui/tooltip.js";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
@@ -1708,6 +1711,13 @@ export default function App() {
   // tab. The `pr && !hasPr` case keeps the preview up while a PR is pending.
   const previewVisible =
     !isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr));
+  // Whether that pane is actually ON SCREEN. `previewVisible` only answers "is
+  // it the selected right-panel tab" — on mobile the whole workspace tree sits
+  // behind the Chat tab as well, and a preview hidden either way must stop
+  // rendering and be told it is hidden (nikzlabs/shipit#2418, second site).
+  const previewOnScreen =
+    previewVisible &&
+    !(isMobile && mobileChatInFront({ showHomeScreen, showNewSessionView, activePanel: mobilePanel }));
   // Re-measure the tab bar whenever the set of visible tabs changes so the
   // icon-only collapse adapts to the actual tab count, not a fixed worst-case
   // width. (See useTabLabelCollapse.)
@@ -1842,6 +1852,7 @@ export default function App() {
         >
           <div className="flex-1 min-h-0 relative">
             <PreviewFrame
+              paneVisible={previewOnScreen}
               preview={effectivePreviewStatus}
               sessionId={sessionId}
               detectedPorts={detectedPorts}

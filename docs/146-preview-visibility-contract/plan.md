@@ -84,6 +84,30 @@ get new `type` names. If we ever need a breaking change, we add a new
 `type` (e.g. `visibility2`) and keep the old one. This is cheaper than
 versioning every message.
 
+### What `visible: false` covers
+
+Three independent reasons a page is not on screen, all folded into the one
+boolean the page receives:
+
+1. It is not the **active slot** — the user selected a different port or session.
+2. Its **preview is not running** (the pane is showing an overlay instead).
+3. Its **pane is not the one on screen** — another right-panel tab is in front
+   (Files, Docs, Terminal, History…), or on mobile the Chat tab is.
+
+The third arrived late, with nikzlabs/shipit#2418. `PreviewFrame` cannot work it
+out for itself: the class that hides the pane is applied by an ancestor in
+`App.tsx`, and `visibility: hidden` is invisible to geometry — an
+`IntersectionObserver` on the iframe still reports it intersecting. So `App`
+passes `paneVisible`, computed from the selected right tab and, on mobile, from
+`mobileChatInFront()` — the same predicate `MobileContentPanels` uses to decide
+which tree it renders, exported rather than duplicated so the two cannot drift.
+
+That flag feeds `hideIframe`, which already had both consequences this needs:
+the slot is given `display: none`, which is what actually stops a cross-origin
+frame rendering, and every mounted page is told `visible: false`. Before it, a
+preview kept a WebGL canvas drawing and its audio playing behind the Files tree
+while being told it was visible.
+
 ### Why visibility, not "mute"
 
 The semantic is **"you are not on screen, please pause yourself"**, modelled
