@@ -144,6 +144,22 @@ export function chownSessionCredentialsTree(credentialsRoot: string, sessionId: 
  */
 const SESSION_ACCOUNT_MARKER = ".shipit-provider-accounts.json";
 
+/**
+ * planning#443 — membership test for a marker key, which is free text once the
+ * file is parsed. Derived from {@link AGENT_CREDENTIAL_PATHS} because its
+ * `Record<AgentId, …>` type is the one enumeration of the union the compiler
+ * keeps complete: the hand-listed `"claude" || "codex" || "opencode"` check
+ * this replaces was never widened for `"grok"`, so a marker written for grok
+ * read back as `{}` for every consumer — and because the write side
+ * round-trips through this reader, the next write of any other agent
+ * re-serialized the filtered view and erased the on-disk entry too.
+ */
+function isAgentId(key: string): key is AgentId {
+  // hasOwn, not `in`: the record is a plain literal, and `in` would accept
+  // inherited Object.prototype names ("toString", …) from a hostile file.
+  return Object.hasOwn(AGENT_CREDENTIAL_PATHS, key);
+}
+
 export function readSessionAccountMarker(
   credentialsRoot: string,
   sessionId: string,
@@ -154,7 +170,7 @@ export function readSessionAccountMarker(
     if (!parsed || typeof parsed !== "object") return {};
     const out: Partial<Record<AgentId, string>> = {};
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if ((key === "claude" || key === "codex" || key === "opencode") && typeof value === "string") out[key] = value;
+      if (isAgentId(key) && typeof value === "string") out[key] = value;
     }
     return out;
   } catch {

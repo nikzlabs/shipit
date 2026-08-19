@@ -11,6 +11,8 @@ import {
   writeSessionAccountMarker,
   writeSessionResidentRoute,
 } from "./session-agent-credentials.js";
+import { AGENT_CREDENTIAL_PATHS } from "./session-credentials-scaffold.js";
+import type { AgentId } from "../shared/types/agent-types.js";
 
 /**
  * docs/260-turn-level-account-routing req 4 — the per-turn credential identity check. The session's
@@ -152,6 +154,25 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
     const marker = readSessionAccountMarker(root, SESSION);
     expect(marker.claude).toBeUndefined();
     expect(marker.codex).toBe("acct_z");
+  });
+
+  it("a marker written for ANY supported agent reads back unchanged (planning#443)", () => {
+    // The list is derived from the same compile-forced Record the reader now
+    // filters through, so an AgentId added tomorrow is covered here without an
+    // edit — the hand-listed filter this guards against dropped "grok" with no
+    // test ever noticing.
+    const allAgentIds = Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[];
+
+    for (const agentId of allAgentIds) {
+      writeSessionAccountMarker(root, SESSION, agentId, `acct_${agentId}`);
+      expect(readSessionAccountMarker(root, SESSION)[agentId]).toBe(`acct_${agentId}`);
+    }
+
+    // The full map survives too — each write's read-modify-write must not drop
+    // the entries earlier writes left for the other agents.
+    expect(readSessionAccountMarker(root, SESSION)).toEqual(
+      Object.fromEntries(allAgentIds.map((id) => [id, `acct_${id}`])),
+    );
   });
 
   it("provisionProviderAccountCredentials records the marker itself", () => {
