@@ -169,8 +169,9 @@ read it twice:
   every role wastes whichever role it does not fit.
 
 Where a role carries no description, the harness and model line is the only hint
-there is; use it the same way, and no further. **Neither signal moves the
-target.** You write the prompt to fit the role — you never override a parameter,
+there is. Use it for the same one thing the description is used for — how much
+the prompt has to spell out — and for nothing beyond that. **Neither signal moves
+the target.** You write the prompt to fit the role — you never override a parameter,
 or reach for a different role, because you judged the work deserves something
 else. That is the same relay-never-decide rule as above, and reading a
 description does not create an exception to it.
