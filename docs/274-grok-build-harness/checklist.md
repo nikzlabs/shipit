@@ -230,29 +230,52 @@ the expansion of every line, with file pointers and gotchas, is in
       **account** credentials too, in both join sites. Without it, giving grok
       an `account` target offers it a ChatGPT subscription (a guaranteed 401,
       the docs/268 class).
-- [ ] **The `xai-oauth` auth manager** — the device flow driven from inside
-      ShipIt (req 11), on the Codex device-auth precedent. Everything below is
-      downstream of it, and `catalogue.test.ts` rightly refuses a login id no
-      manager implements, so they land together: the xAI `sub` mode, the
-      `LoginIntegrationId` member, grok's `account` credential target, and
-      grok's reasoning vocabulary + the harness×mode axis it needs.
-- [ ] Credential injection into a fresh container (req 12) **and surviving
-      token expiry mid-session** (req 13) — the token lives ~6h with a
-      refresh_token, so a one-time file copy does not satisfy req 13.
-- [ ] Account identity + plan on the row (req 15). `auth.json` carries
-      `user_id` (uuid, `=== principal_id`) as the stable external id, `email`
-      as the label, plus `team_id` and `auth_mode: "oidc"`.
-- [ ] Quota (req 16) — expected to take the documented **no-reader** route
-      `catalogue/types.ts` calls for: `/v1/usage`, `/v1/rate-limits`,
-      `/v1/subscription` and `/v1/me` all 404 with a valid token, and
-      `/v1/settings` carries no plan or usage field.
-- [ ] ServicesPanel device-code sign-in UX (req 11).
-- [ ] Wire a UI consumer for `reasoningOptionsFor` — flagged in review as
-      staged-but-unconsumed. Nothing currently prevents the subscription picker
-      from reading `capabilities.reasoning.options` directly and reintroducing
-      the dishonesty req 14 forbids.
-- [ ] One subscription-mode dogfood turn with the billing route verified
+- [x] **The `xai-oauth` auth manager** — the device flow driven from inside
+      ShipIt (req 11), on the Codex device-auth precedent, landed together with
+      everything downstream of it: the xAI `sub` mode, the `LoginIntegrationId`
+      member, grok's `account` credential target, and grok's reasoning
+      vocabulary + the harness×mode axis. Two live differences from the Codex
+      flow, each a silent failure if copied: the challenge prints on **stderr**,
+      and the user code is **four-and-four**, not four-and-five.
+- [x] Token landing for the ~6h rotating token (req 13) — grok declares its
+      token file and a freshness reader, so it joins the existing per-turn
+      sync-in / mid-turn watch / publish-back path rather than getting a new
+      mechanism. **The freshness reader is the load-bearing part**: `expires_at`
+      is an ISO-8601 *string*, and a reader that returns null does not fail safe
+      — the sync guard then copies the source over a session's freshly-refreshed
+      token. Covered by unit tests against the real file shape; not exercised by
+      the dogfood run, which is local mode and keeps no per-session copy.
+- [x] Account identity on the row (req 15) — `user_id` as the stable external
+      id, `email` as the label, read from the scope-keyed file. **No plan**: xAI
+      reports none anywhere, and `tier: 1` in the token is an opaque integer, so
+      req 15 was reworded rather than half-met (receipt in requirements.md).
+- [x] Quota (req 16) — took the documented **no-reader** route: the `sub` mode
+      declares `quota: null`, a new explicit arm of `BillingModeDef`, rather
+      than a fourth `QuotaIntegrationId` nothing implements. `catalogue.test.ts`
+      asserts such a mode reports nothing and offers no refresh.
+- [x] ServicesPanel device-code sign-in UX (req 11) — verified live: *Add a
+      service → xAI* offers **Subscription · API key**, and choosing Subscription
+      renders the challenge with URL, code and both models. The surface was
+      already generic; what was missing was the catalogue declaring the mode.
+- [x] Wire the UI consumers of `reasoningOptionsFor` — the composer picker
+      (via `useBoundModelSelection`, derived from the same session and seed the
+      model picker beside it reads), the reviewer level menu, and the role
+      editor's menu and its harness/model moves. This was flagged as
+      staged-but-unconsumed, and it stopped being theoretical the moment grok's
+      vocabulary became non-empty: all four would have offered four dead levels
+      on a key-billed grok selection.
+- [x] One subscription-mode dogfood turn with the billing route verified
       through the scrub/shaping path — the Phase 10 item key mode cannot cover.
-      **planning#444 no longer blocks this** (fixed and verified in a real
-      container 2026-08-19, see the Phase 10 item); it now waits only on the
-      `xai-oauth` auth manager above.
+      Done 2026-08-19, on a session-worker image carrying the planning#444 fix
+      (the blocker this item used to name — see the Phase 10 item): one turn on
+      `xai/sub` `grok-4.6`, attributed to `xai:sub` with `includedTurns: 1` and
+      `meteredCostUsd: 0`; the adapter logged `subscription login on disk — env
+      credentials scrubbed` with `XAI_API_KEY` present in the environment; and
+      the CLI's own session store records `reasoning_effort: "xhigh"` for the
+      turn.
+- [ ] **Open, and deliberately not built here**: whether grok needs an
+      orchestrator-owned proactive refresher (the docs/153 / docs/154 shape).
+      The token lives six hours, so whether the CLI's refresh ROTATES the
+      refresh token — the property that makes an N-session stampede destructive
+      — cannot be observed without waiting for an expiry. `grok models` is the
+      obvious tier-1 probe, mirroring `codex login status`.

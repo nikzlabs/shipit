@@ -3,7 +3,10 @@ import { BrainIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { getSavedReasoning, saveReasoning } from "../utils/local-storage.js";
 import { Picker, PickerOption } from "./pickers/Picker.js";
+import { useBoundModelSelection } from "./ModelPicker.js";
+import { reasoningOptionsFor } from "../../server/shared/catalogue/index.js";
 import type { AgentOption } from "../agent-types.js";
+import type { AgentId } from "../../server/shared/types.js";
 
 /**
  * The reasoning choice as both this control and docs/260's composer settings
@@ -36,8 +39,16 @@ export function useReasoningPickerState({
     [agent, onChange],
   );
 
+  // docs/274 req 14 — the levels THIS SELECTION honours, never the harness's raw
+  // vocabulary. The two diverge for grok, which declares four levels and sends
+  // them only under a subscription, so reading `reasoning.options` here would
+  // put four controls on screen that change nothing on a key-billed session.
+  // The selection is derived from the same session and seed the model picker
+  // beside this one reads, so the two controls cannot describe different rows.
+  const selection = useBoundModelSelection(seedFromHistory);
   const reasoning = agent?.reasoning;
-  if (!agent || !reasoning || reasoning.options.length === 0) return null;
+  const options = agent ? reasoningOptionsFor(agent.id as AgentId, selection) : [];
+  if (!agent || !reasoning || options.length === 0) return null;
 
   // `pending` (incl. an explicit null = "Default just picked") wins until cleared;
   // otherwise the per-session value. The per-agent seed is consulted only when
@@ -50,10 +61,10 @@ export function useReasoningPickerState({
   return {
     /** The agent's own name for the knob ("Reasoning", "Reasoning effort"). */
     label: reasoning.label,
-    /** "Default" plus the agent's levels, in catalogue order. */
-    options: [{ value: null as string | null, label: "Default" }, ...reasoning.options],
+    /** "Default" plus the levels this selection honours, in catalogue order. */
+    options: [{ value: null as string | null, label: "Default" }, ...options],
     current,
-    currentLabel: reasoning.options.find((o) => o.value === current)?.label ?? "Default",
+    currentLabel: options.find((o) => o.value === current)?.label ?? "Default",
     select,
   };
 }

@@ -146,13 +146,16 @@ describe("parseSubAgentSpawnTarget — the explicit path (docs/261 req 7)", () =
 });
 
 /**
- * docs/275 — completeness is per-harness: `--effort` is part of a complete call
- * exactly where the harness declares reasoning levels. Grok declares none
- * (docs/274 req 8, `capabilities.reasoning.options: []`), so a four-flag call
- * naming it is complete — the shape the docs/274 Phase 10 run found
- * unassemblable. Against the REAL catalogue, deliberately: whether grok has
- * levels is a statement about that catalogue, and a fixture could disagree
- * with what ShipIt does.
+ * docs/275 — completeness is per-harness **and per selection**: `--effort` is
+ * part of a complete call exactly where the selection honours a level.
+ *
+ * The subject below is `grok` on `xai/key`, and since planning#435 that is a
+ * SELECTION with no levels rather than a harness with none — grok declares four
+ * and sends them only under the subscription (docs/274 req 14). The four-flag
+ * call is still complete, which is the shape the docs/274 Phase 10 run found
+ * unassemblable; what changed is why. Against the REAL catalogue, deliberately:
+ * whether that row has levels is a statement about that catalogue, and a
+ * fixture could disagree with what ShipIt does.
  */
 describe("parseSpawnTarget — a harness with no reasoning levels (docs/275)", () => {
   /** A complete grok call: the four identity flags, no effort to name. */
@@ -564,7 +567,7 @@ describe("resolveSpawnTarget", () => {
         { harnessId: "claude" },
         { credentialStore: storeWith([]) },
       ),
-    ).toThrow(/declares no reasoning levels/);
+    ).toThrow(/offers no reasoning levels/);
   });
 
   // docs/275 req 4 — widening completeness must not open a gap on the harnesses

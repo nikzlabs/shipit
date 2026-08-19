@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { nativeServiceForHarness, selectionExists } from "../shared/catalogue/index.js";
+import { nativeServiceForHarness, selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
 import { buildAgentRerouteNotice } from "./agent-reroute-notice.js";
 import {
@@ -818,8 +818,19 @@ export async function registerRoutes(
           : undefined;
       let selectedReasoning: string | undefined = session.reasoningEffort ?? requestedReasoning;
       {
-        const reasoningOpts = agentRegistry.get(perConnectionAgentId)?.capabilities.reasoning?.options;
-        if (selectedReasoning && !reasoningOpts?.some((o) => o.value === selectedReasoning)) {
+        // docs/274 req 14 — asked of the SELECTION, not of the harness's raw
+        // vocabulary. A harness can declare a level and honour none on a given
+        // row (grok, key-billed), so a vocabulary check would rehydrate a
+        // session with a level its every turn silently discards — and persist
+        // it, since the branch below writes the reconciled value back.
+        const reasoningSelection =
+          session.serviceId && session.billingMode && session.model
+            ? { serviceId: session.serviceId, billingMode: session.billingMode, modelId: session.model }
+            : undefined;
+        if (
+          selectedReasoning
+          && !selectionHonoursEffort(perConnectionAgentId, reasoningSelection, selectedReasoning)
+        ) {
           selectedReasoning = undefined;
         }
         if (selectedReasoning !== (session.reasoningEffort ?? undefined)) {
@@ -1725,8 +1736,15 @@ export async function registerRoutes(
               // alone). Reasoning is per-agent, so self-heal it here too —
               // otherwise a stale Claude `max` could ride a Codex spawn as
               // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
+              // docs/274 req 14 — against what the model being MOVED TO honours,
+              // not the new harness's vocabulary. The two differ for grok, so a
+              // `high` carried over from another harness would survive onto a
+              // key-billed grok row and be dropped before the wire every turn.
               const currentReasoning = ctx.getSelectedReasoning();
-              if (currentReasoning && !modelOwner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+              if (
+                currentReasoning
+                && !selectionHonoursEffort(modelOwner.id, verdict?.selection, currentReasoning)
+              ) {
                 ctx.setSelectedReasoning(undefined);
                 if (activeAppSessionId) {
                   sessionManager.setReasoning(activeAppSessionId, null);
@@ -1766,8 +1784,18 @@ export async function registerRoutes(
             const reasoningAgent = agentRegistry.get(ctx.getActiveAgentId());
             const effort = msg.effort;
             if (effort !== null) {
-              const allowed = reasoningAgent?.capabilities.reasoning?.options.some((o) => o.value === effort);
-              if (!allowed) {
+              // docs/274 req 14 — validated against this session's SELECTION.
+              // The vocabulary is what the CLI understands; whether this row
+              // puts it on the wire is a different question, and accepting a
+              // level the row discards stores a preference that silently does
+              // nothing (the picker no longer offers one, so this is the
+              // defence for a stale client or a direct WS caller).
+              const active = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+              const reasoningSelection =
+                active?.serviceId && active.billingMode && active.model
+                  ? { serviceId: active.serviceId, billingMode: active.billingMode, modelId: active.model }
+                  : undefined;
+              if (!selectionHonoursEffort(ctx.getActiveAgentId(), reasoningSelection, effort)) {
                 send({ type: "error", message: `Invalid reasoning effort "${effort}" for ${reasoningAgent?.name ?? "this agent"}` });
                 return;
               }

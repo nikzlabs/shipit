@@ -517,6 +517,27 @@ export function reasoningOptionsFor(
 }
 
 /**
+ * Does this harness put `--reasoning-effort` on the wire under this billing
+ * mode **at all** — the harness×mode gate on its own, with no model named.
+ *
+ * The coarser sibling of {@link reasoningOptionsFor}, and it exists for one real
+ * caller: an explicit `shipit agent run` is validated flag by flag, so the parse
+ * has to say whether `--effort` is part of a complete call *before* it knows
+ * there is a valid model. Falling back to the harness vocabulary there would
+ * demand a level on a key-billed grok call — a flag whose value the CLI
+ * discards — and the caller would be sent to add it.
+ *
+ * Answers the mode question only. Whether a given ROW then narrows the list (a
+ * subscription `grok-4.5` has no `xhigh`) still belongs to `reasoningOptionsFor`,
+ * which is what runs once the model is known.
+ */
+export function harnessSendsReasoningEffort(harnessId: AgentId, billingMode: BillingMode): boolean {
+  const reasoning = getHarness(harnessId)?.capabilities.reasoning;
+  if (!reasoning || reasoning.options.length === 0) return false;
+  return reasoning.billingModes === undefined || reasoning.billingModes.includes(billingMode);
+}
+
+/**
  * Is `effort` a level this selection actually honours? The refusal side of
  * {@link reasoningOptionsFor}, for the places that validate a stored or
  * caller-supplied value rather than render a list — a role's pinned level, an

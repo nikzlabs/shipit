@@ -38,8 +38,9 @@
  */
 
 import type { AgentId, RoleView } from "../../shared/types.js";
-import type { AgentRegistry } from "../../shared/agent-registry.js";
+import type { AgentInfo, AgentRegistry } from "../../shared/agent-registry.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
+import { reasoningOptionsFor } from "../../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { buildRoleSettings, type RoleDeps } from "./roles.js";
 
@@ -122,6 +123,28 @@ export function listRolesForAgent(deps: RoleDeps): AgentRoleListing[] {
  * `installed` probe, matching every other spawn-adjacent gate: a `which` miss in
  * a report-less environment is not the deployment saying no.
  */
+/**
+ * The levels this harness declares that at least one of its credentialed rows
+ * honours, in the harness's own declared order (docs/274 req 14).
+ *
+ * Empty when the harness has no eligible rows at all — there is then nothing to
+ * complete against, which is the honest answer rather than the vocabulary.
+ */
+function honouredLevels(harness: AgentInfo): string[] {
+  const vocabulary = harness.capabilities.reasoning?.options ?? [];
+  if (vocabulary.length === 0) return [];
+  const honoured = new Set(
+    harness.eligibleModels.flatMap((model) =>
+      reasoningOptionsFor(harness.id, {
+        serviceId: model.serviceId,
+        billingMode: model.billingMode,
+        modelId: model.modelId,
+      }).map((option) => option.value),
+    ),
+  );
+  return vocabulary.map((option) => option.value).filter((value) => honoured.has(value));
+}
+
 export function listSpawnParameters(agentRegistry: AgentRegistry): SpawnParameterInventory {
   return {
     harnesses: agentRegistry
@@ -130,7 +153,20 @@ export function listSpawnParameters(agentRegistry: AgentRegistry): SpawnParamete
       .map((harness) => ({
         id: harness.id,
         name: harness.name,
-        reasoningLevels: (harness.capabilities.reasoning?.options ?? []).map((o) => o.value),
+        // docs/274 req 14 — the harness's own vocabulary, NARROWED to the levels
+        // at least one of its credentialed rows actually honours.
+        //
+        // The list drives tab completion for `--effort`, and
+        // `parseSubAgentSpawnTarget` refuses a level the named selection does
+        // not honour — so offering the bare vocabulary would complete a flag the
+        // run then rejects. A union across rows rather than a per-row list,
+        // because completion happens before a model is named.
+        //
+        // Narrowed rather than replaced: the vocabulary and its ORDER come from
+        // the registry the caller injected, which stays authoritative about what
+        // this harness declares; the catalogue only says which of those a row
+        // sends.
+        reasoningLevels: honouredLevels(harness),
         models: harness.eligibleModels.map((model) => ({
           serviceId: model.serviceId,
           billingMode: model.billingMode,

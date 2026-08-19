@@ -575,6 +575,19 @@ export class GrokAdapter
         `[grok] the shared config root ${realRoot} is unusable (${String(err)}) — running this turn on a `
           + "self-contained root instead. Cross-turn resume and any auth.json there are unavailable until it is repaired.",
       );
+      // BILLING, not just resume. `spawnHomeHasAuth` stays false here, so the
+      // subscription scrub below does not fire — and if the worker's environment
+      // carries `XAI_API_KEY` (it does whenever the install has ever stored one),
+      // the CLI silently falls back to that key while ShipIt attributes the turn
+      // to the account. That needs two unlikely states at once, which is exactly
+      // why it must be said out loud rather than left to be inferred from a
+      // resume warning. Raised in review of planning#435.
+      if (process.env.XAI_API_KEY) {
+        console.warn(
+          "[grok] …and XAI_API_KEY is present, so a subscription-pinned turn would authenticate with "
+            + "the METERED KEY instead. Repair the config root before trusting this turn's attribution.",
+        );
+      }
       this.emit(
         "log",
         "server",

@@ -96,6 +96,35 @@ const agents: AgentOption[] = [
       ],
     },
   },
+  {
+    // planning#435 — a harness that DECLARES levels and honours none of them on
+    // a key-billed row. It is in this fixture so the "no menu" case below tests
+    // the mode gate rather than a missing `reasoning` prop, which would pass for
+    // the wrong reason.
+    id: "grok",
+    name: "Grok Build",
+    installed: true,
+    hasRunnableModels: true,
+    models: ["grok-4.6"],
+    eligibleModels: [
+      {
+        serviceId: "xai",
+        serviceName: "xAI",
+        billingMode: "key",
+        modelId: "grok-4.6",
+        label: "Grok 4.6",
+        canonicalModelKey: "grok-4.6",
+      },
+    ],
+    supportsReview: false,
+    reasoning: {
+      label: "Reasoning",
+      options: [
+        { value: "xhigh", label: "Extra high" },
+        { value: "high", label: "High" },
+      ],
+    },
+  },
 ];
 
 const autoSlot = (slot: "first" | "second", over: Partial<ReviewerSlotView> = {}): ReviewerSlotView => ({
@@ -354,11 +383,22 @@ describe("ReviewerSection", () => {
     });
   });
 
-  /** The levels offered are the DERIVED harness's, not the other one's. */
+  /**
+   * The levels offered are the DERIVED harness's, not the other one's — asked of
+   * the real catalogue rather than of this file's `agents` fixture.
+   *
+   * Since planning#435 the menu reads `reasoningOptionsFor(harness, selection)`,
+   * because the harness vocabulary alone over-promises: grok declares four
+   * levels and honours none of them on a key-billed row (docs/274 req 14). A
+   * fixture cannot answer that question, and one that disagrees with the
+   * catalogue would assert something ShipIt does not do — so the distinguishing
+   * levels below are real ones. Codex has `minimal` and Claude does not; Claude
+   * has `max` and Codex does not.
+   */
   it("offers the derived harness's own reasoning levels", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([
-      // Resolves on Codex, whose level set includes `minimal` and excludes `low`.
+      // Resolves on Codex, whose level set includes `minimal` and excludes `max`.
       autoSlot("first", {
         resolved: {
           serviceId: "deepseek",
@@ -378,7 +418,65 @@ describe("ReviewerSection", () => {
     render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-reasoning-trigger-first"));
     expect(screen.getByTestId("reviewer-reasoning-option-first-minimal")).toBeTruthy();
-    expect(screen.queryByTestId("reviewer-reasoning-option-first-low")).toBeNull();
+    expect(screen.queryByTestId("reviewer-reasoning-option-first-max")).toBeNull();
+  });
+
+  /**
+   * docs/274 req 14 — a reviewer on a selection that honours NO level offers no
+   * menu at all, even though its harness declares four.
+   *
+   * grok on `xai/key` is that selection: the CLI drops `--reasoning-effort`
+   * before the wire there, and `resolveReviewerPinPatch` refuses a level for it —
+   * so a menu here would be four options whose every value comes back a 400.
+   */
+  it("offers no reasoning menu for a selection whose harness sends no level", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().setReviewers([
+      autoSlot("first", {
+        resolved: {
+          serviceId: "xai",
+          billingMode: "key",
+          modelId: "grok-4.6",
+          serviceName: "xAI",
+          label: "Grok 4.6",
+          harnessId: "grok",
+          harnessName: "Grok Build",
+        },
+      }),
+      autoSlot("second"),
+    ]);
+
+    render(<ReviewerSection agentList={agents} />);
+    // The harness's `reasoning` capability IS present (see the fixture), so what
+    // hides the menu is the selection gate and nothing else.
+    expect(agents.find((a) => a.id === "grok")?.reasoning?.options.length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("reviewer-reasoning-trigger-first")).toBeNull();
+    void user;
+  });
+
+  /** …and the SAME harness on its subscription row does offer them. */
+  it("offers the levels on a selection whose harness does send them", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().setReviewers([
+      autoSlot("first", {
+        resolved: {
+          serviceId: "xai",
+          billingMode: "sub",
+          modelId: "grok-4.6",
+          serviceName: "xAI",
+          label: "Grok 4.6",
+          harnessId: "grok",
+          harnessName: "Grok Build",
+          reasoningEffort: "high",
+          reasoningLabel: "High",
+        },
+      }),
+      autoSlot("second"),
+    ]);
+
+    render(<ReviewerSection agentList={agents} />);
+    await user.click(screen.getByTestId("reviewer-reasoning-trigger-first"));
+    expect(screen.getByTestId("reviewer-reasoning-option-first-xhigh")).toBeTruthy();
   });
 
   it("resets a pinned slot to auto-configuration with a null patch", async () => {
@@ -614,8 +712,12 @@ describe("ReviewerSection", () => {
       .toContain("Subscription");
     expect(screen.getByTestId("reviewer-first-service-option-deepseek:key").textContent)
       .toContain("API key");
-    // Two modes of one service would be two rows; one mode is one row.
-    expect(screen.getAllByTestId(/^reviewer-first-service-option-/)).toHaveLength(3);
+    // Two modes of one service would be two rows; one mode is one row. Four
+    // rows because the fixture's four harnesses reach four `(service, mode)`
+    // pairs between them — anthropic:sub, anthropic:key, deepseek:key, xai:key.
+    expect(screen.getAllByTestId(/^reviewer-first-service-option-/)).toHaveLength(4);
+    expect(screen.getByTestId("reviewer-first-service-option-xai:key").textContent)
+      .toContain("API key");
   });
 
   /**

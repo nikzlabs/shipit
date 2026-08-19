@@ -138,14 +138,15 @@ function authFileExistsAt(authFile: string): boolean {
 }
 
 /**
- * The stored token record, whichever shape the file has.
+ * The stored token records, in probe order.
  *
- * The CLI writes `auth.json` **scope-keyed**: the top level maps a scope name to
- * the record holding that scope's tokens. There is one scope in every observed
- * file, but reading "the first object that carries an access token" rather than
- * a fixed key means a second scope appearing later does not silently read as an
- * unauthenticated file. A flat top-level record is accepted too, so an older or
- * newer layout degrades to the same probe instead of to null.
+ * The CLI writes `auth.json` **scope-keyed**, and the key is not a name anyone
+ * would guess: the live file's single top-level key is
+ * `https://auth.x.ai::<client-uuid>`. So a reader keyed on a fixed string is not
+ * merely brittle, it could never have been written — which is why this walks the
+ * top-level objects and takes the first that carries what is being asked for.
+ * The bare object is probed too, so a future flat layout degrades to the same
+ * answer rather than to null.
  */
 function tokenRecords(obj: Record<string, unknown>): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [obj];
@@ -157,24 +158,51 @@ function tokenRecords(obj: Record<string, unknown>): Record<string, unknown>[] {
   return out;
 }
 
-/** The access token from a parsed `auth.json`, or null. Exported for unit tests. */
+/**
+ * The access token from a parsed `auth.json`, or null.
+ *
+ * **`key` first, and that is the real field name** (verified against a live
+ * `grok login --device-auth` on 2026-08-19: the record holds `key`, a JWT, with
+ * `refresh_token` beside it). `access_token` is probed after it only as
+ * tolerance for a rename; a reader that assumed the conventional OAuth spelling
+ * — as this one first did — returns null on every real file and reports a
+ * connected account as unauthenticated.
+ *
+ * Exported for unit tests.
+ */
 export function extractXaiAccessToken(obj: Record<string, unknown>): string | null {
   for (const record of tokenRecords(obj)) {
-    const token = probeNestedString(record, ["access_token", "accessToken"], "tokens");
+    const token = probeNestedString(record, ["key", "access_token", "accessToken"], "tokens");
     if (token) return token;
   }
   return null;
+}
+
+/** Epoch ms from an ISO-8601 instant, or null. */
+function isoToEpochMs(raw: unknown): number | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 /**
  * Token freshness (epoch ms) — a strictly larger value means a
  * more-recently-refreshed token.
  *
- * This is what `token-sync-manager.ts` compares source against session with, so
- * it decides whether a rotation propagates. Probes an explicit expiry first,
- * then the `expires_in` + issue-time pair some OAuth responses carry. Returns
- * null when nothing parses, which every guard reads as "cannot prove this one is
- * newer" and therefore declines to overwrite with it.
+ * `token-sync-manager.ts` compares source against session with this, so it
+ * decides whether a rotation propagates and whether a session's own refresh is
+ * safe from being clobbered. **A reader that always returns null does not fail
+ * safe here**: it makes the sync-in guard read "the session has no provable
+ * token" and copy unconditionally, so a session that had just refreshed would
+ * lose its live token to a stale source. That is exactly what the first cut of
+ * this function did, by accepting only NUMERIC expiries.
+ *
+ * The live file's `expires_at` is an ISO-8601 **string**
+ * (`2026-08-19T19:37:53.982150334Z`, six hours after `create_time` — which is
+ * where req 13's "~6h" is measured rather than assumed). So ISO is probed first,
+ * then a numeric expiry, and finally the access token's own JWT `exp` claim —
+ * which advances on every refresh and so is a true freshness signal in its own
+ * right, and covers a file whose expiry field is renamed.
  *
  * Exported for unit tests and for the sync manager's freshness table.
  */
@@ -183,12 +211,35 @@ export function readXaiTokenFreshness(obj: Record<string, unknown>): number | nu
     const tokens = record.tokens && typeof record.tokens === "object"
       ? (record.tokens as Record<string, unknown>)
       : record;
-    const explicit = firstEpochMs([
+    const iso = isoToEpochMs(record.expires_at)
+      ?? isoToEpochMs(record.expiresAt)
+      ?? isoToEpochMs(tokens.expires_at)
+      ?? isoToEpochMs(tokens.expiresAt);
+    if (iso !== null) return iso;
+    const numeric = firstEpochMs([
       record.expires_at, record.expiresAt, tokens.expires_at, tokens.expiresAt,
     ]);
-    if (explicit !== null) return explicit;
+    if (numeric !== null) return numeric;
+    const exp = jwtExpiryMs(probeNestedString(record, ["key", "access_token", "accessToken"], "tokens"));
+    if (exp !== null) return exp;
   }
   return null;
+}
+
+/** The `exp` claim of a JWT, in epoch ms. Null for anything unparseable. */
+function jwtExpiryMs(jwt: string | null): number | null {
+  if (!jwt) return null;
+  const parts = jwt.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8")) as Record<string, unknown>;
+    // JWT `exp` is seconds by spec.
+    return typeof payload.exp === "number" && Number.isFinite(payload.exp) && payload.exp > 0
+      ? payload.exp * 1000
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -216,21 +267,23 @@ export function extractXaiIdentity(
 }
 
 /**
- * The subscription tier for the account row's label, or null when the file does
- * not say.
+ * There is deliberately **no plan reader**, and this is a finding rather than an
+ * omission (docs/274 req 15).
  *
- * Best-effort by design: the row is honest with no plan on it, and inventing one
- * would be worse than omitting it. Distinct from quota — xAI publishes no usage
- * API at all (req 16), so a plan name is the only thing there is to show.
+ * Codex has one because OpenAI stamps `chatgpt_plan_type` — "Plus", "Pro" — onto
+ * the token, and Claude reads its tier off the credentials file. xAI publishes
+ * neither. The live `auth.json` carries `user_id`, `email`, `first_name`,
+ * `last_name`, `team_id`, `principal_type: "User"` and `auth_mode: "oidc"`, and
+ * the access token's own claims add only `tier: 1` — an opaque integer whose
+ * mapping to a product name ("SuperGrok"? "X Premium+"?) is nowhere stated.
+ *
+ * Rendering "Tier 1" tells the user nothing, and mapping 1 to a plan name would
+ * be an invention on a row people use to tell two subscriptions apart. So the
+ * row shows the identity xAI does report — the email, keyed on `user_id` — and
+ * says nothing about the plan. That is the same rule req 16 applies to the
+ * missing usage API, for the same reason: an honest absence beats a plausible
+ * fabrication. It gains a reader if xAI ever reports a plan name.
  */
-export function extractXaiPlan(obj: Record<string, unknown>): string | null {
-  for (const record of tokenRecords(obj)) {
-    const raw = probeNestedString(record, ["plan", "plan_type", "subscription_tier", "tier"], "user");
-    if (!raw) continue;
-    return raw.charAt(0).toUpperCase() + raw.slice(1);
-  }
-  return null;
-}
 
 /**
  * {@link readXaiTokenFreshness} over a PATH — the shape `token-sync-manager.ts`'s
@@ -337,15 +390,15 @@ export class XaiAuthManager extends EventEmitter implements AgentAuthManager {
   }
 
   /**
-   * The account identity and plan this scope's `auth.json` reports, for the
-   * account row (req 15). Null when there is no readable login.
+   * The account identity this scope's `auth.json` reports, for the account row
+   * (req 15). Null when there is no readable login.
+   *
+   * Identity only — no plan, because xAI reports none. See the note above
+   * {@link extractXaiIdentity}'s neighbour.
    */
-  readIdentity(credentialDir?: string): { externalId: string; email?: string; plan: string | null } | null {
+  readIdentity(credentialDir?: string): { externalId: string; email?: string } | null {
     const parsed = readXaiAuthFile(grokAuthFileFor(credentialDir ?? this.activeCredentialDir));
-    if (!parsed) return null;
-    const identity = extractXaiIdentity(parsed);
-    if (!identity) return null;
-    return { ...identity, plan: extractXaiPlan(parsed) };
+    return parsed ? extractXaiIdentity(parsed) : null;
   }
 
   /**

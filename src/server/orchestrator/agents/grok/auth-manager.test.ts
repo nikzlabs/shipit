@@ -22,7 +22,6 @@ import {
   VERIFICATION_URL_PATTERN,
   extractXaiAccessToken,
   extractXaiIdentity,
-  extractXaiPlan,
   grokAuthFileFor,
   grokConfigDirFor,
   readXaiTokenFreshness,
@@ -319,35 +318,72 @@ describe("the flow's terminal states", () => {
 
 describe("reading a scope-keyed auth.json", () => {
   /**
-   * The file's top level maps a SCOPE name to that scope's record. A reader
-   * keyed on a fixed scope name would report an unauthenticated file the moment
-   * xAI renamed or added one, which is why the probe walks the objects.
+   * The REAL shape, from a live `grok login --device-auth` on 2026-08-19,
+   * secrets replaced and everything else verbatim. Three details were each
+   * guessed wrong before this file existed, and every one of them is a silent
+   * failure rather than a loud one:
+   *
+   *   - the scope key is `https://auth.x.ai::<client-uuid>`, which no fixed-key
+   *     reader could ever have matched;
+   *   - the access token is `key`, not `access_token`;
+   *   - `expires_at` is an ISO-8601 **string**, not a number.
    */
-  const scoped = {
-    "grok-build": {
-      access_token: "tok-abc",
-      refresh_token: "ref-abc",
-      expires_at: 1_800_000_000_000,
-      user_id: "0195c0de-1234-7890-abcd-ef0123456789",
+  const real = {
+    "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+      key: `${Buffer.from(JSON.stringify({ typ: "at+jwt" })).toString("base64url")}.`
+        + `${Buffer.from(JSON.stringify({ exp: 1_787_168_273, tier: 1, principal_type: "User" })).toString("base64url")}.sig`,
+      auth_mode: "oidc",
+      create_time: "2026-08-19T13:37:53.982150334Z",
+      user_id: "eb48b549-2c2a-4f56-aef2-543179bd88fe",
       email: "someone@example.com",
-      plan: "supergrok",
+      first_name: "Nik",
+      last_name: "Zherebtsov",
+      principal_type: "User",
+      team_id: "cc0429e2-fd03-412c-956a-f721824b551e",
+      refresh_token: "REDACTED-REFRESH-TOKEN",
+      expires_at: "2026-08-19T19:37:53.982150334Z",
+      oidc_issuer: "https://auth.x.ai",
     },
   };
 
-  it("finds the token, identity, plan and freshness under an arbitrary scope key", () => {
-    expect(extractXaiAccessToken(scoped)).toBe("tok-abc");
-    expect(extractXaiIdentity(scoped)).toEqual({
-      externalId: "0195c0de-1234-7890-abcd-ef0123456789",
+  it("finds the token and identity under a URL-shaped scope key", () => {
+    expect(extractXaiAccessToken(real)).toBe(real["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"].key);
+    expect(extractXaiIdentity(real)).toEqual({
+      externalId: "eb48b549-2c2a-4f56-aef2-543179bd88fe",
       email: "someone@example.com",
     });
-    expect(extractXaiPlan(scoped)).toBe("Supergrok");
-    expect(readXaiTokenFreshness(scoped)).toBe(1_800_000_000_000);
+  });
+
+  /**
+   * The ISO expiry, and this is the assertion that matters most in the file.
+   *
+   * A freshness reader that returns null does NOT fail safe: `syncAgentTokenIn`
+   * skips its copy only when it can prove the session's token is at least as
+   * fresh, so an unreadable expiry makes every sync copy unconditionally — and a
+   * session that had just refreshed loses its live token to a stale source. The
+   * first cut of the reader accepted only numeric expiries and so did exactly
+   * that on every real file.
+   */
+  it("parses the ISO-8601 expires_at the CLI really writes", () => {
+    expect(readXaiTokenFreshness(real)).toBe(Date.parse("2026-08-19T19:37:53.982Z"));
+    // Six hours after `create_time` — the measurement behind req 13's "~6h", so
+    // a future CLI that shortens it makes this fail rather than pass quietly.
+    const lifetimeMs = Date.parse(real["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"].expires_at)
+      - Date.parse(real["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"].create_time);
+    expect(lifetimeMs).toBe(6 * 60 * 60 * 1000);
+  });
+
+  it("falls back to the access token's JWT exp when no expiry field parses", () => {
+    const scope = { ...real["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"] };
+    delete (scope as Partial<typeof scope>).expires_at;
+    // `exp` advances on every refresh, so it is a true freshness signal and not
+    // merely a fallback that happens to return a number.
+    expect(readXaiTokenFreshness({ s: scope })).toBe(1_787_168_273_000);
   });
 
   it("accepts a flat top-level record too, so a layout change degrades rather than breaks", () => {
-    const flat = { access_token: "tok-flat", user_id: "u-1" };
-    expect(extractXaiAccessToken(flat)).toBe("tok-flat");
-    expect(extractXaiIdentity(flat)).toEqual({ externalId: "u-1" });
+    expect(extractXaiAccessToken({ key: "tok-flat" })).toBe("tok-flat");
+    expect(extractXaiIdentity({ access_token: "t", user_id: "u-1" })).toEqual({ externalId: "u-1" });
   });
 
   /**
@@ -356,22 +392,22 @@ describe("reading a scope-keyed auth.json", () => {
    * Identity with no email is legal; the email is a label default only.
    */
   it("keys identity on user_id, and reports none when there is no id", () => {
-    expect(extractXaiIdentity({ s: { access_token: "t", email: "a@b.c" } })).toBeNull();
+    expect(extractXaiIdentity({ s: { key: "t", email: "a@b.c" } })).toBeNull();
     expect(extractXaiIdentity({ s: { user_id: "u-2" } })).toEqual({ externalId: "u-2" });
   });
 
   it("reports no freshness for an unparseable file rather than a fake one", () => {
     const file = path.join(tempRoot(), "auth.json");
-    // Missing: "cannot prove this is newer", which every sync guard treats as
-    // "do not overwrite with it".
+    // Missing: "cannot prove this is newer". The sync guards read that as "copy
+    // the source in", which is the safe direction for a session with no token.
     expect(readXaiTokenFreshnessFile(file)).toBeNull();
     fs.writeFileSync(file, "not json at all");
     expect(readXaiTokenFreshnessFile(file)).toBeNull();
-    fs.writeFileSync(file, JSON.stringify({ s: { access_token: "t" } }));
+    fs.writeFileSync(file, JSON.stringify({ s: { key: "not-a-jwt" } }));
     expect(readXaiTokenFreshnessFile(file)).toBeNull();
     fs.writeFileSync(file, JSON.stringify({ s: { expires_at: 1_800_000_000 } }));
-    // Seconds are scaled to milliseconds, so a seconds-shaped expiry does not
-    // read as 1970 and lose every freshness comparison.
+    // A numeric seconds expiry still scales to ms, so a future CLI that swapped
+    // the ISO string for a number does not read as 1970 and lose every compare.
     expect(readXaiTokenFreshnessFile(file)).toBe(1_800_000_000_000);
   });
 });

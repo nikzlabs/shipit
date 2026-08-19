@@ -8,7 +8,7 @@ import { DropdownMenuLabel } from "./ui/dropdown-menu.js";
 import { Picker, PickerOption } from "./pickers/Picker.js";
 import { BillingModePill } from "./BillingModePill.js";
 import { ServiceLogo } from "./ServiceLogo.js";
-import type { BillingMode } from "../../server/shared/catalogue/index.js";
+import type { BillingMode, ModelSelection } from "../../server/shared/catalogue/index.js";
 import type { AgentId, SessionInfo } from "../../server/shared/types.js";
 import type { AgentOption, ModelChoice } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
@@ -128,6 +128,34 @@ function groupRows(rows: ModelRow[]): ModelGroup[] {
  * warm session up front and talks to it (`set_agent` goes over its socket), so
  * it has `hasActiveSession: false` and a bound session at the same time.
  */
+/**
+ * The `(service, mode, model)` the reasoning picker must narrow its levels by
+ * (docs/274 req 14) — the selection this composer is describing, whether that is
+ * a bound session's or the seed a new one would start from.
+ *
+ * It lives here, beside `useModelPickerState`, and is derived rather than passed
+ * because the two must not disagree: the composer renders the model and the
+ * reasoning controls as SIBLINGS, so threading a selection between them would
+ * put the same rule in two places, and the wrong one shows a level the CLI
+ * discards. Both now read the same session and the same seed.
+ *
+ * `undefined` when nothing names a whole selection, which falls back to the
+ * harness's full vocabulary — the pre-catalogue behaviour, and the only honest
+ * answer when there is no row to ask about.
+ */
+export function useBoundModelSelection(seedFromHistory: boolean): ModelSelection | undefined {
+  const sessionId = useSessionStore((s) => s.sessionId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const session = boundSession(sessions, sessionId, seedFromHistory);
+  if (session?.serviceId && session.billingMode && session.model) {
+    return { serviceId: session.serviceId, billingMode: session.billingMode, modelId: session.model };
+  }
+  // No session of its own (Quick Capture, the new-session route): the seed is
+  // what the next session is actually created with, so it is what the levels
+  // must be honest about.
+  return getSavedModelSelection() ?? undefined;
+}
+
 function boundSession(
   sessions: SessionInfo[],
   storeSessionId: string | undefined,
