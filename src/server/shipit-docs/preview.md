@@ -176,8 +176,10 @@ fresh `node_modules`. Reinstalls are throttled to one per 30s.
 content-keyable (a codegen step or a shell script, with no declared
 `install-inputs`) is not re-run after a ShipIt-performed rewrite, and a re-install
 that fails obviously leaves the tree uninstalled. Neither is silent: both post a
-`[System]` note and add a `Dependencies:` line to `shipit service list`. **Read
-that line before debugging a `Failed to resolve import` as a code fault** — the
+notice in chat, add a `Dependencies:` line to `shipit service list`, and prefix
+your next turn with a `[System]` instruction naming the commands to run — which
+repeats every turn until an install clears it. **Run the install before debugging
+a `Failed to resolve import` as a code fault** — the
 service still reports `running`, and restarting it does not help, because the
 usual compose guard is `[ -d node_modules ] || npm ci` and the directory exists.
 Re-run the install instead.

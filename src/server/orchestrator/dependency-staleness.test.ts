@@ -11,6 +11,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  dependencyGapAgentPrefix,
   dependencyGapNotice,
   dependencyGapSummary,
   rewritePhrase,
@@ -82,6 +83,62 @@ describe("dependencyGapNotice", () => {
   it("renders an empty command list without producing a blank instruction", () => {
     const notice = dependencyGapNotice({ reason: "not-content-keyed", commands: [] });
     expect(notice).toContain("—");
+  });
+
+  it("instructs rather than warning about a possible future", () => {
+    // "Re-run it if imports start failing" is a warning about something that has
+    // not happened yet, and nobody acts on one — which leaves the notice to be
+    // re-read after the failure it was meant to pre-empt.
+    const notice = dependencyGapNotice(NOT_KEYED);
+    expect(notice).toContain("Re-run it now");
+    expect(notice).not.toContain("if imports start failing");
+  });
+});
+
+describe("dependencyGapAgentPrefix", () => {
+  it("says nothing at all when there is no gap", () => {
+    // The composed prefix is a `.filter(Boolean)` array, so the healthy session
+    // has to contribute an empty string — not a reassuring paragraph the agent
+    // pays for on every turn.
+    expect(dependencyGapAgentPrefix(null)).toBe("");
+    expect(dependencyGapAgentPrefix(undefined)).toBe("");
+  });
+
+  it("is a `[System]` instruction that inverts the diagnosis order", () => {
+    const prefix = dependencyGapAgentPrefix(NOT_KEYED);
+
+    // The convention the other prompt prefixes use; without it the text reads as
+    // part of the user's own message.
+    expect(prefix.startsWith("[System] ")).toBe(true);
+    expect(prefix).toContain("a sync onto the latest base");
+    expect(prefix).toContain("npm ci && npx prisma generate");
+    // The whole fix: run the install BEFORE concluding the code is at fault.
+    // Without that ordering the agent has the fact and still starts from the
+    // wrong premise.
+    expect(prefix).toMatch(/before you treat[\s\S]*as a fault in the code/);
+    // The dead end it must not spend the turn on.
+    expect(prefix).toContain("Restarting the service does not fix it");
+  });
+
+  it("names a failed install as failed rather than as one that never ran", () => {
+    const prefix = dependencyGapAgentPrefix(FAILED);
+
+    expect(prefix).toContain("a rollback");
+    expect(prefix).toContain("FAILED");
+    expect(prefix).toContain("npm ci");
+    // The two reasons need different remedies from the agent, so the prefix may
+    // not blur them: this one already re-runs itself, so the "ShipIt cannot tell
+    // which files it consumes" explanation would be a false statement about it.
+    expect(prefix).not.toContain("cannot tell which");
+  });
+
+  it("stays a single prompt block for either reason", () => {
+    // It is joined into the prefix array with a blank-line separator, so a
+    // trailing or leading blank of its own would open a seam the next element
+    // lands in the middle of.
+    for (const gap of [NOT_KEYED, FAILED]) {
+      expect(dependencyGapAgentPrefix(gap)).toBe(dependencyGapAgentPrefix(gap).trim());
+    }
   });
 });
 
