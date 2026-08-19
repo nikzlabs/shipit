@@ -818,7 +818,7 @@ describe("PreviewFrame", () => {
     expect(await screen.findByTitle("Live Preview")).toHaveClass("hidden");
   });
 
-  it("tells the page it is hidden when its pane leaves the screen, and visible again on return", async () => {
+  it("posts visible:false when its pane leaves the screen, and visible:true on return", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
@@ -843,7 +843,7 @@ describe("PreviewFrame", () => {
     });
   });
 
-  it("answers the SDK handshake with hidden while its pane is off screen", async () => {
+  it("answers the SDK handshake with visible:false while its pane is off screen", async () => {
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     render(<PreviewFrame preview={preview} sessionId="s1" paneVisible={false} {...defaultProps} />);
     const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
