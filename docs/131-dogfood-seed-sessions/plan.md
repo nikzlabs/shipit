@@ -182,7 +182,9 @@ sh -c "
 
 (The `npm install` this doc originally showed is gone — the `dev` service shares
 the agent container's `node_modules` and waits for `agent.install` instead; see
-feature 137. The seed step slots in after the orch launch either way.)
+feature 137. The seed step slots in after the orch launch either way. It is now
+`npx tsx scripts/seed-inner.ts` rather than the single repo seeder shown above —
+see [One seed step, three things seeded](#one-seed-step-three-things-seeded).)
 
 The script itself owns the "wait until healthy" poll (bounded retries, ~60s cap)
 so it's resilient to the orch taking a while to boot behind that wait.
@@ -394,15 +396,137 @@ it needs a real `codex login` device flow rather than a string, and no amount of
 seeding substitutes for it. `anthropic:sub` is reachable *as a string
 credential*; its OAuth-account form is likewise a login flow.
 
+## Seeding agent roles
+
+The same idea one layer further on: the inner instance came up with **zero**
+agent roles, so every role surface — the composer's role control, a populated
+Settings → Roles list, a role's disabled state — could not be looked at there at
+all. A visual check of docs/272's composer work was blocked on exactly that.
+
+**Provenance, stated because it is not a numbered requirement.** Reqs 1–12 above
+are the human's; this extends req 1's idea ("the inner ShipIt comes up with
+something to work in rather than an empty slate") from repos to roles, and it was
+asked for by the sibling session doing docs/264's composer work rather than
+stated by the product owner. It is recorded here rather than promoted into
+`requirements.md`, where an agent-supplied requirement would be indistinguishable
+from a human one. If it should be a requirement, it gets a number and a receipt
+first.
+
+### The params are resolved, never hardcoded
+
+A role is a `(harness, service, billing mode, model, level)` tuple
+(docs/264-agent-roles req 6), and a hardcoded one is stranded on any install
+whose secrets differ from the author's — strictly worse than seeding nothing,
+because a broken role in the list is a bug report waiting to be filed. So
+`scripts/seed-inner-roles.ts` reads `GET /api/bootstrap`'s `settings.agents` —
+the same credential-filtered join the Settings role editor renders its pickers
+from — and resolves each role against it: a harness that is installed and has an
+eligible model, that harness's first eligible model, and a level taken from the
+levels that harness actually declares.
+
+What is committed is therefore a set of **recipes** — *what kind of role*, not
+*which tuple*. Between them they cover what the surfaces need to be worth looking
+at, and no more:
+
+| Recipe | Harness | Level | Carries |
+|---|---|---|---|
+| `deep-dive` | the first runnable one | its highest | description + standing instructions |
+| `quick-look` | the same | its lowest | description only |
+| `second-opinion` | a *different* one, where the install runs two | `Default` | description + standing instructions |
+| `needs-a-credential` | a runnable one | `Default` | description; **deliberately unavailable** |
+
+`second-opinion` is skipped rather than duplicated on a single-harness install:
+its whole point is the harness axis, which one harness cannot show. The
+descriptions are written as descriptions the *agent* reads (docs/264 req 19),
+not as notes to self — a seeded set whose descriptions all said "the fast one"
+would exercise the field without exercising what the field is for.
+
+### One deliberately-unavailable role, derived rather than written down
+
+`needs-a-credential` exists so the "shown, disabled, with its reason" state is
+visible too, and it is **derived**: the seeder walks
+`catalogueEntriesForHarness()` for a runnable harness and takes the first entry
+that is *not* in that harness's eligible set. By construction that is a
+`(service, mode)` this install holds no credential for, whatever its secrets
+happen to be — so a hardcoded "unavailable" tuple that silently starts working
+one day is not a failure mode this can have, and an install that holds every
+credential simply gets no such role.
+
+`disconnected` is also the only unavailable state that is seedable at all.
+`stranded` names something the catalogue does not have, which is precisely what
+the save validator refuses (docs/264-agent-roles req 6); `quota_exhausted` is a
+routing state nothing can write. The harness is a *runnable* one on purpose,
+which isolates the reason to the missing credential — the inner UI then says
+"reconnect the service" rather than reporting a role that is also broken some
+other way.
+
+**`reviewer` is never written.** It is present on every install, its params are
+resolved per run (docs/264-agent-roles req 2), and the settings surface refuses
+pinned params under that name — so naming it could only produce a 400. The
+reserved name is excluded unconditionally rather than because the live settings
+read happened to report it.
+
+### Contract, and where it differs from its two siblings
+
+Same as the others: skip what is already present, exit 0 on any failure,
+`DOGFOOD_SEED=0` off entirely, and a per-step switch — `DOGFOOD_SEED_ROLES=0`.
+Two deliberate differences:
+
+- **The name is the idempotency key**, and a present name is left *completely*
+  alone. The developer may have re-pointed `deep-dive` at another model in the
+  inner UI; a seeder that corrected that on every restart would be a worse tool
+  than one that seeds nothing.
+- **One `PUT /api/settings` per role**, not one batched write. `applyRoleWrites`
+  validates every entry before writing any of it (which is right for a Settings
+  screen), so a batch would let one refused role take the good ones down with it
+  — the opposite of req 5.
+
+## One seed step, three things seeded
+
+There are three things to seed and they arrived one at a time, so the `dev`
+service's `command:` had grown into a chain of three interpreter invocations with
+the ordering rationale in a YAML comment. Nothing required that: all three
+modules already export dependency-injected functions, so `scripts/seed-inner.ts`
+is the single entry point compose names, and the order lives next to the code
+that depends on it. Each step keeps its own entry block, so any of them can still
+be run alone while debugging.
+
+The order is load-bearing twice over:
+
+1. **Credentials first**, because they decide the rest. A role names a harness
+   and a model, and the role seeder resolves those against the models this
+   install can actually run — so planning before the credentials are stored
+   plans against a narrower install and seeds fewer, or no, roles.
+2. **Repos last**, because a cold bare-cache clone takes minutes and the other
+   two are seconds of HTTP each.
+
+Consolidating adds exactly one guarantee: a step that throws something
+unexpected is logged and the **remaining steps still run**. Three separate
+invocations could not take each other down, and a single entry point must not
+become a single point of failure either. Everything else is unchanged and still
+each step's own — `DOGFOOD_SEED=0`, a per-step switch, skip-what-is-present,
+exit 0.
+
+The failure mode worth naming is the one every step shares by design: they exit 0
+on failure, so "seeded nothing" and "was never launched" look identical in the
+`[seed]` logs. `seed-inner.test.ts` therefore asserts the *wiring* — that the
+`dev` service's `command:` runs the entry point under `tsx`, and that the step
+order is what the reasoning above requires — so an unwired seeder fails the build
+instead of looking like success.
+
 ## Key files
 
 | File | Change |
 |---|---|
+| `scripts/seed-inner.ts` | New. The single entry point compose runs: credentials → roles → repos, sequential, each step's unexpected throw logged without cancelling the rest. Owns the order and the reason for it. |
+| `scripts/seed-inner.test.ts` | New. Step order, continue-after-throw, and the guard that `docker-compose.yml`'s `dev` command actually runs the entry point under `tsx`. |
+| `scripts/seed-inner-roles.ts` | New. Resolves a committed set of role *recipes* against `settings.agents` and writes each with one `PUT /api/settings`. Never writes `reviewer`; derives one deliberately-`disconnected` role from the catalogue. `DOGFOOD_SEED_ROLES=0` disables it alone. TypeScript, run under `npx tsx` — it imports the catalogue. |
+| `scripts/seed-inner-roles.test.ts` | New. Unit tests for the recipe resolution, the derived unavailable role, idempotency and the failure contract. |
 | `scripts/seed-inner-credentials.ts` | New (reqs 11–12). Catalogue-driven: every supplied `storageEnv` becomes a credential route via `POST /api/credential-routes`. Same fail-open/idempotent/`[seed]`-prefixed contract as the repo seeder; `DOGFOOD_SEED_CREDENTIALS=0` disables it alone. TypeScript, so it runs under `npx tsx` — it imports the catalogue. |
 | `scripts/seed-inner-credentials.test.ts` | New. Unit tests plus the guard that `docker-compose.yml`'s `x-shipit-secrets` covers every catalogue credential name. |
 | `scripts/seed-inner-sessions.js` | New. Add repo → poll `ready` → trust, per fixture entry, keyed for idempotency on `GET /api/repos`. Non-fatal on error, honors `DOGFOOD_SEED`. Plain Node (no deps) so it runs before/independent of the build. |
 | `scripts/dogfood-seed.json` | New. Default fixture — one repo. |
-| `docker-compose.yml` | Background seed step in the `dev` service's `command:`, detached so Vite is not held up — now two scripts in one subshell, credentials first (fast) then repos (a cold clone takes minutes). `x-shipit-secrets` declares every catalogue credential name. |
+| `docker-compose.yml` | Background seed step in the `dev` service's `command:`, detached so Vite is not held up — one `npx tsx scripts/seed-inner.ts`, which owns the credentials → roles → repos order. `x-shipit-secrets` declares every catalogue credential name. |
 | `.claude/skills/dogfooding-shipit/SKILL.md` | Credentials section rewritten: set them once outside, what a seeded credential *is*, and the three names that bypass a connected subscription. |
 | `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. **Done.** |
 | `CLAUDE.md` | The "Dogfooding ShipIt in ShipIt" paragraph: the seed, plus the four calls the outer agent uses to drive the inner ShipIt. |
