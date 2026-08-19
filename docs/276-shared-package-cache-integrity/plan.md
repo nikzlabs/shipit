@@ -211,13 +211,13 @@ to check afterwards.**
 - `docs/075-shared-dependency-cache` — why `/dep-cache` exists and is per-repo.
 - `docs/183-overlay-dep-store` — the overlay dependency base.
 - `docs/198-dep-cache-content-keying-and-pnpm-store` — content keying and the
-  pnpm store. **Its Part 2 "Known caveat" (`plan.md:176-179`) contains a claim
-  that measurement refutes**: "the store is also integrity-checked by pnpm on
-  link, so corruption is detected, not silently propagated". pnpm 11.22.0
-  detects nothing and propagates silently, on every configuration tested. The
-  claim should be corrected there as well as noted here — it is a shipped design
-  doc asserting a guarantee the code does not provide, and this work initially
-  inherited the error from it.
+  pnpm store. **Its Part 2 "Known caveat" (under "Store lifecycle") contained a
+  claim that measurement refutes**: "the store is also integrity-checked by pnpm
+  on link, so corruption is detected, not silently propagated". pnpm 11.22.0
+  detects nothing and propagates silently, on every configuration tested. That
+  bullet now carries a dated correction note, **corrected in this same PR** — it
+  is a shipped design doc asserting a guarantee the code does not provide, and
+  this work initially inherited the error from it.
 - `docs/270-per-session-worker-uids` — req 9 (sharing must survive) and req 1
   (the workspace analogue of req 1 here); `plan.md` §4 and `checklist.md` both
   name this residual.

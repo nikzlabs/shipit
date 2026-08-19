@@ -199,7 +199,8 @@ container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
    package-**presence** failure in a store that had never held the metadata, not
    an integrity check. The independent reviewer caught it; it is recorded rather
    than quietly fixed because* `docs/198-dep-cache-content-keying-and-pnpm-store`
-   *carries the same wrong claim (below) and the design leaned on it.*
+   *carried the same wrong claim and the design leaned on it. That doc's "Known
+   caveat" bullet is corrected in the same PR as this one.*
 
 ## Resolved questions
 
