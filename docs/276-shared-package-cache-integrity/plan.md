@@ -27,8 +27,11 @@ to add already exists and already works.**
 - npm's content cache is self-verifying — the cache path *is* the content hash,
   and cacache checks it on read. A poisoned tarball is detected, discarded, and
   an offline install fails closed.
-- pnpm's store is verified on the install path too. A fresh `pnpm install` from
-  a poisoned store treats the package as missing and refuses offline.
+
+**But it is only the npm half.** pnpm's store has **no** integrity check at all:
+a fresh `pnpm install` from a poisoned store silently hardlinks the attacker's
+bytes — online, offline, with `verify-store-integrity=true`, and with
+`package-import-method=copy`. There is no knob that turns this on.
 
 **And the issue understates the pnpm channel.** It describes the risk as content
 "that another session of the same repo/runtime later installs". Because store
@@ -37,12 +40,21 @@ writing to the store file changes the victim session's *already-installed* file
 immediately, and that code then runs. Verified by inode and link count; the
 poisoned function executed. Requirement 4 exists for this.
 
-So the real, unprotected surface is not "cache content". It is these two:
+So the real, unprotected surface is not "cache content" uniformly — npm's
+content cache is genuinely safe. It is these three:
 
 | Hole | Surface | Protected today? |
 |---|---|---|
 | **H1** — cached *resolution data* (packument) rewritten to point at attacker content | `/dep-cache` npm `_cacache/index-v5` | **No.** Demonstrated install-time RCE, offline, no warning. |
-| **H2** — store file mutated in place, changing already-linked `node_modules` files | `/workspace/.pnpm-store` | **No.** No install event exists to verify at. |
+| **H2** — poisoned store content installed by a normal `pnpm install` | `/workspace/.pnpm-store` | **No.** pnpm performs no store-content verification, and no setting enables one. |
+| **H3** — store file mutated in place, changing already-linked `node_modules` files | `/workspace/.pnpm-store` | **No**, and unfixable by verification: there is no install event to check at. |
+
+**The overlay dependency base is not a third hole.** It is never mounted into a
+session container (`src/server/orchestrator/overlay-volume.ts:38-43`), so no
+session can write it directly; a session reaches it only by *publishing*, which
+is gated by the existing commit-ancestry CAS. The issue lists it alongside the
+other two, but it does not carry the write this work is about. Ruling it out
+here so no option below is priced for a surface that does not need one.
 
 H1 is protected *incidentally* when the repo has a lockfile pinning `integrity`,
 because then npm trusts the lockfile rather than the cached packument. That is
@@ -53,27 +65,33 @@ the whole of the protection that exists (hence req 5, and Q1).
 *Verify a cache entry against its lockfile hash on read, so a poisoned entry
 fails closed.*
 
-**What it costs.** Much less than it looks, because it is mostly already
-implemented by npm and pnpm. The genuine remainder is small: make installs
-lockfile-pinned (`npm ci` semantics), and stop sharing the one part of the npm
-cache that is not self-verifying.
+**What it costs — and the cost is split sharply by ecosystem.**
 
-**What it closes.** H1, completely and cheaply — see [the recommended
-sequence](#recommendation) for the specific shape.
+- *npm:* very little. The check already exists and works; the genuine remainder
+  is to make installs lockfile-pinned (`npm ci` semantics) and stop sharing the
+  one part of the npm cache that is not self-verifying.
+- *pnpm:* a great deal. There is no existing check to lean on — ShipIt would
+  have to verify store contents itself, on every install, for every linked file.
+  That is a hash of the whole store's working set on a path whose entire purpose
+  is to be fast (req 7), and it means reimplementing what the package manager
+  was assumed to be doing.
 
-**What it does not close.** H2, at all, and this is not a matter of degree. The
+**What it closes.** H1, completely and cheaply. H2 only by ShipIt building the
+verification pnpm does not provide.
+
+**What it does not close.** H3, at all, and this is not a matter of degree. The
 victim is a process opening `node_modules/foo/index.js`; the kernel serves the
 poisoned inode. There is no read ShipIt mediates, no install to hook, and no
 hash to compare against at the moment it matters. **Any design whose answer is
-"check integrity on read" is silently a design that leaves H2 open.**
+"check integrity on read" is silently a design that leaves H3 open.**
 
 **What it breaks.** Lockfile-pinned installs break repos with no committed
 lockfile — they would install without the shared cache, or warn. That is a
 product decision (Q1), not a technical one.
 
-**Verdict.** Right for H1, and the cheapest thing on the table for it. Not an
-answer to H2. Its honest description is "stop defeating a check that already
-exists", which is a good outcome but a smaller one than the issue implies.
+**Verdict.** Right for H1, and the cheapest thing on the table for it. For pnpm
+it is neither cheap nor sufficient. Its honest description is "stop defeating a
+check that already exists" — which turns out to be true of npm only.
 
 ## Option B — a writer that is not the session
 
@@ -93,8 +111,10 @@ arbitrary repo-controlled code (the codegen hazard docs/198 documents), so
 running it as the cache owner hands the attacker exactly the write it wanted. It
 defends only against a compromised agent turn, not against a malicious repo.
 
-**What it closes.** Both H1 and H2 — and it is the **only** option that closes
-H2, because it is the only one that removes the session's write to the inode.
+**What it closes.** H1, H2 and H3 — and it is the **only** option that closes
+H3, because it is the only one that removes the session's write to the inode.
+It is also the only option that closes H2 without ShipIt reimplementing pnpm's
+missing verification.
 
 **What it breaks.** It strains req 2 hardest. pnpm falling back to a per-session
 store on a read-only shared store is precisely the "silently fall back to a
@@ -127,15 +147,15 @@ brushes req 7 — a new repo no longer starts warm from another repo's store.
 **What it does not close — and this is the decisive measurement.** `/dep-cache`
 is **already** keyed per repo, and the working install-time RCE was demonstrated
 against it. Per-repo keying is therefore *shown*, not argued, to be
-insufficient: it does not close H1 and it does not close H2. Sessions of the
-same repo still share one store and still poison each other, including the live
-hardlink path — and several sessions on one repo is ShipIt's ordinary workflow,
-so C leaves the common case untouched.
+insufficient: it closes none of H1, H2 or H3. Sessions of the same repo still
+share one store and still poison each other, including the live hardlink path —
+and several sessions on one repo is ShipIt's ordinary workflow, so C leaves the
+common case untouched.
 
 **Verdict.** A real reduction in blast radius, and **not a fix**. The issue
 proposes pricing it first as the cheapest partial step; priced honestly, it is
-cheap in code, not free in disk, and it does not remove either hole. It should
-be described to users as narrowing reach, never as closing the issue.
+cheap in code, not free in disk, and it removes none of the three holes. It
+should be described to users as narrowing reach, never as closing the issue.
 
 ## Recommendation
 
@@ -156,10 +176,13 @@ addresses neither demonstrated hole, and per-repo keying is already disproven by
      usefully forge. *(This is a mechanism proposed here, not a requirement; it
      needs a spike to confirm npm tolerates the split.)*
 
-2. **Take Q2 to the requester before designing for H2.** If req 4 must hold,
-   option B is the only answer and should be scoped properly. If it need not,
-   say so explicitly in the requirements and document the residual, because
-   "integrity checking" will otherwise read as though H2 were covered.
+2. **Treat the pnpm store as the serious half, and take Q2 to the requester
+   before designing for it.** H2 and H3 are both open, nothing in pnpm helps,
+   and option B is the only answer that closes them without ShipIt writing a
+   verifier pnpm does not have. If Q2 comes back (b) or (c), say so explicitly
+   in the requirements and document the residual — otherwise "we added integrity
+   checking" will read as though the store were covered, which is exactly the
+   error `docs/198-dep-cache-content-keying-and-pnpm-store` already made.
 
 3. **Treat C as optional and orthogonal.** Ship it if cross-repo isolation is
    independently wanted (Q3) and the disk cost is acceptable — not as this
@@ -169,8 +192,9 @@ addresses neither demonstrated hole, and per-repo keying is already disproven by
    lands and Q2 is answered (req 8, Q5).
 
 The one-line version: **the cheapest answer really is to stop defeating a check
-that already exists — but only for the npm half. The pnpm half has no existing
-check to stop defeating, because hardlinks mean there is no read to check.**
+that already exists — but that is true of npm only. pnpm has no check to stop
+defeating: it verifies nothing on install, and hardlinks mean there is no read
+to check afterwards.**
 
 ## Key files
 
@@ -187,10 +211,13 @@ check to stop defeating, because hardlinks mean there is no read to check.**
 - `docs/075-shared-dependency-cache` — why `/dep-cache` exists and is per-repo.
 - `docs/183-overlay-dep-store` — the overlay dependency base.
 - `docs/198-dep-cache-content-keying-and-pnpm-store` — content keying and the
-  pnpm store. Its Part 2 "Known caveat" already notes that pnpm integrity-checks
-  on link so "corruption is detected, not silently propagated" — true for the
-  install path, and **not** true for the in-place hardlink mutation this doc
-  measures, which never reaches a check.
+  pnpm store. **Its Part 2 "Known caveat" (`plan.md:176-179`) contains a claim
+  that measurement refutes**: "the store is also integrity-checked by pnpm on
+  link, so corruption is detected, not silently propagated". pnpm 11.22.0
+  detects nothing and propagates silently, on every configuration tested. The
+  claim should be corrected there as well as noted here — it is a shipped design
+  doc asserting a guarantee the code does not provide, and this work initially
+  inherited the error from it.
 - `docs/270-per-session-worker-uids` — req 9 (sharing must survive) and req 1
   (the workspace analogue of req 1 here); `plan.md` §4 and `checklist.md` both
   name this residual.

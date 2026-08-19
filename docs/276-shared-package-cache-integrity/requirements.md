@@ -17,13 +17,25 @@ Sessions of the same repo share three caches so installs are fast:
 |---|---|---|
 | Dependency download cache (docs/075) | per **repo** | `/dep-cache` |
 | pnpm content-addressable store (docs/198) | per **runtime** — spans repos | `/workspace/.pnpm-store` |
-| Overlay dependency base (docs/183) | per (repo, runtime, dep-dir) | the dep dir's lowerdir |
+| Overlay dependency base (docs/183) | per (repo, runtime, dep-dir) | the dep dir's read-only lowerdir |
 
-All three are group-writable by every session on purpose:
 `shareOne` (`src/server/orchestrator/session-worker-uid.ts:381`) sets the shared
-gid and calls `addGroupWrite` (line 395), with setgid on directories. That is
-`docs/270-per-session-worker-uids` req 9 being honoured — so per-session uids
-did **not** close this, and were never meant to.
+gid and calls `addGroupWrite` (line 395) on all three, with setgid on
+directories — `docs/270-per-session-worker-uids` req 9 being honoured. So
+per-session uids did **not** close this, and were never meant to.
+
+**The three are not equally exposed, and the issue's framing flattens them.**
+Only the first two are mounted read-write into a session, so only they can be
+written directly from inside one. The overlay base subtree is **never mounted
+into a session container at all** — deliberately, and the reason given is this
+exact hazard (`src/server/orchestrator/overlay-volume.ts:38-43`: a base under
+`dep-cache/` "would be writable from inside any session and could mutate the
+immutable lowerdir under other sessions' live overlay mounts"). Its group-write
+bit is there so overlayfs copy-up yields a writable file, not to grant sessions
+access. A session therefore reaches the base only through the **publish** path,
+which is a different channel with its own compare-and-swap and is not what these
+requirements are about. Requirements below say "shared package cache" meaning
+the two directly-writable surfaces unless they name the base.
 
 ## Requirements
 
@@ -99,9 +111,11 @@ decision about what repos ShipIt supports, not a security mechanism.
 **Q2 — Must the live hardlink channel be closed (req 4), or only the install path?**
 This is the question the whole design turns on. Measured: writing to a shared
 pnpm store file instantly changes the contents of an already-installed
-`node_modules` file in another session, with no install and no verification
-anywhere (Provenance, test 3). No integrity-check-on-install design can close
-this — there is no install event to hook.
+`node_modules` file in another session, with no install taking place at all
+(Provenance, test 3). No integrity-check-on-install design can close this —
+there is no install event to hook. Note when answering that pnpm also verifies
+nothing on the install path (Provenance, test 4), so answering (b) leaves *both*
+pnpm channels open unless ShipIt writes the verification pnpm lacks.
 
 - **(a) Yes, close it.** Only achievable by making the store not writable by
   sessions (plan.md option B). Expensive, and strains req 2.
@@ -172,8 +186,20 @@ container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
 3. **pnpm store files are hardlinked into `node_modules`** (link count 2,
    confirmed by inode). Writing to the store file changed the already-installed
    victim file immediately, and the poisoned code then executed — no reinstall.
-   A *fresh* `pnpm install` does detect it and fails closed offline, so pnpm's
-   install-path verification works; req 4 is about the path that has no install.
+4. **pnpm does not verify store content on install either.** A *fresh* install
+   (`node_modules` deleted entirely) from a poisoned store silently hardlinks
+   the poisoned bytes: online, offline, with `verify-store-integrity=true`, and
+   with `package-import-method=copy`. All four installed the attacker's content
+   with no warning and no re-download. So the pnpm store has **no** integrity
+   check on either path — req 3 is unmet there today, and req 4 is not merely
+   "the case without an install".
+
+   *An earlier draft of this doc claimed the opposite, on the strength of one
+   offline run that failed with `ERR_PNPM_NO_OFFLINE_TARBALL`. That was a
+   package-**presence** failure in a store that had never held the metadata, not
+   an integrity check. The independent reviewer caught it; it is recorded rather
+   than quietly fixed because* `docs/198-dep-cache-content-keying-and-pnpm-store`
+   *carries the same wrong claim (below) and the design leaned on it.*
 
 ## Resolved questions
 

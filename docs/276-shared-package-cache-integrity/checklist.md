@@ -28,11 +28,19 @@ answers to Q1 and Q2 decide which of these items exist at all.
       `hasInstallScript`, since the second is what makes it execute at install.
 - [ ] shipit-docs update if repos without a lockfile change behaviour.
 
-## Step 2 — H2, the hardlink channel (req 4) — only if Q2 is answered (a)
+## Step 2 — the pnpm store: H2 (install path) and H3 (hardlink)
 
-- [ ] Scope option B properly as its own design: a cache-owning identity, the
-      brokered populate step, and how the agent's own ad-hoc `npm install` keeps
-      working (docs/270 req 10).
+- [ ] Correct the refuted claim in
+      `docs/198-dep-cache-content-keying-and-pnpm-store/plan.md:176-179` — pnpm
+      does **not** integrity-check on link. Do this regardless of which option
+      is chosen; a shipped doc asserting a guarantee the code does not provide
+      is how this work inherited the error in the first place.
+- [ ] H2 (poisoned store content installed normally) has no upstream fix to lean
+      on. Decide whether ShipIt verifies store contents itself, or closes the
+      write via option B — pricing the verification against req 7 first.
+- [ ] H3 (req 4), only if Q2 is answered (a): scope option B properly as its own
+      design — a cache-owning identity, the brokered populate step, and how the
+      agent's own ad-hoc `npm install` keeps working (docs/270 req 10).
 - [ ] Verify against req 2 that pnpm does not silently fall back to a private
       per-session store when the shared store is read-only.
 - [ ] If Q2 is answered (b) or (c) instead: record the residual explicitly in
