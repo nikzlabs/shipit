@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { scanSkillsDir, frontmatterField } from "./skill-scan.js";
+import { PLUGIN_SKILL_MARKER, PLUGIN_SKILL_MARKER_ID } from "./plugin-skill-marker.js";
 
 describe("scanSkillsDir", () => {
   let tmpDir: string;
@@ -51,6 +52,31 @@ describe("scanSkillsDir", () => {
     expect(byName["writing-hookify-rules"]).toMatchObject({ dirName: "writing-rules" });
     // Omit dirName when it would equal the invocable name (avoid serialized noise).
     expect(byName.matched).not.toHaveProperty("dirName");
+  });
+
+  it("excludes a skill materialized from a plugin repository (docs/262 req 22)", async () => {
+    writeSkill("skills", "plugins--assetgen--assetgen-aab26884689f", `---\nname: plugins--assetgen--assetgen-aab26884689f\n---\nbody`);
+    fs.writeFileSync(
+      path.join(tmpDir, "skills", "plugins--assetgen--assetgen-aab26884689f", PLUGIN_SKILL_MARKER),
+      JSON.stringify({ marker: PLUGIN_SKILL_MARKER_ID, name: "x", source: "/plugins/x" }),
+    );
+    writeSkill("skills", "mine", `---\nname: mine\n---\nbody`);
+    const skills = await scanSkillsDir(path.join(tmpDir, "skills"), "project");
+    expect(skills.map((s) => s.name)).toEqual(["mine"]);
+  });
+
+  it("keeps a user's own skill that merely looks like a materialized one", async () => {
+    // The name is not proof of ownership, and neither is a marker file whose
+    // contents say something else — hiding on either would remove a skill the
+    // user wrote and can invoke.
+    writeSkill("skills", "plugins--mine--thing-aab26884689f", `---\nname: plugins--mine--thing-aab26884689f\n---\nbody`);
+    writeSkill("skills", "impostor", `---\nname: impostor\n---\nbody`);
+    fs.writeFileSync(
+      path.join(tmpDir, "skills", "impostor", PLUGIN_SKILL_MARKER),
+      JSON.stringify({ marker: "something-else" }),
+    );
+    const skills = await scanSkillsDir(path.join(tmpDir, "skills"), "project");
+    expect(skills.map((s) => s.name).sort()).toEqual(["impostor", "plugins--mine--thing-aab26884689f"]);
   });
 
   it("ignores non-directory entries and dirs without SKILL.md", async () => {

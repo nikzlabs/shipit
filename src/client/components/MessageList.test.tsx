@@ -1730,6 +1730,16 @@ describe("MessageList", () => {
       expect(screen.getByText("-m 'Fix bug'")).toBeInTheDocument();
     });
 
+    it("renders a plugin skill under its <alias>/<skill> label (docs/262 req 22)", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Skill", input: { skill: "plugins--design-docs--design-docs-5d17d9cba58c" } },
+      ];
+      render(
+        <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
+      );
+      expect(screen.getByText("design-docs/design-docs")).toBeInTheDocument();
+    });
+
     it("renders Skill name from the OpenCode `name` key (rows persisted before the adapter rename)", () => {
       const tools: ToolUseBlock[] = [
         { type: "tool_use", id: "t1", name: "Skill", input: { name: "commit" } },

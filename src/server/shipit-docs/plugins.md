@@ -213,6 +213,12 @@ this session's skill directories, so you discover them exactly like the
 project's own — namespaced `plugins--<alias>--<skill>` so two plugins can ship
 a skill with the same name.
 
+They reach **you**, not the user: they are left out of the composer's
+autocomplete, because a plugin's instructions are something the plugin brought
+rather than a command the user chose to have. So do not tell the user to run
+one — run it yourself, and refer to it as `<alias>/<skill>`, which is how the
+plugin card names it and how the transcript labels it.
+
 They are **not part of the project**. ShipIt keeps them out of git for this
 clone, so they never appear in a diff or a commit, and the project never holds
 a copy that has to be kept in sync. Do not edit them: a refresh rewrites them

@@ -191,7 +191,10 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     project's own skills do, **whichever agent backend runs the session**
     (Claude, Codex, or a later one) — a plugin's skills are never tied to one
     backend. Instructions the agent follows are the sharpest form of the
-    trust a declaration grants (req 29).
+    trust a declaration grants (req 29). The instructions are **agent-facing
+    only**: they never appear as commands the user can invoke, in the `/`
+    menu or anywhere else. A plugin's skill is something the plugin brought,
+    not something the user chose to have.
 23. A plugin repository declares the **credential names** its services and
     CLIs require for their own job (e.g. a third-party API key). Values come
     from the **consuming project's own secret store**, per repository — the
@@ -352,7 +355,10 @@ scope reduction from its fourth, and req 24's informational host declaration
 from its fifth. Requirement 27 (self-use for plugin development) restates the
 user's follow-up of 2026-08-12 during the design phase. Requirement 28
 (reusing the dependency store) comes from the user's review of 2026-08-14.
-Requirement 29 (the trust model) comes from the user's question of
+Req 22's agent-facing-only sentence comes from the user's report of
+2026-08-19, with a screenshot of the composer's `/` menu listing three
+materialized skills under their namespaced directory names. Requirement 29
+(the trust model) comes from the user's question of
 2026-08-15 — *"Can we even contain a plugin? If the plugin cli is
 compromised, the agent may call in it container and give it all access"* —
 and from the answer that followed: the plugin's code is contained, its
@@ -365,6 +371,18 @@ ever saying the second.
 answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-08-19 — Are plugin skills user-callable?** Stated directly by the
+  user, with a screenshot of the composer's `/` menu: *"plugin skills are not
+  very use-friendly-looking, and in general they shouldn't be user-callable"*.
+  The menu was listing them under their on-disk names
+  (`/plugins--assetgen--assetgen-aab26884689f`) — a namespace and a collision
+  hash, which are correct on disk and unusable as a command. This settles a
+  question req 22 had never asked: it says how instructions reach the AGENT and
+  said nothing about the user, and materialization reused the project-skill
+  path, which happens to carry both. → req 22 amended (agent-facing only).
+  Where a plugin skill still shows in the transcript because the agent ran one,
+  it is labelled `<alias>/<skill>` — the plugin card's label, not the directory.
 
 - **2026-08-15 — May a plugin write the consuming project?** Raised from
   outside this repository: an agent building a plugin found that everything its
