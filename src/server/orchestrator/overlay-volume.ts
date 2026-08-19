@@ -223,8 +223,24 @@ export function overlayDriverOpts(spec: OverlaySpec): string {
 export type OverlayVolumeState = "absent" | "match" | "mismatch";
 
 /**
+ * A reading of what the daemon holds under a spec's volume name — the verdict
+ * plus the raw driver option behind it, so a caller that has to *explain* a
+ * mismatch doesn't have to inspect a second time to say what it saw.
+ */
+export interface OverlayVolumeReading {
+  state: OverlayVolumeState;
+  /**
+   * The `o=` driver option the daemon holds. Absent both when the volume does
+   * not exist AND when it exists with **no driver options at all** — the shape
+   * Docker's implicit named-volume creation leaves behind, and the one worth
+   * naming in an error (see {@link assertOverlayVolumesMatch}).
+   */
+  observedOpts?: string;
+}
+
+/**
  * Compare the volume the daemon currently holds under `spec.volumeName` against
- * the spec.
+ * the spec, keeping what was actually read.
  *
  * `match` means a recreate would be a pure no-op, so the caller may leave the
  * volume — and anything mounting it — alone. `mismatch` is the case that MUST
@@ -237,18 +253,28 @@ export type OverlayVolumeState = "absent" | "match" | "mismatch";
  * treating a label drift as a mismatch would cost a Compose-stack teardown —
  * `releaseOverlayVolumeHolders` — for something that mounts identically.
  */
-export async function overlayVolumeState(
+export async function readOverlayVolume(
   docker: Docker,
   spec: OverlaySpec,
-): Promise<OverlayVolumeState> {
+): Promise<OverlayVolumeReading> {
   let info: { Options?: Record<string, string> | null };
   try {
     info = await docker.getVolume(spec.volumeName).inspect();
   } catch (err) {
-    if (errStatus(err) === 404) return "absent";
+    if (errStatus(err) === 404) return { state: "absent" };
     throw err;
   }
-  return info.Options?.o === overlayDriverOpts(spec) ? "match" : "mismatch";
+  const observedOpts = info.Options?.o;
+  if (observedOpts === overlayDriverOpts(spec)) return { state: "match", observedOpts };
+  return { state: "mismatch", ...(observedOpts ? { observedOpts } : {}) };
+}
+
+/** The verdict half of {@link readOverlayVolume}, for callers that only branch on it. */
+export async function overlayVolumeState(
+  docker: Docker,
+  spec: OverlaySpec,
+): Promise<OverlayVolumeState> {
+  return (await readOverlayVolume(docker, spec)).state;
 }
 
 /**
@@ -431,6 +457,71 @@ export async function createOverlayVolume(
       `typically HTTP 409 because a container still mounts it.`,
     );
   });
+}
+
+/**
+ * Greppable marker every verification failure carries. Exported so ops can grep
+ * one literal and the tests can assert on one literal.
+ */
+export const OVERLAY_VERIFY_FAILURE = "overlay volume verification failed";
+
+/**
+ * Re-verify, at the moment the container has been BUILT with these mounts, that
+ * every spec's volume is still the overlay we created — and throw if any is not.
+ *
+ * **Why this exists (nikzlabs/shipit#2495).** Verification used to happen once,
+ * inside {@link createOverlayVolume}, and never again. That leaves a window: the
+ * volume is created, and only ~twenty lines later does `docker createContainer`
+ * reference it. Anything that removes the volume inside that window is invisible
+ * to the create — and Docker does not fail a container that names a volume which
+ * no longer exists. **It silently auto-creates one**, as a plain `local` volume
+ * with NO driver options: empty, `root:root 0755`.
+ *
+ * The result is the worst shape a session can boot in. The dep dir mounts as an
+ * empty directory the session uid cannot write, so `npm ci` EACCESes on its first
+ * `mkdir`, `agent.install` never writes `/session-state/.install-done`, and every
+ * `x-shipit-depends-on-install` service stays down — for the session's whole life,
+ * with no in-container recovery (the path is a mount point, there is no `sudo`,
+ * and the Compose siblings see the same directory through their own mounts). One
+ * production session shipped exactly this: `…_overlay-dba27c31` carrying the
+ * overlay-intended NAME with `Options: null`, beside a sibling dep dir that
+ * mounted correctly.
+ *
+ * So the check is deliberately placed AFTER `createContainer` and BEFORE
+ * `start()`: that is the first instant at which Docker's implicit creation has
+ * already happened and is therefore observable, and the last instant at which
+ * refusing costs nothing. A create that throws here is retried by
+ * `createContainerForRunner` — whose failure path removes the container and every
+ * overlay volume first, which is the load-bearing half: leaving the plain volume
+ * behind would make the next attempt reuse it. A session that fails to create is
+ * recoverable; one that boots wedged is not.
+ *
+ * Trigger-independent by construction: it does not care *what* removed the
+ * volume, only that what the container was built with is not what we created.
+ */
+export async function assertOverlayVolumesMatch(
+  docker: Docker,
+  specs: readonly (OverlaySpec & { depDir?: string })[],
+  opts: { sessionId?: string } = {},
+): Promise<void> {
+  const tag = opts.sessionId ? `[overlay:${opts.sessionId}]` : "[overlay]";
+  for (const spec of specs) {
+    const { state, observedOpts } = await readOverlayVolume(docker, spec);
+    if (state === "match") continue;
+    const held = state === "absent"
+      ? "it does not exist at all"
+      : observedOpts
+        ? `it holds "${observedOpts}"`
+        : "it holds NO driver options — the shape Docker leaves behind when it implicitly "
+          + "creates a named volume that a container referenced but that no longer existed";
+    throw new Error(
+      `${tag} ${OVERLAY_VERIFY_FAILURE}: ${spec.volumeName}`
+      + `${spec.depDir ? ` (dep dir "${spec.depDir}")` : ""} is not the overlay it was created as — `
+      + `${held}, but this container was built to mount "${overlayDriverOpts(spec)}". `
+      + `Refusing to start it: that mount would be an empty root-owned directory the session uid `
+      + `cannot write, so agent.install could never succeed and the session would boot wedged.`,
+    );
+  }
 }
 
 /**

@@ -8,10 +8,13 @@ import {
   createOverlayVolume,
   overlayDriverOpts,
   overlayVolumeState,
+  readOverlayVolume,
+  assertOverlayVolumesMatch,
   releaseOverlayVolumeHolders,
   removeOverlayVolume,
   volumeExists,
   OVERLAY_MANAGED_LABEL,
+  OVERLAY_VERIFY_FAILURE,
   type OverlaySpec,
 } from "./overlay-volume.js";
 
@@ -456,6 +459,127 @@ describe("overlayVolumeState", () => {
       getVolume: () => ({ inspect: async () => { throw new Error("daemon unreachable"); } }),
     } as unknown as Docker;
     await expect(overlayVolumeState(docker, spec)).rejects.toThrow("daemon unreachable");
+  });
+
+  it("keeps the observed opts on a mismatch, so a caller can say what it saw", async () => {
+    const stale = overlayDriverOpts({ ...spec, lowerdir: "/data/overlay-base/h1/g2" });
+    const reading = await readOverlayVolume(
+      makeVolumeStore({ seed: { [spec.volumeName]: { o: stale } } }).docker,
+      spec,
+    );
+    expect(reading).toEqual({ state: "mismatch", observedOpts: stale });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assertOverlayVolumesMatch — the post-createContainer re-verification (#2495)
+// ---------------------------------------------------------------------------
+
+describe("assertOverlayVolumesMatch (nikzlabs/shipit#2495)", () => {
+  const nodeModules: OverlaySpec & { depDir: string } = {
+    depDir: "node_modules",
+    volumeName: "shipit-3f6d1497-c46_overlay-dba27c31",
+    lowerdir: "/data/overlay-base/h1/g3",
+    upperdir: "/data/sessions/s1/overlay/h1/g3/upper",
+    workdir: "/data/sessions/s1/overlay/h1/g3/work",
+  };
+  const dist: OverlaySpec & { depDir: string } = {
+    depDir: "dist",
+    volumeName: "shipit-3f6d1497-c46_overlay-bcae0416",
+    lowerdir: "/data/overlay-base/h2/g1",
+    upperdir: "/data/sessions/s1/overlay/h2/g1/upper",
+    workdir: "/data/sessions/s1/overlay/h2/g1/work",
+  };
+
+  /**
+   * A volume store that can hold the shape `makeVolumeStore` cannot: a volume
+   * with NO driver options. That is not a hypothetical — it is exactly what the
+   * production host held for `…_overlay-dba27c31` (`Options: null`), because
+   * Docker auto-created it when the container referenced a name that had gone.
+   */
+  function daemonHolding(vols: Record<string, { Options: Record<string, string> | null }>): Docker {
+    return {
+      getVolume: (name: string) => ({
+        inspect: async () => {
+          const v = vols[name];
+          if (!v) throw notFound();
+          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data`, ...v };
+        },
+      }),
+    } as unknown as Docker;
+  }
+
+  const overlayOpts = (spec: OverlaySpec) => ({
+    Options: { type: "overlay", device: "overlay", o: overlayDriverOpts(spec) },
+  });
+
+  it("passes the healthy path untouched", async () => {
+    const docker = daemonHolding({
+      [nodeModules.volumeName]: overlayOpts(nodeModules),
+      [dist.volumeName]: overlayOpts(dist),
+    });
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules, dist])).resolves.toBeUndefined();
+  });
+
+  it("is a no-op for a non-overlay session (no specs)", async () => {
+    await expect(assertOverlayVolumesMatch(daemonHolding({}), [])).resolves.toBeUndefined();
+  });
+
+  // THE production shape: the overlay-intended name, no driver options at all.
+  // A container built on this mounts an empty root-owned dir the session uid
+  // cannot write — `npm ci` EACCES, no `.install-done`, gated services down.
+  it("refuses a volume Docker implicitly auto-created (no driver options)", async () => {
+    const docker = daemonHolding({
+      [nodeModules.volumeName]: { Options: null },
+      [dist.volumeName]: overlayOpts(dist),
+    });
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules, dist], { sessionId: "sess-x" }))
+      .rejects.toThrow(OVERLAY_VERIFY_FAILURE);
+    // The message has to be diagnosable on its own: which volume, which dep dir,
+    // and that Docker's implicit creation is what leaves this shape.
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules], { sessionId: "sess-x" }))
+      .rejects.toThrow(/node_modules/);
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules], { sessionId: "sess-x" }))
+      .rejects.toThrow(/NO driver options/);
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules], { sessionId: "sess-x" }))
+      .rejects.toThrow(/\[overlay:sess-x\]/);
+  });
+
+  it("refuses an empty (rather than null) options map the same way", async () => {
+    const docker = daemonHolding({ [nodeModules.volumeName]: { Options: {} } });
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules]))
+      .rejects.toThrow(/NO driver options/);
+  });
+
+  it("refuses a volume that vanished and was not re-created at all", async () => {
+    await expect(assertOverlayVolumesMatch(daemonHolding({}), [nodeModules]))
+      .rejects.toThrow(/does not exist at all/);
+  });
+
+  it("refuses driver opts naming a different generation, quoting what it holds", async () => {
+    const stale = overlayDriverOpts({ ...nodeModules, lowerdir: "/data/overlay-base/h1/g2" });
+    const docker = daemonHolding({
+      [nodeModules.volumeName]: { Options: { type: "overlay", device: "overlay", o: stale } },
+    });
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules])).rejects.toThrow(stale);
+  });
+
+  // The reported session had ONE bad dep dir out of two, so a check that stops
+  // at the first spec (or only looks at one) would have passed it through.
+  it("catches a broken spec that is not the first one", async () => {
+    const docker = daemonHolding({
+      [nodeModules.volumeName]: overlayOpts(nodeModules),
+      [dist.volumeName]: { Options: null },
+    });
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules, dist]))
+      .rejects.toThrow(/dist/);
+  });
+
+  it("propagates a non-404 daemon error rather than passing the container", async () => {
+    const docker = {
+      getVolume: () => ({ inspect: async () => { throw new Error("daemon unreachable"); } }),
+    } as unknown as Docker;
+    await expect(assertOverlayVolumesMatch(docker, [nodeModules])).rejects.toThrow("daemon unreachable");
   });
 });
 
