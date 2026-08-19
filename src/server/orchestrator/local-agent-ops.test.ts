@@ -233,15 +233,28 @@ describe("the host", () => {
   });
 
   it("names the reason when the orchestrator is unreachable", async () => {
-    // Requirement 4 (docs/251): a transport failure must not read as an outcome.
-    await orch.close();
-    const host = await startLocalAgentOpsHost({ sessionId: "s1", orchestratorBaseUrl: orchUrl });
+    // Requirement 4 (docs/251-local-agent-ops): a transport failure must not read as an
+    // outcome.
+    //
+    // The unreachable base is port 0, NOT this suite's own orchestrator closed
+    // mid-test. Closing it released an EPHEMERAL port, and the kernel is free
+    // to hand that number to any of the several hundred other test files
+    // binding `port: 0` in the same run — so the relay's request could connect
+    // to a stranger and be answered. It was: CI saw a 404 here, which this
+    // host can only produce by RELAYING it (its own failures are 403 for an
+    // unmapped path and 502 for a transport error), so the connection had
+    // succeeded against something that was not an orchestrator. Port 0 cannot
+    // be hijacked that way, because "listen on port 0" means "pick a real port"
+    // — nothing is ever bound to it, so the connect refuses by construction.
+    const host = await startLocalAgentOpsHost({
+      sessionId: "s1",
+      orchestratorBaseUrl: "http://127.0.0.1:0",
+    });
     const res = await fetch(`${host.url}/agent-ops/pr/status`);
 
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("Could not reach");
     await host.close();
-    orch = Fastify({ logger: false }); // afterEach closes it again harmlessly
   });
 });
 
