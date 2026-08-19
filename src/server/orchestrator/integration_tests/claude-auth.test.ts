@@ -21,7 +21,7 @@ import {
 import { DatabaseManager } from "../../shared/database.js";
 import type { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
-import { writeSessionAccountMarker } from "../session-credentials.js";
+import { writeSessionAccountMarker, syncProviderAccountTokenBack } from "../session-credentials.js";
 
 describe("Integration: Claude auth (OAuth & API key)", () => {
   let app: FastifyInstance;
@@ -359,5 +359,67 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
 
     expect(readToken(sessionRoot("sess-marked"))).toBe("own-y");
     expect(readToken(sessionRoot("sess-unmarked"))).toBe("own-unmarked");
+  });
+
+  // The case where the marker does NOT save us, so the source-level fix above
+  // is the only thing that does.
+  //
+  // docs/260 §4b refuses a write-back whose subtree marker names a different
+  // account — which covers a session holding some OTHER account's copy. It
+  // cannot cover THIS: the flat token landed in a session marked Y, and the
+  // write-back targets Y, so the marker AGREES and the identity check passes.
+  // The marker is telling the truth about intent and lying about bytes. All
+  // that is left is `syncAgentTokenBackToRoot`'s freshness compare, which
+  // orders two tokens and cannot tell whose they are (8ca7eea9's own lesson) —
+  // so a flat token with a later expiry than Y's source publishes a foreign
+  // bearer straight into Y's account root.
+  //
+  // In production the flat token is stale, so freshness usually blocks this.
+  // "Usually" is luck, not a guarantee, and the expiry ordering is not ours to
+  // control. This test therefore gives the flat token the LATER expiry — the
+  // arrangement where every downstream defence is spent — and asserts the
+  // foreign bearer never reaches Y's root anyway, because the unscoped re-push
+  // that would have started the chain is now unexpressible.
+  it("keeps a foreign flat-root token out of an account root even when it is the fresher of the two", async () => {
+    const accountRoot = (accountId: string): string =>
+      path.join(credentialsDir, "provider-accounts", "claude", accountId);
+    const sessionRoot = (sessionId: string): string =>
+      path.join(credentialsDir, "sessions", sessionId);
+    const tokenFile = (root: string): string => path.join(root, ".claude", ".credentials.json");
+    const writeToken = (root: string, token: string, expiresAt: number): void => {
+      fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+      fs.writeFileSync(tokenFile(root), JSON.stringify({ claudeAiOauth: { expiresAt, accessToken: token } }));
+    };
+    const readToken = (root: string): string =>
+      (JSON.parse(fs.readFileSync(tokenFile(root), "utf-8")) as {
+        claudeAiOauth: { accessToken: string };
+      }).claudeAiOauth.accessToken;
+
+    const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
+    const y = accounts.create("anthropic", "Account Y");
+    const soon = Date.now() + 3_600_000;
+    const later = Date.now() + 36_000_000; // the flat token outlives Y's own
+
+    writeToken(accountRoot(y.id), "own-y", soon);
+    writeToken(credentialsDir, "flat-root-token", later);
+
+    sessionManager.track("sess-marked", "Marked session");
+    sessionManager.setAgentId("sess-marked", "claude");
+    sessionManager.setAgentPinned("sess-marked");
+    writeToken(sessionRoot("sess-marked"), "own-y", soon);
+    writeSessionAccountMarker(credentialsDir, "sess-marked", "claude", y.id);
+
+    authManager.emit("complete"); // no account scope
+
+    // The turn-end write-back for a session that is legitimately Y's. Nothing
+    // refuses it — the marker agrees — so it is the freshness compare's turn,
+    // and the compare would publish whatever the session happens to hold.
+    syncProviderAccountTokenBack(credentialsDir, "sess-marked", "claude", y.id);
+
+    // Asserted first, because it is the claim: on the old code this reads
+    // `flat-root-token` — a foreign bearer in an account root, past a marker
+    // that agreed and a freshness compare that could not tell whose it was.
+    expect(readToken(accountRoot(y.id))).toBe("own-y");
+    expect(readToken(sessionRoot("sess-marked"))).toBe("own-y");
   });
 });
