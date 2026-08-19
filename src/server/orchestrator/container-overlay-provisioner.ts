@@ -26,6 +26,7 @@ import {
 } from "./overlay-session.js";
 import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
+import { claimOverlayBaseGeneration } from "./overlay-base-claims.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -201,7 +202,22 @@ export async function prepareOverlaySpecs(
       ? (scopeHash) => readBasePointerByHash(stateDir, scopeHash)?.generation ?? 0
       : undefined,
   });
-  if (!opts.requireProvisioned) return specs;
+  if (!opts.requireProvisioned) {
+    // planning#440 — a creation path has just DECIDED which generation this
+    // session will mount, and from here until `container.start()` returns
+    // nothing the disk janitor can see pins it: the pointer may advance (a
+    // same-scope publish) and `docker ps` cannot list a container that does not
+    // exist yet, so `sweepStaleBaseGenerations` would reap the lowerdir this
+    // container is on its way to mounting. Claim it for the duration. Done here
+    // rather than at volume-create time because the window opens at the
+    // decision, not at the volume; and only on creation paths —
+    // `requireProvisioned` callers (compose mounts, sibling containers) are
+    // reading back what a RUNNING container already has, which `docker ps`
+    // already pins. See overlay-base-claims.ts for why the claim expires
+    // instead of being released.
+    for (const spec of specs) claimOverlayBaseGeneration(spec.scopeHash, spec.generation);
+    return specs;
+  }
   const provisioned: DepDirOverlaySpec[] = [];
   for (const spec of specs) {
     if (await volumeExists(deps.docker, spec.volumeName)) {

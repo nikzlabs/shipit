@@ -16,8 +16,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import simpleGit from "simple-git";
-import { resolveSiblingOverlayDepDirs } from "./container-overlay-provisioner.js";
+import {
+  prepareOverlaySpecs,
+  resolveSiblingOverlayDepDirs,
+} from "./container-overlay-provisioner.js";
 import type { OverlayProvisionerDeps } from "./container-overlay-provisioner.js";
+import { overlayScopeHash, overlayVolumeName } from "./overlay-volume.js";
+import { overlayRuntimeKey } from "./overlay-session.js";
+import {
+  clearOverlayBaseClaims,
+  liveOverlayBaseClaims,
+  OVERLAY_BASE_CLAIM_MS,
+} from "./overlay-base-claims.js";
 import type { SessionInfo } from "../shared/types.js";
 
 const SESSION = { remoteUrl: "https://github.com/owner/repo.git", kind: "repo" } as unknown as SessionInfo;
@@ -153,5 +163,104 @@ describe("resolveSiblingOverlayDepDirs (#2426)", () => {
       });
       expect(deps.inspected).not.toContain("shipit-workspace");
     }
+  });
+});
+
+/**
+ * planning#440 — the in-flight claim's lifecycle. `prepareOverlaySpecs` is where a
+ * container's base generation is DECIDED, and from there until `container.start()`
+ * returns nothing the disk janitor can observe pins it: the pointer may advance
+ * (a same-scope publish) and `docker ps -q` cannot list a container that does not
+ * exist yet. The claim taken here is the only thing that keeps
+ * `sweepStaleBaseGenerations` off the lowerdir in that window.
+ */
+describe("prepareOverlaySpecs base-generation claims (planning#440)", () => {
+  afterEach(() => { clearOverlayBaseClaims(); });
+
+  /** A state dir whose pointer for `node_modules` sits at `generation`. */
+  function stateDirWithPointer(scopeHash: string, generation: number): string {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "overlay-claim-state-"));
+    tmpDirs.push(stateDir);
+    const metaDir = path.join(stateDir, "overlay-base-meta");
+    fs.mkdirSync(metaDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(metaDir, `${scopeHash}.json`),
+      JSON.stringify({
+        scopeHash, commit: "a".repeat(40), depth: 1, generation,
+        baseDir: path.join(stateDir, "overlay-base", scopeHash, `g${generation}`),
+        updatedAt: "2026-08-19T10:00:00Z",
+      }),
+    );
+    return stateDir;
+  }
+
+  const nodeModulesHash = (): string =>
+    overlayScopeHash(SESSION.remoteUrl!, overlayRuntimeKey(), "node_modules");
+
+  it("claims exactly the generation the spec pins, on a creation path", async () => {
+    const workspaceDir = await makeWorkspace();
+    const scopeHash = nodeModulesHash();
+    const stateDir = stateDirWithPointer(scopeHash, 5);
+    const deps = makeDeps(["shipit-workspace"], { workspaceVolume: "shipit-workspace", stateDir });
+
+    const specs = await prepareOverlaySpecs(deps, {
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      workspaceDir,
+      session: SESSION,
+    });
+
+    // The spec pins g5, so g5 — not the pointer's value at some later moment —
+    // is what has to survive the sweep.
+    expect(specs.map((s) => [s.scopeHash, s.generation])).toEqual([[scopeHash, 5]]);
+    expect(liveOverlayBaseClaims()).toEqual([`${scopeHash}/g5`]);
+  });
+
+  it("does not claim on a read-back path, where a RUNNING container already pins the mount", async () => {
+    // `requireProvisioned` callers (the compose override, a sibling container)
+    // describe what an existing container has mounted. `docker ps` pins that
+    // already, and claiming here would retain generations for reasons that have
+    // nothing to do with an in-flight create.
+    const workspaceDir = await makeWorkspace();
+    const scopeHash = nodeModulesHash();
+    const stateDir = stateDirWithPointer(scopeHash, 5);
+    // The overlay volume exists, so the spec survives the provisioned filter —
+    // otherwise an empty result would make the assertion vacuous.
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    const volumeName = overlayVolumeName(sessionId, "node_modules");
+    const deps = makeDeps(["shipit-workspace", volumeName], {
+      workspaceVolume: "shipit-workspace", stateDir,
+    });
+
+    const specs = await prepareOverlaySpecs(deps, {
+      sessionId, workspaceDir, session: SESSION, requireProvisioned: true,
+    });
+
+    expect(specs).toHaveLength(1);
+    expect(liveOverlayBaseClaims()).toEqual([]);
+  });
+
+  it("re-claims on every creation attempt, so a retried create keeps its window open", async () => {
+    // `attemptContainerCreate` calls this once per attempt; the refreshed expiry
+    // is what stops a slow retry loop from outliving its own claim.
+    const workspaceDir = await makeWorkspace();
+    const scopeHash = nodeModulesHash();
+    const stateDir = stateDirWithPointer(scopeHash, 5);
+    const deps = makeDeps(["shipit-workspace"], { workspaceVolume: "shipit-workspace", stateDir });
+    const opts = {
+      sessionId: "33333333-3333-4333-8333-333333333333",
+      workspaceDir,
+      session: SESSION,
+    };
+
+    await prepareOverlaySpecs(deps, opts);
+    const realNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(realNow + OVERLAY_BASE_CLAIM_MS - 1);
+    await prepareOverlaySpecs(deps, opts);
+
+    // Read the registry a hair past the FIRST claim's expiry: the second claim
+    // must still be holding it.
+    vi.spyOn(Date, "now").mockReturnValue(realNow + OVERLAY_BASE_CLAIM_MS + 1);
+    expect(liveOverlayBaseClaims()).toEqual([`${scopeHash}/g5`]);
+    vi.restoreAllMocks();
   });
 });

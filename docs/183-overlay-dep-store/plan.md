@@ -252,7 +252,9 @@ where it accrues:
    complete skips the whole sweep for that pass rather than resolving to an empty set. Failing open
    there deleted a generation under six running containers on prod: the empty set is indistinguishable
    from "nothing is mounted", and the session that publishes generation N+1 is by construction the one
-   still mounted on N, so the superseded-but-pinned case is the norm rather than a rare race.
+   still mounted on N, so the superseded-but-pinned case is the norm rather than a rare race. The
+   union has a **third arm** for the generations a container being CREATED will mount, which `ps`
+   cannot list — see "The mirror case" below (planning#440).
 2. **Per-session overlay volumes — `shipit-<id>_overlayN`** (N per session). Removed on container
    teardown (`destroyContainer` → `removeOverlayVolume` for each); crash-orphans swept by the
    `^shipit-([a-f0-9-]{12})_` prefix regex (`sweepOrphanSessionVolumes`), which already matches every
@@ -374,8 +376,34 @@ pins what **running** containers name, and the caller's union contributes each r
 **current** generation — so a volume left naming a superseded generation while its session is idle
 pins nothing, and `sweepStaleBaseGenerations` reclaims the lowerdir out from under it. That needs no
 separate fix: it has no producer once the create verifies its own result, because the volume is
-re-pointed at the current generation before anything mounts it. (The residual in-flight-create window
-is the already-recorded planning#440 gap.)
+re-pointed at the current generation before anything mounts it.
+
+**The mirror case: a volume naming the CORRECT generation, reaped because its container does not
+exist yet (planning#440).** The paragraph above is about a volume left on a superseded generation. The
+same sweep also reaps the right one. A container's generation is decided at spec-build time
+(`prepareOverlaySpecs` → `DepDirOverlaySpec.generation`), the volume is written with
+`lowerdir=…/overlay-base/<hash>/g<N>` after that, and only `container.start()` makes the mount visible
+to `docker ps -q`. A same-scope publish anywhere in that window advances the pointer, so `g<N>` is
+neither current nor mounted — and `sweepStaleBaseGenerations` deletes it, with no age delay, while a
+container is on its way to mounting it. `ps` is simply the wrong instrument for a container that does
+not exist yet; this is not a hole in the probe planning#439 hardened, and a perfect probe still has it.
+
+The fix is an **in-flight claim** (`overlay-base-claims.ts`), the shape plugin bases already use
+(`plugin-dep-store.ts` `inFlightScopes` / `liveInFlightScopes`) at generation rather than scope
+granularity, so it unions straight into the sweep's `<hash>/g<N>` live-key set. Creation paths claim
+each spec's `(scopeHash, generation)`; `requireProvisioned` callers (the compose override, sibling
+containers) do not, because they are reading back what a RUNNING container already has.
+
+Two properties carry it. It is **strictly additive** — the sweep unions it in and nothing else
+consults it, so an empty registry is byte-for-byte the prior behaviour and "nothing is claimed" can
+never widen a pass (the failure mode planning#439 established this sweep must not acquire). And it
+**expires rather than being released**: releasing at "the container is running" reads like the precise
+answer and is not, because the sweep's `docker ps` snapshot is taken at an arbitrary moment, so a pass
+that read `ps` *before* the start and deletes *after* the release would re-open a narrower copy of the
+same race. Expiry also answers the failure paths for free — a create that throws, an OOM, or an
+orchestrator restart drops the claim, which is correct because a container that never started never
+mounted the generation; on the far side of a restart the container is either running (`docker ps`
+pins it) or being retried (which re-claims).
 
 **On-host upperdir reclaim — `sessions/<id>/overlay/` (planning#194).** The upper/work **bytes** live on
 the host state volume at `sessions/<id>/overlay/<scopeHash>/g<N>/{upper,work}` — a **sibling** of the
