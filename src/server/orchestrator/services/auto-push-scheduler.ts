@@ -26,6 +26,39 @@
  * finished, and a runner that is gone downgrades the reporting rather than
  * cancelling the work.
  *
+ * ## The lease is released on the runner that took it
+ *
+ * The map below carries the runner OBJECT each armed push took its lease on,
+ * and every release goes to that same object. The runner is re-resolved per
+ * call (`getRunner` is a registry lookup), so releasing at fire time against
+ * "whatever runner the session has now" would land on the wrong object whenever
+ * the session's runner was disposed and rebuilt between arm and fire — a forced
+ * disposal, a crash-rebuild — unwinding the SUCCESSOR's post-turn hold while
+ * the predecessor's leaked (planning#424). An `end()` on a disposed predecessor
+ * is harmless: `PostTurnHold` counts, so it unwinds a counter nobody consults.
+ *
+ * Holding the reference is lease-identity, not storing work on the runner
+ * (post-turn invariant 5): the reference exists for exactly one purpose, the
+ * matching release. It is never used to report, to emit, or to decide whether
+ * the push happens — every one of those still resolves the CURRENT runner,
+ * because a disposed predecessor has no viewers left to tell. And the push
+ * itself stays session-keyed: nothing about the work lives on the runner.
+ *
+ * The timer-drop paths, and whether each needs a log line of its own, for the
+ * same reason the reporting paths insist on one — the test is whether the
+ * session's commit ends local with no explanation. A superseded timer is
+ * dropped by `arm` only to be immediately re-armed (every turn re-arms; the
+ * retry chain re-arms), so the commit still ships or the replacement's own
+ * report says why not. A cancelled timer is dropped only after a SYNCHRONOUS
+ * push has already landed (`services/github.ts` `dropPendingAutoPush`, which
+ * is called after `git push` succeeded), so the work reached origin by a
+ * different, logged, route. Neither is a commit left local unexplained — which
+ * is what the invariant's silence rule is about. The third path, `cancelAll`
+ * at shutdown (`shutdown-manager.ts`), IS: no synchronous push has replaced
+ * the pending one, the process exits with the commit local, and nothing says
+ * so unless the module does. It gets a `console.warn` of its own, one per
+ * dropped push.
+ *
  * ## Loud when it cannot run
  *
  * Every path that ends without a push says so, in the session's log ring and on
@@ -305,7 +338,19 @@ export interface AutoPushScheduler {
 }
 
 export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
-  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * One armed push: the timer that will fire it, and the runner the post-turn
+   * lease was taken on when it was armed.
+   *
+   * The runner reference is lease-identity and nothing else — see the module
+   * docstring. It must never be used for reporting or to decide anything about
+   * the push; those paths resolve the CURRENT runner via `getRunner`.
+   */
+  interface ArmedPush {
+    timer: ReturnType<typeof setTimeout>;
+    runner: SessionRunnerInterface | null;
+  }
+  const timers = new Map<string, ArmedPush>();
   /**
    * Sessions whose current divergence episode has already produced a transcript
    * notice. Cleared by the next successful push — the auto-push here, and the
@@ -365,11 +410,16 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
 
   /**
    * Release the post-turn hold this session's pending push took out when it was
-   * armed. Unbalanced ends are a no-op in `PostTurnHold`, so a runner that was
-   * disposed and rebuilt under us cannot have its successor's hold unwound.
+   * armed. The release goes to the runner OBJECT the hold was taken on — the
+   * one captured at arm time — never to whatever `getRunner` returns now. A
+   * runner disposed and rebuilt while the push was armed therefore unwinds its
+   * own (already-defunct) counter rather than the successor's hold, and an
+   * unbalanced end on the successor is impossible because the successor never
+   * took this lease. `PostTurnHold.end()` is a no-op at depth 0, so releasing
+   * against a runner that took no lease — or none at all — is safe.
    */
-  const releaseHold = (sessionId: string): void => {
-    deps.getRunner(sessionId)?.endPostTurnWork();
+  const releaseHold = (runner: SessionRunnerInterface | null): void => {
+    runner?.endPostTurnWork();
   };
 
   /**
@@ -380,11 +430,11 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
    */
   const clearTimer = (sessionId: string | undefined): void => {
     if (!sessionId) return;
-    const timer = timers.get(sessionId);
-    if (!timer) return;
-    clearTimeout(timer);
+    const armed = timers.get(sessionId);
+    if (!armed) return;
+    clearTimeout(armed.timer);
     timers.delete(sessionId);
-    releaseHold(sessionId);
+    releaseHold(armed.runner);
   };
 
   /**
@@ -416,14 +466,21 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
    */
   const arm = (git: GitManager, sessionId: string, delayMs: number): void => {
     clearTimer(sessionId);
+    // The runner the lease is taken on, resolved ONCE, at arm time, and stored
+    // with the timer so the release — here, in `clearTimer`, and in the timer's
+    // `finally` — lands on the same object. Re-resolving at release time is
+    // the planning#424 bug: `getRunner` returns whatever runner the session
+    // has now, so a runner replaced between arm and fire received a release for
+    // a lease it never took while the predecessor's hold leaked.
+    const runner = deps.getRunner(sessionId) ?? null;
     // Held from ARM, not from fire: the debounce window is exactly when the
     // idle enforcer used to reclaim the session out from under a commit that
     // had already landed. Released in the timer's `finally` below, and bounded
     // by `POST_TURN_HOLD_MAX_MS` so a wedged push cannot pin the container.
-    deps.getRunner(sessionId)?.beginPostTurnWork();
-    timers.set(
-      sessionId,
-      setTimeout(() => {
+    runner?.beginPostTurnWork();
+    timers.set(sessionId, {
+      runner,
+      timer: setTimeout(() => {
         timers.delete(sessionId);
         void runAutoPush(git, sessionId)
           // Backstop, not the ordinary path — `runAutoPush` handles its own
@@ -435,9 +492,9 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
           .catch((err: unknown) => {
             console.error(`[auto-push] ${sessionId}: reporting the push outcome failed:`, err);
           })
-          .finally(() => releaseHold(sessionId));
+          .finally(() => releaseHold(runner));
       }, delayMs),
-    );
+    });
   };
 
   return {
@@ -456,7 +513,18 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     },
     cancel,
     cancelAll(): void {
-      for (const sessionId of [...timers.keys()]) cancel(sessionId);
+      for (const sessionId of [...timers.keys()]) {
+        // Shutdown, not supersession: no synchronous push has replaced these
+        // pushes, and the process exits with each commit local and nothing
+        // scheduled to ship it — the exact shape the "loud when it cannot run"
+        // thesis exists for. The process is exiting, so the durable log ring is
+        // not the right surface; the server log is. One line per dropped push.
+        console.warn(
+          `[auto-push] ${sessionId}: dropping a pending push at shutdown —`
+          + " this session's latest commit stays local until its next push.",
+        );
+        cancel(sessionId);
+      }
       notifiedDiverged.clear();
       deferrals.clear();
     },
