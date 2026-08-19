@@ -12,11 +12,20 @@ instrument attached that can name the cause.
    `x-shipit-preview: auto`, so it is already starting; the first start fetches the
    game and installs it, which takes a minute or two. If it is not running:
    `shipit service start reward-tag`.
-3. The game appears with a small profiler panel over the top left. **Leave it alone
-   for a minute** and watch. Tap the panel's header to fold it out of the way; the
-   measurement keeps running while it is folded.
-4. When something stalls, tap **Send to agent** — the report lands in this chat.
-   **Copy** puts the same text on the clipboard if the send is refused.
+3. The game appears with a small profiler panel over the top left. Tap the panel's
+   header to fold it out of the way; the measurement keeps running while it is
+   folded.
+4. **Leave the tab open and go and do something else.** The profiler sends the
+   report by itself the first time it sees a burst — three stalls inside twenty
+   seconds — so nobody has to be watching when the fault arrives. The panel's
+   `auto-report` row says whether it is still armed.
+5. To send a run by hand at any point, tap **Send to agent**; **Copy** puts the
+   same text on the clipboard if the send is refused.
+
+The first attempt at this ran for 49 s with someone watching and came back
+`clean` — no stalls at all. The reported bursts are minutes apart, which is why
+the automatic capture exists: a watched pot is the wrong instrument for a fault
+that arrives when nobody is looking.
 
 The first six seconds are not measured. Booting the game — shaders, ground
 textures, building the world — blocks the main thread by design, and counting it

@@ -41,9 +41,20 @@
   // that would hand back "the thread is blocked" on every run, which is true and
   // useless. Nothing before this mark is measured; the HUD says so while it waits.
   const WARMUP_MS = 6_000;
+  // Unattended capture. The first phone run came back clean after 49 s of
+  // someone watching the screen, and the reported bursts arrive minutes apart —
+  // so the profiler sends the report itself the first time it sees a real burst,
+  // and the phone can then just sit there with the tab open.
+  const BURST_STALLS = 3;        // stalls…
+  const BURST_WINDOW_MS = 20_000; // …inside this window is a burst, not a blip
+
 
   const state = {
     startedAt: performance.now(),
+    // Wall clock as well as the monotonic one: the open question is what the
+    // HOST was doing when frames stopped, and answering it means lining a burst
+    // up against the session's own timeline.
+    startedAtWall: new Date().toISOString(),
     frames: 0,
     intervals: [],               // recent frame intervals (ring)
     stalls: [],                  // { atMs, ms, periods, viewport, intersecting, shipitVisible }
@@ -220,6 +231,17 @@
     };
   }
 
+  /**
+   * A burst, not a blip: BURST_STALLS stalls inside BURST_WINDOW_MS. One long
+   * frame while the phone does something else is not the reported fault; the
+   * report describes stalls arriving in groups.
+   */
+  function burstNow() {
+    if (state.stalls.length < BURST_STALLS) return false;
+    const recent = state.stalls.slice(-BURST_STALLS);
+    return recent[recent.length - 1].atMs - recent[0].atMs <= BURST_WINDOW_MS;
+  }
+
   function summary() {
     const ranMs = Math.max(1, measuredMs());
     const lostMs = state.stalls.reduce((a, s) => a + s.ms, 0);
@@ -263,6 +285,7 @@
       `device:  ${window.innerWidth}x${window.innerHeight} @ dpr ${window.devicePixelRatio}, ${navigator.hardwareConcurrency} cores`,
       `ua:      ${navigator.userAgent}`,
       `origin:  ${location.origin}`,
+      `started: ${state.startedAtWall}  (sent ${new Date().toISOString()})`,
       `watched: ${observedLabel ?? "no canvas found"}`,
       "",
       JSON.stringify(s, null, 2),
@@ -286,7 +309,29 @@
   // The HUD is DOM, so it waits for one; the counters above have been
   // running since the script was parsed in `<head>`.
   whenDomReady(() => {
-    // ── HUD ───────────────────────────────────────────────────────────────────
+    /**
+   * Put the report in the chat. Returns `{ ok, message }` — the caller shows the
+   * message, and the automatic capture needs to know whether to keep waiting.
+   */
+  async function send(headline) {
+    // Checked rather than assumed: opening this page directly (not in the
+    // Preview pane) leaves `window.shipit` undefined, and reaching into it threw
+    // "Cannot read properties of undefined" at the person holding the phone.
+    if (!window.shipit?.agent?.sendMessage) {
+      return { ok: false, message: "Not embedded in ShipIt — open this in the Preview pane, or use Copy." };
+    }
+    try {
+      await window.shipit.ready;
+      await window.shipit.agent.sendMessage({
+        text: `${headline}, for ShipIt issue #2418.\n\n\`\`\`\n${report()}\n\`\`\``,
+      });
+      return { ok: true, message: "Sent — it is in the chat." };
+    } catch (error) {
+      return { ok: false, message: `Send failed: ${error instanceof Error ? error.message : error}. Use Copy.` };
+    }
+  }
+
+  // ── HUD ───────────────────────────────────────────────────────────────────
     const hud = document.createElement("div");
     hud.id = "shipit-frame-profiler";
     hud.innerHTML = `
@@ -357,19 +402,26 @@
       }
       if (act === "send") {
         said.textContent = "Sending…";
-        try {
-          await window.shipit.ready;
-          await window.shipit.agent.sendMessage({
-            text: `Frame profile from the phone, for ShipIt issue #2418.\n\n\`\`\`\n${text}\n\`\`\``,
-          });
-          said.textContent = "Sent — it is in the chat.";
-        } catch (error) {
-          said.textContent = `Send failed: ${error instanceof Error ? error.message : error}. Use Copy.`;
-        }
+        said.textContent = (await send("Frame profile from the phone")).message;
       }
     });
 
+    // The automatic half. Armed once per page load: one message when the fault
+    // finally shows up is the point, a message every burst would be noise.
+    let autoState = "armed";
+    async function autoCapture() {
+      if (autoState !== "armed" || warming() || !burstNow()) return;
+      // Moved out of "armed" BEFORE the await, or the 500 ms tick re-enters and
+      // sends the same burst several times.
+      autoState = "sending";
+      el(".said").textContent = "Burst caught — sending…";
+      const outcome = await send("Automatic capture: a burst of withheld frames");
+      autoState = outcome.ok ? "sent" : "failed";
+      el(".said").textContent = outcome.message;
+    }
+
     setInterval(() => {
+      void autoCapture();
       const s = summary();
       const v = verdict();
       hud.classList.toggle("bad", s.stalls > 0);
@@ -384,6 +436,9 @@
         `page viewport   ${window.innerWidth}x${window.innerHeight}  intersecting=${intersecting} (${observedLabel ?? "picking…"})`,
         `document.hidden ${document.hidden}`,
         `shipit.visible  ${s.shipitVisibilityAvailable ? `${s.shipitVisibleNow} (${s.shipitVisibilityTransitions} changes)` : "SDK absent"}`,
+        `auto-report     ${autoState === "armed"
+          ? (s.shipitVisibilityAvailable ? "armed — leave this open" : "unavailable (not embedded)")
+          : autoState === "failed" ? "failed — use Copy" : autoState}`,
       ].map((r) => `<div class="row">${r}</div>`).join("");
     }, 500);
   });
