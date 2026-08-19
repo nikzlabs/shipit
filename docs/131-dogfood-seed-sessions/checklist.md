@@ -2,7 +2,47 @@
 
 Implemented and smoke-tested end to end on a real dogfood stack (2026-08-04),
 with a real agent turn. Credential seeding (reqs 11–12) added and smoke-tested
-the same way 2026-08-11. Nothing outstanding.
+the same way 2026-08-11. Role seeding added and smoke-tested the same way
+2026-08-19. Nothing outstanding.
+
+## Role seeding (2026-08-19)
+
+- [x] `scripts/seed-inner-roles.ts` — a committed set of role *recipes*
+      ("the primary harness at its highest level"), resolved against
+      `GET /api/bootstrap`'s `settings.agents` rather than hardcoded, so no
+      seeded role is stranded by an install whose secrets differ.
+- [x] `deep-dive` (highest level, description + standing instructions),
+      `quick-look` (lowest level, description only), `second-opinion` (a second
+      harness where the install runs two, at `Default`).
+- [x] One deliberately-unavailable role — decided yes, and **derived**: the
+      first catalogue entry a runnable harness can speak to that this install
+      holds no credential for. `disconnected` is the only unavailable state that
+      is seedable at all (`stranded` is refused on save, `quota_exhausted` is a
+      routing state).
+- [x] `reviewer` never written — its params are ShipIt's to resolve
+      (docs/264-agent-roles req 2), so naming it could only produce a 400.
+      Excluded unconditionally, not merely when the settings read reports it.
+- [x] Same contract as its siblings: skip-what-is-present keyed on the role
+      NAME, exit 0 on any failure, `DOGFOOD_SEED=0`, plus `DOGFOOD_SEED_ROLES=0`.
+- [x] One `PUT /api/settings` per role rather than one batched write —
+      `applyRoleWrites` validates a whole batch before writing any of it, so a
+      batch would let one refused role take the good ones down with it.
+- [x] `scripts/seed-inner.ts` — the three seeders collapsed behind one entry
+      point compose names, which owns the step order and the reason for it. Adds
+      one guarantee: a step that throws does not cancel the ones after it.
+- [x] `scripts/seed-inner-roles.test.ts` + `scripts/seed-inner.test.ts` —
+      resolution, the derived unavailable role, idempotency, the failure
+      contract, the step order, and the guard that compose actually runs the
+      entry point (an unwired seeder is invisible in logs that exit 0).
+- [x] Smoke-tested on the real `dev` service: cleared the roles, recreated the
+      service, confirmed `[seed] roles: … added` at boot and a second boot
+      reporting "every seeded role is already present". Confirmed in the inner
+      UI that all four appear in Settings → Roles with `needs-a-credential`
+      marked "Service disconnected", and that the composer's role menu offers
+      them with that one greyed out.
+- [x] `.claude/skills/dogfooding-shipit/SKILL.md` — the seeding section now
+      names three steps and one entry point, and says what the seeded roles are
+      for and why one of them is deliberately broken.
 
 ## Credential seeding (reqs 11–12)
 

@@ -92,22 +92,16 @@ services:
     # `preview-proxy.ts`) — client edits hot-reload instead of
     # requiring a `vite build` round-trip.
     #
-    # The seed step (docs/131) is two scripts sharing one backgrounded,
-    # detached subshell (`( … &)`) so Vite starts immediately and the inner UI
-    # is usable while they run. Both wait for the orch themselves, exit 0 on
-    # any failure, skip what is already present, and no-op on DOGFOOD_SEED=0.
+    # The seed step (docs/131) is `scripts/seed-inner.ts`, launched in a
+    # backgrounded, detached subshell (`( … &)`) so Vite starts immediately and
+    # the inner UI is usable while it runs. It seeds credentials, then agent
+    # roles, then repos — that file owns the order and says why, so a step is
+    # added there rather than by editing this shell string. Every step waits for
+    # the orch itself, exits 0 on any failure, skips what is already present, and
+    # no-ops on DOGFOOD_SEED=0 (plus a per-step switch of its own).
     #
-    #   1. `seed-inner-credentials.ts` (req 11) turns each supplied
-    #      `x-shipit-secrets` service key into a real credential ROUTE in the
-    #      inner instance. First because it is fast — a few HTTP calls — and
-    #      the developer wants credentials before they want repos.
-    #   2. `seed-inner-sessions.js` adds and trusts the repos in
-    #      `scripts/dogfood-seed.json`, so the inner ShipIt comes up with
-    #      something to work in instead of an empty slate. Second because a
-    #      cold clone can take minutes.
-    #
-    # `npx tsx` for the first, plain `node` for the second: the credential
-    # seeder imports the model catalogue, which is TypeScript.
+    # `npx tsx`, not `node`: the seeders import the model catalogue, which is
+    # TypeScript.
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} $${AGENT_HOME:-/root} &&
@@ -115,7 +109,7 @@ services:
         echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
       done &&
       PORT=4000 npm run dev &
-      ( { npx tsx scripts/seed-inner-credentials.ts; node scripts/seed-inner-sessions.js; } 2>&1 | sed 's/^/[seed] /' &) &&
+      ( npx tsx scripts/seed-inner.ts 2>&1 | sed 's/^/[seed] /' &) &&
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
     working_dir: /workspace
@@ -332,6 +326,10 @@ services:
   # repo it is supposed to be asking the user for. Flip it to
   # `DOGFOOD_SEED_CREDENTIALS: "0"` if you would rather the repo were already
   # there — that keeps the credential half off no matter what is declared above.
+  # The ROLE seeder needs no switch of its own for that: a role names a harness
+  # and a model, so an instance with no credential has nothing a role could name
+  # and it seeds nothing and says so. (`DOGFOOD_SEED_ROLES: "0"` exists for the
+  # `dev` service, where there IS something to seed.)
   #
   # Manual, like `dev`, and for the same reason — a whole second orchestrator.
   # Start it with `shipit service start onboarding`; it claims port 3001 so both

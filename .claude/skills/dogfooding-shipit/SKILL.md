@@ -75,14 +75,23 @@ Never test onboarding by deleting credentials from inner Settings or wiping `.in
 
 ## Seeding
 
-At `dev`-service boot, two background steps run in order, both prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
+At `dev`-service boot, `scripts/seed-inner.ts` runs in the background and seeds three things in order, all prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
 
 1. **Credentials** (`scripts/seed-inner-credentials.ts`) — every supplied service key becomes a credential route, labelled `… (dogfood secret)` in inner Settings → Services.
-2. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate.
+2. **Roles** (`scripts/seed-inner-roles.ts`) — a few agent roles, so the role surfaces are not empty: `deep-dive`, `quick-look`, `second-opinion`, and `needs-a-credential`. Second **because it reads what the install can run** — a role's harness, model and level are resolved out of `settings.agents`, which step 1 has just widened.
+3. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate. Last, because a cold clone takes minutes.
 
-Behavior for both: skips what is already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`. `DOGFOOD_SEED_CREDENTIALS=0` disables the credential half alone.
+Behavior for all three: skips what is already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`, and has a switch of its own — `DOGFOOD_SEED_CREDENTIALS=0`, `DOGFOOD_SEED_ROLES=0`. A step that throws is logged and the remaining steps still run.
 
-Already-present means *left completely alone*: a credential you edited in the inner UI survives a restart, and rotating the outer secret does **not** propagate — delete the inner credential to re-seed it.
+Already-present means *left completely alone*: a credential or role you edited in the inner UI survives a restart, and rotating the outer secret does **not** propagate — delete the inner credential to re-seed it. The **name** is a role's identity, so a re-pointed `deep-dive` is never reconciled back.
+
+### What the seeded roles are for
+
+Nothing is hardcoded: a role's `(harness, service, billing mode, model, level)` is resolved against what this install can actually run, so the set differs per install and a role is never stranded by someone else's secrets. `reviewer` is never written — it exists on every install and resolves its params per run (`docs/264-agent-roles` req 2).
+
+`needs-a-credential` is **deliberately unavailable**, so the "shown, disabled, with its reason" state is visible too: the seeder derives it by taking the first catalogue entry its harness can speak to that this install holds *no* credential for, so it reads `Service disconnected` in Settings → Roles and is greyed out in the composer's role menu. An install that holds every credential simply gets no such role. Connecting that service turns it into an ordinary working role — that is not a bug.
+
+Delete a seeded role in the inner UI and the next `dev` boot puts it back. To try the empty-install state instead, set `DOGFOOD_SEED_ROLES: "0"` on the `dev` service.
 
 ## Driving the inner instance over HTTP
 
@@ -108,5 +117,6 @@ Then these calls cover the whole loop:
 
 - `docs/118-shipit-ui-local` — local-mode design and degraded behaviors
 - `docs/131-dogfood-seed-sessions` — seeding
+- `docs/264-agent-roles` — what a role is, and why the reviewer's params resolve rather than pin
 - `docs/184-remove-platform-secret-forwarding` — why credentials are user-supplied
 - `src/server/shipit-docs/preview.md` (shipped to containers as `/shipit-docs/preview.md`) — resolving service hosts from inside a container
