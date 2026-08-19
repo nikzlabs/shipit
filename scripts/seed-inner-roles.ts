@@ -284,11 +284,16 @@ export function planUnavailableRole(
       if (eligible.has(`${serviceId}:${billingMode}:${modelId}`)) continue;
       return {
         name: UNAVAILABLE_ROLE_NAME,
+        // "held … when it was seeded", not "holds": req 4 leaves a present role
+        // completely alone, so connecting that service later turns this into an
+        // ordinary working role rather than re-deriving it. Written in the past
+        // tense so the description stays true when that happens, instead of
+        // becoming a role that contradicts its own badge.
         description:
           `Seeded deliberately unavailable, so the disabled state is visible: it names `
           + `${entry.model.label} on ${entry.service.name} `
-          + `(${billingMode === "sub" ? "subscription" : "API key"}), which this install holds `
-          + `no credential for. Connect that service and it starts working.`,
+          + `(${billingMode === "sub" ? "subscription" : "API key"}), which this install held `
+          + `no credential for when it was seeded. Connect that service and it starts working.`,
         params: {
           kind: "pinned",
           harnessId: harness.id as AgentId,

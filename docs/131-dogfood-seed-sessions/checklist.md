@@ -43,6 +43,24 @@ the same way 2026-08-11. Role seeding added and smoke-tested the same way
 - [x] `.claude/skills/dogfooding-shipit/SKILL.md` — the seeding section now
       names three steps and one entry point, and says what the seeded roles are
       for and why one of them is deliberately broken.
+- [x] Cross-agent review by Codex (2026-08-19) — no bugs. It checked the
+      install-agnosticism of the resolution (one harness, no credentials, a
+      harness declaring no levels, an oddly-ordered eligible list), and
+      established from the server's own validator that no tuple
+      `planUnavailableRole` can produce is refusable on save (`purpose: "save"`
+      skips the credential check, and every other check is satisfied by
+      construction because the values came from `catalogueEntriesForHarness`).
+- [x] Acted on the one property it named: `needs-a-credential` is **not**
+      re-derived once it exists, so connecting its service later turns it into
+      an ordinary working role. That is the right contract — re-deriving would
+      break req 4 for every role — but its description is written in the past
+      tense ("held no credential for **when it was seeded**") so it stays true
+      when that happens instead of contradicting its own badge.
+- [x] `quick-look`'s description says what the recipe actually varies — the
+      reasoning level, not the model. It said "fast and cheap" first, which was
+      false: the recipe often lands on the same model `deep-dive` uses, and
+      docs/264-agent-roles req 19 makes the description something the agent
+      reads and acts on.
 
 ## Credential seeding (reqs 11–12)
 
