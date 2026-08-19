@@ -852,13 +852,14 @@ describe("PreviewFrame", () => {
     }, "http://localhost:5173");
   });
 
-  it("stops a background slot rendering with display:none, not visibility:hidden", async () => {
-    // nikzlabs/shipit#2418. `visibility: hidden` hides the pixels and lets the
+  it("parks a background slot off the viewport, and keeps it invisible", async () => {
+    // nikzlabs/shipit#2418. `invisible` alone hides the pixels and lets the
     // document keep drawing — measured cross-origin, a hidden page drew 240
-    // frames in 4 s against 1 under `display: none`. On the reporter's phone
-    // that second live renderer cost the visible preview 9.5–13.5% of its
-    // frames. The pool still keeps the iframe MOUNTED, which is what preserves
-    // its state; only the hiding mechanism changed.
+    // frames in 4 s against 2 when parked off the viewport. On the reporter's
+    // phone that second live renderer cost the visible preview 9.5–13.5% of its
+    // frames. Both properties are load-bearing: parking is what stops the
+    // rendering, `invisible` is what keeps it out of the tab order and the
+    // accessibility tree, and the iframe stays MOUNTED so its state survives.
     const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
     const previewB: PreviewStatus = { running: true, port: 4173, url: "http://localhost:4173", source: "vite" };
     const { rerender } = render(<PreviewFrame preview={previewA} sessionId="s1" {...defaultProps} />);
@@ -867,11 +868,18 @@ describe("PreviewFrame", () => {
     rerender(<PreviewFrame preview={previewB} sessionId="s1" {...defaultProps} />);
     const background = await screen.findByTitle("Background Preview");
 
-    expect(background).toHaveClass("hidden");
-    expect(background).not.toHaveClass("invisible");
-    // Still in the DOM: the pool's whole purpose is that returning to it does
-    // not reload the page.
+    expect(background).toHaveClass("invisible");
+    expect(background.style.transform).toBe("translateY(-200vh)");
     expect(background).toBeInTheDocument();
+  });
+
+  it("does not park the slot the user is looking at", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const active = await screen.findByTitle("Live Preview");
+
+    expect(active).not.toHaveClass("invisible");
+    expect(active.style.transform).toBe("");
   });
 
   it("selector label matches selectedPort", () => {

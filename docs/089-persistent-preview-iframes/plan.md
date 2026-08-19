@@ -13,13 +13,17 @@ When switching sessions or ports, the preview iframe navigates to a new URL, des
 
 Every (session, port) combination the user visits gets its own iframe that stays alive in the DOM. Hidden via CSS when not active, shown instantly when the user switches back. Cap at 20 retained iframes.
 
-### Hidden means `display: none`, not `visibility: hidden`
+### Hidden means invisible **and parked off the viewport**
 
-A retained slot stays **mounted** — that is what preserves its state — but it must not keep **rendering**. `visibility: hidden` hides the pixels and lets the document draw at full frame rate for the rest of the session; measured cross-origin over a 4-second hide, a background page drew **240 frames** under `visibility: hidden` and **1** under `display: none`. On an Android phone that surplus was a second WebGL renderer competing for the GPU with the preview the user was looking at, and it cost the visible one 9.5–13.5% of its frames across a matched A/B at both 60 Hz and 120 Hz (nikzlabs/shipit#2418).
+A retained slot stays **mounted** — that is what preserves its state — but it must not keep **rendering**. `visibility: hidden` alone hides the pixels and lets the document draw at full frame rate for the rest of the session; measured cross-origin over a 4-second hide, a background page drew **240 frames** that way and **2** when parked off the viewport, which is the condition the browser stops rendering a cross-origin frame on. On an Android phone that surplus was a second WebGL renderer competing for the GPU with the preview the user was looking at, costing the visible one 9.5–13.5% of its frames across a matched A/B at both 60 Hz and 120 Hz (nikzlabs/shipit#2418).
 
-Everything this design exists to protect survives the change, all measured: the document is **not** reloaded (its frame counter continues where it left off), the page keeps its own viewport size rather than being handed a 0×0 resize, and re-showing draws again in ~one frame (21 ms, against 18 ms for `visibility: hidden`) — so "shown instantly when the user switches back" still holds.
+So a hidden slot gets both `invisible` and `transform: translateY(-200vh)`, and each does a different job: **parking stops the rendering, `invisible` keeps the parked frame out of the tab order and the accessibility tree.**
 
-This does **not** replace the docs/146 visibility contract. `display: none` does not stop **audio**, which is precisely why that cooperative protocol exists. Rendering and audio are separate axes: the hiding mechanism settles rendering, the contract settles audio, and neither substitutes for the other.
+`display: none` was the obvious single-property alternative and was rejected on measurement. It throttles just as well, and everything else survives it — no reload, typed text, both scroll positions and the caret offset all preserved — but it **drops focus inside the frame**. A preview you were typing in comes back with the caret gone, and the promise this feature is held to is that it feels like keeping browser tabs open.
+
+What the chosen pair preserves, all measured: no reload, input values, inner and document scroll, caret offset, focus — and re-showing draws again in 20 ms against `invisible`'s 18 ms, so "shown instantly when the user switches back" still holds.
+
+This does **not** replace the docs/146 visibility contract. Nothing here stops **audio**, which is precisely why that cooperative protocol exists. Rendering and audio are separate axes: the hiding mechanism settles rendering, the contract settles audio, and neither substitutes for the other.
 
 ## Prior work
 

@@ -36,6 +36,14 @@ export interface PreviewStatus {
   errorOutput?: string;
 }
 
+/**
+ * Where a hidden pool slot is parked. Far enough above the viewport that no pane
+ * position can leave any of it intersecting, which is the condition the browser
+ * stops rendering a cross-origin frame on. The app shell sets
+ * `html, body { overflow: hidden }`, so nothing here can produce a scrollbar.
+ */
+const PARKED_TRANSFORM = "translateY(-200vh)";
+
 const READY_BUFFER_LIMIT = 8;
 const READY_BUFFER_TTL_MS = 2_000;
 
@@ -832,28 +840,37 @@ export function PreviewFrame({
           const slot = slots.get(key);
           if (!slot) return null;
           const isActive = key === activeSlotKey;
-          // `hidden` here is Tailwind's `display: none`, NOT `invisible`
-          // (`visibility: hidden`), and the difference is the whole of
-          // nikzlabs/shipit#2418. A pool slot is kept mounted so returning to it
-          // is instant — but `visibility: hidden` only stops the pixels: the
+          // A hidden pool slot is BOTH made invisible and parked off the
+          // viewport, and it needs both — this is nikzlabs/shipit#2418.
+          //
+          // `invisible` alone (what this did before) hides only the pixels: the
           // document keeps rendering at full frame rate for the rest of the
           // session. Measured cross-origin over a 4-second hide, a background
-          // page drew **240 frames** under `invisible` and **1** under `hidden`.
-          // On a phone that is a second WebGL renderer competing for the GPU
-          // with the preview the user is actually looking at, which cost the
-          // visible one 9.5–13.5% of its frames in a matched A/B on the
-          // reporter's device.
+          // page drew **240 frames** that way and **2** when parked off the
+          // viewport, which is the condition the browser stops rendering on. On
+          // the reporter's phone that surplus was a second WebGL renderer
+          // competing for the GPU with the preview they were looking at, and it
+          // cost the visible one 9.5–13.5% of its frames in a matched A/B at
+          // both 60 Hz and 120 Hz.
           //
-          // Everything the pool exists to protect survives it, all measured: the
-          // document is NOT reloaded (its frame counter continues where it left
-          // off), the page keeps its own viewport size rather than being handed
-          // a 0×0 resize, and re-showing draws again in ~one frame (21 ms) — the
-          // same as `invisible`'s 18 ms, so switching back is still instant.
+          // The obvious single-property alternative, `display: none`, throttles
+          // just as well and was rejected on measurement: it **drops focus**
+          // inside the frame. Everything else survives it — the document is not
+          // reloaded, the typed text, both scroll positions and the caret offset
+          // all come back — but a preview you were typing in returns with the
+          // caret gone, and "you keep tabs open" (docs/089) is the bar this
+          // feature is held to. Parking keeps focus, and keeping `invisible`
+          // alongside it is what keeps a parked preview out of the tab order and
+          // the accessibility tree. Two properties, two jobs.
           //
-          // This does not replace the docs/146 visibility contract: `display:
-          // none` does not stop **audio**, which is exactly why that cooperative
-          // protocol exists. Rendering and audio are different axes and each
-          // needs its own mechanism.
+          // Measured for the pair: no reload, input value / inner scroll /
+          // document scroll / caret / focus all preserved, and re-showing draws
+          // again in 20 ms — against 18 ms before, so switching back is still
+          // instant.
+          //
+          // None of this replaces the docs/146 visibility contract: nothing here
+          // stops **audio**, which is exactly why that cooperative protocol
+          // exists. Rendering and audio are separate axes.
           const hidden = !isActive || hideIframe;
           // When a device preset is active, give the active iframe explicit dimensions
           // and center it in the panel with a scale transform.
@@ -874,11 +891,11 @@ export function PreviewFrame({
               ref={iframeRefFor(key)}
               src={slot.url}
               title={isActive ? "Live Preview" : "Background Preview"}
-              style={deviceFrameStyle}
+              style={hidden ? { ...deviceFrameStyle, transform: PARKED_TRANSFORM } : deviceFrameStyle}
               className={
                 useDeviceFrameStyle
-                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "hidden" : ""}`
-                  : `absolute inset-0 w-full h-full ${hidden ? "hidden" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
+                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "invisible" : ""}`
+                  : `absolute inset-0 w-full h-full ${hidden ? "invisible" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
               }
               {...(!slot.containerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
             />
