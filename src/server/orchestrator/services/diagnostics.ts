@@ -33,6 +33,10 @@ import {
   type ComposeConfig,
 } from "../../shared/shipit-config.js";
 import type { SessionOomCircuitBreaker, OomBreakerState } from "../oom-circuit-breaker.js";
+import {
+  installContentKeyDiagnostic,
+  type InstallContentKeyOff,
+} from "../install-content-key.js";
 
 /** Tail of the per-service compose log buffer included in diagnostics. */
 const SERVICE_LOG_TAIL_LINES = 20;
@@ -211,6 +215,18 @@ export interface SessionDiagnostics {
    * actually running". `null` when there's no reachable container worker.
    */
   nodeRuntime: NodeRuntimeStatus | null;
+  /**
+   * Set when this session's `agent.install` resolves no dependency-input set,
+   * so the content-keyed install skip and the post-rewrite dependency re-check
+   * are both off (`install-content-key.ts`). `null` in the ordinary case.
+   *
+   * This is the same class of fact as the ignored `agent.memory` / `cpu` /
+   * `pids` fields above — "your `shipit.yaml` says something ShipIt could not
+   * honour" — and it is deliberately reported *here* rather than pushed at the
+   * agent: the failure case already has its own transcript notice and prompt
+   * prefix (`dependency-staleness.ts`), and this one has not failed yet.
+   */
+  installContentKeyOff: InstallContentKeyOff | null;
 }
 
 export interface DiagnosticsDeps {
@@ -329,6 +345,10 @@ export async function getSessionDiagnostics(
     oomBreaker: oomBreaker ? oomBreaker.getState(sessionId) : null,
     providerRoute,
     nodeRuntime,
+    // Read from the record `setupServiceManager` wrote, not re-derived here:
+    // the condition is detected once, where the input set is resolved, and this
+    // endpoint reports it.
+    installContentKeyOff: workspaceDir ? installContentKeyDiagnostic(workspaceDir) : null,
   };
 }
 

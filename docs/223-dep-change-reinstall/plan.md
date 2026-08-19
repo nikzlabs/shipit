@@ -193,8 +193,55 @@ scratch. Deferring is defensible; the notice is what makes it honest, and the
 `agent.install-inputs` remedy it names is how a project opts into the automatic
 path for good.
 
+### Saying it at setup, before anything has failed
+
+Everything above reports *after* a rewrite. The condition itself — an
+`agent.install` that resolves no dependency-input set — is knowable at session
+setup, and until it was reported there, a repository only ever learned of it
+from the failure: mid-debug on a `Failed to resolve import` that reads like a
+code fault. The production case (`nikzlabs/requirements`: a build step in
+`agent.install`, `dist` in `dep-dirs`) was configured the way the pre-#2491 docs
+recommended, so it was not a misconfiguration its author could have avoided.
+
+So `setupServiceManager` evaluates it where it already resolves the input set,
+and `applyShipitConfigChange` re-evaluates on every `shipit.yaml` change —
+deliberately *outside* the `agent.install` delta, because the remedy the notice
+names (`agent.install-inputs`) leaves the command list untouched, and a check
+inside that delta would keep reporting a state the user has just fixed.
+
+Three choices are load-bearing, and each is a deliberate *non*-duplication of
+the gap notice above:
+
+- **The diagnostics panel, not the transcript and not the prompt.** This is a
+  configuration observation, not an incident — the same class as the ignored
+  `agent.memory` / `cpu` / `pids` fields the panel already reports. The agent's
+  channel for the failure case is the gap prefix, and a session that hits both
+  must not read two paragraphs that sound the same. The notice therefore opens
+  by saying nothing is broken, and never borrows the gap notice's phrasing.
+- **A record beside the install marker** (`.install-not-content-keyed`, the
+  shape of docs/271's `INSTALL_WITHHELD_FILE`) so the panel reads a state
+  detected once at setup, and the operator log line fires once per *distinct*
+  command list rather than once per container recreate. The record is cleared
+  the moment the config resolves an input set again, so it cannot outlive the
+  condition.
+- **Reporting only.** No auto-reinstall, no change to
+  `notifyWorkspaceRewritten`'s decision, no change to the marker gate. Whether
+  the non-keyable case should reinstall itself is a separate, undecided call.
+
+The remedy is not one answer, so the notice points at the shipped decision rule
+(`shipit-docs/shipit-yaml.md` → *When `install-inputs` is the answer, and when it
+is a trap*) rather than restating it: `install-inputs` is right for a step whose
+inputs are enumerable and a **trap** for a whole-source-tree build, where the
+step belongs in the service `command:` instead.
+
 ## Key files
 
+- `src/server/orchestrator/install-content-key.ts` — the setup-time detection:
+  the `contentKeyingIsOff` predicate, the once-per-command-list record, and the
+  panel's notice text.
+- `src/server/orchestrator/services/diagnostics.ts` — `installContentKeyOff` on
+  the diagnostics payload; `src/client/components/SessionDiagnosticsPanel.tsx`
+  renders it under *Parsed shipit.yaml*.
 - `src/server/orchestrator/container-session-runner.ts` — `setDepReinstallInputs`,
   `isDepInputChange`, `maybeReinstallForDepChange` (throttle), `reinstallForDepChange`
   (the bracket); the `file_changes` handler calls into them; dispose clears the timer.
@@ -233,9 +280,23 @@ path for good.
   on the watcher path and on the #2429 orchestrator-rewrite path alike. The
   rewrite path additionally reports it (above); the watcher path does not, because
   there the person who changed the file is the one reading the transcript.
-- **No `agent.install` at all**: nothing is reported. There is no dependency step
-  to be out of step with the tree, so a warning would be about a problem the
-  session cannot have.
+- **No `agent.install` at all**: nothing is reported, on the rewrite path or at
+  setup. There is no dependency step to be out of step with the tree, so a
+  warning would be about a problem the session cannot have.
+- **`install-inputs` declared but content-keying still off**: an explicit empty
+  list opts out on purpose (`deps-hash.ts`), so the setup notice stays quiet —
+  the choice was made deliberately, which is the thing the notice exists to ask
+  for.
+- **An untrusted remote**: nothing is reported until the repo is trusted. The
+  docs/178 gate returns before the detection, so the panel can show a
+  non-keyable `agent.install` (read live from `shipit.yaml`) with no
+  accompanying row. Left as-is deliberately: the gate's whole point is that
+  nothing repo-declared is acted on first, and the session is unusable until
+  trust is granted anyway.
+- **A recognized but input-free install** (`uv venv`, `python3 -m venv`): the
+  setup notice fires. The commands are recognized, but the union of their inputs
+  is empty, so the deps hash is `null` and both halves are off exactly as for an
+  unrecognized command.
 - **A rewrite that changes both `shipit.yaml` and the lockfile**: the config
   re-read may already have requested a reinstall (a changed `agent.install`), and
   the dependency check then asks again. The 30s cooldown coalesces the two into

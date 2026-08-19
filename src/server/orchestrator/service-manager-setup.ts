@@ -12,6 +12,7 @@ import type { LogSource, SessionInfo } from "../shared/types.js";
 import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { resolveDepsHashInputs } from "../shared/deps-hash.js";
+import { evaluateContentKeyReport, type ContentKeyConfig } from "./install-content-key.js";
 import { agentLogAppend } from "./log-emit.js";
 import { collectAccountAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
@@ -670,6 +671,12 @@ export function setupServiceManager(
       installCommands,
       resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs) ?? [],
     );
+    // An input set that resolved to nothing means the content key is off — no
+    // install skip across commits, and no dependency re-check after a rewrite
+    // ShipIt performs. Both are the right defaults; being told only once
+    // something has already failed is not. Recorded here, the same place the
+    // input set is resolved.
+    reportContentKeyState(runner.sessionId, workspaceDir, shipitConfig.agent);
   }
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
     installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
@@ -1209,6 +1216,27 @@ async function resolvePluginServicesInto(
   }
 }
 
+/**
+ * Bring the session's content-key record up to date, and log when the state is
+ * newly reportable. Detection and reporting only — nothing here changes which
+ * installs run (`install-content-key.ts`).
+ *
+ * Called from both config paths, so the log line is one per *distinct*
+ * `agent.install`, not one per container recreate or activation.
+ */
+function reportContentKeyState(
+  sessionId: string,
+  workspaceDir: string,
+  agent: ContentKeyConfig,
+): void {
+  if (!evaluateContentKeyReport(workspaceDir, agent)) return;
+  console.warn(
+    `[install:${sessionId}] agent.install is not content-keyable and agent.install-inputs is ` +
+      "not declared — the cross-commit install skip and the post-rewrite dependency re-check " +
+      "are both off for this session (see session diagnostics)",
+  );
+}
+
 export function applyShipitConfigChange(
   runner: SessionRunnerInterface,
   deps: ServiceSetupDeps,
@@ -1263,6 +1291,11 @@ export function applyShipitConfigChange(
   // ---- agent.install delta ----
   if (runner instanceof ContainerSessionRunner) {
     const nextCommands = shipitConfig.agent.install;
+    // Outside the delta below on purpose: adding `agent.install-inputs` is the
+    // remedy the diagnostics notice names, and it leaves `agent.install`
+    // untouched — so gating this on a changed command list would leave the
+    // panel reporting a state the user has just fixed.
+    reportContentKeyState(runner.sessionId, workspaceDir, shipitConfig.agent);
     if (!sameCommands(runner.appliedInstallCommands, nextCommands)) {
       console.log(
         `[install:${runner.sessionId}] agent.install changed — re-running (${nextCommands.length} command(s))`,
