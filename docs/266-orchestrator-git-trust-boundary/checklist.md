@@ -101,15 +101,29 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       though nothing was staged and the scan never ran, clearing the banner on
       the lie planning#317's condition exists to prevent.
 
-## Not shipped — tracked, and the reason each was split out
+## Split out of the original scope — the reason each was, and where each ended
+
+Every item here was deferred deliberately rather than missed. **E4 is the only
+one still unshipped**; the rest are kept, checked, because the reason for the
+split is the part worth reading later.
 
 - [ ] **E4 — let the project's hooks fire again** (reqs 9, 10). Sequenced last
       by `plan.md` §5 because it is the only step that *adds* a way for the
       commit to fail, and it needs the bounded-attempt-then-`--no-verify`
       fallback to satisfy req 10.
-- [ ] **Per-session uids** (req 13). **planning#405.** Until then a payload at
-      the shared uid still reaches every session's workspace inside the
-      orchestrator container.
+- [x] **Per-session uids** (req 13). **planning#405**, shipped 2026-08-16 as
+      **docs/270-per-session-worker-uids** — `identityForPath`
+      (`shared/session-identity.ts:164`), session dirs sealed `0700`,
+      `sessionsRoot` root-owned `0755`. This box stayed unchecked for two days
+      after the work landed, which is the same defect as a box checked early:
+      the next reader treats a shipped guarantee as a known hole and plans
+      around it.
+      **Not everything under that heading closed with it**, and docs/270's own
+      checklist keeps the four that did not — pre-existing sessions keep the
+      shared identity (requirement 8a, the requester's decision), shared package
+      caches stay mutually writable between sessions of the same repo/runtime,
+      and the entrypoint's workspace walk still descends into overlay-mounted
+      dep dirs. Read those there rather than restating them here.
 
 ## Review follow-ups — planning#407
 
@@ -310,12 +324,23 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       reads the repository root, not object files). One was an operator
       correction: the auto-push failure's transcript copy is `emitMessage`,
       transport-only, so the runbook now points at the durable log ring.
-- [ ] **Arm it in production, then delete both the switch and the write.**
-      **planning#410.** This is the go/no-go planning#403 reserves for a human,
-      and it must not happen before E1 has been *seen* working in production —
-      which, as `plan.md` §4 now records, has not been established from here.
-      Filed as its own issue because a flag with no expiry becomes permanent, and
-      a permanent one is a supported way to turn the boundary back off.
+- [x] **Arm it in production, then delete both the switch and the write.**
+      **planning#410, done 2026-08-18.** Armed on build `98247585`, deployed
+      unarmed first and armed in a second deploy of the same commit. Zero
+      refusals across both ownership classes of bare cache — `nicolasalt/delve`
+      (uid 1000 before the docs/272 repair) and `nicolasalt/reward-tag`
+      (ShipIt-owned throughout) — plus `nikzlabs/shipit`, the cache whose
+      foreign ownership broke the **first** attempt on 2026-08-17. That first
+      attempt is why the two-class condition is stated rather than assumed: it
+      soaked clean over one population of a two-population surface and then
+      failed on first organic use. Both halves deleted in PR #2444.
+      **Residual, stated because a clean soak is not a complete one:** two
+      surfaces were never reached armed — a claim on a repository with no
+      existing cache (the fresh `clone --bare` at `repo-git.ts:148,160`), and
+      merged-session reset / rebase / CI-fix / conflict remediation plus the
+      release flow. Both are audited, and both were already exposed the moment
+      production armed, so the deletion removed the cheap rollback rather than
+      adding exposure.
 - [x] **A lint, not a sentence, for the corrected `-c` claim.**
       `safe.directory` is honoured from git's *protected configuration*, which is
       everything ShipIt itself supplies — system/global files, the command line,
