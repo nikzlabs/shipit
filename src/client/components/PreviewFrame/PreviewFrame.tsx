@@ -119,13 +119,20 @@ export function PreviewFrame({
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
   // Background slots keep their iframes alive in the DOM. See `useIframePool`
   // for LRU eviction and `usePreviewHealthPoller` for slot creation.
-  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot } = useIframePool();
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot, dropSlot, getSlot } = useIframePool();
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
 
   // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
+
+  // The service that owns the active port. Same derivation as the toolbar
+  // label below, so the slot's recorded owner and the row the user sees can't
+  // disagree. The health poller compares it with a retained slot's recorded
+  // owner and drops the slot when the port changed hands (planning#394).
+  const services = usePreviewStore((s) => s.services);
+  const activeService = activePort ? services.find((s) => s.port === activePort)?.name : undefined;
 
   // Compute poll URL for the active slot
   const pollUrl = isContainerMode && sessionId
@@ -146,6 +153,9 @@ export function PreviewFrame({
     pollingRef,
     promoteSlot,
     setSlot,
+    getSlot,
+    dropSlot,
+    activeService,
   });
 
   // Derive active slot state for overlay/UI logic
@@ -482,7 +492,6 @@ export function PreviewFrame({
   const isRunning = !!preview?.running;
   const showSelector = isRunning && (detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0));
   const startupSteps = usePreviewStore((s) => s.startupSteps);
-  const services = usePreviewStore((s) => s.services);
 
   // Compute current port label and remember it for transitions
   // Prefer service name over raw port number for detected services

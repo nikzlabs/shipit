@@ -53,6 +53,15 @@ slot (docs/064 item 6); it saved nothing — a mounted iframe does not keep a
 container alive, since idle reclamation keys off attached viewers and agent turns
 — and reliably destroyed exactly the preview the user came back to. Removed.
 
+One narrow exception (planning#394): the health poller drops a slot whose port
+has been taken over by a *different service*. The key is `${sessionId}:${port}`,
+so a port that moves to a new owner reuses the key, and the retained iframe
+would keep serving the previous owner's already-loaded document under the new
+owner's row — the reload is the point. Both owners must be known (a transient
+`undefined` list state never drops), and the drop goes through the pool's single
+`dropSlot` routine — the same one LRU eviction uses — so there is one removal
+path, not a second eviction policy.
+
 ### Remembering where each preview was
 
 A slot still gets recreated: LRU eviction, `PreviewFrame` unmounting (navigating
