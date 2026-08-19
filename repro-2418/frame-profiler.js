@@ -302,6 +302,12 @@
       `verdict: ${v.code} — ${v.text}`,
       "",
       `device:  ${window.innerWidth}x${window.innerHeight} @ dpr ${window.devicePixelRatio}, ${navigator.hardwareConcurrency} cores`,
+      // Stated in Hz because it is a CONFOUND, not a detail: an Android phone
+      // drops to 60 Hz on battery saver or when it is warm, which doubles the
+      // per-frame budget. Two runs at different refresh rates are not a
+      // like-for-like comparison, and one of them read as "clean" for that
+      // reason alone.
+      `display: ${Math.round(1000 / summary().displayPeriodMs)} Hz (${summary().displayPeriodMs} ms per frame)`,
       `ua:      ${navigator.userAgent}`,
       `origin:  ${location.origin}`,
       `started: ${state.startedAtWall}  (sent ${new Date().toISOString()})`,
@@ -455,6 +461,7 @@
         `<span class="num">${s.stalls}</span> stalls · <span class="num">${s.lostPct}%</span> lost · ${s.ranSec}s`;
       el(".verdict").textContent = v.text;
       el(".rows").innerHTML = [
+        `display         ${Math.round(1000 / s.displayPeriodMs)} Hz — compare runs only at the same rate`,
         `longest stall   ${s.longestStallMs} ms`,
         `timer gaps      ${s.timerGapsOver100ms}  (max ${s.maxTimerGapMs} ms)  ← the discriminator`,
         `longtask/LoAF   ${s.longtaskEntries} / ${s.loafEntries}`,
