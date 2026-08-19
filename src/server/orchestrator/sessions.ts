@@ -731,6 +731,36 @@ export class SessionManager {
   }
 
   /**
+   * Drop every record of a prior pull request, for a session whose branch has
+   * been replaced by a brand-new one cut off the default branch (unarchive —
+   * `unarchiveSession`). Unconditional, and deliberately NOT {@link clearMerged}:
+   *
+   *  - `clearMerged` only fires `WHERE merged_at IS NOT NULL`, so it leaves the
+   *    breadcrumb standing on a session that was re-armed *before* it was
+   *    archived — which feeds `computeResetBlocker`'s `previousMergedPr`
+   *    fallback and makes the fresh branch look like it shipped work.
+   *  - `clearMerged` WRITES a `previousMergedPr` breadcrumb. Here the correct
+   *    breadcrumb is none at all: the breadcrumb exists to name a reset target
+   *    for a branch that still carries the merged PR's work, and this branch
+   *    carries none of it. Retaining the old PR's base would point the docs/218
+   *    gate at a target with no relationship to the new branch.
+   *
+   * Paired with `PrStatusPoller.clearPersisted` (which nulls `pr_status`) inside
+   * `unarchiveSession`: the two express ONE decision — "the old pull request no
+   * longer applies to this session" — and splitting them across two call sites
+   * is how the merged half came to be forgotten, leaving `merged_at` alive next
+   * to a nulled snapshot. That state made the pre-turn auto-reset (docs/218)
+   * refuse every turn with `no-base-branch`, and then propagated: the next PR's
+   * snapshot coexisted with the stale merge record, so the refusal notice
+   * claimed an OPEN pull request had merged.
+   */
+  clearPriorPrRecord(id: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL WHERE id = ?",
+    ).run(id);
+  }
+
+  /**
    * Mark a session's PR as closed without a merge (sets closed_at timestamp).
    * No-op if the PR already merged — a merge is the stronger terminal state and
    * must not be downgraded to "closed". Unlike `markMerged` this does NOT delete

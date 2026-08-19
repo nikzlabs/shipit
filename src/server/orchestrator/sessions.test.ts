@@ -507,6 +507,49 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("clearPriorPrRecord (unarchive drops the previous PR entirely)", () => {
+    const breadcrumb = { number: 42, url: "https://github.com/o/r/pull/42", title: "Old PR", baseBranch: "main" };
+
+    it("nulls merged_at, merged_head_sha and the breadcrumb together", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      mgr.setMergedHeadSha("sess-1", "abc123def456");
+
+      mgr.clearPriorPrRecord("sess-1");
+      const s = mgr.get("sess-1");
+      expect(s?.mergedAt).toBeUndefined();
+      expect(s?.mergedHeadSha).toBeUndefined();
+      expect(s?.previousMergedPr).toBeUndefined();
+    });
+
+    it("clears a breadcrumb left by an earlier re-arm, which clearMerged cannot", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      mgr.clearMerged("sess-1", breadcrumb); // docs/202 re-arm, then archived
+      expect(mgr.get("sess-1")?.previousMergedPr).toEqual(breadcrumb);
+
+      // `clearMerged` is guarded on `merged_at IS NOT NULL`, so it would no-op
+      // here and leave the breadcrumb feeding computeResetBlocker's fallback.
+      expect(mgr.clearMerged("sess-1", null)).toBe(false);
+      expect(mgr.get("sess-1")?.previousMergedPr).toEqual(breadcrumb);
+
+      mgr.clearPriorPrRecord("sess-1");
+      expect(mgr.get("sess-1")?.previousMergedPr).toBeUndefined();
+    });
+
+    it("never writes a breadcrumb of its own", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      mgr.clearPriorPrRecord("sess-1");
+      // The new branch is cut off the default branch and carries none of the old
+      // PR's work, so the old PR's base is not a safe reset target.
+      expect(mgr.get("sess-1")?.previousMergedPr).toBeUndefined();
+    });
+  });
+
   describe("docs/218: setMergedHeadSha (auto-reset safety anchor)", () => {
     it("round-trips the merged head SHA through persistence", () => {
       const mgr = new SessionManager(dbManager);
