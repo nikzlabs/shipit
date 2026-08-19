@@ -398,6 +398,27 @@ if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.local/share/opencode
   echo "[shipit] warning: could not prepare /credentials/.local/share/opencode for UID ${UID_GID}; OpenCode will fail to start (EEXIST on the dangling ~/.local/share/opencode symlink)" >&2
 fi
 
+# planning#444 — Grok's config root, the same class of bug as the OpenCode block
+# above and the same remedy, reached from the other direction.
+#
+# OpenCode's target was uncreatable because the path is three deep and no code
+# path walked it. Grok's is single-segment, so a `mkdir -p` would have worked
+# fine — nothing ever RAN one. Grok is key-billed (docs/274 req 6): the
+# credential arrives as XAI_API_KEY, no auth.json is ever written, and
+# `copyCredentialPath` returns early on a source that does not exist, so the
+# provisioning that materializes `.claude`/`.codex` materializes nothing here.
+# The image symlinks ~/.grok at /credentials/.grok unconditionally, so the link
+# DANGLES in every session container, and the CLI dies at its own session
+# creation with `FS_OTHER / "File exists (os error 17)"` and `duration_ms: 0` —
+# before any stream event, which is why it presented as a bare `error` row.
+#
+# Same gosu requirement, for exactly the reason spelled out above: /credentials
+# is sealed 0700 to the session's own uid before the container starts and the
+# container drops DAC_OVERRIDE, so the root form could only ever warn.
+if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.grok 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /credentials/.grok for UID ${UID_GID}; Grok turns will fail (dangling ~/.grok symlink)" >&2
+fi
+
 # docs/262 req 17 — /plugin-bin holds the generated companion-CLI wrappers the
 # worker writes AFTER dropping to UID_GID, so it needs the same handoff /plugins
 # does and for the same reason (`/` is root-owned). Nothing plugin-authored ever

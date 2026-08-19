@@ -85,8 +85,16 @@ harness_bin() {
 # the exception (planning#442): its shim is a JS launcher whose job is to
 # install or decompress the real binary at runtime, which either fails (read-
 # only install tree) or costs a 157MB copy per spawn (throwaway $GROK_HOME).
-# The grok block above already decompressed the binary in place, so PATH points
-# straight at it and the launcher is never involved.
+# The grok block above already decompressed the binary in place, so this points
+# straight at it.
+#
+# planning#444 — this used to claim "PATH points straight at it and the launcher
+# is never involved", and that second half was FALSE as shipped. Every image
+# prepends `/opt/agent-cli/node_modules/.bin` to PATH, which BEATS $BIN_DIR, so a
+# bare-name lookup found the launcher and not this link — measured in a live
+# container: `command -v grok` answered `/opt/agent-cli/node_modules/.bin/grok`.
+# Linking $BIN_DIR is therefore necessary and not sufficient; the grok block
+# below also UNLINKS the shim, which is what makes the claim true.
 harness_link_target() {
   case "$1" in
     grok) echo "$AGENT_CLI_DIR/node_modules/@xai-official/grok-$(node -p 'process.platform + "-" + process.arch')/bin/grok" ;;
@@ -179,6 +187,28 @@ if contains grok $selected; then
     fs.rmSync(br, { force: true });
     console.log(`[install-agent-clis] decompressed ${raw}`);
   '
+  # planning#444 — and REMOVE the npm-generated launcher shim, because linking
+  # $BIN_DIR at the real binary does not keep the launcher out of the way.
+  #
+  # Every image prepends `$AGENT_CLI_DIR/node_modules/.bin` to PATH, ahead of
+  # $BIN_DIR, so `grok` by name resolved to the launcher: verified in a live
+  # container, where `command -v grok` answered
+  # `/opt/agent-cli/node_modules/.bin/grok` while `/usr/local/bin/grok` was the
+  # direct link. The launcher then bootstraps ~157MB into $GROK_HOME on a root
+  # that has none — and ShipIt hands every spawn a fresh throwaway $GROK_HOME
+  # (session/agents/grok/adapter.ts), so that is a per-TURN cost, landing in the
+  # per-session credentials volume whenever that root is real.
+  #
+  # Deleting the shim rather than reordering PATH, for two reasons. The prepend
+  # serves the OTHER harnesses — their $BIN_DIR links point INTO `.bin`, so the
+  # order is what makes their unlinked npm siblings reachable — and reordering
+  # would change resolution for all of them to fix one. And grok is the only
+  # harness whose `.bin` entry is a DIFFERENT PROGRAM from its $BIN_DIR link, so
+  # removing that one divergence fixes every resolution path at once, including
+  # a user typing `grok` in the terminal panel, which no spawn-site fix reaches.
+  # This is the same `rm` the prune loop below performs for a deselected harness.
+  rm -f "$AGENT_CLI_DIR/node_modules/.bin/grok"
+  echo "[install-agent-clis] removed the grok launcher shim; PATH now resolves grok to the real binary"
 fi
 
 # Prune the deselected harnesses, bins first so a failed rm can't leave a dangling

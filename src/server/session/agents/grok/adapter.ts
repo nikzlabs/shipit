@@ -72,6 +72,63 @@ import { renderGrokConfigToml, type GrokMcpServer } from "./config-toml.js";
 const GROK_REASONING = HARNESSES.find((h) => h.id === "grok")?.capabilities.reasoning;
 
 /**
+ * A `node_modules/.bin` directory, as a PATH entry.
+ *
+ * Anchored at the END so it matches the directory itself and not a package that
+ * merely lives under one, and tolerant of a trailing separator because a PATH
+ * entry may carry one.
+ */
+const NPM_BIN_DIR = /(^|[\\/])node_modules[\\/]\.bin[\\/]?$/;
+
+/**
+ * The grok binary a spawn must exec — resolved to an absolute path, never left
+ * to `$PATH` (planning#444).
+ *
+ * `@xai-official/grok` publishes TWO different programs under the same name,
+ * and until now ShipIt got the wrong one:
+ *
+ *   - `node_modules/.bin/grok` is a JS **launcher**. Its own resolution order
+ *     starts at `$GROK_HOME/bin/grok`, and when that is absent it BOOTSTRAPS —
+ *     decompressing the ~157 MB platform payload into `$GROK_HOME`. This
+ *     adapter gives every spawn a fresh throwaway `GROK_HOME` (see the header),
+ *     so the launcher would pay that 157 MB on EVERY TURN, and write it into
+ *     the per-session credentials volume whenever the real root is usable.
+ *     That is verbatim the cost planning#442 exists to prevent.
+ *   - `/usr/local/bin/grok` is the installer's link straight at the decompressed
+ *     platform binary (`install-agent-clis.sh` → `harness_link_target`), which
+ *     needs no bootstrap and writes no payload anywhere.
+ *
+ * Every image prepends `/opt/agent-cli/node_modules/.bin` to `PATH`, so the
+ * launcher WINS a bare-name lookup — measured in a live container:
+ * `command -v grok` answered `/opt/agent-cli/node_modules/.bin/grok`. The
+ * installer's comment claimed "PATH points straight at it and the launcher is
+ * never involved"; that was false as shipped. The installer now unlinks the
+ * shim, and this resolver is the second half: it skips any `node_modules/.bin`
+ * candidate outright, so an image built before that change still spawns the
+ * real binary.
+ *
+ * Falls back to the bare name when nothing else on `PATH` answers — a spawn
+ * that runs the launcher is bad, and a spawn that runs nothing is worse.
+ */
+export function resolveGrokBinary(pathEnv = process.env.PATH ?? ""): string {
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir || NPM_BIN_DIR.test(dir)) continue;
+    const candidate = path.join(dir, "grok");
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Not here, or not executable — keep looking.
+    }
+  }
+  console.warn(
+    "[grok] no grok binary on PATH outside node_modules/.bin — falling back to the bare name, "
+      + "which may resolve to the npm launcher (a 157MB bootstrap into this turn's GROK_HOME)",
+  );
+  return "grok";
+}
+
+/**
  * Harness-compatibility toggles, set explicitly on every spawn (docs/274).
  *
  * `grok inspect` shows Grok reading OTHER agents' project files by default —
@@ -255,6 +312,18 @@ export class GrokAdapter
     const scopedHome = this.resolveHome?.();
     const home = resolveAgentHome(scopedHome);
     const configRoot = this.makeSpawnHome(grokHome(home));
+    if (configRoot === null) {
+      // Nothing usable to point GROK_HOME at. Fail loudly rather than spawn: the
+      // CLI's own error for a broken config root names no path (planning#444).
+      this.cleanupTurnFiles();
+      this.emit(
+        "error",
+        new Error(
+          `Grok: could not create a config root for this turn under ${os.tmpdir()}. The turn was not started.`,
+        ),
+      );
+      return;
+    }
     const spawnEnv: Record<string, string> = {
       ...(process.env as Record<string, string>),
       HOME: home,
@@ -322,13 +391,18 @@ export class GrokAdapter
     }
     args.push("--prompt-file", this.promptPath);
 
+    // An absolute path, never the bare name — see `resolveGrokBinary`. Logged
+    // because "which grok did this turn run" is exactly the question planning#444
+    // could not answer from the outside.
+    const binary = resolveGrokBinary();
+
     console.log(
-      "[grok] spawning:", "grok", args.join(" ").slice(0, 200),
+      "[grok] spawning:", binary, args.join(" ").slice(0, 200),
       `| promptBytes=${Buffer.byteLength(params.prompt)} | cwd:`, params.cwd,
     );
 
     try {
-      this.proc = this.spawnFn("grok", args, {
+      this.proc = this.spawnFn(binary, args, {
         cwd: params.cwd,
         env: spawnEnv,
         stdio: ["ignore", "pipe", "pipe"],
@@ -401,42 +475,83 @@ export class GrokAdapter
    * Everything else the CLI writes there (logs, caches, its bundled docs) is
    * genuinely per-run and goes away with the directory.
    *
-   * Falls back to the real root if any of this fails. That is the honest
-   * degradation: a turn that runs against the shared root might race a
-   * concurrent spawn over one file, while a turn refused for a mkdir is no turn
-   * at all.
+   * **It never returns a root it has just proven unusable** (planning#444).
+   *
+   * The previous fallback returned `realRoot` on any failure, arguing that "a
+   * turn that runs against the shared root might race a concurrent spawn over
+   * one file, while a turn refused for a mkdir is no turn at all". That reasoning
+   * assumes the shared root WORKS, and the one failure it actually met was the
+   * case where it does not: every session image symlinks `~/.grok` at
+   * `/credentials/.grok`, key-billed Grok writes no credential material, so
+   * nothing created the target and the link DANGLED. A recursive `mkdir` through
+   * a dangling symlink throws (ENOENT on Node's recursive form; the raw syscall
+   * reports EEXIST, because the link is an existing directory entry — the same
+   * trap `shared/opencode-data-dir.ts` documents). The `catch` then handed the
+   * CLI that very path as `GROK_HOME`, which died at its own session creation
+   * with `FS_OTHER / "File exists (os error 17)"` and `duration_ms: 0`, before
+   * emitting any stream event. A silent fallback onto a broken path turned a
+   * repairable condition into a total turn failure naming no cause.
+   *
+   * So the throwaway root is built FIRST and unconditionally, and linking the
+   * durable state back is what may fail. When it does, the turn still runs — on
+   * a fully self-contained root, with a local `sessions/` so the CLI can create
+   * its session — and the condition is narrated to the transcript rather than
+   * swallowed. What is lost in that state is cross-turn resume (this turn's
+   * session state goes away with the directory) and any `auth.json`, which is
+   * strictly more than the zero turns the old behaviour delivered.
+   *
+   * Returns `null` only when even a temp root could not be made — a genuinely
+   * unusable `os.tmpdir()`. The caller fails the turn loudly instead of spawning.
    */
-  private makeSpawnHome(realRoot: string): string {
+  private makeSpawnHome(realRoot: string): string | null {
+    let spawnHome: string;
     try {
-      fs.mkdirSync(realRoot, { recursive: true });
-      const spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-home-"));
+      spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-home-"));
+    } catch (err) {
+      console.error(`[grok] could not create a per-spawn config root under ${os.tmpdir()}: ${String(err)}`);
+      this.spawnHome = null;
+      return null;
+    }
+    this.spawnHome = spawnHome;
+
+    try {
       // Created rather than assumed: on a cold credentials tree the directory
-      // does not exist yet, and a dangling link would fail the CLI's own mkdir.
+      // does not exist yet. This is also the line that fails when `realRoot` is
+      // a dangling symlink — deliberately not "repaired" here, because the
+      // credentials tree is per-session and uid-sensitive (docs/150, docs/270)
+      // and the orchestrator owns what is created inside it.
+      fs.mkdirSync(realRoot, { recursive: true });
       const sessions = path.join(realRoot, "sessions");
       fs.mkdirSync(sessions, { recursive: true });
       fs.symlinkSync(sessions, path.join(spawnHome, "sessions"));
       const auth = path.join(realRoot, "auth.json");
       if (fs.existsSync(auth)) fs.symlinkSync(auth, path.join(spawnHome, "auth.json"));
-      fs.writeFileSync(path.join(spawnHome, "config.toml"), renderGrokConfigToml(this.pendingMcpServers));
-      this.spawnHome = spawnHome;
-      return spawnHome;
     } catch (err) {
-      console.warn(`[grok] could not build a per-spawn config root under ${realRoot}: ${String(err)} — falling back to the shared one`);
-      this.spawnHome = null;
+      console.warn(
+        `[grok] the shared config root ${realRoot} is unusable (${String(err)}) — running this turn on a `
+          + "self-contained root instead. Cross-turn resume and any auth.json there are unavailable until it is repaired.",
+      );
+      this.emit(
+        "log",
+        "server",
+        `Warning: Grok's config root (${realRoot}) could not be prepared, so this turn runs on a temporary one. `
+          + "Conversation resume is unavailable until it is repaired.",
+      );
       try {
-        // Write-then-rename, because this is the shared root: two spawns that
-        // both reached this fallback would otherwise interleave their writes
-        // and leave a half-written config. `rename` within one filesystem is
-        // atomic, so the loser overwrites the winner wholesale instead — the
-        // same content either way, since both render the same server set.
-        const staging = path.join(realRoot, `.config.toml.${randomUUID()}`);
-        fs.writeFileSync(staging, renderGrokConfigToml(this.pendingMcpServers));
-        fs.renameSync(staging, path.join(realRoot, "config.toml"));
-      } catch (writeErr) {
-        console.warn(`[grok] and could not write its config.toml either: ${String(writeErr)} — the turn runs without MCP servers`);
+        // A local sessions/ rather than a link: the CLI creates a session before
+        // it does anything, and the whole failure this replaces was that step.
+        fs.mkdirSync(path.join(spawnHome, "sessions"), { recursive: true });
+      } catch {
+        // The CLI makes its own under a writable GROK_HOME; nothing more to do.
       }
-      return realRoot;
     }
+
+    try {
+      fs.writeFileSync(path.join(spawnHome, "config.toml"), renderGrokConfigToml(this.pendingMcpServers));
+    } catch (err) {
+      console.warn(`[grok] could not write this turn's config.toml: ${String(err)} — the turn runs without MCP servers`);
+    }
+    return spawnHome;
   }
 
   private drainLines(flush = false): void {

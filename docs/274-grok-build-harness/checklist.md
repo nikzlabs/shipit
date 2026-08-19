@@ -114,31 +114,43 @@ the expansion of every line, with file pointers and gotchas, is in
       with the CLI's auth error while the valid ambient env key sits unused,
       and restoring the stored value makes the same spawn succeed. Evidence:
       [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
-- [ ] `shipit agent run` both directions — **blocked on planning#444**
-      (dangling `~/.grok` defeats the adapter's `GROK_HOME`). The
-      structural blockers cleared 2026-08-18 ~16:00Z (outer redeployed
-      with grok in the installed set; role `Grok` exists) and target
-      resolution proves out end to end in BOTH directions — the inbound
-      one-shot resolves role `Grok` → xai:key grok-4.6 and an outbound
-      grok-pinned child session (`556b60ca…`, via
-      `shipit session create --role Grok`) resolved identically.
-      **planning#442 is now verified fixed** (rerun 2026-08-19:
+- [ ] `shipit agent run` both directions — **planning#444 is fixed; the rerun
+      is blocked on a redeployed session-worker image.** The structural
+      blockers cleared 2026-08-18 ~16:00Z (outer redeployed with grok in the
+      installed set; role `Grok` exists) and target resolution proves out end
+      to end in BOTH directions — the inbound one-shot resolves role `Grok` →
+      xai:key grok-4.6 and an outbound grok-pinned child session
+      (`556b60ca…`, via `shipit session create --role Grok`) resolved
+      identically. **planning#442 is verified fixed** (rerun 2026-08-19:
       `grok --version` → 1.0.1, the real binary spawns and executes a full
-      turn) — do not re-test it. The consult now dies one step later:
-      `~/.grok` is a dangling symlink in every session container (nothing
+      turn) — do not re-test it. The consult then died one step later, for
+      **two** causes found together and filed as planning#444:
+      (a) `~/.grok` is a dangling symlink in every session container (nothing
       creates `/credentials/.grok` in key mode), `makeSpawnHome`'s opening
-      `mkdirSync` throws ENOENT through it, and the catch falls back to
-      handing the CLI that same dangling path as `GROK_HOME` — so it dies
-      at its own session creation, `duration_ms: 0`, before any event. A
-      three-case controlled test with `GROK_HOME` as the only variable
-      succeeds ($0.0435, exit 0) and pins the cause; the green dogfood runs
-      are explained by `Dockerfile.dev` creating no `.grok` symlink at all.
-      Filed **planning#444**. OUTBOUND and the optional role-less explicit
+      `mkdirSync` throws ENOENT through it, and the catch fell back to handing
+      the CLI that same dangling path as `GROK_HOME` — so it died at its own
+      session creation, `duration_ms: 0`, before any event; and (b) `grok`
+      spawned by NAME resolved to the npm **launcher** rather than the real
+      binary, because every image puts `node_modules/.bin` ahead of
+      `/usr/local/bin` — so fixing (a) alone would have bought a ~157MB
+      bootstrap into the throwaway `GROK_HOME` per turn rather than a working
+      one. A three-case controlled test with `GROK_HOME` as the only variable
+      succeeds ($0.0435, exit 0) and pins (a); `command -v grok` answering the
+      `.bin` path in a live container pins (b). The green dogfood runs are
+      explained by `Dockerfile.dev` creating no `.grok` symlink at all — so a
+      dogfood run can neither reproduce this nor demonstrate the fix.
+      **The failure was never consult-specific**: `makeSpawnHome` sits on the
+      single spawn path for every grok turn, and an ordinary grok-pinned
+      session reproduces it (probe session `3c992d1a…`, first turn `error`,
+      subtype `error_during_execution`), so grok was non-functional in every
+      real session container. OUTBOUND and the optional role-less explicit
       target were not reached — the per-turn spawn cap (3, shared with
       `shipit session create`) was consumed by the inbound attempts.
       planning#438's silence reproduces and materially raised the cost of
       diagnosis; planning#443 (marker reader drops grok) was found in the
-      previous run. Rerun the recipe once planning#444 lands. Evidence:
+      previous run. Both halves are fixed; this item stays open until a
+      rebuilt session-worker image is deployed and the recipe reruns.
+      Evidence:
       [docs/272 run 2026-08-19-1048](../272-harness-conversion-verification/runs/2026-08-19-1048-grok-1.0.1-agent-run.md),
       prior attempt
       [2026-08-18-1600](../272-harness-conversion-verification/runs/2026-08-18-1600-grok-1.0.1-agent-run.md).

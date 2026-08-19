@@ -349,6 +349,12 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
   // real /credentials — which in a ShipIt session container EXISTS.
   const gosuPrepared = gosuPreparedDirs(source);
   expect(gosuPrepared).toContain("/credentials/.local/share/opencode");
+  // planning#444 — the same class for Grok. Key-billed harnesses write no
+  // credential material, so nothing materializes the target of the image's
+  // unconditional `~/.grok` -> `/credentials/.grok` symlink and the CLI dies at
+  // its own session creation. Named explicitly rather than left to the derived
+  // list, so removing the block is a failed assertion and not a silent gap.
+  expect(gosuPrepared).toContain("/credentials/.grok");
 
   // Every prepared dir is redirected under this run's temp root, so none of them
   // touches the real filesystem. `pluginDir` overrides only `/plugins` — the one

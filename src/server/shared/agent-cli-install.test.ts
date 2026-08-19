@@ -275,6 +275,45 @@ ${opts?.breakBin ? `printf '#!/bin/sh\\nexit 1\\n' > "node_modules/.bin/${opts.b
       .toContain("grok 9.9.9");
   });
 
+  it("grok: removes the launcher shim, so PATH cannot resolve to it (planning#444)", () => {
+    run("grok");
+    // Linking $BIN_DIR at the real binary was never sufficient: every image
+    // prepends `$AGENT_CLI_DIR/node_modules/.bin` to PATH, AHEAD of $BIN_DIR, so
+    // `grok` by name found the launcher — verified in a live container, where
+    // `command -v grok` answered `/opt/agent-cli/node_modules/.bin/grok`. The
+    // launcher then bootstraps ~157MB into $GROK_HOME, and ShipIt hands every
+    // spawn a fresh throwaway one, so that is a per-TURN cost.
+    expect(exists(path.join(agentCliDir, "node_modules/.bin/grok"))).toBe(false);
+    // The other harnesses keep theirs — their $BIN_DIR links point INTO `.bin`,
+    // which is what the PATH prepend is for. This fix is one divergent shim, not
+    // a reordering that would change resolution for all of them.
+    run();
+    for (const id of defaultHarnesses()) {
+      const binary = HARNESSES.find((h) => (h.id as string) === id)?.binary;
+      expect(exists(path.join(agentCliDir, `node_modules/.bin/${binary!}`)), id).toBe(true);
+    }
+  });
+
+  it("grok: resolves to the real binary under the images' own PATH order (planning#444)", () => {
+    run("grok");
+    // The assertion the bug needed and nobody had: not "the link exists" but
+    // "a bare-name lookup, under the PATH every image actually sets, lands on
+    // the real binary". The stub's launcher exits 1 with a loud message, so a
+    // regression that leaves it resolvable turns this red rather than passing on
+    // launcher behaviour.
+    const containerPath = `${path.join(agentCliDir, "node_modules/.bin")}${path.delimiter}${binDir}`;
+    // `/bin/sh` by absolute path, deliberately: the whole point is to hand the
+    // shell ONLY the two directories the images put on PATH, so a `grok` that
+    // happens to be installed on the machine running the suite cannot answer the
+    // lookup and make a regression look green.
+    const sh = (script: string): string =>
+      execFileSync("/bin/sh", ["-c", script], { encoding: "utf8", env: { PATH: containerPath } });
+    const resolved = sh("command -v grok").trim();
+    expect(resolved).toBe(path.join(binDir, "grok"));
+    expect(resolved).not.toContain("node_modules");
+    expect(sh("grok --version")).toContain("grok 9.9.9");
+  });
+
   it("fails the build when a selected harness's binary does not execute", () => {
     // The planning#442 shape: every existence check passes (the shim is there,
     // executable, linked) but running it fails. The old symlink-only

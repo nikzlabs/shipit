@@ -38,10 +38,20 @@ several rows below.
   per spawn (ShipIt's throwaway per-turn root). So instead of `npm rebuild`,
   `install-agent-clis.sh` decompresses `grok.br` in place at build (0755,
   `.br` deleted) and links `/usr/local/bin/grok` **directly at the platform
-  binary**, bypassing the launcher entirely; the installer then proves every
-  selected harness binary executes (`--version` under a scratch HOME).
-  Runtime `GROK_HOME` stays what the adapter says it is — pure config/state
-  delivery, no longer part of binary resolution.
+  binary**; the installer then proves every selected harness binary executes
+  (`--version` under a scratch HOME). Runtime `GROK_HOME` stays what the
+  adapter says it is — pure config/state delivery, no longer part of binary
+  resolution.
+  **Linking `/usr/local/bin` did NOT on its own bypass the launcher** — this
+  paragraph claimed it did, and planning#444 found the claim false as shipped.
+  Every image prepends `/opt/agent-cli/node_modules/.bin` to `PATH`, *ahead* of
+  `/usr/local/bin`, and the adapter spawned `grok` by name: measured in a live
+  container, `command -v grok` answered
+  `/opt/agent-cli/node_modules/.bin/grok`. Two edits make it true — the
+  installer now **unlinks** that shim (the one harness whose `.bin` entry is a
+  different program from its `/usr/local/bin` link), and the adapter resolves an
+  absolute path that skips any `node_modules/.bin` candidate, so an image built
+  before the installer change still runs the real binary.
   `bin: { grok: "bin/grok" }` matches the catalogue binary. One transitive
   dep (`@iarna/toml`). **Pin decision: `1.0.1`** (published 2026-08-11T00:30Z;
   `check-deps` compares strict milliseconds, so 1.0.1 crossed the 7-day line
@@ -373,6 +383,38 @@ above as "verify at implementation", and each was wrong.
   the throwaway root, session state writes through the link, and `-r` resumes a
   conversation started under a *different* throwaway root. Cleanup is
   `rmSync` on the directory, which does not follow symlinks.
+
+  **The fallback in that builder was itself a trap (planning#444).** It caught
+  any failure and returned `realRoot` as `GROK_HOME`, on the argument that a
+  turn racing over one shared file beats a turn refused for a `mkdir`. That
+  reasoning assumes the shared root works, and the failure it actually met was
+  the case where it does not: the images symlink `~/.grok` at
+  `/credentials/.grok`, key-billed Grok writes no credential material, and
+  `copyCredentialPath` returns early on a missing source — so **nothing ever
+  created the target and the link dangled in every session container**. A
+  recursive `mkdir` through a dangling symlink throws (the raw syscall reports
+  EEXIST, because the link is an existing entry; Node's recursive form reports
+  ENOENT), the `catch` handed back that same unopenable path, and the CLI died
+  at its own session creation with `FS_OTHER / "File exists (os error 17)"` and
+  `duration_ms: 0` — before any stream event, which is why it surfaced as a bare
+  `error` row (planning#438). Grok was non-functional in every real session
+  container; only `Dockerfile.dev` escaped it, by creating no `.grok` symlink at
+  all, which is why the dogfood runs were green while the outer install was dead.
+
+  Fixed in three layers, each with a distinct job:
+  1. **`docker/session-worker/entrypoint.sh`** creates `/credentials/.grok` via
+     `gosu` as the worker on every boot — the same block, and the same gosu
+     requirement, as OpenCode's `docs/270` line above it. This covers a wiped
+     subtree, the terminal panel, and any spawn site ShipIt does not own.
+  2. **`provisionAgentCredentialsFromRoot`** materializes every declared
+     credential *directory* (`agentCredentialDirs`) whether or not there was
+     anything to copy — the generic form of the class, so the next key-billed
+     harness does not rediscover it. Orchestrator-side and per-session, so it
+     never touches a shared tree and the existing chown covers it.
+  3. **`makeSpawnHome`** never returns a root it has just proven unusable: the
+     throwaway root is built first and unconditionally, the durable links are
+     what may fail, and a failure narrates itself to the transcript. The turn
+     runs with resume unavailable rather than not at all.
 - **`GROK_HOME` is the `.grok` directory itself, not the home above it.**
   Verified: `GROK_HOME=/tmp/gh` produced `/tmp/gh/config.toml`, `/tmp/gh/logs/`,
   and the CLI reported the path back as `$GROK_HOME/config.toml`. Getting this
