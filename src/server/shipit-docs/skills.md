@@ -20,9 +20,19 @@ ShipIt surfaces two kinds of skill directories under the workspace:
   (docs/149). These have a sentinel `.shipit-installed.json` file next to the
   `SKILL.md` and invoke under the catalog's namespace (e.g.
   `/commit-commands:commit` for Claude or `$commit-commands:commit` for Codex).
+- `<workspace>/<agent-dir>/skills/plugins--<alias>--<skill>-<hash>/SKILL.md` —
+  skills ShipIt materialized from a **plugin repository** the project declares
+  (docs/262; see `plugins.md`). These carry a `.shipit-plugin-skill.json`
+  marker, and they are **yours, not the user's**: you discover and invoke them
+  like any other skill, but they are deliberately absent from the composer's
+  autocomplete, because a plugin's instructions are not commands the user chose
+  to have. Where one shows in the transcript it is labelled `<alias>/<skill>`.
+  ShipIt writes and removes these — never hand-edit one; change the plugin
+  repository instead.
 
-The two layouts coexist in the same directory; ShipIt distinguishes them by
-the presence of `.shipit-installed.json`.
+The layouts coexist in the same directory; ShipIt distinguishes them by the
+marker file each carries (`.shipit-installed.json`, `.shipit-plugin-skill.json`)
+— never by the directory name, which anyone may write.
 
 ## Do not edit installed skill directories by hand
 
