@@ -235,11 +235,23 @@ describe("session-credentials", () => {
     expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(false);
   });
 
-  it("provisioning tolerates a missing agent subtree (agent never logged in)", () => {
+  it("provisioning tolerates a missing agent subtree, and still creates the DIR (planning#444)", () => {
+    // This assertion used to be `.codex` does NOT exist, and that was the bug.
+    // "Agent never logged in" is exactly the key-billed shape: the credential
+    // travels as an env var, `copyCredentialPath` early-returns on a missing
+    // source, and the image has ALREADY symlinked `~/.codex` at this path — so
+    // leaving nothing here leaves the link DANGLING. That is not a harmless
+    // absence: a dangling symlink is an existing directory entry, so the CLI's
+    // own `mkdir` fails and it dies at startup (grok did exactly this in every
+    // session container; OpenCode did it before that, docs/270).
     fs.rmSync(path.join(root, ".codex"), { recursive: true, force: true });
     expect(() => provisionAgentCredentials(root, sid, "codex")).not.toThrow();
     const dir = perSessionCredentialsDir(root, sid);
-    expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
+    // The directory exists…
+    expect(fs.statSync(path.join(dir, ".codex")).isDirectory()).toBe(true);
+    // …and is EMPTY. Materializing the mount point must never invent credential
+    // material, which is what keeps the docs/138 isolation guarantee intact.
+    expect(fs.readdirSync(path.join(dir, ".codex"))).toEqual([]);
     // .gitconfig still provisioned.
     expect(fs.existsSync(path.join(dir, ".gitconfig"))).toBe(true);
   });
