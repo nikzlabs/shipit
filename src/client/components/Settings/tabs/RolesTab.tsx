@@ -10,9 +10,10 @@
  * other role is one pinned tuple, while the reviewer's params are docs/261's
  * **two ranked candidate slots** (req 2) — no single row of controls can
  * configure that, and the reviewer can be neither renamed nor deleted. So the
- * Reviewer keeps its own section with the two slot cards exactly as docs/261
- * ships them, and the pinned roles follow as a list. Uniformity holds where it is
- * true (one store, one lookup, one refusal) and stops at the screen.
+ * pinned roles come first as a list, and the Reviewer follows in its own section
+ * with the two slot cards exactly as docs/261 ships them — the roles a user
+ * creates lead, and the one special case sits after them. Uniformity holds where
+ * it is true (one store, one lookup, one refusal) and stops at the screen.
  *
  * **A row is a summary, never a control** (req 17): the name, what it is for, and
  * what it resolves to, plus open and delete. Editing all of it happens in the
@@ -124,19 +125,7 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
 
   return (
     <div className="px-5 py-4 flex flex-col gap-5 overflow-y-auto h-full" data-testid="roles-tab">
-      <ReviewerSection
-        agentList={agentList}
-        metadata={
-          reviewer && (
-            <RoleMetadata
-              role={reviewer}
-              onEdit={() => { setError(undefined); setEditing({ role: reviewer }); }}
-            />
-          )
-        }
-      />
-
-      <section className="flex flex-col gap-3 border-t border-(--color-border-secondary) pt-4">
+      <section className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             {/* docs/272-user-selectable-roles req 16 — the SAME mark the composer shows, beside
@@ -175,7 +164,7 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
             className="rounded-md border border-dashed border-(--color-border-secondary) p-6 text-center text-sm text-(--color-text-secondary)"
             data-testid="roles-empty"
           >
-            No roles yet. The reviewer above is always available; add a role for any other job you
+            No roles yet. The reviewer below is always available; add a role for any other job you
             start an agent for.
           </p>
         ) : (
@@ -190,6 +179,23 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
           ))
         )}
       </section>
+
+      {/* The reviewer follows the roles it is one of. The divider is applied
+          here rather than inside `ReviewerSection`, so the section stays a
+          block that does not know what precedes it. */}
+      <div className="border-t border-(--color-border-secondary) pt-4">
+        <ReviewerSection
+          agentList={agentList}
+          metadata={
+            reviewer && (
+              <RoleMetadata
+                role={reviewer}
+                onEdit={() => { setError(undefined); setEditing({ role: reviewer }); }}
+              />
+            )
+          }
+        />
+      </div>
 
       {editing && (
         <RoleEditor
