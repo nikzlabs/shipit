@@ -287,6 +287,17 @@ describe("RoleEditor — the whole role in one place", () => {
     expect(write.previousName).toBe("deep-dive");
   });
 
+  /**
+   * Req 19's last paragraph — the description field names its READER. Presented
+   * as the user's own label it attracts "The thorough one", which neither the
+   * role choice nor the prompt pitch can be made from, so the requirement would
+   * hold server-side and produce nothing.
+   */
+  it("says the agent reads the description", () => {
+    open(roleOn(DUAL_HARNESS));
+    expect(screen.getByText(/agent reads it/i)).toBeTruthy();
+  });
+
   it("cannot be saved with no name", async () => {
     const { onSave } = open(undefined);
     await userEvent.click(screen.getByTestId("role-editor-save"));

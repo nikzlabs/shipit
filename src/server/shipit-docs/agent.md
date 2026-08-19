@@ -152,6 +152,30 @@ and the models each can run with the service and billing mode that serve them �
 so you never name a model from memory that this install does not have. A role
 that cannot run right now is still listed, with the reason.
 
+### The description is for choosing AND for writing
+
+A role's description is what the user wrote about what that role is for, and you
+read it twice:
+
+- **To choose.** When the user did not name a role, the description is what says
+  which one they mean. A request that matches a role's stated job goes to that
+  role; where nothing matches, say so rather than sending the work to the nearest
+  role you can find.
+- **To write.** The description also tells you *how much the prompt has to spell
+  out*. A role described as fast, cheap, or narrow wants an explicit, ordered
+  brief — the exact files, the exact steps, the shape of the answer. A role
+  described as deep, thorough, or exploratory can take an open research brief and
+  will do worse with a checklist that pre-decides the work. One prompt style for
+  every role wastes whichever role it does not fit.
+
+Where a role carries no description, the harness and model line is the only hint
+there is. Use it for the same one thing the description is used for — how much
+the prompt has to spell out — and for nothing beyond that. **Neither signal moves
+the target.** You write the prompt to fit the role — you never override a parameter,
+or reach for a different role, because you judged the work deserves something
+else. That is the same relay-never-decide rule as above, and reading a
+description does not create an exception to it.
+
 A role's reasoning level may read as **`Default`**. That is a level the user
 chose, not a gap: the role runs at whatever level its harness runs at when no
 `--effort` flag is passed. Do not "complete" it with an `--effort` of your own —

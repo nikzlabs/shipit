@@ -295,6 +295,14 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
  *
  * Prints the name first on each line, because the name is the whole invocation:
  * everything after it is context for choosing between them.
+ *
+ * **The description is carried for two jobs, not one** (req 19). It is what makes
+ * an intent resolvable onto a role (req 3) — and it is also the only thing that
+ * tells the caller how to *write* for that role, because a prompt pitched for a
+ * deep research model wastes a fast narrow one and a prompt pitched for a fast
+ * narrow one wastes a deep one. The epilogue says so, because the field's mere
+ * presence in the output does not: this listing shipped with the description in
+ * it and every caller still wrote one prompt for every role.
  */
 export async function handleAgentRoles(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
@@ -335,6 +343,13 @@ export async function handleAgentRoles(args: string[], deps: RunDeps): Promise<v
       "",
       "Run one with: shipit agent run --role NAME --prompt-file - (or shipit session create --role NAME).",
       "The reviewer's model is resolved per run, which is why it lists none.",
+      "",
+      "Read the description before you choose a role AND before you write its prompt. It is the",
+      "user's account of what the role is for, so it is what tells you which role an unnamed",
+      "request means, and how much the prompt has to spell out: a role described as fast, cheap or",
+      "narrow wants explicit steps; one described as deep or exploratory can take an open brief.",
+      "Where a role has no description, what it runs on is the only hint there is. Neither moves",
+      "the target — write the prompt to fit the role, never override a parameter to fit the task.",
     ].join("\n"),
   );
 }
