@@ -31,10 +31,18 @@
  * cause — which is the fact the person diagnosing it is missing.
  *
  * This module is pure text. It holds no state and reaches nothing: the runner
- * owns the gap (`ContainerSessionRunner`), and the two surfaces render what is
- * here — a persisted transcript notice for the user, and a line alongside
+ * owns the gap (`ContainerSessionRunner`), and three surfaces render what is
+ * here — a persisted transcript notice for the user, a line alongside
  * `shipit service list` / `GET /api/sessions/:id/services` for the agent that is
- * looking at the failing service.
+ * already looking at the failing service, and a `[System]` prompt prefix for the
+ * agent that is not.
+ *
+ * The third one exists because the first two both wait to be read. The
+ * transcript notice reaches the user's message list and never the agent's
+ * prompt; the service-list line reaches the agent only if it *chooses* to call
+ * `shipit service list` — and it has no reason to, because the symptom
+ * (`Failed to resolve import`) reads as a code fault and the service row still
+ * says `running`. So the fact has to be pushed into the turn.
  */
 
 /** Why the dependencies could not be verified after the rewrite. */
@@ -117,7 +125,11 @@ export function dependencyGapNotice(gap: DependencyGap): string {
     gap.reason === "install-failed"
       ? ["Re-run it once the failure is fixed:", "", renderCommands(gap.commands)]
       : [
-          "Re-run it if imports start failing:",
+          // Unconditional on purpose. "Re-run it if imports start failing" is a
+          // warning about a possible future, and nobody acts on one of those —
+          // which leaves the notice to be re-read later, after the failure it
+          // was supposed to pre-empt.
+          "Re-run it now:",
           "",
           renderCommands(gap.commands),
           "",
@@ -142,5 +154,50 @@ export function dependencyGapSummary(gap: DependencyGap): string {
         "A service may run while every request fails on an unresolvable import."
     : `\`agent.install\` was not re-run after ${where} — ShipIt cannot tell which files it ` +
         "consumes, so installed dependencies may not match this tree. A service may run while " +
-        "every request fails on an unresolvable import; re-run the install if that happens.";
+        "every request fails on an unresolvable import; re-run the install before reading that " +
+        "as a code fault.";
+}
+
+/**
+ * The `[System]` prefix that rides in front of the agent's turn prompt.
+ *
+ * Deliberately an **instruction**, not a warning. A conditional ("dependencies
+ * may be stale") is something an agent reads and files away; what it needs is an
+ * ordering rule it can act on — run these commands *before* concluding that an
+ * unresolved import is a code fault. That inversion is the whole fix: the
+ * reported failure was a diagnosis that started from the wrong premise, not a
+ * missing fact.
+ *
+ * Read live from `runner.dependencyGap` at prompt-build time rather than parked
+ * in the session's single `pendingAgentNotice` slot — that slot is
+ * last-write-wins and would clobber a branch notice (docs/164-user-bug-filing
+ * rejected it for the same reason). Reading live also buys the right lifetime
+ * for free: the gap stays set until an install clears it, so the agent is
+ * re-told at the start of every turn until the problem is actually fixed, with
+ * no new persistence and no episode-dedup state machine.
+ *
+ * Returns `""` for the healthy case so call sites can compose it unconditionally
+ * into a `.filter(Boolean)` array.
+ */
+export function dependencyGapAgentPrefix(gap: DependencyGap | null | undefined): string {
+  if (!gap) return "";
+  const where = rewritePhrase(gap.rewrite);
+  const cause =
+    gap.reason === "install-failed"
+      ? `ShipIt rewrote this session's working tree (${where}) and re-ran \`agent.install\`, which FAILED.`
+      : `ShipIt rewrote this session's working tree (${where}) and did NOT re-run \`agent.install\`, ` +
+        "because its commands are not a recognized dependency install and ShipIt cannot tell which " +
+        "files they consume.";
+
+  return [
+    `[System] ${cause} The dependencies installed in this container may not match the code now ` +
+      "on disk. Run this session's install commands before you treat any unresolved-import, " +
+      "missing-module or missing-binary error as a fault in the code:",
+    "",
+    renderCommands(gap.commands),
+    "",
+    "Restarting the service does not fix it: the usual compose guard is " +
+      "`[ -d node_modules ] || npm ci`, and the directory exists — it just holds the pre-rewrite " +
+      "contents. A service can keep reporting `running` while every request it serves fails.",
+  ].join("\n");
 }

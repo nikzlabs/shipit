@@ -13,6 +13,7 @@ import type { Socket } from "node:net";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { WorkerAbortedError } from "./worker-http.js";
 import { clearActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
+import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 import type { WsServerMessage } from "../shared/types.js";
 import {
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
@@ -353,6 +354,54 @@ describe("ContainerSessionRunner — dependency re-check after an orchestrator t
     } finally {
       server.close();
     }
+  });
+
+  /**
+   * The gap the runner exposes is what the turn-prompt builders read
+   * (`agent-execution.ts`, `dispatched-turn.ts`), so these check the join
+   * between the two: a rewrite has to leave the runner in a state that produces
+   * a usable `[System]` instruction, for either reason, without any surface
+   * having to be called first.
+   */
+  it("exposes a gap the turn prompt can push at the agent, for a skipped install", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["./build.sh"], []);
+
+    runner.notifyWorkspaceRewritten("rebase");
+
+    const prefix = dependencyGapAgentPrefix(runner.dependencyGap);
+    expect(prefix.startsWith("[System] ")).toBe(true);
+    // The declared commands, straight off the runner — the agent is told what to
+    // run rather than left to infer it from the repo.
+    expect(prefix).toContain("./build.sh");
+    expect(prefix).toContain("a sync onto the latest base");
+  });
+
+  it("exposes a gap the turn prompt can push at the agent, for a failed install", async () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: false });
+
+    runner.notifyWorkspaceRewritten("git-pull");
+    await vi.runAllTimersAsync();
+
+    const prefix = dependencyGapAgentPrefix(runner.dependencyGap);
+    expect(prefix).toContain("FAILED");
+    expect(prefix).toContain("npm ci");
+    expect(prefix).toContain("a git pull");
+  });
+
+  it("contributes nothing to the turn prompt when the tree is believed installed", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+
+    runner.notifyWorkspaceRewritten("rebase");
+
+    // The healthy session is the overwhelmingly common one, and it must not pay
+    // a paragraph of prompt for a problem it does not have.
+    expect(runner.dependencyGap).toBeNull();
+    expect(dependencyGapAgentPrefix(runner.dependencyGap)).toBe("");
   });
 
   it("keeps the recorded gap when the notice hook throws", () => {

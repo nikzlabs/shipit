@@ -26,6 +26,7 @@ import { releaseResidentOnSpawnChange } from "../resident-spawn-guard.js";
 import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-routing.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 import { takeRoleStandingInstructions } from "../services/session-role.js";
+import { dependencyGapAgentPrefix } from "../dependency-staleness.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
 // tests, secret-resolver coverage) keep their import path working while the
@@ -455,7 +456,25 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
-  const agentPrefix = [pendingAgentNotice, bugOutcomeNotice, resetAgentPrefix]
+  // nikzlabs/shipit#2429 — the unverified-dependency instruction, last because it is
+  // the consequence of whatever the reset above just did to the tree. Read LIVE
+  // off the runner rather than consumed from a slot: the gap stays set until an
+  // install clears it, so this repeats every turn until the session is actually
+  // fixed, and it cannot clobber (or be clobbered by) `pendingAgentNotice`.
+  //
+  // Skipped for `/compact` like the three above it, and for the same reason each
+  // of them is: a compaction is ShipIt asking for a summary, not a turn that
+  // touches the tree, so an instruction to run the install is at best noise in
+  // the summary and at worst something the turn tries to act on. Nothing is lost
+  // by waiting — unlike the consume-once notices, this one is re-derived from
+  // live state, so the next real turn carries it unchanged.
+  const dependencyPrefix = opts.compact ? "" : dependencyGapAgentPrefix(runner?.dependencyGap);
+  const agentPrefix = [
+    pendingAgentNotice,
+    bugOutcomeNotice,
+    resetAgentPrefix,
+    dependencyPrefix,
+  ]
     .filter(Boolean)
     .join("\n\n");
   // docs/272 req 2 — the standing instructions of the role this session was

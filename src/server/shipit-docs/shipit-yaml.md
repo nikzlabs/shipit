@@ -15,8 +15,12 @@ version: 1
 
 agent:
   install:
-    - npm install
+    - npm ci
     - npx prisma generate
+  install-inputs:            # required once a step is not a plain dep install —
+    - package.json           # otherwise the content-keyed install skip turns off
+    - package-lock.json      # and ShipIt can no longer re-check deps after a sync
+    - prisma/schema.prisma
 
 compose: docker-compose.yml
 
@@ -49,14 +53,23 @@ Configures the agent container (runs the AI coding agent — Claude Code or Code
 ```yaml
 agent:
   install:            # Install commands, run sequentially
-    - npm install
+    - npm ci
     - npx prisma generate
   dep-dirs:           # Dependency dirs for the overlay store (default: [node_modules])
     - node_modules
   install-inputs:     # Dependency input files for the content-keyed install skip
     - package.json
     - package-lock.json
+    - prisma/schema.prisma
 ```
+
+`npx prisma generate` is not a recognized dependency install, so it would switch
+the content-keyed skip **off** for the whole `install` block — which also stops
+ShipIt re-checking dependencies after it rewrites the tree. `install-inputs`
+turns it back on, and must list the codegen step's own inputs
+(`prisma/schema.prisma`) as well as the manifest and lockfile. See
+[when `install-inputs` is the answer, and when it is a trap](#when-install-inputs-is-the-answer-and-when-it-is-a-trap)
+before copying this — for a step like `npm run build` the fix is a different one.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -106,7 +119,13 @@ sizing is fully automatic.
   still reports done. (An ordinary idle recreate keeps the same clone, so it
   usually looks fine — which is what makes this read as intermittent.) If a
   build step's output has to be there, declare its directory in `dep-dirs`
-  alongside `node_modules`.
+  alongside `node_modules` — **but only for a step whose inputs are
+  enumerable.** Keeping a whole-source-tree build (`npm run build`, `tsc`, a
+  bundler) inside `agent.install` and listing its output dir in `dep-dirs` is the
+  configuration that disables content-keying, and it is what leaves you
+  re-running the install by hand after every sync. That build belongs in the
+  service `command:` instead — see
+  [when `install-inputs` is the answer, and when it is a trap](#when-install-inputs-is-the-answer-and-when-it-is-a-trap).
 - **`dep-dirs` is checked after the install, not only before it.** A declared
   directory that exists but is **empty** when the install commands finish is
   treated as a failed install: no marker is written, and services gated on the
@@ -162,6 +181,55 @@ agent:
   every file whose change should re-run install.
 - Omit the key to use the inferred set. A missing or mismatched hash only ever
   causes a (safe, one-time) reinstall — it can never cause a stale skip.
+
+##### When `install-inputs` is the answer, and when it is a trap
+
+Content-keying is not just an optimization: it is also what lets ShipIt re-check
+your dependencies after **it** rewrites the working tree (a sync onto the base, a
+rollback, a post-merge reset). Without it, the install is left alone after every
+such rewrite and you re-run it yourself. So an `install` with an extra step needs
+a decision, and there are exactly two answers.
+
+**(a) The extra step's inputs are enumerable.** Prisma codegen from a schema,
+`protoc` over a fixed set of `.proto` files, any generator with a config file.
+Declare `install-inputs` listing the manifest, the lockfile, **and** the step's
+own inputs:
+
+```yaml
+agent:
+  install:
+    - npm ci
+    - npx prisma generate
+  install-inputs: [package.json, package-lock.json, prisma/schema.prisma]
+```
+
+**(b) The extra step consumes the whole source tree.** `npm run build`, `tsc`, a
+bundler, a Docker-less asset pipeline. There is no finite input list, so
+`install-inputs` is a **trap**: listing only the manifest and lockfile makes the
+skip fire whenever *only source* changed, and the build then never re-runs. That
+trades a loud staleness notice for a silent stale build, which is worse — the
+output is present, plausible, and wrong.
+
+For (b), take the build out of `agent.install` entirely:
+
+```yaml
+# shipit.yaml — install is now a pure dependency install, so content-keying works
+agent:
+  install: npm ci
+  dep-dirs: [node_modules]   # NOT dist/ — the service builds it, not the install
+```
+
+```yaml
+# docker-compose.yml — the build moves into the service that needs it
+services:
+  web:
+    command: sh -c "npm run build && npm start"
+    x-shipit-depends-on-install: true   # wait for node_modules, then build
+```
+
+The build then re-runs whenever the service starts, against whatever the tree
+currently holds, and its output directory is no longer something a skipped
+install can claim to have produced.
 
 > **Python projects usually have no `install` step.** A Python virtualenv is
 > pinned to the interpreter that creates it, so deps must be installed by the
@@ -378,9 +446,11 @@ worker, which writes `.shipit/.install-done` until it is recreated.)
   step or a shell script, so no `install-inputs` can be inferred and none are
   declared — is left alone, and you re-run its install yourself after a sync.
 - **When ShipIt cannot re-check, or the re-check fails, it says so** rather than
-  leaving you to diagnose it. Both cases post a `[System]` note in chat and add a
-  `Dependencies:` line to `shipit service list` (and to `GET
-  /api/sessions/:id/services` as a `dependencies` field). Read that line before
+  leaving you to diagnose it. Both cases post a notice in chat, prefix the
+  agent's next turn with a `[System]` instruction to run the install (repeated
+  every turn until an install clears it), and add a `Dependencies:` line to
+  `shipit service list` (and to `GET /api/sessions/:id/services` as a
+  `dependencies` field). Read that line before
   you read an unresolvable-import error as a code fault: a service can report
   `running` while every request it serves fails, and restarting it does not help
   because the usual compose guard is `[ -d node_modules ] || npm ci` and the
