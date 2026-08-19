@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CredentialRoute, ReviewerPin, ReviewerSlot } from "../shared/types.js";
-import { HARNESSES, catalogueEntriesForHarness, reasoningOptionsFor } from "../shared/catalogue/index.js";
+import { HARNESSES, catalogueEntriesForHarness, reasoningOptionsFor, resolveStyle } from "../shared/catalogue/index.js";
 
 /**
  * docs/261 phase 1 (reqs 1, 3, 4, 5, 8) — the two reviewers and the distance
@@ -229,19 +229,67 @@ describe("the ShipIt-authored review effort (reqs 5, 8)", () => {
     }
   });
 
-  // The zero-levels case end to end: a derived reviewer on such a harness is
-  // still COMPLETE (req 5) — it simply has one field fewer, rather than being
-  // handed a level the CLI would ignore.
-  it("omits the level entirely for a harness no selection of which offers levels", async () => {
+  /**
+   * The zero-levels case end to end — and since planning#435 it is a property of
+   * a SELECTION rather than of a harness, which is the whole of docs/274 req 14.
+   *
+   * This is the test the previous version predicted would have to change, and it
+   * changed in the predicted direction: grok now has selections that offer
+   * levels, so its authored default stopped being `null`. What must not weaken
+   * is the other half — a key-billed grok selection still offers NONE, so a
+   * reviewer on one is complete with one field fewer rather than carrying a flag
+   * the CLI discards before the wire.
+   */
+  it("splits the level per selection: none on a key-billed grok row, real ones on the subscription", async () => {
     const { REVIEWER_DEFAULT_EFFORT } = await import("./reviewer-model.js");
-    expect(REVIEWER_DEFAULT_EFFORT.grok).toBeNull();
-    // Every grok row ShipIt can run today is key-billed, and key mode discards
-    // the flag — so the resolved answer is empty even though the vocabulary is
-    // not. When the subscription mode lands (planning#435) this becomes the
-    // test that has to change, and it should: grok will then have selections
-    // that DO offer levels, and its authored default stops being null.
+    expect(REVIEWER_DEFAULT_EFFORT.grok).toBe("high");
+
+    const byMode = { sub: 0, key: 0 };
     for (const entry of catalogueEntriesForHarness("grok")) {
+      const offered = reasoningOptionsFor("grok", entry.selection).map((o) => o.value);
+      byMode[entry.selection.billingMode] += 1;
+      if (entry.selection.billingMode === "key") {
+        // Includes every GATEWAY row grok shares with the other three harnesses.
+        // Those rows name no `reasoningEfforts` at all, so this is the mode gate
+        // doing the work and not a per-row narrowing.
+        expect(offered, `${entry.selection.serviceId}/${entry.selection.modelId}`).toEqual([]);
+      } else {
+        expect(offered.length, `${entry.selection.serviceId}/${entry.selection.modelId}`).toBeGreaterThan(0);
+        // ShipIt's authored review level has to be one this row actually offers,
+        // or a derived grok reviewer silently falls back to something else.
+        expect(offered).toContain(REVIEWER_DEFAULT_EFFORT.grok);
+      }
+    }
+    // Both halves were genuinely exercised — an empty catalogue would otherwise
+    // pass this vacuously.
+    expect(byMode.sub, "no subscription grok rows in the catalogue").toBeGreaterThan(0);
+    expect(byMode.key, "no key-billed grok rows in the catalogue").toBeGreaterThan(0);
+  });
+
+  /**
+   * The same gate seen from the OTHER harnesses' side, which is the case that
+   * makes the axis necessary rather than merely tidy: a gateway row grok shares
+   * with Claude/Codex/OpenCode must keep offering THEM their full vocabularies
+   * while offering grok nothing. A per-row `reasoningEfforts` could not express
+   * that — one value would have to serve all four.
+   */
+  it("leaves a shared gateway row's levels intact for the harnesses that honour them", async () => {
+    await import("./reviewer-model.js");
+    const shared = catalogueEntriesForHarness("grok").filter(
+      (entry) => entry.selection.billingMode === "key" && entry.selection.serviceId !== "xai",
+    );
+    expect(shared.length, "no shared key-billed rows to check").toBeGreaterThan(0);
+    for (const entry of shared) {
       expect(reasoningOptionsFor("grok", entry.selection)).toEqual([]);
+      for (const other of ["claude", "codex", "opencode"] as const) {
+        // Only where that harness can actually run the row — a style it does not
+        // share says nothing about reasoning.
+        if (resolveStyle(other, entry.model) === undefined) continue;
+        expect(
+          reasoningOptionsFor(other, entry.selection).length,
+          `${other} lost its levels on ${entry.selection.serviceId}/${entry.selection.modelId}`,
+        ).toBeGreaterThan(0);
+      }
     }
   });
 });

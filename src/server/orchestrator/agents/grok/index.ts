@@ -1,13 +1,20 @@
 /**
  * Per-agent barrel for Grok Build orchestrator-side code (docs/274).
  *
- * Same shape as `../opencode/index.ts`, and omitting the same two things for
- * the same kind of reason (docs/274 req 6): no auth manager and no limits
- * provider. Grok's subscription is real and reached by the CLI's own
- * `grok login --device-auth` — it is deferred to planning#435 rather than
- * absent, so this barrel gains an auth manager when that lands and not before.
+ * Carries an auth manager since planning#435 — {@link XaiAuthManager}, the
+ * device-code flow that connects a SuperGrok subscription. It is keyed by the
+ * LOGIN (`xai-oauth`) rather than by this harness, which is why it is named for
+ * xAI and not for Grok.
+ *
+ * Still no limits provider, and that omission is a decision rather than a gap
+ * (docs/274 req 16): xAI publishes no per-account usage API — every candidate
+ * route 404s — so the subscription mode declares `quota: null` and ShipIt
+ * reports nothing instead of an invented indicator. It gains one if the vendor
+ * ever ships a usage endpoint.
+ *
  * The session-side adapter lives in `src/server/session/agents/grok/`.
  */
 
+export { XaiAuthManager } from "./auth-manager.js";
 export { prepareGrokRunParams } from "./run-params-prep.js";
 export { GROK_PARALLEL_SESSIONS_SECTION } from "./system-prompt.js";

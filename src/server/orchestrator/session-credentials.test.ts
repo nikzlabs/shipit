@@ -1710,6 +1710,150 @@ describe("session-credentials", () => {
   // "merged" by doing nothing and then recursively deleted — destroying the
   // only copy of Codex's disk-backed rollout while `sessions.agent_session_id`
   // still pointed at that thread.
+  /**
+   * planning#435 / docs/274 req 13 — a Grok subscription token is short-lived
+   * (~6h) and rotates, so "connect once" only holds if the rotation LANDS.
+   *
+   * These exercise the generic sync machinery through the grok entries added to
+   * `AGENT_TOKEN_FILES` and the freshness table: without both, a session that
+   * outlives one token would 401 mid-work and its refreshed token would be
+   * stranded in the session's own copy where the next container never sees it.
+   */
+  describe("docs/274 req 13 — a rotating Grok subscription token", () => {
+    const account = "acct_grok";
+    const grokAuth = (tag: string, expiresAt: number) =>
+      JSON.stringify({ "grok-build": { access_token: `tok-${tag}`, refresh_token: `ref-${tag}`, expires_at: expiresAt } });
+
+    function seedAccount(expiresAt: number, tag = "SOURCE"): string {
+      const accountRoot = path.join(root, "provider-accounts", "grok", account);
+      fs.mkdirSync(path.join(accountRoot, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(accountRoot, ".grok", "auth.json"), grokAuth(tag, expiresAt));
+      return accountRoot;
+    }
+
+    it("syncs the account's token into the session at turn start", () => {
+      seedAccount(9_000_000_000_000);
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+
+      syncProviderAccountTokenIn(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(sessionDir, ".grok", "auth.json"), "utf-8")).toContain("tok-SOURCE");
+    });
+
+    /**
+     * The guard that makes the sync SAFE, and it is the half that a naive
+     * "always copy the source in" would get wrong: a session that just
+     * refreshed its own token must not have it clobbered by a staler source,
+     * because the refresh may already have invalidated the source's copy
+     * upstream.
+     */
+    it("never overwrites a session token that is already fresher", () => {
+      seedAccount(1_000_000_000_000, "STALE");
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".grok", "auth.json"), grokAuth("ROTATED", 9_000_000_000_000));
+
+      syncProviderAccountTokenIn(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(sessionDir, ".grok", "auth.json"), "utf-8")).toContain("tok-ROTATED");
+    });
+
+    /**
+     * The publish half — a rotation reaching the source, so the NEXT container
+     * starts from the live token rather than a dead refresh token.
+     *
+     * The account MARKER is what says whose bearer the subtree currently holds,
+     * and the write-back refuses without it: publishing a token to an account
+     * that is not the one on disk is how one subscription's credential lands in
+     * another's source.
+     */
+    it("publishes a rotation back to the account source", () => {
+      const accountRoot = seedAccount(1_000_000_000_000, "OLD");
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".grok", "auth.json"), grokAuth("ROTATED", 9_000_000_000_000));
+      writeSessionAccountMarker(root, sid, "grok", account);
+
+      syncProviderAccountTokenBack(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(accountRoot, ".grok", "auth.json"), "utf-8")).toContain("tok-ROTATED");
+    });
+
+    /** …and refuses when the subtree holds a DIFFERENT account's credentials. */
+    it("refuses to publish into an account the subtree does not hold", () => {
+      const accountRoot = seedAccount(1_000_000_000_000, "OLD");
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".grok", "auth.json"), grokAuth("OTHER", 9_000_000_000_000));
+      writeSessionAccountMarker(root, sid, "grok", "acct_someone_else");
+
+      syncProviderAccountTokenBack(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(accountRoot, ".grok", "auth.json"), "utf-8")).toContain("tok-OLD");
+    });
+
+    /**
+     * The token file is the ONLY thing synced. `.grok/` also holds config.toml
+     * and the sessions store the CLI writes in place, and a sync that touched
+     * them would destroy this session's resume history every turn.
+     */
+    it("touches nothing in .grok but auth.json", () => {
+      const accountRoot = seedAccount(9_000_000_000_000);
+      fs.writeFileSync(path.join(accountRoot, ".grok", "config.toml"), 'shared = true\n');
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok", "sessions"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".grok", "sessions", "conversation.json"), '{"turns":1}');
+      fs.writeFileSync(path.join(sessionDir, ".grok", "config.toml"), 'session_local = true\n');
+
+      syncProviderAccountTokenIn(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(sessionDir, ".grok", "sessions", "conversation.json"), "utf-8")).toBe('{"turns":1}');
+      expect(fs.readFileSync(path.join(sessionDir, ".grok", "config.toml"), "utf-8")).toContain("session_local");
+    });
+
+    /**
+     * A KEY-billed grok session has no auth.json anywhere and is perfectly
+     * healthy — its credential travels as an environment variable. The
+     * credential-less warning must stay quiet for it, or every key-billed turn
+     * logs that it "will fail authentication" while working fine.
+     */
+    it("does not warn about a missing token on a key-billed session", () => {
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        syncAgentTokenIn(root, sid, "grok");
+        const complaints = warn.mock.calls
+          .map((call) => call.join(" "))
+          .filter((line) => line.includes("no token file"));
+        expect(complaints).toEqual([]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    /** …and stays loud for an ACCOUNT-scoped session, which is genuinely broken. */
+    it("still warns when an account-scoped session has no token", () => {
+      seedAccount(9_000_000_000_000);
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      // Remove the source too, so the sync has nothing to copy in and the
+      // session is left authenticating on nothing.
+      fs.rmSync(path.join(root, "provider-accounts", "grok", account, ".grok", "auth.json"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        syncProviderAccountTokenIn(root, sid, "grok", account);
+        const complaints = warn.mock.calls
+          .map((call) => call.join(" "))
+          .filter((line) => line.includes("no token file"));
+        expect(complaints.length).toBeGreaterThan(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
   describe("docs/153 — Codex rollout preservation", () => {
     const threadId = "019fb994-733e-7051-86da-e7a800bfc710";
     const rolloutRel = path.join("sessions", "2026", "07", "31", `rollout-2026-07-31T19-20-00-${threadId}.jsonl`);

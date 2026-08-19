@@ -384,10 +384,40 @@ describe("every mode can be authenticated", () => {
     }
   });
 
-  it("a subscription mode names a quota integration", () => {
+  /**
+   * Every subscription ANSWERS the quota question — with a reader id, or with an
+   * explicit `null` meaning "the vendor publishes nothing to read" (docs/274
+   * req 16).
+   *
+   * `toBeTruthy()` would have refused the second answer, and the point of the
+   * third `BillingModeDef` arm is that refusing it is what drove the previous
+   * two no-reader subscriptions to declare an id nothing implements. So the
+   * assertion moves to what actually matters: the field is PRESENT and is one of
+   * the two honest shapes, never `undefined`.
+   */
+  it("a subscription mode answers the quota question — a reader id, or an explicit null", () => {
     for (const service of CATALOGUE) {
       for (const mode of service.modes) {
-        if (mode.kind === "sub") expect(mode.quota, `${service.id}/sub`).toBeTruthy();
+        if (mode.kind !== "sub") continue;
+        expect(Object.hasOwn(mode, "quota"), `${service.id}/sub declares no quota field`).toBe(true);
+        expect(
+          mode.quota === null || typeof mode.quota === "string",
+          `${service.id}/sub quota must be a reader id or null`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  /**
+   * A no-reader subscription reports NOTHING, rather than an empty indicator —
+   * the behavioural half of req 16, which the declaration alone does not give.
+   */
+  it("a no-reader subscription reports no quota and offers no refresh", () => {
+    for (const service of CATALOGUE) {
+      for (const mode of service.modes) {
+        if (mode.kind !== "sub" || mode.quota !== null) continue;
+        expect(modeReportsQuota(service.id, "sub"), `${service.id}/sub`).toBe(false);
+        expect(subQuotaRefreshable(service.id), `${service.id}/sub`).toBe(false);
       }
     }
   });
@@ -1482,10 +1512,34 @@ describe("credentials", () => {
       expect(anthropic?.carriers).toBeUndefined();
     });
 
-    it("keeps every declared login backed by a manager key", () => {
-      // The auth-manager map is keyed by these ids, so a catalogue row naming a
-      // login nothing implements would be a lookup that always throws.
-      expect(allLoginIntegrations().sort()).toEqual(["anthropic-oauth", "openai-chatgpt"]);
+    /**
+     * Every declared login is BACKED, and this asks the runtime table rather
+     * than a hand-kept list.
+     *
+     * The list version described this invariant and never checked it: it would
+     * have passed for a catalogue declaring `xai-oauth` with no manager anywhere,
+     * as long as somebody edited the literal — which is precisely the state it
+     * exists to prevent, because a `LoginIntegrationId` the map has no entry for
+     * is a sign-in the UI offers and nothing can run. Building the real map costs
+     * three constructors, none of which touches the filesystem or spawns anything
+     * until a flow is started.
+     */
+    it("keeps every declared login backed by a real auth manager", async () => {
+      const { buildAgentRuntime } = await import("../../orchestrator/agents/index.js");
+      const { AuthManager } = await import("../../orchestrator/agents/claude/auth-manager.js");
+      const { CodexAuthManager } = await import("../../orchestrator/agents/codex/auth-manager.js");
+      const { XaiAuthManager } = await import("../../orchestrator/agents/grok/auth-manager.js");
+      const { authManagers } = buildAgentRuntime({
+        authManager: new AuthManager(),
+        codexAuthManager: new CodexAuthManager(),
+        xaiAuthManager: new XaiAuthManager(),
+      });
+      for (const loginId of allLoginIntegrations()) {
+        expect(authManagers.get(loginId)?.loginId, `no auth manager for ${loginId}`).toBe(loginId);
+      }
+      // And the reverse, so a manager built for a login the catalogue dropped is
+      // visible rather than dead weight.
+      expect([...authManagers.keys()].sort()).toEqual(allLoginIntegrations().sort());
     });
   });
 

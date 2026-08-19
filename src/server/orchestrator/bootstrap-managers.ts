@@ -139,6 +139,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     autoPushDebounceMs, sessionsRoot, agentFactory, localAgentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
+    xaiAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
     secretStore, reviewStore, egressAllowlistStore, presentStore, generateText,
     isTestMode, runtimeMode,
@@ -495,6 +496,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const agentRuntime = buildAgentRuntime({
     authManager,
     codexAuthManager,
+    // planning#435 — the `xai-oauth` device flow. Its own key in the map, not a
+    // second harness on an existing login: the credential is an xAI account.
+    xaiAuthManager,
     // docs/150 — lets the Claude limits provider fetch each account's usage
     // with THAT account's token, and know about an account before it has ever
     // reported quota.
@@ -1448,6 +1452,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     autoPushDebounceMs, sessionsRoot, agentFactory, localAgentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
+    xaiAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
     secretStore, reviewStore, egressAllowlistStore, presentStore,
     generateText: effectiveGenerateText,

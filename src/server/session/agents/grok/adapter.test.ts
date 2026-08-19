@@ -140,16 +140,33 @@ describe("GrokAdapter — spawn shape", () => {
     }
   });
 
-  it("NEVER passes a reasoning-effort flag, even when one is handed to it", () => {
-    // The catalogue declares no levels for this harness, so nothing should ask
-    // — but a stale stored selection can, and passing it would advertise a
-    // control the CLI silently drops before the wire (recorder-verified).
-    const h = makeHarness({ reasoningEffort: "high" });
-    homes.push(h.home);
-    expect(h.args).not.toContain("--reasoning-effort");
-    expect(h.args).not.toContain("--effort");
-    expect(h.args).not.toContain("high");
-    h.child.close(0);
+  /**
+   * Passes the level it is GIVEN, and passes nothing when given nothing.
+   *
+   * This replaces a "never passes it" assertion, and the inversion is
+   * planning#435's finding rather than a relaxation: under a subscription the
+   * CLI puts `--reasoning-effort` on the wire (recorder-verified with a negative
+   * control), so an adapter that dropped it would silently ignore a level the
+   * user picked and paid for.
+   *
+   * The gate that keeps the flag off a key-billed turn is upstream, in the
+   * catalogue's harness×mode axis — a key-billed grok selection offers no level
+   * for anything to pick, which `catalogue.test.ts` and `reviewer-model.test.ts`
+   * pin. Re-testing the billing mode here would be a second copy of that rule,
+   * and the adapter does not receive a billing mode to test.
+   */
+  it("passes the reasoning level it is handed, and none when handed none", () => {
+    const withEffort = makeHarness({ reasoningEffort: "xhigh" });
+    homes.push(withEffort.home);
+    expect(withEffort.args).toContain("--reasoning-effort");
+    expect(withEffort.args[withEffort.args.indexOf("--reasoning-effort") + 1]).toBe("xhigh");
+    withEffort.child.close(0);
+
+    const without = makeHarness({});
+    homes.push(without.home);
+    expect(without.args).not.toContain("--reasoning-effort");
+    expect(without.args).not.toContain("--effort");
+    without.child.close(0);
   });
 
   it("scrubs inherited xAI credentials and delivers exactly the routed one", () => {
@@ -643,6 +660,56 @@ describe("GrokAdapter — the per-spawn config root", () => {
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     expect(fs.readFileSync(link, "utf8")).toBe('{"scope":{"key":"secret"}}');
     subMode.child.close(0);
+  });
+
+  /**
+   * planning#435 — the SUBSCRIPTION turn's whole credential handling, and the
+   * failure it prevents is silent rather than loud.
+   *
+   * An account-delivered credential carries no `serviceRouting` at all (a login
+   * IS the vendor's own, bound to the vendor's own endpoint), so the routed
+   * branch never runs. Meanwhile the worker is handed every stored service
+   * credential regardless of the turn's route — so on any install that has ever
+   * saved an xAI key, the CLI would prefer `XAI_API_KEY` over the login on disk
+   * and bill the key while ShipIt attributed the turn to the subscription.
+   *
+   * The gate is the auth FILE and not a scoped home, because `resolveHome` is
+   * undefined inside a container — the one place this matters most.
+   */
+  it("scrubs inherited env credentials when a subscription login is on disk", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    fs.writeFileSync(path.join(configRoot, "auth.json"), '{"scope":{"access_token":"sub"}}');
+
+    const prior = { key: process.env.XAI_API_KEY, auth: process.env.GROK_AUTH };
+    process.env.XAI_API_KEY = "a-metered-key";
+    process.env.GROK_AUTH = "/somewhere/else/auth.json";
+    try {
+      const sub = build();
+      sub.adapter.run({ prompt: "p", cwd: "/workspace" });
+      expect(sub.env().XAI_API_KEY).toBeUndefined();
+      expect(sub.env().GROK_AUTH).toBeUndefined();
+      // No endpoint override either: the CLI reaches cli-chat-proxy by itself
+      // off auth.json, and a base URL meant for the key mode would redirect it.
+      expect(sub.env().GROK_XAI_API_BASE_URL).toBeUndefined();
+      sub.child.close(0);
+
+      // The OTHER direction, which is why the scrub cannot simply be
+      // unconditional: with no login on disk an unrouted spawn keeps the
+      // ambient key, because "use the key in my environment" is the only thing
+      // such a spawn could mean. Removing it would fail the turn with an auth
+      // error naming no cause.
+      fs.rmSync(path.join(configRoot, "auth.json"));
+      const keyed = build();
+      keyed.adapter.run({ prompt: "p", cwd: "/workspace" });
+      expect(keyed.env().XAI_API_KEY).toBe("a-metered-key");
+      keyed.child.close(0);
+    } finally {
+      if (prior.key === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = prior.key;
+      if (prior.auth === undefined) delete process.env.GROK_AUTH;
+      else process.env.GROK_AUTH = prior.auth;
+    }
   });
 
   it("removes the throwaway root at turn end WITHOUT following its symlinks", () => {

@@ -45,8 +45,48 @@ export const GROK_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded
 export interface AgentReasoningCapability {
   /** Control label, e.g. "Reasoning" (claude) or "Reasoning effort" (codex). */
   label: string;
-  /** Selectable effort levels. Does NOT include the implicit "Default"/no-flag entry. */
+  /**
+   * The harness's VOCABULARY: every effort level this CLI understands, with the
+   * label each renders under. Does NOT include the implicit "Default"/no-flag
+   * entry.
+   *
+   * Naming a level here says the CLI accepts the word — **not that every
+   * selection honours it**. That second question is {@link billingModes} and
+   * `ModelDef.reasoningEfforts`, and the three compose in
+   * `catalogue/index.ts`'s `reasoningOptionsFor`, which is the only honest
+   * answer to "what goes in the picker".
+   */
   options: { value: string; label: string }[];
+  /**
+   * docs/274 req 14 — the billing modes under which this harness's CLI actually
+   * SENDS the level, when that is not all of them. Absent means all of them,
+   * which is every harness but one.
+   *
+   * The axis exists because grok needs it and neither of the other two can
+   * express it. `--reasoning-effort` reaches the wire when xAI's SUBSCRIPTION
+   * catalogue authenticated the CLI and is silently discarded under an API key
+   * — both recorder-verified with a negative control (docs/274 Resolved
+   * questions). That gate is the billing mode and nothing else:
+   *
+   *   - **Per-harness ({@link options}) cannot say it.** One list must either
+   *     offer four levels that do nothing under a key, or hide four that work
+   *     under a subscription.
+   *   - **Per-row (`ModelDef.reasoningEfforts`) cannot say it either**, and
+   *     this is the part that looks like it could. A `ModelDef` is per
+   *     *(service, mode, model)* and NOT per harness, while grok shares gateway
+   *     rows (`x-ai/grok-4.6` at OpenRouter and Vercel, DeepSeek and GLM via
+   *     chat-completions) with three harnesses that DO honour levels there. On
+   *     such a row `[]` strips the levels from those three and absent leaks
+   *     grok's four onto a row that drops them — there is no value that is
+   *     right for all four at once.
+   *
+   * So the row field keeps the job only it can do — narrowing WITHIN a mode,
+   * where `grok-4.6` offers `xhigh` and `grok-4.5` does not — and this field
+   * carries the mode gate. Stated as the modes that DO honour it rather than
+   * the ones that do not, so the default (absent) is the permissive, correct
+   * answer for a harness with no such split.
+   */
+  billingModes?: BillingMode[];
 }
 
 /*

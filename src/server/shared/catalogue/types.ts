@@ -54,7 +54,15 @@ export type HarnessId = AgentId;
  * credential root on disk, and `AgentRegistry.refreshAuth` — is documented at
  * `harnessesForLoginIntegration` in `./index.ts`.
  */
-export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
+export type LoginIntegrationId =
+  | "anthropic-oauth"
+  | "openai-chatgpt"
+  // planning#435 — xAI's own device-code flow (`grok login --device-auth`),
+  // which authenticates a SuperGrok / X Premium+ subscription. Named for the
+  // VENDOR and not for the harness, like its two siblings: the credential it
+  // writes is an xAI account login, and `grok` is merely the CLI that presents
+  // it.
+  | "xai-oauth";
 
 /**
  * Selects the quota-reporting implementation — what fills req 10's indicator.
@@ -341,11 +349,21 @@ interface ModeCommon {
  * is an explicit no-reader variant of this union, not another dangling id.
  * xAI's subscription is exactly that case (planning#435 probed it: every usage
  * route 404s), so the variant lands in the same change as the mode that needs
- * it rather than ahead of it.
+ * it rather than ahead of it — it is the third arm below.
+ *
+ * **`quota: null` is a declaration, not an omission** (docs/274 req 16). The
+ * field stays REQUIRED on every `sub` arm, so a subscription still cannot be
+ * written without answering the question; what the third arm adds is a way to
+ * answer it with "there is nothing to read". The distinction it preserves is
+ * the one `opencode-go-usage` could only make in a comment: a named id that
+ * nothing implements reads, from the type alone, exactly like one whose reader
+ * is merely late — and `IMPLEMENTED_QUOTA_INTEGRATIONS` is a second list to
+ * keep in step. `null` needs neither.
  */
 export type BillingModeDef =
   | (ModeCommon & { kind: "key" })
-  | (ModeCommon & { kind: "sub"; quota: QuotaIntegrationId });
+  | (ModeCommon & { kind: "sub"; quota: QuotaIntegrationId })
+  | (ModeCommon & { kind: "sub"; quota: null });
 
 
 export interface ServiceDef {

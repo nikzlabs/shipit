@@ -26,7 +26,8 @@
  */
 
 import type { AgentId, ReviewerPin, ReviewerSlot } from "../../shared/types/agent-types.js";
-import { getHarness, getModel } from "../../shared/catalogue/index.js";
+import type { ModelSelection } from "../../shared/catalogue/types.js";
+import { getHarness, getModel, reasoningOptionsFor } from "../../shared/catalogue/index.js";
 import { harnessesForSelection } from "../non-turn-model.js";
 import {
   listConfiguredCredentials,
@@ -119,30 +120,39 @@ export function resolveReviewerPinPatch(
       `No installed harness can run ${patch.serviceId}/${patch.billingMode}/${patch.modelId} with the credentials configured`,
     );
   }
-  const reasoning = getHarness(runnable.harnessId)?.capabilities.reasoning;
-  const options = reasoning?.options ?? [];
-  // A harness with an EMPTY option set pins without a level (docs/274 req 8) —
-  // there is none to name. This used to be a 400, on the reading that a
-  // levelless reviewer is an incomplete one; with Grok Build shipping such a
-  // harness it would have refused to pin a perfectly runnable reviewer. What
-  // stays a 400 is naming a level anyway: that is a claim about the harness that
-  // is false, and silently dropping it would make the Settings screen report a
-  // pin the user did not make.
+  // What THIS SELECTION offers on that harness, never the harness's raw
+  // vocabulary (docs/274 req 14). The two diverge for grok, and reading the
+  // vocabulary here would let a reviewer be pinned to `xhigh` on a key-billed
+  // row whose CLI discards the flag before the wire — a pin the Settings screen
+  // would then report as in force while the review ran at the CLI's default.
+  const options = reasoningOptionsFor(runnable.harnessId, patch);
+  // An EMPTY option set pins without a level (docs/274 req 8) — there is none to
+  // name. This used to be a 400, on the reading that a levelless reviewer is an
+  // incomplete one; with Grok Build shipping such a selection it would have
+  // refused to pin a perfectly runnable reviewer. What stays a 400 is naming a
+  // level anyway: that is a false claim, and silently dropping it would make the
+  // Settings screen report a pin the user did not make.
+  //
+  // The wording says "on this selection", not "declares none", and the
+  // difference is req 14's: since planning#435 grok DOES declare four levels and
+  // still honours none of them on a key-billed row, so a message blaming the
+  // harness would send the user looking for a harness setting that is not the
+  // problem.
   if (options.length === 0) {
     if (patch.reasoningEffort !== undefined) {
       throw new ServiceError(
         400,
-        `${runnable.harnessId} declares no reasoning levels, so a reviewer on it cannot name one`,
+        `${runnable.harnessId} offers no reasoning levels on ${patch.serviceId}/${patch.billingMode}/${patch.modelId}, so a reviewer on it cannot name one`,
       );
     }
     return selectionOf(patch);
   }
   if (patch.reasoningEffort === undefined) {
-    const derived = defaultReviewerEffort(runnable.harnessId);
+    const derived = defaultReviewerEffort(runnable.harnessId, patch);
     if (!derived) {
       throw new ServiceError(
         400,
-        `${runnable.harnessId} declares no reasoning levels, so a reviewer on it cannot name one (docs/261 req 5)`,
+        `${runnable.harnessId} offers no reasoning levels on ${patch.serviceId}/${patch.billingMode}/${patch.modelId}, so a reviewer on it cannot name one (docs/261 req 5)`,
       );
     }
     return { ...selectionOf(patch), reasoningEffort: derived };
@@ -150,7 +160,7 @@ export function resolveReviewerPinPatch(
   if (!options.some((option) => option.value === patch.reasoningEffort)) {
     throw new ServiceError(
       400,
-      `${patch.reasoningEffort} is not a reasoning level ${runnable.harnessId} offers`,
+      `${patch.reasoningEffort} is not a reasoning level ${runnable.harnessId} offers on ${patch.serviceId}/${patch.billingMode}/${patch.modelId}`,
     );
   }
   return { ...selectionOf(patch), reasoningEffort: patch.reasoningEffort };
@@ -214,8 +224,12 @@ function selectionOf(patch: ReviewerPinPatch) {
  * with no levels is a refusal rather than a value to invent. Same table, two
  * honest answers.
  */
-function defaultReviewerEffort(harnessId: AgentId): string | undefined {
-  const options = getHarness(harnessId)?.capabilities.reasoning?.options ?? [];
+function defaultReviewerEffort(harnessId: AgentId, selection: ModelSelection): string | undefined {
+  // Asked of the SELECTION (docs/274 req 14). A harness's authored default is
+  // its answer to "how hard should a review think", not a claim that every row
+  // it can run honours that word — grok's `high` is real on a subscription row
+  // and meaningless on a key-billed one.
+  const options = reasoningOptionsFor(harnessId, selection);
   const authored = REVIEWER_DEFAULT_EFFORT[harnessId];
   if (authored && options.some((option) => option.value === authored)) return authored;
   return options[0]?.value;

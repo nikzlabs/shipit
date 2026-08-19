@@ -27,6 +27,7 @@ import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { PROVIDER_ACCOUNTS_SUBDIR, providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { readXaiTokenFreshnessFile } from "./agents/grok/auth-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
   chownSessionCredentialsTree,
@@ -46,6 +47,17 @@ import {
 export const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   claude: [".claude/.credentials.json", ".claude/credentials.json", ".claude/auth.json"],
   codex: [".codex/auth.json"],
+  // planning#435 — Grok's subscription login, and the reason docs/274 req 13
+  // exists as a separate requirement from req 12. The access token lives ~6
+  // HOURS with a refresh token beside it, which is short enough that an ordinary
+  // working session outlives one: a write-once copy would 401 mid-turn, and the
+  // rotation the CLI then performs would be stranded in the session's own copy
+  // where the next container never sees it. Declaring the file here is what puts
+  // grok on the same per-turn sync-in / publish-back path Claude and Codex use.
+  //
+  // Only `auth.json` — NOT the rest of `.grok`, which holds config.toml,
+  // sessions and logs the CLI writes in place and must never be clobbered.
+  grok: [".grok/auth.json"],
 };
 
 // Claude keys conversation history by its encoded cwd. Session agents always
@@ -129,6 +141,10 @@ export function readCodexTokenFreshness(file: string): number | null {
 const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number | null>> = {
   claude: readClaudeTokenExpiry,
   codex: readCodexTokenFreshness,
+  // Imported rather than re-implemented: the auth manager already parses this
+  // file's scope-keyed shape for the identity and plan, and two parsers of one
+  // format are how the guards come to disagree about which copy is newer.
+  grok: readXaiTokenFreshnessFile,
 };
 
 /**
@@ -511,9 +527,24 @@ const CODEX_SESSION_STATE_SUBPATHS: readonly string[] = [
  * One definition, two consumers — a second hand-maintained copy is exactly
  * how the `.codex` case got missed the first time.
  */
+/**
+ * The `.grok/` equivalent (planning#435). Grok resumes with `-r <sessionId>`
+ * against its own `sessions/` store under `$GROK_HOME`, so that directory is the
+ * conversation state a repair must rescue before dropping an orphan.
+ *
+ * Deliberately an allowlist of *state*, like the two above: `.grok/` also holds
+ * `auth.json` and `config.toml`, which are the shared authentication/config
+ * baseline the repair has just copied in from the source root. The merge is
+ * `force: false` (shared wins), so even a same-named orphan copy could not
+ * clobber the fresh credential — keeping them out of the list makes that
+ * structural rather than incidental.
+ */
+const GROK_SESSION_STATE_SUBPATHS: readonly string[] = ["sessions"];
+
 export const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>> = {
   ".claude": CLAUDE_SESSION_STATE_SUBPATHS,
   ".codex": CODEX_SESSION_STATE_SUBPATHS,
+  ".grok": GROK_SESSION_STATE_SUBPATHS,
 };
 
 /** Subtrees under a Codex home that can hold a thread's rollout jsonl. */
@@ -833,9 +864,23 @@ function materializeLeakedSubtreeSymlinks(
       // (the incident that motivated the discovery fix above took a container
       // forensics session to find). One greppable line per turn is the cost of
       // never having to do that again.
+      //
+      // **Only for an ACCOUNT-scoped flow** (planning#435). "No token file" is a
+      // defect when the session is pinned to a subscription account and a
+      // perfectly ordinary state when it is not: a key-billed session's
+      // credential travels as an environment variable and NOTHING is ever
+      // written to its credential subtree — which is provisioned as an empty
+      // directory regardless, because a dangling symlink kills the CLI at
+      // startup (planning#444). Warning there would tell every key-billed grok
+      // and Codex turn that it "will fail authentication" while it works fine,
+      // and a warning that cries wolf on the common path is how the real one
+      // stops being read. `sourceRoot !== credentialsRoot` is exactly the
+      // account-scoped case — `syncProviderAccountTokenIn` resolves an account
+      // root, the plain path passes the credentials root through unchanged.
       const tokenNames = tokenFileNamesForSubtree(rel);
       if (
         tokenNames.length > 0
+        && sourceRoot !== credentialsRoot
         && dstStat.isDirectory()
         && !tokenNames.some((name) => fs.existsSync(path.join(dst, name)))
       ) {
