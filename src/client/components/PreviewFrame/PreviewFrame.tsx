@@ -122,15 +122,15 @@ export function PreviewFrame({
   // for LRU eviction and `usePreviewHealthPoller` for slot creation.
   const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot } = useIframePool();
 
+  const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
+  const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
+
   // Whether each slot's iframe element is actually inside the ShipIt window's
   // viewport. A cross-origin iframe scrolled or transformed out of view has its
   // rendering throttled by the browser — rAF stops — and nothing inside the page
   // can see that (nikzlabs/shipit#2418). See `useIframeOnScreen` for the
   // measurement this is based on.
-  const { trackIframe, offScreenSlots } = useIframeOnScreen();
-
-  const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
-  const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
+  const { trackIframe, offScreenSlots } = useIframeOnScreen(activeSlotKey);
 
   // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
@@ -826,12 +826,34 @@ export function PreviewFrame({
             front), and reordering keyed <iframe> elements moves them in the DOM — which forces the
             browser to RELOAD the iframe, wiping its in-page state and defeating the whole pool.
             Insertion order never moves an existing iframe, so a cached preview survives switching
-            away and back. The active slot is chosen via CSS visibility below, so render order is
+            away and back. The active slot is chosen by the `hidden` class below, so render order is
             purely structural and doesn't affect which preview is shown. */}
         {[...slots.keys()].map((key) => {
           const slot = slots.get(key);
           if (!slot) return null;
           const isActive = key === activeSlotKey;
+          // `hidden` here is Tailwind's `display: none`, NOT `invisible`
+          // (`visibility: hidden`), and the difference is the whole of
+          // nikzlabs/shipit#2418. A pool slot is kept mounted so returning to it
+          // is instant — but `visibility: hidden` only stops the pixels: the
+          // document keeps rendering at full frame rate for the rest of the
+          // session. Measured cross-origin over a 4-second hide, a background
+          // page drew **240 frames** under `invisible` and **1** under `hidden`.
+          // On a phone that is a second WebGL renderer competing for the GPU
+          // with the preview the user is actually looking at, which cost the
+          // visible one 9.5–13.5% of its frames in a matched A/B on the
+          // reporter's device.
+          //
+          // Everything the pool exists to protect survives it, all measured: the
+          // document is NOT reloaded (its frame counter continues where it left
+          // off), the page keeps its own viewport size rather than being handed
+          // a 0×0 resize, and re-showing draws again in ~one frame (21 ms) — the
+          // same as `invisible`'s 18 ms, so switching back is still instant.
+          //
+          // This does not replace the docs/146 visibility contract: `display:
+          // none` does not stop **audio**, which is exactly why that cooperative
+          // protocol exists. Rendering and audio are different axes and each
+          // needs its own mechanism.
           const hidden = !isActive || hideIframe;
           // When a device preset is active, give the active iframe explicit dimensions
           // and center it in the panel with a scale transform.
@@ -855,8 +877,8 @@ export function PreviewFrame({
               style={deviceFrameStyle}
               className={
                 useDeviceFrameStyle
-                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "invisible" : ""}`
-                  : `absolute inset-0 w-full h-full ${hidden ? "invisible" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
+                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "hidden" : ""}`
+                  : `absolute inset-0 w-full h-full ${hidden ? "hidden" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
               }
               {...(!slot.containerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
             />

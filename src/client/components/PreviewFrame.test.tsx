@@ -852,6 +852,28 @@ describe("PreviewFrame", () => {
     }, "http://localhost:5173");
   });
 
+  it("stops a background slot rendering with display:none, not visibility:hidden", async () => {
+    // nikzlabs/shipit#2418. `visibility: hidden` hides the pixels and lets the
+    // document keep drawing — measured cross-origin, a hidden page drew 240
+    // frames in 4 s against 1 under `display: none`. On the reporter's phone
+    // that second live renderer cost the visible preview 9.5–13.5% of its
+    // frames. The pool still keeps the iframe MOUNTED, which is what preserves
+    // its state; only the hiding mechanism changed.
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 4173, url: "http://localhost:4173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="s1" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    rerender(<PreviewFrame preview={previewB} sessionId="s1" {...defaultProps} />);
+    const background = await screen.findByTitle("Background Preview");
+
+    expect(background).toHaveClass("hidden");
+    expect(background).not.toHaveClass("invisible");
+    // Still in the DOM: the pool's whole purpose is that returning to it does
+    // not reload the page.
+    expect(background).toBeInTheDocument();
+  });
+
   it("selector label matches selectedPort", () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);

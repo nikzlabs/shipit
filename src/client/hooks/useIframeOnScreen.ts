@@ -22,10 +22,12 @@
  * into the visibility message makes the stall observable to the page instead of
  * silent.
  *
- * Deliberately geometric only. `visibility: hidden` and `opacity: 0` are NOT
- * reported here (an `IntersectionObserver` ignores both, and — measured — the
- * browser does not throttle for either); ShipIt's own hiding of background
- * slots is already carried by the active-slot half of the visibility signal.
+ * Deliberately narrow: this answers "is the slot ShipIt is SHOWING nonetheless
+ * not on screen?" and nothing else. Only the active slot is tracked, because
+ * ShipIt hides background slots with `display: none`, which reports
+ * not-intersecting for a reason that is not news — and a mark left behind by
+ * that would make the slot read as hidden for a frame at the moment it is
+ * activated, telling a page to pause just as it comes back.
  */
 // eslint-disable-next-line no-restricted-imports -- useEffect: tear down a browser observer on unmount (external system sync)
 import { useEffect, useRef, useState } from "react";
@@ -46,13 +48,17 @@ export interface IframeOnScreenTracker {
   offScreenSlots: ReadonlySet<string>;
 }
 
-export function useIframeOnScreen(): IframeOnScreenTracker {
+export function useIframeOnScreen(activeKey: string | null): IframeOnScreenTracker {
   const [offScreenSlots, setOffScreenSlots] = useState<ReadonlySet<string>>(() => new Set());
   // Both directions are needed: the observer callback resolves an element back
   // to its slot, and re-tracking a key has to unobserve the element it replaces.
   const keyForElement = useRef<Map<Element, string>>(new Map());
   const elementForKey = useRef<Map<string, HTMLIFrameElement>>(new Map());
   const observer = useRef<IntersectionObserver | null>(null);
+  // Read inside the observer callback, which is registered once and must see the
+  // current active slot rather than the one that was active when it was made.
+  const activeKeyRef = useRef(activeKey);
+  activeKeyRef.current = activeKey;
 
   const markOffScreen = (key: string, off: boolean) => {
     setOffScreenSlots((prev) => {
@@ -73,7 +79,9 @@ export function useIframeOnScreen(): IframeOnScreenTracker {
       for (const entry of entries) {
         const key = keyForElement.current.get(entry.target);
         if (key === undefined) continue;
-        markOffScreen(key, !entry.isIntersecting);
+        // A background slot is `display: none` by design; reporting that as
+        // "off screen" would say nothing and would outlive the hiding.
+        markOffScreen(key, key === activeKeyRef.current && !entry.isIntersecting);
       }
     });
     return observer.current;
