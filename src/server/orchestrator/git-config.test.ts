@@ -313,6 +313,72 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
   });
 });
 
+// planning#387 — "The orchestrator's global .gitconfig holds a raw PAT and is
+// created world-readable", filed 2026-08-15 against the pre-E3 code: inline PAT
+// in the config, `mkdirSync` with no mode (0755), `.gitconfig` at 0644. The
+// substantive fix landed the NEXT DAY in PR #2341 (docs/266
+// E3): the token moved out of the config into a root-only 0600 file beside it,
+// and the directory became 0711 with a repair on every boot.
+//
+// What that PR's tests never pinned is the permission state itself, below the
+// one assertion on the credential file's creation: the directory mode, and the
+// REPAIR of a directory or file an older build left loose. `/credentials` is a
+// named docker volume that survives every upgrade, so "creation is correct"
+// covers only fresh installs — the existing-deployment case is entirely in the
+// repair, and a regression there is silent until an unprivileged uid exists in
+// the orchestrator container to read it (planning#384).
+describe("git-config: credential permission state (planning#387)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-modes-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates the credentials directory 0711 — traversable, never listable", () => {
+    const dir = path.join(tmpDir, "creds");
+    initGlobalGitConfig(dir);
+    // Exact, not "at most": 0755 is the world-listable state planning#387 was
+    // filed against, and 0700 — the first attempt, see initGlobalGitConfig —
+    // denies traversal to the dropped-uid git that must reach `.gitconfig`.
+    // The explicit chmod inside init makes this umask-independent; this test
+    // is what keeps that chmod from being deleted as redundant.
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o711);
+  });
+
+  it("repairs a credentials directory an older build left at 0755", () => {
+    // The on-disk state of every deployment that ran a pre-E3 build. chmod pins
+    // the fixture exactly rather than trusting the runner's umask.
+    const dir = path.join(tmpDir, "creds");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.chmodSync(dir, 0o755);
+    initGlobalGitConfig(dir);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o711);
+  });
+
+  it("repairs a credential file left at 0644 back to 0600 on the next write", () => {
+    // `writeFileSync`'s `mode` option is creation-only, so it is the explicit
+    // chmod in `writeRootOnlyCredentialFile` that has to close this — without
+    // it, a file once loosened (a hand edit, a restored volume, a future write
+    // path that forgets the repair) stays readable by every uid forever.
+    initGlobalGitConfig(tmpDir);
+    setGlobalCredentialHelper("ghp_mode_repair_token");
+    const credPath = path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME);
+    expect(fs.statSync(credPath).mode & 0o777).toBe(0o600);
+
+    fs.chmodSync(credPath, 0o644);
+    setGlobalCredentialHelper("ghp_mode_repair_token");
+    expect(fs.statSync(credPath).mode & 0o777).toBe(0o600);
+  });
+});
+
 describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
