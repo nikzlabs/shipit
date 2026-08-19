@@ -126,19 +126,40 @@ sizing is fully automatic.
   re-running the install by hand after every sync. That build belongs in the
   service `command:` instead — see
   [when `install-inputs` is the answer, and when it is a trap](#when-install-inputs-is-the-answer-and-when-it-is-a-trap).
-- **`dep-dirs` is checked after the install, not only before it.** A declared
-  directory that exists but is **empty** when the install commands finish is
-  treated as a failed install: no marker is written, and services gated on the
-  install (`x-shipit-depends-on-install`) are not started. The exit status alone
-  is not enough — an install command that ends in `|| true`, or in a fallback
-  test like `|| [ -x node_modules/.bin/vite ]`, exits 0 while having installed
-  nothing, and the gate would then open over an empty dependency tree and leave
-  the services crash-looping on a missing module. If you hit this, either the
-  install genuinely failed (read the `install_error` message and the install
-  log) or `dep-dirs` names a directory this install does not produce — narrow
-  the list. An **absent** directory is not a failure: a project that manages no
-  dependency directory at all is unaffected, and `dep-dirs: []` opts out
-  entirely.
+- **`dep-dirs` is checked after the install, not only before it.** The exit
+  status alone is not enough — an install command that ends in `|| true`, or in
+  a fallback test like `|| [ -x node_modules/.bin/vite ]`, exits 0 while having
+  installed nothing, and the gate would then open over a dependency tree that
+  was never built, leaving the services crash-looping on a missing module. So
+  two things are checked when the install commands finish, and either one fails
+  the install: no marker is written, and services gated on the install
+  (`x-shipit-depends-on-install`) are not started.
+  - **Empty.** A declared directory that exists but holds nothing.
+  - **Stale.** A declared directory npm reified — one holding a
+    `.package-lock.json`, npm's own record of what it installed — whose record
+    disagrees with the `package-lock.json` beside it. This is the case a leftover
+    tree from an earlier commit used to pass: the directory is not empty, so only
+    comparing it against the lockfile catches it. The `install_error` names the
+    packages that disagree.
+
+  If you hit either, the install genuinely failed (read the `install_error`
+  message and the install log for the first error it swallowed) — or, for the
+  empty case only, `dep-dirs` names a directory this install does not produce;
+  narrow the list. An **absent** directory is not a failure: a project that
+  manages no dependency directory at all is unaffected, and `dep-dirs: []` opts
+  out entirely.
+
+  **What the stale check will not tell you.** It is deliberately one-directional
+  and narrow, so that a directory which is legitimately *partial* never starts
+  failing. A directory with no `.package-lock.json` is not compared to anything —
+  that covers a declared build output, a monorepo `node_modules` that is nearly
+  empty because everything hoisted to the root, and any tree managed by yarn,
+  pnpm, pip or uv. A tree holding *more* than the lockfile asks for is fine. Dev
+  dependencies are required only when the tree already records some, so an
+  install run with `--omit=dev` is unaffected. Optional, peer, bundled, linked
+  and platform-restricted packages are never required. Within those limits a
+  stale tree still reaches the services in the cases the check cannot see, so
+  for a non-npm project the empty check remains the only post-install check.
 - When `install` is a string, it's treated as a single-element list.
 
 #### Content-keyed install skip (`install-inputs`)
