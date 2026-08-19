@@ -611,9 +611,11 @@ export async function prepareSessionAgentEnvironment(
   // `selectAccountForTurn(nativeService)` — reaches the same credential, so
   // writing would change nothing about routing and plenty about the spawn:
   // shaping a previously-unshaped first-party turn also starts sending
-  // `--model`, and for `anthropic:sub` it would move the secret from
-  // `ANTHROPIC_AUTH_TOKEN` into `ANTHROPIC_API_KEY` — a bearer token delivered
-  // as an `x-api-key` header (planning#354). Cross-agent review caught that.
+  // `--model` and an explicit endpoint, which is a behavior change for no
+  // routing gain (a derived `anthropic:sub` would ALSO have delivered the
+  // stored `ANTHROPIC_AUTH_TOKEN` through the shaped path — fixed at the
+  // catalogue in planning#354, so the credential hazard is gone but the
+  // spawn-shape change is not). Cross-agent review caught that.
   // So the write is confined to the case the old answer got wrong: a harness
   // whose own vendor this install cannot authenticate.
   //

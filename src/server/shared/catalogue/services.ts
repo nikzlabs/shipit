@@ -327,7 +327,15 @@ export const SERVICES = [
           // `carriers`: the token is a Claude-Code OAuth artifact (Bearer
           // semantics; Anthropic prohibits third-party harnesses on
           // subscription auth — docs/268), so no other harness may carry it.
-          { via: "string", storageEnv: "ANTHROPIC_AUTH_TOKEN", carriers: ["claude"] },
+          // The `targetOverride` is the same shape as GLM's coding plan:
+          // Bearer semantics must not inherit Claude's string target
+          // `ANTHROPIC_API_KEY`, which the CLI sends as an `x-api-key` header.
+          {
+            via: "string",
+            storageEnv: "ANTHROPIC_AUTH_TOKEN",
+            targetOverride: { claude: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" } },
+            carriers: ["claude"],
+          },
         ],
         retired: [],
         models: [
