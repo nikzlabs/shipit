@@ -14,6 +14,9 @@ import {
   allHarnesses,
   allServices,
   catalogueEntriesForHarness,
+  getHarness,
+  reasoningOptionsFor,
+  selectionHonoursEffort,
   catalogueContextWindows,
   catalogueModelLabels,
   contextWindowFor,
@@ -1454,6 +1457,56 @@ describe("credentials", () => {
       // The auth-manager map is keyed by these ids, so a catalogue row naming a
       // login nothing implements would be a lookup that always throws.
       expect(allLoginIntegrations().sort()).toEqual(["anthropic-oauth", "openai-chatgpt"]);
+    });
+  });
+
+  describe("reasoning levels per selection (docs/274 req 14)", () => {
+    // The requirement is "levels are offered where they exist and never where
+    // they are silently dropped". Grok is the harness that forced it: the CLI
+    // accepts `--reasoning-effort` under an API key and discards it before the
+    // wire, so the harness-level list over-promises on its own.
+    it("distinguishes an empty list from an absent one", () => {
+      // The distinction the field exists for: `[]` hides the control, absent
+      // inherits the harness's list. Claude declares no per-model narrowing, so
+      // its rows must still offer the harness's full set — a truthiness check
+      // in the resolver would collapse these two and silently strip them.
+      const claude = reasoningOptionsFor("claude", {
+        serviceId: "anthropic",
+        billingMode: "sub",
+        modelId: "claude-opus-5",
+      });
+      expect(claude).toEqual(getHarness("claude")?.capabilities.reasoning?.options);
+      expect(claude.length).toBeGreaterThan(0);
+    });
+
+    it("falls back to the harness list when no selection is known", () => {
+      expect(reasoningOptionsFor("codex", undefined))
+        .toEqual(getHarness("codex")?.capabilities.reasoning?.options);
+    });
+
+    it("refuses a level the selection does not honour", () => {
+      const keyGrok = { serviceId: "xai", billingMode: "key" as const, modelId: "grok-4.6" };
+      expect(selectionHonoursEffort("grok", keyGrok, "high")).toBe(false);
+      expect(selectionHonoursEffort("claude", {
+        serviceId: "anthropic", billingMode: "sub" as const, modelId: "claude-opus-5",
+      }, "high")).toBe(true);
+    });
+
+    it("keeps every declared per-model level inside its harness vocabulary", () => {
+      // The INVARIANT `reasoningOptionsFor` relies on: a row may only narrow the
+      // harness's list, never add to it. A typo here would otherwise vanish
+      // silently (intersected away) instead of failing the build.
+      for (const harness of allHarnesses()) {
+        const vocabulary = new Set(harness.capabilities.reasoning?.options.map((o) => o.value) ?? []);
+        for (const entry of catalogueEntriesForHarness(harness.id)) {
+          for (const level of entry.model.reasoningEfforts ?? []) {
+            expect(
+              vocabulary.has(level),
+              `${harness.id}/${entry.model.id} names effort "${level}", which the harness does not declare`,
+            ).toBe(true);
+          }
+        }
+      }
     });
   });
 });

@@ -212,14 +212,31 @@ export function harnessesForLoginIntegration(loginId: LoginIntegrationId): Agent
   // set this login can never change. Two answers to "can this harness run
   // something here" must not be computed two ways.
   //
-  // A shared style is still not enough: the credential is account-delivered, so
-  // a harness declaring no account destination could never carry it however
-  // well the wire formats line up.
+  // A shared style is still not enough, and there are TWO ways it isn't.
+  //
+  // First, the credential is account-delivered, so a harness declaring no
+  // account destination could never carry it however well the wire formats
+  // line up.
+  //
+  // Second — and this is what a shared style actively gets wrong — the mode may
+  // name its `carriers`. An OAuth account is a login to one vendor's account
+  // system, so speaking the same wire format says nothing about being able to
+  // present it: Grok speaks `openai-responses` and carries an account target,
+  // yet cannot authenticate against ChatGPT (planning#435). Without this
+  // clause a ChatGPT sign-in would fan out to Grok and re-evaluate an eligible
+  // set it can never change.
   return HARNESSES.filter(
     (harness) =>
       harness.spawn.credential.account !== undefined
-      && modes.some((mode) =>
-        mode.models.some((model) => resolveStyle(harness.id, model) !== undefined),
+      && modes.some(
+        (mode) =>
+          mode.credentials.some(
+            (c) =>
+              c.via === "account"
+              && c.login === loginId
+              && (!c.carriers || c.carriers.includes(harness.id)),
+          )
+          && mode.models.some((model) => resolveStyle(harness.id, model) !== undefined),
       ),
   ).map((harness) => harness.id);
 }
@@ -438,6 +455,54 @@ export function subQuotaRefreshable(serviceId: string): boolean {
     && ON_DEMAND_QUOTA_INTEGRATIONS.has(mode.quota);
 }
 
+/**
+ * docs/274 req 14 — the reasoning-effort levels a SELECTION offers.
+ *
+ * The one entry point for "what goes in the reasoning picker", and the reason
+ * it exists: `capabilities.reasoning.options` is per-harness and, for at least
+ * one harness, over-promises. Grok's key-billed selections silently discard
+ * `--reasoning-effort` while its subscription ones honour it, so a UI reading
+ * the harness list directly would put four dead controls on screen for a
+ * key-mode session — the exact dishonesty req 14 forbids.
+ *
+ * The narrowing is intersect-and-preserve-order, not replace: the harness owns
+ * the vocabulary and its LABELS, a row only says which of them it honours. An
+ * entry a row names that the harness does not declare is dropped rather than
+ * rendered label-less (`catalogue.test.ts` also fails the build on one, so this
+ * is belt-and-braces for a row authored while the test is red).
+ *
+ * `undefined` on the row means "the harness's list, unchanged" — every
+ * pre-existing row, so nothing outside grok changes behaviour. An EMPTY array
+ * means "this row honours none", which returns `[]` and hides the control.
+ * Those two must not be conflated, which is why this reads `?? options` rather
+ * than testing truthiness.
+ */
+export function reasoningOptionsFor(
+  harnessId: AgentId,
+  selection: ModelSelection | undefined,
+): { value: string; label: string }[] {
+  const options = getHarness(harnessId)?.capabilities.reasoning?.options ?? [];
+  if (!selection) return [...options];
+  const honoured = getModel(selection)?.reasoningEfforts;
+  if (!honoured) return [...options];
+  const allowed = new Set(honoured);
+  return options.filter((o) => allowed.has(o.value));
+}
+
+/**
+ * Is `effort` a level this selection actually honours? The refusal side of
+ * {@link reasoningOptionsFor}, for the places that validate a stored or
+ * caller-supplied value rather than render a list — a role's pinned level, an
+ * explicit `--effort`, a rehydrated session preference.
+ */
+export function selectionHonoursEffort(
+  harnessId: AgentId,
+  selection: ModelSelection | undefined,
+  effort: string,
+): boolean {
+  return reasoningOptionsFor(harnessId, selection).some((o) => o.value === effort);
+}
+
 /** A catalogue row paired with the identity that names it. */
 export interface CatalogueEntry {
   selection: ModelSelection & { serviceId: ServiceId };
@@ -553,11 +618,17 @@ export function harnessCanCarry(harnessId: AgentId, credential: ConfiguredCreden
   // up delivered under a name nothing reads.
   const declared = modeCredentialFor(credential.serviceId, credential.billingMode, credential.via);
   if (!declared) return false;
-  // A string credential may be restricted to the harnesses that can actually
+  // A credential may be restricted to the harnesses that can actually
   // authenticate with it (`carriers` — see the type's docstring). Without this
-  // check, an Anthropic-subscription OAuth token would make subscription
-  // models eligible on OpenCode, and every such turn would 401 (docs/268).
-  if (declared.via === "string" && declared.carriers && !declared.carriers.includes(harnessId)) {
+  // check an Anthropic-subscription OAuth token would make subscription models
+  // eligible on OpenCode (docs/268), and — once a second harness carried an
+  // `account` target while speaking OpenAI's style — a ChatGPT subscription
+  // would do the same on Grok (planning#435). Both 401 at the wire.
+  //
+  // Checked for BOTH `via` shapes deliberately: the restriction was
+  // string-only while every account-bearing service had exactly one harness
+  // speaking its style, and Grok is where that stopped being true.
+  if (declared.carriers && !declared.carriers.includes(harnessId)) {
     return false;
   }
   return true;

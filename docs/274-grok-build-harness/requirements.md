@@ -103,26 +103,28 @@ They are recorded here as requirements, not relitigated.
     invented indicator — a declared reader that reads nothing is the state
     `catalogue/types.ts` warns against, not a placeholder to fill in later.
 
+17. **A connected Grok subscription ranks above the metered xAI key**, the
+    way every other connected account ranks above a metered key. Because the
+    two modes offer disjoint model sets, this changes which models a Grok
+    session gets and not only who pays for them — that consequence is
+    accepted, not overlooked (see Resolved questions).
+18. **Subscription mode ships both `grok-4.6` and `grok-4.5`.** Req 9's
+    launch set was decided for key mode and does not constrain this one; the
+    subscription offers both, so both appear.
+
 ## Open questions
 
-- **Should a subscription selection rank above the metered key when both are
-  connected?** Every other provider's ordering was a deliberate decision
-  (ShipIt ranks connected accounts above a metered API key, per CLAUDE.md's
-  auth note), but nobody has stated it for xAI, and the two modes here do not
-  offer the same models — so "prefer the subscription" also silently changes
-  which models a session gets. Options: (a) subscription first, matching the
-  house rule; (b) leave both visible with no implied preference and let the
-  model choice decide; (c) subscription first only when the user has not
-  pinned a model. *Recommendation: (a)*, for consistency with the other
-  providers. Reported to the orchestrating session; not assumed.
-- **Does `grok-4.5` ship as a catalogue row?** It is in the subscription
-  catalogue (500k context, effort levels high/medium/low) but is not in req
-  9's launch model set, which was decided for key mode. Options: (a) ship
-  `grok-4.6` only in subscription mode, keeping the launch set as small as
-  req 9 left it; (b) ship both, since the mode offers both and omitting one
-  hides a model the user is paying for. *Recommendation: (b)*.
+None.
 
 ## Resolved questions
+
+- **2026-08-19 — Does a subscription rank above the metered key (req 17)?**
+  Asked with options; Nik chose **"Subscription first"**, the house rule,
+  having been told the caveat explicitly: the two xAI modes do not offer the
+  same models, so preferring the subscription also decides which models a
+  session gets. Req 17 records both the rule and the accepted consequence.
+- **2026-08-19 — Does `grok-4.5` ship (req 18)?** Asked with options; Nik
+  chose **"Ship both 4.6 and 4.5"**. Recorded as req 18.
 
 - **2026-08-19 — Does subscription mode offer real reasoning-effort levels
   (the open thread req 8 left)?** Resolved empirically: **yes**, and req 14

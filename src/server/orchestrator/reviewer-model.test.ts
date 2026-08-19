@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CredentialRoute, ReviewerPin, ReviewerSlot } from "../shared/types.js";
-import { HARNESSES } from "../shared/catalogue/index.js";
+import { HARNESSES, catalogueEntriesForHarness, reasoningOptionsFor } from "../shared/catalogue/index.js";
 
 /**
  * docs/261 phase 1 (reqs 1, 3, 4, 5, 8) — the two reviewers and the distance
@@ -200,27 +200,49 @@ describe("the ShipIt-authored review effort (reqs 5, 8)", () => {
    * levels is checked exactly as before, and a harness without them must say so
    * explicitly with `null` — not by omission, which would let a forgotten entry
    * pass as a deliberate one.
+   *
+   * **Both assertions ask `reasoningOptionsFor`, never
+   * `capabilities.reasoning.options` (planning#435, docs/274 req 14).** The
+   * harness list is a VOCABULARY and, for grok, deliberately over-promises: it
+   * names four levels the CLI understands while every catalogue row it can
+   * currently run honours none of them. Reading it directly is what this test
+   * did before, and it passed only because grok's vocabulary happened to be
+   * empty too — an accident that would have silently stopped protecting
+   * anything the moment the vocabulary was written down.
    */
   it("names a level every harness actually offers, or null where there are none", async () => {
     const { REVIEWER_DEFAULT_EFFORT } = await import("./reviewer-model.js");
     for (const harness of HARNESSES) {
-      const options = harness.capabilities.reasoning?.options.map((o) => o.value) ?? [];
+      // What any REAL selection on this harness offers — the union across its
+      // catalogue rows, which is the set a reviewer could actually be given.
+      const offered = new Set(
+        catalogueEntriesForHarness(harness.id).flatMap((entry) =>
+          reasoningOptionsFor(harness.id, entry.selection).map((o) => o.value),
+        ),
+      );
       const authored = REVIEWER_DEFAULT_EFFORT[harness.id];
-      if (options.length === 0) {
-        expect(authored, `${harness.id} offers no reasoning levels, so its default must be null`).toBeNull();
+      if (offered.size === 0) {
+        expect(authored, `${harness.id} offers no reasoning levels on any selection, so its default must be null`).toBeNull();
         continue;
       }
-      expect(options).toContain(authored);
+      expect([...offered]).toContain(authored);
     }
   });
 
   // The zero-levels case end to end: a derived reviewer on such a harness is
   // still COMPLETE (req 5) — it simply has one field fewer, rather than being
   // handed a level the CLI would ignore.
-  it("omits the level entirely for a harness that declares none", async () => {
+  it("omits the level entirely for a harness no selection of which offers levels", async () => {
     const { REVIEWER_DEFAULT_EFFORT } = await import("./reviewer-model.js");
     expect(REVIEWER_DEFAULT_EFFORT.grok).toBeNull();
-    expect(HARNESSES.find((h) => h.id === "grok")?.capabilities.reasoning?.options).toEqual([]);
+    // Every grok row ShipIt can run today is key-billed, and key mode discards
+    // the flag — so the resolved answer is empty even though the vocabulary is
+    // not. When the subscription mode lands (planning#435) this becomes the
+    // test that has to change, and it should: grok will then have selections
+    // that DO offer levels, and its authored default stops being null.
+    for (const entry of catalogueEntriesForHarness("grok")) {
+      expect(reasoningOptionsFor("grok", entry.selection)).toEqual([]);
+    }
   });
 });
 

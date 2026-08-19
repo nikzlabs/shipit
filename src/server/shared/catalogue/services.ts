@@ -320,7 +320,13 @@ export const SERVICES = [
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
         quota: "anthropic-oauth-usage",
         credentials: [
-          { via: "account", login: "anthropic-oauth" },
+          // `carriers` for the same reason OpenAI's row below carries one: an
+          // OAuth account is a login to Anthropic's account system, not a
+          // portable secret. No harness other than Claude Code speaks
+          // `anthropic-messages` today, so the style join already covers it —
+          // stated anyway, because that is exactly the accident-of-the-moment
+          // that let planning#435's hole open on the OpenAI row.
+          { via: "account", login: "anthropic-oauth", carriers: ["claude"] },
           // `claude-env-oauth`: a subscription delivered as an env-supplied
           // OAuth token — quota-bearing, and ranked above the metered key route.
           // It is why `via` (delivery) and `kind` (billing) are separate axes.
@@ -384,7 +390,12 @@ export const SERVICES = [
         // base URL below look inconsistent and are not.)
         endpoints: { [O_RESP]: "https://api.openai.com/v1" },
         quota: "openai-chatgpt-usage",
-        credentials: [{ via: "account", login: "openai-chatgpt" }],
+        // `carriers` — a ChatGPT subscription is a login to OpenAI's account
+        // system and only Codex can present it. Load-bearing since
+        // planning#435: Grok also speaks `openai-responses` and now carries an
+        // `account` target, so without this the style join would offer this
+        // subscription on Grok and every such turn would 401.
+        credentials: [{ via: "account", login: "openai-chatgpt", carriers: ["codex"] }],
         // The `gpt-5.6 → gpt-5.6-sol` remap. It arrived as the hand-written
         // `normalizeCodexModelId` shim, which was mode-blind and style-blind —
         // so its placement under both modes under `openai-responses` is this
@@ -429,13 +440,17 @@ export const SERVICES = [
     // docs/274 — xAI, the `grok` harness's native service, and the third
     // first-party vendor row.
     //
-    // KEY MODE ONLY, structurally. Grok Build has a subscription (SuperGrok /
-    // X Premium Plus, reached by `grok login --device-auth`), and it is
-    // deliberately absent here rather than declared-but-unwired: verifying it
-    // needs a paid subscription and is deferred to planning#435 (docs/274
-    // req 6). The exclusion is enforced by the harness row carrying no
-    // `account` credential target, the docs/268 OpenCode precedent — so no
-    // `via: "account"` mode can join even if one were added here by mistake.
+    // TWO MODES, and they are two genuinely different offerings rather than one
+    // offering with two ways to pay (planning#435, verified live on 2026-08-19
+    // with a real SuperGrok login). Different host, different API style, and a
+    // DISJOINT model set — `grok-4.5` exists only on the subscription, the 4.20
+    // pair and 4.3 only on the key. Only `grok-4.6` is on both, which is why it
+    // is one identity spread into both mode rows.
+    //
+    // That disjointness is also why docs/274 req 17 (subscription ranks above
+    // the metered key) is a bigger decision than it looks: preferring the
+    // subscription decides which MODELS a session gets, not only who is billed.
+    // Nik was asked with that caveat stated and chose it anyway.
     //
     // VERIFIED (docs/274 Phase 0, CLI 1.0.1, against a local HTTP recorder
     // with a dummy key). Pointed at an arbitrary `GROK_XAI_API_BASE_URL` the
