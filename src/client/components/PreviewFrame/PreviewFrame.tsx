@@ -788,12 +788,45 @@ export function PreviewFrame({
             front), and reordering keyed <iframe> elements moves them in the DOM — which forces the
             browser to RELOAD the iframe, wiping its in-page state and defeating the whole pool.
             Insertion order never moves an existing iframe, so a cached preview survives switching
-            away and back. The active slot is chosen via CSS visibility below, so render order is
+            away and back. The active slot is chosen by the `hidden` class below, so render order is
             purely structural and doesn't affect which preview is shown. */}
         {[...slots.keys()].map((key) => {
           const slot = slots.get(key);
           if (!slot) return null;
           const isActive = key === activeSlotKey;
+          // `hidden` is Tailwind's `display: none`, and that is the whole of
+          // nikzlabs/shipit#2418.
+          //
+          // This was `invisible` (`visibility: hidden`), which hides only the
+          // pixels: the document keeps rendering at full frame rate for the rest
+          // of the session. Measured cross-origin over a 4-second hide, a
+          // background page drew **240 frames** that way and **1** under
+          // `display: none`. On the reporter's phone that surplus was a second
+          // WebGL renderer competing for the GPU with the preview they were
+          // looking at, costing the visible one 9.5–13.5% of its frames in a
+          // matched A/B at both 60 Hz and 120 Hz.
+          //
+          // **The one thing this costs is focus inside the frame**, knowingly:
+          // measured, a genuine browser tab switch DOES restore the focused
+          // element, so this deviates from the "it feels like keeping tabs open"
+          // promise this pool is built on (docs/089). Everything else a person
+          // would notice survives — no reload, typed text, inner and document
+          // scroll, and the caret offset — so a preview you were typing in comes
+          // back whole except that you must tap the field to resume. The design
+          // owner was shown the measurement and took that trade.
+          //
+          // The alternative that keeps focus is `invisible` plus a parking
+          // transform (`translateY(-200vh)`), which throttles equally well. It
+          // was dropped once focus was off the table: two properties doing two
+          // jobs, and a silent dependency on that constant always clearing the
+          // viewport — a future layout placing this pane under a transformed or
+          // scrolled ancestor would stop it throttling with nothing to notice.
+          // `display: none` cannot fail that way, and it drops the frame from
+          // the tab order and the accessibility tree without a second property.
+          //
+          // This does not replace the docs/146 visibility contract: nothing here
+          // stops **audio**, which is exactly why that cooperative protocol
+          // exists. Rendering and audio are separate axes.
           const hidden = !isActive || hideIframe;
           // When a device preset is active, give the active iframe explicit dimensions
           // and center it in the panel with a scale transform.
@@ -820,8 +853,8 @@ export function PreviewFrame({
               style={deviceFrameStyle}
               className={
                 useDeviceFrameStyle
-                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "invisible" : ""}`
-                  : `absolute inset-0 w-full h-full ${hidden ? "invisible" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
+                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "hidden" : ""}`
+                  : `absolute inset-0 w-full h-full ${hidden ? "hidden" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
               }
               {...(!slot.containerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
             />
