@@ -21,6 +21,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
 import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager } from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
+import { installContentKeyDiagnostic } from "./install-content-key.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -519,5 +520,99 @@ describe("setupServiceManager threads serviceEnvDir to the secrets resolver (pla
 
     expect(fs.existsSync(path.join(serviceEnvDir, "s1", ".env.api"))).toBe(true);
     expect(fs.existsSync(path.join(clone, ".shipit"))).toBe(false);
+  });
+});
+
+/**
+ * Follow-up to nikzlabs/shipit#2429 — the condition is detected where the
+ * dependency-input set is resolved, so the user learns from the diagnostics
+ * panel that content-keying is off *before* the failure it eventually causes.
+ *
+ * Driven through `applyShipitConfigChange` because that is the path a user's
+ * `shipit.yaml` edit takes, and it is where the record can go stale: the
+ * remedy (`agent.install-inputs`) leaves `agent.install` untouched, so a check
+ * living inside the command-list delta would never see it.
+ */
+describe("content-key reporting (install-content-key.ts)", () => {
+  /** A production-shaped clone — the state dir derives from `<sessionDir>/workspace`. */
+  function makeClone(): string {
+    const clone = path.join(tmpDir, "session", "workspace");
+    fs.mkdirSync(clone, { recursive: true });
+    return clone;
+  }
+
+  function makeContainerRunner(clone: string): ContainerSessionRunner {
+    const runner = new ContainerSessionRunner({
+      sessionId: "s1",
+      sessionDir: clone,
+      defaultAgentId: "claude",
+      workerUrl: "http://0.0.0.0:0",
+    });
+    vi.spyOn(runner, "requestDepReinstall").mockImplementation(() => { /* no worker */ });
+    return runner;
+  }
+
+  function makeCloneDeps(clone: string) {
+    const deps = makeDeps("");
+    deps.sessionManager = {
+      get: () => ({ workspaceDir: clone, remoteUrl: undefined }),
+    } as unknown as SessionManager;
+    deps.serviceManagers.set("s1", {
+      reconcile: vi.fn(async () => { /* no compose stack in tests */ }),
+      stop: vi.fn(async () => { /* no compose stack in tests */ }),
+      startError: null,
+      updateComposeConfig: vi.fn(() => false),
+    } as unknown as ServiceManager);
+    return deps;
+  }
+
+  it("records a non-content-keyable install so diagnostics can report it", () => {
+    const clone = makeClone();
+    fs.writeFileSync(
+      path.join(clone, "shipit.yaml"),
+      "compose: docker-compose.yml\nagent:\n  install:\n    - npm ci\n    - npm run build\n",
+    );
+    const runner = makeContainerRunner(clone);
+
+    applyShipitConfigChange(runner, makeCloneDeps(clone));
+
+    expect(installContentKeyDiagnostic(clone)?.commands).toEqual(["npm ci", "npm run build"]);
+    runner.dispose({ force: true });
+  });
+
+  it("stops reporting when install-inputs is added, though agent.install is unchanged", () => {
+    const clone = makeClone();
+    const install = "compose: docker-compose.yml\nagent:\n  install:\n    - npm ci\n    - npx prisma generate\n";
+    fs.writeFileSync(path.join(clone, "shipit.yaml"), install);
+    const runner = makeContainerRunner(clone);
+    const deps = makeCloneDeps(clone);
+
+    applyShipitConfigChange(runner, deps);
+    expect(installContentKeyDiagnostic(clone)).not.toBeNull();
+
+    // The remedy the notice names. The command list does not move, so this is
+    // exactly what a check inside the `sameCommands` delta would miss.
+    fs.writeFileSync(
+      path.join(clone, "shipit.yaml"),
+      `${install}  install-inputs: [package.json, package-lock.json, prisma/schema.prisma]\n`,
+    );
+    applyShipitConfigChange(runner, deps);
+
+    expect(installContentKeyDiagnostic(clone)).toBeNull();
+    runner.dispose({ force: true });
+  });
+
+  it("says nothing for a pure dependency install", () => {
+    const clone = makeClone();
+    fs.writeFileSync(
+      path.join(clone, "shipit.yaml"),
+      "compose: docker-compose.yml\nagent:\n  install: npm ci\n",
+    );
+    const runner = makeContainerRunner(clone);
+
+    applyShipitConfigChange(runner, makeCloneDeps(clone));
+
+    expect(installContentKeyDiagnostic(clone)).toBeNull();
+    runner.dispose({ force: true });
   });
 });

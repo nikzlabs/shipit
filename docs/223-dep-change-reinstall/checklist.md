@@ -31,3 +31,11 @@
 - [x] `dependencies` alongside `GET /api/sessions/:id/services` + `shipit service list`
 - [x] Co-located tests (text, runner state, route shape, shim rendering)
 - [x] Update agent-facing docs with the new signal and how to read it
+
+### Say at setup that content-keying is off, before it costs a diagnosis
+
+- [x] `install-content-key.ts` — predicate, once-per-command-list record, notice text
+- [x] Detect in `setupServiceManager`, where the dep-input set is resolved
+- [x] Re-evaluate in `applyShipitConfigChange`, outside the `agent.install` delta
+- [x] `installContentKeyOff` on the diagnostics payload + the panel row
+- [x] Co-located tests (predicate, once/re-arm/clear, payload, panel, both wirings)
