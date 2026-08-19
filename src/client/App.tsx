@@ -370,6 +370,7 @@ export default function App() {
   const newRepoDialogOpen = useRepoStore((s) => s.newRepoDialogOpen);
   const creatingRepo = useSessionStore((s) => s.creatingRepo);
   const allSessionsDialogOpen = useSessionStore((s) => s.allSessionsDialogOpen);
+  const allSessionsDialogRepoUrl = useSessionStore((s) => s.allSessionsDialogRepoUrl);
   const allSessions = useSessionStore((s) => s.allSessions);
   const currentSession = useMemo(
     () => sessions.find((s) => s.id === sessionId),
@@ -2639,7 +2640,9 @@ export default function App() {
           }
           sessions={allSessions}
           repos={repos}
-          currentRepoUrl={currentRepoUrl}
+          // The repo the dialog was opened FROM wins; the current session's
+          // repo is only the fallback for openers that name none.
+          initialRepoUrl={allSessionsDialogRepoUrl ?? currentRepoUrl}
           onFetch={() => useSessionStore.getState().fetchAllSessions()}
           onResume={(sid) => handleSessionResume(sid, navigate)}
           onUnarchive={(sid) =>

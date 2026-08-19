@@ -46,7 +46,7 @@ const defaultProps = () => ({
   onClose: vi.fn(),
   sessions: [] as SessionInfo[],
   repos: [],
-  currentRepoUrl: undefined,
+  initialRepoUrl: undefined as string | undefined,
   onFetch: vi.fn(),
   onResume: vi.fn(),
   onUnarchive: vi.fn<(id: string) => Promise<void>>().mockResolvedValue(undefined),
@@ -176,6 +176,21 @@ describe("AllSessionsDialog", () => {
     fireEvent.change(select, { target: { value: "__ops__" } });
     expect(screen.getByText("Ops session")).toBeTruthy();
     expect(screen.queryByText("Sandbox archived")).toBeNull();
+  });
+
+  it("opens filtered to initialRepoUrl — the repo it was opened from", () => {
+    const props = defaultProps();
+    props.initialRepoUrl = "https://github.com/acme/other.git";
+    props.sessions = [
+      baseSession({ id: "s1", title: "In app", remoteUrl: "https://github.com/acme/app.git" }),
+      baseSession({ id: "s2", title: "In other", remoteUrl: "https://github.com/acme/other.git" }),
+    ];
+    render(<AllSessionsDialog {...props} />);
+    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe(
+      "https://github.com/acme/other.git",
+    );
+    expect(screen.getByText("In other")).toBeTruthy();
+    expect(screen.queryByText("In app")).toBeNull();
   });
 
   it("omits the Sandbox / Host-Ops filters when no such sessions exist", () => {

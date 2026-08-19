@@ -291,7 +291,15 @@ interface SessionState {
   // All sessions dialog
   allSessions: SessionInfo[];
   allSessionsDialogOpen: boolean;
-  setAllSessionsDialogOpen: (open: boolean) => void;
+  /**
+   * Repo the dialog opens filtered to, when it was opened FROM a repo (the
+   * sidebar's "View All Sessions"). `undefined` means "no repo was named" and
+   * the dialog falls back to the current session's repo. Carried here rather
+   * than read off the active session because the two differ exactly when it
+   * matters — opening the menu on repo B while a session of repo A is current.
+   */
+  allSessionsDialogRepoUrl: string | undefined;
+  setAllSessionsDialogOpen: (open: boolean, repoUrl?: string) => void;
   fetchAllSessions: () => Promise<void>;
   unarchiveSession: (sessionId: string) => Promise<void>;
 
@@ -369,6 +377,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
   allSessionsDialogOpen: false,
+  allSessionsDialogRepoUrl: undefined,
 
   setSessionId: (sessionId) => set({ sessionId }),
 
@@ -662,7 +671,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   reset: () => set(initialResettableState),
 
-  setAllSessionsDialogOpen: (allSessionsDialogOpen) => set({ allSessionsDialogOpen }),
+  setAllSessionsDialogOpen: (allSessionsDialogOpen, allSessionsDialogRepoUrl) =>
+    // Clear the scope on close as well as on a scope-less open, so the next
+    // open never inherits the previous one's repo.
+    set({ allSessionsDialogOpen, allSessionsDialogRepoUrl }),
 
   fetchAllSessions: async () => {
     const res = await fetch("/api/sessions/all", {
