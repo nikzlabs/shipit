@@ -193,6 +193,26 @@ instead (req 2).
     token shape, no case rule, no length limit beyond what storage needs. A name that needs
     quoting where it is used is quoted, in the way a session title already is.
 
+19. **The agent writes the prompt to fit the role it is starting, and the role's description
+    (req 9) is what it writes from.** The description is read for two jobs, not one: it is what
+    decides which role an unnamed request means (req 3), and it is what decides how much the
+    prompt has to spell out. A role the user described as fast, cheap or narrow is given an
+    explicit, ordered brief; a role described as deep or exploratory is given an open one and is
+    not handed a checklist that pre-decides the work. One prompt style for every role wastes
+    whichever role it does not fit.
+
+    Where a role carries no description, what it runs on — which the agent can already see
+    (req 12) — is the only hint there is, and is used the same way and no further.
+
+    **Neither signal moves the target.** Reading a description changes how the run is *asked*,
+    never *what it runs on*: it is not licence to override a parameter (req 10 stays the user's
+    relay) or to send the work to a different role because the agent judged it deserved
+    something else.
+
+    The user has to be told this too, where they write it: a description field labelled only
+    "what this role is for" reads as a note to self, and a note to self cannot be written *for*
+    by either job above.
+
 
 ## Scope
 
@@ -208,6 +228,32 @@ other agent settings already do.
 _None._
 
 ## Resolved questions
+
+- 2026-08-19 — **When the agent pitches a prompt for a role, which signal may it read — the
+  description only, or also what the role runs on?** **Chosen: the description first, and what
+  the role runs on only where there is no description.** Req 19 added in the same change.
+
+  The human asked for the description to reach the agent because it "may contain information
+  that would affect what prompt would be sent to the role", giving the example of a less powerful
+  model needing a more straightforward, more detailed prompt and a powerful one taking a
+  research-style brief. The description already reaches the agent (req 12, `shipit agent roles`);
+  what was missing was any statement that it should be *used* this way, so every role got the
+  same prompt.
+
+  The fork was whether the agent may also judge from the harness and model line the same listing
+  prints. Reading a model's name and inferring its capability is knowledge the agent has, but it
+  is unreliable for models it does not know, and making it a co-equal signal invites the agent
+  back into judging backends — the thing req 2 and the reviewer's distance guarantee deliberately
+  take away from it. Ranking them keeps the user's own words authoritative and still leaves an
+  undescribed role better served than a neutral prompt would leave it.
+
+- 2026-08-19 — **Should the role editor tell the user that the agent reads the description?**
+  **Chosen: yes.** The final paragraph of req 19.
+
+  The description had been presented purely as the user's own label ("Optional — what this role
+  is for"), with a placeholder to match ("The thorough one"). A user who does not know the agent
+  reads it has no reason to write anything the agent could act on, so the requirement would have
+  held server-side and produced nothing.
 
 - 2026-08-18 — **May a role's reasoning level be `Default`, as it can be in the composer?**
   **Chosen: yes.** Req 1 amended in the same change.

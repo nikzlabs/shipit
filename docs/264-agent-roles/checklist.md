@@ -235,3 +235,21 @@ see it: the rule is stated in one phase and violated by another phase's layer in
       newly-chosen harness does not declare dropped to that harness's first level and now drops to
       `Default`. `ReviewerPin` stays required — docs/261 req 5 derives its harness per review, so
       `Default` there would name no harness
+
+- [x] **A role's description is read for how to write, not only for which role to pick** (req 19).
+      The description has reached the agent since phase 3 (`shipit agent roles`), and nothing
+      anywhere said what to do with it — so every role got the same prompt, and a role the user
+      created *because* it runs a small fast model was handed the same open-ended brief as the
+      deep one
+
+      The rule is stated in the four places a prompt-writer actually reads: the listing's own
+      epilogue, all four harness system prompts, `shipit-docs/agent.md`, and — the other end of it
+      — the role editor's Description hint, which now names the reader instead of reading as a
+      note to self. Signals are **ranked**, not paired: the user's words first, the `runsOn` line
+      only where a role has no description
+
+      Every statement of the rule carries the clause that keeps it away from the target: write the
+      prompt to fit the role, never override a parameter or switch roles because the work seemed
+      to deserve something else. Without it, "this role runs a small model" reads as an argument
+      for `--model` — the invented override req 10 forbids, reached from the one field ShipIt just
+      told the agent to take seriously

@@ -3451,6 +3451,29 @@ describe("runShim — agent roles / params", () => {
     expect(out.stdout).toContain("quota_exhausted");
   });
 
+  /**
+   * Req 19 — the description is carried for two jobs, and the listing has to say
+   * the second one. The field shipped in this output from the start and every
+   * caller still wrote one prompt for every role, which is the evidence that
+   * *carrying* it is not the same as it being used.
+   *
+   * Asserted on the epilogue rather than on wording: what must be there is the
+   * instruction to write from the description, and the clause that stops "this
+   * role runs a small model" from being read as an argument for `--model`.
+   */
+  it("tells the caller to write the prompt from the description, without moving the target", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "roles"], {
+      "GET /agent-ops/agent/roles": {
+        status: 200,
+        body: { roles: [{ name: "deep-dive", description: "Slow and thorough" }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("Read the description");
+    expect(out.stdout).toMatch(/never override a parameter/i);
+  });
+
   it("prints the roles verbatim with --json", async () => {
     const { run } = makeRunner();
     const roles = [{ name: "reviewer" }];

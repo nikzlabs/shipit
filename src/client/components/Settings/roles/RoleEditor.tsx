@@ -217,12 +217,22 @@ export function RoleEditor({
             </Field>
           )}
 
-          <Field label="Description" hint="Optional — what this role is for.">
+          {/*
+            docs/264 req 19 — the hint names the READER, not just the field. The
+            description is the one thing the agent reads to decide which role an
+            unnamed request means and how much its prompt has to spell out, and a
+            user who thinks it is a label for themselves writes "The thorough
+            one" instead of something either job can be done from.
+          */}
+          <Field
+            label="Description"
+            hint="Optional — what this role is for. The agent reads it to pick this role and to pitch the prompts it sends here."
+          >
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="The thorough one"
+              placeholder="Deep research on a hard problem — takes an open brief"
               className={INPUT_CLASS}
               data-testid="role-editor-description"
             />

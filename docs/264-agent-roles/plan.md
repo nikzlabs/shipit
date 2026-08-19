@@ -519,6 +519,39 @@ five-parameter form attractive.
 The refusal (req 13) carries the role list, so an unknown role is self-correcting; an override
 that names something this install does not have is refused the same way, naming the parameter.
 
+## Writing for the role (req 19)
+
+The inventory above ships the description to the agent. **Shipping it is not the same as it being
+used, and the gap between the two was the whole of what req 19 found.** Every caller had the
+description in front of it and wrote one prompt for every role, because nothing anywhere said the
+field had a *second* job: it decides which role an unnamed request means (req 3), and it decides
+how much the prompt has to spell out.
+
+The rule has one shape and lives in four places, because a rule about how to write a prompt can
+only live in what the writer reads:
+
+- **The listing's epilogue** (`shipit-agent.ts`) — read at the moment the roles are in front of
+  the caller, which is the moment the choice and the pitch are both being made.
+- **The four harness system prompts** — always on, so a caller that never runs `agent roles`
+  (because the user named the role) still knows to read what it was given.
+- **`shipit-docs/agent.md`** — the reference the prompts point at, with the worked contrast.
+- **The role editor's hint** — the other end of the same rule. Presented purely as the user's own
+  label, the field attracts "The thorough one", which neither job can be done from. The hint now
+  names the reader, and the placeholder shows the shape that works.
+
+**Ranked signals, not two signals** (req 19's 2026-08-19 resolution). The description is the
+user's own words and is authoritative; the `runsOn` line is the fallback where a role has none.
+Making them co-equal would have the agent judging models by name — unreliable for a model it does
+not know, and a step back toward the backend-judging that req 2's ranked reviewer exists to take
+away from it.
+
+**What must not move is the target.** The description changes how the run is *asked*, never what
+it runs on, so the same sentence is stated everywhere the rule appears: write the prompt to fit
+the role, never override a parameter or reach for a different role because the work seemed to
+deserve something else. Without that clause, "this role runs a small model" reads as an argument
+for `--model` — which is exactly the invented override req 10 forbids, arrived at from the one
+field ShipIt just told the agent to take seriously.
+
 ## What the agent is told (req 15)
 
 ShipIt injects instructions into every session, and today they document a run that names every
