@@ -30,11 +30,12 @@ answers to Q1 and Q2 decide which of these items exist at all.
 
 ## Step 2 — the pnpm store: H2 (install path) and H3 (hardlink)
 
-- [ ] Correct the refuted claim in
-      `docs/198-dep-cache-content-keying-and-pnpm-store/plan.md:176-179` — pnpm
-      does **not** integrity-check on link. Do this regardless of which option
-      is chosen; a shipped doc asserting a guarantee the code does not provide
-      is how this work inherited the error in the first place.
+- [x] Correct the refuted claim in
+      `docs/198-dep-cache-content-keying-and-pnpm-store/plan.md` — pnpm does
+      **not** integrity-check on link. Done in this PR, as a dated correction
+      note on the "Known caveat" bullet, since a shipped doc asserting a
+      guarantee the code does not provide is how this work inherited the error
+      in the first place. Not gated on the open questions: it is a factual fix.
 - [ ] H2 (poisoned store content installed normally) has no upstream fix to lean
       on. Decide whether ShipIt verifies store contents itself, or closes the
       write via option B — pricing the verification against req 7 first.
