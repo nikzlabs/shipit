@@ -108,26 +108,61 @@ describe("server test environment is hermetic", () => {
    * build a config directly and never reach it. The container-side mount
    * TARGET is legitimately the literal, so the scan matches the assignment
    * only.
+   *
+   * **Scanned per SETUP FILE, not per directory.** The hazard is exactly "a
+   * test file that runs with `server-test-setup.ts` loaded", and
+   * `vitest.config.ts` loads it for TWO projects: `server` (`src/server/**`)
+   * and `tooling` (`scripts/**`). Walking only `src/server` — as this did when
+   * it was written beside the `server` project's other pins — left the second
+   * one unscanned, so a `scripts/**.test.ts` could reintroduce #2432's litter
+   * half with the guard green. There is no offender there today; the point is
+   * that the scan's reach should be decided by which files can do the damage,
+   * not by which directory the guard happens to live in.
    */
   it("no test passes the live credentials volume as a host path", () => {
-    const root = path.resolve(import.meta.dirname, "..");
+    const repoRoot = path.resolve(import.meta.dirname, "../../..");
+    // Listed rather than walked from the repo root: `docs/`, `.git/` and the
+    // Gradle trees hold no test Vitest runs, and walking them costs more than
+    // it can ever catch.
+    // Exactly the two roots, and no more: `src/client` runs under its own
+    // `test-setup.ts` and never loads `server-test-setup.ts`, so a file there
+    // cannot trip this guard and scanning it would only blur what the scan
+    // claims to cover.
+    const setupFileRoots = ["src/server", "scripts"];
+    const roots = setupFileRoots.map((rel) => path.join(repoRoot, rel));
     const offenders: string[] = [];
+    const scanned: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           if (entry.name !== "node_modules") walk(full);
         } else if (entry.name.endsWith(".test.ts")) {
+          const rel = path.relative(repoRoot, full);
+          scanned.push(rel);
           const text = fs.readFileSync(full, "utf-8");
           text.split("\n").forEach((line, i) => {
             if (/credentialsDir:\s*"\/credentials"/.test(line)) {
-              offenders.push(`${path.relative(root, full)}:${i + 1}`);
+              offenders.push(`${rel}:${i + 1}`);
             }
           });
         }
       }
     };
-    walk(root);
+    for (const root of roots) walk(root);
+
+    // Both roots must actually have been reached. With no offender anywhere,
+    // the assertion below passes whether the scan covers one root or both —
+    // the same CI-invisibility that let #2432 exist, one level up. So the
+    // reach is asserted directly rather than inferred from a green scan.
+    for (const rel of setupFileRoots) {
+      expect(
+        scanned.some((f) => f.startsWith(`${rel}${path.sep}`)),
+        `the scan reached no *.test.ts under ${rel}/ — it covers a project whose tests load `
+          + "server-test-setup.ts, so a live-credentials write there would go uncaught",
+      ).toBe(true);
+    }
+
     expect(
       offenders,
       "these tests would write fixture credential subtrees into the live /credentials volume — "
