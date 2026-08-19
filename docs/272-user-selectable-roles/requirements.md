@@ -39,10 +39,23 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
    Standing instructions describe what a session is for, and a session that is already under way
    is already for something.
 
+   **What locks is the choice of role, not the parameters it set.** Once the first turn has
+   started the user still changes the model and the reasoning level, exactly as in a session that
+   was never started on a role, and the harness is fixed, exactly as in a session that was never
+   started on a role. A session that began on a role must never end up with fewer controls than
+   one that did not: the role decided how the session starts, and it does not take the ordinary
+   controls away for the rest of the session's life.
+
 5. **A selected role replaces the controls it set. The composer shows the role name, and nothing
    else about what the session runs on.** The harness, the model and the reasoning level are what
    the role is *made of*; once the user has chosen the role, restating its three parts tells them
    nothing they did not just decide. The permission mode is not a role parameter and is unaffected.
+
+   This holds for as long as the role is still a decision. **Once the session has locked the role
+   (req 4) the controls come back on their own**, without being asked for: the reason to hide them
+   was that the user had just decided them, and that reason expires with the decision. From then on
+   the composer shows the role's name beside the parameters, and the name is the one thing on the
+   row the user can no longer change.
 
    The composer therefore carries **one** role affordance: the role's name when a role is selected,
    and a way to select one when none is. This sets aside docs/261's decision that the composer row
@@ -115,6 +128,13 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
     warned about or put back: changing a control is the whole of leaving a role, and selecting one
     again is the whole of returning.
 
+    **In a locked session (req 4) there is nothing to bring back** — the controls are already
+    there. The rest of this requirement is unchanged there: changing one of them is still the whole
+    of leaving the role, and the name still stops being shown, because the session is no longer
+    running what the role set. What does not follow is the return trip: no role can be selected
+    after the first turn, so leaving one there is a one-way move. That is the price of req 4, and
+    it is stated here so it is not discovered.
+
     **There is no separate way to clear a role**, and no "no role" entry in the list. Leaving a role
     means changing something about how the session runs; an action that only un-names it, while the
     session goes on running exactly as the role set it up to, states nothing a user would want to
@@ -156,6 +176,9 @@ Kept separate so that what the user asked for stays visible next to what was pro
   user replaced this: a selected role shows its **name alone**, its parameters stay reachable, and
   roles do not belong in the model list. The user then caught the agent giving the role name a
   click that no other control has (req 14). See the receipts below.
+- **Reported and directed by the user on 2026-08-19**: the second half of requirement 4, and the
+  locked case in requirements 5 and 15 — a locked role stops the user choosing another role, and
+  stops nothing else. See the receipt below.
 - **Inherited from docs/264 and docs/261, restated here because this feature must not break them**:
   requirements 7 and 8.
 - **Answered by the user on 2026-08-17**: requirements 9, 10, 11 and 12, and the wording of
@@ -173,6 +196,18 @@ Kept separate so that what the user asked for stays visible next to what was pro
   hint that others match. This is low stakes and does not block design; correct it if you disagree.
 
 ## Resolved questions
+
+- **2026-08-19 — Does the lock at the first turn take the parameters away too?** No, and it should
+  never have: "when the user started the session with the role, they cannot adjust the parameters
+  anymore — this does not make sense." As shipped, a locked role replaced the harness, model and
+  reasoning controls and offered no way back to them, so a session started on a role could not
+  change its model or its reasoning level for the rest of its life, while every session that was
+  **not** started on a role could. The role was a starting point that behaved like a cage.
+
+  The user was asked whether the lock should also loosen — whether a **different** role could be
+  selected after the first turn — and said no: "no switching roles, but changing the parameters
+  should be allowed", the harness excluded because it is pinned for every session alike. So req 4
+  stands as it was, and what changes is only what the lock reaches. → req 4, req 5, req 15.
 
 - **2026-08-17 — Does the reserved `reviewer` role appear in the list?** No: hide it. The user
   chose this over showing it resolved normally, and over showing it only once edited. → req 10.

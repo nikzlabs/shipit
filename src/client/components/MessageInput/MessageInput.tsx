@@ -274,7 +274,20 @@ export function MessageInput({
     if (!roleInForce || hasActiveSession) return;
     if (applyRoleSeeds(roleView)) noteSeedWrite((n) => n + 1);
   }, [roleInForce, hasActiveSession, roleView]);
-  const roleParamsRevealed = !roleInForce || revealedFor === roleInForce;
+  // req 4, second half — **the lock takes the CHOICE of role, and nothing else.**
+  //
+  // A locked role has no menu (a readout does not open), and "Adjust parameters…"
+  // lives inside that menu — so as first shipped, a session started on a role
+  // lost its model and reasoning controls at the first turn and never got them
+  // back, while an identical hand-configured session kept both. Nothing
+  // server-side was refusing them; the composer simply would not draw them.
+  //
+  // So the reveal is implied by the lock. The reveal's whole reason for existing
+  // is "you have just decided these three, so they are not restated" (req 5), and
+  // that reason expires at the first turn: the decision is behind the user, the
+  // harness is fixed for every session alike, and the other two are as changeable
+  // here as anywhere else in ShipIt.
+  const roleParamsRevealed = !roleInForce || roleLocked || revealedFor === roleInForce;
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);

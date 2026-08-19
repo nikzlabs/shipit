@@ -192,6 +192,27 @@ than today, not more (req 5).
    role's name. Clicking it opens the list of roles (req 14), like every other control in the row
    opens what it chooses between.
 
+**And a fourth, which is state 3 after the session's first turn: the role locks and the parameters
+come back.** `roleParamsRevealed` is true whenever the role is locked, so no one has to ask for
+them — the reveal exists to say "you have just decided these", and at the first turn that sentence
+stops being true while the controls stay useful. What the row then shows is the locked role pill,
+the locked harness readout, and a live model and reasoning picker: exactly the controls a session
+that never took a role has, plus the name.
+
+This is the shape reported as broken. A locked pill has no menu (below), and "Adjust parameters…"
+lives *inside* that menu — so a role-started session lost its model and reasoning controls at the
+first turn and never got them back, while an identical hand-configured session kept both. Nothing
+server-side was wrong: `set_model` and `set_reasoning` were reachable the whole time, and
+`leaveRoleOnParameterChange` clears the role when one of them moves whether the session is pinned or
+not. It was the composer refusing to draw them. The fix is that one condition, and both layouts read
+it from the same place — `ComposerSettingsMenu` takes `roleParamsRevealed` as a prop rather than
+recomputing it, which is why the narrow menu is fixed by the same line.
+
+**The lock still means what it says**: no role can be selected after the first turn (req 4). The
+server refuses `set_role` on `agentPinned` and that is unchanged — the pill stays a readout with no
+menu, and its tooltip now names what is still changeable rather than only what is not, because a
+lock with no such sentence is what made "I cannot adjust the parameters" the natural reading.
+
 **"Adjust parameters…" is a footer inside that list** (req 15), not a second control. Choosing it
 brings the three controls back beside the role name; the role stays in force until one of them
 actually moves, and moving one is the whole of leaving the role. There is no "no role" entry and no

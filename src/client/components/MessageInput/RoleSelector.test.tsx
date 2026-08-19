@@ -173,6 +173,17 @@ describe("RoleSelector (wide row)", () => {
       render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} locked />);
       expect(screen.queryByTestId("role-selector-trigger")).toBeNull();
     });
+
+    it("says what is still changeable, not only what is not", () => {
+      // A lock stating a prohibition alone was read as "this session's settings
+      // are frozen" — the reading the vanished parameters appeared to confirm.
+      render(
+        <RoleSelector roles={[DEEP_DIVE]} selectedRole="deep dive" onSelectRole={vi.fn()} locked />,
+      );
+      expect(screen.getByTestId("role-selector-trigger").getAttribute("title")).toContain(
+        "stay changeable",
+      );
+    });
   });
 
   it("offers the parameters from INSIDE the list, not as a second control (req 15)", async () => {
@@ -378,6 +389,83 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
   });
 });
 
+describe("a locked role keeps the parameters (docs/272 req 4)", () => {
+  /*
+    The reported bug, and it is the whole feature's shape in one row: a locked
+    role has no menu, "Adjust parameters…" lives inside that menu, so a session
+    started on a role lost its model and reasoning controls at the first turn and
+    never got them back — while an identical hand-configured session kept both.
+
+    Rendered through `MessageInput` rather than the pickers directly, because the
+    condition under test is the composer's own (`roleParamsRevealed`), and it is
+    the single place both layouts read.
+  */
+  beforeEach(() => {
+    useSessionStore.setState({
+      sessionId: SESSION_ID,
+      sessions: [
+        {
+          id: SESSION_ID,
+          name: "s",
+          agentId: "claude",
+          agentPinned: true,
+          model: "claude-opus-5",
+          serviceId: "anthropic",
+          billingMode: "sub",
+          roleName: "deep dive",
+        },
+      ] as never,
+    });
+    setRoles([DEEP_DIVE]);
+  });
+  afterEach(() => {
+    useSessionStore.setState({ sessionId: null, sessions: [] } as never);
+  });
+
+  function renderLocked() {
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession
+        sessionId={SESSION_ID}
+        sessionRoleName="deep dive"
+        roleLocked
+      />,
+    );
+  }
+
+  it("shows the model and reasoning controls with no reveal to ask for", () => {
+    renderLocked();
+    expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+    expect(screen.getByTestId("reasoning-trigger")).toBeInTheDocument();
+  });
+
+  it("keeps the harness a locked readout, exactly as in any other pinned session", () => {
+    // The one parameter the lock genuinely reaches — and it reaches it for every
+    // session alike, role or no role.
+    renderLocked();
+    expect(screen.getByTestId("harness-trigger").getAttribute("title")).toContain(
+      "fixed for this session",
+    );
+  });
+
+  it("still refuses to offer another role", async () => {
+    // req 4 is unchanged: what loosened is what the lock reaches, not the lock.
+    renderLocked();
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    expect(screen.queryByTestId("role-selector-menu")).toBeNull();
+    expect(screen.queryByTestId("role-adjust-parameters")).toBeNull();
+  });
+});
+
 describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   beforeEach(() => {
     useSessionStore.setState({
@@ -464,5 +552,22 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     await userEvent.click(screen.getByTestId("composer-settings-trigger"));
     const row = screen.getByTestId("composer-settings-row-role");
     expect(row).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("lists the parameters below the locked role, so the narrow layout is not a cage either", async () => {
+    // The same fix as the wide row, reaching here for free: this menu takes
+    // `roleParamsRevealed` as a prop rather than recomputing it, which is why one
+    // condition in `MessageInput` fixes both layouts.
+    setRoles([DEEP_DIVE]);
+    renderMenu({
+      onRoleChange: vi.fn(),
+      sessionRoleName: "deep dive",
+      roleLocked: true,
+      roleParamsRevealed: true,
+    });
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    expect(screen.getByTestId("composer-settings-row-role")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByTestId("composer-settings-row-model")).toBeInTheDocument();
+    expect(screen.getByTestId("composer-settings-row-reasoning")).toBeInTheDocument();
   });
 });
