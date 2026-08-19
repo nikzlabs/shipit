@@ -1,0 +1,180 @@
+---
+issue: planning#414
+title: Shared package cache integrity between sessions
+description: What must be true so that a session cannot use a shared package cache to place or change code that another session runs.
+---
+
+# Requirements — shared package cache integrity
+
+Scoping doc for planning#414. The design lives in [plan.md](./plan.md) and is
+**not settled**: every open question below has to be answered first.
+
+## Context these requirements are written against
+
+Sessions of the same repo share three caches so installs are fast:
+
+| Surface | Key | Container path |
+|---|---|---|
+| Dependency download cache (docs/075) | per **repo** | `/dep-cache` |
+| pnpm content-addressable store (docs/198) | per **runtime** — spans repos | `/workspace/.pnpm-store` |
+| Overlay dependency base (docs/183) | per (repo, runtime, dep-dir) | the dep dir's lowerdir |
+
+All three are group-writable by every session on purpose:
+`shareOne` (`src/server/orchestrator/session-worker-uid.ts:381`) sets the shared
+gid and calls `addGroupWrite` (line 395), with setgid on directories. That is
+`docs/270-per-session-worker-uids` req 9 being honoured — so per-session uids
+did **not** close this, and were never meant to.
+
+## Requirements
+
+1. A session MUST NOT be able to cause code of its choosing to run in another
+   session by writing to a shared package cache. *(This is the whole point of
+   the issue, and the cache-shaped analogue of
+   `docs/270-per-session-worker-uids` req 1, which covers workspaces.)*
+
+2. Sessions MUST keep sharing the caches they share today. A session MUST NOT
+   fail an install, or silently fall back to a private copy, because a different
+   session wrote the shared cache first. *(Inherited verbatim from
+   `docs/270-per-session-worker-uids` req 9 — human-approved there, so it binds
+   here. It is what rules out "make the caches per-session".)*
+
+3. When content in a shared cache cannot be shown to be the content that was
+   asked for, the install MUST fail, or obtain a trustworthy copy. It MUST NOT
+   install the untrusted content. Failing closed is acceptable; installing
+   anyway is not.
+
+4. The protection MUST cover dependencies a session has **already installed**,
+   not only dependencies it installs after the poisoning. *(Observable
+   difference, and not a restatement of req 1: a pnpm store file is hardlinked
+   into `node_modules`, so changing the store file changes the victim's
+   installed file with no second install taking place. Verified — see
+   Provenance.)*
+
+5. Requirement 1 MUST hold for a repo that has no lockfile, or whose lockfile
+   does not pin an integrity hash for every dependency. *(Supplied — see
+   Provenance and Q1. Today the protection that exists is exactly the protection
+   a lockfile provides, so a repo without one has none.)*
+
+6. Requirement 1 MUST hold against writes to cached **resolution data** (what
+   version and what bytes a dependency name resolves to), not only against
+   writes to cached package content. *(Supplied — see Provenance and Q1. Stated
+   separately because the content half is already safe and the resolution half
+   is the demonstrated hole; a requirement naming only "the cache" would be read
+   as satisfied by the half that already works.)*
+
+7. Whatever ShipIt does MUST NOT make a warm install materially slower than it
+   is today. *(The caches exist for install speed — docs/075, docs/198. A fix
+   that costs the speed the caches were built for fails the feature it is
+   protecting.)*
+
+8. ShipIt MUST NOT let a project's own git hooks fire on the orchestrator-side
+   auto-commit path (`docs/266-orchestrator-git-trust-boundary` E4) while a
+   session can still place executable content in another session's dependency
+   directory. *(Supplied — see Provenance and Q5. This is a sequencing
+   constraint between two open items, not a requirement to build E4 or to change
+   it.)*
+
+## Open questions
+
+None of these may be answered by inference. Each blocks implementation; none
+blocks further design.
+
+**Q1 — Does the fix have to hold without a lockfile?**
+Measured: with a lockfile that pins `integrity`, npm already fails closed on a
+poisoned cache entry. Without one, a poisoned cache gives arbitrary code
+execution at install time (Provenance, test 2). So the cheapest real answer to
+the npm half is "require lockfile-pinned installs", which is a **product**
+decision about what repos ShipIt supports, not a security mechanism.
+
+- **(a) Yes — it must hold with no lockfile.** Costs a ShipIt-owned mechanism,
+  because no package manager protects this case for us.
+- **(b) No — pin the requirement to lockfile-pinned installs**, and make a repo
+  without one either install without the shared cache or warn. Cheap, and
+  matches what CI everywhere already assumes. **← recommended**, because the
+  protection is then something npm/pnpm maintain rather than something ShipIt
+  reimplements, and reqs 5 and 6 are largely satisfied for free.
+- **(c) No, and do nothing** — accept it, document it. Not recommended: the
+  exploit is a working install-time RCE, not a theoretical one.
+
+**Q2 — Must the live hardlink channel be closed (req 4), or only the install path?**
+This is the question the whole design turns on. Measured: writing to a shared
+pnpm store file instantly changes the contents of an already-installed
+`node_modules` file in another session, with no install and no verification
+anywhere (Provenance, test 3). No integrity-check-on-install design can close
+this — there is no install event to hook.
+
+- **(a) Yes, close it.** Only achievable by making the store not writable by
+  sessions (plan.md option B). Expensive, and strains req 2.
+- **(b) No — install path only**, accept that a session sharing a store with a
+  malicious session can have its already-linked files rewritten. Cheap, and
+  leaves the largest hole open.
+- **(c) Close it only across repos**, i.e. accept it between sessions of the
+  same repo. **← recommended** as the honest middle, but only if Q3 is answered
+  the same way; see plan.md for why this is a reduction and not a fix.
+
+**Q3 — Is per-repo blast radius the target, or per-session?**
+The issue calls narrowing the pnpm store key the cheapest partial step. Priced
+in plan.md option C. Note before answering: `/dep-cache` is **already** per-repo
+and is still fully exploitable (Provenance, test 2), so per-repo keying is
+demonstrably not sufficient on its own.
+
+- **(a) Per-repo is the target** — sessions of one repo may affect each other.
+  **← recommended** as the first shipped step, on the explicit understanding
+  that it is a blast-radius reduction. Several sessions on one repo is ShipIt's
+  normal workflow, so this leaves the common case open.
+- **(b) Per-session is the target** — cross-session must be closed even within a
+  repo. Rules out C as sufficient and forces B.
+
+**Q4 — If fully meeting req 1 turns out to require giving up sharing, does
+`docs/270-per-session-worker-uids` req 9 bend?**
+Req 9 is human-approved, so this is not a decision this work may take. Asking it
+explicitly because option B may end up shaped as "shared for reads, not shared
+for writes", which is a partial answer to req 9 depending on how it is read.
+
+- **(a) No — req 9 is firm.** Sharing survives; the fix works around it.
+  **← recommended.**
+- **(b) It bends for the pnpm store only**, which spans repos today and is the
+  surface with the worst channel.
+- **(c) Reopen req 9.** Most expensive; re-prices docs/198 entirely.
+
+**Q5 — Accept the E4 sequencing constraint (req 8)?**
+`docs/266-orchestrator-git-trust-boundary` E4 is open
+(`docs/266-orchestrator-git-trust-boundary/checklist.md:110`). Real `pre-commit`
+hooks run binaries out of `node_modules/.bin`, and those are the files this
+issue lets another session control — so E4 would turn "a poisoned dependency
+sits on disk" into "a poisoned dependency runs on a schedule ShipIt chose". It
+does not breach docs/266 req 11: the hook script is the session's own and runs
+as the session's uid; what changes is what the script *invokes*.
+
+- **(a) Accept — E4 waits for this.** **← recommended.**
+- **(b) E4 proceeds, with `node_modules/.bin` kept off the hook's PATH.**
+  Plausible but unverified by this work, and husky/lint-staged rely on that PATH.
+- **(c) E4 proceeds unchanged.** Not recommended.
+
+## Provenance
+
+Requirements 1–4 and 7 restate the problem or an already-approved requirement.
+Requirements 5, 6 and 8 were **supplied by the agent** and are the reason Q1 and
+Q5 exist — they are marked so a reviewer can see what a human did not say.
+
+Requirements 4, 5 and 6 exist because of three tests run against this
+container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
+
+1. **npm content cache is already safe.** Overwriting a cached tarball under
+   `_cacache/content-v2` is detected (`seems to be corrupted`), the entry is
+   discarded, and an offline install fails closed. The content path is
+   self-verifying because the path *is* the hash.
+2. **npm resolution cache is not.** Rewriting the cached packument's
+   `dist.integrity` to point at attacker content placed at its own correct hash
+   — plus `hasInstallScript: true` — installs the attacker's package and **runs
+   its `postinstall`**, offline, with no warning. This is the demonstrated RCE,
+   and `/dep-cache` is already per-repo, which is why req 6 is separate from req 1.
+3. **pnpm store files are hardlinked into `node_modules`** (link count 2,
+   confirmed by inode). Writing to the store file changed the already-installed
+   victim file immediately, and the poisoned code then executed — no reinstall.
+   A *fresh* `pnpm install` does detect it and fails closed offline, so pnpm's
+   install-path verification works; req 4 is about the path that has no install.
+
+## Resolved questions
+
+None yet.
