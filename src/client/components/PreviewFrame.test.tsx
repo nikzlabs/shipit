@@ -802,6 +802,66 @@ describe("PreviewFrame", () => {
     expect(active).not.toHaveClass("hidden");
   });
 
+  it("stops the active preview rendering when its pane is not on screen", async () => {
+    // nikzlabs/shipit#2418, second site. The pane is kept mounted behind the
+    // other right-panel tabs (and behind the mobile Chat tab) so returning to it
+    // is instant — but until this prop existed the preview kept a WebGL canvas
+    // drawing behind the Files tree, because the ancestor that hides it uses
+    // `visibility: hidden`, which does not stop rendering.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = await screen.findByTitle("Live Preview");
+    expect(iframe).not.toHaveClass("hidden");
+
+    rerender(<PreviewFrame preview={preview} sessionId="s1" paneVisible={false} {...defaultProps} />);
+
+    expect(await screen.findByTitle("Live Preview")).toHaveClass("hidden");
+  });
+
+  it("posts visible:false when its pane leaves the screen, and visible:true on return", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    postMessage.mockClear();
+
+    rerender(<PreviewFrame preview={preview} sessionId="s1" paneVisible={false} {...defaultProps} />);
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith(
+        { source: "shipit-preview", type: "visibility", visible: false },
+        "http://localhost:5173",
+      );
+    });
+
+    postMessage.mockClear();
+    rerender(<PreviewFrame preview={preview} sessionId="s1" paneVisible {...defaultProps} />);
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith(
+        { source: "shipit-preview", type: "visibility", visible: true },
+        "http://localhost:5173",
+      );
+    });
+  });
+
+  it("answers the SDK handshake with visible:false while its pane is off screen", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" paneVisible={false} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    postMessage.mockClear();
+
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "ready" },
+      source: iframe.contentWindow,
+      origin: "http://localhost:5173",
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith(
+      { source: "shipit-preview", type: "visibility", visible: false },
+      "http://localhost:5173",
+    );
+  });
+
   it("selector label matches selectedPort", () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);

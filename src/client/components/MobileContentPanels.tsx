@@ -1,5 +1,21 @@
 import type { ReactNode } from "react";
 
+/**
+ * Which of the two mobile content trees is in front.
+ *
+ * Exported because `App` needs the same answer to tell the preview whether it is
+ * on screen. Two copies of this rule would drift, and the copy that drifts
+ * silently is the one that stops a hidden preview being told it is hidden —
+ * which is how a background WebGL canvas keeps rendering (nikzlabs/shipit#2418).
+ */
+export function mobileChatInFront(state: {
+  showHomeScreen: boolean;
+  showNewSessionView: boolean;
+  activePanel: "chat" | "preview";
+}): boolean {
+  return (state.showHomeScreen && !state.showNewSessionView) || state.activePanel === "chat";
+}
+
 interface MobileContentPanelsProps {
   showHomeScreen: boolean;
   showNewSessionView: boolean;
@@ -20,7 +36,7 @@ export function MobileContentPanels({
   chatPanel,
   rightPanel,
 }: MobileContentPanelsProps) {
-  const showChat = (showHomeScreen && !showNewSessionView) || activePanel === "chat";
+  const showChat = mobileChatInFront({ showHomeScreen, showNewSessionView, activePanel });
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
