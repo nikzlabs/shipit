@@ -228,9 +228,32 @@ describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing r
       }
     });
 
-    it("never creates `.claude.json`, which is a FILE the CLI parses", () => {
-      // An empty directory at that path would be worse than the dangling link:
-      // the CLI would read it as its user config and fail on every turn.
+    it("never treats a FILE-shaped declared path as a directory, for any agent", () => {
+      // An empty directory where the CLI expects a file is worse than the
+      // dangling link this fixes: the CLI would parse a directory as its user
+      // config and fail every turn. `.claude.json` is the only such path today,
+      // and asserting that one name would pin nothing for the NEXT one — the
+      // deny-list is exactly the kind of table a later edit forgets.
+      //
+      // So the check is mechanical: a declared path whose final segment carries
+      // an extension (a dot after the leading dot that makes it hidden) is
+      // file-shaped, and must have been excluded. `.claude` and `.grok` are
+      // hidden directories, not extensions; `.local/share/opencode` has neither.
+      const looksLikeAFile = (rel: string): boolean => {
+        const leaf = rel.split("/").pop() ?? rel;
+        return leaf.replace(/^\./, "").includes(".");
+      };
+      for (const agentId of Object.keys(AGENT_CREDENTIAL_PATHS) as AgentId[]) {
+        for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
+          if (!looksLikeAFile(rel)) continue;
+          expect(
+            agentCredentialDirs(agentId),
+            `'${rel}' is file-shaped but would be created as a directory — add it to AGENT_CREDENTIAL_FILES`,
+          ).not.toContain(rel);
+        }
+      }
+      // And the known one, named, so the assertion above cannot go vacuous.
+      expect(AGENT_CREDENTIAL_PATHS.claude).toContain(".claude.json");
       expect(agentCredentialDirs("claude")).not.toContain(".claude.json");
       provisionProviderAccountCredentials(root, SESSION, "claude", "acct_a");
       const claudeJson = path.join(sessionDir(), ".claude.json");

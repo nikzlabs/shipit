@@ -389,6 +389,12 @@ function provisionAgentCredentialsFromRoot(
   // Per path rather than around the loop: one unwritable entry must not cost the
   // others, and it must never skip the chown below — the whole subtree has just
   // been rewritten and the container's boot-time chown has long since run.
+  //
+  // **This loop MUST stay above `chownSessionCredentialsTree`.** It creates the
+  // directories as the orchestrator (root), so a chown that ran first would
+  // leave them root-owned inside a subtree sealed 0700 to the session's uid —
+  // unreadable to the very CLI they exist for, and the failure would look
+  // exactly like the dangling link this replaces.
   for (const rel of agentCredentialDirs(agentId)) {
     try {
       fs.mkdirSync(path.join(dir, rel), { recursive: true });

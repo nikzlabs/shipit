@@ -125,6 +125,40 @@ describe("every image installs the CLIs through the shared script", () => {
     expect(instructions(dockerfile)).toMatch(/^ARG SHIPIT_HARNESSES=$/m);
   });
 
+  it.each(CLI_IMAGES)("%s puts the npm .bin dir AHEAD of /usr/local/bin on PATH (planning#444)", (dockerfile) => {
+    // Not an aspiration — the PREMISE the installer's grok block rests on, pinned
+    // so it cannot drift silently. Because `.bin` wins a bare-name lookup, a
+    // `.bin/<harness>` entry that is a DIFFERENT PROGRAM from its /usr/local/bin
+    // link is the one that runs. That is how grok spawned the npm launcher (a
+    // ~157MB bootstrap into $GROK_HOME, per turn) despite /usr/local/bin/grok
+    // pointing straight at the real binary.
+    //
+    // If this assertion ever fails, the ordering was changed: re-check whether
+    // the grok shim deletion is still the right remedy, rather than deleting
+    // this test. The other harnesses' links point INTO `.bin`, so the prepend is
+    // load-bearing for them and this is not a suggestion to reorder it.
+    // Composed rather than pattern-matched on one line. The session-worker
+    // images set PATH FIVE times (npm-global, the agent CLIs, Java, the Android
+    // SDK, Gradle), each prepending through `${PATH}`, so an assertion about a
+    // single line proves nothing about the order the container actually gets —
+    // it would just happen to read whichever line came first in the file.
+    // Replay them in order against a base that contains /usr/local/bin, exactly
+    // as Docker would, and ask the question that matters about the RESULT.
+    const lines = [...instructions(dockerfile).matchAll(/^ENV PATH=(?:"([^"]*)"|(\S+))$/gm)]
+      .map((m) => m[1] ?? m[2]!);
+    expect(lines.length, `${dockerfile} sets no ENV PATH`).toBeGreaterThan(0);
+    const composed = lines.reduce(
+      // eslint-disable-next-line no-template-curly-in-string -- Dockerfile syntax being parsed, not a JS template
+      (acc, line) => line.replaceAll("${PATH}", acc),
+      "/usr/local/bin:/usr/bin:/bin",
+    );
+    const npmBin = composed.split(":").indexOf("/opt/agent-cli/node_modules/.bin");
+    const usrLocal = composed.split(":").indexOf("/usr/local/bin");
+    expect(npmBin, `${dockerfile} never puts the agent-cli .bin dir on PATH`).toBeGreaterThanOrEqual(0);
+    expect(usrLocal).toBeGreaterThanOrEqual(0);
+    expect(npmBin).toBeLessThan(usrLocal);
+  });
+
   it.each(CLI_IMAGES)("%s runs install-agent-clis rather than its own npm ci", (dockerfile) => {
     const src = instructions(dockerfile);
     expect(src).toContain("COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis");
