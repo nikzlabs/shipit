@@ -829,6 +829,18 @@ describe("AuthManager / one terminal outcome per flow", () => {
     expect(seen.failed).toEqual([]);
   });
 
+  it("a cancelled flow's PTY exit reports nothing", () => {
+    const mgr = new AuthManager();
+    const seen = trackScoped(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-cancelled", credentialDir: tmp });
+
+    mgr.cancel(); // the user gave up; the scope is released here
+    for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
+
+    expect(seen.failed).toEqual([]);
+    expect(seen.complete).toEqual([]);
+  });
+
   it("a superseded flow's PTY exit does not consume the new flow's terminal event", () => {
     const mgr = new AuthManager();
     const seen = trackScoped(mgr);

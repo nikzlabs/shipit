@@ -950,8 +950,19 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     }
   }
 
-  /** Kill the auth process if running. */
+  /**
+   * Kill the auth process if running.
+   *
+   * Also claims the flow's terminal outcome, which is what makes a torn-down
+   * flow stay silent. Every teardown reaches here — `cancel()`, `signOut()`,
+   * `startOAuthFlow()`'s stale-PTY sweep, and the poll's own success path —
+   * and `onExit` fires *asynchronously*, so without the claim the dead PTY
+   * still reported an outcome for a flow nobody is watching, with the account
+   * scope already cleared. The poll's success path claims before calling here,
+   * so this never takes the claim away from a real completion.
+   */
   kill(): void {
+    this.claimTerminalOutcome();
     if (this.wizardTimer) {
       clearTimeout(this.wizardTimer);
       this.wizardTimer = null;
