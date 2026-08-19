@@ -198,6 +198,36 @@ describe("unarchiveSession drops the previous pull request", () => {
     expect(after).toMatchObject({ clause: "not-merged" });
   });
 
+  it("clears the snapshot of a session archived while its PR was still open", async () => {
+    // The clear is UNCONDITIONAL, which has to be right for a session that never
+    // merged too: the new branch is not the branch that PR was opened from, so
+    // its snapshot no longer describes this session either.
+    const id = "sess-open";
+    const workspaceDir = path.join(tmpDir, "workspace-open");
+    sessionManager.track(id, "Open PR, then archived", workspaceDir);
+    sessionManager.setRemoteUrl(id, remoteUrl);
+    sessionManager.setBranch(id, "shipit/old");
+    sessionManager.setPrStatus(id, {
+      sessionId: id, prNumber: 2484, prUrl: "https://github.com/o/r/pull/2484",
+      prTitle: "In flight", prBody: "", prState: "open",
+      baseBranch: "main", headBranch: "shipit/old",
+      insertions: 1, deletions: 0,
+      checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+      mergeable: "unknown", reviewDecision: "none", autoMergeEnabled: false,
+    });
+    dbManager.db.prepare("UPDATE sessions SET user_archived = 1 WHERE id = ?").run(id);
+
+    const { session } = await unarchiveSession(
+      sessionManager, createRepoGit, () => cacheDir, githubAuthManager, repoStore, id,
+      { clearPersisted: (s) => sessionManager.setPrStatus(s, null) },
+    );
+
+    expect(sessionManager.getPrStatus(id)).toBeNull();
+    // Never merged, nothing to un-merge — the gate is quiet either way.
+    expect(await computeResetBlocker(session, null, {} as unknown as GitManager))
+      .toMatchObject({ clause: "not-merged" });
+  });
+
   it("clears a breadcrumb from a session re-armed before it was archived", async () => {
     const id = "sess-rearmed";
     const workspaceDir = path.join(tmpDir, "workspace-rearmed");
