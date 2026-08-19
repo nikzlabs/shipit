@@ -604,6 +604,30 @@ export function buildEnv(
     const gid = identity?.gid ?? procEnv.SHIPIT_SESSION_WORKER_UID;
     env.push(`SHIPIT_SESSION_WORKER_UID=${uid}`);
     env.push(`SHIPIT_SESSION_WORKER_GID=${gid}`);
+    // planning#415 — forward the resolved `agent.dep-dirs` (colon-separated,
+    // the PATH convention) so the entrypoint's workspace chown can PRUNE them
+    // exactly like this side's worktree walk does
+    // (`chownWorktreeToSessionWorker`'s `excludeRelDirs`). The entrypoint has
+    // no other way to learn the list: shipit.yaml lives in the workspace, but
+    // the entrypoint is POSIX sh and the config is resolved — validated,
+    // defaulted — here. Without the prune, the entrypoint's walk chowns a dep
+    // dir mounted as a docs/183 overlay entry-by-entry, and `chown` sets
+    // ATTR_UID even when the value does not change, so overlayfs answers with
+    // a copy-up of each shared-base file into the session's private upper
+    // layer. Forwarded only alongside the uid because the entrypoint reads it
+    // solely on the non-root path; an explicitly empty resolved list
+    // (`agent.dep-dirs: []`) forwards nothing, which the entrypoint reads as
+    // "no dep dirs" — the same prune set as an orchestrator that predates
+    // this change.
+    let depDirs: string[];
+    try {
+      depDirs = resolveShipitConfig(config.workspaceDir).agent.depDirs;
+    } catch {
+      depDirs = [...DEFAULT_DEP_DIRS];
+    }
+    if (depDirs.length > 0) {
+      env.push(`SHIPIT_DEP_DIRS=${depDirs.join(":")}`);
+    }
   }
 
   // docs/183 — forward the session-worker image id so the worker's
