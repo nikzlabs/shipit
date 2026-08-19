@@ -192,8 +192,13 @@ export function RoleSelector({
   onAdjustParameters?: (() => void) | undefined;
   disabled?: boolean;
   /**
-   * The session has taken its first turn, so no role applies any more (req 4).
-   * Rendered as the same lock the pinned harness uses — a caret on a control
+   * The session has taken its first turn, so no role can be CHOSEN any more
+   * (req 4) — not "no role applies": the role in force keeps its name, keeps
+   * setting what the session runs on, and keeps offering its parameters through
+   * `onAdjustParameters`.
+   *
+   * Rendered as the same lock the pinned harness uses. The caret beside it is
+   * drawn only while there is something to open, because a caret on a control
    * that will never open is a lie the user has to click to discover.
    */
   locked?: boolean;
@@ -218,6 +223,12 @@ export function RoleSelector({
     `DropdownMenuTrigger` still opens its menu. A locked control that must not
     open therefore cannot express it as a state on the trigger — the menu has to
     be ABSENT, which is what the second branch below does.
+
+    The same mechanism means `disabled` (a turn running) does not stop THIS
+    branch opening either, and that is left alone: what is behind it changes
+    nothing, since revealing the parameters is a look rather than a setting, and
+    the pickers it reveals are themselves inert until the turn ends. The unlocked
+    trigger below has behaved this way since it shipped, so the two agree.
 
     With no role in force there is nothing to read out either — the mark's whole
     job is to offer the list (req 16) — so the control goes rather than sitting

@@ -2237,12 +2237,13 @@ export default function App() {
           sessionReasoning={currentSession?.reasoningEffort}
           {...(currentSession?.roleName ? { sessionRoleName: currentSession.roleName } : {})}
           onRoleChange={handleRoleChange}
-          // docs/272 req 4 — a role applies until the session's first turn and
-          // not after. `agentPinned` IS that moment: it is set when the first
-          // turn provisions per-agent credentials, which is the same fact that
-          // makes the harness irreversible. Server-side `set_role` refuses on
-          // it too; this only stops the user reaching for a control that would
-          // be refused.
+          // docs/272 req 4 — a role can be CHOSEN until the session's first turn
+          // and not after. What the role set goes on applying for the session's
+          // whole life, and stays adjustable (req 4, second half): this locks the
+          // choice alone. `agentPinned` IS that moment — set when the first turn
+          // provisions per-agent credentials, the same fact that makes the
+          // harness irreversible. Server-side `set_role` refuses on it too; this
+          // only stops the user reaching for a control that would be refused.
           roleLocked={!!currentSession?.agentPinned}
           modelInfo={modelInfo}
           contextTokens={contextTokens}

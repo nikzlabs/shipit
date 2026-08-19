@@ -285,7 +285,12 @@ export function ComposerSettingsMenu({
    * server answer to follow) stops naming the role.
    */
   onLeaveRole?: () => void;
-  /** docs/272 req 4 — the first turn has run, so no role applies any more. */
+  /**
+   * docs/272 req 4 — the first turn has run, so no role can be CHOSEN any more.
+   * Not "no role applies": the Role row still names the role in force, and still
+   * opens onto the parameters it set until those have been asked for
+   * (`roleRowOpens`).
+   */
   roleLocked?: boolean;
 }) {
   const [panel, setPanel] = useState<Panel>("root");
