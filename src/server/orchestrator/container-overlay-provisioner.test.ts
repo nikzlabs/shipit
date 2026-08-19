@@ -11,7 +11,7 @@
  * comes from what the agent container was PROVISIONED with, and the live
  * workspace is consulted only when there is no container record to read.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -175,7 +175,6 @@ describe("resolveSiblingOverlayDepDirs (#2426)", () => {
  * `sweepStaleBaseGenerations` off the lowerdir in that window.
  */
 describe("prepareOverlaySpecs base-generation claims (planning#440)", () => {
-  beforeEach(() => { clearOverlayBaseClaims(); });
   afterEach(() => { clearOverlayBaseClaims(); });
 
   /** A state dir whose pointer for `node_modules` sits at `generation`. */

@@ -42,6 +42,13 @@
  *  - **A create that succeeds** — `docker ps` takes over long before the claim
  *    lapses, so the overlap is deliberate, not slack to be trimmed.
  *
+ * That second point is the layering, and it is worth stating plainly because a
+ * warm standby makes it visible: a claim is the FIRST line, covering only the
+ * interval in which nothing observable exists, and `docker ps` is the standing
+ * guard for the whole life of the container after that. A standby that sits
+ * unclaimed for hours is not unprotected — it is running, which is the stronger
+ * signal. Nothing here is ever the sole protection for a container that exists.
+ *
  * ## Fail-closed
  *
  * The claim set is **strictly additive**: the sweep unions it into its live set
@@ -82,6 +89,12 @@ export function claimOverlayBaseGeneration(scopeHash: string, generation: number
 /**
  * Unexpired claims as `<hash>/g<N>` keys, pruning as it goes so the map cannot
  * grow with the process.
+ *
+ * Pruning only on read is deliberate and sound here: the sole reader is the
+ * reclaim pass, which fires at startup, on every session activation, and on an
+ * hourly backstop — so between reads the map is bounded by the concurrent
+ * in-flight creates of that interval, which is bounded by the host's session
+ * count. There is no arrival rate that outruns it.
  */
 export function liveOverlayBaseClaims(): string[] {
   const now = Date.now();
