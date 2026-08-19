@@ -287,6 +287,12 @@ step belongs in the service `command:` instead.
   list opts out on purpose (`deps-hash.ts`), so the setup notice stays quiet —
   the choice was made deliberately, which is the thing the notice exists to ask
   for.
+- **An untrusted remote**: nothing is reported until the repo is trusted. The
+  docs/178 gate returns before the detection, so the panel can show a
+  non-keyable `agent.install` (read live from `shipit.yaml`) with no
+  accompanying row. Left as-is deliberately: the gate's whole point is that
+  nothing repo-declared is acted on first, and the session is unusable until
+  trust is granted anyway.
 - **A recognized but input-free install** (`uv venv`, `python3 -m venv`): the
   setup notice fires. The commands are recognized, but the union of their inputs
   is empty, so the deps hash is `null` and both halves are off exactly as for an

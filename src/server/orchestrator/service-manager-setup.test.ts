@@ -602,6 +602,30 @@ describe("content-key reporting (install-content-key.ts)", () => {
     runner.dispose({ force: true });
   });
 
+  // The other tests here drive `applyShipitConfigChange`. This one drives the
+  // INITIAL setup, which is where the spec puts the detection: the two paths
+  // are separate call sites, so an early return added to one would otherwise
+  // diverge silently from the other.
+  it("detects at first setup, not only on a later config change", () => {
+    const clone = makeClone();
+    fs.writeFileSync(
+      path.join(clone, "shipit.yaml"),
+      "agent:\n  install:\n    - npm ci\n    - npm run build\n",
+    );
+    const runner = makeContainerRunner(clone);
+    // The install itself needs a worker; the detection sits beside it and does not.
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+    const deps = makeDeps("");
+    deps.sessionManager = {
+      get: () => ({ workspaceDir: clone, remoteUrl: undefined }),
+    } as unknown as SessionManager;
+
+    setupServiceManager(runner, deps);
+
+    expect(installContentKeyDiagnostic(clone)?.commands).toEqual(["npm ci", "npm run build"]);
+    runner.dispose({ force: true });
+  });
+
   it("says nothing for a pure dependency install", () => {
     const clone = makeClone();
     fs.writeFileSync(
