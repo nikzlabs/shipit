@@ -30,7 +30,12 @@ import {
 import { modelRowsFor } from "../../utils/model-rows.js";
 import { useReasoningPickerState } from "../ReasoningSelector.js";
 import { formatModelName } from "../../utils/format-model.js";
-import { ROLE_PILL_CLASS, roleUnavailableDetail, useRolePickerState } from "./RoleSelector.js";
+import {
+  ROLE_LOCKED_REASON,
+  ROLE_PILL_CLASS,
+  roleUnavailableDetail,
+  useRolePickerState,
+} from "./RoleSelector.js";
 import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
@@ -289,8 +294,15 @@ export function ComposerSettingsMenu({
   // still in force keeps its row even if the list has since emptied, or the row
   // naming the session would vanish while the session still runs as it.
   const showRole = !!onRoleChange && (hasRoles || !!sessionRoleName);
-  // req 5 — the three rows the role replaced, folded away until asked for.
+  // req 5 — the three rows the role replaced, folded away until asked for. The
+  // lock is deliberately not in this: it takes the choice of role, not the route
+  // to what the role set (req 4), and it does not put the rows back unasked.
   const showParams = !sessionRoleName || roleParamsRevealed;
+  // …which is why the Role row still opens once locked. What is behind it there
+  // is "Adjust parameters…" and no roles; once those have been asked for there is
+  // nothing left, and the row goes inert rather than opening onto an empty panel.
+  const roleRowOpens =
+    !pickersLocked && (!roleLocked || (!!sessionRoleName && !roleParamsRevealed));
 
   const harness = useHarnessPickerState({ agents, activeAgentId, hasActiveSession, seedFromHistory });
   const model = useModelPickerState({
@@ -429,7 +441,7 @@ export function ComposerSettingsMenu({
                 icon={<BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />}
                 label="Role"
                 value={sessionRoleName ?? "None"}
-                onSelect={roleLocked || pickersLocked ? undefined : () => setPanel("role")}
+                onSelect={roleRowOpens ? () => setPanel("role") : undefined}
                 trailing={
                   roleLocked ? (
                     <LockIcon
@@ -495,7 +507,19 @@ export function ComposerSettingsMenu({
           <>
             <PanelHeader title="Role" onBack={() => setPanel("root")} />
             <DropdownMenuSeparator />
-            {roles.map((role) => {
+            {/* req 4 — a locked panel lists no roles. The server refuses
+                `set_role` on a pinned session, so rows here would all be
+                unselectable; the one line says why, and "Adjust parameters…"
+                below it is what the lock does NOT take away. */}
+            {roleLocked && (
+              <p
+                className="px-3 py-2 text-xs text-(--color-text-tertiary)"
+                data-testid="composer-settings-role-locked"
+              >
+                {ROLE_LOCKED_REASON}
+              </p>
+            )}
+            {!roleLocked && roles.map((role) => {
               const unavailable = roleUnavailableDetail(role);
               return (
                 <ChoiceRow
