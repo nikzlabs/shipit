@@ -151,15 +151,20 @@ describe("ensurePluginRuntimeOverlay", () => {
     const notFound = (): never => {
       throw Object.assign(new Error("no such volume"), { statusCode: 404 });
     };
+    // `createOverlayVolume` re-inspects after creating and throws unless the opts
+    // and labels come back as the ones it asked for (the 2026-08-19 ops finding),
+    // so the double has to remember them.
+    const opts = new Map<string, { Options?: Record<string, string>; Labels?: Record<string, string> }>();
     const docker = {
-      createVolume: async (spec: { Name: string }) => {
+      createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string>; Labels?: Record<string, string> }) => {
         creates.push(spec.Name);
         live.add(spec.Name);
+        opts.set(spec.Name, { Options: spec.DriverOpts, Labels: spec.Labels });
       },
       getVolume: (name: string) => ({
         inspect: async () => {
           if (!live.has(name)) notFound();
-          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data`, ...(opts.get(name) ?? {}) };
         },
         remove: async () => {
           // 404 when absent, like the daemon — `createOverlayVolume` calls
@@ -252,16 +257,22 @@ describe("ensurePluginRuntimeOverlay with shared dependency bases", () => {
   /** Records the driver options, which is where the lowerdir stack shows up. */
   function fakeDocker() {
     const live = new Set<string>();
-    const creates: { Name: string; DriverOpts?: Record<string, string> }[] = [];
+    const creates: { Name: string; DriverOpts?: Record<string, string>; Labels?: Record<string, string> }[] = [];
     const docker = {
-      createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
+      createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string>; Labels?: Record<string, string> }) => {
         creates.push(spec);
         live.add(spec.Name);
       },
       getVolume: (name: string) => ({
         inspect: async () => {
           if (!live.has(name)) throw Object.assign(new Error("no such volume"), { statusCode: 404 });
-          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+          const created = creates.find((c) => c.Name === name);
+          // The post-create verification in `createOverlayVolume` reads these back.
+          return {
+            Mountpoint: `/var/lib/docker/volumes/${name}/_data`,
+            Options: created?.DriverOpts,
+            Labels: created?.Labels,
+          };
         },
         remove: async () => {
           if (!live.has(name)) throw Object.assign(new Error("no such volume"), { statusCode: 404 });

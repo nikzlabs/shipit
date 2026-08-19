@@ -211,14 +211,136 @@ export async function resolveVolumeMountpoint(
 }
 
 /**
+ * The `o=` driver option one spec mounts with — the single place the three dirs
+ * are joined, so "what we asked for" and "what the daemon holds" are compared as
+ * the same string. See {@link createOverlayVolume}'s post-create check.
+ */
+export function overlayDriverOpts(spec: OverlaySpec): string {
+  return `lowerdir=${spec.lowerdir},upperdir=${spec.upperdir},workdir=${spec.workdir}`;
+}
+
+/** What a live volume of this name is, relative to the spec we want it to be. */
+export type OverlayVolumeState = "absent" | "match" | "mismatch";
+
+/**
+ * Compare the volume the daemon currently holds under `spec.volumeName` against
+ * the spec.
+ *
+ * `match` means a recreate would be a pure no-op, so the caller may leave the
+ * volume — and anything mounting it — alone. `mismatch` is the case that MUST
+ * recreate: the opts name a base generation, and `prepareOverlayDirs` deletes the
+ * superseded generation's upper/work as it rotates, so a volume left at the old
+ * opts wires the session to directories that no longer exist.
+ *
+ * The `o=` string is the whole comparison, deliberately. Labels are not part of it:
+ * they are stamped for parity with the sweeps (which key on the volume NAME), so
+ * treating a label drift as a mismatch would cost a Compose-stack teardown —
+ * `releaseOverlayVolumeHolders` — for something that mounts identically.
+ */
+export async function overlayVolumeState(
+  docker: Docker,
+  spec: OverlaySpec,
+): Promise<OverlayVolumeState> {
+  let info: { Options?: Record<string, string> | null };
+  try {
+    info = await docker.getVolume(spec.volumeName).inspect();
+  } catch (err) {
+    if (errStatus(err) === 404) return "absent";
+    throw err;
+  }
+  return info.Options?.o === overlayDriverOpts(spec) ? "match" : "mismatch";
+}
+
+/**
+ * Force-remove every container currently holding any of these volumes, so a
+ * subsequent `docker volume rm` cannot fail with 409 (`volume is in use`).
+ *
+ * **Why this exists (the ops finding of 2026-08-19).** A session's Compose
+ * siblings mount the same per-session overlay volumes the agent does. On a base
+ * rotation the orchestrator reaps the superseded `g<M>/{upper,work}` and then
+ * recreates the volumes against `g<N>` — but the siblings were still holding
+ * them, the removal 409'd, and `docker volume create` on a name that already
+ * exists returns the EXISTING volume and silently ignores the new driver opts.
+ * Four production sessions ended up mounting an overlay whose upperdir and
+ * workdir were unlinked directories: reads served a frozen base generation and
+ * writes went nowhere, so `tsc` reported success and wrote nothing.
+ *
+ * Only volumes that genuinely need recreating are passed here — a session whose
+ * base did not rotate keeps its Compose stack running, which is what the
+ * restart-agent path (docs/127) deliberately preserves. When the base DID rotate
+ * the siblings are mounting reaped directories anyway, so removing them is not a
+ * cost: a container freezes its mount set at create time, so nothing short of a
+ * recreate could ever hand them the new generation.
+ *
+ * Returns the ids of the containers it removed, for the caller's log and to tell
+ * the compose path that it owes the stack a reconcile.
+ */
+export async function releaseOverlayVolumeHolders(
+  docker: Docker,
+  volumeNames: string[],
+  opts: { sessionId?: string } = {},
+): Promise<string[]> {
+  if (volumeNames.length === 0) return [];
+  const tag = opts.sessionId ? `[overlay:${opts.sessionId}]` : "[overlay]";
+  let holders: { Id: string; Names?: string[] }[];
+  try {
+    holders = await docker.listContainers({
+      all: true,
+      filters: { volume: volumeNames },
+    });
+  } catch (err) {
+    // Not fatal here: `createOverlayVolume`'s post-create check is what makes a
+    // surviving holder loud, and it runs either way.
+    console.warn(
+      `${tag} could not list the containers holding ${volumeNames.join(", ")}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return [];
+  }
+  const released: string[] = [];
+  for (const holder of holders) {
+    try {
+      await docker.getContainer(holder.Id).remove({ force: true });
+      released.push(holder.Id);
+    } catch (err) {
+      // 404 — someone else removed it first, which is the outcome we wanted.
+      if (errStatus(err) === 404) continue;
+      console.warn(
+        `${tag} could not remove ${holder.Names?.[0] ?? holder.Id} before recreating its overlay volume:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  if (released.length > 0) {
+    console.log(
+      `${tag} removed ${released.length} container(s) holding ${volumeNames.length} ` +
+      `overlay volume(s) whose base generation rotated — they are recreated over the new generation`,
+    );
+  }
+  return released;
+}
+
+/**
  * Create the per-session `local`-driver `type=overlay` volume. The daemon performs
  * the overlay mount when the session container later mounts this volume at
  * `/workspace`. Serialized to avoid the overlay2 EBUSY hazard.
  *
- * Idempotent on name conflict: if a volume with the same name already exists (e.g. a
- * crash left it behind), it is removed and recreated so the driver opts reflect the
- * current base/upper/work — a stale overlay volume pointing at a since-rebuilt base
- * would otherwise wire the session to the wrong lowerdir.
+ * Idempotent on name conflict: a volume that already exists with exactly the opts
+ * and labels this spec wants is left alone, and one that disagrees (e.g. a crash
+ * left it behind, or the base rotated under it) is removed and recreated — a stale
+ * overlay volume pointing at a since-rebuilt base would otherwise wire the session
+ * to the wrong lowerdir.
+ *
+ * **The create is verified, because Docker will not fail for us.** `createVolume`
+ * against a name that is already taken returns the EXISTING volume and ignores the
+ * `DriverOpts` entirely — no error, no warning. So a removal that did not actually
+ * happen (the 409 of the 2026-08-19 ops finding: a Compose sibling still mounting
+ * it) used to produce a volume whose opts named a generation `prepareOverlayDirs`
+ * had just deleted, and the session ran on an overlay with no upperdir. We inspect
+ * afterwards and throw when the opts are not the ones we asked for: a container
+ * that fails to create is recoverable and visible, a container that starts on a
+ * dead upper layer is neither. The caller
+ * ({@link releaseOverlayVolumeHolders}) is what keeps this from firing.
  */
 export async function createOverlayVolume(
   docker: Docker,
@@ -226,17 +348,27 @@ export async function createOverlayVolume(
   labels: Record<string, string> = {},
 ): Promise<void> {
   await serialize(async () => {
-    await removeVolumeIfExists(docker, spec.volumeName);
+    const state = await overlayVolumeState(docker, spec);
+    if (state === "match") return;
+    if (state === "mismatch") await removeVolumeIfExists(docker, spec.volumeName);
     await docker.createVolume({
       Name: spec.volumeName,
       Driver: "local",
       DriverOpts: {
         type: "overlay",
         device: "overlay",
-        o: `lowerdir=${spec.lowerdir},upperdir=${spec.upperdir},workdir=${spec.workdir}`,
+        o: overlayDriverOpts(spec),
       },
       Labels: { ...labels, [OVERLAY_MANAGED_LABEL]: "true" },
     });
+    if (await overlayVolumeState(docker, spec) !== "match") {
+      throw new Error(
+        `Overlay volume ${spec.volumeName} was not created with the requested driver opts ` +
+        `(wanted "${overlayDriverOpts(spec)}"). Docker returns the pre-existing volume when ` +
+        `the name is taken, so the pre-create removal did not take effect — typically HTTP 409 ` +
+        `because a container still mounts it.`,
+      );
+    }
   });
 }
 
@@ -286,9 +418,11 @@ async function removeVolumeIfExists(docker: Docker, volumeName: string): Promise
   try {
     await docker.getVolume(volumeName).remove({ force: true });
   } catch (err) {
-    // 404 means it never existed — the common case; anything else we let surface
-    // only as a warning so create can still proceed (it will throw 409 itself if
-    // the volume genuinely couldn't be cleared).
+    // 404 means it vanished between the inspect and here — nothing to do. Anything
+    // else stays a warning rather than a throw because it is not yet a defect: the
+    // create below re-reads what the daemon actually holds and throws THERE if the
+    // removal did not take. Warning and then verifying catches every path that can
+    // leave stale opts, not just this one.
     if (errStatus(err) !== 404) {
       console.warn(
         `[overlay] pre-create removal of ${volumeName} did not complete cleanly:`,

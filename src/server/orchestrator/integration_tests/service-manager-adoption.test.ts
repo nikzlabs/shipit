@@ -357,6 +357,9 @@ describe("adoptExistingServiceManager (docs/127)", () => {
         connectToNetwork: async () => undefined,
         provisionedOverlayDepDirs: () => PAIRS,
         dockerClient: { getVolume: () => ({ inspect: async () => ({}) }) },
+        // This container's creation did not have to recreate a rotated overlay
+        // volume, so the set is the only thing that can ask for a reconcile.
+        consumeOverlayVolumesRecreated: () => false,
       } as unknown as SessionContainerManager;
     }
 

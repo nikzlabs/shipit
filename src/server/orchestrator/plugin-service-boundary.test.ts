@@ -302,14 +302,22 @@ function writeTrackedFixture(): void {
  */
 function fakeDocker(): { docker: Docker; volumes: Set<string> } {
   const volumes = new Set<string>(["shipit-ws"]);
+  const volumeOpts = new Map<string, Record<string, string>>();
   const docker = {
-    createVolume: async (spec: { Name: string }) => { volumes.add(spec.Name); },
+    // `createOverlayVolume` re-inspects after creating and throws unless the driver
+    // opts come back as the ones it asked for (the 2026-08-19 ops finding — Docker
+    // silently returns the pre-existing volume when the name is taken), so the
+    // double has to remember them.
+    createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
+      volumes.add(spec.Name);
+      volumeOpts.set(spec.Name, spec.DriverOpts ?? {});
+    },
     getVolume: (name: string) => ({
       inspect: async () => {
         if (!volumes.has(name)) throw Object.assign(new Error("no such volume"), { statusCode: 404 });
-        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data`, Options: volumeOpts.get(name) };
       },
-      remove: async () => { volumes.delete(name); },
+      remove: async () => { volumes.delete(name); volumeOpts.delete(name); },
     }),
   };
   return { docker: docker as unknown as Docker, volumes };

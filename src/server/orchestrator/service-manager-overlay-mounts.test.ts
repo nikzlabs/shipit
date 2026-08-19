@@ -65,14 +65,22 @@ function makeContainerManager(opts: {
   provisioned: { depDir: string; volumeName: string }[] | null;
   existingVolumes: string[];
   prepareOverlaySpecs?: () => Promise<{ depDir: string; volumeName: string }[]>;
+  /** Container creation had to remove Compose siblings to recreate a rotated volume. */
+  volumesRecreated?: boolean;
 }) {
   const prepareCalls: number[] = [];
+  let recreated = opts.volumesRecreated ?? false;
   return {
     provisionedOverlayDepDirs: () => opts.provisioned,
     dockerClient: makeDocker(opts.existingVolumes),
     prepareOverlaySpecs: async () => {
       prepareCalls.push(1);
       return opts.prepareOverlaySpecs ? await opts.prepareOverlaySpecs() : [];
+    },
+    consumeOverlayVolumesRecreated: () => {
+      const was = recreated;
+      recreated = false;
+      return was;
     },
     prepareCalls,
   } as unknown as SessionContainerManager & { prepareCalls: number[] };
@@ -194,6 +202,30 @@ describe("applyOverlayDepDirs (#2426)", () => {
     })).toBe(true);
   });
 
+  // The ops finding of 2026-08-19. A base-generation rotation recreates the volumes
+  // but leaves the dep-dir SET identical (the name is keyed on session + dep dir),
+  // so `setOverlayDepDirs` says "unchanged" — while container creation has just
+  // removed the Compose siblings that were holding the old volumes. Without this
+  // the stack would never be brought back up over the new generation.
+  it("asks for a reconcile when creation had to recreate the overlay volumes", async () => {
+    const provisioned = [{ depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" }];
+    const containerManager = makeContainerManager({
+      provisioned,
+      existingVolumes: provisioned.map((p) => p.volumeName),
+      volumesRecreated: true,
+    });
+    const { mgr } = makeManager({ changed: false });
+
+    expect(await applyOverlayDepDirs(makeRunner(), mgr, {
+      containerManager, session: SESSION, workspaceDir: "/nonexistent",
+    })).toBe(true);
+
+    // Read-and-clear: one reconcile settles it, so a second call must not ask again.
+    expect(await applyOverlayDepDirs(makeRunner(), mgr, {
+      containerManager, session: SESSION, workspaceDir: "/nonexistent",
+    })).toBe(false);
+  });
+
   it("falls back to re-derivation only when the container is unknown", async () => {
     const containerManager = makeContainerManager({
       provisioned: null,
@@ -228,6 +260,7 @@ describe("applyOverlayDepDirs (#2426)", () => {
       provisionedOverlayDepDirs: () => { throw new Error("daemon down"); },
       dockerClient: makeDocker([]),
       prepareOverlaySpecs: async () => [],
+      consumeOverlayVolumesRecreated: () => false,
     } as unknown as SessionContainerManager;
     const { mgr, applied } = makeManager();
     const { lines, broadcastLog } = makeLog();

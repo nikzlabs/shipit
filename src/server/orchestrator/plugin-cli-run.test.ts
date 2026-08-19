@@ -181,6 +181,7 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
   // The workspace volume already exists in production; the overlay's daemon-path
   // translation inspects it for its mountpoint.
   const volumes = new Set<string>(["shipit-ws"]);
+  const volumeOpts = new Map<string, Record<string, string>>();
   const networks: string[] = [];
   const connected: unknown[] = [];
   const notFound = (): never => {
@@ -207,13 +208,20 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
       connect: async (spec: unknown) => { connected.push(spec); },
     }),
     createNetwork: async (spec: { Name: string }) => { networks.push(spec.Name); },
-    createVolume: async (spec: { Name: string }) => { volumes.add(spec.Name); },
+    // `createOverlayVolume` re-inspects after creating and throws unless the driver
+    // opts come back as the ones it asked for (the 2026-08-19 ops finding — Docker
+    // silently returns the pre-existing volume when the name is taken), so the
+    // double has to remember them.
+    createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
+      volumes.add(spec.Name);
+      volumeOpts.set(spec.Name, spec.DriverOpts ?? {});
+    },
     getVolume: (name: string) => ({
       inspect: async () => {
         if (!volumes.has(name)) notFound();
-        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data`, Options: volumeOpts.get(name) };
       },
-      remove: async () => { volumes.delete(name); },
+      remove: async () => { volumes.delete(name); volumeOpts.delete(name); },
     }),
     listContainers: async () => [],
     getContainer: (_id: string) => ({ remove: async () => undefined }),

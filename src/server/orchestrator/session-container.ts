@@ -286,6 +286,19 @@ export interface SessionContainer {
    */
   overlayDepDirs?: { depDir: string; volumeName: string }[];
   /**
+   * The ops finding of 2026-08-19 — set when creating this container had to remove
+   * Compose siblings that were holding an overlay volume whose base generation had
+   * rotated, so the volume could be recreated over the new generation.
+   *
+   * The compose path decides whether to reconcile by asking whether the dep-dir SET
+   * changed, and a rotation does not change it (the volume name is keyed on session
+   * + dep dir, never on the generation). But the containers are now gone, and a
+   * service container freezes its mounts at create time, so a reconcile is the only
+   * thing that can bring them back over the new generation. Consumed once by
+   * {@link SessionContainerManager.consumeOverlayVolumesRecreated}.
+   */
+  overlayVolumesRecreated?: boolean;
+  /**
    * docs/172 — the resolved egress containment (`ResolvedEgressConfig.contained`)
    * this container was actually created with. The egress topology is installed
    * into the netns at creation, so this is the source of truth for "what is the
@@ -552,6 +565,19 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const sc = this.containers.get(sessionId);
     if (!sc) return null;
     return sc.overlayDepDirs ?? [];
+  }
+
+  /**
+   * Whether creating this session's current agent container had to remove Compose
+   * siblings so a rotated overlay volume could be recreated — see
+   * {@link SessionContainer.overlayVolumesRecreated}. Read-and-clear: the answer
+   * is "does the stack owe itself a reconcile", and one reconcile settles it.
+   */
+  consumeOverlayVolumesRecreated(sessionId: string): boolean {
+    const sc = this.containers.get(sessionId);
+    if (!sc?.overlayVolumesRecreated) return false;
+    sc.overlayVolumesRecreated = false;
+    return true;
   }
 
   /** Boot-effective containment used when generating the Compose override. */

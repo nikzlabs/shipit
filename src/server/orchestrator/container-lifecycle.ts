@@ -38,7 +38,12 @@ import {
   perSessionCredentialsDir,
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
-import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
+import {
+  createOverlayVolume,
+  overlayVolumeState,
+  releaseOverlayVolumeHolders,
+  removeOverlayVolume,
+} from "./overlay-volume.js";
 import {
   preStampInstallMarker,
   sortOverlayDepDirs,
@@ -1175,6 +1180,31 @@ export async function createContainer(
         workspaceDir: config.workspaceDir,
         sessionId: config.sessionId,
       });
+      // The ops finding of 2026-08-19. `prepareOverlayDirs` has just DELETED the
+      // superseded generation's upper/work, so every volume whose opts still name
+      // it must be recreated — and a volume cannot be removed while a container
+      // mounts it (409). The session's Compose siblings mount exactly these
+      // volumes, and on the restart-agent path (docs/127) they are deliberately
+      // left running, so the removal failed, `createVolume` returned the existing
+      // volume with its stale opts, and the session ran on an overlay whose upper
+      // layer no longer existed on the host — reads frozen at the old base, writes
+      // discarded. Release the holders FIRST, and only for the volumes that
+      // actually disagree: a session whose base did not rotate keeps its stack.
+      const rotated: string[] = [];
+      for (const spec of config.overlaySpecs) {
+        if (await overlayVolumeState(deps.docker, spec) === "mismatch") {
+          rotated.push(spec.volumeName);
+        }
+      }
+      const released = await releaseOverlayVolumeHolders(deps.docker, rotated, {
+        sessionId: config.sessionId,
+      });
+      // Those siblings are gone now, and nothing else brings them back: the dep-dir
+      // SET is unchanged, so the compose path's own "did the overlay change?" test
+      // says no and skips the reconcile. Record it so `applyOverlayDepDirs` asks for
+      // one anyway — a service container freezes its mounts at create time, so the
+      // recreate is the only way it can ever see the new generation.
+      if (released.length > 0) sc.overlayVolumesRecreated = true;
       for (const spec of config.overlaySpecs) {
         await createOverlayVolume(deps.docker, spec, deps.baseLabels());
       }
