@@ -209,6 +209,20 @@ export function MessageInput({
   // The same gate `PermissionModeSelector` applies to itself, hoisted so the
   // narrow row's settings menu offers exactly the modes the wide row would.
   const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
+  /**
+   * docs/260 req 19 — the one control the compact layout gives back, and only
+   * in the quick-capture overlay on a desktop viewport.
+   *
+   * Not a width test, deliberately: the overlay's panel is `max-w-2xl` (672px)
+   * at every window size, so it is ALWAYS under the 700px breakpoint and its
+   * measurement never carried req 3's "space is scarce" meaning. The viewport is
+   * what says whether there is room beside it — and below 768px there is not,
+   * which is the ordinary narrow case the fold was designed for.
+   *
+   * Read by the narrow row (which renders the control) and by the settings menu
+   * (which drops its Mode row), so the setting is offered in exactly one place.
+   */
+  const modeInRow = surface === "overlay" && !isMobile;
   // docs/257 req 3 — "disabled as a whole". Every affordance below reads this
   // rather than `disabled`, which guards submission only.
   const inert = !!disabledReason;
@@ -987,6 +1001,40 @@ export function MessageInput({
                   </button>
                 </WithTooltip>
 
+                {/* docs/260 req 19 — **the mode comes back out of the menu in
+                    the quick-capture overlay on desktop.**
+
+                    The overlay's composer is under 700px because its PANEL is a
+                    fixed `max-w-2xl` (672px), and it is that width on a 1400px
+                    window as much as on a 900px one. So the measurement that
+                    means "space is scarce" in the chat panel — where the user
+                    chose the width by dragging the split — means nothing here,
+                    and req 3's fold takes a control the surface needs most: this
+                    overlay starts a session and sends its first message in one
+                    act, and the mode is what decides whether the agent asks
+                    before it acts.
+
+                    Only the mode. Everything else stays folded, and it is
+                    offered here INSTEAD of in the menu (`modeInRow` below), never
+                    in both — one setting, one control.
+
+                    Placed before the settings anchor rather than after it because
+                    the anchor is the group's one elastic item: req 8's clipping
+                    depends on it being last, so it truncates before anything is
+                    cut at the mic's edge. */}
+                {modeInRow && onPermissionModeChange && (
+                  <div className="flex shrink-0 items-center">
+                    <PermissionModeSelector
+                      mode={permissionMode}
+                      onChange={onPermissionModeChange}
+                      agents={agents}
+                      activeAgentId={activeAgentId}
+                      modelInfo={modelInfo}
+                      disabled={inert}
+                    />
+                  </div>
+                )}
+
                 <ComposerSettingsMenu
                   // Keyed on the session so an optimistic pick can't linger across a switch,
                   // for the same reason `ReasoningSelector` is keyed in the wide row.
@@ -1019,6 +1067,11 @@ export function MessageInput({
                   seedFromHistory={!sessionId}
                   permissionMode={permissionMode}
                   onPermissionModeChange={onPermissionModeChange}
+                  // docs/260 req 19 — the menu drops its Mode row when the row
+                  // carries the control. The handler still goes in: the menu
+                  // reads the mode for nothing else, and a menu that could not
+                  // be told the mode would have to guess it back.
+                  modeInRow={modeInRow}
                   guardedModelOk={guardedModelOk}
                   // Only `inert` closes the anchor. A running turn locks the
                   // three pickers instead, so the mode stays changeable and the

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { handleModelSelectionChanged } from "./model-selection-changed.js";
@@ -97,6 +97,42 @@ describe("handleModelSelectionChanged", () => {
   it("says nothing when the user asked for the change themselves", () => {
     handleModelSelectionChanged(ctx, message());
     expect(useUiStore.getState().toast).toBeUndefined();
+  });
+
+  /**
+   * docs/272-user-selectable-roles req 12 — the seed is "the role the user last
+   * SELECTED", and a role can only be selected before the first turn (req 4).
+   */
+  describe("the role seed", () => {
+    beforeEach(() => localStorage.setItem("shipit-role-name", "deep dive"));
+    afterEach(() => localStorage.removeItem("shipit-role-name"));
+
+    it("follows the session's role while the session has not started", () => {
+      // Before the first turn the seed is BOTH the composer's display (a warm
+      // session has no row to read) and the `?role=` the next connect applies,
+      // which overrides the harness, model and reasoning. A seed left naming a
+      // role the user has just moved away from would put it back.
+      handleModelSelectionChanged(ctx, message({ roleName: null }));
+      expect(localStorage.getItem("shipit-role-name")).toBeNull();
+    });
+
+    it("is left alone once the session has started", () => {
+      // The reported bug: changing the model in an already-running session
+      // cleared the role the user had picked for everything they start NEXT.
+      // That session's role stopped being an answer to "what should the next new
+      // session be" at its first turn.
+      useSessionStore.setState({ sessions: [session({ agentPinned: true }), session({ id: "s2" })] });
+      handleModelSelectionChanged(ctx, message({ roleName: null }));
+      expect(localStorage.getItem("shipit-role-name")).toBe("deep dive");
+    });
+
+    it("does not make an agent-started child's role the user's default either", () => {
+      // Same bound, other direction: a child session spawned on a role carries
+      // one the user never selected in this browser.
+      useSessionStore.setState({ sessions: [session({ agentPinned: true }), session({ id: "s2" })] });
+      handleModelSelectionChanged(ctx, message({ roleName: "triage" }));
+      expect(localStorage.getItem("shipit-role-name")).toBe("deep dive");
+    });
   });
 
   it("records that the server answered — including when it REFUSED and changed nothing", () => {

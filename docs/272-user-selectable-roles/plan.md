@@ -167,6 +167,15 @@ Two consequences fell out of fixing it, and both are simplifications:
   on the way out. Leaving a role happens when a parameter *moves*, and only the server knows whether
   one did — re-selecting the harness a role already set is not a change (req 15). Clearing it at the
   call sites re-implemented that comparison and got it wrong in the one case the rule exists for.
+
+  **It follows it only until that session starts** (`agentPinned`), which is where req 12's own
+  words put the bound: the seed is the role the user last *selected*, and a role can only be
+  selected before the first turn (req 4). Unbounded, it read every later answer as a selection —
+  nudging the model in a week-old session cleared the role the user had picked for everything they
+  start next, and an agent-spawned child running some role would have made that role the user's
+  default. Neither is something the user selected. Before the first turn the write stays
+  load-bearing in both directions, because there the seed is the display *and* the `?role=` the next
+  connect applies.
 - **Picking a role writes the three pickers' seeds from the role's resolved params**
   (`utils/role-seed.ts`). Without it, "Adjust parameters…" brought back controls showing whatever
   the seeds held from some earlier session — the role's own values were nowhere on screen, which is

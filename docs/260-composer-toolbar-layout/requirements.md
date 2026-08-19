@@ -67,6 +67,12 @@ The row already contained three controls that had been collapsed to icons to buy
 
 18. The composer's model control shows the model's name only. It does not append the service or billing mode ("Subscription", "API key") to that name, even when the same model id is offered under more than one.
 
+19. **In the quick-capture overlay, on a desktop viewport, the permission mode is its own control in the row** — not a row inside the settings menu. Everything else the compact layout folds stays folded there, and the mode is then offered in one place only: the control, not the menu as well.
+
+    The overlay is the case requirement 3's rule was not written for. Its composer is narrow because the *panel* is a fixed width, and it is that width on a 1400 px window as much as on a 900 px one — so "the composer is under 700 px" carries none of the "space is scarce" meaning it carries in the chat panel, where the user chose the width by dragging the split. Requirement 3 still decides the layout; this names the one control that comes back out of it, and the reason is what the mode is *for* in this surface: quick capture starts a session and sends its first message in one act, so the mode is the setting most likely to need changing before that act, and it is the one that decides whether the agent asks before it acts.
+
+    On a mobile viewport the overlay is narrow in the ordinary way and folds exactly as it does today.
+
 ## Requirement provenance
 
 Requirements 1–8 and 10–13 were stated by the human in chat, most of them in direct response to a rendered mock-up.
@@ -82,6 +88,8 @@ No requirement is an unreviewed agent inference.
 None. Implementation is unblocked.
 
 ## Resolved questions
+
+- 2026-08-19 — Should the quick-capture overlay fold the permission mode into the settings menu on desktop, as its composer width says it should? **No, on the human's instruction**: "in a quick session UI on desktop, the mode control needs to be separate, not embedded in the single mobile menu." Requirement 19 follows. This narrows the last receipt below rather than reversing it — that one accepted that a non-default mode is invisible until the menu is opened, and it still holds everywhere the composer is narrow because space is actually scarce. The overlay's panel is a fixed width at every window size, so its narrowness never meant that. Nothing else leaves the menu, and the mode leaves the menu entirely rather than appearing in both places.
 
 - 2026-08-10 — Should the permission mode be an icon in the wide row, given that "Guarded mode" at 123.5 px is the widest single contributor to the row's worst case? Chosen: **keep the icon and the word, but the word alone** — "Guarded", not "Guarded mode". The human's first reaction was "an icon at most"; shown the mock, the call was the shorter label rather than dropping the label. Requirement 17 follows. The menu that offers the choice still spells out "Guarded mode", where there is room and the extra word reads as a description rather than a badge.
 

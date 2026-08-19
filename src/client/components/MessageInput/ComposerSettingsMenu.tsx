@@ -210,6 +210,7 @@ export function ComposerSettingsMenu({
   seedFromHistory = false,
   permissionMode,
   onPermissionModeChange,
+  modeInRow = false,
   guardedModelOk = true,
   disabled = false,
   pickersLocked = false,
@@ -241,6 +242,13 @@ export function ComposerSettingsMenu({
   seedFromHistory?: boolean;
   permissionMode: PermissionMode;
   onPermissionModeChange?: (mode: PermissionMode) => void;
+  /**
+   * docs/260 req 19 — the composer row is carrying the mode control itself, so
+   * this menu drops its Mode row rather than offering the same setting twice.
+   * Only the quick-capture overlay on a desktop viewport does this; everywhere
+   * else the compact layout owns the mode, as req 3 says.
+   */
+  modeInRow?: boolean;
   /** False when the effective model cannot run guarded (Haiku) — same gate the standalone selector applies. */
   guardedModelOk?: boolean;
   /** The composer is dead as a whole (docs/257 `disabledReason`) — the anchor does not open. */
@@ -395,6 +403,11 @@ export function ComposerSettingsMenu({
       >
         {panel === "root" && (
           <>
+            {/* docs/260 req 19 — absent, not inert, when the row carries the
+                control: a Mode row here as well would be a second place to
+                change one setting, and the two would have to agree about which
+                is the real one. */}
+            {!modeInRow && (
             <RootRow
               testId="composer-settings-row-mode"
               icon={
@@ -409,6 +422,7 @@ export function ComposerSettingsMenu({
               valueAccent={!modeIsDefault}
               onSelect={canPickMode ? () => setPanel("mode") : undefined}
             />
+            )}
             {showRole && (
               <RootRow
                 testId="composer-settings-row-role"

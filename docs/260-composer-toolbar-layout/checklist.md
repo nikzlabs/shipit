@@ -34,3 +34,7 @@
 - [x] Re-verified against the real component: nothing past the composer's edge at 700 / 760 /
       808 / 900 px in the guarded + ambiguous state, nor at 520 px on the compact row
 - [x] `lint:dev`, `typecheck`, full client suite (3358) green
+- [x] Req 19 — quick capture on desktop keeps the permission mode in the row, and the settings
+      menu drops its Mode row (`modeInRow` in `MessageInput.tsx` / `ComposerSettingsMenu.tsx`)
+- [x] Tests for req 19: mode in the row on desktop and absent from the menu, folded on a mobile
+      viewport, chat composer unchanged at the same width
