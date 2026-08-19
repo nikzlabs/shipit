@@ -451,7 +451,7 @@ function provisionAgentCredentialsFromRoot(
  * let the session spawn on the borrowed account's token.
  *
  * **The account it displaces is captured HERE**, into the borrow ledger, rather
- * than by each caller reading the marker some lines earlier (planning#312). The
+ * than by each caller reading the marker some lines earlier (planning#445). The
  * displaced account is what {@link releaseSubAgentCredentials} hands back for
  * the restore, and a capture that reads `undefined` loses it — leaving the
  * session with no marker at all and every later write-back refused, which for a

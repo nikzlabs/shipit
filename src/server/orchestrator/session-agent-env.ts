@@ -1190,7 +1190,7 @@ export function finalizeSessionAgentEnvironment(
         route.providerRouteId,
         // `sessionOwnRoute` — both branches above resolve the SESSION'S route
         // (the turn's own capture, or failing that the subtree's own marker),
-        // never an account borrowed for a sub-agent. planning#312: that is the
+        // never an account borrowed for a sub-agent. planning#445: that is the
         // caller class allowed to repair a marker lost mid-turn rather than
         // drop the rotation, which for a rotating token kills the source.
         { sessionOwnRoute: true },

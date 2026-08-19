@@ -196,7 +196,7 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
   });
 
   /**
-   * planning#312 — the production incident, end to end. The session's marker went
+   * planning#445 — the production incident, end to end. The session's marker went
    * missing mid-turn (a borrow whose restore captured nothing), so every
    * publish this watch attempted was refused with "the subtree holds no
    * recorded account". A refused publish is a DROPPED rotation, and the token

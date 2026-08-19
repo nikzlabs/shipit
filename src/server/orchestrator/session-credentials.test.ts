@@ -466,7 +466,7 @@ describe("session-credentials", () => {
   });
 
   /**
-   * planning#312 — the incident the borrow ledger exists for.
+   * planning#445 — the incident the borrow ledger exists for.
    *
    * Losing the marker is not a cosmetic bookkeeping error: every write-back
    * afterwards is refused, and a refused write-back DROPS a rotation whose
@@ -551,7 +551,7 @@ describe("session-credentials", () => {
   });
 
   /**
-   * planning#312 — an absent marker is resolved, not assumed. The write-back
+   * planning#445 — an absent marker is resolved, not assumed. The write-back
    * may repair one it can prove is lost, and only then; a dropped rotation
    * kills the source credential, so "refuse and move on" is the expensive
    * branch, not the safe one.

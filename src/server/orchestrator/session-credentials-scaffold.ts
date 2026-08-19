@@ -239,7 +239,7 @@ export function writeSessionAccountMarker(
   // reader landing inside that truncation window therefore does not merely
   // retry later; `syncProviderAccountTokenBack` DROPS the rotation it was
   // called with, and with rotating refresh tokens a dropped rotation kills the
-  // source credential permanently (planning#312).
+  // source credential permanently (planning#445).
   const file = path.join(dir, SESSION_ACCOUNT_MARKER);
   const tmp = `${file}.tmp-${process.pid}-${randomUUID()}`;
   fs.writeFileSync(tmp, JSON.stringify(current));

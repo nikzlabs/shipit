@@ -334,7 +334,7 @@ describe("makeNonTurnGenerateText — credential window", () => {
       provisionSubAgentCredentials: () => calls.push("provision"),
       // docs/260 — the restore uses the credential subtree's own account
       // MARKER, not session.providerRoute* (the row records no route any more).
-      // planning#312 — and the borrow reports it on release, having captured it
+      // planning#445 — and the borrow reports it on release, having captured it
       // when it overwrote the marker; a caller that re-reads the marker itself
       // is the shape that lost it.
       releaseSubAgentCredentials: () => {
@@ -411,6 +411,52 @@ describe("makeNonTurnGenerateText — credential window", () => {
 
     expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
     expect(calls).toContain("wipe");
+  });
+
+  /**
+   * planning#445 — a provisioning failure must still close the credential window.
+   * The provision used to run BEFORE the try, so an ENOSPC (or a source root
+   * deleted between route resolution and copy) threw past every cleanup: the
+   * borrow it had already opened stayed open for the process's life, and a
+   * subtree recorded as lent out refuses the session's own token write-backs —
+   * the permanent-refusal state this whole fix exists to end.
+   */
+  it("closes the credential window when provisioning itself throws", async () => {
+    const calls: string[] = [];
+    vi.doMock("../session-credentials.js", () => ({
+      provisionSubAgentCredentials: () => {
+        calls.push("provision");
+        throw new Error("ENOSPC: no space left on device");
+      },
+      releaseSubAgentCredentials: () => {
+        calls.push("wipe");
+        return "acct_marker";
+      },
+      syncAgentTokenBack: () => calls.push("sync"),
+      syncProviderAccountTokenBack: () => calls.push("sync-account"),
+      provisionProviderAccountCredentials: () => calls.push("restore"),
+    }));
+    const { ContainerSessionRunner } = await import("../container-session-runner.js");
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const runner = fakeContainerRunner(ContainerSessionRunner, {
+      spawnSubAgent: async () => {
+        calls.push("spawn");
+        return OK_RESULT;
+      },
+    });
+    const { deps } = buildDeps({});
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      getRunnerRegistry: () => ({ get: () => runner }),
+      sessionManager: { get: () => ({ agentId: "claude" }) },
+      credentialsDir: TEST_CREDENTIALS_DIR,
+      fallback: async () => "unused",
+    } as never);
+
+    // The generation fails (nothing spawned), but the window closes and the
+    // session goes back to its own account.
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(calls).toEqual(["provision", "sync", "wipe", "restore"]);
   });
 });
 

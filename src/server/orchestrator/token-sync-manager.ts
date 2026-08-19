@@ -1384,7 +1384,7 @@ export function syncAgentTokenBack(
   agentId: AgentId,
   opts?: ProviderTokenWriteBackOptions,
 ): void {
-  // planning#312 — the marker is written after the borrow's copy lands, so for an
+  // planning#445 — the marker is written after the borrow's copy lands, so for an
   // instant the subtree holds the borrowed account's bearer under the session's
   // own (or no) marker. A session-route caller refuses for the whole borrow
   // instead of trusting the marker alone; the borrow's own write-back passes no
@@ -1438,7 +1438,7 @@ export function syncAgentTokenBack(
  *
  * A marker that names a DIFFERENT account is always a refusal. A marker that
  * names NOTHING is the ambiguous case, and treating it as a refusal outright
- * was itself an incident (planning#312): a rotation refused is a rotation
+ * was itself an incident (planning#445): a rotation refused is a rotation
  * DROPPED, and the token it was carrying has already invalidated the source's
  * copy upstream, so the account dies — the refresher then fails every tick,
  * the CLI eventually erases the source file, and the user is made to sign in

@@ -526,10 +526,16 @@ async function runNonTurnSpawn(
   const credentialsDir = deps.credentialsDir;
   const provisioned = runner instanceof ContainerSessionRunner && !!credentialsDir;
   const accountId = target.route?.kind === "account" ? target.route.id : undefined;
-  if (provisioned && credentialsDir) {
-    provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, accountId);
-  }
   try {
+    // Inside the try, so the `finally` always closes the borrow it opens
+    // (planning#445): a provisioning failure that threw past the cleanup used to
+    // leave the subtree lent out for the process's life, and a subtree lent out
+    // refuses the session's own token write-backs — the state this fix exists
+    // to end. `runSubAgent` opens its window in the same place, for the same
+    // reason.
+    if (provisioned && credentialsDir) {
+      provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, accountId);
+    }
     const result = await runner.spawnSubAgent({
       agentId: target.harnessId,
       prompt: args.prompt,
@@ -586,7 +592,7 @@ async function runNonTurnSpawn(
       }
       // docs/260 — which account to put back is the credential subtree's own
       // recorded identity (the marker), not a session row: the row records no
-      // route any more. planning#312 — and the borrow itself captured it, at the
+      // route any more. planning#445 — and the borrow itself captured it, at the
       // instant it overwrote the marker: reading it here would find the borrow's
       // own account, and reading it *before* the borrow (what this used to do)
       // could race a concurrent borrow's cleared window and restore nothing,
