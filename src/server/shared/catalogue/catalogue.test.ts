@@ -41,6 +41,7 @@ import {
   harnessSupportsService,
   isSelectionEligible,
   resolveSpawnShaping,
+  spawnCredentialTarget,
   parseSelection,
   resolveEndpoint,
   resolveModelSelection,
@@ -999,6 +1000,26 @@ describe("spawn shaping", () => {
     });
   });
 
+  it("keeps Anthropic's subscription token a bearer token, not an x-api-key (planning#354)", () => {
+    // `ANTHROPIC_AUTH_TOKEN` is an OAuth artifact with Bearer semantics; without
+    // a `targetOverride` it inherited Claude's string target `ANTHROPIC_API_KEY`
+    // and the CLI would deliver it as an `x-api-key` header (harnesses.ts,
+    // measured at the wire). Same shape as GLM's override above.
+    const shaping = resolveSpawnShaping("claude", {
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-opus-5",
+    });
+    expect(shaping?.credential).toEqual({
+      sourceEnv: "ANTHROPIC_AUTH_TOKEN",
+      target: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" },
+    });
+    expect(spawnCredentialTarget("claude", "anthropic", "sub")).toEqual({
+      kind: "env",
+      name: "ANTHROPIC_AUTH_TOKEN",
+    });
+  });
+
   it("has nothing to shape for a selection the harness shares no style with", () => {
     expect(
       resolveSpawnShaping("codex", {
@@ -1337,6 +1358,39 @@ describe("credentials", () => {
       expect(storageEnvFor(owner!.serviceId, owner!.billingMode)).toBe(envName);
     }
     expect(credentialModeForStorageEnv("NOT_A_CATALOGUE_KEY")).toBeUndefined();
+  });
+
+  it("never delivers a Bearer-semantics credential as an x-api-key (planning#354)", () => {
+    // `ANTHROPIC_AUTH_TOKEN` is the only storage name in the catalogue from
+    // which Bearer semantics can be READ OFF THE NAME — `ZAI_CODING_PLAN_KEY`
+    // is bearer-delivered too, but its row's override states that explicitly,
+    // and a future bearer credential named `*_API_KEY` gets no coverage here.
+    // This key exists for the silent kind: a credential stored under it must
+    // never land in `ANTHROPIC_API_KEY` (Claude's harness default), because
+    // the CLI sends that variable as an `x-api-key` header and the turn 401s
+    // with an error that looks like a bad key. The negative form is
+    // harness-general: a second carrier whose string target is a different
+    // api-key variable (OpenCode's `OPENCODE_PROVIDER_API_KEY`) is correct.
+    let checked = 0;
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        for (const credential of mode.credentials) {
+          if (credential.via !== "string" || credential.storageEnv !== "ANTHROPIC_AUTH_TOKEN") continue;
+          const where = `${service.id}:${mode.kind}`;
+          for (const harness of allHarnesses()) {
+            // `carriers` already gates who may authenticate with this token;
+            // the invariant binds the harnesses that can actually carry it.
+            if (!harnessCanCarry(harness.id, { serviceId: service.id, billingMode: mode.kind, via: "string" })) continue;
+            checked += 1;
+            expect(
+              spawnCredentialTarget(harness.id, service.id, mode.kind),
+              `${where} → ${harness.id}`,
+            ).not.toEqual({ kind: "env", name: "ANTHROPIC_API_KEY" });
+          }
+        }
+      }
+    }
+    expect(checked, "the loop must bind at least one carrying harness").toBeGreaterThan(0);
   });
 
   it("declares at least one credential shape for every mode", () => {
