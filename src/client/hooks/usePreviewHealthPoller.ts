@@ -121,13 +121,28 @@ export interface UsePreviewHealthPollerParams {
   promoteSlot: (key: string) => void;
   /** Add/update a slot in the iframe pool. */
   setSlot: (key: string, slot: IframeSlot) => void;
+  /** Read a slot from the pool (stable identity — not the reactive `slots`). */
+  getSlot: (key: string) => IframeSlot | undefined;
+  /** Drop a slot whose port changed owner (the pool's one non-LRU drop). */
+  dropSlot: (key: string) => void;
+  /**
+   * The Compose service that currently owns `activePort`, or `undefined`
+   * when none is known. Compared with the owner recorded on a retained slot
+   * (planning#394): a port that moved to a different service must not keep
+   * serving the previous owner's already-loaded document.
+   */
+  activeService: string | undefined;
 }
 
 /**
  * Poll the preview server's health endpoint (container mode) or root URL
  * (local mode) and create an iframe slot once it responds. The hook is the
  * sole driver of new slot creation — if a slot already exists for the active
- * key, it's promoted in the LRU and no polling happens.
+ * key, it's promoted in the LRU and no polling happens. The one exception:
+ * a slot whose port has been taken over by a different service (both owners
+ * known, differing) is dropped and re-polled, so the recreated iframe loads
+ * the new owner's app instead of showing the previous owner's document
+ * (planning#394).
  *
  * Cancellation invariant: only the effect that "owns" a `pollingRef` entry
  * (the one that added it on mount) may remove it. The cleanup function is
@@ -155,6 +170,9 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     pollingRef,
     promoteSlot,
     setSlot,
+    getSlot,
+    dropSlot,
+    activeService,
   } = params;
 
   // The ref-in-cleanup warning does not apply: `pollingRef` holds a Map owned
@@ -163,8 +181,25 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
   useEffect(() => {
     if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
 
-    // If slot already exists (previously visited), just promote it
-    if (createdSlotsRef.current.has(activeSlotKey)) {
+    // If slot already exists (previously visited), just promote it — unless
+    // the port has been taken over by a different service since the slot was
+    // created. The key is `${sessionId}:${port}`, so a port that moves to a
+    // new owner reuses the key, and the retained iframe would keep serving
+    // the previous owner's document under the new owner's row (planning#394).
+    // Dropping falls through to the poll below, which re-probes and recreates
+    // the slot with the new owner's app.
+    //
+    // Both owners must be known: `undefined` on either side is a transient
+    // service-list state (or a preview with no service rows at all), and
+    // evicting on it would drop slots during ordinary list updates.
+    const existing = getSlot(activeSlotKey);
+    if (
+      existing?.service !== undefined &&
+      activeService !== undefined &&
+      existing.service !== activeService
+    ) {
+      dropSlot(activeSlotKey);
+    } else if (createdSlotsRef.current.has(activeSlotKey)) {
       promoteSlot(activeSlotKey);
       return;
     }
@@ -235,7 +270,10 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       );
       if (result) {
         createdSlotsRef.current.add(key);
-        setSlot(key, { url: result.url, containerMode: result.containerMode });
+        // The owner recorded at creation is this effect's `activeService`: if
+        // it changes, the effect re-runs and the promote branch above decides
+        // whether a retained slot's recorded owner still matches the port's.
+        setSlot(key, { url: result.url, containerMode: result.containerMode, service: activeService });
         promoteSlot(key);
       }
     };
@@ -245,7 +283,7 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       // eslint-disable-next-line react-hooks/exhaustive-deps -- `pollingRef` holds a hook-owned Map, not a DOM node, so deleting this key at cleanup is correct
       pollingRef.current.delete(key);
     };
-  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, preview, createdSlotsRef, pollingRef]);
+  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, getSlot, dropSlot, activeService, preview, createdSlotsRef, pollingRef]);
 }
 
 // Re-export internal helpers for the consuming component, which also needs
