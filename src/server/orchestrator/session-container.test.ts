@@ -893,16 +893,20 @@ describe("SessionContainerManager", () => {
         expect(manager.consumeOverlayVolumesRecreated("test-session-1")).toBe(false);
       });
 
-      it("fails the create loudly when a holder survives, rather than mounting the reaped generation", async () => {
+      it("fails the create loudly when a holder survives every attempt, rather than mounting the reaped generation", async () => {
         seedStaleHeldVolumes();
-        // A holder the daemon refuses to remove — the guard is what turns the old
-        // silent corruption into a visible, recoverable create failure.
-        mockDocker.getContainer.mockImplementationOnce(() => ({
-          remove: vi.fn(async () => { throw Object.assign(new Error("cannot remove"), { statusCode: 500 }); }),
-        }) as any);
+        // A holder the daemon refuses to remove, on every retry — the guard is what
+        // turns the old silent corruption into a visible, recoverable create
+        // failure. `mockImplementation`, not `…Once`: the create converges, so a
+        // holder that goes away after one round is a success, not a failure.
+        const realGetContainer = mockDocker.getContainer.getMockImplementation()!;
+        mockDocker.getContainer.mockImplementation((id: string) =>
+          id.startsWith("compose-sibling-")
+            ? { remove: vi.fn(async () => { throw Object.assign(new Error("cannot remove"), { statusCode: 500 }); }) } as any
+            : realGetContainer(id));
 
         await expect(manager.create(buildConfig({ overlaySpecs: rotated }))).rejects.toThrow(
-          /was not created with the requested driver opts/,
+          /could not be recreated with the requested driver opts/,
         );
       });
 

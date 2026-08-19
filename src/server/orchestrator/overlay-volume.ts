@@ -262,8 +262,9 @@ export async function overlayVolumeState(
  * them, the removal 409'd, and `docker volume create` on a name that already
  * exists returns the EXISTING volume and silently ignores the new driver opts.
  * Four production sessions ended up mounting an overlay whose upperdir and
- * workdir were unlinked directories: reads served a frozen base generation and
- * writes went nowhere, so `tsc` reported success and wrote nothing.
+ * workdir were unlinked: reads served a frozen base generation, writes failed
+ * ENOENT, and the damage reached past the dep dir — `agent.install` failed and
+ * gated Compose services never started.
  *
  * Only volumes that genuinely need recreating are passed here — a session whose
  * base did not rotate keeps its Compose stack running, which is what the
@@ -271,6 +272,13 @@ export async function overlayVolumeState(
  * the siblings are mounting reaped directories anyway, so removing them is not a
  * cost: a container freezes its mount set at create time, so nothing short of a
  * recreate could ever hand them the new generation.
+ *
+ * **The holder set is DYNAMIC, so this list must be derived fresh at the moment
+ * it is used** (operator finding, 2026-08-19). While an operator was repairing a
+ * production session, an unrelated `refreshSecrets` reconcile re-created that
+ * session's `dev-1` and `assetgen-1` containers mid-window — a holder set read
+ * minutes earlier was already stale. Hence: never cache this, and treat its
+ * result as "true a moment ago", which is why {@link createOverlayVolume} loops.
  *
  * Returns the ids of the containers it removed, for the caller's log and to tell
  * the compose path that it owes the stack a reconcile.
@@ -289,7 +297,7 @@ export async function releaseOverlayVolumeHolders(
       filters: { volume: volumeNames },
     });
   } catch (err) {
-    // Not fatal here: `createOverlayVolume`'s post-create check is what makes a
+    // Not fatal here: `createOverlayVolume`'s verify-and-retry is what makes a
     // surviving holder loud, and it runs either way.
     console.warn(
       `${tag} could not list the containers holding ${volumeNames.join(", ")}:`,
@@ -321,54 +329,107 @@ export async function releaseOverlayVolumeHolders(
 }
 
 /**
+ * How many times {@link createOverlayVolume} will release-remove-create-verify
+ * before giving up. Three, because the thing it is racing — an unrelated compose
+ * reconcile re-creating a holder — is a bounded burst, not a standing condition:
+ * each round the holder set is re-derived, so a reconcile has to land inside a
+ * sub-second window three times running to exhaust it.
+ */
+const OVERLAY_CREATE_ATTEMPTS = 3;
+
+/** Backoff between attempts, so a reconcile in flight has time to finish. */
+const OVERLAY_CREATE_RETRY_MS = 250;
+
+/** What `createOverlayVolume` did, for a caller that has to react to a recreate. */
+export interface OverlayVolumeCreateResult {
+  /** The volume already matched the spec and was left untouched. */
+  unchanged: boolean;
+  /** Ids of containers removed to free the volume — non-empty ⇒ the stack owes itself a reconcile. */
+  releasedHolders: string[];
+}
+
+/**
  * Create the per-session `local`-driver `type=overlay` volume. The daemon performs
  * the overlay mount when the session container later mounts this volume at
  * `/workspace`. Serialized to avoid the overlay2 EBUSY hazard.
  *
  * Idempotent on name conflict: a volume that already exists with exactly the opts
- * and labels this spec wants is left alone, and one that disagrees (e.g. a crash
- * left it behind, or the base rotated under it) is removed and recreated — a stale
- * overlay volume pointing at a since-rebuilt base would otherwise wire the session
- * to the wrong lowerdir.
+ * this spec wants is left alone, and one that disagrees (a crash left it behind, or
+ * the base rotated under it) is recreated — a stale overlay volume pointing at a
+ * since-rebuilt base would otherwise wire the session to the wrong lowerdir.
  *
- * **The create is verified, because Docker will not fail for us.** `createVolume`
- * against a name that is already taken returns the EXISTING volume and ignores the
- * `DriverOpts` entirely — no error, no warning. So a removal that did not actually
- * happen (the 409 of the 2026-08-19 ops finding: a Compose sibling still mounting
- * it) used to produce a volume whose opts named a generation `prepareOverlayDirs`
- * had just deleted, and the session ran on an overlay with no upperdir. We inspect
- * afterwards and throw when the opts are not the ones we asked for: a container
- * that fails to create is recoverable and visible, a container that starts on a
- * dead upper layer is neither. The caller
- * ({@link releaseOverlayVolumeHolders}) is what keeps this from firing.
+ * **Recreating is a converge loop, not one shot** (the 2026-08-19 ops finding plus
+ * the operator's field correction). Two facts force it:
+ *
+ * 1. `createVolume` against a name that is already taken returns the EXISTING
+ *    volume and ignores `DriverOpts` entirely — no error, no warning. So a removal
+ *    that silently failed produced a volume naming a generation `prepareOverlayDirs`
+ *    had just deleted, and the session ran on an overlay with no upperdir.
+ * 2. The removal fails (409) whenever a container mounts the volume, and **the
+ *    holder set is dynamic**: an unrelated compose reconcile (`refreshSecrets`, a
+ *    plugin reconcile) can re-create a Compose sibling at any moment. Tearing the
+ *    holders down and then creating merely shrinks that race — it does not close it.
+ *
+ * So each attempt re-derives the holders, removes them, recreates, and **verifies**
+ * by re-inspecting; a mismatch retries. Only after {@link OVERLAY_CREATE_ATTEMPTS}
+ * does it throw — a container that fails to create is visible and recoverable, one
+ * that starts on a dead upper layer is neither, but a single transient reconcile
+ * must not be what fails it.
+ *
+ * `releaseHolders` is opt-in because only the session dep-dir path owns its
+ * volumes' holders. The plugin runtime overlay is shared between a service and a
+ * CLI container by design (`ensurePluginRuntimeOverlay`), so it never asks for this.
  */
 export async function createOverlayVolume(
   docker: Docker,
   spec: OverlaySpec,
   labels: Record<string, string> = {},
-): Promise<void> {
-  await serialize(async () => {
-    const state = await overlayVolumeState(docker, spec);
-    if (state === "match") return;
-    if (state === "mismatch") await removeVolumeIfExists(docker, spec.volumeName);
-    await docker.createVolume({
-      Name: spec.volumeName,
-      Driver: "local",
-      DriverOpts: {
-        type: "overlay",
-        device: "overlay",
-        o: overlayDriverOpts(spec),
-      },
-      Labels: { ...labels, [OVERLAY_MANAGED_LABEL]: "true" },
-    });
-    if (await overlayVolumeState(docker, spec) !== "match") {
-      throw new Error(
-        `Overlay volume ${spec.volumeName} was not created with the requested driver opts ` +
-        `(wanted "${overlayDriverOpts(spec)}"). Docker returns the pre-existing volume when ` +
-        `the name is taken, so the pre-create removal did not take effect — typically HTTP 409 ` +
-        `because a container still mounts it.`,
-      );
+  opts: { releaseHolders?: boolean; sessionId?: string } = {},
+): Promise<OverlayVolumeCreateResult> {
+  return serialize(async () => {
+    const tag = opts.sessionId ? `[overlay:${opts.sessionId}]` : "[overlay]";
+    const releasedHolders: string[] = [];
+    for (let attempt = 1; attempt <= OVERLAY_CREATE_ATTEMPTS; attempt++) {
+      const state = await overlayVolumeState(docker, spec);
+      if (state === "match") {
+        return { unchanged: attempt === 1 && releasedHolders.length === 0, releasedHolders };
+      }
+      if (state === "mismatch") {
+        // Derived HERE, on every attempt — see releaseOverlayVolumeHolders.
+        if (opts.releaseHolders) {
+          releasedHolders.push(
+            ...(await releaseOverlayVolumeHolders(docker, [spec.volumeName], opts)),
+          );
+        }
+        await removeVolumeIfExists(docker, spec.volumeName);
+      }
+      await docker.createVolume({
+        Name: spec.volumeName,
+        Driver: "local",
+        DriverOpts: {
+          type: "overlay",
+          device: "overlay",
+          o: overlayDriverOpts(spec),
+        },
+        Labels: { ...labels, [OVERLAY_MANAGED_LABEL]: "true" },
+      });
+      if (await overlayVolumeState(docker, spec) === "match") {
+        return { unchanged: false, releasedHolders };
+      }
+      if (attempt < OVERLAY_CREATE_ATTEMPTS) {
+        console.warn(
+          `${tag} ${spec.volumeName} still names a different generation after attempt ${attempt} ` +
+          `— a container re-took it mid-recreate; retrying`,
+        );
+        await new Promise((r) => setTimeout(r, OVERLAY_CREATE_RETRY_MS));
+      }
     }
+    throw new Error(
+      `Overlay volume ${spec.volumeName} could not be recreated with the requested driver opts ` +
+      `after ${OVERLAY_CREATE_ATTEMPTS} attempts (wanted "${overlayDriverOpts(spec)}"). Docker ` +
+      `returns the pre-existing volume when the name is taken, so the removal kept failing — ` +
+      `typically HTTP 409 because a container still mounts it.`,
+    );
   });
 }
 

@@ -792,10 +792,20 @@ async function inspectTolerantOfVanished(
  *
  * We gate on RUNNING containers, NOT "the volume exists on disk": an idle
  * (non-evicted) session keeps its overlay volume for a warm resume, but on resume
- * `createOverlayVolume` removes+recreates it against the CURRENT-runtime base — so
- * a lingering idle volume never re-pins its (possibly old-runtime) lowerdir and
- * must not keep an obsolete scope alive. Idle sessions' current-runtime bases are
- * covered by the resumable-session union in the caller.
+ * `createOverlayVolume` re-points it at the CURRENT-runtime base whenever its
+ * driver opts disagree — so a lingering idle volume never re-pins its (possibly
+ * old-runtime) lowerdir and must not keep an obsolete scope alive. Idle sessions'
+ * current-runtime bases are covered by the resumable-session union in the caller.
+ *
+ * **The converse is the reason a stale volume must never survive a create**
+ * (ops finding, 2026-08-19): this probe pins what RUNNING containers name, and
+ * the caller's union contributes each resumable session's CURRENT generation — so
+ * a volume left naming a SUPERSEDED generation while its session is idle pins
+ * nothing, and `sweepStaleBaseGenerations` reclaims the lowerdir out from under
+ * it. That is how two of the four damaged production sessions lost the base
+ * itself, not just their upper. It needs no fix here because it has no producer
+ * once `createOverlayVolume` verifies its own result: the volume is re-pointed at
+ * the current generation before anything mounts it.
  *
  * A failed reading is reported as `complete: false`, NEVER as an empty set: this
  * probe is the only protection a superseded-but-mounted generation has, and (since

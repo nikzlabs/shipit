@@ -314,40 +314,68 @@ session still pays ~0 and only a session the new base does **not** satisfy pays 
 The pre-`g<N>` layout (a bare `upper/` + `work/` under the scope dir) counts as superseded too, so
 the upgrade itself takes the marker drop rather than silently emptying every live session's upper.
 
-**A rotation must evict the volume's holders before it recreates it (ops finding, 2026-08-19).**
-The rotation above only works if the Docker volume actually follows the generation, and for seven
-months it did not. `createOverlayVolume` removes the same-named volume before creating it, but a
-volume **cannot be removed while a container mounts it** — the daemon answers HTTP 409 — and the
-session's **Compose siblings mount the very same per-session overlay volumes** (a project compose
+**A rotation must evict the volume's holders before it recreates it, and verify that it did (ops
+finding, 2026-08-19).** The rotation above only works if the Docker volume actually follows the
+generation, and it did not. `createOverlayVolume` removes the same-named volume before creating it,
+but a volume **cannot be removed while a container mounts it** — the daemon answers HTTP 409 — and
+the session's **Compose siblings mount the very same per-session overlay volumes** (a project compose
 file maps them onto `/app/dist`, `/plugin/dist`, `/project/node_modules`). On the restart-agent path
 (docs/127) those siblings are deliberately left running, so the removal 409'd, and then
 `docker volume create` against a name that already exists **returns the existing volume and silently
 ignores the new `DriverOpts`** — no error anywhere. The volume kept opts naming the `g<M>` whose
-`upper`/`work` `prepareOverlayDirs` had deleted seconds earlier. Four production sessions ran that
-way: reads served a frozen base generation, writes had nowhere to land, and an agent reported `tsc`
-"reporting success and writing nothing". The container even started, because the siblings already
-held that overlay mounted — the daemon joined the live mount instead of attempting a fresh
-`mount -t overlay` that would have failed ENOENT.
+`upper`/`work` `prepareOverlayDirs` had deleted seconds earlier. The container even started, because
+the siblings already held that overlay mounted — the daemon joined the live mount instead of
+attempting a fresh `mount -t overlay` that would have failed ENOENT.
+
+Four production sessions ran that way. **The blast radius is wider than dep-dir writes**: reads serve
+a frozen base generation and writes into the unlinked upper fail **ENOENT** (they are not silently
+discarded — the original "`tsc` reports success and writes nothing" was tsc swallowing the write
+error). One affected session logged `install_ok=false` and "install failed — 1 gated service(s) not
+started"; several had Compose stacks failing with exits 1, 127 and 137. So the defect takes down
+`agent.install` and the preview stack, not just the dep dir.
+
+*Diagnosing one by hand:* the signature is **ENOENT**, and a write probe must run as the session's own
+uid (`docker exec -u <uid>:1000`). Probing as uid 0 reports "Permission denied" on a **healthy** mount
+too — these containers lack `CAP_DAC_OVERRIDE` and the merged root is mode 2775.
 
 The fix is two halves that only work together, and neither is shippable alone:
 
-1. **Ordering.** Container create now compares each volume's live `o=` against the spec
-   (`overlayVolumeState`) and, for the ones that **disagree**, force-removes every container holding
-   them (`releaseOverlayVolumeHolders`, a `docker ps --filter volume=`) *before* the recreate. Scoped
-   to the disagreeing volumes on purpose: a session whose base did not rotate keeps its Compose stack,
-   which is what docs/127 exists to preserve. When it *did* rotate the siblings were mounting reaped
-   directories anyway, and a container freezes its mount set at create time — so nothing short of a
-   recreate could ever hand them the new generation. A volume that already matches is left untouched
-   rather than churned.
-2. **A guard that cannot be bypassed.** `createOverlayVolume` re-inspects after creating and **throws**
-   unless the opts are the ones it asked for. A failed container create is visible and recoverable; a
-   container that starts on a dead upper layer is neither. It catches any other path that could leave
-   stale opts, not just the 409.
+1. **Ordering.** For a volume whose live `o=` disagrees with the spec (`overlayVolumeState`), the
+   create force-removes every container holding it (`releaseOverlayVolumeHolders`, a
+   `docker ps --filter volume=`) before removing and recreating it. Scoped to the disagreeing volumes
+   on purpose: a session whose base did not rotate keeps its Compose stack, which is what docs/127
+   exists to preserve. When it *did* rotate the siblings were mounting reaped directories anyway, and
+   a container freezes its mount set at create time — so nothing short of a recreate could ever hand
+   them the new generation.
+2. **Verify, then retry, and only then fail loudly.** `createOverlayVolume` re-inspects after creating
+   and, on a mismatch, re-derives the holders and goes round again — three attempts, then it throws.
+   A failed container create is visible and recoverable; a container that starts on a dead upper layer
+   is neither.
+
+**The retry is not belt-and-braces — reordering alone cannot close this race** (operator finding,
+2026-08-19). The holder set is **dynamic**: while an operator was repairing a damaged session, an
+unrelated `refreshSecrets` reconcile re-created that session's `dev-1` and `assetgen-1` containers
+mid-window, so a holder list read minutes earlier was already stale. Any "tear down, then create"
+ordering leaves a window in which a compose reconcile puts the 409 back. That also decides the shape
+of the guard: a plain throw on 409 would turn a transient reconcile into a failed container create, so
+the loud failure belongs *after* the converge loop, not instead of it.
 
 Because the dep-dir *set* is unchanged by a rotation (the volume name is keyed on session + dep dir,
 never on the generation), the compose path's own change test would skip the reconcile that brings the
 removed siblings back. So a release records `SessionContainer.overlayVolumesRecreated`, which
-`applyOverlayDepDirs` consumes and reports as "reconcile needed".
+`applyOverlayDepDirs` consumes and reports as "reconcile needed". `reconcile()` restarts **auto** and
+install-gated services; a **manual** service the user had started stays stopped, and the session's
+Logs panel says so — the alternative was leaving it running against an upper layer that no longer
+exists.
+
+**A stale volume also loses its lowerdir, which is why it must not survive a create.** Two of the four
+damaged sessions had the pinned base generation itself gone from disk. `liveMountedOverlayBaseGenerations`
+pins what **running** containers name, and the caller's union contributes each resumable session's
+**current** generation — so a volume left naming a superseded generation while its session is idle
+pins nothing, and `sweepStaleBaseGenerations` reclaims the lowerdir out from under it. That needs no
+separate fix: it has no producer once the create verifies its own result, because the volume is
+re-pointed at the current generation before anything mounts it. (The residual in-flight-create window
+is the already-recorded planning#440 gap.)
 
 **On-host upperdir reclaim — `sessions/<id>/overlay/` (planning#194).** The upper/work **bytes** live on
 the host state volume at `sessions/<id>/overlay/<scopeHash>/g<N>/{upper,work}` — a **sibling** of the

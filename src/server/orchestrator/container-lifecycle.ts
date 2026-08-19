@@ -38,12 +38,7 @@ import {
   perSessionCredentialsDir,
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
-import {
-  createOverlayVolume,
-  overlayVolumeState,
-  releaseOverlayVolumeHolders,
-  removeOverlayVolume,
-} from "./overlay-volume.js";
+import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import {
   preStampInstallMarker,
   sortOverlayDepDirs,
@@ -1187,26 +1182,25 @@ export async function createContainer(
       // volumes, and on the restart-agent path (docs/127) they are deliberately
       // left running, so the removal failed, `createVolume` returned the existing
       // volume with its stale opts, and the session ran on an overlay whose upper
-      // layer no longer existed on the host — reads frozen at the old base, writes
-      // discarded. Release the holders FIRST, and only for the volumes that
-      // actually disagree: a session whose base did not rotate keeps its stack.
-      const rotated: string[] = [];
+      // layer no longer existed on the host: writes ENOENT'd, `agent.install`
+      // failed, and gated compose services never started. `releaseHolders` lets
+      // the create tear those siblings down — re-derived on every attempt,
+      // because an unrelated compose reconcile can mint a new holder at any
+      // moment (operator finding) — and verify the result instead of trusting it.
       for (const spec of config.overlaySpecs) {
-        if (await overlayVolumeState(deps.docker, spec) === "mismatch") {
-          rotated.push(spec.volumeName);
-        }
-      }
-      const released = await releaseOverlayVolumeHolders(deps.docker, rotated, {
-        sessionId: config.sessionId,
-      });
-      // Those siblings are gone now, and nothing else brings them back: the dep-dir
-      // SET is unchanged, so the compose path's own "did the overlay change?" test
-      // says no and skips the reconcile. Record it so `applyOverlayDepDirs` asks for
-      // one anyway — a service container freezes its mounts at create time, so the
-      // recreate is the only way it can ever see the new generation.
-      if (released.length > 0) sc.overlayVolumesRecreated = true;
-      for (const spec of config.overlaySpecs) {
-        await createOverlayVolume(deps.docker, spec, deps.baseLabels());
+        const { releasedHolders } = await createOverlayVolume(
+          deps.docker,
+          spec,
+          deps.baseLabels(),
+          { releaseHolders: true, sessionId: config.sessionId },
+        );
+        // Those siblings are gone now, and nothing else brings them back: the
+        // dep-dir SET is unchanged, so the compose path's own "did the overlay
+        // change?" test says no and skips the reconcile. Record it so
+        // `applyOverlayDepDirs` asks for one anyway — a service container freezes
+        // its mounts at create time, so the recreate is the only way it can ever
+        // see the new generation.
+        if (releasedHolders.length > 0) sc.overlayVolumesRecreated = true;
       }
     }
 

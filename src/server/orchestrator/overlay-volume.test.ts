@@ -145,6 +145,10 @@ function makeVolumeStore(opts: {
   seed?: Record<string, { o: string; labels?: Record<string, string> }>;
   heldBy?: Record<string, string[]>;
   onCreate?: (name: string) => Promise<void>;
+  /** Ids whose `remove` throws with this status — models a holder we cannot evict. */
+  unremovableHolders?: Record<string, number>;
+  /** Called after each holder removal — the hook a test uses to re-take a volume. */
+  onHolderRemoved?: (id: string, held: Map<string, string[]>) => void;
 } = {}) {
   interface Vol { Options: Record<string, string>; Labels: Record<string, string> }
   const store = new Map<string, Vol>();
@@ -190,14 +194,19 @@ function makeVolumeStore(opts: {
     }),
     getContainer: (id: string) => ({
       remove: async () => {
+        const status = opts.unremovableHolders?.[id];
+        if (status !== undefined) {
+          throw Object.assign(new Error(`cannot remove ${id}`), { statusCode: status });
+        }
         removedContainers.push(id);
         for (const [vol, containers] of held) {
           held.set(vol, containers.filter((c) => c !== id));
         }
+        opts.onHolderRemoved?.(id, held);
       },
     }),
   };
-  return { docker: docker as unknown as Docker, store, created, removed, removedContainers };
+  return { docker: docker as unknown as Docker, store, held, created, removed, removedContainers };
 }
 
 describe("createOverlayVolume", () => {
@@ -284,34 +293,94 @@ describe("createOverlayVolume", () => {
     expect(created[1].DriverOpts?.o).not.toContain("g262");
   });
 
-  // THE regression of 2026-08-19. Four production sessions ran on an overlay whose
-  // upperdir and workdir had been reaped: the pre-create removal 409'd (a Compose
-  // sibling still mounted the volume), `createVolume` returned the existing volume
-  // with its stale opts, and NOTHING said so. A create that cannot honour its spec
-  // must fail loudly — a container that will not start beats one that starts on a
-  // dead upper layer, where `tsc` reports success and writes nothing.
-  it("throws when a 409 on the pre-create removal leaves the reaped generation's opts", async () => {
-    const staleOpts = "lowerdir=/data/overlay-base/h1/g2," +
-      "upperdir=/data/sessions/s1/overlay/h1/g2/upper," +
-      "workdir=/data/sessions/s1/overlay/h1/g2/work";
-    const rotated: OverlaySpec = {
-      volumeName: spec.volumeName,
-      lowerdir: "/data/overlay-base/h1/g3",
-      upperdir: "/data/sessions/s1/overlay/h1/g3/upper",
-      workdir: "/data/sessions/s1/overlay/h1/g3/work",
-    };
+  // --- THE regression of 2026-08-19 -----------------------------------------
+  //
+  // Four production sessions ran on an overlay whose upperdir and workdir had been
+  // reaped: the pre-create removal 409'd (a Compose sibling still mounted the
+  // volume), `createVolume` returned the existing volume with its stale opts, and
+  // NOTHING said so. Writes into the unlinked upper then failed ENOENT, which took
+  // `agent.install` and the gated compose services down with them.
+  const STALE = "lowerdir=/data/overlay-base/h1/g2," +
+    "upperdir=/data/sessions/s1/overlay/h1/g2/upper," +
+    "workdir=/data/sessions/s1/overlay/h1/g2/work";
+  const rotated: OverlaySpec = {
+    volumeName: "shipit-abcdef012345_overlay",
+    lowerdir: "/data/overlay-base/h1/g3",
+    upperdir: "/data/sessions/s1/overlay/h1/g3/upper",
+    workdir: "/data/sessions/s1/overlay/h1/g3/work",
+  };
+
+  it("throws when a 409 on the removal leaves the reaped generation's opts", async () => {
     const { docker, store } = makeVolumeStore({
-      seed: { [spec.volumeName]: { o: staleOpts } },
-      heldBy: { [spec.volumeName]: ["dev-1"] },
+      seed: { [rotated.volumeName]: { o: STALE } },
+      heldBy: { [rotated.volumeName]: ["dev-1"] },
+      // The holder cannot be evicted, so every attempt re-finds the 409.
+      unremovableHolders: { "dev-1": 500 },
     });
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await expect(createOverlayVolume(docker, rotated)).rejects.toThrow(
-      /was not created with the requested driver opts/,
+    await expect(createOverlayVolume(docker, rotated, {}, { releaseHolders: true })).rejects.toThrow(
+      /could not be recreated with the requested driver opts/,
     );
     // And the daemon still holds the stale one — the point being that the caller
     // now KNOWS, rather than starting a container over it.
-    expect(store.get(spec.volumeName)?.Options.o).toBe(staleOpts);
+    expect(store.get(rotated.volumeName)?.Options.o).toBe(STALE);
+  });
+
+  it("evicts the holder and recreates over the new generation, reporting what it removed", async () => {
+    const { docker, store, removedContainers } = makeVolumeStore({
+      seed: { [rotated.volumeName]: { o: STALE } },
+      heldBy: { [rotated.volumeName]: ["dev-1", "assetgen-1"] },
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const result = await createOverlayVolume(docker, rotated, {}, { releaseHolders: true });
+
+    expect(result.unchanged).toBe(false);
+    expect(result.releasedHolders.sort()).toEqual(["assetgen-1", "dev-1"]);
+    expect(removedContainers.sort()).toEqual(["assetgen-1", "dev-1"]);
+    expect(store.get(rotated.volumeName)?.Options.o).toBe(overlayDriverOpts(rotated));
+  });
+
+  // The operator's field finding: the holder set is DYNAMIC. While a production
+  // session was being repaired, an unrelated `refreshSecrets` reconcile re-created
+  // its `dev-1` and `assetgen-1` containers mid-window. Tearing holders down and
+  // then creating only shrinks that race — so the create has to re-derive the
+  // holders and verify its own result, round after round, rather than once.
+  it("converges when a compose reconcile re-takes the volume mid-recreate", async () => {
+    let retaken = false;
+    const store = makeVolumeStore({
+      seed: { [rotated.volumeName]: { o: STALE } },
+      heldBy: { [rotated.volumeName]: ["dev-1"] },
+      onHolderRemoved: (_id, held) => {
+        // Exactly once: a reconcile mints a fresh holder the instant the old one
+        // goes, so this attempt's removal 409s and its create is a silent no-op.
+        if (retaken) return;
+        retaken = true;
+        held.set(rotated.volumeName, ["dev-2"]);
+      },
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const result = await createOverlayVolume(store.docker, rotated, {}, { releaseHolders: true });
+
+    // Round 1 evicted dev-1 and still failed; round 2 evicted dev-2 and won.
+    expect(result.releasedHolders).toEqual(["dev-1", "dev-2"]);
+    expect(store.store.get(rotated.volumeName)?.Options.o).toBe(overlayDriverOpts(rotated));
+  });
+
+  // `releaseHolders` is opt-in: the plugin runtime overlay is shared between a
+  // service and a CLI container by design, so that path must never evict them.
+  it("does not touch holders unless asked to", async () => {
+    const { docker, removedContainers } = makeVolumeStore({
+      seed: { [rotated.volumeName]: { o: STALE } },
+      heldBy: { [rotated.volumeName]: ["cli-1"] },
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(createOverlayVolume(docker, rotated)).rejects.toThrow(/could not be recreated/);
+    expect(removedContainers).toEqual([]);
   });
 
   it("serializes concurrent creates (no interleaving)", async () => {
@@ -353,7 +422,8 @@ describe("createOverlayVolume", () => {
 
     await expect(createOverlayVolume(docker, { ...spec, volumeName: "v1" })).rejects.toThrow("boom");
     // Second create still runs.
-    await expect(createOverlayVolume(docker, { ...spec, volumeName: "v2" })).resolves.toBeUndefined();
+    await expect(createOverlayVolume(docker, { ...spec, volumeName: "v2" }))
+      .resolves.toEqual({ unchanged: false, releasedHolders: [] });
   });
 });
 
@@ -419,6 +489,19 @@ describe("releaseOverlayVolumeHolders", () => {
     } as unknown as Docker;
     vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(await releaseOverlayVolumeHolders(docker, [volumeName])).toEqual([]);
+  });
+
+  it("treats a holder that has already gone (404) as released by someone else", async () => {
+    const { docker } = makeVolumeStore({
+      seed: { [volumeName]: { o: "lowerdir=/g2,upperdir=/g2/u,workdir=/g2/w" } },
+      heldBy: { [volumeName]: ["already-gone", "dev-1"] },
+      unremovableHolders: { "already-gone": 404 },
+    });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+
+    // The 404 is not reported as released (we did not remove it) and is not an
+    // error either — the volume is free, which is the outcome we wanted.
+    expect(await releaseOverlayVolumeHolders(docker, [volumeName])).toEqual(["dev-1"]);
   });
 });
 
