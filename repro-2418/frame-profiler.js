@@ -236,7 +236,13 @@
     }
     return {
       code: "frames-withheld",
-      text: "Frames withheld while timers ran normally and this page stayed laid out — the browser throttled this frame's rendering, which it does when the iframe ELEMENT is outside the ShipIt viewport.",
+      // Deliberately names the CLASS and not a cause. An earlier wording said
+      // "the iframe element is outside the ShipIt viewport", which was the only
+      // condition in the desktop matrix that produced this fingerprint — but
+      // that matrix never contained a second live WebGL preview competing for
+      // the GPU, and that produces the same fingerprint. The instrument should
+      // not decide between two candidates it cannot see.
+      text: "Frames withheld by the browser, not by the thread: timers ran normally and this page stayed laid out. Two host-side causes do this — the iframe element being outside the ShipIt viewport, or another live preview contending for the GPU. This page cannot tell them apart; the A/B in README.md can.",
     };
   }
 
