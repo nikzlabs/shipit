@@ -114,19 +114,34 @@ the expansion of every line, with file pointers and gotchas, is in
       with the CLI's auth error while the valid ambient env key sits unused,
       and restoring the stored value makes the same spawn succeed. Evidence:
       [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
-- [ ] `shipit agent run` both directions — **blocked on planning#442**
-      (grok binary missing at runtime). The original structural blockers
-      cleared 2026-08-18 ~16:00Z (outer redeployed with grok in the
-      installed set; role `Grok` exists) and target resolution now proves
-      out end to end in BOTH directions — the inbound one-shot resolved
-      role `Grok` → xai:key grok-4.6 (runs `8d65173d…`, `91acc84f…`) and
-      an outbound grok-pinned child session (`556b60ca…`, via
-      `shipit session create --role Grok`) resolved identically — but the
-      grok CLI dies at startup before any event, so neither consult
-      executed. planning#438's silence reproduces on the consult surface;
-      planning#443 (marker reader drops grok) found while tracing the
-      spawn path. Rerun the recipe once planning#442 lands. Evidence:
-      [docs/272 run 2026-08-18-1600](../272-harness-conversion-verification/runs/2026-08-18-1600-grok-1.0.1-agent-run.md).
+- [ ] `shipit agent run` both directions — **blocked on planning#444**
+      (dangling `~/.grok` defeats the adapter's `GROK_HOME`). The
+      structural blockers cleared 2026-08-18 ~16:00Z (outer redeployed
+      with grok in the installed set; role `Grok` exists) and target
+      resolution proves out end to end in BOTH directions — the inbound
+      one-shot resolves role `Grok` → xai:key grok-4.6 and an outbound
+      grok-pinned child session (`556b60ca…`, via
+      `shipit session create --role Grok`) resolved identically.
+      **planning#442 is now verified fixed** (rerun 2026-08-19:
+      `grok --version` → 1.0.1, the real binary spawns and executes a full
+      turn) — do not re-test it. The consult now dies one step later:
+      `~/.grok` is a dangling symlink in every session container (nothing
+      creates `/credentials/.grok` in key mode), `makeSpawnHome`'s opening
+      `mkdirSync` throws ENOENT through it, and the catch falls back to
+      handing the CLI that same dangling path as `GROK_HOME` — so it dies
+      at its own session creation, `duration_ms: 0`, before any event. A
+      three-case controlled test with `GROK_HOME` as the only variable
+      succeeds ($0.0435, exit 0) and pins the cause; the green dogfood runs
+      are explained by `Dockerfile.dev` creating no `.grok` symlink at all.
+      Filed **planning#444**. OUTBOUND and the optional role-less explicit
+      target were not reached — the per-turn spawn cap (3, shared with
+      `shipit session create`) was consumed by the inbound attempts.
+      planning#438's silence reproduces and materially raised the cost of
+      diagnosis; planning#443 (marker reader drops grok) was found in the
+      previous run. Rerun the recipe once planning#444 lands. Evidence:
+      [docs/272 run 2026-08-19-1048](../272-harness-conversion-verification/runs/2026-08-19-1048-grok-1.0.1-agent-run.md),
+      prior attempt
+      [2026-08-18-1600](../272-harness-conversion-verification/runs/2026-08-18-1600-grok-1.0.1-agent-run.md).
       Separately, the *design*-level blocker this item also carried — an
       explicit grok target being unassemblable, since the five-flag rule
       demanded a level grok declares none of — is gone:
