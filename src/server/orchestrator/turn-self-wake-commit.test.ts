@@ -35,9 +35,15 @@ import { GitManager } from "../shared/git.js";
 // These tests run several `waitFor` polls plus real git subprocesses per case;
 // under a loaded full-suite CI runner the vitest default (5000ms) is headroom-
 // free, and it equals `waitFor`'s internal deadline, which swallowed the
-// helper's diagnostic label (see the comment on `waitFor`). 20s is generous on
-// purpose — the helper's 5s deadline is what actually bounds a hung condition.
-vi.setConfig({ testTimeout: 20_000 });
+// helper's diagnostic label (see the comment on `waitFor`).
+//
+// The two deadlines COMPOSE, which is why this is not simply "20s is generous".
+// The heaviest cases chain THREE sequential `waitFor` calls, so the budget a
+// single test can consume is `3 × waitFor deadline` — and that product, not the
+// helper deadline alone, is what has to stay under this timeout for a hang to
+// fail with its label. 60s over a 15s helper deadline keeps the gap at 3 × 15 <
+// 60 with room to spare.
+vi.setConfig({ testTimeout: 60_000 });
 
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
@@ -73,12 +79,23 @@ async function selfWake(agent: FakeAgent, taskId = "bg-1"): Promise<void> {
   await flush();
 }
 
-// The helper's deadline must stay strictly BELOW the file's testTimeout
-// (set right below): when the two were equal (both 5000, vitest's default),
-// vitest killed the test at the same instant this deadline expired, so CI
-// reported a bare "Test timed out in 5000ms" and the descriptive label never
-// surfaced. The gap is what makes a hang diagnosable.
-async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 5000): Promise<void> {
+// This deadline must stay strictly below the file's testTimeout — MULTIPLIED by
+// the most `waitFor` calls any one test chains (three). When the two were equal
+// (both 5000, vitest's default), vitest killed the test at the same instant this
+// deadline expired, so CI reported a bare "Test timed out in 5000ms" and the
+// descriptive label never surfaced. The gap is what makes a hang diagnosable.
+//
+// **Why 15s and not the 5s that made the label work.** Splitting the two
+// deadlines fixed the diagnosis and deliberately left this bound alone, so it
+// became the binding one: CI then failed on "Timed out waiting for errored
+// adopted turn's edits committed". Measured on an idle box that condition
+// settles in ~19 polls / ~92ms, so 5s only breaks past a ~54× slowdown — which a
+// loaded 913-file suite reached. Each poll spawns a `git status`, so what the
+// deadline really buys is a POLL COUNT, and the two heaviest cases sit at 17 and
+// 19 polls; in the failing run the 17-poll sibling passed and the 19-poll case
+// did not, which is the signature of a marginal budget rather than a hang. 15s
+// covers a ~163× slowdown and stays diagnosable.
+async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fn()) return;
