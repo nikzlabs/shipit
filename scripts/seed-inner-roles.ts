@@ -157,9 +157,15 @@ export const RECIPES: readonly RoleRecipe[] = [
   },
   {
     name: "quick-look",
+    // Deliberately NOT described as "cheap": what this recipe varies is the
+    // reasoning level, and the model it lands on is whatever the harness's
+    // eligible list offers first — often the same one `deep-dive` uses. A
+    // description promising a small model would be a description the agent
+    // reads (req 19) and acts on, and it would be false.
     description:
-      "Fast and cheap, for one narrow well-specified question. Give it an explicit, ordered brief "
-      + "and a single deliverable — it is not the role to hand an open-ended investigation to.",
+      "A short leash: the same harness at its lowest reasoning level, for one narrow "
+      + "well-specified question. Give it an explicit, ordered brief and a single deliverable — "
+      + "it is not the role to hand an open-ended investigation to.",
     harness: "primary",
     level: "lowest",
   },
