@@ -114,9 +114,39 @@ the expansion of every line, with file pointers and gotchas, is in
       with the CLI's auth error while the valid ambient env key sits unused,
       and restoring the stored value makes the same spawn succeed. Evidence:
       [docs/272 run 2026-08-18-1240](../272-harness-conversion-verification/runs/2026-08-18-1240-grok-1.0.1.md).
-- [ ] `shipit agent run` both directions — **planning#444 is fixed; the rerun
-      is blocked on a redeployed session-worker image.** The structural
-      blockers cleared 2026-08-18 ~16:00Z (outer redeployed with grok in the
+- [x] `shipit agent run` both directions — **DONE 2026-08-19 13:09Z, verdict
+      GREEN**, on a session-worker image rebuilt with the planning#444 fix.
+      Evidence:
+      [docs/272 run 2026-08-19-1309](../272-harness-conversion-verification/runs/2026-08-19-1309-grok-1.0.1-agent-run.md).
+      All in **real session containers** (a dogfood run cannot settle this —
+      `Dockerfile.dev` creates no `.grok` symlink, so the bug cannot exist
+      there). INBOUND `shipit agent run --role Grok` → `eb61663c…`,
+      `status: success`, 13.3s, $0.0619, coherent output. OUTBOUND from a
+      grok-pinned child session (`c57755ea…`, orchestrator-resolved
+      `agent: grok` / `grok-4.6`) → `shipit agent run --role Fable`
+      `47b49de6…`, exit 0. The optional role-less explicit target
+      (`--agent grok --service xai --billing-mode key --model grok-4.6`, no
+      `--effort`, docs/275's acceptance case) → `96b99b49…`, success, and
+      carries no `roleName`. Exactly three spawns, one turn, no retry.
+      The planning#444 fix confirmed by three checks: a grok-pinned session
+      completes its first turn (and a second) where the pre-fix symptom was
+      `error` / `error_during_execution` / `duration_ms 0`; `command -v grok`
+      answers `/usr/local/bin/grok` in both containers (the `.bin` launcher
+      shim no longer exists, so `PATH` order stopped mattering); and three
+      per-turn `GROK_HOME` roots across two containers all show no `bin/`
+      payload at 1MB — measured both in-band by the CLI and out-of-band by a
+      5Hz watcher whose 69 samples are uniformly `bin=no`. The **root** cause
+      is fixed rather than survived: both spawn homes link
+      `sessions -> /home/shipit/.grok/sessions`, which is `makeSpawnHome`'s
+      success path, not its degraded self-contained fallback, and
+      `/credentials/.grok` now exists. No new defect found; planning#442 was
+      not re-tested. planning#438 is still open but did not bite — with grok
+      starting successfully there was no startup-dead turn to be silent about.
+      Still out of scope: the subscription-mode turn (planning#435).
+
+      <details><summary>History — why this took three attempts</summary>
+
+      The structural blockers cleared 2026-08-18 ~16:00Z (outer redeployed with grok in the
       installed set; role `Grok` exists) and target resolution proves out end
       to end in BOTH directions — the inbound one-shot resolves role `Grok` →
       xai:key grok-4.6 and an outbound grok-pinned child session
@@ -146,20 +176,18 @@ the expansion of every line, with file pointers and gotchas, is in
       real session container. OUTBOUND and the optional role-less explicit
       target were not reached — the per-turn spawn cap (3, shared with
       `shipit session create`) was consumed by the inbound attempts.
-      planning#438's silence reproduces and materially raised the cost of
+      planning#438's silence reproduced and materially raised the cost of
       diagnosis; planning#443 (marker reader drops grok) was found in the
-      previous run. Both halves are fixed; this item stays open until a
-      rebuilt session-worker image is deployed and the recipe reruns.
-      Evidence:
+      previous run. Prior attempts:
       [docs/272 run 2026-08-19-1048](../272-harness-conversion-verification/runs/2026-08-19-1048-grok-1.0.1-agent-run.md),
-      prior attempt
       [2026-08-18-1600](../272-harness-conversion-verification/runs/2026-08-18-1600-grok-1.0.1-agent-run.md).
       Separately, the *design*-level blocker this item also carried — an
       explicit grok target being unassemblable, since the five-flag rule
-      demanded a level grok declares none of — is gone:
-      docs/275-roleless-explicit-run (planning#441) makes the four identity
-      flags a complete grok target, so this item no longer depends on a
-      configured grok role at all.
+      demanded a level grok declares none of — was removed by
+      docs/275-roleless-explicit-run (planning#441), which makes the four
+      identity flags a complete grok target.
+
+      </details>
 - [x] Event-conversion verification: the full docs/272 recipe run
       (tool-tour capture ✅, inventory diff, recognition matrix on persisted
       history + UI) —
@@ -225,4 +253,6 @@ the expansion of every line, with file pointers and gotchas, is in
       the dishonesty req 14 forbids.
 - [ ] One subscription-mode dogfood turn with the billing route verified
       through the scrub/shaping path — the Phase 10 item key mode cannot cover.
-      Blocked on planning#444.
+      **planning#444 no longer blocks this** (fixed and verified in a real
+      container 2026-08-19, see the Phase 10 item); it now waits only on the
+      `xai-oauth` auth manager above.
