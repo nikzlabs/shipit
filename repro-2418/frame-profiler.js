@@ -67,6 +67,14 @@
     visibility: [],              // { atMs, visible } from window.shipit
     hiddenEver: false,
     heapValues: new Set(),
+    // ShipIt stops correcting a scrolled-off shell while the focused element is
+    // an iframe (useAppViewportHeight's `isFocusHoldingScroll`), and playing the
+    // game is what focuses this one. `document.hasFocus()` inside the frame is
+    // that exact condition seen from in here, so it is recorded per stall — if
+    // stalls only ever happen with focus held, that is a real lead.
+    firstTouchAtMs: null,
+    touches: 0,
+    firstFocusAtMs: null,
   };
 
   /**
@@ -169,6 +177,7 @@
           viewport: `${window.innerWidth}x${window.innerHeight}`,
           intersecting,
           documentHidden: document.hidden,
+          hasFocus: document.hasFocus(),
           shipitVisible,
         });
       }
@@ -264,6 +273,10 @@
       timerGapsOver100ms: state.timerGaps.length,
       timerGapsDuringStalls,
       documentHiddenEver: state.hiddenEver,
+      touches: state.touches,
+      firstTouchAtMs: state.firstTouchAtMs,
+      firstFocusAtMs: state.firstFocusAtMs,
+      stallsWhileFrameFocused: state.stalls.filter((st) => st.hasFocus).length,
       stallsWithPageNotLaidOut: state.stalls.filter((st) =>
         st.intersecting === false || st.viewport.startsWith("0x") || st.viewport.endsWith("x0")).length,
       distinctHeapValues: state.heapValues.size,
@@ -292,7 +305,8 @@
       "",
       "worst stalls (ms, display periods, what the page believed at the time):",
       ...worst.map((st) => `  t+${(st.atMs / 1000).toFixed(1)}s  ${st.ms}ms = ${st.periods} periods  ` +
-        `viewport=${st.viewport} intersecting=${st.intersecting} hidden=${st.documentHidden} shipitVisible=${st.shipitVisible}`),
+        `viewport=${st.viewport} intersecting=${st.intersecting} hidden=${st.documentHidden} ` +
+        `focused=${st.hasFocus} shipitVisible=${st.shipitVisible}`),
       "",
       "timer gaps over 100ms (empty = the event loop never stalled):",
       state.timerGaps.length
