@@ -257,12 +257,11 @@ export const HARNESSES = [
     id: "grok",
     name: "Grok Build",
     binary: "grok",
-    // xAI is a real native service for this CLI — but note it carries no
-    // account machinery either (no ShipIt-side login flow, no OAuth heal), the
-    // same caveat OpenCode's row spells out above. Grok's subscription is real
-    // and reached by the CLI's OWN `grok login --device-auth`; wiring it is
-    // planning#435, and until then `nativeService` here means "whose models
-    // and whose bill", not "whose account system".
+    // xAI is a real native service for this CLI, and since planning#435 it
+    // carries account machinery too: the subscription (SuperGrok / X Premium+)
+    // is reached by the CLI's own `grok login --device-auth`, whose cached
+    // `auth.json` ShipIt injects. So `nativeService` now means both "whose
+    // models and whose bill" and "whose account system".
     nativeService: "xai",
     // VERIFIED (docs/274 Phase 0, CLI 1.0.1, against a local HTTP recorder).
     // ONE CLI, TWO styles: an explicit `-m` turn goes to
@@ -277,11 +276,13 @@ export const HARNESSES = [
     spawn: {
       credential: {
         string: { kind: "env", name: "XAI_API_KEY" },
-        // Deliberately NO `account` target (docs/274 req 6), the docs/268
-        // precedent: the eligibility join then structurally excludes every
-        // `via: "account"` mode, so no subscription can be selected for a
-        // harness whose subscription path is unverified. Flipping this on is
-        // planning#435's first line, not a config change.
+        // Still NO `account` target, and now for a narrower reason than
+        // docs/274 req 6's. The subscription path is VERIFIED (planning#435: a
+        // real device-code login, effort levels honoured at the wire) — what is
+        // missing is the `xai-oauth` auth manager that would run the flow from
+        // inside ShipIt. Flipping this on before that exists would let the
+        // eligibility join offer a subscription no ShipIt surface can sign into.
+        // It flips in the same change as the manager, not before.
         account: undefined,
       },
       // `grok -p … -m <modelId>`. Verified forwarded verbatim: the id also
@@ -312,16 +313,29 @@ export const HARNESSES = [
       supportsPermissionModes: true,
       supportedPermissionModes: GROK_PERMISSION_MODES,
       toolNames: [...GROK_TOOL_NAMES],
-      // EMPTY, and honest (docs/274 req 8). `--reasoning-effort` exists in the
-      // CLI's help and the binary carries per-model `reasoning_efforts`
-      // machinery — but in API-key mode the flag is SILENTLY DROPPED for every
-      // model probed (recorder-verified: no effort field reaches the wire).
-      // Reasoning in key mode is a model-id choice instead, which is why the
-      // 4.20 pair ships as two catalogue rows. Declaring a level ShipIt cannot
-      // deliver would put a control on screen that does nothing. The effort
-      // machinery appears gated on the subscription catalog; re-probe under
-      // planning#435. This is the first harness with no levels, which is why
-      // `reviewer-model.ts` had to learn the case (docs/274 req 8).
+      // EMPTY, and still honest — but for a narrower reason than docs/274 req 8
+      // gave, and the difference is planning#435's finding.
+      //
+      // `--reasoning-effort` is NOT universally dropped: under a SUBSCRIPTION
+      // the CLI honours it, recorder-verified with a negative control
+      // (`reasoning:{effort:"xhigh"}` with the flag against
+      // `reasoning:{effort:"high"}` without). Under an API key it is discarded
+      // for every model probed. So Grok's real vocabulary is
+      // xhigh/high/medium/low — and every selection ShipIt can currently run is
+      // key-billed, because the subscription mode is not declared yet.
+      //
+      // Which is why this stays `[]` rather than naming the four now. The gate
+      // is the BILLING MODE, and `AgentReasoningCapability` has no axis for
+      // that: writing the vocabulary here would offer four dead levels on every
+      // key-mode row — including the gateway rows Grok shares with other
+      // harnesses (`x-ai/grok-4.6` at OpenRouter, DeepSeek, GLM), which cannot
+      // narrow per-harness because a `ModelDef` is per service and not per
+      // harness. `ModelDef.reasoningEfforts` narrows per ROW and so cannot
+      // express it either.
+      //
+      // The vocabulary lands with the subscription mode, together with the
+      // harness×mode axis it needs. Recorded here rather than in a doc because
+      // this is where the next person will look for it.
       reasoning: { label: "Reasoning", options: [] },
       // Unexercised as a reviewer at launch.
       supportsReview: false,

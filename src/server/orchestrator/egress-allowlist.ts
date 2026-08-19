@@ -61,12 +61,25 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   // billing modes. NOT ".opencode.ai": the suffix would also open the console,
   // and inference is what a session needs.
   "opencode.ai",
-  // docs/274 — xAI's inference endpoint, the `grok` harness's native service.
-  // EXACT host, never ".x.ai": the suffix would also open `auth.x.ai` and the
-  // marketing site, and inference is what a session needs. (When planning#435
-  // wires the device-flow login, `auth.x.ai` is the entry that adds — as its
-  // own exact host, with the login flow to justify it.)
+  // docs/274 — xAI's inference endpoint, the `grok` harness's KEY-billed mode.
+  // EXACT host, never ".x.ai": the suffix would open the marketing site and
+  // every other x.ai service, and inference is what a session needs.
   "api.x.ai",
+  // planning#435 — the two hosts Grok's SUBSCRIPTION mode needs, each its own
+  // exact host for the same reason. Both are here because they were observed
+  // in use, not because the binary mentions them:
+  //   - `auth.x.ai` serves the OIDC device-code flow (`grok login
+  //     --device-auth` POSTs `/oauth2/device/code`) AND the refresh — the
+  //     token is short-lived (6h observed), so a long session re-reaches this
+  //     host mid-turn, which is why it cannot be a login-time-only grant.
+  //   - `cli-chat-proxy.grok.com` is where subscription turns actually go:
+  //     `GET /v1/models` returns a catalogue disjoint from the key mode's, and
+  //     every recorded turn POSTs `/v1/responses` there.
+  // Note `accounts.x.ai` is deliberately ABSENT: it serves the page the user
+  // approves the device code on, which their own browser loads. The container
+  // never fetches it.
+  "auth.x.ai",
+  "cli-chat-proxy.grok.com",
 
   // --- Git host ---
   // ShipIt only authenticates against GitHub today (see docs/172 Gap 2). The
@@ -137,6 +150,14 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   "ai-gateway.vercel.sh",
   "opencode.ai",
   "api.x.ai",
+  // planning#435 — Grok's subscription mode. `cli-chat-proxy.grok.com` is an
+  // inference endpoint, so it belongs in the lifeline on the same footing as
+  // `api.x.ai`. `auth.x.ai` is here for a different reason: the subscription
+  // token expires in ~6h and refreshes against it, so a Network-off session
+  // that could reach inference but not the refresh would die partway through
+  // rather than at the start — the failure mode a lifeline exists to prevent.
+  "auth.x.ai",
+  "cli-chat-proxy.grok.com",
 ];
 
 /**

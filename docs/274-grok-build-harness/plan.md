@@ -459,6 +459,71 @@ And two probes that came back negative, each of which changed what shipped:
   negative control proves the model got the right answer, not that it got it the
   way you think.
 
+## Reasoning is a harness×mode fact, and neither existing axis holds it (req 14)
+
+planning#435 verified that Grok's two billing modes disagree about
+`--reasoning-effort`: the subscription honours it, the API key discards it
+(negative control in requirements.md's receipt). Making the picker honest about
+that turned out to need a shape neither the harness nor the model can express,
+and the first two attempts both failed in ways worth recording — the second only
+because a guard test had teeth.
+
+**Attempt 1 — widen `AgentCapabilities.reasoning`.** Rejected immediately:
+`reasoning.options` is per-harness, so one list must either offer levels that do
+nothing under a key or hide levels that work under a subscription.
+
+**Attempt 2 — narrow per catalogue row (`ModelDef.reasoningEfforts`).** This is
+the shape that shipped as the *mechanism*, and it is genuinely the right
+granularity for one thing: within the subscription, `grok-4.6` offers `xhigh`
+and `grok-4.5` does not, so a mode-level list would have to be the intersection
+and drop a level the user pays for.
+
+But it is **not sufficient on its own**, and `reviewer-model.test.ts` is what
+found it. A `ModelDef` is per *(service, mode, model)* — **not per harness**.
+Grok can also run gateway rows (`x-ai/grok-4.6` at OpenRouter and Vercel, plus
+DeepSeek and GLM via chat-completions), and those rows are *shared with Claude,
+Codex and OpenCode*, which do honour levels there.
+
+**Precisely when that bites is worth stating, because the obvious reading
+overstates it** (caught in review). Today a shared row leaves `reasoningEfforts`
+absent, every harness falls back to its own vocabulary, and every answer is
+already correct — Grok's is `[]`, Claude's is Claude's. The per-model field is
+not wrong; it is simply not the thing carrying that case. The insufficiency
+appears the moment Grok's vocabulary becomes **non-empty**: a shared row then
+has no value that is right for all four harnesses at once — `[]` strips levels
+from the three that have them, and absent leaks Grok's four onto rows where the
+flag is dropped.
+
+That is the whole argument for why the vocabulary and the harness×mode axis have
+to land in the *same* change, and why writing the four levels down now — with
+the mechanism looking finished — would be the actual mistake.
+
+**The axis that actually holds the fact is harness × billing mode**, because
+that is where the real gate is — the CLI honours the flag when the *subscription
+catalogue* authenticated it, whatever the model. So the composition is three
+facts, not one:
+
+| fact | lives on | example |
+|---|---|---|
+| the vocabulary and its labels | harness | grok: xhigh/high/medium/low |
+| which billing modes honour it | harness × mode | grok: `sub` only |
+| which of them a row offers | model row | grok-4.5 lacks `xhigh` |
+
+**What shipped, and what deliberately did not.** `ModelDef.reasoningEfforts`
+and `reasoningOptionsFor()` are in place and tested — the per-row narrowing, the
+`[] ≠ absent` distinction, and the build-breaking invariant that a row may only
+narrow its harness's vocabulary. Grok's `reasoning.options` stays **`[]`**,
+which remains the honest answer while every selection it can run is key-billed,
+and the vocabulary lands with the subscription mode and the harness×mode axis
+together. Declaring the four levels first would have put dead controls on every
+gateway row Grok shares.
+
+`reviewer-model.test.ts`'s guard was rewritten in the same change to ask
+`reasoningOptionsFor` across a harness's real catalogue rows rather than reading
+`capabilities.reasoning.options`. It had been passing only because Grok's
+vocabulary happened to be empty *too* — so the moment the vocabulary was written
+down it stopped protecting anything, which is exactly what it did.
+
 ## The reviewer-default extension (req 8)
 
 Grok is the first harness declaring **no** reasoning levels, and

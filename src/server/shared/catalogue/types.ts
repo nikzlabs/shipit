@@ -163,6 +163,41 @@ export interface ModelDef {
   price: ModelPrice;
   /** Absorbs the server's old `MODEL_CONTEXT_WINDOWS` record. */
   contextWindow: ContextWindow;
+  /**
+   * docs/274 req 14 — the reasoning-effort levels THIS row actually honours,
+   * narrowing the harness's {@link AgentReasoningCapability}. Absent means "the
+   * harness's list applies unchanged", which is every pre-existing row, so this
+   * field costs nothing to ignore.
+   *
+   * It lives on the MODEL rather than on the mode or the harness because that
+   * is where the fact is, and the two alternatives are each wrong in a way that
+   * shows up on screen:
+   *
+   *   - **Per-harness** cannot express it at all. `--reasoning-effort` is
+   *     honoured by grok's SUBSCRIPTION selections and silently discarded by
+   *     its key-billed ones (both recorder-verified, docs/274 Resolved
+   *     questions), so one list per harness must either offer levels that do
+   *     nothing or hide levels that work.
+   *   - **Per-mode** is the right granularity for the host and the API style,
+   *     but not for this: within xAI's one subscription mode, `grok-4.6` offers
+   *     `xhigh` and `grok-4.5` does not. A mode-level list would have to be the
+   *     intersection, dropping a level the user is paying for.
+   *
+   * A `ModelDef` is already scoped to *this service, under this mode* (see
+   * `styles`), so per-model is per-mode plus the extra precision, at no extra
+   * concept.
+   *
+   * **An empty array is meaningful and is not the same as absent**: it says
+   * this row honours NO levels, so the control is hidden rather than
+   * defaulted. That is the key-mode grok case, and it is why the field is
+   * `string[] | undefined` and never just falsy-checked.
+   *
+   * INVARIANT: every entry must be a `value` of the owning harness's
+   * `capabilities.reasoning.options` — the harness owns the vocabulary and its
+   * labels, this only selects from it. `catalogue.test.ts` enforces it, because
+   * a typo here would silently render a level with no label.
+   */
+  reasoningEfforts?: string[];
 }
 
 /**
@@ -216,7 +251,31 @@ export type CredentialTarget =
  * outage into a stopped session.
  */
 export type ModeCredential =
-  | { via: "account"; login: LoginIntegrationId }
+  | {
+      via: "account";
+      login: LoginIntegrationId;
+      /**
+       * The harnesses that can authenticate with this ACCOUNT — same meaning as
+       * the `string` variant's field below, and here for a sharper reason.
+       *
+       * An API key is often genuinely portable: any harness that speaks the
+       * wire format can use it, so `carriers` is the exception there. An OAuth
+       * account is the opposite — it is a login to one vendor's account system,
+       * and no harness outside that vendor's own CLI can present it. So the
+       * safe default would be "nobody", except that the style join covered this
+       * for as long as each account-bearing service had exactly one harness
+       * that spoke its style.
+       *
+       * That stopped being true with Grok (planning#435): it carries an
+       * `account` target AND speaks `openai-responses`, so the join silently
+       * offered it OpenAI's ChatGPT subscription — a turn that would 401, and
+       * the same hole docs/268 found when OpenCode was offered Anthropic's
+       * env-OAuth token. Caught by `catalogue.test.ts`'s login fan-out
+       * assertion, which is why that test enumerates harnesses per login rather
+       * than counting them.
+       */
+      carriers?: HarnessId[];
+    }
   | {
       via: "string";
       /**
@@ -280,10 +339,14 @@ interface ModeCommon {
  *
  * So if a future service has a subscription with no usage API at all, the fix
  * is an explicit no-reader variant of this union, not another dangling id.
+ * xAI's subscription is exactly that case (planning#435 probed it: every usage
+ * route 404s), so the variant lands in the same change as the mode that needs
+ * it rather than ahead of it.
  */
 export type BillingModeDef =
   | (ModeCommon & { kind: "key" })
   | (ModeCommon & { kind: "sub"; quota: QuotaIntegrationId });
+
 
 export interface ServiceDef {
   id: string;
