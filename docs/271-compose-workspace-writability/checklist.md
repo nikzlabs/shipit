@@ -22,5 +22,11 @@
       troubleshooting, `session-worker-uid.ts`'s `RESERVED_EGRESS_UIDS` reasoning,
       `plugin-compose.ts`'s `toComposeService` comment, plus `docs/262` and
       `docs/150`. Added the missing contained-plugin acceptance test.
-- [ ] After this ships: drop the `user: "1000:1000"` lines from this repo's
-      `docker-compose.yml` (see plan.md §4).
+- [x] After this ships: drop the `user: "1000:1000"` lines from this repo's
+      `docker-compose.yml` (see plan.md §4). **Done in
+      [docs/272-services-run-as-session-uid](../272-services-run-as-session-uid/checklist.md)**
+      (`fec4444e`, 2026-08-17), which took the item over along with the rest of
+      the uid-1000 cleanup and gated it on the check this item implied — that the
+      deployed orchestrator accepts a contained service with no `user:` — before
+      removing anything. `emulator`'s `1300:1301` stays: a baked-in image account
+      that writes no workspace, kept working by half B's `group_add`.

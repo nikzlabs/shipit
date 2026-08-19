@@ -134,10 +134,13 @@ services:
       # This used to be `/root`, on the premise that local mode "keeps the
       # orchestrator on root". That stopped being true: with
       # SHIPIT_SESSION_WORKER_UID set on the deployment, `compose-generator`
-      # forces `user: <uid>:<uid>` onto every service without an explicit
-      # `user:` — including this one. So the inner orch runs as uid 1000 against
+      # fills `user: <uid>:<gid>` in for every service without an explicit
+      # `user:` — including this one. So the inner orch runs NON-ROOT against
       # HOME=/root and every credential write failed with
       # `EACCES: permission denied, lstat '/root/.codex'` (planning#284).
+      # (That uid was 1000 when this note was written; since docs/272 it is this
+      # session's own identity. The number never mattered here — only that it is
+      # not root.)
       #
       # The state dir is the natural home: bind-mounted, owned by the same uid,
       # already gitignored, and it survives a service restart. Kept out of
@@ -147,7 +150,8 @@ services:
       # planning#390 — and `HOME` alongside it, at the same path, because
       # planning#284 moved only half of the problem. Dockerfile.dogfood still
       # sets `ENV HOME=/root` (correct for a root container, wrong for this one:
-      # `user: "1000:1000"` above, and /root is `drwx------ root root`), so
+      # it runs as the non-root identity ShipIt fills in — see the note above —
+      # and /root is `drwx------ root root`), so
       # everything in here that keys off `$HOME` rather than `$AGENT_HOME` kept
       # landing on an unwritable directory. Codex is the one that dies loudest —
       # it reads `$HOME/.codex/config.toml` before doing any work — and the
@@ -366,8 +370,9 @@ services:
       SHIPIT_STATE_DIR: /workspace/.inner-shipit/onboarding
       AGENT_HOME: /workspace/.inner-shipit/onboarding/agent-home
       # Same pairing as `dev`, same reason (planning#390) — read the long note
-      # there. The image's `ENV HOME=/root` is unwritable for `user: "1000:1000"`,
-      # and anything keying off `$HOME` instead of `$AGENT_HOME` needs this.
+      # there. The image's `ENV HOME=/root` is unwritable for the non-root
+      # identity this service runs as, and anything keying off `$HOME` instead of
+      # `$AGENT_HOME` needs this.
       HOME: /workspace/.inner-shipit/onboarding/agent-home
       # NOT shared with `dev`: two Vite dev servers committing an optimizer run
       # into one cache dir race on the same directory renames.

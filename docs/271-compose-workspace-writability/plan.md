@@ -101,9 +101,15 @@ EACCESes as the agent.
 This is pre-existing — true of any declared `user:` since docs/150 — and it does
 not arise for a service that declares nothing, which after this change is every
 service whose image tolerates it. It does still arise for the declared-user shape
-this change sets out to keep working, including the three services this repo
-itself ships that way (see §4). Requirement 1 as written does not carve it out;
-it is named here rather than rounded off.
+this change sets out to keep working. Requirement 1 as written does not carve it
+out; it is named here rather than rounded off.
+
+*This paragraph ended "including the three services this repo itself ships that
+way (see §4)" until 2026-08-19. Since docs/272 that is one, not three —
+`emulator`, whose baked-in `1300:1301` writes no workspace, so the residual is
+real but unreachable here. The residual itself is unchanged for any project that
+does declare a workspace-writing `user:`; only this repo's exposure to it went
+away.*
 
 The durable fix is a group-writable umask inside the service, which means
 wrapping a command ShipIt does not own, or default POSIX ACLs on the workspace,
@@ -112,12 +118,28 @@ are larger than this fix and neither is attempted here.
 
 ## 4. Deploy ordering
 
-This repo's own `docker-compose.yml` **keeps** its `user: "1000:1000"` lines for
-now. They work again because of half B, and deleting them would break dogfooding
-on every session running an orchestrator that predates half A — which still
-refuses an undeclared contained service, and refuses the whole file with it. The
-comment on the `dev` service names the follow-up: drop them once the fix is
-deployed, so those services get the session identity and own their own output.
+This repo's own `docker-compose.yml` **kept** its `user: "1000:1000"` lines
+through this change. They worked again because of half B, and deleting them
+before half A was deployed would have broken dogfooding on every session running
+an older orchestrator — which still refused an undeclared contained service, and
+refused the whole file with it. So the ordering constraint was real, and it was a
+constraint on *when*, not on *whether*.
+
+**That follow-up is done** —
+[docs/272-services-run-as-session-uid](../272-services-run-as-session-uid/plan.md)
+(`fec4444e`, 2026-08-17) dropped the lines from `dev`, `onboarding`, `sdk-test`
+and `android`, after first confirming the deployed orchestrator accepts a
+contained service with no `user:`. Those services now get the session identity
+and own their own output, which also retires §3's residual *for this repo*:
+nothing here declares a foreign uid any more. `emulator` keeps `1300:1301` on
+purpose — a baked-in image account that writes no workspace, reaching the tree
+through half B's `group_add`.
+
+*This section read "**keeps** its `user: "1000:1000"` lines for now" until
+2026-08-19. Corrected rather than deleted, because the deploy-ordering
+constraint it records is the reasoning someone will need if this sequence ever
+has to be re-run — and because a plan asserting a superseded state as current is
+the same drift §4b is about.*
 
 ## 4b. The rule outlived its deletion in six places (2026-08-18)
 
