@@ -491,6 +491,61 @@ describe("buildEnv", () => {
     expect(env.some((e) => e.startsWith("SHIPIT_SESSION_WORKER_UID="))).toBe(false);
   });
 
+  // planning#415 — the entrypoint's workspace chown must PRUNE the declared dep
+  // dirs: a docs/183 overlay dep dir's lowerdir is a base generation shared by
+  // every session of the repo, and chowning a lower-only entry forces a copy-up
+  // into the session's private upper layer. The entrypoint cannot read
+  // shipit.yaml (POSIX sh, and the config is resolved — validated, defaulted —
+  // orchestrator-side), so the list travels as SHIPIT_DEP_DIRS, colon-separated,
+  // alongside the uid/gid pair.
+  describe("planning#415: forwards the dep-dir prune list", () => {
+    let tmpDir: string | undefined;
+    afterEach(() => {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    });
+
+    /** A workspace whose shipit.yaml declares the given `agent:` block. */
+    function workspaceWith(agentBlock: string): string {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "buildenv-depdirs-"));
+      fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), `agent:\n${agentBlock}`);
+      return tmpDir;
+    }
+
+    function envFor(workspaceDir: string, procEnv: NodeJS.ProcessEnv): string[] {
+      return buildEnv(baseConfig({ workspaceDir }), "/workspace", 9100, undefined, undefined, procEnv);
+    }
+
+    it("forwards the workspace's declared dep dirs, colon-separated", () => {
+      const ws = workspaceWith("  dep-dirs:\n    - node_modules\n    - vendor\n");
+      const env = envFor(ws, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env).toContain("SHIPIT_DEP_DIRS=node_modules:vendor");
+    });
+
+    it("falls back to the default list when the workspace has no shipit.yaml", () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "buildenv-depdirs-"));
+      const env = envFor(tmpDir, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env).toContain("SHIPIT_DEP_DIRS=node_modules");
+    });
+
+    it("forwards nothing for an explicitly empty dep-dir list", () => {
+      // `agent.dep-dirs: []` means "no dep dirs" — forwarding an empty value
+      // would be indistinguishable from it anyway (the entrypoint's `[ -n … ]`
+      // reads both as none), so nothing is pushed at all.
+      const ws = workspaceWith("  dep-dirs: []\n");
+      const env = envFor(ws, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env.some((e) => e.startsWith("SHIPIT_DEP_DIRS="))).toBe(false);
+    });
+
+    it("forwards no dep dirs when the worker uid is unset", () => {
+      // The entrypoint reads the list only on the non-root path, so it rides
+      // the same gate as the uid/gid pair.
+      const ws = workspaceWith("  dep-dirs:\n    - node_modules\n");
+      const env = envFor(ws, {} as NodeJS.ProcessEnv);
+      expect(env.some((e) => e.startsWith("SHIPIT_DEP_DIRS="))).toBe(false);
+    });
+  });
+
   // docs/183 — the orchestrator resolves the worker image id at startup into
   // SESSION_WORKER_IMAGE_ID; buildEnv forwards it so the worker's
   // install-runtime runtimeKey() shares the same ABI fingerprint and a

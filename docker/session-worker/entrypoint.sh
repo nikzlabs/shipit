@@ -36,7 +36,7 @@ fi
 # docs/270 — chown the workspace WITHOUT taking ownership of anything that is
 # shared with another clone or another session.
 #
-# Two things inside /workspace are not this session's to own:
+# Three things inside /workspace are not this session's to own:
 #
 #   1. `.git/objects` and `.git/lfs/objects` REGULAR FILES. `RepoGit.cloneFromCache`
 #      creates every session clone with `git clone --local`, which HARDLINKS the
@@ -56,6 +56,22 @@ fi
 #      runtime across sessions. It gets the same group treatment /dep-cache does,
 #      from the orchestrator (`ensurePnpmStoreDir`), so the walk must not descend
 #      into it at all.
+#
+#   3. The declared dep dirs (`agent.dep-dirs`, resolved by the orchestrator and
+#      forwarded as SHIPIT_DEP_DIRS — planning#415). A dep dir is either a
+#      docs/183 overlay mount whose lowerdir is a base generation SHARED by
+#      every session of the repo, or a plain populated install cache. In the
+#      overlay case ANY chown/chmod on a lower-only entry forces a copy-up of
+#      that file into this session's private upper layer — `chown_common` sets
+#      ATTR_UID whenever the argument is not `-1`, whether or not the value
+#      changes, so even an ownership-preserving chown copies the whole shared
+#      base up and defeats the sharing docs/183 exists for. The per-session
+#      contents are owned orchestrator-side instead
+#      (`reconcileDepDirCacheOwnership` over the upperdir, every container
+#      create), so the walk here prunes the whole dep dir and gives only its
+#      ROOT a shallow handoff — see the tail of `chown_workspace`. This mirrors
+#      the orchestrator-side worktree walk (`chownWorktreeToSessionWorker`'s
+#      `excludeRelDirs`), which excludes the dep dirs for the same reasons.
 #
 # `find … -prune` on the paths above, `-exec chown -h` on everything else. `-h`
 # so a symlink is chowned in place and never followed out of the tree, matching
@@ -95,20 +111,73 @@ fi
 # own. Revisit both if the bare cache ever starts carrying submodule objects.
 chown_workspace() {
   d="$1"
+  # planning#415 — the declared dep dirs join the prune set, as `.pnpm-store`
+  # above already does. POSIX sh has no arrays, so the `-path … -o -path …`
+  # terms accumulate in the POSITIONAL PARAMETERS, one quoted word per path —
+  # a dep-dir name containing a space survives, and the three finds below each
+  # splice the whole set in as `\( "$@" \)`. SHIPIT_DEP_DIRS is colon-separated
+  # (the PATH convention); an unset or empty value — an orchestrator that
+  # predates this change, or an explicit `agent.dep-dirs: []` — leaves exactly
+  # today's prune set, so the legacy boot is byte-for-byte unchanged.
+  #
+  # No HANDOFF_SCHEME bump for this: v2's walk already chowned and group-wrote
+  # every dep-dir ROOT (it was not pruned, so the root got the full treatment),
+  # which is all the shallow pass at the tail of this function applies. A tree
+  # claimed under v2 therefore has nothing to gain from a v3 re-walk — the
+  # copy-ups it already suffered cannot be undone by walking again.
+  set -- -path "$d/.pnpm-store"
+  if [ -n "${SHIPIT_DEP_DIRS:-}" ]; then
+    old_ifs=$IFS
+    IFS=:
+    for dep in $SHIPIT_DEP_DIRS; do
+      [ -n "$dep" ] || continue
+      set -- "$@" -o -path "$d/$dep"
+    done
+    IFS=$old_ifs
+  fi
   find "$d" \
-    \( -path "$d/.pnpm-store" \) -prune -o \
+    \( "$@" \) -prune -o \
     \( \( -path "$d/.git/objects/*" -o -path "$d/.git/lfs/objects/*" \) -type f \) -prune -o \
     -exec chown -h "${UID_GID}:${WORKER_GID}" {} +
   # Directories: group write + traverse, and setgid so an entry a Compose service
   # creates inherits the shared group instead of that service's own.
-  find "$d" \( -path "$d/.pnpm-store" \) -prune -o \
+  find "$d" \( "$@" \) -prune -o \
     -type d -exec chmod g+rwxs {} + || true
   # Files: group write, and group execute ONLY where some class already has it
   # (`X`), so nothing becomes executable that was not.
   find "$d" \
-    \( -path "$d/.pnpm-store" \) -prune -o \
+    \( "$@" \) -prune -o \
     \( \( -path "$d/.git/objects/*" -o -path "$d/.git/lfs/objects/*" \) -type f \) -prune -o \
     -type f -exec chmod g+rwX {} + || true
+  # planning#415 — the dep-dir ROOTS still get a handoff, SHALLOWLY: one chown
+  # and one chmod on the root, never a descent. In overlay mode the merged dep
+  # dir's root IS the per-session upperdir's root, so these are in-place upper
+  # operations — no copy-up — and they are what leaves the session able to
+  # write its upper layer at all: worker-owned, group-writable (docs/271, so a
+  # Compose service at another uid can create its `node_modules/.vite`-style
+  # cache), and setgid so new entries inherit the shared group (docs/272).
+  # Everything BELOW a root may be a lower-only entry shared with every session
+  # of the repo, and the per-session layer's contents are reconciled
+  # orchestrator-side on every container create — the walk here must not touch
+  # them. Best-effort for the same reason the mode passes are.
+  #
+  # A SYMLINKED dep dir is refused whole, never chowned and never moded:
+  # `chown -h` would be safe on the link itself, but `chmod` FOLLOWS one and
+  # would rewrite whatever it points at, possibly outside the tree — the same
+  # reason the mode passes above select `-type d`/`-type f`. This mirrors
+  # `reconcileDepDirCacheOwnership`, which refuses a symlinked dep dir too.
+  if [ -n "${SHIPIT_DEP_DIRS:-}" ]; then
+    old_ifs=$IFS
+    IFS=:
+    for dep in $SHIPIT_DEP_DIRS; do
+      [ -n "$dep" ] || continue
+      [ -d "$d/$dep" ] || continue
+      [ ! -L "$d/$dep" ] || continue
+      chown -h "${UID_GID}:${WORKER_GID}" "$d/$dep" 2>/dev/null || true
+      chmod g+rwxs "$d/$dep" 2>/dev/null || true
+    done
+    IFS=$old_ifs
+  fi
 }
 
 # docs/272 — hand a SHARED mount (/dep-cache) to every session of its repo:

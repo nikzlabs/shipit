@@ -29,6 +29,7 @@ import {
   mkdtempSync,
   readFileSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -977,8 +978,13 @@ describe("host journal readability (#1917)", () => {
    * expression whose prune/`-o` precedence no amount of reading proves. The
    * anchor is the function's own definition line, so a rename or a reshape fails
    * here loudly instead of silently testing nothing.
+   *
+   * `shipitDepDirs` stands in for the orchestrator-forwarded SHIPIT_DEP_DIRS
+   * (planning#415): `undefined` = an orchestrator that predates the variable,
+   * `""` = an explicitly empty list, anything else = the colon-joined
+   * `agent.dep-dirs` value.
    */
-  function runChownWorkspace(tree: string): string[] {
+  function runChownWorkspace(tree: string, shipitDepDirs?: string): string[] {
     const source = readFileSync(ENTRYPOINT, "utf8");
     const start = source.indexOf("chown_workspace() {");
     expect(start).toBeGreaterThan(-1);
@@ -999,7 +1005,11 @@ describe("host journal readability (#1917)", () => {
     const script = join(root, "fragment.sh");
     writeFileSync(script, `set -eu\nUID_GID=2000001\nWORKER_GID=1000\n${fn}\nchown_workspace "$1"\n`);
     const run = spawnSync("sh", [script, tree], {
-      env: { PATH: `${bin}:${process.env.PATH ?? ""}`, CHOWN_LOG: log },
+      env: {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        CHOWN_LOG: log,
+        ...(shipitDepDirs === undefined ? {} : { SHIPIT_DEP_DIRS: shipitDepDirs }),
+      },
       encoding: "utf8",
     });
     expect(run.status).toBe(0);
@@ -1095,6 +1105,105 @@ describe("host journal readability (#1917)", () => {
 
     expect(chowned.some((p) => p.includes(".pnpm-store"))).toBe(false);
     expect(chowned).toContain(join(tree, "keep.txt"));
+  });
+
+  // ---- planning#415: the walk must not descend into the declared dep dirs ----
+  //
+  // A dep dir mounted as a docs/183 overlay carries a base generation SHARED by
+  // every session of the repo as its lowerdir. `chown` sets ATTR_UID whenever
+  // the argument is not -1 — even when the value does not change — so chowning
+  // a lower-only entry forces a copy-up of that file into this session's
+  // private upper layer, which defeats the sharing docs/183 exists for. The
+  // fix mirrors the orchestrator-side worktree walk: prune the dep dirs, hand
+  // only each ROOT over (the root IS the per-session upperdir's root, so it is
+  // an in-place upper operation).
+
+  it("does not descend into a declared dep dir, and hands only its ROOT over", () => {
+    const tree = tempDir();
+    mkdirSync(join(tree, "node_modules/react"), { recursive: true });
+    writeFileSync(join(tree, "node_modules/react/package.json"), "");
+    mkdirSync(join(tree, "src"), { recursive: true });
+    writeFileSync(join(tree, "src/a.ts"), "");
+    // Pin the modes the "untouched" assertions below read: the suite's ambient
+    // umask is 002, so a fresh 0777/0666 creation lands 0775/0664 and would
+    // make an untouched entry indistinguishable from a chmodded one.
+    chmodSync(join(tree, "node_modules/react"), 0o755);
+    chmodSync(join(tree, "node_modules/react/package.json"), 0o644);
+
+    const chowned = runChownWorkspace(tree, "node_modules");
+
+    // Exactly ONE node_modules entry — the root, from the shallow pass. The
+    // deep walk never reached react/ or its contents.
+    expect(chowned.filter((p) => p.includes("node_modules"))).toEqual([
+      join(tree, "node_modules"),
+    ]);
+    // Ordinary content is untouched by the exclusion — the walk is not a no-op.
+    expect(chowned).toContain(join(tree, "src/a.ts"));
+
+    // The root got the full shallow treatment: group write + setgid, so the
+    // session (and a Compose service at another uid, via the shared group) can
+    // create entries in its upper layer…
+    expect(statSync(join(tree, "node_modules")).mode & 0o7777).toBe(0o2775);
+    // …while everything INSIDE keeps the mode it had — no chmod descended,
+    // which on a real overlay is the copy-up storm the prune exists to stop.
+    expect(statSync(join(tree, "node_modules/react")).mode & 0o7777).toBe(0o755);
+    expect(statSync(join(tree, "node_modules/react/package.json")).mode & 0o7777).toBe(0o644);
+  });
+
+  it("prunes every declared dep dir, a nested one included", () => {
+    const tree = tempDir();
+    for (const d of ["node_modules/x", "client/node_modules/y", "vendor/z", "src"]) {
+      mkdirSync(join(tree, d), { recursive: true });
+      writeFileSync(join(tree, d, "f"), "");
+    }
+
+    const chowned = runChownWorkspace(tree, "node_modules:client/node_modules:vendor");
+
+    // No entry INSIDE any declared dep dir was chowned…
+    for (const inside of ["node_modules/x/f", "client/node_modules/y/f", "vendor/z/f"]) {
+      expect(chowned).not.toContain(join(tree, inside));
+    }
+    // …every dep-dir ROOT was, by the shallow pass…
+    for (const root of ["node_modules", "client/node_modules", "vendor"]) {
+      expect(chowned).toContain(join(tree, root));
+    }
+    // …and `client` itself is still walked — the prune starts at its child.
+    expect(chowned).toContain(join(tree, "client"));
+    expect(chowned).toContain(join(tree, "src/f"));
+  });
+
+  it("refuses a symlinked dep dir whole, so chmod cannot follow it out of the tree", () => {
+    const tree = tempDir();
+    const target = tempDir();
+    writeFileSync(join(target, "f"), "");
+    // mkdtemp lands 0700; pin 0755 so a followed chmod (g+rwxs → 0o2775) is
+    // distinguishable from an untouched target.
+    chmodSync(target, 0o755);
+    symlinkSync(target, join(tree, "vendor"));
+
+    const chowned = runChownWorkspace(tree, "vendor");
+
+    // Neither the link nor what it points at. `chown -h` alone would be safe on
+    // the link itself, but the shallow pass also chmods, and `chmod` FOLLOWS a
+    // symlink — refusing the whole dep dir is the only coherent answer, and it
+    // is the one `reconcileDepDirCacheOwnership` takes orchestrator-side.
+    expect(chowned.some((p) => p.includes("vendor"))).toBe(false);
+    expect(statSync(target).mode & 0o7777).toBe(0o755);
+  });
+
+  it("still descends for an orchestrator that predates the dep-dir list", () => {
+    // Deliberately asserted, not assumed: an older orchestrator forwards no
+    // SHIPIT_DEP_DIRS, and an explicitly empty list forwards nothing either —
+    // both must boot byte-for-byte as before, including the descent. The prune
+    // is a new contract between the two sides, not a retrofit of the old boot.
+    const tree = tempDir();
+    mkdirSync(join(tree, "node_modules/react"), { recursive: true });
+    writeFileSync(join(tree, "node_modules/react/package.json"), "");
+
+    for (const depDirs of [undefined, ""]) {
+      const chowned = runChownWorkspace(tree, depDirs);
+      expect(chowned).toContain(join(tree, "node_modules/react/package.json"));
+    }
   });
 
   it("drops to a group-writable umask, so a shared cache stays shared", () => {
