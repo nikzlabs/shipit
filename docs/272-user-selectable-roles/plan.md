@@ -201,26 +201,30 @@ than today, not more (req 5).
    role's name. Clicking it opens the list of roles (req 14), like every other control in the row
    opens what it chooses between.
 
-**And a fourth, which is state 3 after the session's first turn: the role locks and the parameters
-come back.** `roleParamsRevealed` is true whenever the role is locked, so no one has to ask for
-them — the reveal exists to say "you have just decided these", and at the first turn that sentence
-stops being true while the controls stay useful. What the row then shows is the locked role pill,
-the locked harness readout, and a live model and reasoning picker: exactly the controls a session
-that never took a role has, plus the name.
+**State 3 does not end at the session's first turn.** The lock takes the *choice* of role and
+nothing else (req 4), so a locked session still shows the role's name in place of the three controls
+— and still reaches those controls the one way they have ever been reached, by asking for them
+inside the role control (req 15). `roleParamsRevealed` is therefore the user's own act and only
+that: `revealedFor === roleInForce`, with no lock clause in it.
 
-This is the shape reported as broken. A locked pill has no menu (below), and "Adjust parameters…"
-lives *inside* that menu — so a role-started session lost its model and reasoning controls at the
-first turn and never got them back, while an identical hand-configured session kept both. Nothing
-server-side was wrong: `set_model` and `set_reasoning` were reachable the whole time, and
-`leaveRoleOnParameterChange` clears the role when one of them moves whether the session is pinned or
-not. It was the composer refusing to draw them. The fix is that one condition, and both layouts read
-it from the same place — `ComposerSettingsMenu` takes `roleParamsRevealed` as a prop rather than
-recomputing it, which is why the narrow menu is fixed by the same line.
+**Both halves of that were shipped wrong, in opposite directions, and the second is the reason the
+first is worth reading.** As first shipped, a locked pill had *no menu at all* — "Adjust
+parameters…" lives inside that menu, so a role-started session lost its model and reasoning controls
+at the first turn and never got them back, while an identical hand-configured session kept both.
+Nothing server-side was refusing them: `set_model` and `set_reasoning` were reachable the whole
+time, and `leaveRoleOnParameterChange` clears the role when one of them moves whether the session is
+pinned or not. It was the composer refusing to draw them. The repair was `roleParamsRevealed ||
+roleLocked` — one condition, both layouts, and *wrong the other way*: the row a role exists to
+shorten grew back at the first turn, uninvited, which is the state req 5 rules out. **A cage is not
+fixed by removing the door; it is fixed by giving it one.**
 
-**The lock still means what it says**: no role can be selected after the first turn (req 4). The
-server refuses `set_role` on `agentPinned` and that is unchanged — the pill stays a readout with no
-menu, and its tooltip now names what is still changeable rather than only what is not, because a
-lock with no such sentence is what made "I cannot adjust the parameters" the natural reading.
+So the door is what the lock keeps. **The locked pill opens** (this is what changed), and behind it
+there is exactly one thing: "Adjust parameters…". No roles are listed — the server refuses
+`set_role` on `agentPinned`, so a list there would be a menu of things that cannot be chosen — and
+the panel says why in one line, in the shape `lockedHarnessReason` already uses. Once the user has
+asked, the pill has nothing left to offer and goes back to being a plain readout with no caret,
+which is the same rule the unlocked control follows: a caret is drawn where a click opens something,
+and nowhere else.
 
 **"Adjust parameters…" is a footer inside that list** (req 15), not a second control. Choosing it
 brings the three controls back beside the role name; the role stays in force until one of them
