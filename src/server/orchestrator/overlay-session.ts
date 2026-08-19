@@ -178,6 +178,12 @@ export interface DepDirOverlaySpec extends OverlaySpec {
    * mounted — a publish racing container creation moves the pointer's
    * generation, and stamping from the newer pointer would claim deps the
    * pinned (older) lowerdir doesn't hold.
+   *
+   * That same racing publish also leaves this generation invisible to the disk
+   * janitor's liveness check until the container is RUNNING, so the creation
+   * path additionally CLAIMS it for the duration (planning#440,
+   * `overlay-base-claims.ts`). The claim is taken in `prepareOverlaySpecs`, not
+   * here — this builder stays pure.
    */
   generation: number;
   /**

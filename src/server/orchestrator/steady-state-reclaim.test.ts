@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -10,6 +10,11 @@ import { runSteadyStateReclaim } from "./steady-state-reclaim.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { liveOverlayScopeHashes, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
+import {
+  claimOverlayBaseGeneration,
+  clearOverlayBaseClaims,
+  OVERLAY_BASE_CLAIM_MS,
+} from "./overlay-base-claims.js";
 
 /**
  * Build a `runDocker` stub that simulates a RUNNING session-worker container
@@ -55,6 +60,10 @@ describe("runSteadyStateReclaim", () => {
     underlyingDb = null;
     dbManager = null;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    // The claim registry is process-wide (planning#440), so a case that claims
+    // would otherwise protect the next case's fixtures.
+    clearOverlayBaseClaims();
+    vi.restoreAllMocks();
   });
 
   it("keeps a plugin repository's caches, which no repo store can vouch for", async () => {
@@ -560,6 +569,138 @@ describe("runSteadyStateReclaim", () => {
 
       expect(fs.existsSync(warmBase)).toBe(true);
       expect(result.overlayBasesRemoved).toBe(0);
+    });
+  });
+
+  describe("in-flight base-generation claims (planning#440)", () => {
+    /**
+     * The window `docker ps` cannot see into: a session's overlay volume names
+     * `…/overlay-base/<hash>/g<N>` as its lowerdir BEFORE its container exists,
+     * so between the spec decision and `container.start()` a same-scope publish
+     * moves the pointer to `g<N+1>` and `g<N>` reads as neither current nor
+     * mounted. Without a claim the sweep deletes it — with no age delay — and
+     * the starting container mounts a lowerdir that is gone.
+     */
+    function creatingFixture() {
+      const hash = "1f2e3d4c5b6a7988";
+      const mkGen = (gen: number) => {
+        const d = path.join(tmpDir, "overlay-base", hash, `g${gen}`);
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(path.join(d, "marker"), "x");
+        return d;
+      };
+      const claimed = mkGen(7);      // what the in-flight container will mount
+      const superseded = mkGen(6);   // nothing pins it — genuinely reclaimable
+      const current = mkGen(8);      // the publish that raced the create
+      const metaDir = path.join(tmpDir, "overlay-base-meta");
+      fs.mkdirSync(metaDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(metaDir, `${hash}.json`),
+        JSON.stringify({
+          scopeHash: hash, commit: "d".repeat(40), depth: 2, generation: 8,
+          baseDir: current, updatedAt: "2026-08-19T10:00:00Z",
+        }),
+      );
+      return { hash, claimed, superseded, current };
+    }
+
+    it("keeps a generation a container being CREATED will mount, and still reaps its unclaimed sibling", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      // What `prepareOverlaySpecs` does on a creation path, and the ONLY thing
+      // standing between g7 and deletion: no container exists yet, so the
+      // live-mount probe reads an empty (but complete) set.
+      claimOverlayBaseGeneration(fx.hash, 7);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker: () => Promise.resolve(""),
+      });
+
+      expect(fs.existsSync(fx.claimed)).toBe(true);
+      expect(fs.existsSync(fx.current)).toBe(true);
+      // The claim protects exactly what it names — it must not turn the sweep off.
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(result.overlayBasesRemoved).toBe(1);
+    });
+
+    it("keeps the whole scope dir alive on the claim alone, when nothing else vouches for it", async () => {
+      // A warm standby being created: no running container, and its scope is
+      // absent from the resumable-session union. Whole-scope removal and
+      // generation reaping are two different arms of the sweep, and the claim
+      // has to reach both — the scope dir is what holds the generation.
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      claimOverlayBaseGeneration(fx.hash, 7);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set<string>(),
+        runDocker: () => Promise.resolve(""),
+      });
+
+      expect(fs.existsSync(path.join(tmpDir, "overlay-base", fx.hash))).toBe(true);
+      expect(fs.existsSync(fx.claimed)).toBe(true);
+      // The scope survives on the claim; inside it, only the unclaimed
+      // superseded generation goes — the sweep is still doing its job.
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(result.overlayBasesRemoved).toBe(1);
+    });
+
+    it("stops protecting once the claim expires, so a dead create cannot pin a base forever", async () => {
+      // The release path, such as it is: an orchestrator that dies mid-create
+      // never mounted the generation, so the claim must lapse rather than
+      // retain the directory for the life of the process.
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      claimOverlayBaseGeneration(fx.hash, 7);
+      const realNow = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(realNow + OVERLAY_BASE_CLAIM_MS + 1);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker: () => Promise.resolve(""),
+      });
+
+      expect(fs.existsSync(fx.claimed)).toBe(false);
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(fs.existsSync(fx.current)).toBe(true);
+      expect(result.overlayBasesRemoved).toBe(2);
+    });
+
+    it("never widens the sweep: an unreadable live-mount reading still skips the pass", async () => {
+      // planning#439's rule outranks the claim. The claim is additive — it can
+      // only ever protect more — so a hole in the docker reading must still stop
+      // the pass, claim or no claim.
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      claimOverlayBaseGeneration(fx.hash, 7);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker: (args) =>
+          args[0] === "ps"
+            ? Promise.reject(new Error("Cannot connect to the Docker daemon"))
+            : Promise.resolve(""),
+      });
+
+      expect(result.overlayBasesRemoved).toBe(0);
+      expect(fs.existsSync(fx.superseded)).toBe(true);
     });
   });
 

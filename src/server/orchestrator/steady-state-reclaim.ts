@@ -68,6 +68,7 @@ import { repoUrlToHash } from "./git-utils.js";
 import { REPO_MEMORY_SUBDIR } from "./session-credentials.js";
 import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
+import { liveOverlayBaseClaims } from "./overlay-base-claims.js";
 import { PNPM_STORE_SUBDIR } from "./overlay-session.js";
 import { getMessage, sleep, defaultRunDocker } from "./disk-utils.js";
 
@@ -607,7 +608,16 @@ async function sweepOrphanedOverlayBases(
     );
     return 0;
   }
+  // planning#440 — the third arm of the union: generations a container being
+  // CREATED right now will mount. `docker ps -q` lists running containers, and a
+  // session's overlay volume is written with its `lowerdir=…/g<N>` before its
+  // container exists, so between the spec decision and `start()` a same-scope
+  // publish can supersede a generation nothing can yet observe as mounted.
+  // Strictly additive — an empty claim set is byte-for-byte the prior behavior,
+  // so this cannot become a new way to read "nothing is claimed" as
+  // "everything is reclaimable" (`overlay-base-claims.ts`).
   const liveGenKeys = live.keys;
+  for (const key of liveOverlayBaseClaims()) liveGenKeys.add(key);
   const liveScopeHashes = new Set(resumableScopeHashes);
   for (const key of liveGenKeys) liveScopeHashes.add(key.split("/")[0]);
 
@@ -650,17 +660,14 @@ async function sweepOrphanedOverlayBases(
  *   - the pointer's current generation — the base a fresh/resuming session mounts.
  *   - a generation in `liveGenKeys` — pinned as a `lowerdir` by a running container
  *     right now (e.g. a container created before the last publish advanced the
- *     pointer; it keeps mounting the older generation until it exits).
+ *     pointer; it keeps mounting the older generation until it exits), OR claimed
+ *     by a container being created right now (planning#440). `docker ps` lists
+ *     RUNNING containers, and a session's overlay volume names its generation
+ *     before its container exists — so between the spec decision and `start()` a
+ *     same-scope publish supersedes a generation nothing can yet observe as
+ *     mounted. The caller unions the unexpired claims from
+ *     `overlay-base-claims.ts` into `liveGenKeys` to cover that window.
  * Everything else has no live mount and is reclaimable immediately — no age delay.
- *
- * KNOWN GAP (planning#440, deliberately not fixed here): `docker ps` lists RUNNING
- * containers, but a session's overlay volume is created — pinning the pointer's
- * generation at that moment — before its container starts. A publish landing in
- * that window supersedes a generation nothing can yet observe as mounted, and this
- * deletes it. Rarer than the fail-open probe planning#439 fixed (it needs a
- * concurrent same-scope publish inside a seconds-long window, not merely a docker
- * hiccup) and it needs a different mechanism: an in-flight claim like the one
- * plugin bases already have (`plugin-dep-store.ts` `liveInFlightScopes`).
  * Crash-orphaned `.tmp-*` copies get the short `OVERLAY_TMP_GRACE_MS` window instead
  * (they're never mounted, but an in-flight publish may be writing one).
  */
@@ -811,6 +818,11 @@ async function inspectTolerantOfVanished(
  * probe is the only protection a superseded-but-mounted generation has, and (since
  * the union is built from non-warm sessions) the only protection a warm-pool
  * session's scope has at all. See `sweepOrphanedOverlayBases`.
+ *
+ * **What this probe cannot pin, by construction:** a generation whose container
+ * does not exist yet. `ps` is the wrong instrument for a container being created,
+ * not a hiccup in this one — which is why planning#440's fix is an in-flight claim
+ * (`overlay-base-claims.ts`) the caller unions in, rather than anything here.
  */
 async function liveMountedOverlayBaseGenerations(
   runDocker: (args: string[]) => Promise<string>,
