@@ -53,12 +53,31 @@
  *    direction only: a required entry missing from the tree, or present at the
  *    wrong version. A tree holding *more* than the lockfile asks for is what
  *    every partial cleanup looks like, and it is not a failed install.
+ *  - **A filtered workspace install disables the comparison entirely.** This
+ *    one was caught in review and is the sharpest false positive of the set:
+ *    `npm install --workspace=packages/web` reifies only that workspace's
+ *    dependencies while the ROOT lockfile keeps describing every workspace, so
+ *    a naive comparison flags a perfectly good install (verified against npm
+ *    10 — the sibling workspace's packages and its `node_modules/<name>` link
+ *    are both simply absent). {@link npmLockfileMismatches} detects it from the
+ *    artifact rather than the command line — a workspace link the lockfile
+ *    declares and the tree does not hold means the install was filtered — which
+ *    also covers the other routes to the same state (`--prefix`, an install run
+ *    from inside a subpackage).
+ *  - **A command that bypasses the lockfile disables it too.** `--no-package-lock`
+ *    and `--package-lock=false` let npm resolve from `package.json` and write a
+ *    hidden lockfile that may legitimately disagree with the on-disk
+ *    `package-lock.json`; `--package-lock-only` rewrites the hidden lockfile
+ *    without touching the tree at all. Neither pair of files describes the same
+ *    intent, so there is nothing to compare — see {@link bypassesLockfile}.
  *
- * One known false negative, recorded rather than fixed: `npm install
- * --package-lock-only` rewrites the hidden lockfile without touching the tree,
- * so a tree left stale by *that* command reads as current. It is not a command
- * anyone declares in `agent.install` to populate dependencies, and the error
- * direction is the safe one.
+ * Two known false negatives, recorded rather than fixed. A **partial `npm ci`**
+ * leaves no npm record at all (`npm ci` wipes the directory first, and writes
+ * the hidden lockfile only at the end), so a half-extracted tree is compared
+ * against nothing and only the emptiness check covers it. And a **nested
+ * workspace dep dir** (`packages/web/node_modules` in a monorepo) has no
+ * lockfile beside it — npm keeps the lockfile at the root — so a stale tree
+ * there is not seen either. Both err in the safe direction.
  *
  * Cost: two `readFileSync` + `JSON.parse` per declared dep dir that has a
  * hidden lockfile, on the post-install path only. Never a tree walk.
@@ -150,13 +169,31 @@ function isRequired(key: string, entry: LockEntry, treeHasDev: boolean): boolean
 }
 
 /**
+ * Flags that sever the tie between `package-lock.json` and the tree npm builds,
+ * making the two files describe different intents rather than the same one.
+ * `--no-package-lock` / `--package-lock=false` resolve from `package.json` and
+ * leave the on-disk lockfile untouched; `--package-lock-only` rewrites the
+ * hidden lockfile without touching the tree.
+ */
+const LOCKFILE_BYPASS_FLAGS = ["--no-package-lock", "--package-lock=false", "--package-lock-only"];
+
+/**
+ * Does any install command opt out of the lockfile? A substring test is the
+ * right shape here: these flags take no value, and the direction of a false
+ * match is to skip the check, never to fail an install.
+ */
+export function bypassesLockfile(installCommands: string[]): boolean {
+  return installCommands.some((cmd) => LOCKFILE_BYPASS_FLAGS.some((flag) => cmd.includes(flag)));
+}
+
+/**
  * Compare a `package-lock.json` against the `node_modules/.package-lock.json`
  * npm wrote for the same tree.
  *
- * Returns the disagreeing packages, or `null` when the pair is not comparable
- * (unparseable, or not a v2+ lockfile) — which the caller treats as "nothing to
- * say", never as a failure. Pure, so the whole rule set is unit-testable
- * without a filesystem.
+ * Returns the disagreeing packages, or `null` when the pair is not comparable —
+ * unparseable, not a v2+ lockfile, or a filtered workspace install — which the
+ * caller treats as "nothing to say", never as a failure. Pure, so the whole
+ * rule set is unit-testable without a filesystem.
  */
 export function npmLockfileMismatches(
   lockfileText: string,
@@ -165,6 +202,15 @@ export function npmLockfileMismatches(
   const required = parsePackages(lockfileText);
   const installed = parsePackages(hiddenLockfileText);
   if (required === null || installed === null) return null;
+
+  // A filtered install reifies part of the tree against a lockfile describing
+  // all of it. The tell is a workspace link the lockfile declares and the tree
+  // does not hold: npm creates `node_modules/<name>` for every workspace it
+  // reifies, so a missing one means this install covered only some of them, and
+  // every "missing" package below would be an artifact of the filter.
+  for (const [key, entry] of Object.entries(required)) {
+    if (entry?.link === true && installed[key] === undefined) return null;
+  }
 
   const treeHasDev = Object.values(installed).some((e) => e?.dev === true);
 
@@ -185,12 +231,14 @@ export function npmLockfileMismatches(
  * whose install has just finished.
  *
  * Returns `[]` when nothing disagrees, when no declared dir is an npm-reified
- * tree, when the repo opted out with `agent.dep-dirs: []`, or when the config
- * cannot be read — conservative in exactly the direction
- * `emptyDepDirsContradictingMarker` is: an unreadable declaration never fails an
- * install.
+ * tree, when an install command bypasses the lockfile, when the repo opted out
+ * with `agent.dep-dirs: []`, or when the config cannot be read — conservative in
+ * exactly the direction `emptyDepDirsContradictingMarker` is: an unreadable
+ * declaration never fails an install.
  */
-export function staleDepDirs(workspaceRoot: string): StaleDepDir[] {
+export function staleDepDirs(workspaceRoot: string, installCommands: string[]): StaleDepDir[] {
+  if (bypassesLockfile(installCommands)) return [];
+
   let depDirs: string[];
   try {
     depDirs = resolveShipitConfig(workspaceRoot).agent.depDirs;

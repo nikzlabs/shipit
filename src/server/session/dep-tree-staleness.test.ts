@@ -13,7 +13,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { npmLockfileMismatches, staleDepDirs } from "./dep-tree-staleness.js";
+import { bypassesLockfile, npmLockfileMismatches, staleDepDirs } from "./dep-tree-staleness.js";
 
 interface Entry {
   version?: string;
@@ -96,13 +96,15 @@ describe("npmLockfileMismatches — the tree must hold what the lockfile asks fo
     expect(npmLockfileMismatches(required, installed)).toEqual([]);
   });
 
-  it("never requires optional, peer, bundled, linked or platform-restricted entries", () => {
+  it("never requires optional, peer, bundled or platform-restricted entries", () => {
+    // A `link: true` entry is deliberately NOT in this fixture: a missing one is
+    // the filtered-workspace-install tell, which is a stronger rule than "not
+    // required" and has its own test below.
     const required = lock({
       "node_modules/opt": { version: "1.0.0", optional: true },
       "node_modules/devopt": { version: "1.0.0", devOptional: true },
       "node_modules/peer": { version: "1.0.0", peer: true },
       "node_modules/bundled": { version: "1.0.0", inBundle: true },
-      "node_modules/web": { version: "1.0.0", link: true },
       "node_modules/fsevents": { version: "2.3.3", os: ["darwin"] },
       "node_modules/swc-linux": { version: "1.0.0", cpu: ["x64"] },
       "node_modules/musl-only": { version: "1.0.0", libc: ["musl"] },
@@ -125,6 +127,62 @@ describe("npmLockfileMismatches — the tree must hold what the lockfile asks fo
     const installed = lock({ "node_modules/a": { version: "1.0.0" } });
 
     expect(npmLockfileMismatches(required, installed)).toEqual([]);
+  });
+
+  it("is not comparable when a workspace link the lockfile declares is missing from the tree", () => {
+    // `npm install --workspace=packages/web` reifies only that workspace while
+    // the ROOT lockfile keeps describing every one of them — verified against
+    // npm 10, where the sibling's packages AND its `node_modules/api` link are
+    // both simply absent. Without this the whole sibling workspace reads as a
+    // stale tree, which is the sharpest false positive of the set.
+    const required = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { version: "1.0.0" },
+        "node_modules/web": { link: true },
+        "node_modules/api": { link: true },
+        "node_modules/is-odd": { version: "3.0.1" },
+        "node_modules/is-buffer": { version: "1.1.6" },
+        "packages/web": { version: "1.0.0" },
+        "packages/api": { version: "1.0.0" },
+      },
+    });
+    const installed = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "node_modules/web": { link: true },
+        "node_modules/is-odd": { version: "3.0.1" },
+        "packages/web": { version: "1.0.0" },
+      },
+    });
+
+    expect(npmLockfileMismatches(required, installed)).toBeNull();
+  });
+
+  it("still compares a workspace repo whose install covered every workspace", () => {
+    // The guard keys on a MISSING link, so an unfiltered workspace install is
+    // checked exactly like any other — otherwise every monorepo would opt out.
+    const required = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { version: "1.0.0" },
+        "node_modules/web": { link: true },
+        "node_modules/is-odd": { version: "3.0.1" },
+        "packages/web": { version: "1.0.0" },
+      },
+    });
+    const installed = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "node_modules/web": { link: true },
+        "node_modules/is-odd": { version: "2.0.0" },
+        "packages/web": { version: "1.0.0" },
+      },
+    });
+
+    expect(npmLockfileMismatches(required, installed)).toEqual([
+      { packagePath: "node_modules/is-odd", expected: "3.0.1", found: "2.0.0" },
+    ]);
   });
 
   it("is not comparable — never stale — for unparseable or v1 lockfiles", () => {
@@ -165,12 +223,26 @@ describe("staleDepDirs — which declared dirs get checked at all", () => {
     const root = makeWorkspace("  dep-dirs:\n    - node_modules\n");
     writeTree(root, "node_modules", { "node_modules/vite": { version: "5.4.0" } }, { "node_modules/vite": { version: "4.0.0" } });
 
-    expect(staleDepDirs(root)).toEqual([
+    expect(staleDepDirs(root, ["npm ci"])).toEqual([
       {
         depDir: "node_modules",
         mismatches: [{ packagePath: "node_modules/vite", expected: "5.4.0", found: "4.0.0" }],
       },
     ]);
+  });
+
+  it("checks nothing when an install command opts out of the lockfile", () => {
+    // `--no-package-lock` lets npm resolve from `package.json` and leaves the
+    // on-disk lockfile behind, so the two files describe different intents and
+    // a disagreement between them says nothing about whether the install ran.
+    const root = makeWorkspace("  dep-dirs:\n    - node_modules\n");
+    writeTree(root, "node_modules", { "node_modules/vite": { version: "5.4.0" } }, { "node_modules/vite": { version: "4.0.0" } });
+
+    expect(staleDepDirs(root, ["npm install --no-package-lock"])).toEqual([]);
+    expect(staleDepDirs(root, ["npm install --package-lock-only"])).toEqual([]);
+    expect(staleDepDirs(root, ["npm ci", "npm install --package-lock=false"])).toEqual([]);
+    // …and an ordinary install is unaffected by the opt-out.
+    expect(bypassesLockfile(["npm ci", "npx prisma generate"])).toBe(false);
   });
 
   it("leaves a dir with no hidden lockfile alone — it is not an npm-reified tree", () => {
@@ -183,7 +255,7 @@ describe("staleDepDirs — which declared dirs get checked at all", () => {
     fs.mkdirSync(path.join(root, "dist"), { recursive: true });
     fs.writeFileSync(path.join(root, "dist", "bundle.js"), "// built once, never rebuilt");
 
-    expect(staleDepDirs(root)).toEqual([]);
+    expect(staleDepDirs(root, ["npm ci"])).toEqual([]);
   });
 
   it("leaves a nested dep dir alone when its parent has no lockfile of its own", () => {
@@ -194,20 +266,20 @@ describe("staleDepDirs — which declared dirs get checked at all", () => {
       lock({ "node_modules/a": { version: "0.0.1" } }),
     );
 
-    expect(staleDepDirs(root)).toEqual([]);
+    expect(staleDepDirs(root, ["npm ci"])).toEqual([]);
   });
 
   it("returns nothing when the repo opts out with an empty dep-dirs list", () => {
     const root = makeWorkspace("  dep-dirs: []\n");
     writeTree(root, "node_modules", { "node_modules/vite": { version: "5.4.0" } }, { "node_modules/vite": { version: "4.0.0" } });
 
-    expect(staleDepDirs(root)).toEqual([]);
+    expect(staleDepDirs(root, ["npm ci"])).toEqual([]);
   });
 
   it("returns nothing when the workspace has no shipit.yaml at all", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "dep-stale-"));
     roots.push(root);
     // Default dep-dirs is [node_modules], and there is no tree to compare.
-    expect(staleDepDirs(root)).toEqual([]);
+    expect(staleDepDirs(root, ["npm ci"])).toEqual([]);
   });
 });

@@ -151,15 +151,32 @@ sizing is fully automatic.
 
   **What the stale check will not tell you.** It is deliberately one-directional
   and narrow, so that a directory which is legitimately *partial* never starts
-  failing. A directory with no `.package-lock.json` is not compared to anything —
-  that covers a declared build output, a monorepo `node_modules` that is nearly
-  empty because everything hoisted to the root, and any tree managed by yarn,
-  pnpm, pip or uv. A tree holding *more* than the lockfile asks for is fine. Dev
-  dependencies are required only when the tree already records some, so an
-  install run with `--omit=dev` is unaffected. Optional, peer, bundled, linked
-  and platform-restricted packages are never required. Within those limits a
-  stale tree still reaches the services in the cases the check cannot see, so
-  for a non-npm project the empty check remains the only post-install check.
+  failing. It is switched off entirely for a directory or an install where the
+  two files do not describe the same thing:
+
+  - **No `.package-lock.json`** — nothing to compare. That covers a declared
+    build output, a monorepo `node_modules` that is nearly empty because
+    everything hoisted to the root, any tree managed by yarn, pnpm, pip or uv,
+    and a lockfile written by npm 6 (`lockfileVersion: 1`).
+  - **A nested workspace dep dir** (`packages/web/node_modules`) — npm keeps the
+    lockfile at the workspace root, so there is none beside the directory.
+  - **A filtered workspace install** (`npm install --workspace=…`, or an install
+    run from inside one subpackage) — it builds part of the tree while the root
+    lockfile describes all of it.
+  - **An install that opts out of the lockfile** — `--no-package-lock`,
+    `--package-lock=false`, `--package-lock-only`.
+  - **A `npm ci` that died part-way** — `npm ci` empties the directory first and
+    writes its record only at the end, so a half-extracted tree carries no
+    record. The empty check still covers it when the directory is left empty.
+
+  Within the comparison itself: a tree holding *more* than the lockfile asks for
+  is fine, dev dependencies are required only when the tree already records some
+  (so `--omit=dev` is unaffected), and optional, peer, bundled, linked and
+  platform-restricted packages are never required.
+
+  So for a non-npm project — or for any of the cases above — the empty check
+  remains the only post-install check, and a stale tree there still reaches the
+  gated services.
 - When `install` is a string, it's treated as a single-element list.
 
 #### Content-keyed install skip (`install-inputs`)

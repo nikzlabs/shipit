@@ -478,7 +478,7 @@ export class InstallController {
       // it left its own record of what it installed, and that record is checkable
       // against the lockfile; `staleDepDirs` compares only in the direction that
       // cannot mistake a legitimately partial tree for a stale one (module doc).
-      const stale = staleDepDirs(this.workspaceDir);
+      const stale = staleDepDirs(this.workspaceDir, commands);
       if (stale.length > 0) {
         const message = formatStaleDepDirsFailureMessage(stale, MAX_REPORTED_MISMATCHES);
         console.warn(`[install] ${message}`);
