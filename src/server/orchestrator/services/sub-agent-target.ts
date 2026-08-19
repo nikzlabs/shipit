@@ -60,7 +60,14 @@ import type {
 } from "../../shared/types.js";
 import { RESERVED_ROLE_NAME } from "../../shared/types.js";
 import type { BillingMode, ModelSelection } from "../../shared/catalogue/types.js";
-import { getHarness, getModel, resolveStyle, selectionExists } from "../../shared/catalogue/index.js";
+import {
+  getHarness,
+  getModel,
+  harnessSendsReasoningEffort,
+  reasoningOptionsFor,
+  resolveStyle,
+  selectionExists,
+} from "../../shared/catalogue/index.js";
 import type { ProviderRoute } from "../provider-account-manager.js";
 import { parseSpawnIdentity } from "../service-routing.js";
 import { selectionOf } from "../turn-attribution.js";
@@ -99,7 +106,13 @@ const EXPLICIT_FIELDS = [
 ] as const;
 
 /**
- * docs/275 req 2 — whether `--effort` is part of a complete call, per harness.
+ * docs/275 req 2 — whether `--effort` is part of a complete call.
+ *
+ * Per harness AND per selection (docs/274 req 14). It was per harness alone
+ * while no harness could offer levels on one row and not another; grok can —
+ * four levels under the subscription, none under a key — so asking the
+ * vocabulary would demand `--effort` on a key-billed grok call and then have
+ * nothing to do with the answer.
  *
  * `undefined` when the body names no harness at all: with nothing to consult,
  * requiredness is unknowable and the caller's first problem is the missing
@@ -108,10 +121,26 @@ const EXPLICIT_FIELDS = [
  * {@link resolveSpawnTarget} refuses it as an unknown agent, which is the
  * message that names the actual mistake (listing `--effort` as missing for a
  * typo'd harness would send the caller to add a flag that fixes nothing).
+ *
+ * A body that names a harness but not a whole selection falls back to the
+ * harness's vocabulary, for the same reason: the caller is already missing an
+ * identity flag, and that is the refusal worth reading.
  */
 function effortIsRequired(body: SubAgentSpawnTargetBody): boolean | undefined {
   const agentId = str(body.agentId);
   if (agentId === undefined) return undefined;
+  const serviceId = str(body.serviceId);
+  const rawMode = str(body.billingMode);
+  const modelId = str(body.modelId);
+  const billingMode = rawMode === "sub" || rawMode === "key" ? rawMode : undefined;
+  if (serviceId && modelId && billingMode) {
+    return reasoningOptionsFor(agentId as AgentId, { serviceId, billingMode, modelId }).length > 0;
+  }
+  // A body naming the MODE but not the whole selection can still be answered
+  // exactly, because the mode is where the gate is: grok sends nothing under a
+  // key whatever the model. Only a body with no mode at all falls back to the
+  // vocabulary, and such a caller is missing `--billing-mode` anyway.
+  if (billingMode) return harnessSendsReasoningEffort(agentId as AgentId, billingMode);
   const options = getHarness(agentId as AgentId)?.capabilities.reasoning?.options ?? [];
   return options.length > 0;
 }
@@ -426,11 +455,14 @@ export function resolveSpawnTarget(
     // that does declare them is the incomplete call docs/261 req 7 refuses —
     // normally caught at the parse edge, restated here because parse and
     // resolve are separate authorities.
-    const options = harness.capabilities.reasoning?.options ?? [];
+    // Asked of the SELECTION, matching the parse edge above — a harness can
+    // offer levels on one row and none on another (docs/274 req 14), so the
+    // vocabulary answers a different question from the one being asked.
+    const options = reasoningOptionsFor(target.harnessId, selection);
     if (options.length === 0 && target.reasoningEffort !== undefined) {
       throw new ServiceError(
         400,
-        `${harness.name} declares no reasoning levels — omit --effort. `
+        `${harness.name} offers no reasoning levels on ${model?.label ?? target.modelId} — omit --effort. `
           + "A complete call on it is the other four flags.",
       );
     }

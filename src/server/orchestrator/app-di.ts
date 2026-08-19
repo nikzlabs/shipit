@@ -12,6 +12,7 @@ import type { GitRemoteCredentialResolver } from "../shared/git-remote-credentia
 import { gitRemoteCredentialResolver } from "./services/github.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
+import { XaiAuthManager } from "./agents/grok/auth-manager.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
@@ -139,6 +140,12 @@ export interface AppDeps {
    * `codex login --device-auth`. See feature 119.
    */
   codexAuthManager?: CodexAuthManager;
+  /**
+   * xAI (SuperGrok subscription) auth manager. Defaults to
+   * `new XaiAuthManager()`. Tests can inject a stub that doesn't spawn
+   * `grok login --device-auth`. See planning#435.
+   */
+  xaiAuthManager?: XaiAuthManager;
   /** GitHub auth manager instance. Defaults to `new GitHubAuthManager()`. */
   githubAuthManager?: GitHubAuthManager;
   /** Chat history manager instance. Defaults to `new ChatHistoryManager()`. */
@@ -270,6 +277,7 @@ export interface ManagerSet {
   usageManager: UsageManager;
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;
+  xaiAuthManager: XaiAuthManager;
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
@@ -549,6 +557,12 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const codexAuthManager = deps.codexAuthManager ?? new CodexAuthManager();
   console.log("[server] Codex ChatGPT credentials found:", providerAccountManager.hasAnyAuthForProvider("codex"));
 
+  // ---- xAI auth manager (SuperGrok subscription) ----
+  // Wraps `grok login --device-auth` so a user can sign in with their SuperGrok
+  // / X Premium+ plan instead of an XAI_API_KEY. See planning#435 / docs/274.
+  const xaiAuthManager = deps.xaiAuthManager ?? new XaiAuthManager();
+  console.log("[server] xAI subscription credentials found:", providerAccountManager.hasAnyAuthForProvider("grok"));
+
   // ---- Global git config (single source of truth for identity) ----
   // Only initialize if not already configured (tests set this up via createTestCredentialStore).
   if (!process.env.GIT_CONFIG_GLOBAL) {
@@ -696,6 +710,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     usageManager,
     authManager,
     codexAuthManager,
+    xaiAuthManager,
     credentialStore,
     providerAccountManager,
     agentRegistry,

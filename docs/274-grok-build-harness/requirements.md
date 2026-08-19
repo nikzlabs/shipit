@@ -94,10 +94,11 @@ They are recorded here as requirements, not relitigated.
     user can pick must follow the actual selection, and a Grok reviewer's
     `REVIEWER_DEFAULT_EFFORT` entry may name a real level for a selection
     that has them.
-15. **The account's own identity and plan are visible on its row**, so two
-    rows holding the same upstream subscription are distinguishable (the
-    docs/150 req 22 duplicate-detection contract every other provider row
-    already meets).
+15. **The account's own identity is visible on its row**, so two rows holding
+    the same upstream subscription are distinguishable (the docs/150 req 22
+    duplicate-detection contract every other provider row already meets).
+    *(Reworded 2026-08-19 — see Resolved questions: the original said "identity
+    and plan", and xAI reports no plan name for a row to show.)*
 16. **Quota is reported honestly or not at all.** If xAI exposes no usage API
     for the subscription, ShipIt says so rather than rendering an empty or
     invented indicator — a declared reader that reads nothing is the state
@@ -117,6 +118,32 @@ They are recorded here as requirements, not relitigated.
 None.
 
 ## Resolved questions
+
+- **2026-08-19 — Can the account row show a PLAN (req 15)?** **No, and the
+  requirement was reworded rather than half-met.** Resolved by reading a real
+  credential file from a completed device-code login. Codex can show one because
+  OpenAI stamps `chatgpt_plan_type` onto the token and Claude reads its tier from
+  the credentials file; xAI publishes neither. The live `auth.json` carries
+  `user_id`, `email`, `first_name`, `last_name`, `team_id`,
+  `principal_type: "User"` and `auth_mode: "oidc"`, and the access token's own
+  claims add only `tier: 1` — an opaque integer whose mapping to a product name
+  is nowhere stated. "Tier 1" on a row tells the user nothing and a guessed
+  "SuperGrok" would be an invention on the very row people use to tell two
+  subscriptions apart, so the row shows the identity xAI does report (email,
+  keyed on `user_id`) and says nothing about the plan. Same rule as req 16, for
+  the same reason. **Req 15's purpose is unaffected**: distinguishability comes
+  from the identity, not the plan. This is an agent finding about what the
+  provider publishes, not a decision taken on the user's behalf — a plan reader
+  lands if xAI ever reports one.
+- **2026-08-19 — Is the subscription token really ~6h (req 13)?** Confirmed by
+  measurement rather than inherited: the live `auth.json` records
+  `create_time: 2026-08-19T13:37:53Z` and
+  `expires_at: 2026-08-19T19:37:53Z` — exactly six hours — with a
+  `refresh_token` beside it. The expiry is an ISO-8601 **string**, which matters
+  beyond bookkeeping: a freshness reader that accepts only numbers returns null,
+  and null does not fail safe here (the sync guard then copies the source over a
+  session's freshly-refreshed token). Recorded because the requirement's premise
+  is what justifies the whole per-turn sync path.
 
 - **2026-08-19 — Does a subscription rank above the metered key (req 17)?**
   Asked with options; Nik chose **"Subscription first"**, the house rule,

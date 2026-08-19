@@ -294,6 +294,17 @@ const OPENCODE_GO_PRICES = {
  */
 const XAI_PRICES = {
   grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
+  // planning#435 — re-read live from `GET https://api.x.ai/v1/models` on
+  // 2026-08-19 for the subscription mode's second model
+  // (`prompt_text_token_price: 20000`, `cached_prompt_text_token_price: 3000`,
+  // `completion_text_token_price: 60000`). It differs from 4.6 in exactly one
+  // axis — a cheaper cache read — which is the kind of near-miss that makes
+  // copying a sibling's row wrong.
+  //
+  // A SUBSCRIPTION row still carries the API rate: under a plan it is req 16's
+  // "would have cost" comparison rather than what the user paid (see
+  // {@link ModelPrice}).
+  grok45: { input: 2, output: 6, cacheRead: 0.3, cacheWrite: 2 },
   grok43: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
   // The 4.20 line bills identically whether or not it reasons.
   grok420: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
@@ -474,6 +485,57 @@ export const SERVICES = [
     id: "xai",
     name: "xAI",
     modes: [
+      {
+        // FIRST, and that is req 17 rather than tidiness: the mode order is
+        // what makes a connected SuperGrok subscription rank above the metered
+        // key, the way every other connected account outranks a key. Because
+        // the two modes offer DISJOINT model sets, this decides which models a
+        // Grok session gets and not only who pays — Nik was asked with that
+        // caveat stated and chose it anyway (docs/274 Resolved questions).
+        kind: "sub",
+        // NO usage API, declared rather than left dangling (req 16). Every
+        // candidate route 404s — the CLI's own surface reads its allowance
+        // through a session-authenticated web endpoint, not a per-account REST
+        // one — so ShipIt says nothing rather than rendering an empty or
+        // invented indicator. `null` is the answer, not an omission; see
+        // {@link BillingModeDef}.
+        quota: null,
+        // ONE style, and a different one from the key mode's. The subscription
+        // is a genuinely separate product surface reached at
+        // `cli-chat-proxy.grok.com` — a different host, speaking Responses —
+        // which is exactly why req 10 makes it a second MODE and not a second
+        // credential on the key mode. The CLI reaches this host by itself once
+        // `auth.json` authenticates it, so ShipIt sets no base URL for a
+        // subscription turn (`serviceRoutingForSelection` returns nothing for
+        // an account-delivered credential); the endpoint is declared because a
+        // mode whose models name a style must declare it, and because it is
+        // what the egress allowlist is authored against.
+        endpoints: {
+          [O_RESP]: "https://cli-chat-proxy.grok.com/v1",
+        },
+        // The one and only credential: xAI's own device-code login. `carriers`
+        // is not redundant with the style join — Codex also speaks
+        // `openai-responses` and carries an account target, so without this the
+        // join would offer a SuperGrok subscription to the Codex CLI, which
+        // cannot present it.
+        credentials: [{ via: "account", login: "xai-oauth", carriers: ["grok"] }],
+        retired: [],
+        // Req 18 — BOTH models, decided for this mode on its own terms. Req 9's
+        // launch set was chosen for key mode and does not constrain this one:
+        // `grok-4.5` is superseded at the API and is a current, offered model on
+        // the subscription, so leaving it out would hide something the user is
+        // paying for.
+        //
+        // `reasoningEfforts` narrows the harness vocabulary per ROW, and the two
+        // rows genuinely disagree: the subscription catalogue declares
+        // `supports_reasoning_effort: true` with xhigh/high/medium/low for 4.6
+        // and high/medium/low for 4.5. A mode-level list would have to be the
+        // intersection and would drop `xhigh` from the top model.
+        models: [
+          { id: "grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_RESP], contextWindow: HALF_M, price: XAI_PRICES.grok46, reasoningEfforts: ["xhigh", "high", "medium", "low"] },
+          { id: "grok-4.5", label: "Grok 4.5", ...MODEL_IDENTITIES.grok45, styles: [O_RESP], contextWindow: HALF_M, price: XAI_PRICES.grok45, reasoningEfforts: ["high", "medium", "low"] },
+        ],
+      },
       {
         kind: "key",
         endpoints: {

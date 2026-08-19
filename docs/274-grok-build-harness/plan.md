@@ -524,6 +524,179 @@ gateway row Grok shares.
 vocabulary happened to be empty *too* — so the moment the vocabulary was written
 down it stopped protecting anything, which is exactly what it did.
 
+## Subscription mode, end to end (planning#435, reqs 10–18)
+
+The launch integration was key-billed only because no ShipIt surface could sign
+in. Three things had to land in ONE change, and the reason is a guard rather
+than taste: `catalogue.test.ts` refuses a `LoginIntegrationId` no auth manager
+implements, so declaring the mode without the manager would have offered a
+subscription nothing could sign into, and giving the harness an `account` target
+without the mode would have offered nothing at all.
+
+### What the credential file actually is
+
+Verified by reading a real one after a completed device-code login (2026-08-19).
+Three details were each guessed wrong first, and every one of them fails
+**silently**:
+
+| guess | reality |
+|---|---|
+| a scope key one could name | `https://auth.x.ai::<client-uuid>` — unguessable, so the reader walks the top-level objects |
+| `access_token` | **`key`**, a JWT, with `refresh_token` beside it |
+| a numeric `expires_at` | an ISO-8601 **string**, `2026-08-19T19:37:53.982150334Z` |
+
+The third is the dangerous one. A freshness reader that cannot parse the expiry
+returns null, and **null does not fail safe here**: `syncAgentTokenIn` skips its
+copy only when it can *prove* the session's token is at least as fresh, so an
+unreadable expiry makes every sync copy unconditionally — and a session that had
+just refreshed loses its live token to a stale source. The reader now takes ISO
+first, then a numeric expiry, then the access token's own JWT `exp` claim (which
+advances on every refresh and so is a real freshness signal, not a consolation
+prize).
+
+`create_time` → `expires_at` is exactly **six hours**, which is where req 13's
+premise is measured rather than inherited.
+
+### No plan, and that is a finding
+
+xAI reports no plan name anywhere: not in the file (`principal_type: "User"`,
+`auth_mode: "oidc"`) and not in the token, whose only tier-shaped claim is
+`tier: 1` — an opaque integer with no published mapping. So the account row
+shows the identity xAI does report (`email`, keyed on `user_id`) and says
+nothing about the plan, and req 15 was reworded to match. Same rule as req 16's
+missing usage API: an honest absence beats a plausible fabrication, and this row
+is exactly where a fabrication would do damage, since its job is telling two
+subscriptions apart.
+
+### The scrub the routed path could not reach
+
+An account-delivered credential carries **no `serviceRouting`** —
+`serviceRoutingForSelection` returns nothing for one, because a login IS the
+vendor's own and its token exchange is bound to the vendor's own endpoint. So
+the adapter's existing scrub, gated on `params.serviceRouting`, never ran for a
+subscription turn.
+
+Meanwhile the worker is handed every stored service credential regardless of
+which route the turn is pinned to (`collectServiceCredentialEnv`), and grok
+prefers `XAI_API_KEY` over its on-disk login. On any install that had ever saved
+an xAI key — which is every dogfood install, by design — every "subscription"
+turn would have been billed to that key while ShipIt attributed it to the
+account. A silent mis-billing, with nothing wrong on screen.
+
+The gate is the auth **file**, not a scoped home. `resolveHome` is undefined
+inside a container (the image symlinks `~/.grok` at the per-session credentials
+mount instead), so Claude's scoped-home test would be false on the one path that
+matters most. This is the Codex adapter's rule — delete the env key when file
+auth wins — reached from the same direction.
+
+### The harness×mode axis, and why the row field could not carry it
+
+`ModelDef.reasoningEfforts` shipped earlier and is right for what it does; the
+section above records why it is not sufficient. The composition is now three
+facts, and `reasoningOptionsFor` is the single entry point:
+
+| fact | lives on | grok |
+|---|---|---|
+| the vocabulary and its labels | harness `capabilities.reasoning.options` | xhigh/high/medium/low |
+| which billing modes send it | harness `capabilities.reasoning.billingModes` | `["sub"]` |
+| which of them a row offers | `ModelDef.reasoningEfforts` | 4.5 lacks `xhigh` |
+
+Every consumer that validated or derived a level now asks the SELECTION:
+`reviewer-model.ts`'s `defaultEffortFor`, `reviewer-settings.ts`'s pin
+validator, `roles.ts`'s role validator, and both edges of docs/275's explicit
+spawn target. The last needed one extra helper —
+`harnessSendsReasoningEffort(harness, mode)` — because the parse edge has to say
+whether `--effort` is part of a complete call before it knows there is a valid
+model, and falling back to the vocabulary there would demand a level on a
+key-billed grok call.
+
+`REVIEWER_DEFAULT_EFFORT.grok` becomes `high` (a level both subscription rows
+offer). It stops being `null`, which the previous guard test predicted would
+happen and said it *should*.
+
+### What was verified live, and what was not
+
+Verified in the dogfood instance on 2026-08-19, with a real SuperGrok login:
+
+- **Sign-in inside ShipIt** (req 11) — *Add a service → xAI* offers
+  **Subscription · API key**; choosing Subscription renders the device-code
+  challenge with URL, code and both models; approving it in the browser
+  completed the flow (`✓ Signed in as …`, exit 0) and produced a connected
+  account row labelled with the reported email.
+- **The `carriers` restriction, both directions** — the support matrix reads
+  "Grok Build runs xAI" while Codex and OpenCode read "API key only", and
+  ChatGPT's subscription is still withheld from Grok ("API key only" on the
+  OpenAI row). Without it the style join would have offered a ChatGPT
+  subscription to the grok CLI.
+- **The billing route** (the last docs/274 auth-mode gap) — one turn on
+  `xai/sub` `grok-4.6`, attributed to `xai:sub` with `includedTurns: 1`,
+  `meteredCostUsd: 0` and an `atApiRatesUsd` "would have cost" figure. The
+  adapter logged `subscription login on disk — env credentials scrubbed`, with
+  `XAI_API_KEY` present in the environment.
+- **The level at the wire** (req 14) — the CLI's own session store for that turn
+  records `reasoning_effort: "xhigh"`, alongside a non-zero `reasoningTokens`.
+
+**Not** verified by that run, and worth stating rather than implying: the
+per-turn token sync. The dogfood instance is `RUNTIME_MODE=local`, which points a
+spawn's HOME straight at the account root and keeps **no per-session credential
+copy** — the CLI wrote its session state into the account directory itself. So
+req 13's machinery is covered by unit tests against the real file shape
+(`session-credentials.test.ts`), not by that turn, and the container path is
+where it first runs for real.
+
+### What the independent review caught, and why it was the right question to ask
+
+The brief for the out-of-family reviewer led with "did I miss a consumer of the
+new axis?", because a missed one is invisible: it renders a control that does
+nothing, or refuses a pin that is valid. It had found five, and four were real.
+
+Every one was a place validating a level against the harness's **vocabulary**
+rather than against the selection — harmless while grok's vocabulary was empty,
+and live the moment it was written down:
+
+- **`route-registry.ts`, three sites.** WS connect rehydrating a session's
+  stored level; `set_model`'s self-heal when a model change crosses a harness;
+  and the `set_reasoning` handler itself. The first is the worst of them, since
+  it *persists* the reconciled value — a session would carry a level its every
+  turn discarded, written back as a preference.
+- **`model-switch.ts`'s `conformSelectionToAgent`.** A level carried across a
+  harness switch onto a key-billed grok row survived AND reported
+  `reasoningCleared: false`, so the move notice stayed silent about a setting
+  that had stopped meaning anything.
+- **`spawn-inventory.ts`** completed `--effort` from the vocabulary while
+  `parseSubAgentSpawnTarget` refused the result — tab completion offering a flag
+  the run rejects.
+
+Two of the fixes needed a correction the first attempt got wrong, and the shape
+is worth recording because it recurs: **asking `reasoningOptionsFor` INSTEAD of
+the injected capabilities is not the same as asking it as well.** Both
+`conformSelectionToAgent` and `listSpawnParameters` take an injected registry,
+and replacing the vocabulary check with a catalogue lookup silently made the
+caller's own declaration irrelevant — which two fixture-based tests caught. The
+correct rule in both is the conjunction: the harness must declare the level AND
+the landing row must send it.
+
+The review also raised a real hole in the adapter's fallback path: when
+`makeSpawnHome` cannot reach the shared config root, `spawnHomeHasAuth` stays
+false, so the subscription scrub does not fire and an ambient `XAI_API_KEY`
+would authenticate the turn while ShipIt attributed it to the account. It needs
+two unlikely states at once (a broken credential root *and* a stored key), which
+is exactly why it now logs explicitly rather than being left to be inferred from
+the resume warning beside it.
+
+### Deliberately not built: a proactive refresher
+
+Claude and Codex each own an orchestrator-side OAuth refresher (docs/153,
+docs/154) that keeps the SOURCE token fresh between turns and stops N sessions
+stampeding one token endpoint. Grok gets no equivalent here, and the reason is
+that the need is **not measurable yet** rather than that it was judged absent:
+the token lives six hours, so whether the CLI's refresh rotates the refresh
+token — the property that makes a stampede destructive — cannot be observed
+without waiting for an expiry. The per-turn sync path is what req 13 asks for and
+is complete on its own terms; the stampede hazard is a separate question, and
+the honest answer today is that it is open. `grok models` is the obvious tier-1
+probe if one is written, mirroring `codex login status`.
+
 ## The reviewer-default extension (req 8)
 
 Grok is the first harness declaring **no** reasoning levels, and

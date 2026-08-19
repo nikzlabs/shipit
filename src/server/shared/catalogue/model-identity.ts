@@ -150,6 +150,11 @@ export const MODEL_IDENTITIES = {
   // docs/261: a review by `-reasoning` of work done by `-non-reasoning` is a
   // second opinion from the same *family* but not the same model.
   grok43: identity("grok-4.3", "grok"),
+  // planning#435 — subscription-only. Its own canonical key rather than a
+  // spelling of 4.6: they are different models on the same training lineage, so
+  // a 4.5 review of 4.6's work IS a second opinion (docs/261 req 4) and the
+  // reviewer ranking must be able to say so.
+  grok45: identity("grok-4.5", "grok"),
   grok420Reasoning: identity("grok-4.20-0309-reasoning", "grok"),
   grok420NonReasoning: identity("grok-4.20-0309-non-reasoning", "grok"),
   kimiK3: identity("kimi-k3", "kimi"),

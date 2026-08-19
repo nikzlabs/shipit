@@ -53,6 +53,9 @@ import {
   type HarnessChoice,
   type ServiceChoice,
 } from "../../pickers/model-choice.js";
+import { reasoningOptionsFor } from "../../../../server/shared/catalogue/index.js";
+import type { ModelSelection } from "../../../../server/shared/catalogue/index.js";
+import type { AgentId } from "../../../../server/shared/types.js";
 import type { AgentOption, EligibleModelOption } from "../../../agent-types.js";
 import type { RoleView, RoleWrite } from "../../../../server/shared/types/agent-types.js";
 
@@ -111,6 +114,20 @@ export function RoleEditor({
   const harness = harnesses.find((h) => h.id === params?.harnessId);
   const modelLabel =
     serviceModels.find((m) => m.modelId === params?.modelId)?.label ?? params?.modelId ?? "";
+  /**
+   * docs/274 req 14 — the levels this role's SELECTION honours, which is what
+   * both the menu and the harness/model moves below must go on. A harness can
+   * declare levels and honour none on a given row (grok, key-billed), and
+   * `validateRoleParams` refuses a level in exactly that case.
+   */
+  const roleLevels =
+    params?.harnessId && params.serviceId && params.billingMode && params.modelId
+      ? reasoningOptionsFor(params.harnessId as AgentId, {
+          serviceId: params.serviceId,
+          billingMode: params.billingMode,
+          modelId: params.modelId,
+        })
+      : (harness?.reasoning?.options ?? []);
 
   /**
    * Move the draft onto a new model, keeping the harness and the level **only
@@ -134,7 +151,17 @@ export function RoleEditor({
       const harnessId = valid.some((h) => h.id === next.harnessId)
         ? next.harnessId
         : (valid[0]?.id ?? next.harnessId);
-      return { ...next, harnessId, reasoningEffort: effortFor(valid, harnessId, next.reasoningEffort) };
+      return {
+        ...next,
+        harnessId,
+        // The SELECTION being moved to, not the one being moved from — a level
+        // valid on the old row can be meaningless on the new one.
+        reasoningEffort: effortFor(valid, harnessId, next.reasoningEffort, {
+          serviceId: next.serviceId,
+          billingMode: next.billingMode,
+          modelId: next.modelId,
+        }),
+      };
     });
   };
 
@@ -149,7 +176,14 @@ export function RoleEditor({
         ? {
             ...prev,
             harnessId: choice.id,
-            reasoningEffort: effortFor([choice], choice.id, prev.reasoningEffort),
+            reasoningEffort: effortFor(
+              [choice],
+              choice.id,
+              prev.reasoningEffort,
+              prev.serviceId && prev.billingMode && prev.modelId
+                ? { serviceId: prev.serviceId, billingMode: prev.billingMode, modelId: prev.modelId }
+                : undefined,
+            ),
           }
         : prev,
     );
@@ -317,9 +351,13 @@ export function RoleEditor({
                   wrong answer — but Default still reads as "Default" there,
                   since it needs no harness to mean what it means.
                 */}
-                {harness?.reasoning && harness.reasoning.options.length > 0 ? (
+                {/* docs/274 req 14 — the levels this role's SELECTION honours, not
+                    the harness's vocabulary. `validateRoleParams` refuses a level
+                    a selection does not honour, so offering the vocabulary here
+                    renders options the save then rejects. */}
+                {harness?.reasoning && roleLevels.length > 0 ? (
                   <Picker
-                    label={levelLabel(harness.reasoning.options, params.reasoningEffort)}
+                    label={levelLabel(roleLevels, params.reasoningEffort)}
                     icon={<BrainIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />}
                     ariaLabel={`${harness.reasoning.label} for this role`}
                     triggerTestId="role-editor-reasoning-trigger"
@@ -328,7 +366,7 @@ export function RoleEditor({
                     menuWidth="w-48"
                     disabled={busy}
                   >
-                    {[{ value: undefined, label: DEFAULT_LEVEL_LABEL }, ...harness.reasoning.options]
+                    {[{ value: undefined, label: DEFAULT_LEVEL_LABEL }, ...roleLevels]
                       .map((option) => (
                         <PickerOption
                           key={option.value ?? "__default__"}
@@ -550,9 +588,16 @@ function effortFor(
   harnesses: HarnessChoice[],
   harnessId: string,
   current: string | undefined,
+  selection?: ModelSelection,
 ): string | undefined {
   if (current === undefined) return undefined;
-  const options = harnesses.find((h) => h.id === harnessId)?.reasoning?.options ?? [];
+  // Asked of the SELECTION when there is one (docs/274 req 14): a level the new
+  // row does not honour must drop to Default, exactly as a level the new harness
+  // does not declare does. Without the selection this falls back to the
+  // vocabulary, which is the pre-catalogue answer.
+  const options = selection
+    ? reasoningOptionsFor(harnessId as AgentId, selection)
+    : (harnesses.find((h) => h.id === harnessId)?.reasoning?.options ?? []);
   if (options.length === 0) return undefined;
   return options.some((o) => o.value === current) ? current : undefined;
 }

@@ -64,6 +64,7 @@ import {
   getService,
   isSelectionEligible,
   modesOfferingModel,
+  reasoningOptionsFor,
   resolveStyle,
   sameSelection,
   selectionExists,
@@ -352,14 +353,19 @@ export function checkRolePinnedParams(
   // docs/274 left it: the claim is false about the harness. It now carries the
   // remedy, which is the thing the user actually has to do.
   if (params.reasoningEffort !== undefined) {
-    const options = harness.capabilities.reasoning?.options ?? [];
+    // What this SELECTION offers on this harness, not the harness's raw
+    // vocabulary (docs/274 req 14). Since planning#435 the two diverge: grok
+    // declares four levels and honours none of them on a key-billed row, so
+    // validating against the vocabulary would accept a role whose level the CLI
+    // drops before the wire — a pinned parameter that silently does nothing.
+    const options = reasoningOptionsFor(harnessId, selection);
     if (options.length === 0) {
       return {
         ok: false,
         kind: "catalogue",
         field: "reasoningEffort",
         message:
-          `${harness.name} declares no reasoning levels, so a role on it cannot name one. `
+          `${harness.name} offers no reasoning levels on ${label}, so a role on it cannot name one. `
           + "Use the Default level.",
       };
     }
@@ -369,7 +375,7 @@ export function checkRolePinnedParams(
         kind: "catalogue",
         field: "reasoningEffort",
         message:
-          `"${params.reasoningEffort}" is not a reasoning level ${harness.name} offers. `
+          `"${params.reasoningEffort}" is not a reasoning level ${harness.name} offers on ${label}. `
           + `Valid levels: ${options.map((o) => o.value).join(", ")}, or Default.`,
       };
     }

@@ -47,8 +47,15 @@ const ANTHROPIC_SUB_OPUS: EligibleModel = {
 function agent(
   eligibleModels: EligibleModel[],
   reasoning?: { value: string; label: string }[],
-): Pick<AgentInfo, "name" | "eligibleModels" | "capabilities"> {
+  /**
+   * planning#435 — the harness the switch is TO. It is needed now because the
+   * level's survival is asked of the resulting SELECTION, and that question has
+   * no answer without knowing which harness is asking (docs/274 req 14).
+   */
+  id: AgentInfo["id"] = "claude",
+): Pick<AgentInfo, "id" | "name" | "eligibleModels" | "capabilities"> {
   return {
+    id,
     name: "Claude Code",
     eligibleModels,
     capabilities: {
@@ -250,6 +257,44 @@ describe("conformSelectionToAgent — what a harness switch moves", () => {
         currentReasoning: "xhigh",
       }).reasoningCleared,
     ).toBe(true);
+  });
+
+  /**
+   * docs/274 req 14 — a level the new harness DECLARES but does not send on the
+   * row being landed on is cleared too.
+   *
+   * Grok is the case: it declares xhigh/high/medium/low and its CLI drops
+   * `--reasoning-effort` before the wire on every key-billed row. A
+   * vocabulary-only check would carry the level across the switch and report
+   * `reasoningCleared: false`, so the move notice would stay silent about a
+   * setting that had stopped meaning anything.
+   */
+  it("clears a level the new harness declares but does not send on the landing row", () => {
+    const grok = agent(
+      [{ serviceId: "xai", billingMode: "key", modelId: "grok-4.6" } as EligibleModel],
+      [{ value: "high", label: "High" }],
+      "grok",
+    );
+    expect(
+      conformSelectionToAgent({
+        agent: grok,
+        current: { serviceId: "xai", billingMode: "key", modelId: "grok-4.6" },
+        currentReasoning: "high",
+      }).reasoningCleared,
+    ).toBe(true);
+    // …and the same harness on the row that DOES send it keeps the level.
+    const grokSub = agent(
+      [{ serviceId: "xai", billingMode: "sub", modelId: "grok-4.6" } as EligibleModel],
+      [{ value: "high", label: "High" }],
+      "grok",
+    );
+    expect(
+      conformSelectionToAgent({
+        agent: grokSub,
+        current: { serviceId: "xai", billingMode: "sub", modelId: "grok-4.6" },
+        currentReasoning: "high",
+      }).reasoningCleared,
+    ).toBe(false);
   });
 
   it("leaves the selection alone when the new harness has nothing eligible", () => {

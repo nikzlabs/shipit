@@ -56,7 +56,7 @@
 
 import type { AgentInfo, EligibleModel } from "../shared/agent-registry.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
-import { selectionExists } from "../shared/catalogue/index.js";
+import { selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
 
 /** The session fields these rules read. */
 export interface SelectionSource {
@@ -207,7 +207,7 @@ export interface SelectionMove {
  * valid (`plan.md`, "Reasoning effort stays on the harness").
  */
 export function conformSelectionToAgent(args: {
-  agent: Pick<AgentInfo, "eligibleModels" | "capabilities">;
+  agent: Pick<AgentInfo, "id" | "eligibleModels" | "capabilities">;
   /** The session's persisted triple, when it has one. */
   current: ModelSelection | undefined;
   /**
@@ -220,10 +220,40 @@ export function conformSelectionToAgent(args: {
   currentReasoning: string | undefined;
 }): SelectionMove {
   const { agent, current, currentModelId, currentReasoning } = args;
-  const reasoningCleared =
-    !!currentReasoning
-    && !agent.capabilities.reasoning?.options.some((o) => o.value === currentReasoning);
-  const unchanged: SelectionMove = { modelMoved: false, serviceMoved: false, reasoningCleared };
+  /**
+   * Does the level survive onto `landing`?
+   *
+   * docs/274 req 14 — asked of the SELECTION the session ends up on, not of the
+   * new harness's vocabulary. The two differ for grok, which declares four
+   * levels and honours none of them on a key-billed row, so a vocabulary check
+   * would carry a level across a harness switch onto a row that discards it
+   * before the wire — and report `reasoningCleared: false`, so the notice would
+   * not even say the level had stopped meaning anything.
+   *
+   * `undefined` landing (the composer case with only a bare model id) falls back
+   * to the vocabulary, which is all that is knowable without a triple.
+   */
+  const clearsOn = (landing: ModelSelection | undefined): boolean => {
+    if (!currentReasoning) return false;
+    // Two independent reasons to clear, and BOTH must be asked. The harness may
+    // not declare the level at all — the original rule, and the one the caller's
+    // injected capabilities stay authoritative about. Or it may declare it and
+    // send it on no row the session is landing on, which is the docs/274 req 14
+    // half: a `high` carried onto a key-billed grok row is a level the CLI
+    // discards before the wire, and reporting `reasoningCleared: false` there
+    // would leave the notice silent about a setting that had stopped meaning
+    // anything.
+    if (!agent.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) return true;
+    // Nothing to ask the catalogue with — the composer case, holding a bare
+    // model id and no triple. The vocabulary check above is all that is knowable.
+    if (!landing) return false;
+    return !selectionHonoursEffort(agent.id, landing, currentReasoning);
+  };
+  const unchanged: SelectionMove = {
+    modelMoved: false,
+    serviceMoved: false,
+    reasoningCleared: clearsOn(current),
+  };
 
   const keeps = current
     ? isEligibleOnAgent(agent, current)
@@ -246,7 +276,9 @@ export function conformSelectionToAgent(args: {
       !!current
       && (selection.serviceId !== current.serviceId
         || selection.billingMode !== current.billingMode),
-    reasoningCleared,
+    // Against the row being moved TO, not the one being moved from: a level
+    // valid where the session was can be meaningless where it lands.
+    reasoningCleared: clearsOn(selection),
   };
 }
 

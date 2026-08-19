@@ -438,7 +438,10 @@ const ON_DEMAND_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
  */
 export function modeReportsQuota(serviceId: string, billingMode: BillingMode): boolean {
   const mode = getMode(serviceId, billingMode);
-  return mode?.kind === "sub" && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota);
+  // `quota: null` is the declared no-reader subscription (docs/274 req 16 —
+  // xAI's, whose every usage route 404s). It is not a lookup miss and must not
+  // be treated as one: the answer is "nothing to read", arrived at on purpose.
+  return mode?.kind === "sub" && mode.quota !== null && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota);
 }
 
 /**
@@ -451,6 +454,7 @@ export function modeReportsQuota(serviceId: string, billingMode: BillingMode): b
 export function subQuotaRefreshable(serviceId: string): boolean {
   const mode = getMode(serviceId, "sub");
   return mode?.kind === "sub"
+    && mode.quota !== null
     && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota)
     && ON_DEMAND_QUOTA_INTEGRATIONS.has(mode.quota);
 }
@@ -476,17 +480,61 @@ export function subQuotaRefreshable(serviceId: string): boolean {
  * means "this row honours none", which returns `[]` and hides the control.
  * Those two must not be conflated, which is why this reads `?? options` rather
  * than testing truthiness.
+ *
+ * **Three facts compose here, and the middle one is the reason this function
+ * exists at all** (docs/274 req 14):
+ *
+ *   | fact | lives on | grok |
+ *   |---|---|---|
+ *   | the vocabulary and its labels | harness | xhigh/high/medium/low |
+ *   | which billing modes honour it | `capabilities.reasoning.billingModes` | `sub` only |
+ *   | which of them a row offers | `ModelDef.reasoningEfforts` | 4.5 lacks `xhigh` |
+ *
+ * The mode gate is applied BEFORE the row narrowing and independently of it, so
+ * a key-billed row that names no `reasoningEfforts` — every gateway row grok
+ * shares with the other three harnesses — still answers `[]` for grok and the
+ * full vocabulary for them. Doing it the other way round (making each shared
+ * row declare a list) has no value that is right for all four harnesses at
+ * once; see {@link AgentReasoningCapability.billingModes}.
  */
 export function reasoningOptionsFor(
   harnessId: AgentId,
   selection: ModelSelection | undefined,
 ): { value: string; label: string }[] {
-  const options = getHarness(harnessId)?.capabilities.reasoning?.options ?? [];
+  const reasoning = getHarness(harnessId)?.capabilities.reasoning;
+  const options = reasoning?.options ?? [];
   if (!selection) return [...options];
+  // The harness×mode gate. A selection whose billing mode this harness does not
+  // send the flag under offers NOTHING, whatever the row says — the row cannot
+  // know which harness is asking.
+  if (reasoning?.billingModes && !reasoning.billingModes.includes(selection.billingMode)) {
+    return [];
+  }
   const honoured = getModel(selection)?.reasoningEfforts;
   if (!honoured) return [...options];
   const allowed = new Set(honoured);
   return options.filter((o) => allowed.has(o.value));
+}
+
+/**
+ * Does this harness put `--reasoning-effort` on the wire under this billing
+ * mode **at all** — the harness×mode gate on its own, with no model named.
+ *
+ * The coarser sibling of {@link reasoningOptionsFor}, and it exists for one real
+ * caller: an explicit `shipit agent run` is validated flag by flag, so the parse
+ * has to say whether `--effort` is part of a complete call *before* it knows
+ * there is a valid model. Falling back to the harness vocabulary there would
+ * demand a level on a key-billed grok call — a flag whose value the CLI
+ * discards — and the caller would be sent to add it.
+ *
+ * Answers the mode question only. Whether a given ROW then narrows the list (a
+ * subscription `grok-4.5` has no `xhigh`) still belongs to `reasoningOptionsFor`,
+ * which is what runs once the model is known.
+ */
+export function harnessSendsReasoningEffort(harnessId: AgentId, billingMode: BillingMode): boolean {
+  const reasoning = getHarness(harnessId)?.capabilities.reasoning;
+  if (!reasoning || reasoning.options.length === 0) return false;
+  return reasoning.billingModes === undefined || reasoning.billingModes.includes(billingMode);
 }
 
 /**

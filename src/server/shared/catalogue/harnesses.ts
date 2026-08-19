@@ -276,14 +276,19 @@ export const HARNESSES = [
     spawn: {
       credential: {
         string: { kind: "env", name: "XAI_API_KEY" },
-        // Still NO `account` target, and now for a narrower reason than
-        // docs/274 req 6's. The subscription path is VERIFIED (planning#435: a
-        // real device-code login, effort levels honoured at the wire) — what is
-        // missing is the `xai-oauth` auth manager that would run the flow from
-        // inside ShipIt. Flipping this on before that exists would let the
-        // eligibility join offer a subscription no ShipIt surface can sign into.
-        // It flips in the same change as the manager, not before.
-        account: undefined,
+        // ON since planning#435, in the same change as the `xai-oauth` manager
+        // that runs the flow — never before it. `catalogue.test.ts` refuses a
+        // `LoginIntegrationId` no manager implements, and that guard is right:
+        // an account target without one would let the eligibility join offer a
+        // subscription no ShipIt surface can sign into.
+        //
+        // `scoped-home` because the credential IS xAI's own login — a
+        // `~/.grok/auth.json` the CLI reads from whatever `GROK_HOME` names, so
+        // pointing the spawn at the account root is the whole delivery. Note
+        // that pointing it there is NOT sufficient on its own: grok prefers
+        // `XAI_API_KEY` over the file, so the adapter must also scrub (see
+        // `spawn-routing.ts`'s `HARNESS_CREDENTIAL_VARS`).
+        account: { kind: "scoped-home" },
       },
       // `grok -p … -m <modelId>`. Verified forwarded verbatim: the id also
       // appears in an `x-grok-model-override` request header.
@@ -313,30 +318,36 @@ export const HARNESSES = [
       supportsPermissionModes: true,
       supportedPermissionModes: GROK_PERMISSION_MODES,
       toolNames: [...GROK_TOOL_NAMES],
-      // EMPTY, and still honest — but for a narrower reason than docs/274 req 8
-      // gave, and the difference is planning#435's finding.
+      // The vocabulary, and the ONE mode that sends it (docs/274 req 14).
       //
-      // `--reasoning-effort` is NOT universally dropped: under a SUBSCRIPTION
-      // the CLI honours it, recorder-verified with a negative control
+      // `--reasoning-effort` is not universally dropped and it is not
+      // universally honoured: under a SUBSCRIPTION the CLI puts it on the wire,
+      // recorder-verified with a negative control
       // (`reasoning:{effort:"xhigh"}` with the flag against
-      // `reasoning:{effort:"high"}` without). Under an API key it is discarded
-      // for every model probed. So Grok's real vocabulary is
-      // xhigh/high/medium/low — and every selection ShipIt can currently run is
-      // key-billed, because the subscription mode is not declared yet.
+      // `reasoning:{effort:"high"}` without), and under an API key no effort
+      // field reaches the request body for any model probed.
       //
-      // Which is why this stays `[]` rather than naming the four now. The gate
-      // is the BILLING MODE, and `AgentReasoningCapability` has no axis for
-      // that: writing the vocabulary here would offer four dead levels on every
-      // key-mode row — including the gateway rows Grok shares with other
-      // harnesses (`x-ai/grok-4.6` at OpenRouter, DeepSeek, GLM), which cannot
-      // narrow per-harness because a `ModelDef` is per service and not per
-      // harness. `ModelDef.reasoningEfforts` narrows per ROW and so cannot
-      // express it either.
+      // So the four levels are named here — they are what the CLI understands —
+      // and `billingModes: ["sub"]` is what keeps them off every key-billed
+      // selection, including the gateway rows Grok shares with Claude, Codex
+      // and OpenCode (`x-ai/grok-4.6` at OpenRouter and Vercel, DeepSeek, GLM).
+      // Those three DO honour levels there, which is exactly why the gate
+      // cannot live on the rows: no per-row value is right for all four
+      // harnesses at once. `reasoningOptionsFor` is the composition; nothing
+      // should read `options` directly.
       //
-      // The vocabulary lands with the subscription mode, together with the
-      // harness×mode axis it needs. Recorded here rather than in a doc because
-      // this is where the next person will look for it.
-      reasoning: { label: "Reasoning", options: [] },
+      // Order is the picker's order, strongest first, and matches the CLI's own
+      // `reasoning_efforts` list for grok-4.6.
+      reasoning: {
+        label: "Reasoning",
+        options: [
+          { value: "xhigh", label: "Extra high" },
+          { value: "high", label: "High" },
+          { value: "medium", label: "Medium" },
+          { value: "low", label: "Low" },
+        ],
+        billingModes: ["sub"],
+      },
       // Unexercised as a reviewer at launch.
       supportsReview: false,
       // One-shot spawn per turn, prompt as argv — no mid-turn steering channel.

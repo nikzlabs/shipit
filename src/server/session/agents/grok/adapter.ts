@@ -209,6 +209,17 @@ export class GrokAdapter
   private systemPromptPath: string | null = null;
   /** This turn's throwaway config root, removed wholesale at turn end. */
   private spawnHome: string | null = null;
+  /**
+   * Whether this turn's config root reaches a real `auth.json` — i.e. whether a
+   * subscription login is what authenticates it.
+   *
+   * Set by {@link makeSpawnHome}, which is the one place that knows: it is the
+   * step that links the durable `auth.json` in, and it is also the step that can
+   * FAIL to (an unusable shared root falls back to a self-contained one with no
+   * link, and a turn that believed it had a login there would then scrub its own
+   * only credential).
+   */
+  private spawnHomeHasAuth = false;
   private resultKillTimer: NodeJS.Timeout | null = null;
   private interruptKillTimer: NodeJS.Timeout | null = null;
   private watchdog: NodeJS.Timeout | null = null;
@@ -283,12 +294,17 @@ export class GrokAdapter
 
     if (params.model) args.push("-m", params.model);
 
-    // No `--reasoning-effort`, deliberately, and not an oversight: in API-key
-    // mode the CLI accepts the flag and drops it before the wire (recorder-
-    // verified on two models — no effort field reaches the request body). The
-    // catalogue row declares no levels for the same reason, so nothing should
-    // reach this adapter with one; passing it anyway would advertise a control
-    // ShipIt cannot deliver. Re-probe under planning#435 with a subscription.
+    // `--reasoning-effort` IS passed now (planning#435), and the gate that
+    // decides whether it means anything is upstream rather than here.
+    //
+    // The flag reaches the wire under a SUBSCRIPTION and is silently discarded
+    // under an API key — both recorder-verified with a negative control. That
+    // gate is `capabilities.reasoning.billingModes` in the catalogue, composed
+    // by `reasoningOptionsFor`, so a key-billed selection can offer no level for
+    // a user, a role or a reviewer to pick and nothing arrives here to pass on.
+    // Re-testing the billing mode in the adapter would be a second copy of one
+    // rule; what the adapter owes is delivering what it was given.
+    if (params.reasoningEffort) args.push("--reasoning-effort", params.reasoningEffort);
 
     if (params.systemPrompt) {
       // `--rules <FILE>` APPENDS to the CLI's own system prompt;
@@ -376,6 +392,30 @@ export class GrokAdapter
       console.log(
         `[grok] service routing: ${routing.serviceId}/${routing.billingMode} -> ${routing.baseUrl}`,
       );
+    } else if (this.spawnHomeHasAuth) {
+      // **A SUBSCRIPTION turn, and the scrub is the whole of its credential
+      // handling** (planning#435). An account-delivered credential carries no
+      // routing at all — `serviceRoutingForSelection` returns nothing for one,
+      // because a login IS the vendor's own and its token exchange is bound to
+      // the vendor's own endpoint — so the branch above never runs and the CLI
+      // reaches `cli-chat-proxy.grok.com` by itself off `auth.json`.
+      //
+      // Which is exactly why the env has to be scrubbed here rather than only
+      // there. Grok prefers `XAI_API_KEY` over its on-disk login, and the worker
+      // is handed every stored service credential regardless of which route the
+      // turn is pinned to (`collectServiceCredentialEnv`) — so an install that
+      // has ever saved an xAI key would have every "subscription" turn silently
+      // billed to that key, with ShipIt attributing it to the account. Same for
+      // `GROK_AUTH` / `GROK_AUTH_PATH`, which redirect the CLI at a different
+      // token store and defeat the scoped home just as thoroughly.
+      //
+      // The gate is the auth FILE, not a scoped home: `resolveHome` is undefined
+      // inside a container (the image symlinks `~/.grok` at the per-session
+      // credentials mount instead), so a scoped-home test — Claude's shape —
+      // would be false on the one path that matters most. This is the Codex
+      // adapter's rule, which deletes `OPENAI_API_KEY` when file auth wins.
+      scrubHarnessEnvCredentials(spawnEnv, "grok");
+      console.log("[grok] subscription login on disk — env credentials scrubbed so it cannot be out-preferred");
     }
 
     // The prompt is a file, not argv (see the header). Written before the
@@ -504,6 +544,7 @@ export class GrokAdapter
    * unusable `os.tmpdir()`. The caller fails the turn loudly instead of spawning.
    */
   private makeSpawnHome(realRoot: string): string | null {
+    this.spawnHomeHasAuth = false;
     let spawnHome: string;
     try {
       spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-home-"));
@@ -525,12 +566,28 @@ export class GrokAdapter
       fs.mkdirSync(sessions, { recursive: true });
       fs.symlinkSync(sessions, path.join(spawnHome, "sessions"));
       const auth = path.join(realRoot, "auth.json");
-      if (fs.existsSync(auth)) fs.symlinkSync(auth, path.join(spawnHome, "auth.json"));
+      if (fs.existsSync(auth)) {
+        fs.symlinkSync(auth, path.join(spawnHome, "auth.json"));
+        this.spawnHomeHasAuth = true;
+      }
     } catch (err) {
       console.warn(
         `[grok] the shared config root ${realRoot} is unusable (${String(err)}) — running this turn on a `
           + "self-contained root instead. Cross-turn resume and any auth.json there are unavailable until it is repaired.",
       );
+      // BILLING, not just resume. `spawnHomeHasAuth` stays false here, so the
+      // subscription scrub below does not fire — and if the worker's environment
+      // carries `XAI_API_KEY` (it does whenever the install has ever stored one),
+      // the CLI silently falls back to that key while ShipIt attributes the turn
+      // to the account. That needs two unlikely states at once, which is exactly
+      // why it must be said out loud rather than left to be inferred from a
+      // resume warning. Raised in review of planning#435.
+      if (process.env.XAI_API_KEY) {
+        console.warn(
+          "[grok] …and XAI_API_KEY is present, so a subscription-pinned turn would authenticate with "
+            + "the METERED KEY instead. Repair the config root before trusting this turn's attribution.",
+        );
+      }
       this.emit(
         "log",
         "server",

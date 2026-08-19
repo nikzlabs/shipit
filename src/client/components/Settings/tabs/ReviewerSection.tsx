@@ -62,6 +62,7 @@ import {
   type ServiceChoice,
 } from "../../pickers/model-choice.js";
 import { BillingModePill } from "../../BillingModePill.js";
+import { reasoningOptionsFor } from "../../../../server/shared/catalogue/index.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import type { AgentOption, EligibleModelOption } from "../../../agent-types.js";
@@ -244,6 +245,22 @@ function ReviewerSlotCard({
 }) {
   const { resolved } = view;
   const pinned = view.source === "pinned";
+  /**
+   * docs/274 req 14 — the levels this reviewer's SELECTION honours.
+   *
+   * Not `reasoning.options`, which is the harness's vocabulary: a harness can
+   * declare levels and send none on a given row (grok, key-billed), and
+   * `resolveReviewerPinPatch` refuses a level in exactly that case — so reading
+   * the vocabulary here renders a menu whose every value comes back a 400.
+   */
+  const reviewerLevels = () =>
+    resolved
+      ? reasoningOptionsFor(resolved.harnessId, {
+          serviceId: resolved.serviceId,
+          billingMode: resolved.billingMode,
+          modelId: resolved.modelId,
+        })
+      : [];
   // Req 12's bound: the model menu shows one service's models, not the whole
   // catalogue. An unresolved slot has no service, so it offers no models either
   // — the service control is the one to use first, which is the order the
@@ -459,11 +476,16 @@ function ReviewerSlotCard({
             />
           )}
 
-          {reasoning && reasoning.options.length > 0 && (
+          {/* docs/274 req 14 — the levels THIS reviewer's selection honours, not
+              the harness's raw vocabulary. A harness can declare levels and send
+              none on a given row (grok, key-billed), and the server refuses such
+              a pin — so offering it here would render a control whose every
+              value comes back a 400. */}
+          {reasoning && reviewerLevels().length > 0 && (
             <ReasoningMenu
               slot={view.slot}
               label={reasoning.label}
-              options={reasoning.options}
+              options={reviewerLevels()}
               current={resolved?.reasoningEffort}
               disabled={busy || !resolved}
               onPick={(effort) => {

@@ -147,6 +147,76 @@ describe("listSpawnParameters (req 12)", () => {
 
   const registryWith = (harnesses: unknown[]) => ({ list: () => harnesses }) as never;
 
+  /**
+   * docs/274 req 14 — a harness's declared level is offered for completion only
+   * where one of its credentialed rows actually sends it.
+   *
+   * grok declares four levels and its CLI drops `--reasoning-effort` before the
+   * wire on every key-billed row, so a key-only grok install completes NOTHING
+   * for `--effort` — which matches what `parseSubAgentSpawnTarget` will accept.
+   * Offering the vocabulary here would complete a flag the run then rejects.
+   */
+  it("offers no level for a harness whose only rows discard the flag", async () => {
+    vi.doMock("../../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["grok"],
+    }));
+    const { listSpawnParameters } = await import("./spawn-inventory.js");
+    const keyOnly = listSpawnParameters(
+      registryWith([
+        {
+          id: "grok",
+          name: "Grok Build",
+          capabilities: {
+            reasoning: {
+              label: "Reasoning",
+              options: [{ value: "xhigh", label: "Extra high" }, { value: "high", label: "High" }],
+            },
+          },
+          eligibleModels: [
+            {
+              serviceId: "xai",
+              billingMode: "key",
+              modelId: "grok-4.6",
+              label: "Grok 4.6",
+              serviceName: "xAI",
+              canonicalModelKey: "grok-4.6",
+            },
+          ],
+        },
+      ]),
+    );
+    expect(keyOnly.harnesses[0].reasoningLevels).toEqual([]);
+
+    // The SAME harness with a subscription row offers them, in its own declared
+    // order — the registry stays authoritative about the vocabulary.
+    const withSub = listSpawnParameters(
+      registryWith([
+        {
+          id: "grok",
+          name: "Grok Build",
+          capabilities: {
+            reasoning: {
+              label: "Reasoning",
+              options: [{ value: "xhigh", label: "Extra high" }, { value: "high", label: "High" }],
+            },
+          },
+          eligibleModels: [
+            {
+              serviceId: "xai",
+              billingMode: "sub",
+              modelId: "grok-4.6",
+              label: "Grok 4.6",
+              serviceName: "xAI",
+              canonicalModelKey: "grok-4.6",
+            },
+          ],
+        },
+      ]),
+    );
+    expect(withSub.harnesses[0].reasoningLevels).toEqual(["xhigh", "high"]);
+  });
+
   it("reports each installed harness's levels and credentialed models", async () => {
     vi.doMock("../../shared/installed-harnesses.js", () => ({
       isHarnessInstalled: () => true,

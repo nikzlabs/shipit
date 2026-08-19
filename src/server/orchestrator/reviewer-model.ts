@@ -79,10 +79,10 @@ import type { ProviderAccountManager, ProviderRoute } from "./provider-account-m
 import type { CredentialStore } from "./credential-store.js";
 import {
   allServices,
-  getHarness,
   getService,
   modelIdentityFor,
   nativeServiceForHarness,
+  reasoningOptionsFor,
   sameCanonicalModel,
   sameModelFamily,
   type ConfiguredCredential,
@@ -105,20 +105,26 @@ import {
  * Req 5 makes the level part of the reviewer and req 8 makes an unpinned one
  * complete, so a derived reviewer carries an effort rather than omitting the
  * flag and inheriting whatever the CLI does by default — the one thing req 5
- * rules out. `high` on both: a review is the case where thinking harder is worth
- * paying for, and it is a level both shipped harnesses declare.
+ * rules out. `high` throughout: a review is the case where thinking harder is
+ * worth paying for, and every harness declares that level.
  *
  * ShipIt's answer, not the harness's — which is why it lives here rather than in
  * the catalogue's harness rows. `reviewer-model.test.ts` asserts each value is
- * one that harness actually offers.
+ * one that harness actually offers on a real catalogue row.
  *
- * **`null` is the fourth honest answer, added in docs/274: "this harness has no
- * levels to choose from."** Grok Build declares `reasoning.options: []` (in
- * API-key mode `--reasoning-effort` is silently dropped at the wire), so there
- * is no level to name and inventing one would put a control on screen that
- * changes nothing. It is `null` rather than an omitted key deliberately — the
- * `Record<AgentId, …>` stays exhaustive, so the next harness added still gets a
- * compile error here instead of silently inheriting a default nobody chose.
+ * **`null` is the fourth honest answer: "this harness has no levels to choose
+ * from."** No shipped harness needs it today — Grok Build did until
+ * planning#435, when its subscription mode gave it selections that honour a
+ * level — but the shape stays, because a harness whose CLI takes no effort flag
+ * at all is a real thing to be able to declare. It is `null` rather than an
+ * omitted key deliberately: the `Record<AgentId, …>` stays exhaustive, so the
+ * next harness added gets a compile error here instead of silently inheriting a
+ * default nobody chose.
+ *
+ * **This table is per HARNESS; whether a given review can use its value is per
+ * SELECTION** (docs/274 req 14). `defaultEffortFor` composes the two, so a
+ * harness with an authored level still contributes none to a row that discards
+ * the flag.
  */
 export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string | null> = {
   claude: "high",
@@ -126,9 +132,17 @@ export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string | null> = {
   // `high` exists on essentially every reasoning-capable model OpenCode
   // routes (docs/268 Phase 0) and is in the harness's declared option list.
   opencode: "high",
-  // Not "we did not decide" — there is nothing to decide (docs/274 req 8).
-  // Re-probe under planning#435 if subscription mode turns out to have levels.
-  grok: null,
+  // `high` since planning#435, and the `null` it replaces was never "we did not
+  // decide" — there had been nothing to decide, because every grok selection
+  // ShipIt could run was key-billed and key mode drops the flag. The
+  // subscription mode has real levels (docs/274 req 14), so there is a choice
+  // again and this is it: `high` for the same reason as the other three, and it
+  // is a level BOTH subscription rows offer (grok-4.5 has no `xhigh`).
+  //
+  // A grok reviewer landing on a key-billed row still gets no level at all —
+  // `defaultEffortFor` asks the selection, not this table, so the entry being
+  // non-null does not put a dead flag on a row that ignores it.
+  grok: "high",
 };
 
 /** Where a slot's answer came from — req 8's visible state. */
@@ -617,7 +631,7 @@ function buildTarget(
     : undefined;
   // A pinned level wins; otherwise the harness's authored default. Both can be
   // absent, and only for a harness declaring no levels — see `defaultEffortFor`.
-  const effort = plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId);
+  const effort = plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId, candidate.selection);
   return Object.freeze({
     slot: plan.slot,
     source: plan.source,
@@ -642,18 +656,26 @@ function buildTarget(
 }
 
 /**
- * This harness's ShipIt-authored review level, falling back to its own first
- * declared option if {@link REVIEWER_DEFAULT_EFFORT} ever names one it dropped.
+ * The review level for a resolved reviewer: ShipIt's authored answer for that
+ * harness, falling back to the first level THIS SELECTION actually offers if
+ * {@link REVIEWER_DEFAULT_EFFORT} names one the selection does not.
  *
- * `undefined` for a harness that declares **no** levels, and that is not the
+ * `undefined` when the selection offers **no** levels, and that is not the
  * "omit it" branch req 5 rules out. Req 5 forbids leaving the level to the
- * CLI's own default when there is a level to choose; a harness with an empty
+ * CLI's own default when there is a level to choose; a selection with an empty
  * option set offers no choice at all, so there is nothing ShipIt could have
- * decided and nothing the CLI could have decided differently. Every other
- * harness still gets a level — the fallback below is unchanged.
+ * decided and nothing the CLI could have decided differently.
+ *
+ * **Asked of the selection rather than of the harness** (docs/274 req 14). A
+ * harness's vocabulary says which words its CLI understands; whether a given
+ * row's turn puts one on the wire is the `reasoningOptionsFor` composition. Grok
+ * is where those differ — four levels declared, honoured only under the
+ * subscription — so reading the vocabulary here would hand a key-billed review a
+ * flag the CLI discards, and req 5's "COMPLETE" would be satisfied by a field
+ * that changes nothing.
  */
-function defaultEffortFor(harnessId: AgentId): string | undefined {
-  const options = getHarness(harnessId)?.capabilities.reasoning?.options ?? [];
+function defaultEffortFor(harnessId: AgentId, selection: ModelSelection): string | undefined {
+  const options = reasoningOptionsFor(harnessId, selection);
   if (options.length === 0) return undefined;
   const authored = REVIEWER_DEFAULT_EFFORT[harnessId];
   if (authored !== null && options.some((option) => option.value === authored)) return authored;
