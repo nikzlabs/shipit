@@ -432,7 +432,19 @@ container and then **every** overlay volume, which is the load-bearing half: lea
 impostor behind would make the next attempt reuse it. `createContainerForRunner` retries three times,
 so a genuinely transient loss self-heals and a standing one surfaces in the health strip.
 
-It is deliberately **trigger-independent**: it does not care what removed the volume, only that what
+**The plugin runtime overlay has the same exposure and is NOT covered by this** (review finding,
+2026-08-19). `ensurePluginRuntimeOverlay` (`plugin-overlay.ts`) skips on `volumeExists` — existence
+only — and a plain impostor satisfies that, so unlike the dep-dir path it would never repair itself on
+any restart. Its docstring argues the skip is safe because "the NAME carries the generation", but that
+argument is about *stale opts* and does not reach a volume that stopped existing. Two facts make it
+worth a look on its own rather than a one-line change here: `plugin-install.ts` builds a spec with the
+**same** `pluginOverlayVolumeName(session, repo, generationId)` but a different lowerdir stack
+(`job.stagingDir`, no dep bases) from the one `ensurePluginRuntimeOverlay` computes (the published
+generation plus pinned bases) — so tightening the skip to an opts match would change which volume a
+runtime mount gets, and whether that is a fix or a regression depends on how staging is promoted
+(docs/262, docs/273). Deliberately left alone here; #2495 is the dep-dir path.
+
+The dep-dir check is deliberately **trigger-independent**: it does not care what removed the volume, only that what
 the container was built with is not what we created. The trigger itself is **not** identified. Two
 candidates were checked and one was refuted: the disk janitor cannot be it. `steady-state-reclaim.ts`
 only ever runs `docker ps` / `container inspect` / `volume inspect` — it removes base *directories*,
