@@ -405,6 +405,46 @@ orchestrator restart drops the claim, which is correct because a container that 
 mounted the generation; on the far side of a restart the container is either running (`docker ps`
 pins it) or being retried (which re-claims).
 
+**The third case: the volume itself is gone, and Docker quietly makes a plain one
+(nikzlabs/shipit#2495).** The two cases above are about a volume that exists and names the wrong
+generation. This one is about a volume that stopped existing between `createOverlayVolume` and
+`docker createContainer` — roughly twenty lines later, in `container-lifecycle.ts`. Referencing a
+missing named volume does **not** fail a container create: the daemon **implicitly creates** one, as a
+plain `local` volume with **no driver options**, empty and `root:root 0755`. Production held exactly
+that: `shipit-3f6d1497-c46_overlay-dba27c31` carrying the overlay-intended NAME with `Options: null`,
+beside a sibling dep dir (`…-bcae0416`) that mounted correctly.
+
+That is the worst shape a session can boot in, and the reason it deserves its own guard rather than
+another retry. The dep dir mounts as a directory the session uid cannot write, so `npm ci` EACCESes on
+its first `mkdir`, `agent.install` never writes `/session-state/.install-done`, and every
+`x-shipit-depends-on-install` service stays down — for the session's whole life. There is no
+in-container recovery: the path is a mount point, there is no `sudo`, and the Compose siblings see the
+same directory through their own mounts.
+
+The gap was that **ShipIt verified driver options exactly once, at creation, and never again**
+(`createOverlayVolume` → `overlayVolumeState`), so nothing looked at the volume after the container
+was built with it. The fix re-verifies: `assertOverlayVolumesMatch` runs **after** `createContainer`
+and **before** `start()`, and throws a greppable `overlay volume verification failed` naming the
+volume, the dep dir, and what the daemon actually holds. That placement is the whole design — it is
+the first instant at which Docker's implicit creation has happened and is therefore observable, and
+the last instant at which refusing costs nothing. The create-failure path already removes the
+container and then **every** overlay volume, which is the load-bearing half: leaving the plain
+impostor behind would make the next attempt reuse it. `createContainerForRunner` retries three times,
+so a genuinely transient loss self-heals and a standing one surfaces in the health strip.
+
+It is deliberately **trigger-independent**: it does not care what removed the volume, only that what
+the container was built with is not what we created. The trigger itself is **not** identified. Two
+candidates were checked and one was refuted: the disk janitor cannot be it. `steady-state-reclaim.ts`
+only ever runs `docker ps` / `container inspect` / `volume inspect` — it removes base *directories*,
+never a volume — so its `batched docker … inspect failed (overlay live-mount check)` line is a failed
+**read**, not a reap; and the only sweep that removes `shipit-*_overlay-*` volumes
+(`sweepOrphanSessionVolumes`, `startup-janitor.ts`) is boot-only, filters `dangling=true`, and
+preserves every non-evicted session's 12-char prefix. What remains open is that `destroyContainer`
+removes `sc.overlayVolumeNames` and is **not** mutually excluded from a concurrent `createContainer`
+for the same session (the create refuses a duplicate *create*, nothing more) — a destroy landing
+between the two volumes' creates would leave the first plain and the second correct, which is the
+observed pattern. Unconfirmed, and deliberately not fixed on a hypothesis.
+
 **On-host upperdir reclaim — `sessions/<id>/overlay/` (planning#194).** The upper/work **bytes** live on
 the host state volume at `sessions/<id>/overlay/<scopeHash>/g<N>/{upper,work}` — a **sibling** of the
 `workspace/` checkout, never inside it (the kernel forbids an upperdir within its own lowerdir; see

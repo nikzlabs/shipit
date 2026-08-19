@@ -38,7 +38,7 @@ import {
   perSessionCredentialsDir,
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
-import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
+import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import {
   preStampInstallMarker,
   sortOverlayDepDirs,
@@ -1282,6 +1282,22 @@ export async function createContainer(
     // the `sc.id = …` below, a `die` event arriving with this ID is
     // correctly attributed instead of being mistaken for a stale event.
     sc.id = container.id;
+
+    // nikzlabs/shipit#2495 — the SECOND verification, and the one that closes the
+    // window. `createOverlayVolume` above verified each volume at creation and
+    // nothing re-checked it after; the container is only built with these mounts
+    // here, ~twenty lines later. A volume removed inside that window does not fail
+    // `createContainer` — Docker silently auto-creates a plain, empty, root-owned
+    // one under the same name — and the session then boots with a dep dir its own
+    // uid cannot write, permanently. Checked before `start()` so the catch below
+    // still owns the cleanup (container removed, then every overlay volume,
+    // INCLUDING the plain impostor — leaving it would make the retry reuse it).
+    // See assertOverlayVolumesMatch for the full failure account.
+    if (config.overlaySpecs && config.overlaySpecs.length > 0) {
+      await assertOverlayVolumesMatch(deps.docker, config.overlaySpecs, {
+        sessionId: config.sessionId,
+      });
+    }
 
     await container.start();
 
