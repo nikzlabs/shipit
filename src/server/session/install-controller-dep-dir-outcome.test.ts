@@ -196,6 +196,81 @@ describe("install outcome — declared dep dirs must actually hold something", (
     expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(true);
   });
 
+  /**
+   * nikzlabs#2496 — the STALE half. `empty` catches only the emptiest case; a
+   * dep dir still holding the PREVIOUS commit's tree passes it, so the same
+   * laundered exit status stamps a marker for the current commit and opens the
+   * gate over dependencies that do not match the code.
+   */
+  function writeNpmTree(
+    workspaceDir: string,
+    required: Record<string, { version: string }>,
+    installed: Record<string, { version: string }> | null,
+  ): void {
+    const lock = (packages: Record<string, { version: string }>) =>
+      JSON.stringify({ name: "fixture", lockfileVersion: 3, packages: { "": { version: "0.0.0" }, ...packages } });
+    fs.writeFileSync(path.join(workspaceDir, "package-lock.json"), lock(required));
+    fs.mkdirSync(path.join(workspaceDir, "node_modules"), { recursive: true });
+    if (installed !== null) {
+      fs.writeFileSync(path.join(workspaceDir, "node_modules", ".package-lock.json"), lock(installed));
+    }
+  }
+
+  it("fails when a `||` fallback exits 0 over a present-but-STALE tree", async () => {
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - false || true\n  dep-dirs:\n    - node_modules\n",
+    );
+    // Non-empty, so the docs/272 emptiness check passes it — and npm's own
+    // record says the tree holds vite 4 while the lockfile asks for vite 5.
+    writeNpmTree(workspaceDir, { "node_modules/vite": { version: "5.4.0" } }, { "node_modules/vite": { version: "4.0.0" } });
+    register(workspaceDir, stateDir);
+
+    const result = await runInstall(["false || true"]);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("package-lock.json");
+    expect(result.message).toContain("node_modules/vite");
+    // Same other half of the gate as the empty case: no marker, so the next
+    // activation cannot skip the install and re-open the gate over this tree.
+    expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(false);
+  });
+
+  it("succeeds when the tree matches the lockfile", async () => {
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - true\n  dep-dirs:\n    - node_modules\n",
+    );
+    writeNpmTree(workspaceDir, { "node_modules/vite": { version: "5.4.0" } }, { "node_modules/vite": { version: "5.4.0" } });
+    register(workspaceDir, stateDir);
+
+    const result = await runInstall(["true"]);
+
+    expect(result.ok).toBe(true);
+    expect(errorMessages()).toEqual([]);
+    expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(true);
+  });
+
+  it("succeeds for a legitimately PARTIAL dep dir — the regression guard", async () => {
+    // The `dep-dirs` contract permits declaring a directory a given install does
+    // not fully produce, and the doc actively invites declaring a build output.
+    // Neither holds an npm record, so neither is compared to a lockfile: here
+    // `node_modules` is populated but un-reified (no `.package-lock.json`) while
+    // a lockfile sits beside it, and `dist/` holds a stale build nobody rebuilt.
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - true\n  dep-dirs:\n    - node_modules\n    - dist\n",
+    );
+    writeNpmTree(workspaceDir, { "node_modules/vite": { version: "5.4.0" } }, null);
+    fs.mkdirSync(path.join(workspaceDir, "node_modules", "vite"), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "dist", "bundle.js"), "// built once");
+    register(workspaceDir, stateDir);
+
+    const result = await runInstall(["true"]);
+
+    expect(result.ok).toBe(true);
+    expect(errorMessages()).toEqual([]);
+    expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(true);
+  });
+
   it("still reports a non-zero exit as the command failure it is", async () => {
     // The pre-existing path must be untouched: a real non-zero exit reports the
     // command and its code, not the dep-dir diagnosis.

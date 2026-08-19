@@ -34,8 +34,10 @@ import { installSkipOutputWarning } from "./install-skip-warning.js";
 import {
   formatEmptyDepDirsFailureMessage,
   formatInstallFailureMessage,
+  formatStaleDepDirsFailureMessage,
   INSTALL_STDERR_TAIL_BYTES,
 } from "./install-failure.js";
+import { MAX_REPORTED_MISMATCHES, staleDepDirs } from "./dep-tree-staleness.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
@@ -464,6 +466,21 @@ export class InstallController {
       const empty = emptyDepDirsContradictingMarker(this.workspaceDir);
       if (empty.length > 0) {
         const message = formatEmptyDepDirsFailureMessage(empty.map((c) => c.depDir));
+        console.warn(`[install] ${message}`);
+        this.finishInstallFailed(message);
+        return;
+      }
+
+      // nikzlabs#2496 — empty is only the emptiest case. A dep dir left holding
+      // the PREVIOUS commit's tree passes the check above, so the same laundered
+      // exit status stamps a marker for the current commit and opens the gate
+      // over dependencies that do not match the code. Where npm reified the dir
+      // it left its own record of what it installed, and that record is checkable
+      // against the lockfile; `staleDepDirs` compares only in the direction that
+      // cannot mistake a legitimately partial tree for a stale one (module doc).
+      const stale = staleDepDirs(this.workspaceDir, commands);
+      if (stale.length > 0) {
+        const message = formatStaleDepDirsFailureMessage(stale, MAX_REPORTED_MISMATCHES);
         console.warn(`[install] ${message}`);
         this.finishInstallFailed(message);
         return;

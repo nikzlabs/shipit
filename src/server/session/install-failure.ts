@@ -68,3 +68,42 @@ export function formatEmptyDepDirsFailureMessage(depDirs: string[]): string {
     `declares a directory this install does not produce.`
   );
 }
+
+/**
+ * The `install_error` message for an install whose commands all exited 0 but
+ * left a declared dep dir holding a tree that does not match its
+ * `package-lock.json` (nikzlabs#2496 — the STALE half of the same gate
+ * {@link formatEmptyDepDirsFailureMessage} covers the empty half of).
+ *
+ * The wording differs from the empty case in one way that matters: an empty dir
+ * has two plausible causes (a failed install, or a `dep-dirs` entry this repo
+ * does not produce), so that message offers both remedies. A tree that npm
+ * itself recorded as holding different versions than the lockfile asks for has
+ * only one — the install did not run to completion. Naming the packages is what
+ * makes that checkable at a glance instead of taken on trust.
+ */
+export function formatStaleDepDirsFailureMessage(
+  stale: { depDir: string; mismatches: { packagePath: string; expected: string; found: string | null }[] }[],
+  maxExamples: number,
+): string {
+  const list = stale.map((s) => s.depDir).join(", ");
+  const plural = stale.length === 1 ? "" : "s";
+  const all = stale.flatMap((s) => s.mismatches);
+  const examples = all
+    .slice(0, maxExamples)
+    .map(
+      (m) =>
+        `${m.packagePath}: lockfile wants ${m.expected}, tree has ${m.found ?? "nothing"}`,
+    )
+    .join("; ");
+  const more = all.length > maxExamples ? ` (+${all.length - maxExamples} more)` : "";
+  return (
+    `agent.install exited 0 but left declared dep dir${plural} out of date with ` +
+    `package-lock.json: ${list}. npm's own record of what it installed ` +
+    `(.package-lock.json inside the dep dir) still describes a different tree — ` +
+    `${examples}${more}. Treating the install as failed: the services gated on ` +
+    `the install would start against dependencies the lockfile does not ask for. ` +
+    `The install did not really succeed — a "|| true"-style fallback can hide a ` +
+    `non-zero exit — so read the install log for the first error it swallowed.`
+  );
+}
