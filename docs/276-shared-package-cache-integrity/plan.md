@@ -11,7 +11,7 @@ Implements [requirements.md](./requirements.md). Read it first.
 > **⚠️ The design is NOT settled.** Every question under
 > [Open questions](./requirements.md#open-questions) has to be answered by the
 > requester before implementation starts. This document prices the options so
-> that those questions can be answered; it does not choose for them. Q2 in
+> that those questions can be answered; it does not choose for them. Q1 in
 > particular decides which option is even viable.
 
 ## What changed after measuring
@@ -58,7 +58,7 @@ here so no option below is priced for a surface that does not need one.
 
 H1 is protected *incidentally* when the repo has a lockfile pinning `integrity`,
 because then npm trusts the lockfile rather than the cached packument. That is
-the whole of the protection that exists (hence req 5, and Q1).
+the whole of the protection that exists (hence req 5, and Q2).
 
 ## Option A — integrity rather than isolation
 
@@ -87,7 +87,7 @@ hash to compare against at the moment it matters. **Any design whose answer is
 
 **What it breaks.** Lockfile-pinned installs break repos with no committed
 lockfile — they would install without the shared cache, or warn. That is a
-product decision (Q1), not a technical one.
+product decision (Q2), not a technical one.
 
 **Verdict.** Right for H1, and the cheapest thing on the table for it. For pnpm
 it is neither cheap nor sufficient. Its honest description is "stop defeating a
@@ -120,10 +120,10 @@ missing verification.
 store on a read-only shared store is precisely the "silently fall back to a
 private copy" that req 2 forbids, so the broker has to actually work rather than
 degrade. Whether "shared for reads, not for writes" satisfies
-`docs/270-per-session-worker-uids` req 9 is Q4, and is the requester's call.
+`docs/270-per-session-worker-uids` req 9 is Q3, and is the requester's call.
 
-**Verdict.** The only complete answer, and expensive. Worth it only if Q2 is
-answered (a).
+**Verdict.** The only complete answer, and expensive. Worth it only if Q1 is
+answered (c) — "stop sessions writing the shared copy".
 
 ## Option C — narrow the blast radius (pnpm store key)
 
@@ -166,7 +166,7 @@ addresses neither demonstrated hole, and per-repo keying is already disproven by
 1. **Close H1 first — cheap, and it is a working RCE.** Two parts, neither of
    which is a new integrity subsystem:
    - Make ShipIt's installs lockfile-pinned, so npm trusts the lockfile rather
-     than the cached packument (subject to **Q1**).
+     than the cached packument (subject to **Q2**).
    - **Stop sharing the npm resolution cache while continuing to share the
      content cache.** These live in one directory today but are not equally
      trustworthy: `content-v2` is self-verifying by construction, whereas
@@ -176,20 +176,20 @@ addresses neither demonstrated hole, and per-repo keying is already disproven by
      usefully forge. *(This is a mechanism proposed here, not a requirement; it
      needs a spike to confirm npm tolerates the split.)*
 
-2. **Treat the pnpm store as the serious half, and take Q2 to the requester
+2. **Treat the pnpm store as the serious half, and take Q1 to the requester
    before designing for it.** H2 and H3 are both open, nothing in pnpm helps,
    and option B is the only answer that closes them without ShipIt writing a
-   verifier pnpm does not have. If Q2 comes back (b) or (c), say so explicitly
+   verifier pnpm does not have. If Q1 comes back (a) or (b), say so explicitly
    in the requirements and document the residual — otherwise "we added integrity
    checking" will read as though the store were covered, which is exactly the
    error `docs/198-dep-cache-content-keying-and-pnpm-store` already made.
 
 3. **Treat C as optional and orthogonal.** Ship it if cross-repo isolation is
-   independently wanted (Q3) and the disk cost is acceptable — not as this
+   independently wanted (Q1 answered (a)) and the disk cost is acceptable — not as this
    issue's fix.
 
 4. **Hold `docs/266-orchestrator-git-trust-boundary` E4** until at least step 1
-   lands and Q2 is answered (req 8, Q5).
+   lands and Q1 is answered (req 8, Q4).
 
 The one-line version: **the cheapest answer really is to stop defeating a check
 that already exists — but that is true of npm only. pnpm has no check to stop
