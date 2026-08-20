@@ -185,11 +185,10 @@ session keeps running its own install command and keeps owning its own
 `node_modules`, while what enters the shared store is fetched and verified by
 ShipIt.
 
-**This is unpriced.** It is named here so the option set is honest, not because
-it is recommended yet. Before it could be, three things need answering: whether
-every install path can be pointed at a mediating endpoint (including the agent's
-ad-hoc terminal use), what it costs a warm install (req 7), and whether it holds
-for package managers that bypass the registry (git and `file:` dependencies).
+**This has now been priced, as [Option D](#option-d--registry-mediation-priced-and-refuted-for-this-threat),
+and it is refuted.** The three questions it needed answering were answered
+against it, and a fourth killed it outright: the attacker never uses the network,
+so a mediator is never asked. Kept here as the record of what was tried.
 
 ## Option C — narrow the blast radius (pnpm store key)
 
@@ -223,6 +222,89 @@ proposes pricing it first as the cheapest partial step; priced honestly, it is
 cheap in code, not free in disk, and it removes none of the three holes. It
 should be described to users as narrowing reach, never as closing the issue.
 
+## Option D — registry mediation *(priced, and refuted for this threat)*
+
+*Point every package manager at a ShipIt-owned registry endpoint, so ShipIt
+controls and verifies what enters the shared cache. Sessions keep running their
+own `npm install`, satisfying req 9.*
+
+This was priced because it looked strictly better than copies on both axes:
+verify on the way in, and keep `npm install` working. **It is not better. It
+closes none of the three holes**, and the reason is structural rather than a
+matter of implementation quality.
+
+**Why it fails: the attacker never uses the network.** Every hole here is a local
+write to a shared path. Mediation defends the path from the registry to the
+cache. The attack writes to the cache directly and then lets the package manager
+read its own local cache.
+
+Measured, each hole against a mediator that works perfectly:
+
+- **H1** — a poisoned packument in the shared npm cache is served **with the
+  network fully available**: the install completed in ~400 ms, ran the
+  attacker's `postinstall`, and installed attacker content. npm never asked the
+  registry, so it could not have asked a mediator either.
+- **H2** — a package already present in the pnpm store is never fetched. A fresh
+  online install links the poisoned bytes without a request. Nothing to mediate.
+- **H3** — no install occurs at all. Nothing to mediate.
+
+**Forcing revalidation is not a rescue, and this is the sharpest result.**
+`--prefer-online` and `--cache-max=0` *do* make the poisoned-packument attack
+fail closed (`EINTEGRITY`) when the attacker supplies crafted bytes. But an
+attacker who instead repoints `is-odd@3.0.1` at a **genuinely published**
+package's real tarball URL and real integrity defeats both flags: measured,
+`is-even` installed under the name `is-odd`, online, with `--prefer-online` set.
+Publishing a package is trivial, so this raises the bar and does not close it —
+and a mediator is in exactly the same position, because it would be asked for a
+legitimate package with legitimate integrity.
+
+**What actually closes H1 is the lockfile, not the network.** Measured: with a
+valid lockfile present, the same poisoned packument is simply ignored — npm uses
+the lockfile's `resolved` and `integrity`, and the correct package installs. That
+is Q2, and it costs nothing to build.
+
+**What it would cost anyway**, for the record:
+
+- *Interception point.* `npm_config_registry` for npm and pnpm, `YARN_REGISTRY`
+  for yarn — ShipIt already sets cache env vars in `buildEnv`, so the hook exists,
+  and env beats a repo's own `.npmrc` in npm's config precedence. It does **not**
+  beat an explicit `--registry=` inside `agent.install`.
+- *Credentials.* Private registries and scoped packages carry their own
+  `_authToken`. A mediator must hold or forward them, concentrating users'
+  registry tokens in the orchestrator — a new credential surface this design
+  would create in order to solve a problem it does not solve.
+- *Availability.* One mediator serving every session is a single point of
+  failure: if it is down, no session can install anything.
+- *Latency.* An extra hop on cold installs. Warm installs are unaffected
+  **because they hit the local cache** — so the fast path is precisely the
+  unprotected path.
+- *Coverage.* npm-ecosystem only. Git and `file:` dependencies, direct tarball
+  URLs, `postinstall` scripts fetching arbitrary URLs, and every non-Node
+  ecosystem sharing `/dep-cache` (pip, uv) all bypass it.
+
+**Verdict.** Refuted for this issue. It is real defence against a *different*
+threat — a compromised upstream registry or a malicious published package — and
+if that threat is ever in scope it should be re-priced on its own terms. It is
+not a candidate here, and it is worse than copies: more mechanism, a new
+credential concentration, a new single point of failure, and zero holes closed.
+
+## The three options side by side
+
+| | **Copies** (`package-import-method=copy`) | **Registry mediation** | **Narrow the store key** |
+|---|---|---|---|
+| **H1** npm packument RCE | ✗ | ✗ | ✗ |
+| **H2** poisoned store installed | ✗ | ✗ | ✗ (same-repo only) |
+| **H3** live hardlink mutation | **✓** | ✗ | ✗ |
+| Cross-repo reach | unchanged | unchanged | **✓ closed** |
+| Cost | ~464 MB per installing session | proxy + credential store + SPOF | disk; loses cross-repo dedup |
+| Compatible with req 9 | ✓ | ✓ | ✓ |
+| New failure modes | none | mediator down ⇒ no installs anywhere | none |
+
+**And the row that is not one of the three:** lockfile-pinned installs (Q2) close
+**H1** outright, cost nothing to build, and are the only thing here that closes a
+demonstrated remote-code-execution path. The three options were framed as the
+menu; the cheapest real win is not on it.
+
 ## Recommendation
 
 **Do not start with C.** It is the cheapest to write, but it buys the least: it
@@ -242,13 +324,15 @@ addresses neither demonstrated hole, and per-repo keying is already disproven by
      usefully forge. *(This is a mechanism proposed here, not a requirement; it
      needs a spike to confirm npm tolerates the split.)*
 
-2. **Close H3 with per-session copies** (`package-import-method=copy`), unless
-   the requester asks for Reshaped B to be priced. Requirement 9 removed the
-   only other route: the session must keep managing its own packages, so the
-   shared files cannot be taken away from it, and once the session owns them
-   read-only permissions are worthless (measured — see option B). Copying breaks
-   the shared inode instead, which is what H3 actually depends on. The cost is
-   real and is the exact cost docs/198 removed: ~464 MB per session.
+2. **Close H3 with per-session copies** (`package-import-method=copy`).
+   Requirement 9 removed the only other route: the session must keep managing its
+   own packages, so the shared files cannot be taken away from it, and once the
+   session owns them read-only permissions are worthless (measured — see option
+   B). Copying breaks the shared inode instead, which is what H3 actually depends
+   on. The cost is real and is the exact cost docs/198 removed: ~464 MB per
+   session. **Registry mediation was priced as the alternative and refuted** —
+   see option D; it closes nothing here, so copies are not being chosen by
+   default for lack of a costed rival.
 
 3. **H2 has no cheap answer, and that must be said plainly.** With copies in
    place a fresh install can still be handed tampered bytes, and pnpm verifies

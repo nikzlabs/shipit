@@ -145,10 +145,11 @@ repository-backed, is not an Ops session, and is detected as pnpm (a
   ability to edit installed packages, because the installed file and the shared
   file are one file.
 
-  It survives only in a **reshaped** form, which is **unpriced**: ShipIt mediates
-  *fetching* invisibly, so `npm install` still works from the agent's point of
-  view. Say so if you want that priced — it is the only route that closes the
-  problem completely.
+  A **reshaped** form was then priced — ShipIt controls package downloads
+  invisibly, so `npm install` still works — and it **does not work either**. The
+  attacker never downloads anything; it writes to the shared files directly, so
+  controlling downloads is never consulted. Measured: a poisoned entry was served
+  with the network fully available, in about 400 ms, without asking anywhere.
 
 **One thing requirement 9 did not settle.** You rejected option (d) in response
 to a consequence about **editing files inside installed packages**, but stated
@@ -158,10 +159,17 @@ debug it, or for `patch-package`-style fixes — say so, because it further
 constrains the answer. I have not assumed it.
 
 **Q2 — May we require projects to pin their dependency versions?**
-A "lockfile" is a file recording exactly which package versions a project uses.
-Most projects have one and it is standard practice. When it exists, the existing
-tooling already refuses tampered packages and we get that protection free. When
-it is missing, we would have to build the protection ourselves.
+*This is now the highest-value decision here, and it was not one of the three
+options the issue proposed.* A "lockfile" records exactly which package versions
+a project uses. Most projects have one and it is standard practice.
+
+Measured: **the lockfile is what defeats the one attack that runs code.** With
+one present, a tampered entry in the shared cache is simply ignored and the
+correct package installs. Without one, the same tampering runs the attacker's
+code during install, with the network available, in about 400 ms. Forcing the
+package manager to re-check online is *not* a substitute — an attacker who points
+at a real published package defeats that, and a different package installed under
+the expected name (verified).
 
 - **(a) Yes, require it.** A project without one installs without the shared copy,
   or gets a warning. **← recommended** — the protection is then maintained by the
