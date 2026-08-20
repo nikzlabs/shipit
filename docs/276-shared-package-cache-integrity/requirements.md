@@ -163,13 +163,25 @@ constrains the answer. I have not assumed it.
 options the issue proposed.* A "lockfile" records exactly which package versions
 a project uses. Most projects have one and it is standard practice.
 
-Measured: **the lockfile is what defeats the one attack that runs code.** With
-one present, a tampered entry in the shared cache is simply ignored and the
-correct package installs. Without one, the same tampering runs the attacker's
-code during install, with the network available, in about 400 ms. Forcing the
-package manager to re-check online is *not* a substitute — an attacker who points
-at a real published package defeats that, and a different package installed under
-the expected name (verified).
+Measured, and **narrower than an earlier draft of this doc claimed**. A lockfile
+protects a package it already pins: the tampered entry is ignored and the correct
+package installs. It does **not** protect a package the lockfile cannot answer
+for. Verified, with the network available and a valid lockfile present:
+
+- `npm install <new-package>` — **not protected.** The attacker's code ran during
+  the install.
+- `npm install`, when `package.json` asks for something the lockfile does not
+  have — **not protected.** In the *same run*, the pinned package installed
+  correctly while the unpinned one was poisoned.
+
+**And the tampering writes itself into the lockfile.** After the poisoned add,
+the project's `package-lock.json` recorded the attacker's hash as the expected
+one. So it survives a cache wipe, and every later "safe" install faithfully
+reproduces it — and ShipIt commits the changed lockfile automatically.
+
+Forcing the package manager to re-check online is not a substitute either: an
+attacker pointing at a genuinely published package defeats it, installing a
+different package under the expected name (verified).
 
 - **(a) Yes, require it.** A project without one installs without the shared copy,
   or gets a warning. **← recommended** — the protection is then maintained by the
