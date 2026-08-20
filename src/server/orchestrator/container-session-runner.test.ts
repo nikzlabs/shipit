@@ -19,6 +19,7 @@ import {
   startTokenWriteBackWatch,
   stopAllTokenWriteBackWatches,
 } from "./session-token-publisher.js";
+import { evaluateInstallGate } from "./agent-install-gate.js";
 import type { WsServerMessage } from "../shared/types.js";
 import {
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
@@ -1167,12 +1168,95 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
     });
 
     /**
-     * Found by review. The worker coalesces a second `/install` onto one already
-     * running and answers `joined`. The completion is real, but it is evidence
-     * about the list that IS running, not the one we asked for — recording ours
-     * would accept a list that never ran.
+     * docs/271 remainder 5, closed — and this is the whole incident reached from
+     * the other end, so it is written as the sequence rather than as a unit.
+     *
+     * A plugin-bearing session's FIRST install completes `unverified`: the
+     * completion is synthesized from no observation (a dispose, a reconnect
+     * resync with no last result), so the old design recorded no acceptance. The
+     * marker was then the session's only anchor — and the marker is deleted by
+     * five paths, one of them in another process. Lose it, and an established
+     * session reaches the gate with neither source, reads as a first install,
+     * and runs whatever `shipit.yaml` says by then.
+     *
+     * The state each step asserts matters more than the calls that produce it:
+     * (1) no record, no marker; (2) the gate ALLOWS and the list is recorded
+     * DESPITE the completion carrying no evidence; (3) the marker is gone and a
+     * different list is requested — which must now be withheld against the
+     * recorded anchor, where before it was allowed.
      */
-    it("does not record acceptance when the worker joined us onto another install", async () => {
+    it("records acceptance on a first install that completes with no evidence", async () => {
+      fs.rmSync(path.join(dir, ".install-accepted"), { force: true });
+      fs.rmSync(path.join(dir, "state", "shared", ".install-done"), { force: true });
+      const workspace = path.join(dir, "workspace");
+      fs.writeFileSync(
+        path.join(workspace, "shipit.yaml"),
+        "agent:\n  install:\n    - \"npm ci\"\nplugins:\n  use:\n    - plugin: probe\n      from: tools\n",
+      );
+      // Nothing to answer the gate with: this is a genuine first install, which
+      // the docs/178 repo-trust decision allows.
+      expect(evaluateInstallGate({ workspaceDir: workspace, requested: ["npm ci"] }).withheld).toBeFalsy();
+
+      const server = http.createServer((req, res) => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(req.url === "/install" ? { started: true } : { running: true }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const addr = server.address();
+      if (typeof addr === "string" || !addr) throw new Error("no server address");
+      try {
+        const runner = runnerIn(dir);
+        runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+        vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+        const install = runner.runInstall(["npm ci"]);
+        await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+        // The resolution that carries no evidence about the tree.
+        priv(runner).signalInstallComplete(true, { unverified: true });
+        expect(await install).toMatchObject({ ok: true, unverified: true });
+      } finally {
+        server.close();
+      }
+
+      // Recorded anyway, because the GATE allowed it — that decision is what
+      // acceptance now means, and it had already been made.
+      const record = JSON.parse(fs.readFileSync(path.join(dir, ".install-accepted"), "utf8"));
+      expect(record).toMatchObject({ commands: ["npm ci"], pluginBearing: true });
+
+      // The incident's second half: a plugin rewrites the list, and the marker
+      // this session never wrote cannot be lost because it never existed. With
+      // no record this read as a first install and ALLOWED.
+      fs.writeFileSync(
+        path.join(workspace, "shipit.yaml"),
+        "agent:\n  install:\n    - \"npm ci && node ./node_modules/tools/x.js\"\n"
+        + "plugins:\n  use:\n    - plugin: probe\n      from: tools\n",
+      );
+      expect(evaluateInstallGate({
+        workspaceDir: workspace,
+        requested: ["npm ci && node ./node_modules/tools/x.js"],
+      })).toMatchObject({ withheld: true, accepted: ["npm ci"], afterDependencyReset: true });
+    });
+
+    /**
+     * Found by review, then INVERTED by the security review of 2026-08-20 — kept
+     * as one test because the pair is the argument.
+     *
+     * The worker coalesces a second `/install` onto one already running and
+     * answers `joined`. While acceptance was recorded on COMPLETION that was
+     * decisive: the completion is evidence about the list that is running, not
+     * ours, so recording ours would have accepted a list that never ran, and the
+     * call site passed `undefined` to avoid it.
+     *
+     * Acceptance is now recorded at the gate's ALLOW — before the POST, so
+     * before `joined` can even be known — and it means "this list was
+     * authorized", not "this list ran". Ours was authorized, so recording it is
+     * right, and the old assertion would now be asserting the hole: a first
+     * install that never records is exactly how a session ends up anchored on a
+     * marker that five paths delete.
+     *
+     * What must still hold is the half that was never about completion: the
+     * record names OUR list, and never the one we were joined onto.
+     */
+    it("records our own authorized list, not the one it was joined onto", async () => {
       fs.rmSync(path.join(dir, ".install-accepted"), { force: true });
       fs.rmSync(path.join(dir, "state", "shared", ".install-done"), { force: true });
       const server = http.createServer((req, res) => {
@@ -1190,7 +1274,8 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
         await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
         priv(runner).signalInstallComplete(true);
         expect(await install).toEqual({ ok: true });
-        expect(fs.existsSync(path.join(dir, ".install-accepted"))).toBe(false);
+        const record = JSON.parse(fs.readFileSync(path.join(dir, ".install-accepted"), "utf8"));
+        expect(record.commands).toEqual(["npm ci"]);
       } finally {
         server.close();
       }

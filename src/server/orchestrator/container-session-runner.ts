@@ -2021,6 +2021,39 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       return { ok: true, withheld: true };
     }
 
+    // docs/271 remainder 5 — acceptance is recorded where the gate ALLOWS, not
+    // where the install completes, and the difference is a hole the security
+    // review found.
+    //
+    // Recording on completion meant a session whose FIRST install resolved
+    // `unverified` (dispose, a reconnect resync with no last result) wrote no
+    // record at all. The marker was then the only anchor, and the marker is
+    // deleted by five paths — so a base rotation or a disk eviction left an
+    // established, plugin-bearing session reaching the gate with neither source,
+    // reading as a first install, and allowing whatever `shipit.yaml` said by
+    // then. That is the incident's own class, reached from the other end.
+    //
+    // Recording here grants nothing new: the gate has just ALLOWED this exact
+    // list, so writing it down cannot authorize anything that was not already
+    // about to run. What it changes is the meaning of the record — from "what
+    // ran" to "what was authorized" — and that is the point. Acceptance is a
+    // property of the decision, and the decision has been made by this line.
+    //
+    // The cost, stated plainly: a plugin-bearing session that changes its own
+    // `agent.install` between an allowed attempt and a successful one is now
+    // withheld, where before it was allowed until the first install completed.
+    // That is the gate's ordinary behaviour arriving one event earlier, and the
+    // remedy is unchanged (req 8 — ask the agent).
+    if (!recordAcceptedInstall(this.sessionDir, commands)) {
+      // Not fatal — the install is authorized either way, and a session that
+      // already had a record keeps it. Worth a line because a session that had
+      // NONE stays anchored on a marker five paths delete.
+      console.error(
+        `[install:${this.sessionId}] could not record the accepted install list; this ` +
+        `session's gate still depends on its install marker`,
+      );
+    }
+
     // Concurrent-call guard: if an install is already in flight (either we
     // armed `_installComplete` and haven't resolved yet, or the worker is
     // still running its commands), join that in-flight promise rather than
@@ -2098,7 +2131,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         // The worker's content-keyed marker matched, which IS the dependency
         // check — the installed tree provably matches this checkout, so any gap
         // we were carrying is answered (nikzlabs/shipit#2429).
-        this.clearDependencyGap(commands);
+        this.clearDependencyGap();
         this.emitMessage({
           type: "install_status",
           sessionId: this.sessionId,
@@ -2118,16 +2151,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // lost, it resolves the gate deterministically.
       void this.resyncInstallStateAfterReconnect();
       const outcome = await completion;
-      // An install that ran and succeeded is the same proof a marker skip is —
-      // but only if it RAN, and only if it ran OUR list. `unverified` marks the
-      // resolutions synthesized from no observation (reconnect resync with no
-      // last result, dispose), which resolve `ok: true` by default and are not
-      // evidence of anything. `joined` marks the other case: the worker was
-      // already installing a DIFFERENT list and coalesced us onto it, so the
-      // completion is real but it is not evidence about the commands we asked
-      // for — recording them would accept a list that never ran.
+      // An install that ran and succeeded answers the gap — but only if it RAN.
+      // `unverified` marks the resolutions synthesized from no observation
+      // (reconnect resync with no last result, dispose), which resolve
+      // `ok: true` by default and are not evidence of anything.
+      //
+      // `result.joined` used to be tested here as well, because coalescing onto
+      // a different list made the completion no evidence about OUR commands.
+      // That mattered only while this call also recorded acceptance; it no
+      // longer does. For the GAP the distinction was always weaker — a joined
+      // install still installed something into this tree — so dropping it costs
+      // nothing the type does not already carry.
       if (outcome.ok && !outcome.unverified) {
-        this.clearDependencyGap(result.joined ? undefined : commands);
+        this.clearDependencyGap();
       }
       return outcome;
     } catch (err) {
@@ -2322,20 +2358,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * both the resync's no-last-result branch and `dispose()` called it bare — so
    * the `outcome.ok` test in `runInstall` cleared the gap on exactly the two
    * paths this paragraph excludes. It is now carried in the type
-   * ({@link InstallCompletion.unverified}) rather than in prose, which is what
-   * made it safe to give this method the reset record as well: dropping the
-   * trust gate's accepted-list anchor on a synthesized completion would have
-   * re-opened the escalation docs/271 exists to close.
+   * ({@link InstallCompletion.unverified}) rather than in prose.
    *
-   * This is also where docs/271's ACCEPTANCE is recorded, because it is the same
-   * event: an install that completed with positive evidence is, by definition,
-   * the user's session running a command list to completion. Recording it here
-   * rather than at the places that delete the marker is what makes the gate's
-   * anchor independent of dependency state — see `INSTALL_ACCEPTED_FILE`.
+   * docs/271's ACCEPTANCE used to be recorded here too, on the reasoning that an
+   * install completing with positive evidence *is* the user's session running a
+   * list to completion. The security review of 2026-08-20 found the gap that
+   * leaves: a first install that resolves `unverified` completes without
+   * evidence, so nothing was ever recorded and the gate fell back to a marker
+   * five paths delete. Acceptance is now recorded at the gate's ALLOW in
+   * `runInstall` — one event earlier and unconditional — so this method is back
+   * to doing only what its name says.
+   *
+   * That also retired the `joined` special case at the call site. It existed
+   * because coalescing onto a DIFFERENT list meant the completion was not
+   * evidence about OUR commands; under authorization semantics our commands were
+   * allowed by the gate regardless of what the worker happened to be running, so
+   * there is nothing left for it to protect.
    */
-  private clearDependencyGap(commands?: string[]): void {
+  private clearDependencyGap(): void {
     this._dependencyGap = null;
-    if (commands && commands.length > 0) recordAcceptedInstall(this.sessionDir, commands);
   }
 
   /**

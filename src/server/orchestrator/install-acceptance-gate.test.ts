@@ -443,6 +443,59 @@ describe("acceptance survives every way the marker can be destroyed", () => {
     });
   });
 
+  /**
+   * docs/271 remainder 6, closed. An UNPARSEABLE record fails closed, so it
+   * would be strange for one that parses but has lost this single field to fail
+   * open — and the fork is where that difference decides the outcome, because a
+   * fork has no live plugin evidence of its own and the flag is the only thing
+   * left that can gate it. Costs nothing to migrate: the record has never
+   * shipped, so no on-disk record predates the field.
+   */
+  it("gates a record that parses but has lost its plugin flag", () => {
+    const forkRoot = path.join(root, "sessions", "flagless");
+    const forkWorkspace = path.join(forkRoot, "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    fs.writeFileSync(
+      path.join(forkWorkspace, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
+    );
+    // Valid JSON with a valid `commands`, so it does NOT resolve to UNREADABLE.
+    fs.writeFileSync(
+      path.join(forkRoot, INSTALL_ACCEPTED_FILE),
+      JSON.stringify({ commands: ACCEPTED, at: "2026-08-20T00:00:00.000Z" }),
+    );
+
+    expect(sessionHasPlugin(forkWorkspace)).toBe(false);
+    expect(readAcceptedInstall(forkWorkspace)).toMatchObject({ commands: ACCEPTED, pluginBearing: true });
+    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED })).toMatchObject({
+      withheld: true,
+      accepted: ACCEPTED,
+    });
+  });
+
+  /**
+   * The other direction, and the reason the field is not simply ignored: an
+   * EXPLICIT `false` is a real answer from a session that genuinely had no
+   * plugin, and must keep allowing. Without this, "fail closed on a missing
+   * flag" could be implemented as "gate everything" and still look correct.
+   */
+  it("still allows a record that explicitly says the session is plugin-free", () => {
+    const otherRoot = path.join(root, "sessions", "plain");
+    const otherWorkspace = path.join(otherRoot, "workspace");
+    fs.mkdirSync(otherWorkspace, { recursive: true });
+    fs.writeFileSync(
+      path.join(otherWorkspace, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
+    );
+    fs.writeFileSync(
+      path.join(otherRoot, INSTALL_ACCEPTED_FILE),
+      JSON.stringify({ commands: ACCEPTED, at: "2026-08-20T00:00:00.000Z", pluginBearing: false }),
+    );
+
+    expect(readAcceptedInstall(otherWorkspace)).toMatchObject({ pluginBearing: false });
+    expect(evaluateInstallGate({ workspaceDir: otherWorkspace, requested: CHANGED }).withheld).toBeFalsy();
+  });
+
   it("does not gate a fork whose parent never had a plugin", () => {
     // The flag is the ONLY thing that can gate a plugin-free session, so it must
     // not be set by a session that never had one.

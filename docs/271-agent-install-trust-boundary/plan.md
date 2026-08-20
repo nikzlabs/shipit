@@ -185,12 +185,23 @@ against the next one somebody adds.
 ### So acceptance is recorded where acceptance happens
 
 `INSTALL_ACCEPTED_FILE` (`.install-accepted`) is written by exactly one caller:
-`runInstall`, when an install completes with positive evidence that it ran — or
-that the worker's content-keyed marker proved the tree already matched. One
-writer, no enumeration, and no amount of dependency-state deletion by either
-process can move it. `null` now means what it always claimed to: no install has
-ever completed in this session, which is the first-time case the docs/178
-repo-trust decision covers.
+`runInstall`, **at the moment the gate ALLOWS a command list** — before the POST,
+not after the completion. One writer, no enumeration, and no amount of
+dependency-state deletion by either process can move it. `null` now means what it
+always claimed to: nothing has ever been authorized in this session, which is the
+first-time case the docs/178 repo-trust decision covers.
+
+**Acceptance means AUTHORIZED, not RAN, and the distinction is load-bearing.**
+The first draft recorded on completion-with-positive-evidence, reasoning that an
+install running to completion *is* the user's session accepting a list. The
+security review of 2026-08-20 found what that leaves open: a completion can be
+*synthesized* rather than observed (`unverified` — a dispose, a reconnect resync
+with no last result), and a session whose FIRST install resolved that way wrote
+no record at all. The marker was then its only anchor, and five paths delete the
+marker. Lose it and an established, plugin-bearing session reads as a first
+install. Recording at the ALLOW grants nothing new — the gate has just permitted
+that exact list — and it cannot be skipped by any outcome downstream of the
+decision. Remainder 5 has the cost.
 
 Three properties follow:
 
@@ -211,7 +222,9 @@ Three properties follow:
 - **A record that exists but cannot be read fails closed.** It resolves to an
   empty accepted list, which matches no request and so withholds — not to
   "absent", which allows. The file's existence is itself the evidence that
-  something was accepted and we have lost track of what.
+  something was accepted and we have lost track of what. A record that *parses*
+  but has lost its `pluginBearing` fails closed the same way (`!== false`), so
+  the two halves of the reader cannot disagree — see remainder 6.
 
 `claim-session.ts` clears it when a clone changes hands, alongside the marker
 unlink it already did — a new occupant inherits no acceptance.
@@ -445,8 +458,9 @@ skipped.
    `docs/251-worker-trust-boundary/plan.md` §"Token resolution, and failing
    closed". The route is still not gated by *this* design — what changed is that
    the guarantee it borrows can now fail a build.
-5. **A first install that completed UNVERIFIED leaves no record, so a later
-   marker loss re-opens the first-install allow.** Found by the 2026-08-20
+5. **CLOSED (2026-08-20).** *A first install that completed UNVERIFIED left no
+   record, so a later marker loss re-opened the first-install allow.* Found by
+   the 2026-08-20
    security review of the acceptance record. When a completion is synthesized
    rather than observed (dispose before the worker was ready, `dispose()`, a
    resync with no last result) ShipIt deliberately records no acceptance — it has
@@ -463,24 +477,48 @@ skipped.
    marker deletion can move. It is nonetheless the incident's own class, and the
    eviction half is the exact path that caused it.
 
-   **Not fixed here, because the fix is a change to what acceptance MEANS.** The
-   cheap closure is to record the *requested* list when the gate ALLOWED it,
-   rather than when the install completes — the gate had already authorized that
-   list, so recording it grants no new authority, and it makes a later mutated
-   list mismatch. That moves the record from "what ran" to "what was
-   authorized", which is a trust-model decision for the requester (req 4's
-   author), not one to self-promote inside a bug fix. **Owner: planning#400.**
-6. **A well-formed record that merely lacks `pluginBearing` is not fail-closed.**
-   Same review. `readAcceptedInstall` fails closed on every *unparseable* record
-   — bad JSON, a directory, `EACCES`, a `commands` that is not a string array all
-   resolve to `UNREADABLE`, which gates — but valid JSON whose `pluginBearing` is
-   absent reads as `false`, and if the session's live plugin evidence is also
-   gone (the fork case) nothing gates it. The only writer is the orchestrator and
-   it always serializes the field, so producing this state needs a corrupted
-   write that stays valid JSON, or a hand-authored file at a path no container
-   mounts. Recorded rather than fixed: making an absent flag mean `true` would
-   also make every pre-flag record gate, which is a migration cost for a state
-   nothing produces.
+   **Fixed by moving where acceptance is recorded** — from the completion to the
+   gate's ALLOW in `runInstall`, which is one event earlier and unconditional.
+   The record's meaning changes with it, from *what ran* to **what was
+   authorized**, and that is the substance of the fix rather than a side effect:
+   acceptance is a property of the decision, and by that line the decision has
+   been made. It grants nothing new, because the gate has just allowed that exact
+   list.
+
+   Raised as a trust-model change rather than self-promoted, and approved on
+   2026-08-20. **The cost, stated plainly:** a plugin-bearing session that
+   changes its own `agent.install` between an *allowed* attempt and a
+   *successful* one is now withheld, where before it was allowed until the first
+   install completed. That is the gate's ordinary behaviour arriving one event
+   earlier, with the req 8 remedy unchanged.
+
+   Two things fell out. `clearDependencyGap` no longer records acceptance, so it
+   is back to what its name says and lost its `commands` parameter. And the
+   `result.joined` guard at its call site went with it: it existed only because
+   coalescing onto a *different* list made the completion no evidence about ours,
+   which stops mattering once the record means "authorized". Guard:
+   `container-session-runner.test.ts` → "records acceptance on a first install
+   that completes with no evidence", written as the incident's own sequence.
+6. **CLOSED (2026-08-20).** *A well-formed record that merely lacked
+   `pluginBearing` was not fail-closed.* Same review. `readAcceptedInstall` fails
+   closed on every *unparseable* record — bad JSON, a directory, `EACCES`, a
+   `commands` that is not a string array all resolve to `UNREADABLE`, which gates
+   — but valid JSON whose `pluginBearing` was absent read as `false`, and if the
+   session's live plugin evidence is also gone (the fork case) nothing gated it.
+
+   Now parsed as `!== false`: only an EXPLICIT `false` leaves a record ungated,
+   so the two halves of the reader agree instead of contradicting each other.
+
+   **The migration cost this was originally deferred for turned out to be zero.**
+   The concern was that every record written before the flag existed would start
+   gating — but the acceptance record has never shipped (`git show
+   origin/main:src/server/orchestrator/agent-install-gate.ts` matches none of
+   `install-accepted`, `INSTALL_ACCEPTED`, `pluginBearing`), so no on-disk record
+   anywhere predates the field and there is nothing to migrate. The schema-version
+   alternative was not needed. Guarded in both directions —
+   `install-acceptance-gate.test.ts` gates a flagless record AND keeps allowing an
+   explicitly plugin-free one, so "fail closed" cannot be satisfied by gating
+   everything.
 7. **The route is closed for `agent.install` only.** The other two routes are
    docs/266 (`.git`, shipped) and planning#386 (the compose file, closed). This
    design does not make `/project` safe to write in general, and docs/262 req 29

@@ -466,7 +466,17 @@ export function readAcceptedInstall(workspaceDir: string): AcceptedInstallRecord
     return {
       commands: r.commands,
       at: typeof r.at === "string" ? r.at : "",
-      pluginBearing: r.pluginBearing === true,
+      // `!== false`, not `=== true`: only an EXPLICIT `false` leaves a record
+      // ungated. Absent, `null`, a string, anything else reads as gated, so this
+      // agrees with {@link UNREADABLE} instead of contradicting it — a record
+      // that is unparseable fails closed, and it would be strange for one that
+      // parses but has lost this field to fail open.
+      //
+      // Costs nothing to migrate: this record has never shipped (it is new on
+      // the branch that adds it), so there is no on-disk record anywhere that
+      // predates the field. A schema version was the alternative if there had
+      // been.
+      pluginBearing: r.pluginBearing !== false,
     };
   }
   return UNREADABLE;
