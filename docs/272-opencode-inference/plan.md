@@ -215,6 +215,22 @@ excludes, and `nativeService` staying deferred. Key files:
       stay unauthored: each duplicates a paid row in rate-limited form, and
       none is a frontier coding model, which is the subset rule the list
       follows.
+    - **Ox Alpha, added 2026-08-21** (`x-preview-f-free`, `O_CC`, 1M context,
+      $0 on every rate) — the one free row authored, and by the sentence above
+      rather than against it: it duplicates no paid row, and the vendor
+      publishes it as a frontier stealth reasoning model for coding and tool
+      use. Three things it settled that the rest of the list did not have to:
+      a **stealth model has no disclosed lineage**, so it takes a family of its
+      own (`ox`) rather than a guessed one, and `model-identity.ts` records what
+      that costs docs/261's reviewer ranking; its **`reasoningEfforts` are
+      load-bearing** — ✅ live, `low`/`high`/`max` complete and `medium` (the
+      harness default vocabulary) fails the request with `[1210] This model
+      always engages in thinking and cannot be disabled`, so a row without the
+      field would render a level that cannot start a turn; and the catalogue's
+      per-million **price floor** now exempts an all-zero row, all four rates
+      together, so a half-authored `input: 0` still fails the build.
+      Free is promotional ("for a limited time" ✅ vendor docs), so a priced Ox
+      Alpha is an ordinary edit to `OPENCODE_ZEN_PRICES`, not a new model.
   - `{ kind: "sub", quota: <new "opencode-go-usage"> }` — OpenCode Go, the
     GLM-coding-plan shape (sub-via-string, same key). Endpoints as above with
     `/zen/go`. Quota: **decided (req 6)** — a new `QuotaIntegrationId`

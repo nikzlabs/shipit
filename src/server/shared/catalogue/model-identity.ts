@@ -63,6 +63,19 @@ export const MODEL_FAMILY_IDS = [
   "grok",
   "kimi",
   "qwen",
+  // A **stealth** model's lineage, which is a family precisely because nobody
+  // outside the vendor knows what it is. OpenCode publishes Ox Alpha with no
+  // maker named, so every alternative to its own family is a claim this
+  // repository cannot make: filing it under an existing vendor asserts a
+  // lineage nobody disclosed, and reusing another family's handle would make
+  // ShipIt refuse a review pairing on a guess.
+  //
+  // Note what the honest answer costs. A family of its own makes Ox Alpha read
+  // as maximally distant from everything (docs/261 req 4), so if it turns out
+  // to be a re-badged model ShipIt already lists, a review it gives is less
+  // independent than the ranking believed. That is the direction the error
+  // falls in, and it is the one that does not require inventing a fact.
+  "ox",
 ] as const;
 
 export type ModelFamily = (typeof MODEL_FAMILY_IDS)[number];
@@ -159,6 +172,13 @@ export const MODEL_IDENTITIES = {
   grok420NonReasoning: identity("grok-4.20-0309-non-reasoning", "grok"),
   kimiK3: identity("kimi-k3", "kimi"),
   qwen38max: identity("qwen3.8-max", "qwen"),
+
+  // OpenCode Zen's stealth model, served ONLY there (2026-08-21). The key is the
+  // vendor's product name rather than its wire id `x-preview-f-free`, which is
+  // the one case the docstring above allows for: the id carries Zen's `-free`
+  // tier marker, and a model leaving stealth would change the id while staying
+  // the same model. `MODEL_ID_ALIASES` carries the id→key claim.
+  oxAlpha: identity("ox-alpha", "ox"),
 } as const;
 
 /**
@@ -189,6 +209,11 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   // second model: Zen is a gateway serving Anthropic's own Haiku 4.5, at
   // Anthropic's own rate.
   "claude-haiku-4-5": "claude-haiku-4.5",
+  // The claim to check here is a naming one, and the vendor's own table makes
+  // it: `opencode.ai/docs/zen` lists the model **Ox Alpha Free** with model id
+  // `x-preview-f-free`, and models.dev names the same id "Ox Alpha Free". One
+  // model under a product name and a wire id, not two models.
+  "x-preview-f-free": "ox-alpha",
 };
 
 /**

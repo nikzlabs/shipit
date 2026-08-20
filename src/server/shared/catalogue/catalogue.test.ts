@@ -116,7 +116,19 @@ describe("no shipped row still carries a sentinel", () => {
       // A rate expressed per *token* rather than per million would come out
       // vanishingly small; a rate expressed per thousand would come out huge.
       // These bounds catch the unit slip that a spot-check by eye does not.
-      expect(model.price.input, where).toBeGreaterThan(0.001);
+      //
+      // A row the vendor charges NOTHING for is exempt from the lower bound and
+      // only from it — a free model's input rate is 0, which is indistinguishable
+      // from a per-token slip by magnitude alone. The exemption is deliberately
+      // all-or-nothing: every rate must be zero together, so `input: 0` beside a
+      // priced output still fails, and that half-authored row is the mistake this
+      // bound is really for. (OpenCode Zen's Ox Alpha, the only such row today.)
+      const free =
+        model.price.input === 0 &&
+        model.price.output === 0 &&
+        model.price.cacheRead === 0 &&
+        model.price.cacheWrite === 0;
+      if (!free) expect(model.price.input, where).toBeGreaterThan(0.001);
       expect(model.price.input, where).toBeLessThan(1000);
       expect(model.price.output, where).toBeGreaterThanOrEqual(model.price.input);
       expect(model.price.cacheRead, where).toBeLessThanOrEqual(model.price.input);
@@ -1189,6 +1201,31 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
     expect(go("gpt-5.6-luna")!.price.input).toBeLessThan(zen("gpt-5.6-luna")!.price.input);
   });
 
+  it("offers Ox Alpha only the three reasoning levels it accepts", () => {
+    // The narrowing on this row is not cosmetic, which is why it is pinned
+    // separately from the grok rows that share the mechanism. Measured live
+    // 2026-08-21: `low`, `high` and `max` each returned a completion, while
+    // `medium` — a level OpenCode's harness vocabulary offers, so the DEFAULT
+    // for a row that names nothing — failed the request outright with `[1210]
+    // This model always engages in thinking and cannot be disabled`. Drop
+    // `reasoningEfforts` from the row and ShipIt renders a level that cannot
+    // start a turn.
+    const oxAlpha = { serviceId: "opencode", billingMode: "key" as const, modelId: "x-preview-f-free" };
+    expect(reasoningOptionsFor("opencode", oxAlpha).map((o) => o.value)).toEqual([
+      "low",
+      "high",
+      "max",
+    ]);
+    expect(selectionHonoursEffort("opencode", oxAlpha, "medium")).toBe(false);
+    expect(selectionHonoursEffort("opencode", oxAlpha, "max")).toBe(true);
+    // The contrast that proves the row did the narrowing rather than the
+    // harness: a sibling of the same mode and style, naming no efforts, still
+    // gets OpenCode's whole vocabulary.
+    expect(
+      reasoningOptionsFor("opencode", { ...oxAlpha, modelId: "kimi-k3" }).length,
+    ).toBe(getHarness("opencode")?.capabilities.reasoning?.options.length);
+  });
+
   it("names OpenCode's own inference as its harness's native service (docs/272)", () => {
     // …and the thing that makes that safe: three readers used "native" to mean
     // "the vendor's account machinery owns this", which is false here. The
@@ -1618,9 +1655,21 @@ describe("credentials", () => {
       // The INVARIANT `reasoningOptionsFor` relies on: a row may only narrow the
       // harness's list, never add to it. A typo here would otherwise vanish
       // silently (intersected away) instead of failing the build.
+      //
+      // Scoped to the harnesses that can actually SPAWN the row, not to every
+      // harness that joins it by style. `catalogueEntriesForHarness` is a style
+      // join alone, so it hands the grok CLI every chat-completions row in the
+      // catalogue — including OpenCode Zen's, which no grok credential may carry
+      // (`carriers: ["opencode", "codex"]`). Asserting against a harness that can
+      // never reach the row makes the invariant the INTERSECTION of unrelated
+      // vocabularies: Zen's Ox Alpha honours `max`, which OpenCode declares and
+      // grok does not, and the unscoped check failed on a level the only harness
+      // that can run it accepts. A typo is still caught — it is in no
+      // vocabulary, so the harness that CAN spawn the row fails on it.
       for (const harness of allHarnesses()) {
         const vocabulary = new Set(harness.capabilities.reasoning?.options.map((o) => o.value) ?? []);
         for (const entry of catalogueEntriesForHarness(harness.id)) {
+          if (!harnessSupportsMode(harness.id, entry.service.id, entry.mode.kind)) continue;
           for (const level of entry.model.reasoningEfforts ?? []) {
             expect(
               vocabulary.has(level),
