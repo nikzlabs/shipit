@@ -27,6 +27,12 @@ the expansion of every line, with file pointers and gotchas, is in
       `x-shipit-secrets` block (guard-tested; never in `onboarding`) —
       for Grok: `XAI_API_KEY` on the xAI `ServiceDef`
 - [x] `GROK_TOOL_NAMES`
+- [x] Composer / Cursor on the xAI subscription — probed 2026-08-20, **not
+      served.** Binary 1.0.1 contains `composer-2.5-fast` (one hit, Cursor-compat
+      harness default) plus `composerId`/`composerHeaders` (Cursor session SQL).
+      Live `grok models` + `GET cli-chat-proxy.grok.com/v1/models` return only
+      `grok-4.6` and `grok-4.5`. The string is inert from ShipIt's perspective
+      today; do not re-run. Receipt in plan.md.
 
 **3 — Install & images**
 - [x] `install-agent-clis.sh`: known set, pkg prefix, binary. (The original

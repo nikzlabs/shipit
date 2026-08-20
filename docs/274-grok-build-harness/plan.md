@@ -737,6 +737,61 @@ is complete on its own terms; the stampede hazard is a separate question, and
 the honest answer today is that it is open. `grok models` is the obvious tier-1
 probe if one is written, mirroring `codex login status`.
 
+## Composer is not served on the xAI subscription (probed 2026-08-20)
+
+The grok 1.0.1 binary contains the string `composer-2.5-fast`. SpaceX acquiring
+Cursor makes "Composer arrives on an xAI surface" a plausible reading of that
+string, and the CLI also ships Cursor-compat toggles that ShipIt already
+disables (`GROK_CURSOR_*_ENABLED=0` in `COMPAT_TOGGLES`,
+`session/agents/grok/adapter.ts`). Plausible is not evidence. Live evidence,
+same day, against a still-valid SuperGrok token (no refresh — `auth.json`
+byte-identical before and after; a sibling is measuring whether expiry
+*rotates* the refresh token and was not disturbed):
+
+**What the binary string actually is.** One hit, at
+`/opt/agent-cli/node_modules/@xai-official/grok-linux-x64/bin/grok` offset
+~135194667, in the Cursor-compat prompt/template neighbourhood
+(`crates/codegen/xai-grok-cursor/`, `cursor_harness.rs`). Surrounding bytes
+are a grep-tool instruction, then `composer-2.5-fast`, then a `<response>`
+regex — a Cursor-harness default model id, not a catalogue row. The nearby
+`composerId` / `composerHeaders` strings are SQL against Cursor's local
+`composerHeaders` table (session restore under `GROK_CURSOR_SESSIONS_ENABLED`),
+also not a model. No other `composer-*` model-id token exists in the binary
+(`composer.lock` is the only other `composer-*` match).
+
+**What the subscription catalogue actually serves.** CLI 1.0.1 (`e9444c5615`),
+logged in with grok.com, 2026-08-20 09:22Z.
+
+`grok models` verbatim:
+
+```
+You are logged in with grok.com.
+
+Default model: grok-4.6
+
+Available models:
+  * grok-4.6 (default)
+  - grok-4.5
+```
+
+`GET https://cli-chat-proxy.grok.com/v1/models` (Bearer, HTTP 200, `object:
+list`, `data` length 2) — the structured fields the earlier capture used:
+
+| id | `api_backend` | `context_window` | `supports_reasoning_effort` | `reasoning_efforts` | default effort |
+|---|---|---|---|---|---|
+| `grok-4.6` | `responses` | 500000 | true | xhigh, high, medium, low | high (`reasoning_effort`) |
+| `grok-4.5` | `responses` | 500000 | true | high, medium, low | high |
+
+No row whose id, name, or payload contains `composer` or `cursor`. The CLI's
+`models_cache.json` (`origin` the same URL, `auth_method: session`) is the same
+two rows. ShipIt's `xai`/`sub` catalogue already matches this set
+(`services.ts`: grok-4.6 with `reasoningEfforts` xhigh/high/medium/low, grok-4.5
+with high/medium/low, both `openai-responses`, 500k).
+
+**The string is inert from ShipIt's perspective today.** Do not add a catalogue
+row. Do not re-run this probe unless the subscription catalogue grows a third
+model or the pin moves off 1.0.1.
+
 ## The reviewer-default extension (req 8)
 
 Grok is the first harness declaring **no** reasoning levels, and
