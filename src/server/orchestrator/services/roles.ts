@@ -18,11 +18,14 @@
  * (reqs 6, 7). {@link validateRolePinnedParams} takes `harnessId` rather than
  * deriving one, which is the whole reason it is not `resolveReviewerPinPatch`:
  * that function derives a harness (`harnessesForSelection(patch, …)[0]`) and
- * validates the reasoning level against whichever it picked, so a level can be
- * checked against one harness and carried onto another. That is a live defect on
- * the reviewer-pin path — reachable today, since `deepseek-v4-flash` is offered
- * under both `anthropic-messages` and `openai-responses` and the two harnesses
- * declare different level sets. A role has no such gap by construction.
+ * checks the reasoning level against whichever it picked, so a level checked at
+ * save time can be *used* somewhere else — `deepseek-v4-flash` is offered under
+ * both `anthropic-messages` and `openai-responses`, and the two harnesses
+ * declare different level sets. On the reviewer path that gap is closed by
+ * re-deriving the level at every point of use (planning#352,
+ * `reviewer-model.ts`'s `effortFor`), which a *setting* needs because its
+ * harness is derived per review. A role has no such gap to close: it names its
+ * harness, so one check at save time is a check against what will run.
  *
  * **2. Saving checks COMPATIBILITY, never live availability.** Whether a
  * credential routes *right now* changes without anyone editing a role — a
