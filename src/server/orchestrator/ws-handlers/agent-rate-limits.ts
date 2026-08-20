@@ -61,6 +61,16 @@ const CLOCK_RESET_UTC = /resets?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*
  * had started saying "You've hit your session limit" while this list still knew
  * only weekly/monthly/5h *usage* limits. `usage` is optional for the same
  * reason — "session limit" and "session usage limit" are the same event.
+ *
+ * Grok (planning#453): this list is still Claude/Codex wording, and xAI's
+ * subscription has no quota reader (`quota: null`), so a miss here is the
+ * *only* miss — there is no meter to fall back on. Strings exist in the grok
+ * binary that this list does not match (`You hit your weekly limit.`,
+ * `usage balance exhausted`, a free-tier `You hit your free usage limit.`).
+ * None of them has been seen on a SuperGrok *headless* turn. Do not widen
+ * against `strings` output; the capture fixture in the co-located test is
+ * the one-assignment change once a real notice is in hand. See
+ * `docs/274-grok-build-harness`.
  */
 const EXHAUSTION_PATTERNS: readonly RegExp[] = [
   /usage limit reached/i,
@@ -90,6 +100,11 @@ const EXHAUSTION_PATTERNS: readonly RegExp[] = [
  * words, so nothing can precede the notice and still match.
  */
 const TURN_TEXT_NOTICE_PATTERNS: readonly RegExp[] = [
+  // The optional prefix is Claude's and Codex's own notice grammar, not a
+  // harness registry. `grok` is absent on purpose: "Grok usage limit reached"
+  // as conversation text has never been captured, and adding a word here is
+  // how an ordinary short summary that happens to start with the harness name
+  // would bench a working subscription (planning#453).
   /^[^a-z0-9]*(?:claude(?: ai| code)?|codex)?\s*usage limit reached\b/i,
   /^[^a-z0-9]*you'?ve hit (?:your|[a-z]+'?s) (?:weekly|monthly|session|5h|five[- ]hour) (?:usage )?limit\b/i,
 ];
