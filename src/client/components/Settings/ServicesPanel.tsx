@@ -1573,6 +1573,11 @@ function AddServiceDialog({
       if (!existing && account) mintedHere.current = true;
       if (!account) {
         setError("Could not start the sign-in — no account was created.");
+        // There is no attempt to wait for, so stop waiting to see one. The
+        // dialog recovers either way (with no account, `signInIdle` puts *Sign
+        // in* back), but a latch left armed over a start that never happened is
+        // a state that says something untrue about the flow. Found by review.
+        setAttemptUnseen(false);
         return;
       }
       // Taken BEFORE the login starts, on purpose: the account exists from the
