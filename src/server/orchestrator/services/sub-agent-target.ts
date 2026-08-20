@@ -83,6 +83,8 @@ import { ServiceError } from "./types.js";
 /** The wire shape of a spawn request's target half, before anything is checked. */
 export interface SubAgentSpawnTargetBody {
   role?: unknown;
+  /** docs/264-agent-roles req 20 — `--no-role`: decline the parent's role. */
+  noRole?: unknown;
   agentId?: unknown;
   serviceId?: unknown;
   billingMode?: unknown;
@@ -261,6 +263,29 @@ export function parseSpawnTarget(
   opts: { parentBase: boolean },
 ): SpawnTarget {
   const role = readRoleName(body.role);
+  // docs/264-agent-roles req 20 — the two say opposite things about the same
+  // thing, and neither is a sensible reading of the pair. Refused here as well
+  // as at the shim, on this module's own rule that the shim buys a message and
+  // never a guarantee.
+  const noRole = body.noRole === true;
+  if (noRole && role !== undefined) {
+    throw new ServiceError(
+      400,
+      "--no-role and --role name opposite things. Pass --role NAME to run that role, "
+        + "or --no-role to decline the role the parent session is running.",
+    );
+  }
+  // A base is what a role could be inherited FROM, so without one there is
+  // nothing to decline. Said rather than dropped, on the same rule the blank
+  // override follows: a caller that named a flag tried to state something, and a
+  // flag that quietly does nothing teaches that it works.
+  if (noRole && !opts.parentBase) {
+    throw new ServiceError(
+      400,
+      "--no-role applies to a spawn that inherits from a parent session. A one-shot run has no "
+        + "parent and therefore no role to decline — name a role, or name every parameter.",
+    );
+  }
   if (role !== undefined) {
     return { kind: "role", role, overrides: readOverrides(body) };
   }
@@ -297,8 +322,9 @@ export function parseSpawnTarget(
     // The parent is the base. Partial is ordinary here — including the empty
     // call, which inherits everything, and the bare `--model X` docs/261 req 10
     // ships. How much of the parent each override carries is `child-sessions.ts`'s
-    // question, deliberately NOT unified with a role's completion.
-    return { kind: "inherit", overrides: readOverrides(body) };
+    // question, deliberately NOT unified with a role's completion — and req 20's
+    // "everything" now includes the parent's ROLE, which `--no-role` declines.
+    return { kind: "inherit", overrides: readOverrides(body), ...(noRole ? { noRole } : {}) };
   }
   throw new ServiceError(
     400,

@@ -171,7 +171,20 @@ export type SpawnTarget =
        */
       reasoningEffort?: string;
     }
-  | { kind: "inherit"; overrides: RoleOverrides };
+  | {
+      kind: "inherit";
+      overrides: RoleOverrides;
+      /**
+       * docs/264-agent-roles req 20 — the caller declined the parent's role
+       * (`--no-role`). The child still inherits the parent's parameters; what it
+       * does not inherit is the role's name and its standing instructions.
+       *
+       * Absent is the default, which inherits the role whole. The flag exists so
+       * that a session working under a brief can still spawn a child for
+       * something else — a brief that cannot be declined is not a default.
+       */
+      noRole?: boolean;
+    };
 
 /**
  * What a **one-shot** `shipit agent run` runs on: {@link SpawnTarget} minus the

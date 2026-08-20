@@ -885,17 +885,29 @@ export async function registerRoutes(
           ? request.query.role
           : undefined;
       //
-      // **It does not need a fourth guard against re-applying a role the clear
-      // just above removed**, which cross-agent review expected it to: the seed
-      // outlives the clear, so a later connect does reach here with the role's
-      // name — and `resolveUserRole` refuses it, because the only two things
-      // that clear a role here (a retired model, a model the harness no longer
-      // lists) are both things that make the ROLE unrunnable too. A retired id
-      // lives in its mode's `retired[]` and not in its model list, so
-      // `selectionExists` is already false for it. Pinned by a test in
-      // `services/session-role.test.ts`, since it is a property of the catalogue
-      // rather than of this block.
-      if (requestedRole && !session.agentPinned && !session.roleName) {
+      // **The clear just above needs no guard of its own**: the seed outlives it,
+      // so a later connect does reach here with the role's name — and
+      // `resolveUserRole` refuses it, because the only two things that clear a
+      // role there (a retired model, a model the harness no longer lists) are
+      // both things that make the ROLE unrunnable too. A retired id lives in its
+      // mode's `retired[]` and not in its model list, so `selectionExists` is
+      // already false for it. Pinned by a test in `services/session-role.test.ts`,
+      // since it is a property of the catalogue rather than of this block.
+      //
+      // **req 18's clear is the case that argument does not cover, and it needs
+      // the fourth guard.** A role the USER cleared is perfectly runnable, so
+      // nothing downstream would refuse it — and the browser's seed sits inside
+      // a per-session memoized WebSocket URL, so a reconnect between the clear
+      // and the first message arrives here still naming it. Without
+      // `roleExplicitlyCleared` the clear would silently undo itself, standing
+      // instructions and all. It reads the row directly because "chose none" and
+      // "never chose" are one value in `SessionInfo` on purpose.
+      if (
+        requestedRole
+        && !session.agentPinned
+        && !session.roleName
+        && !sessionManager.roleExplicitlyCleared(sessionId)
+      ) {
         try {
           const seededRole = resolveUserRole(requestedRole, { credentialStore });
           applyRoleToSession(sessionId, seededRole, { sessionManager });
@@ -1814,8 +1826,8 @@ export async function registerRoutes(
             return;
           }
           case "set_role": {
-            // docs/272-user-selectable-roles reqs 1, 2, 4, 8, 9, 10 — start this session on a
-            // configured role.
+            // docs/272-user-selectable-roles reqs 1, 2, 4, 8, 9, 10, 18 — start this session on a
+            // configured role, or take the role off it.
             //
             // **Decide everything before mutating anything**, the rule
             // `set_model` above states: `resolveUserRole` refuses an unknown
@@ -1839,6 +1851,22 @@ export async function registerRoutes(
                 type: "error",
                 message: "A role can only be chosen before the session's first message.",
               });
+              return;
+            }
+            // req 18 — **"No role" is a choice of role, and it is the whole of
+            // this branch.** The three parameters are deliberately left where
+            // they are: the role's values are the last thing the user chose, so
+            // putting ShipIt's defaults back would undo a choice they did not
+            // ask to undo. What clearing takes away is the name and, with it,
+            // the standing instructions the first turn would otherwise carry —
+            // the one thing no parameter can express.
+            if (msg.roleName === null) {
+              // `clearRoleName`, not `setRoleName(…, null)`: the row records that
+              // the user chose none, so the `?role=` seed cannot put it back on
+              // the next reconnect. See that method for why the two clears
+              // differ.
+              sessionManager.clearRoleName(activeAppSessionId);
+              sendSelectionChanged(ctx.getActiveAgentId());
               return;
             }
             let resolvedRole;

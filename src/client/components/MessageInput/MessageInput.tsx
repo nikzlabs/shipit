@@ -176,8 +176,11 @@ export function MessageInput({
    * stands in their place.
    */
   sessionRoleName?: string;
-  /** docs/272 req 1 — start this session on the named role. Absent ⇒ no role control. */
-  onRoleChange?: (roleName: string) => void;
+  /**
+   * docs/272 reqs 1, 18 — start this session on the named role, or take the role
+   * off it with `undefined`. Absent ⇒ no role control at all.
+   */
+  onRoleChange?: (roleName: string | undefined) => void;
   /**
    * docs/272 req 4 — the session has taken its first turn, so no role applies any
    * more. The same fact that pins the harness, and shown the same way.
@@ -1054,7 +1057,12 @@ export function MessageInput({
                   // row so crossing the breakpoint does not re-fold what the
                   // user just opened.
                   {...(onRoleChange
-                    ? { onRoleChange: (name: string) => { setPendingRole(name); onRoleChange(name); } }
+                    ? {
+                        onRoleChange: (name: string | undefined) => {
+                          setPendingRole(name);
+                          onRoleChange(name);
+                        },
+                      }
                     : {})}
                   {...(roleInForce ? { sessionRoleName: roleInForce } : {})}
                   roleParamsRevealed={roleParamsRevealed}
@@ -1276,7 +1284,9 @@ export function MessageInput({
                   {...(roleInForce ? { selectedRole: roleInForce } : {})}
                   onSelectRole={(name) => {
                     // A fresh pick folds the parameters away: they described the
-                    // role the user has just left behind.
+                    // role the user has just left behind. "No role" (req 18)
+                    // needs no fold — with nothing in force the three controls
+                    // are back on their own (`roleParamsRevealed`).
                     setRevealedFor(undefined);
                     setPendingRole(name);
                     onRoleChange?.(name);

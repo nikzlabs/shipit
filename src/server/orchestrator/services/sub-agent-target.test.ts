@@ -411,6 +411,38 @@ describe("parseSpawnTarget — the parent base (req 16)", () => {
       overrides: { modelId: "x" },
     });
   });
+
+  describe("--no-role (docs/264-agent-roles req 20)", () => {
+    it("carries the decline onto the inherit target, overrides and all", async () => {
+      const { parseSpawnTarget } = await import("./sub-agent-target.js");
+      expect(parseSpawnTarget({ noRole: true, modelId: "gpt-5.6-sol" }, { parentBase: true })).toEqual({
+        kind: "inherit",
+        overrides: { modelId: "gpt-5.6-sol" },
+        noRole: true,
+      });
+    });
+
+    it("leaves the flag off the target when it was not asked for", async () => {
+      // Absence is the DEFAULT — inherit the parent's role whole — so it must
+      // not be spelled as `noRole: false` on a target nobody declined anything on.
+      const { parseSpawnTarget } = await import("./sub-agent-target.js");
+      expect(parseSpawnTarget({}, { parentBase: true })).toEqual({ kind: "inherit", overrides: {} });
+    });
+
+    it("refuses --no-role together with --role rather than picking one", async () => {
+      const { parseSpawnTarget } = await import("./sub-agent-target.js");
+      expect(() =>
+        parseSpawnTarget({ role: "deep-dive", noRole: true }, { parentBase: true }),
+      ).toThrow(/opposite things/);
+    });
+
+    it("refuses --no-role where there is no parent to inherit a role from", async () => {
+      const { parseSpawnTarget } = await import("./sub-agent-target.js");
+      expect(() => parseSpawnTarget({ ...FULL, noRole: true }, { parentBase: false })).toThrow(
+        /one-shot run has no/,
+      );
+    });
+  });
 });
 
 describe("resolveSpawnTarget", () => {

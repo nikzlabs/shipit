@@ -116,7 +116,7 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
-| `shipit session create --prompt-file FILE --title T [--role NAME] [OVERRIDE…] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. **What the child runs on** is named the same way as for `shipit agent run` — see *What the child runs on* below. |
+| `shipit session create --prompt-file FILE --title T [--role NAME\|--no-role] [OVERRIDE…] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. **What the child runs on** is named the same way as for `shipit agent run` — see *What the child runs on* below. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available, and the resolved `agent` + `model` the child actually runs on (use these to confirm the backend/model rather than trusting the child's own self-report, which models are unreliable at). |
 | `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt. A resolved child rejects the message, receives no card or wake, and returns a named non-zero result. |
@@ -190,13 +190,25 @@ started it. `shipit agent roles` lists the roles; `shipit agent params` lists
 every parameter an override may name on this install, and the flag that names
 each — read it rather than naming a model from memory.
 
-**Name no role and YOU are the base.** This is the shipped behaviour and it is
-unchanged: the child inherits your harness, model and reasoning level, and any
-parameter you *did* name overrides that. Set one only when the user asks for a
-specific backend or model — e.g. "do this part with Codex". (A call that names
-**every** parameter is a complete target with nothing left to inherit — it is
-validated as such, exactly as on `shipit agent run`; `--effort` belongs to it
-only where the named harness declares reasoning levels.)
+**Name no role and YOU are the base.** The child inherits your harness, model and
+reasoning level, and any parameter you *did* name overrides that. Set one only
+when the user asks for a specific backend or model — e.g. "do this part with
+Codex". (A call that names **every** parameter is a complete target with nothing
+left to inherit — it is validated as such, exactly as on `shipit agent run`;
+`--effort` belongs to it only where the named harness declares reasoning levels.)
+
+**And if YOU are running a role, the child inherits that too — whole.** Not just
+the parameters: the role's name and its standing instructions, which arrive in
+the child's first message the same way they would if you had named the role. That
+is the default because it is usually right — a session working under a brief
+spawns help for that same work — and overriding a parameter does **not** cancel
+it, exactly as `--role NAME --model X` does not.
+
+Pass **`--no-role`** when the child's work is not the role's work: a fix for an
+unrelated bug you noticed, a chore you are getting out of the way. The child still
+inherits your parameters; what it does not inherit is the brief. `--no-role` and
+`--role` contradict each other and the pair is refused. If you are running no
+role, nothing changes and `--no-role` is unnecessary.
 
 Inheritance is per-parameter, and the rules are deliberately not a role's:
 

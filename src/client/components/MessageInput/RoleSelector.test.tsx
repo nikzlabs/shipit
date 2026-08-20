@@ -197,10 +197,50 @@ describe("RoleSelector (wide row)", () => {
       />,
     );
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
-    // …and there is no "no role" entry to leave by (req 15).
-    expect(screen.queryByText(/no role/i)).toBeNull();
     await userEvent.click(screen.getByTestId("role-adjust-parameters"));
     expect(onAdjustParameters).toHaveBeenCalled();
+  });
+
+  describe("No role (req 18)", () => {
+    it("offers it in the list, and calls back with nothing selected", async () => {
+      // The act req 15's "changing a parameter is the whole of leaving a role"
+      // cannot express: keep what the role set, drop the brief it carries.
+      const onSelectRole = vi.fn();
+      render(
+        <RoleSelector roles={[DEEP_DIVE]} selectedRole="deep dive" onSelectRole={onSelectRole} />,
+      );
+      await userEvent.click(screen.getByTestId("role-selector-trigger"));
+      await userEvent.click(screen.getByTestId("role-option-none"));
+      expect(onSelectRole).toHaveBeenCalledWith(undefined);
+    });
+
+    it("is what the list shows as chosen while no role is in force", async () => {
+      render(<RoleSelector roles={[DEEP_DIVE]} onSelectRole={vi.fn()} />);
+      await userEvent.click(screen.getByTestId("role-selector-trigger"));
+      // The same selected treatment every picker row wears, asserted the way
+      // this file already asserts the pill's tint.
+      expect(screen.getByTestId("role-option-none").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("role-option-deep dive").className).not.toContain(
+        "bg-(--color-accent-subtle)",
+      );
+    });
+
+    it("is not offered once the choice of role has locked (req 4)", async () => {
+      // Clearing IS a choice of role. By the first turn the standing
+      // instructions have been delivered, so un-naming them states nothing.
+      render(
+        <RoleSelector
+          roles={[DEEP_DIVE]}
+          selectedRole="deep dive"
+          onSelectRole={vi.fn()}
+          onAdjustParameters={vi.fn()}
+          locked
+        />,
+      );
+      await userEvent.click(screen.getByTestId("role-selector-trigger"));
+      expect(screen.queryByTestId("role-option-none")).toBeNull();
+      expect(screen.getByTestId("role-adjust-parameters")).toBeTruthy();
+    });
   });
 });
 
@@ -593,6 +633,41 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
     expect(screen.queryByTestId("composer-settings-role-deep dive")).toBeNull();
     await userEvent.click(screen.getByTestId("composer-settings-role-adjust"));
     expect(onAdjustRoleParameters).toHaveBeenCalled();
+  });
+
+  it("offers No role in the panel, and not once the choice has locked (req 18)", async () => {
+    // One fact, both layouts: the narrow menu is where a role is chosen below
+    // 700px, so a clear reachable only in the wide row would be no clear at all
+    // on a phone.
+    setRoles([DEEP_DIVE]);
+    const onRoleChange = vi.fn();
+    const { rerender } = renderMenu({ onRoleChange, sessionRoleName: "deep dive" });
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+    await userEvent.click(screen.getByTestId("composer-settings-role-none"));
+    expect(onRoleChange).toHaveBeenCalledWith(undefined);
+
+    rerender(
+      <ComposerSettingsMenu
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession
+        permissionMode="auto"
+        onPermissionModeChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        sessionRoleName="deep dive"
+        roleLocked
+        roleParamsRevealed={false}
+        onAdjustRoleParameters={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByTestId("composer-settings-trigger"));
+    await userEvent.click(screen.getByTestId("composer-settings-row-role"));
+    expect(screen.queryByTestId("composer-settings-role-none")).toBeNull();
   });
 
   it("goes inert once the locked role's parameters are out", async () => {

@@ -213,6 +213,35 @@ instead (req 2).
     "what this role is for" reads as a note to self, and a note to self cannot be written *for*
     by either job above.
 
+20. **A child session inherits its parent's role, whole, when the spawn names no role of its own.**
+    Req 16 already makes the parent the base a partial spawn completes from, and req 11 already lets
+    a spawn name a role. What was missing is the case between them: a parent that is itself running
+    a role spawned children that took its harness, model and level and left the role's standing
+    instructions behind. The child ran the same parameters under no brief, and nothing said so.
+
+    A role is a complete unit (req 1), so inheriting it means inheriting all of it: the parameters,
+    the standing instructions, and the record of which role the child was started as. This is the
+    default because it is what the parent is already doing — a session working under a brief spawns
+    help for that same work.
+
+    - **Naming a role overrides the inheritance**, exactly as it does today. The named role is the
+      one that runs.
+    - **Overriding a parameter does not cancel the role** (req 10): the override changes that one
+      parameter and the role, its name and its standing instructions stay. This is the same rule
+      `--role NAME --model X` already follows, and the alternative would make the two spawn shapes
+      disagree about what an override means.
+    - **A spawn can decline the inherited role** in one word, and then the child runs the parent's
+      parameters under no brief — which is what every child did before this requirement. The
+      decline exists because a brief that cannot be declined is not a default; a session working
+      under a role must still be able to spawn a child for something else.
+    - **This is about the case where the parent is the base.** A spawn that names every parameter
+      it runs on states what it runs on completely, and that statement has always been role-less
+      (docs/275); it stays so.
+    - **A parent with no role is unaffected**: the child inherits parameters as it always has.
+
+    A role still decides only what the child *starts* as (req 11). Nothing re-reads it afterwards,
+    and editing or deleting the role does not reach back into a child that already exists.
+
 
 ## Scope
 
@@ -228,6 +257,21 @@ other agent settings already do.
 _None._
 
 ## Resolved questions
+
+- 2026-08-20 — **Does a child session inherit its parent's role?** **Chosen: yes, by default and
+  whole.** The user's words: "when spawning child sessions, by default it should inherit not only
+  the parameters but the whole role if the parent has a role." Req 20 added in the same change.
+
+  Two follow-ups were put to the user in the same exchange, and both were answered:
+
+  - **Does overriding one parameter cancel the inherited role?** **No — the role stays.** The
+    override changes that parameter and nothing else, matching `--role NAME --model X`, which keeps
+    the role today. Rejected: dropping the role on any override, which would have made an inherited
+    role and a named role behave differently under the same flag.
+  - **How does a spawn decline the inherited role?** **A `--no-role` flag.** Rejected: requiring the
+    caller to name a complete explicit target instead — that is already role-less, but it makes the
+    caller spell out five parameters to say one thing, and it leaves inheritance effectively
+    mandatory for a caller that only wants the parent's parameters.
 
 - 2026-08-19 — **When the agent pitches a prompt for a role, which signal may it read — the
   description only, or also what the role runs on?** **Chosen: the description first, and what

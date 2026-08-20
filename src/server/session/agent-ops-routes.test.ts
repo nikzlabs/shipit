@@ -360,6 +360,23 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ prompt: "Port API to TS", branch: "port-api-ts" });
   });
 
+  // docs/264-agent-roles req 20 — the decline crosses this hop intact. It is a
+  // BOOLEAN, and the relay is where that matters: a truthiness-flattening or a
+  // dropped key here would spawn the child under the parent's brief, which is
+  // the one thing the caller said it did not want.
+  it("POST /agent-ops/session/create forwards --no-role", async () => {
+    client.setResponse("POST", "/spawn", {
+      ok: true, status: 200,
+      body: { sessionId: "ses_abc", branch: "b", status: "running" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/create",
+      payload: { prompt: "Fix the unrelated bug", title: "Chore", noRole: true },
+    });
+    expect(client.calls[0].body).toMatchObject({ noRole: true });
+  });
+
   it("POST /agent-ops/session/create surfaces a 429 quota error", async () => {
     client.setResponse("POST", "/spawn", {
       ok: false, status: 429,

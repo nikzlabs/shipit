@@ -253,3 +253,19 @@ see it: the rule is stated in one phase and violated by another phase's layer in
       to deserve something else. Without it, "this role runs a small model" reads as an argument
       for `--model` — the invented override req 10 forbids, reached from the one field ShipIt just
       told the agent to take seriously
+
+- [x] **A child inherits its parent's role, whole** (req 20, 2026-08-20). Inheritance carried the
+      parameters and dropped the standing instructions, so a child of a role-running parent ran the
+      right model under no brief. `spawnChildSession` now reads `parent.roleName` for its prompt on
+      the `inherit` path only — the parameters still arrive by ordinary inheritance, so the inherit
+      path's per-parameter rules are unchanged
+
+      An override does not cancel the role (matching `--role NAME --model X`), `--no-role` declines
+      it, and the pair `--role` + `--no-role` is refused at both the shim and the parser. A role
+      deleted since the parent started on it inherits nothing rather than recording a name with no
+      instructions behind it
+
+      `noRole` is named at every hop it crosses — shim payload, worker relay body, orchestrator
+      route, parser — rather than riding the relay's pass-through. Cross-agent review caught the
+      worker hop, which is the hop this file already records `--model` going missing on for three
+      releases; a relay test now pins the boolean across it

@@ -117,6 +117,10 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
       // docs/205 — spawn a completely separate (parentless) session: no
       // linkage, no sidebar nesting, no coordination, no chat card.
       "--detached": "detached",
+      // docs/264-agent-roles req 20 — decline the role this session is running,
+      // which the child would otherwise inherit whole. The child still inherits
+      // the parameters; what it does not inherit is the brief.
+      "--no-role": "noRole",
       // docs/162 — Ops-only: target the ShipIt source repo, branched off the
       // exact deployed commit the Ops session inspected.
       "--shipit-source": "shipitSource",
@@ -197,6 +201,17 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
       `shipit session create: --billing-mode must be "sub" (a subscription) or "key" (a metered API key), not "${billingMode}".`,
     );
   }
+  // docs/264-agent-roles req 20 — `--role` and `--no-role` are contradictory
+  // statements about the same thing, so the pair is refused rather than resolved
+  // by precedence: a caller that wrote both had one of the two in mind, and
+  // guessing which one runs a child on a brief it may have meant to decline.
+  if (parsed.booleans.has("noRole") && parsed.values.role !== undefined) {
+    fail(
+      deps.io,
+      "shipit session create: --no-role and --role name opposite things. Pass --role NAME to run "
+        + "that role, or --no-role to decline the role this session is running.",
+    );
+  }
   const payload: Record<string, unknown> = { prompt };
   if (parsed.values.title) payload.title = parsed.values.title;
   // `!== undefined`, NOT a truthiness test — the same rule `shipit agent run`
@@ -207,6 +222,7 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
   // the server refuses it by name, so both commands answer `--model=""`
   // identically — one parser, one refusal rule (req 16).
   if (parsed.values.role !== undefined) payload.role = parsed.values.role;
+  if (parsed.booleans.has("noRole")) payload.noRole = true;
   if (parsed.values.agent !== undefined) payload.agentId = parsed.values.agent;
   if (parsed.values.model !== undefined) payload.modelId = parsed.values.model;
   if (parsed.values.service !== undefined) payload.serviceId = parsed.values.service;

@@ -13,7 +13,7 @@ A spawned session is a **child** by default — linked to you, nested in the sid
 
 ### Asking for a review, or consulting another model — `shipit agent run`
 
-`shipit session create` above runs **another copy of you** (Codex) in its own workspace, and by default inherits what it runs on from you. **It takes the same target vocabulary as `shipit agent run` below**: `--role NAME`, with any parameter the user asked to change overriding it — or, with no role named, your own setup as the base with any parameter you did name overriding that. A role decides what the child *starts* as; from then on it is an ordinary session with normal routing and failover.
+`shipit session create` above runs **another copy of you** (Codex) in its own workspace, and by default inherits what it runs on from you. **It takes the same target vocabulary as `shipit agent run` below**: `--role NAME`, with any parameter the user asked to change overriding it — or, with no role named, your own setup as the base with any parameter you did name overriding that. A role decides what the child *starts* as; from then on it is an ordinary session with normal routing and failover. **If you are running a role, that is inherited too, whole** — its standing instructions reach the child's first message, and overriding a parameter does not cancel it. Pass `--no-role` when the child's work is not the role's work; the child then takes your parameters and no brief.
 
 When you instead want a second opinion — "review this," "get a second opinion," "have another model audit this" — use the brokered one-shot. **What it runs on you name with a ROLE**, and that is all you supply:
 

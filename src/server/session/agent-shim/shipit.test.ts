@@ -450,6 +450,33 @@ describe("shipit session create", () => {
     });
   });
 
+  // docs/264-agent-roles req 20 — the one word that declines the parent's role.
+  it("forwards --no-role on a child spawn", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("x");
+    const out = await run(
+      ["session", "create", "--prompt-file", pf, "--title", "Chore", "--no-role"],
+      {
+        "POST /agent-ops/session/create": { status: 200, body: { sessionId: "s", branch: "b", status: "running" } },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ noRole: true });
+  });
+
+  it("refuses --no-role together with --role, without a round trip", async () => {
+    // Two opposite statements about the same thing. Resolving it by precedence
+    // would run a child on a brief the caller may have meant to decline.
+    const { run } = makeRunner();
+    const pf = await promptFile("x");
+    const out = await run([
+      "session", "create", "--prompt-file", pf, "--title", "T", "--role", "deep dive", "--no-role",
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("opposite things");
+    expect(out.calls).toHaveLength(0);
+  });
+
   it("refuses a --billing-mode that is neither sub nor key, without a round trip", async () => {
     const { run } = makeRunner();
     const pf = await promptFile("x");

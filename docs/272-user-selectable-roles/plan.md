@@ -41,6 +41,11 @@ derived.
 | `session.roleName` | **new.** The role currently in force — what the composer names. | Written when the user selects a role. **Cleared** the moment the harness, model or reasoning changes (req 15). |
 | `session.originRoleName` | docs/264 req 14. What the session was *started* on (req 6). | Write-once. Set from `roleName` at the session's first turn, or at creation for an agent-spawned child. |
 
+`role_name` carries one more state than `roleName` does: `''` means the user chose **"No role"**
+(req 18), as against `NULL` for "never chose one". It is dropped on the way out of the row, so the
+type still has two states and only the `?role=` connect guard asks the difference — see *Two paths
+move a parameter without the user touching a control* below.
+
 They cannot be one field, and the reason is that reqs 3 and 6 pull in opposite directions: req 3
 says the name stops being shown the moment the user moves a control, and req 6 says the record of
 what the session was started as survives. A single field either keeps naming a role that is no
@@ -65,6 +70,7 @@ from one the user configured by hand, which is req 3 stated as an implementation
 | Composer, next new session (req 12) | `?role=` on the WS connect URL, from the browser's seed slot | the connect handler, after its existing agent/model reconciliation |
 | Quick capture (req 11) | `role` in the headless creation body | `createHeadlessSession`, before the claim |
 | `shipit session create --role` (docs/264, unchanged) | the spawn target | `spawnChildSession` — now also writes `roleName`, so the child's composer names it |
+| A child of a session that is running a role (docs/264-agent-roles req 20) | the parent's `roleName` | `spawnChildSession` — the role is read for its standing instructions; the parameters arrive by ordinary inheritance |
 
 **The connect param is where req 12 lives.** The browser already seeds a new session's harness,
 model and reasoning through `?agent=` / `?model=` / `?reasoning=`; the role rides the same
@@ -138,14 +144,32 @@ A role in force means the three fields were written together from one tuple the 
 are not two independent sources to reconcile — so the derivation is skipped. That is docs/264
 req 6's "nothing is ever derived" reaching a path that predates it.
 
-**What this deliberately does not need: a guard against the seed re-applying the role it just
-cleared.** The browser's seed outlives the clear, so a later connect does arrive naming the role —
-and `resolveUserRole` refuses it, because both things that clear a role here also make the role
-itself unrunnable. A retired id lives in its mode's `retired[]` and not in its model list, so
-`selectionExists` is already false; a model the harness cannot list fails the same check. Cross-agent
-review predicted an oscillation here and it does not reproduce for that reason — which is a property
-of the catalogue rather than of the connect block, so it is pinned by a test in
+**What the two automatic clears deliberately do not need: a guard against the seed re-applying the
+role they just cleared.** The browser's seed outlives the clear, so a later connect does arrive
+naming the role — and `resolveUserRole` refuses it, because both things that clear a role here also
+make the role itself unrunnable. A retired id lives in its mode's `retired[]` and not in its model
+list, so `selectionExists` is already false; a model the harness cannot list fails the same check.
+Cross-agent review predicted an oscillation here and it does not reproduce for that reason — which
+is a property of the catalogue rather than of the connect block, so it is pinned by a test in
 `services/session-role.test.ts` rather than left to be re-derived.
+
+**req 18's clear is the case that argument does not cover, and it does need a guard** — the stale
+claim was found while implementing it, which is the whole reason to state a dependency as "verified
+at X" rather than inherit it. A role the *user* cleared is perfectly runnable, so nothing downstream
+refuses it; and the seed does not merely outlive the clear, it is baked into a **memoized
+per-session WebSocket URL** (`useSessionWebSocket`'s `useMemo(…, [sessionId])`), so a reconnect
+between the clear and the first message re-sends the cleared role's name. The clear would then
+silently undo itself, standing instructions and all — in exactly the window where the user is least
+likely to notice.
+
+So the row records the difference: `clearRoleName` writes `''` where the automatic clears write
+`NULL`, and the connect guard asks `roleExplicitlyCleared`. **The sentinel deliberately does not
+reach `SessionInfo`** — `fromRow`'s truthiness test drops `''`, so "chose none" and "never chose"
+stay one state (`roleName: undefined`) for every reader but this one guard, and no call site gains a
+third case to remember. Rebuilding the URL client-side was the alternative and was rejected: the url
+is `useWebSocket`'s effect dependency, so changing it tears down and reopens the socket — a
+reconnect and a history reload on every role pick, most visibly in a forked session that has a
+transcript to reload.
 
 ## Before a session is active, the seed is the display
 
@@ -228,9 +252,24 @@ and nowhere else.
 
 **"Adjust parameters…" is a footer inside that list** (req 15), not a second control. Choosing it
 brings the three controls back beside the role name; the role stays in force until one of them
-actually moves, and moving one is the whole of leaving the role. There is no "no role" entry and no
-clear action — an action that only un-names a role while the session goes on running exactly as the
-role set it up states nothing a user would want to state.
+actually moves, and moving one is the whole of leaving the role.
+
+**"No role" is the list's first row** (req 18), and it is what the list shows as chosen when nothing
+is in force. This reverses the original design, which had no clear action at all on the grounds that
+un-naming a role while the session goes on running exactly as the role set it up states nothing a
+user would want to state. That argument was written while req 13 still *derived* the name from the
+parameters — where clearing genuinely could not do anything, because the parameters still matched
+and the name came straight back. When req 13 was reversed the same day, the clause was left standing
+on a premise that no longer existed, and it cost the user two things: a role is its parameters **and
+its standing instructions**, so nothing they could move expressed "these settings, without the
+brief"; and because the last selected role is remembered (req 12), a user who ever picked one could
+not get back to a plain session at all.
+
+So `set_role` takes `roleName: string | null`, and the `null` branch writes exactly one field. The
+parameters are deliberately untouched — the role's values are the last thing the user chose, and
+reverting them would undo a choice they did not ask to undo. Both directions lock at the first turn
+(req 4): by then the instructions have been delivered, so un-naming them afterwards states nothing
+the transcript does not already show.
 
 **Below 700px** this is the same fact in docs/260's shape: the role becomes a row in the one
 composer settings menu, and when a role is selected the harness, model and reasoning rows are the
