@@ -306,6 +306,10 @@ String-literal validators that **drop or reject a new id**:
 - `token-sync-manager.ts:126,921,990,1017` — per-agent token freshness
   readers and stale-resume recovery; a new OAuth backend needs its own
   parser, and gets **no** stale-resume recovery until written.
+  Check that parser against a **real captured credential file**, committed as
+  its fixture in `token-freshness-guard.test.ts` — a reader written to the
+  documented shape returns null on every live file and silently licenses the
+  sync-in to clobber the session's own token (planning#449).
 - `orchestrator/session-agent-env.ts:828` — Codex-style first-run home
   init (`ensureCodexHomeInitialized`); copy the shape if the CLI needs a
   seeded config root.
