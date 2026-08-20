@@ -253,7 +253,10 @@ export class GrokAdapter
     ...(GROK_REASONING ? { reasoning: GROK_REASONING } : {}),
     supportsReview: false,
     supportsSteering: false,
-    supportsCompaction: false,
+    // docs/276 — the CLI intercepts `/compact` in the prompt in headless mode
+    // (Claude's in-band shape), so `run({ compact: true })` is the whole
+    // mechanism and needs no special argv.
+    supportsCompaction: true,
     skillsDirName: ".grok",
     skillInvocationPrefix: "/",
   };
@@ -266,6 +269,21 @@ export class GrokAdapter
   private stderrBuffer = "";
   private promptPath: string | null = null;
   private systemPromptPath: string | null = null;
+  /**
+   * docs/276 — true when this turn was spawned purely to compact
+   * (`run({ compact: true })`), so the `compact_boundary` it produces can be
+   * labeled `"manual"`.
+   *
+   * This correlation is not optional politeness, it is the only way to tell:
+   * Grok stamps `compact_metadata.trigger` `"auto"` on EVERY compaction,
+   * including one it performed because ShipIt asked (verified — the manual
+   * `/compact` runs that produced the docs/276 token measurements all reported
+   * `"auto"` on the wire while writing `"trigger": "manual"` into their own
+   * `compaction_requests/` record). Trusting the wire field would mislabel
+   * every user-triggered compaction. Same fix, same reason, as Codex's
+   * `compactionRequested`.
+   */
+  private compactionRequested = false;
   /** This turn's throwaway config root, removed wholesale at turn end. */
   private spawnHome: string | null = null;
   /**
@@ -329,6 +347,19 @@ export class GrokAdapter
     this.sawAnyEvent = false;
     this.latestCallContextTokens = undefined;
     this.turnCallNames.clear();
+    // docs/276 — a compaction spawn needs NO special argv. Grok intercepts a
+    // leading `/compact` in the prompt itself (the Claude shape, not Codex's
+    // out-of-band RPC), and `params.prompt` already IS `/compact` on this path,
+    // so the ordinary spawn below carries the trigger. All this flag does is
+    // label the resulting boundary; see the field's docstring for why the
+    // wire's own `trigger` cannot.
+    this.compactionRequested = params.compact === true;
+    if (this.compactionRequested) {
+      // Grok emits no progress event for compaction (Claude's
+      // `status:"compacting"` has no Grok counterpart), so the "Compacting…"
+      // indicator would never appear. We know we asked for it, so say so.
+      this.emit("event", { type: "agent_compaction_started", trigger: "manual" });
+    }
 
     // Pre-assign rather than parse (verified live): `-s <uuid>` on a new
     // conversation is adopted verbatim and echoed on both init and result, so
@@ -797,6 +828,20 @@ export class GrokAdapter
   private mapEvent(raw: GrokEvent): AgentEvent | null {
     switch (raw.type) {
       case "system":
+        // docs/276 — Grok's compaction boundary is byte-for-byte Claude's:
+        // `system`/`subtype:"compact_boundary"` carrying `compact_metadata`.
+        // It reports `pre_tokens` but NO `post_tokens` and no `duration_ms`,
+        // and the card degrades to the fields it does have.
+        if (raw.subtype === "compact_boundary") {
+          const pre = raw.compact_metadata?.pre_tokens;
+          return {
+            type: "agent_compacted",
+            // NOT `raw.compact_metadata.trigger` — it is always `"auto"`. See
+            // `compactionRequested`.
+            trigger: this.compactionRequested ? "manual" : "auto",
+            ...(typeof pre === "number" ? { preTokens: pre } : {}),
+          };
+        }
         if (raw.subtype !== "init") return null;
         return {
           type: "agent_init",
@@ -914,6 +959,25 @@ export class GrokAdapter
       sessionId: this.turnSessionId,
       error: `Grok exited with code ${String(exitCode)} before producing a result`,
     });
+  }
+
+  /**
+   * docs/276 — mid-turn compaction, which this adapter cannot do. Grok is one
+   * spawn per turn with the prompt in a file and stdin `ignore`d, so there is
+   * no channel into a running process and nothing resident between turns.
+   *
+   * That is not a gap: the orchestrator only calls `compact()` when a turn is
+   * IN FLIGHT, and routes the ordinary `/compact` (no turn running) through
+   * `run({ compact: true })`, which is the path that actually works here — the
+   * CLI intercepts `/compact` in the prompt. So this warns rather than
+   * throwing, mirroring the Claude adapter's non-streaming branch: a
+   * compaction the user asked for mid-turn is best-effort, and failing it must
+   * not tear down the turn it was asked about.
+   */
+  compact(_instructions?: string): void {
+    console.warn(
+      "[grok-adapter] compact() called mid-turn — Grok has no resident process to compact (the orchestrator should have spawned a /compact run instead)",
+    );
   }
 
   sendUserMessage(text: string): void {

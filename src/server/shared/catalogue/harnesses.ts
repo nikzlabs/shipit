@@ -243,9 +243,31 @@ export const HARNESSES = [
       // The process exits at turn end; it cannot start a turn ShipIt never
       // asked for.
       startsOwnTurns: false,
-      // Autocompact exists upstream, but `opencode run` has no on-demand
-      // compaction trigger, so the `/compact` composer path cannot work.
-      supportsCompaction: false,
+      // VERIFIED true (CLI 1.18.18, live-probed — docs/276). The trigger is
+      // NOT on `opencode run`; it is the server's documented
+      // `POST /session/{id}/summarize` (opencode.ai/docs/server), which the
+      // adapter reaches by spawning a transient `opencode serve`.
+      //
+      // Two `run`-shaped triggers were tested and BOTH fail — do not retry
+      // them without re-probing:
+      //  - `/compact` as the prompt is an ORDINARY prompt (it reaches the
+      //    model verbatim and burns a turn), the exact opposite of Claude.
+      //  - `--command compact` fails identically to `--command
+      //    __definitely_bogus__` (same `UnknownError` at `SessionPrompt
+      //    .command`); `--command` resolves REGISTERED commands only, and
+      //    `compact` is not one — `init` is, and succeeds, which is the
+      //    control proving the flag itself works.
+      // The v2 route `POST /api/session/{id}/compact` is in the OpenAPI doc
+      // but returns 503 `"Session compact is not available yet"` — declared,
+      // not implemented. That unimplemented route is the likeliest source of
+      // the `/compact` string in the binary.
+      //
+      // Outcome measured, not just exit status: a probe turn's reported
+      // context went 16,684 → 6,250 tokens across the call, and against a
+      // recording proxy the pre-compaction turns disappear from the next
+      // request, replaced by a summary produced by OpenCode's own
+      // "context summarization agent".
+      supportsCompaction: true,
       skillsDirName: ".opencode",
       skillInvocationPrefix: "/",
     },
@@ -355,9 +377,31 @@ export const HARNESSES = [
       // The process exits at turn end; it cannot start a turn ShipIt never
       // asked for.
       startsOwnTurns: false,
-      // Autocompact is config-driven only; no on-demand trigger found, so the
-      // `/compact` composer path cannot work.
-      supportsCompaction: false,
+      // VERIFIED true (CLI 1.0.1, live-probed — docs/276). Grok's trigger is
+      // IN-BAND, the Claude shape: `/compact` in the prompt is intercepted by
+      // the CLI in headless mode, so the adapter needs no special argv — the
+      // orchestrator's existing `run({ compact: true })` spawn (whose prompt
+      // already IS `/compact`) is the whole mechanism. Confirmed through
+      // `--prompt-file`, which is how this adapter passes every prompt, and
+      // with `prefixPromptWithNotice`'s trailing notice appended.
+      //
+      // Two negative controls prove interception rather than a lucky reply:
+      // `/__definitely_bogus__` and `/compact-mode` both run as ORDINARY
+      // prompts (full `usage` block, model answers), while `/compact` alone
+      // returns empty text with NO usage block and no model call.
+      //
+      // Outcome measured, not just exit status: a probe turn's reported
+      // context went 24,117 → 10,394 tokens across the call, and the session
+      // store gains `compaction_requests/<id>.json` with `"trigger":
+      // "manual"` plus a `compaction_checkpoints/` entry whose
+      // `compacted_history` has replaced the transcript with a continuation
+      // summary. The CLI also ADVERTISES the command: `system/init` carries
+      // `slash_commands: ["compact", …]`.
+      //
+      // One subtlety worth knowing before reading the adapter: the wire's
+      // `compact_metadata.trigger` is ALWAYS `"auto"`, even here. The adapter
+      // labels manual-vs-auto by correlation instead and never reads it.
+      supportsCompaction: true,
       // Verified live (docs/209 probe): Grok auto-discloses skills from BOTH
       // `.grok/skills/` and `.claude/skills/` via its claude-compat layer, so
       // no symlink is needed — but its OWN directory is the one to declare.
