@@ -100,7 +100,13 @@ import {
   type PluginNetns,
 } from "./plugin-egress.js";
 import { holdGeneration, type ReleaseHold } from "./plugin-leases.js";
-import { ensurePluginRuntimeOverlay, resolvePluginOverlayRoots } from "./plugin-overlay.js";
+import { assertOverlayVolumesMatch } from "./overlay-volume.js";
+import {
+  ensurePluginRuntimeOverlay,
+  pluginRuntimeOverlaySpec,
+  resolvePluginOverlayRoots,
+  type PluginOverlaySpec,
+} from "./plugin-overlay.js";
 import { resolveLiveGenerations } from "./plugin-generations.js";
 import {
   createPluginImportResolver,
@@ -394,6 +400,7 @@ async function runHeldPluginCommand(
   // stated for services in `compose-generator.ts`.
   const workspaceTreeTargets: string[] = [];
   let commit: string | null = null;
+  let overlaySpec: PluginOverlaySpec | undefined;
   if (!pinned) {
     addSessionMount(deps.workspaceDir, CONTAINER_PLUGIN_DIR, false);
     // req 27 — under `repo: self` the working tree is BOTH of these, and the
@@ -403,7 +410,7 @@ async function runHeldPluginCommand(
     commit = pinned.commit;
     try {
       const roots = await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot);
-      const volume = await ensurePluginRuntimeOverlay(deps.docker, {
+      const overlayArgs = {
         sessionId: deps.sessionId,
         repoName,
         // Both from the SAME pinned directory, so the volume's name and its
@@ -416,7 +423,9 @@ async function runHeldPluginCommand(
         // describe two generations either.
         ...(deps.depStoreDir ? { depStoreDir: deps.depStoreDir } : {}),
         ...roots,
-      });
+      };
+      overlaySpec = pluginRuntimeOverlaySpec(overlayArgs);
+      const volume = await ensurePluginRuntimeOverlay(deps.docker, overlayArgs);
       // A NAMED volume, so it needs no path translation: the daemon already
       // knows where it is, which is exactly why install could get away with one
       // bind and this cannot.
@@ -546,6 +555,7 @@ async function runHeldPluginCommand(
       workingDir: mapWorkingDir(deps.workspaceDir, req.cwd),
       stdin: req.stdin ?? "",
       networkMode: netns.networkMode,
+      overlaySpec,
     });
   } catch (err) {
     // The daemon refusing to create or start the container is the ordinary
@@ -794,6 +804,13 @@ interface ExecuteSpec {
    * container's own (req 19).
    */
   networkMode: string;
+  /**
+   * The runtime overlay this container was built to mount, when it mounts one.
+   * Re-verified after `createContainer` and before `start()` — the same
+   * placement as the session dep-dir path (nikzlabs/shipit#2495). Absent for
+   * `repo: self`, which binds the working tree instead.
+   */
+  overlaySpec?: PluginOverlaySpec;
 }
 
 /** Create, attach, run, and collect. */
@@ -837,6 +854,18 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
 
   const timeoutMs = deps.timeoutMs ?? DEFAULT_PLUGIN_CLI_TIMEOUT_MS;
   try {
+    // nikzlabs/shipit#2495 / planning#451 — the volume was verified at ensure
+    // time, and `createContainer` is the first instant Docker's implicit
+    // named-volume creation (a missing name becomes a plain empty local volume)
+    // is observable. Checked before start() so this `finally` still owns the
+    // container removal; the volume itself is shared with plugin services, so
+    // it is not removed here. An unattached impostor is repaired on the next
+    // `ensurePluginRuntimeOverlay`.
+    if (spec.overlaySpec) {
+      await assertOverlayVolumesMatch(deps.docker, [spec.overlaySpec], {
+        sessionId: deps.sessionId,
+      });
+    }
     // Attached BEFORE start: output written between start and attach is simply
     // gone, and for a command that only prints one line that is all of it.
     const stream = await container.attach({

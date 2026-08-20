@@ -147,17 +147,32 @@ export async function resolveSessionPluginServices(
   // rather than throwing past every caller. A throw would leave whoever asked
   // holding the PREVIOUS answer, and a set resolved against a project file that
   // has since changed is exactly the unknown version req 13 forbids running.
-  const roots = deps.docker
-    ? await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot)
-      .catch((err: unknown) => {
-        console.warn(
-          `[plugins:${sessionId}] could not resolve the plugin overlay roots:`,
-          err instanceof Error ? err.message : String(err),
-        );
-        return {};
-      })
-    : {};
-  const pluginVolumes = await ensurePluginVolumes(sessionId, stateDir, tracked, held, deps, roots);
+  //
+  // **Do not fall through to identity roots.** `resolvePluginOverlayRoots`
+  // returning `{}` is the legitimate dev/dogfood answer (no workspace volume,
+  // both sides see one path). The same `{}` after a *failed* inspect is not:
+  // `daemonPath` becomes the identity, `ensurePluginRuntimeOverlay` computes a
+  // spec whose `o=` names orchestrator paths, and planning#451's opts-match skip
+  // then treats the live, correctly-translated overlay as a mismatch — so a
+  // transient `volume inspect` would delete a volume a CLI container still
+  // holds, or recreate it with paths the daemon cannot resolve. Skip ensure
+  // entirely; the empty map is the "layer is not available" degradation the
+  // comment above already promised.
+  let overlayRoots: { volumeMountpoint?: string; stateRoot?: string } | "unresolved" = {};
+  if (deps.docker) {
+    try {
+      overlayRoots = await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot);
+    } catch (err: unknown) {
+      console.warn(
+        `[plugins:${sessionId}] could not resolve the plugin overlay roots:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      overlayRoots = "unresolved";
+    }
+  }
+  const pluginVolumes = overlayRoots === "unresolved"
+    ? new Map<string, string>()
+    : await ensurePluginVolumes(sessionId, stateDir, tracked, held, deps, overlayRoots);
 
   // docs/266-plugin-service-ports req 10 — there is no allocation step any more. A plugin service's
   // port is the consuming project's own `plugins.use` entry, so it is both the

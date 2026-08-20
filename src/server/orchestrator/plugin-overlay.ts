@@ -45,6 +45,7 @@ import type Docker from "dockerode";
 import { chownToSessionWorker } from "./session-worker-uid.js";
 import {
   createOverlayVolume,
+  overlayVolumeState,
   removeOverlayVolume,
   resolveVolumeMountpoint,
   volumeExists,
@@ -234,16 +235,19 @@ export async function createPluginOverlay(docker: Docker, spec: PluginOverlaySpe
  * install wrote into, now under the published checkout as its lowerdir.
  *
  * Idempotent, and shared on purpose — the CLI invocation container
- * (`plugin-cli-run.ts`) and, when it lands, a plugin service both attach ONE
- * volume per generation. Creating a second one over the same upperdir is not an
- * option the kernel offers, so "ensure" rather than "create" is the only shape
- * that lets two independent callers ask for it.
+ * (`plugin-cli-run.ts`) and a plugin service both attach ONE volume per
+ * generation. Creating a second one over the same upperdir is not an option the
+ * kernel offers, so "ensure" rather than "create" is the only shape that lets
+ * two independent callers ask for it.
  *
- * Existing → returned untouched. Absent → the upper and work directories are
- * created if they are missing (a plugin with no `install` never had them) and
- * handed to the session-worker UID, which is what every consumer runs as. The
- * directories are never *cleared*: that is install's job, before it writes, and
- * doing it here would delete the install output this volume exists to expose.
+ * Matching overlay → returned untouched. Absent, or a volume of this name whose
+ * driver opts disagree (the plain impostor Docker leaves behind when a container
+ * references a named volume that is gone — nikzlabs/shipit#2495 / planning#451)
+ * → the upper and work directories are created if they are missing (a plugin
+ * with no `install` never had them) and handed to the session-worker UID, which
+ * is what every consumer runs as. The directories are never *cleared*: that is
+ * install's job, before it writes, and doing it here would delete the install
+ * output this volume exists to expose.
  *
  * **Serialized per volume name, which is not optional** (review finding).
  * `createOverlayVolume` REMOVES an existing volume of the same name whose driver
@@ -254,42 +258,68 @@ export async function createPluginOverlay(docker: Docker, spec: PluginOverlaySpe
  * volume the first just created, or gets a 409 because the first has already
  * attached it. The queue makes the check-then-create one step.
  *
- * **The `volumeExists` skip is existence-only on purpose, and it is safe because
- * the NAME carries the generation.** `pluginOverlayVolumeName(session, repo,
- * generationId)` changes whenever the checkout does, and the pinned dep bases are
- * read out of that generation's own immutable record — so there is no way for a
- * live volume of this name to hold opts other than the ones this spec computes.
- * That is why the 2026-08-19 dep-dir defect (a same-named volume left naming a
- * superseded generation) has no counterpart here, and why this path deliberately
- * does not ask `createOverlayVolume` to release holders: the volume is SHARED
- * between a plugin service and a CLI container by design.
+ * **The skip is an opts-match, not existence** (planning#451). The NAME carrying
+ * the generation is a complete argument against *stale overlay opts* — a live
+ * volume of this name cannot name a different checkout, and the pinned dep bases
+ * are read out of that generation's own immutable record. It is not an argument
+ * against a volume that stopped existing and came back as something else: Docker
+ * silently creates a plain `local` volume with no driver options when a container
+ * references a missing name, and an existence-only skip latched that impostor
+ * for the life of the generation. `overlayVolumeState === "match"` still skips
+ * for the second of two legitimate callers, who compute the same spec; a
+ * mismatch falls through to `createOverlayVolume`.
+ *
+ * **That throw-on-held-mismatch is reachable only for a genuinely broken
+ * volume.** Attach happens *after* ensure returns, and the queue serializes
+ * inspect-then-create, so a second caller never enters `createOverlayVolume` on
+ * a volume the first just created — it waits, sees match, skips. Docker cannot
+ * change driver opts of an in-use volume, so a held mismatch means the holder is
+ * already mounting something that is not the overlay we created. We still do not
+ * ask `createOverlayVolume` to release holders: the volume is SHARED between a
+ * plugin service and a CLI container by design, and killing one to repair the
+ * other would be wrong for a matching volume. A matching volume never reaches
+ * that branch.
  */
+export interface PluginRuntimeOverlayArgs {
+  sessionId: string;
+  repoName: string;
+  /** The build being mounted — `generationIdFor(record, dir)`, never the bare commit. */
+  generationId: string;
+  stateDir: string;
+  /** The PUBLISHED generation directory — resolve `active` before calling. */
+  checkoutDir: string;
+  /**
+   * req 28 — the orchestrator state dir that holds the shared dependency
+   * store. Omitted where there is none (tests), which simply means no
+   * generation can pin a base.
+   */
+  depStoreDir?: string;
+  volumeMountpoint?: string;
+  stateRoot?: string;
+}
+
+/**
+ * The runtime spec `ensurePluginRuntimeOverlay` will create or match. Exported
+ * so a caller that then builds a container with that volume can re-verify after
+ * `createContainer` (nikzlabs/shipit#2495) using a spec built from the same
+ * args. `ensurePluginRuntimeOverlay` rebuilds it internally; the two agree
+ * because the generation record and pin dirs are immutable for a published
+ * generation.
+ */
+export function pluginRuntimeOverlaySpec(args: PluginRuntimeOverlayArgs): PluginOverlaySpec {
+  return buildPluginOverlaySpec({ ...args, depBases: resolvePinnedDepBases(args) });
+}
+
 const ensureQueues = new Map<string, Promise<void>>();
 export async function ensurePluginRuntimeOverlay(
   docker: Docker,
-  args: {
-    sessionId: string;
-    repoName: string;
-    /** The build being mounted — `generationIdFor(record, dir)`, never the bare commit. */
-    generationId: string;
-    stateDir: string;
-    /** The PUBLISHED generation directory — resolve `active` before calling. */
-    checkoutDir: string;
-    /**
-     * req 28 — the orchestrator state dir that holds the shared dependency
-     * store. Omitted where there is none (tests), which simply means no
-     * generation can pin a base.
-     */
-    depStoreDir?: string;
-    volumeMountpoint?: string;
-    stateRoot?: string;
-  },
+  args: PluginRuntimeOverlayArgs,
 ): Promise<string> {
-  const spec = buildPluginOverlaySpec({ ...args, depBases: resolvePinnedDepBases(args) });
+  const spec = pluginRuntimeOverlaySpec(args);
   const previous = ensureQueues.get(spec.volumeName) ?? Promise.resolve();
   // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue; awaiting `previous` here would be the race
   const work = previous.then(async () => {
-    if (await volumeExists(docker, spec.volumeName)) return;
+    if (await overlayVolumeState(docker, spec) === "match") return;
     for (const dir of [spec.orchDirs.upperdir, spec.orchDirs.workdir]) {
       fs.mkdirSync(dir, { recursive: true });
       chownToSessionWorker(dir);
