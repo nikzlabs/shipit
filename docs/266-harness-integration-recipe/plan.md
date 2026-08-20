@@ -138,10 +138,27 @@ sign-off before integrating on metered-only auth.
 13. **The remaining `AgentCapabilities` declarations**, answered honestly
     up front: image input (`supportsImages`), mid-turn steering
     (`supportsSteering`), resident-process turn behavior (`startsOwnTurns`),
-    native compaction (`supportsCompaction`), review usability
-    (`supportsReview`), and the skill invocation prefix — each shapes UI and
-    turn plumbing, and a wrong guess here surfaces as runtime behavior, not
-    a type error.
+    review usability (`supportsReview`), and the skill invocation prefix —
+    each shapes UI and turn plumbing, and a wrong guess here surfaces as
+    runtime behavior, not a type error. (`supportsCompaction` was in this
+    list and is now item 14 — see why there.)
+14. **On-demand compaction (`supportsCompaction`) — TEST it, don't search
+    for it.** ShipIt's composer `/compact` path calls
+    `AgentProcess.compact()`, and there are two proven implementations:
+    a dedicated RPC (Codex's `thread/compact/start`) and **the slash command
+    as a fresh turn's prompt** — Claude's non-streaming fallback spawns
+    `claude -p "/compact" --resume`. That second shape is spawn-per-turn, so
+    **compaction does NOT require a steering channel**, and "the process
+    exits at turn end" is not a reason to declare `false`.
+    🚩 This item is called out separately because declaring it from a
+    `--help` sweep got it wrong for *both* OpenCode and Grok: each CLI's
+    `--help` lists no compaction subcommand, yet both binaries contain a
+    `/compact` string and manual compaction turned out to work. Run the real
+    probe — issue `/compact` as the prompt on a resumed headless session —
+    and prove the *outcome* (token counts, session history), because a CLI
+    that silently ignores an unknown slash command still exits 0. Record the
+    CLI version you tested: this is upstream-drift territory, so a version
+    bump can change the answer (docs/272's recipe is how you re-check).
 
 ## The recipe
 
