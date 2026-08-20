@@ -242,7 +242,26 @@ The scan surfaces **every** `.md` file in the workspace, not just `docs/` — so
 
 ### Every new feature is under requirements discipline
 
-Requirements discipline (docs/241, `/shipit-docs/spec-discipline.md`) is opt-in per feature *for projects built inside ShipIt*. **In this repo it is mandatory for every new feature**: if the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Existing features without one are not retroactively required to have it — but the moment you materially rework one, write its requirements first.
+If the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Materially reworking an older feature that has none starts by writing them. The shape:
+
+```markdown
+# Feature name
+
+1. A numbered, plain-language statement of what the feature must do.
+2. Another observable requirement — what, never how.
+
+## Open questions
+
+- A decision the human has not made yet.
+
+## Resolved questions
+
+- YYYY-MM-DD — the question, the human's answer, and any constraint it carries.
+```
+
+The numbers are the IDs: keep them stable, append rather than renumber, and cite them as `docs/241-spec-discipline req 3`.
+
+**At the start of each turn that touches feature work**, identify the one active feature — from the session's issue or feature context, or the one the user named — and check its folder for `requirements.md`. Bullets under `## Open questions` block implementation code whether or not *you* raised them; resolve them at step 3 below. Only the active feature is gated: don't scan unrelated features for blockers.
 
 That means, in order:
 
@@ -250,7 +269,7 @@ That means, in order:
 2. **Ask, don't assume.** Batch the open questions into one structured question with concrete options and a recommendation. Do not write implementation code while any bullet remains under `## Open questions`; requirements and design work may continue.
 3. **Record the answer where it happened.** A human answer adds/edits the numbered requirement *and* leaves a dated receipt under `## Resolved questions`, with the open-question bullet removed in the same change — receipt, removal, and requirement change all in one diff. An agent inference never clears an open question.
 4. **Then design.** `plan.md` implements `requirements.md` and cites requirements as `(req 3)`; it opens with a link to the requirements doc. Later human input lands in `requirements.md` first — editing `plan.md` from human input while the requirements stay unchanged makes the design a second, hidden source of requirements.
-5. **Independent check before you call it done.** ShipIt's configured reviewer (`shipit agent run --role reviewer`, per [Get an independent review](#workflow)) compares the branch diff against every numbered requirement. Your own final pass doesn't count, and neither does a subagent under your own model.
+5. **Independent check before you call it done.** ShipIt's configured reviewer (`shipit agent run --role reviewer --prompt-file -`, per [Get an independent review](#workflow)) compares the branch diff against every numbered requirement, told to review only and not edit. That is a brokered out-of-process agent, **not** a `Task`/AgentTool subagent, so a harness rule about spawning subagents does not govern it. Your own final pass doesn't count, and neither does a subagent under your own model.
 
 Nothing enforces this mechanically — the pull-request diff is the enforcement, so a skipped question or a self-promoted requirement is visible to review (mechanical enforcement is planning#275). `docs/241-spec-discipline/` is the worked example: read its `requirements.md` alongside its `plan.md` for the shape.
 

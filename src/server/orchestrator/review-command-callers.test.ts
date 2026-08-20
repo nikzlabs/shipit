@@ -100,7 +100,7 @@ function completeExplicitRuns(text: string): string[] {
  * The pages that must mention the role positively. A subset, deliberately: not
  * every page has a reason to talk about reviews.
  */
-const SHIPIT_DOC_PAGES = ["agent.md", "spec-discipline.md", "sandbox-session.md"] as const;
+const SHIPIT_DOC_PAGES = ["agent.md", "sandbox-session.md"] as const;
 
 function readShipitDoc(name: string): string {
   return fs.readFileSync(new URL(`../shipit-docs/${name}`, import.meta.url), "utf8");
@@ -137,8 +137,18 @@ const ALL_VARIANTS: AgentSystemInstructionOptions[] = [
 ];
 
 describe("product-owned review commands (docs/261 phase 5)", () => {
-  it("tells every system-prompt variant to ask for a review by role", () => {
-    for (const opts of ALL_VARIANTS) {
+  it("tells every system-prompt variant with spawn guidance to ask for a review by role", () => {
+    // Scoped to the variants that HAVE the guidance, not a narrowing of the rule.
+    // The review command lives in the per-agent "Parallel sessions" section, and a
+    // render with no `agentId` omits that section entirely — it is the Settings
+    // baseline and this file's fixture, never a session (`session-agent-run-params.ts`
+    // and `services/settings.ts` both pass one). The bare render used to name the
+    // role anyway, from the requirements-discipline fragment; docs/241-spec-discipline
+    // req 11 deleted that fragment, so the assertion follows the guidance that
+    // remains rather than outliving it.
+    const withGuidance = ALL_VARIANTS.filter((opts) => opts.agentId !== undefined);
+    expect(withGuidance.length).toBeGreaterThan(0);
+    for (const opts of withGuidance) {
       expect(buildAgentSystemInstructions(opts)).toContain("--role reviewer");
     }
   });
@@ -146,20 +156,6 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
   it("never authors a bare `--agent <backend>` run in any system-prompt variant", () => {
     for (const opts of ALL_VARIANTS) {
       expect(incompleteExplicitRuns(buildAgentSystemInstructions(opts))).toEqual([]);
-    }
-  });
-
-  it("keeps the requirements-discipline fragment on the role in every variant", () => {
-    const fragment = fs
-      .readFileSync(new URL("./prompts/spec-discipline.md", import.meta.url), "utf8")
-      .trim();
-    // The fragment is what makes the independent check reproducible across
-    // backends; a backend named here would re-introduce the choice the role took
-    // away, on the one call the discipline mandates.
-    expect(fragment).toContain("--role reviewer");
-    expect(incompleteExplicitRuns(fragment)).toEqual([]);
-    for (const opts of ALL_VARIANTS) {
-      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
     }
   });
 

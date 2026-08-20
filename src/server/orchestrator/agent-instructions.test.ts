@@ -75,27 +75,6 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
-  it("composes the shared requirements-discipline fragment into every variant", () => {
-    const fragment = fs.readFileSync(
-      new URL("./prompts/spec-discipline.md", import.meta.url),
-      "utf8",
-    ).trim();
-    const variants: AgentSystemInstructionOptions[] = [
-      {},
-      { agentId: "claude" },
-      { agentId: "codex" },
-      { isOps: true },
-      { agentId: "claude", isOps: true },
-      { agentId: "codex", isOps: true },
-      { isSandbox: true },
-      { agentId: "claude", isSandbox: true },
-      { agentId: "codex", isSandbox: true },
-    ];
-    for (const opts of variants) {
-      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
-    }
-  });
-
   // docs/117 Phase 2 — per-agent "Parallel sessions" guidance is composed in
   // only when an `agentId` is supplied, and the Claude/Codex fragments differ.
   // Assert the variants DIFFER (the switch fired), not which words landed.
