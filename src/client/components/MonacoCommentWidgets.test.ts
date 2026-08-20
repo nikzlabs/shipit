@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   createCommentWidgetManager,
   ADD_COMMENT_TOOLTIP,
@@ -31,6 +31,8 @@ interface FakeDecoration {
  */
 function makeFakeEditor() {
   const zones = new Map<string, { afterLineNumber: number; domNode: HTMLElement; heightInPx: number }>();
+  /** Zone ids passed to `layoutZone`, in order. */
+  const layoutCalls: string[] = [];
   let nextId = 0;
   const mouseDownHandlers: ((e: FakeMouseEvent) => void)[] = [];
   const mouseMoveHandlers: ((e: FakeMouseEvent) => void)[] = [];
@@ -66,7 +68,19 @@ function makeFakeEditor() {
     removeZone(id: string): void {
       zones.delete(id);
     },
+    /**
+     * Monaco re-reads the zone object's `heightInPx` here, which is how the
+     * widget grows a zone to fit a measured card.
+     */
+    layoutZone(id: string): void {
+      layoutCalls.push(id);
+    },
   };
+
+  const layoutHandlers: (() => void)[] = [];
+  /** Drives the widget's zone-node pinning: content width and scroll offset. */
+  let contentWidth = 800;
+  let scrollLeft = 0;
 
   const editor = {
     changeViewZones(cb: (a: typeof accessor) => void) {
@@ -76,6 +90,9 @@ function makeFakeEditor() {
     onMouseMove: (handler: (e: FakeMouseEvent) => void) => subscribe(mouseMoveHandlers, handler),
     onMouseLeave: (handler: () => void) => subscribe(mouseLeaveHandlers, handler),
     onDidScrollChange: (handler: () => void) => subscribe(scrollHandlers, handler),
+    onDidLayoutChange: (handler: () => void) => subscribe(layoutHandlers, handler),
+    getLayoutInfo: () => ({ contentWidth }),
+    getScrollLeft: () => scrollLeft,
     updateOptions,
     createDecorationsCollection: vi.fn((decs: FakeDecoration[]) => {
       const id = ++nextCollectionId;
@@ -101,6 +118,8 @@ function makeFakeEditor() {
   return {
     editor,
     zones,
+    layoutCalls,
+    zoneIds: () => [...zones.keys()],
     fireMouseDown: (lineNumber: number, type = 2, isAfterLines = false) => {
       for (const h of [...mouseDownHandlers]) {
         h({
@@ -128,6 +147,15 @@ function makeFakeEditor() {
     },
     fireScroll: () => {
       for (const h of [...scrollHandlers]) h();
+    },
+    /** Scroll sideways, as a non-wrapping editor with long lines does. */
+    scrollRightTo: (left: number) => {
+      scrollLeft = left;
+      for (const h of [...scrollHandlers]) h();
+    },
+    setContentWidth: (width: number) => {
+      contentWidth = width;
+      for (const h of [...layoutHandlers]) h();
     },
     hasMouseMoveHandler: () => mouseMoveHandlers.length > 0,
     decorationsWithClass,
@@ -775,6 +803,169 @@ describe("MonacoCommentWidgets", () => {
       makeManager();
       fake.fireMouseMove(6);
       expect(fake.addGlyphLines()).toEqual([6]);
+    });
+  });
+
+  /**
+   * Monaco reserves exactly `heightInPx` and paints `.view-lines` after
+   * `.view-zones`, so a card taller than its reservation is drawn *under* the
+   * following code: it reads as half-transparent and its buttons are not
+   * clickable, because the click lands on the editor line covering them. And
+   * Monaco forces `width: 100%` on the zone node, so a left *margin* pushes
+   * the right edge — with the primary button on it — past the viewport.
+   */
+  describe("zone sizing and insets", () => {
+    interface FakeObserver { el: Element; cb: () => void }
+    let observers: FakeObserver[] = [];
+
+    class ResizeObserverStub {
+      constructor(public cb: () => void) {}
+      observe(el: Element) { observers.push({ el, cb: this.cb }); }
+      unobserve() {}
+      disconnect() { observers = observers.filter((o) => o.cb !== this.cb); }
+    }
+
+    beforeEach(() => {
+      observers = [];
+      vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    /** jsdom has no layout, so the measured height is supplied. */
+    function setMeasuredHeight(el: Element, px: number): void {
+      Object.defineProperty(el, "offsetHeight", { value: px, configurable: true });
+    }
+
+    function makeManager() {
+      return createCommentWidgetManager(
+        fake.editor as never,
+        {
+          filePath: "src/a.ts",
+          onAddComment: vi.fn(),
+          onEditComment: vi.fn(),
+          onDeleteComment: vi.fn(),
+        },
+      );
+    }
+
+    it("insets the panel with padding, never a margin that would overflow", () => {
+      makeManager().openCommentInput(4);
+      const { domNode } = [...fake.zones.values()][0];
+      expect(domNode.style.marginLeft).toBe("");
+      expect(domNode.style.margin).toBe("");
+      expect(domNode.style.paddingLeft).toBe("56px");
+      // Without border-box the padding is added to Monaco's forced 100%.
+      expect(domNode.style.boxSizing).toBe("border-box");
+      // `.view-lines` is a later sibling covering the same rows, so without a
+      // z-index it wins every hit test over the panel underneath it.
+      expect(domNode.style.zIndex).toBe("10");
+    });
+
+    it("keeps a press on the panel away from the editor's mouse handler", () => {
+      makeManager().openCommentInput(4);
+      const { domNode } = [...fake.zones.values()][0];
+      // The zone lives inside the editor, so an unstopped press makes Monaco
+      // focus itself and reveal its cursor — which scrolls the panel out from
+      // under the pointer before the button ever sees a mouseup.
+      const parent = document.createElement("div");
+      const reachedEditor = vi.fn();
+      parent.addEventListener("mousedown", reachedEditor);
+      parent.appendChild(domNode);
+
+      const press = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      domNode.querySelector("textarea")!.dispatchEvent(press);
+
+      expect(reachedEditor).not.toHaveBeenCalled();
+      // ...but not swallowed outright: the textarea still needs the press to
+      // take focus.
+      expect(press.defaultPrevented).toBe(false);
+    });
+
+    it("gives the panel an opaque background, so code can't read through it", () => {
+      makeManager().openCommentInput(4);
+      const panel = [...fake.zones.values()][0].domNode.firstElementChild as HTMLElement;
+      expect(panel.style.background).not.toContain("rgba");
+    });
+
+    it("grows the input zone to the panel's measured height", () => {
+      makeManager().openCommentInput(4);
+      const [id] = fake.zoneIds();
+      const zone = fake.zones.get(id)!;
+      const panel = zone.domNode.firstElementChild!;
+
+      setMeasuredHeight(panel, 140);
+      observers.find((o) => o.el === panel)!.cb();
+
+      // Measured card + the zone's own vertical insets (8px top and bottom).
+      expect(zone.heightInPx).toBe(156);
+      expect(fake.layoutCalls).toContain(id);
+    });
+
+    it("grows a comment card zone to its measured height", () => {
+      const manager = makeManager();
+      manager.setComments([lineComment({ line: 7, text: "a".repeat(400) })]);
+      const [id] = fake.zoneIds();
+      const zone = fake.zones.get(id)!;
+      const card = zone.domNode.firstElementChild!;
+
+      setMeasuredHeight(card, 320);
+      observers.find((o) => o.el === card)!.cb();
+
+      expect(zone.heightInPx).toBe(336);
+    });
+
+    it("keeps the estimate when the card has not been laid out yet", () => {
+      makeManager().openCommentInput(4);
+      const zone = [...fake.zones.values()][0];
+      const before = zone.heightInPx;
+      // offsetHeight is 0 before layout — collapsing to the insets would hide
+      // the panel entirely.
+      observers[0].cb();
+      expect(zone.heightInPx).toBe(before);
+      expect(before).toBeGreaterThan(50);
+    });
+
+    it("sizes the panel to the visible content, not to the longest line", () => {
+      makeManager().openCommentInput(4);
+      const { domNode } = [...fake.zones.values()][0];
+      // Monaco's own `width: 100%` is 100% of the *scroll* width, so in a
+      // non-wrapping file the buttons end up a screen or two to the right.
+      expect(domNode.style.width).toBe("800px");
+      fake.setContentWidth(500);
+      expect(domNode.style.width).toBe("500px");
+    });
+
+    it("keeps the panel in view when the code scrolls sideways", () => {
+      const manager = makeManager();
+      manager.setComments([lineComment({ line: 2 })]);
+      manager.openCommentInput(4);
+      fake.scrollRightTo(320);
+      for (const { domNode } of fake.zones.values()) {
+        // The zone container is translated by the scroll offset; cancelling it
+        // pins the card to the viewport instead of dragging it out of sight.
+        expect(domNode.style.transform).toBe("translateX(320px)");
+      }
+    });
+
+    it("stops measuring a zone it removed", () => {
+      const manager = makeManager();
+      manager.openCommentInput(4);
+      expect(observers).toHaveLength(1);
+      const zone = [...fake.zones.values()][0];
+      [...zone.domNode.querySelectorAll("button")].find((b) => b.textContent === "Cancel")!.click();
+      expect(observers).toHaveLength(0);
+    });
+
+    it("stops measuring every zone on dispose()", () => {
+      const manager = makeManager();
+      manager.setComments([lineComment({ line: 4 }), lineComment({ id: "c2", line: 9 })]);
+      manager.openCommentInput(12);
+      expect(observers).toHaveLength(3);
+      manager.dispose();
+      expect(observers).toHaveLength(0);
     });
   });
 
