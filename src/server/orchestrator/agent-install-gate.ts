@@ -153,6 +153,31 @@ export interface AcceptedInstallRecord {
   commands: string[];
   /** ISO timestamp — diagnostics only, never compared. */
   at: string;
+  /**
+   * Was this session plugin-bearing when the install completed?
+   *
+   * Requirement 12's on-disk evidence — `plugin-data/` — is what stops a plugin
+   * deleting its own `plugins.use` entry in the same write that changes
+   * `agent.install` and thereby making the session look ungated. A **fork** is
+   * the one transition that defeats it by construction: forking clones the
+   * parent's workspace and nothing else, so the fork inherits the plugin's
+   * rewritten `shipit.yaml` and none of the evidence. Without this flag a
+   * hidden plugin's command list escapes the gate entirely in the fork.
+   *
+   * Carried here rather than by copying `plugin-data/` into the fork, which is
+   * what it would otherwise take. That directory holds a plugin's own saved
+   * working data (docs/262 reqs 17, 18), and duplicating it into a second
+   * session to transport one boolean would change what plugin state means for
+   * a fact the check never reads: `sessionHasPlugin` only asks whether the
+   * directory EXISTS.
+   *
+   * **Sticky.** Once true it stays true for the life of the session, the same
+   * one-way property `plugin-data/` has: a plugin cannot erase the evidence
+   * that it ran. An unreadable record also reads as `true`, for the same reason
+   * its command list reads as empty — the file's existence is evidence, and the
+   * safe direction is to gate.
+   */
+  pluginBearing: boolean;
 }
 
 export interface InstallGateVerdict {
@@ -358,12 +383,27 @@ function acceptedRecordPath(workspaceDir: string): string {
  * accepted list standing, which withholds the new one until an install succeeds
  * again. That is the safe direction — it costs a notice, never an execution.
  */
-export function recordAcceptedInstall(workspaceDir: string, commands: string[]): boolean {
+export function recordAcceptedInstall(
+  workspaceDir: string,
+  commands: string[],
+  opts: { pluginBearing?: boolean } = {},
+): boolean {
   let tmp: string | null = null;
   try {
     const file = acceptedRecordPath(workspaceDir);
     tmp = `${file}.tmp`;
-    const record: AcceptedInstallRecord = { commands, at: new Date().toISOString() };
+    // Sticky, and OR-ed from three sources: what the caller carried in (the fork
+    // copy), what this session already recorded, and what it looks like now.
+    // Only ever gains the flag — see the field's docstring.
+    const previous = readAcceptedInstall(workspaceDir);
+    const record: AcceptedInstallRecord = {
+      commands,
+      at: new Date().toISOString(),
+      pluginBearing:
+        opts.pluginBearing === true
+        || previous?.pluginBearing === true
+        || sessionHasPlugin(workspaceDir),
+    };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(tmp, JSON.stringify(record));
     fs.renameSync(tmp, file);
@@ -400,21 +440,33 @@ export function readAcceptedInstall(workspaceDir: string): AcceptedInstallRecord
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === undefined) return null;
     // Anything else (EACCES, EIO) is a record we cannot read, not one absent.
-    return { commands: [], at: "" };
+    return UNREADABLE;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { commands: [], at: "" };
+    return UNREADABLE;
   }
-  if (!parsed || typeof parsed !== "object") return { commands: [], at: "" };
+  if (!parsed || typeof parsed !== "object") return UNREADABLE;
   const r = parsed as Record<string, unknown>;
   if (Array.isArray(r.commands) && r.commands.every((c) => typeof c === "string")) {
-    return { commands: r.commands, at: typeof r.at === "string" ? r.at : "" };
+    return {
+      commands: r.commands,
+      at: typeof r.at === "string" ? r.at : "",
+      pluginBearing: r.pluginBearing === true,
+    };
   }
-  return { commands: [], at: "" };
+  return UNREADABLE;
 }
+
+/**
+ * What a record that EXISTS but cannot be read resolves to. Both fields fail
+ * closed: no command list matches an empty one, so the gate withholds, and it
+ * gates at all because the file's existence is evidence that something was
+ * accepted here. Reading it as absent would allow instead.
+ */
+const UNREADABLE: AcceptedInstallRecord = { commands: [], at: "", pluginBearing: true };
 
 /**
  * Carry one session's acceptance into another — the fork case, and only that.
@@ -435,7 +487,12 @@ export function copyAcceptedInstall(fromWorkspaceDir: string | undefined, toWork
   try {
     const record = readAcceptedInstall(fromWorkspaceDir);
     if (!record || record.commands.length === 0) return;
-    recordAcceptedInstall(toWorkspaceDir, record.commands);
+    // The flag rides along explicitly: the fork has no `plugin-data/` of its
+    // own, so recomputing it there would answer `false` and drop the very fact
+    // this copy exists to carry.
+    recordAcceptedInstall(toWorkspaceDir, record.commands, {
+      pluginBearing: record.pluginBearing,
+    });
   } catch (err) {
     console.warn(
       "[install-gate] could not carry the accepted-install record into the fork:",
@@ -477,9 +534,12 @@ function installMarkerAbsent(workspaceDir: string): boolean {
 /**
  * Decide whether `requested` may be handed to the worker.
  *
- * Order matters for cost as well as correctness: the plugin check runs first so
- * a session with no plugin — the overwhelming majority (docs/271-agent-install-trust-boundary req 11) — pays
- * one `existsSync` and nothing else.
+ * A session with no plugin — the overwhelming majority
+ * (docs/271-agent-install-trust-boundary req 11) — pays one config resolve, one
+ * `existsSync` and one failed open, then returns. The record read moved ahead of
+ * the plugin check because the record is now part of the plugin ANSWER, not only
+ * of the accepted-list one: a fork carries its parent's flag and no
+ * `plugin-data/` of its own.
  */
 export function evaluateInstallGate(args: {
   /** The session's CLONE — `ContainerSessionRunner.sessionDir`. See above. */
@@ -488,15 +548,22 @@ export function evaluateInstallGate(args: {
 }): InstallGateVerdict {
   const { workspaceDir, requested } = args;
   if (requested.length === 0) return ALLOW;
-  if (!sessionHasPlugin(workspaceDir)) return ALLOW;
 
-  const accepted = acceptedInstallCommands(workspaceDir);
+  // Read once: it answers both "is this session gated at all" and "which list is
+  // in force", and those two must not be able to come apart.
+  const record = readAcceptedInstall(workspaceDir);
+  // The live evidence OR what this session recorded when it last accepted a
+  // list. The second is what survives a fork, which clones the parent's
+  // workspace and none of its `plugin-data/` — see `AcceptedInstallRecord`.
+  if (!sessionHasPlugin(workspaceDir) && record?.pluginBearing !== true) return ALLOW;
+
+  const accepted = record ? record.commands : markerInstallCommands(workspaceDir);
   if (accepted === null) return ALLOW; // First install — the repo-trust decision covers it.
   // Migration: a session that accepted a list before the record existed answers
   // from its marker. Persist that answer the first time we need it, so the
   // session stops depending on a marker five different paths delete. Cheap and
   // idempotent — `readAcceptedInstall` short-circuits every later call.
-  if (readAcceptedInstall(workspaceDir) === null) recordAcceptedInstall(workspaceDir, accepted);
+  if (record === null) recordAcceptedInstall(workspaceDir, accepted);
   if (sameCommands(accepted, requested)) return ALLOW;
 
   const reported = reportedWithheldCommands(workspaceDir);

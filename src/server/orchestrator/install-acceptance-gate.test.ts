@@ -33,6 +33,7 @@ import {
   evaluateInstallGate,
   readAcceptedInstall,
   recordAcceptedInstall,
+  sessionHasPlugin,
 } from "./agent-install-gate.js";
 import { reclaimBlockedSessionCaches, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 import { INSTALL_MARKER_VERSION, type InstallMarker } from "../shared/install-marker.js";
@@ -269,6 +270,67 @@ describe("acceptance survives every way the marker can be destroyed", () => {
     expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED }).withheld).toBe(true);
   });
 
+  /**
+   * The case the flag exists for. Requirement 12's on-disk evidence
+   * (`plugin-data/`) is what stops a plugin deleting its own `plugins.use` entry
+   * in the same write that changes `agent.install`. A fork defeats that by
+   * construction — it clones the workspace and nothing else — so a hidden
+   * plugin's list would otherwise escape the gate entirely in the fork.
+   */
+  it("keeps a fork gated even when the plugin deleted its own declaration", () => {
+    installSucceeded(ACCEPTED);
+    expect(readAcceptedInstall(workspaceDir)).toMatchObject({ pluginBearing: true });
+
+    const forkWorkspace = path.join(root, "sessions", "fork-hidden", "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    // The plugin removed itself from the config in the same write. The fork
+    // therefore has no declaration AND no plugin-data — both halves of
+    // `sessionHasPlugin` answer false.
+    fs.writeFileSync(
+      path.join(forkWorkspace, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
+    );
+    expect(sessionHasPlugin(forkWorkspace)).toBe(false);
+
+    copyAcceptedInstall(workspaceDir, forkWorkspace);
+
+    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED })).toMatchObject({
+      withheld: true,
+      accepted: ACCEPTED,
+    });
+  });
+
+  it("does not gate a fork whose parent never had a plugin", () => {
+    // The flag is the ONLY thing that can gate a plugin-free session, so it must
+    // not be set by a session that never had one.
+    fs.rmSync(path.join(sessionRoot, "plugin-data"), { recursive: true, force: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(ACCEPTED[0])}\n`,
+    );
+    recordAcceptedInstall(workspaceDir, ACCEPTED);
+    expect(readAcceptedInstall(workspaceDir)).toMatchObject({ pluginBearing: false });
+
+    const forkWorkspace = path.join(root, "sessions", "fork-plain", "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    copyAcceptedInstall(workspaceDir, forkWorkspace);
+    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED }).withheld).toBe(false);
+  });
+
+  // Once true it stays true, the same one-way property `plugin-data/` has: a
+  // plugin must not be able to clear the evidence that it ran by arranging for
+  // one later install to complete while it looks absent.
+  it("never loses the flag once set", () => {
+    installSucceeded(ACCEPTED);
+    fs.rmSync(path.join(sessionRoot, "plugin-data"), { recursive: true, force: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(ACCEPTED[0])}\n`,
+    );
+    recordAcceptedInstall(workspaceDir, ACCEPTED);
+    expect(readAcceptedInstall(workspaceDir)).toMatchObject({ pluginBearing: true });
+  });
+
   it("carries nothing from a parent that never completed an install", () => {
     const forkWorkspace = path.join(root, "sessions", "fork-2", "workspace");
     fs.mkdirSync(forkWorkspace, { recursive: true });
@@ -330,7 +392,12 @@ describe("the gate", () => {
   it("fails CLOSED on a record it cannot parse", () => {
     installSucceeded(ACCEPTED);
     fs.writeFileSync(acceptedFile, "{tru");
-    expect(readAcceptedInstall(workspaceDir)).toMatchObject({ commands: [] });
+    expect(readAcceptedInstall(workspaceDir)).toMatchObject({
+      commands: [],
+      // Fails closed on both fields: the file's existence is evidence that
+      // something was accepted here, so it must still gate.
+      pluginBearing: true,
+    });
     expect(evaluateInstallGate({ workspaceDir, requested: CHANGED })).toMatchObject({
       withheld: true,
       accepted: [],
@@ -358,12 +425,22 @@ describe("the gate", () => {
   // gating a session with no plugin in it — the boundary exists because a plugin
   // container can write `shipit.yaml`, and there isn't one.
   it("leaves a session with no plugin entirely alone", () => {
+    // Plugin-free from the START. Removing `plugin-data` from a session that
+    // once had a plugin does NOT make it plugin-free — the recorded flag is
+    // sticky precisely so a plugin cannot erase the evidence that it ran, which
+    // the sibling test below pins.
+    fs.rmSync(path.join(sessionRoot, "plugin-data"), { recursive: true, force: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(ACCEPTED[0])}\n`,
+    );
     installSucceeded(ACCEPTED);
+    expect(readAcceptedInstall(workspaceDir)).toMatchObject({ pluginBearing: false });
+
     fs.writeFileSync(
       path.join(workspaceDir, "shipit.yaml"),
       `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
     );
-    fs.rmSync(path.join(sessionRoot, "plugin-data"), { recursive: true, force: true });
     expect(evaluateInstallGate({ workspaceDir, requested: CHANGED }).withheld).toBe(false);
   });
 
