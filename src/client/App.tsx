@@ -1627,8 +1627,16 @@ export default function App() {
    * got it wrong in the one case the rule exists for.
    */
   const handleRoleChange = useCallback(
-    (roleName: string) => {
+    (roleName: string | undefined) => {
       saveRoleName(roleName);
+      // req 18 — "No role" clears the name and the standing instructions, and
+      // leaves the parameters alone. So there are no seeds to apply: the three
+      // pickers go on displaying what the role set, which is what the session
+      // goes on running.
+      if (roleName === undefined) {
+        send({ type: "set_role", roleName: null });
+        return;
+      }
       // req 15 — the seeds the three pickers display become the role's, so
       // "Adjust parameters…" shows what the role actually set rather than what
       // some earlier session left behind. See `utils/role-seed.ts`.

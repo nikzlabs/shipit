@@ -204,6 +204,54 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     client.close();
   });
 
+  it("clears the role and leaves the parameters where the role put them (req 18)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    client.send({ type: "set_role", roleName: "deep dive" });
+    await drainUntil(client, (m) => m.type === "model_selection_changed");
+
+    client.send({ type: "set_role", roleName: null });
+    const echo = await drainUntil(
+      client,
+      (m) => m.type === "model_selection_changed" && m.roleName === null,
+    );
+    expect(echo).not.toBeNull();
+
+    // The name is gone — and with it the standing instructions the first turn
+    // would have carried, which is the whole point of the act: no parameter
+    // carries them, so no parameter change can express this.
+    const row = sessionManager.get(client.sessionId!);
+    expect(row?.roleName).toBeUndefined();
+    // …and NOTHING else moved. The role's values are the last thing the user
+    // chose, so putting ShipIt's defaults back would undo a choice they did not
+    // ask to undo.
+    expect(row?.agentId).toBe("claude");
+    expect(row?.model).toBe(ROLE_MODEL);
+    expect(row?.serviceId).toBe("openrouter");
+    expect(row?.billingMode).toBe("key");
+    expect(row?.reasoningEffort).toBe("high");
+
+    client.close();
+  });
+
+  it("refuses to clear the role once the session has taken its first turn (reqs 4, 18)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive();
+    client.send({ type: "set_role", roleName: "deep dive" });
+    await drainUntil(client, (m) => m.type === "model_selection_changed");
+    // Clearing is a choice of role, so it locks when the choice does: by now the
+    // standing instructions have been delivered, and un-naming them afterwards
+    // states nothing the transcript does not already show.
+    sessionManager.setAgentPinned(client.sessionId!);
+
+    client.send({ type: "set_role", roleName: null });
+    const err = await drainUntil(client, (m) => m.type === "error");
+    expect(err.message).toMatch(/before the session's first message/);
+    expect(sessionManager.get(client.sessionId!)?.roleName).toBe("deep dive");
+
+    client.close();
+  });
+
   it("refuses the reviewer without touching the session (req 10)", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
@@ -261,6 +309,31 @@ describe("Integration: user-selectable roles (docs/272)", () => {
     expect(row?.reasoningEffort).toBe("high");
 
     client.close();
+  });
+
+  it("keeps a cleared role cleared across a reconnect that still seeds it (reqs 12, 18)", async () => {
+    // The browser's seed lives inside a per-session memoized WebSocket URL, so a
+    // socket that reconnects after the clear still carries the role's name. The
+    // role is perfectly runnable — nothing downstream would refuse it — so
+    // without the row remembering that the user chose NONE, the clear would
+    // silently undo itself between here and the first message, standing
+    // instructions and all.
+    const first = await TestClient.connect(port, undefined, { role: "deep dive" });
+    await first.receive();
+    const sessionId = first.sessionId!;
+    expect(sessionManager.get(sessionId)?.roleName).toBe("deep dive");
+    first.send({ type: "set_role", roleName: null });
+    await drainUntil(first, (m) => m.type === "model_selection_changed" && m.roleName === null);
+    first.close();
+
+    const again = await TestClient.connect(port, sessionId, { role: "deep dive" });
+    await again.receive();
+    expect(sessionManager.get(sessionId)?.roleName).toBeUndefined();
+    // …and picking the role again still works: "none" is a choice, not a ban.
+    again.send({ type: "set_role", roleName: "deep dive" });
+    await drainUntil(again, (m) => m.type === "model_selection_changed" && m.roleName === "deep dive");
+    expect(sessionManager.get(sessionId)?.roleName).toBe("deep dive");
+    again.close();
   });
 
   it("keeps the role's harness across a RECONNECT rather than re-deriving it (reqs 8, 13)", async () => {

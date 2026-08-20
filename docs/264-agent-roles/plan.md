@@ -396,8 +396,41 @@ a base is where the two commands differ, and it is the only place they do:
 | Base | Available to | Completed from |
 |---|---|---|
 | a **role** | both commands | the role's params (resolved, for the reviewer) |
-| the **parent session** | `session create` only | the parent's harness, selection and level |
+| the **parent session** | `session create` only | the parent's harness, selection and level — **and the parent's role, whole** (req 20) |
 | **nothing** | both commands | nothing — so the call must name all five itself |
+
+### The parent's role is part of what a child inherits (req 20)
+
+Inheritance carried the parent's harness, model and level and dropped the half of a role that no
+parameter can express: the standing instructions. A session working under a brief spawned help for
+that same work, and the help arrived under no brief, with nothing on either side saying so.
+
+The fix is deliberately **not** routed through the role path. A parent that is running a role is
+already running that role's parameters — `roleName` is cleared the moment one of them moves
+(docs/272 req 15) — so there is nothing for role resolution to supply that inheritance does not
+already produce, and running it would silently swap the inherit path's per-parameter rules (a
+`--model` that switches harness, a level dropped where the child's harness does not declare it) for
+the role path's stricter ones. So `spawnChildSession` reads the parent's role **for its prompt
+only**, and the parameters arrive exactly as they always did:
+
+- **`target.kind === "inherit"` and not `--no-role`** is the whole condition. A `--role` names its
+  own; a complete explicit target states what it runs on completely, and has been role-less since
+  docs/275.
+- **`parent.roleName`, not `parent.originRoleName`** — what the parent is running now, not what it
+  was started as. The two differ exactly when someone moved a parameter, which is the user saying
+  the role is no longer what this session is doing.
+- **It cannot fail.** No tuple is being started from the role, so `stranded` / `disconnected` /
+  `quota_exhausted` have nothing to refuse — those are facts about a role's parameters, and the
+  child's come from the parent. A role **deleted** since the parent started on it yields nothing:
+  the child runs briefless rather than carrying a provenance line with no instructions behind it.
+- **An override does not cancel it** (the user's decision, 2026-08-20), matching `--role NAME
+  --model X`. `roleForChild` is one value from that point on, so the prompt join and the two row
+  writes cannot disagree about which role the child is running.
+
+`--no-role` is the decline, refused alongside `--role` at both the shim and the parser — two
+opposite statements about one thing, and resolving them by precedence would run a child on a brief
+the caller may have meant to decline. It is also refused where there is no parent base at all: a
+one-shot run has no role to decline, and a flag that quietly does nothing teaches that it works.
 
 Overrides apply over whichever base was named. This is what makes req 16 true without a carve-out:
 partial is ordinary, the child's existing `--model X` is not a special case but a partial call over

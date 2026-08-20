@@ -1204,6 +1204,44 @@ export class SessionManager {
   }
 
   /**
+   * docs/272-user-selectable-roles req 18 — the user chose **"No role"**, which is
+   * not the same fact as never having chosen one.
+   *
+   * Both are "no role in force", and every reader of {@link SessionInfo.roleName}
+   * sees exactly that: the row holds `''`, and `fromRow`'s truthiness test drops
+   * it, so nothing downstream gains a third case to handle. The one place the
+   * difference matters is the `?role=` connect seed, which asks
+   * {@link SessionManager.roleExplicitlyCleared}.
+   *
+   * **Why the distinction has to be stored at all.** The browser's seed slot
+   * (req 12) is baked into the session WebSocket's URL, and that URL is memoized
+   * per session — so a socket that reconnects after the clear still carries the
+   * cleared role's name. The connect handler would then apply it to a session
+   * with no role in force, and the user's clear would silently undo itself
+   * somewhere between the clear and the first message. The handler's own note
+   * used to say no such guard was needed, and it was right at the time: the only
+   * clears that existed were the automatic ones, which happen precisely because
+   * the role became unrunnable, so re-applying it refuses harmlessly. An
+   * explicitly cleared role is perfectly runnable, and that is what breaks the
+   * old argument.
+   *
+   * The automatic clears keep writing `null` (see {@link SessionManager.setRoleName}):
+   * "the role stopped being true" is not the user saying "none", and only the
+   * second should outrank a seed.
+   */
+  clearRoleName(id: string): void {
+    this.db.prepare("UPDATE sessions SET role_name = '' WHERE id = ?").run(id);
+  }
+
+  /** Did the user choose "No role" on this session? See {@link SessionManager.clearRoleName}. */
+  roleExplicitlyCleared(id: string): boolean {
+    const row = this.db
+      .prepare("SELECT role_name FROM sessions WHERE id = ?")
+      .get(id) as { role_name: string | null } | undefined;
+    return row?.role_name === "";
+  }
+
+  /**
    * docs/205 — count detached (parentless) sessions spawned in a given turn.
    * Mirrors `findChildren`'s `user_archived = 0` filter so the per-turn cap
    * counts the same liveness class for detached spawns as it does for linked

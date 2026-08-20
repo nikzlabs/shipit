@@ -43,3 +43,19 @@ Implementation to-do for this branch. See [`plan.md`](./plan.md).
       back showing the ROLE's values → moving one leaves the role. Both layouts.
       This is what caught the warm-session display bug, which every unit and
       integration test passed straight through.
+
+## No role (req 18, 2026-08-20)
+
+- [x] `set_role` takes `roleName: string | null`; the `null` branch writes only the name and
+      refuses on `agentPinned` exactly as a selection does
+- [x] "No role" is the first row of the roles list, in both layouts, and is what the list shows as
+      chosen while none is in force
+- [x] The seed follows it, so the next new session starts with no role (req 12)
+- [x] Quick capture applies no seeds when the role is cleared — the parameters stay where the role
+      left them
+- [x] The clear is recorded as a CHOICE (`role_name = ''`), so the `?role=` seed cannot put the role
+      back on a reconnect — the browser's seed lives in a memoized per-session WS URL, and the
+      shipped "no fourth guard needed" argument only ever covered the two automatic clears
+- [x] Tests: the clear leaves every parameter untouched; the clear is refused after the first turn;
+      the option is absent from a locked control in both layouts; a reconnect that still seeds the
+      cleared role leaves it cleared, and re-picking it still works

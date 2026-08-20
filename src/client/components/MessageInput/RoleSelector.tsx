@@ -23,9 +23,13 @@
  * **Clicking the name opens the list of roles** (req 14), because every other
  * control in this row opens what it chooses between and the role is not the one
  * exception. The parameters it set are reached from *inside* that list, through
- * "Adjust parameters…", and **changing one of them is the whole of leaving the
- * role** (req 15) — which is why there is no "no role" entry and no clear
- * action.
+ * "Adjust parameters…", and changing one of them leaves the role (req 15).
+ *
+ * **"No role" is the first entry in that list** (req 18). Changing a parameter
+ * leaves a role by changing what the session runs on, and that cannot express
+ * the case the user actually has: keep what the role set, drop the brief it
+ * carries. It is also the only way back to a plain session once a role has been
+ * selected, since the selection is remembered for the next one (req 12).
  *
  * **The session's first turn locks the choice of role and nothing else** (req 4).
  * The control keeps opening; what it offers there is "Adjust parameters…" and no
@@ -183,7 +187,8 @@ export function RoleSelector({
   roles: RoleView[];
   /** The role in force, or undefined. Never derived from the parameters (req 13). */
   selectedRole?: string | undefined;
-  onSelectRole: (roleName: string) => void;
+  /** A role by name, or `undefined` for "No role" (req 18). */
+  onSelectRole: (roleName: string | undefined) => void;
   /**
    * "Adjust parameters…" — bring the three controls the role replaced back into
    * the row (req 15). Absent when no role is selected, because then they are
@@ -340,6 +345,16 @@ export function RoleSelector({
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="w-64" data-testid="role-selector-menu">
         <DropdownMenuLabel>Role</DropdownMenuLabel>
+        {/* req 18 — the way to select none, and what the list shows as chosen
+            while none is in force. First, because it is the state every other
+            row is a departure from. */}
+        <PickerOption
+          label="No role"
+          detail="Run this session without a role's standing instructions"
+          selected={!selectedRole}
+          onSelect={() => onSelectRole(undefined)}
+          testId="role-option-none"
+        />
         {roles.map((role) => {
           const unavailable = roleUnavailableDetail(role);
           const detail = roleDetail(role);

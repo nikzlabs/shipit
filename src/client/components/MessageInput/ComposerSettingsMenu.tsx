@@ -270,8 +270,11 @@ export function ComposerSettingsMenu({
    * inert.
    */
   pickersLocked?: boolean;
-  /** docs/272-user-selectable-roles req 1 — start this session on the named role. */
-  onRoleChange?: (roleName: string) => void;
+  /**
+   * docs/272-user-selectable-roles reqs 1, 18 — start this session on the named
+   * role, or take the role off it with `undefined`.
+   */
+  onRoleChange?: (roleName: string | undefined) => void;
   /** docs/272 req 5 — the role IN FORCE, which replaces the three rows below it. */
   sessionRoleName?: string;
   /** docs/272 req 15 — "Adjust parameters…" was chosen, so the three rows are back. */
@@ -523,6 +526,20 @@ export function ComposerSettingsMenu({
               >
                 {ROLE_LOCKED_REASON}
               </p>
+            )}
+            {/* req 18 — the same first entry the wide row's list carries, and
+                what the panel shows as chosen while no role is in force. */}
+            {!roleLocked && (
+              <ChoiceRow
+                testId="composer-settings-role-none"
+                label="No role"
+                description="Run this session without a role's standing instructions"
+                isCurrent={!sessionRoleName}
+                onSelect={() => {
+                  onRoleSelected?.();
+                  onRoleChange?.(undefined);
+                }}
+              />
             )}
             {!roleLocked && roles.map((role) => {
               const unavailable = roleUnavailableDetail(role);

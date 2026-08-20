@@ -142,13 +142,33 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
     after the first turn, so leaving one there is a one-way move. That is the price of req 4, and
     it is stated here so it is not discovered.
 
-    **There is no separate way to clear a role**, and no "no role" entry in the list. Leaving a role
-    means changing something about how the session runs; an action that only un-names it, while the
-    session goes on running exactly as the role set it up to, states nothing a user would want to
-    state.
-
     Below 700px this is the same fact in the shape docs/260 already uses: the role folds into the
     one composer settings menu, alongside the controls it sets.
+
+18. **The user can select no role, in the same list they select one.** "No role" is an entry in the
+    roles list, and it is what the list shows as chosen when nothing is in force. Selecting it takes
+    the role off the session: the name stops being shown, the three controls come back, and the
+    role's standing instructions do not apply to the session's first turn.
+
+    **This is not the same act as changing a parameter, and that is why it has to exist.** A role is
+    its parameters *and* its standing instructions (req 2). Moving a control leaves the role by
+    changing what the session runs on — but a user who wants the parameters the role set and not the
+    brief it carries has nothing to move, and a user who simply wants the plain session ShipIt gives
+    by default (req 7) has to nudge a control and put it back. Because ShipIt remembers the last role
+    selected (req 12), the state with no role is otherwise unreachable once a first role has ever
+    been chosen.
+
+    **Clearing a role changes the name and the instructions, and nothing else.** The session goes on
+    running the harness, the model and the reasoning level the role set, exactly as it would if the
+    user had reached those values with the three controls. Nothing is put back to a default: the
+    user chose a role, and its parameters are the last thing they chose.
+
+    **Clearing is a choice of role, so it locks when the choice does** (req 4). After the first turn
+    the role control offers the parameters and nothing else — no other role, and no "No role" —
+    because the standing instructions have already been delivered and un-naming them afterwards
+    states nothing the transcript does not already show.
+
+    ShipIt remembers "no role" as it remembers a role (req 12): the next new session starts with none.
 
 16. **The composer offers a role only once the user has one, and the same mark means "role"
     wherever roles appear.** A user who has configured no roles sees the composer exactly as it is
@@ -183,6 +203,11 @@ Kept separate so that what the user asked for stays visible next to what was pro
   user replaced this: a selected role shows its **name alone**, its parameters stay reachable, and
   roles do not belong in the model list. The user then caught the agent giving the role name a
   click that no other control has (req 14). See the receipts below.
+- **Directed by the user on 2026-08-20**: requirement 18, and the removal of req 15's "there is no
+  separate way to clear a role" clause. The user's reason is the one the original clause missed —
+  "the role may also contain the prompt" — so leaving a role by moving a parameter cannot express
+  "these parameters, without the brief", and "now there is no way to select no role" is the state it
+  leaves the user in.
 - **Reported and directed by the user on 2026-08-19**: the second half of requirement 4, and the
   locked case in requirements 5 and 15 — a locked role stops the user choosing another role, and
   stops nothing else. **Corrected by the user the same day**, after seeing it: the parameters a
@@ -205,6 +230,22 @@ Kept separate so that what the user asked for stays visible next to what was pro
   hint that others match. This is low stakes and does not block design; correct it if you disagree.
 
 ## Resolved questions
+
+- **2026-08-20 — Can the user select no role? (supersedes the 2026-08-17 receipt on what "No role"
+  would do)** Yes: "there should be a way to adjust parameters and clear the role, because the role
+  may also contain the prompt. Now there is no way to select no role."
+
+  The 2026-08-17 answer removed "No role" on the reasoning that it could not clear anything —
+  but that reasoning was built on the req 13 rule that ShipIt *derived* the role name from the
+  parameters, which the same day's later receipt reversed. Once the name reports the user's
+  **choice**, un-choosing is a real act with a real effect: the standing instructions stop applying.
+  The clause was left standing after the premise under it was removed, and this is what that cost —
+  a user who selects a role once can never get back to a session without one, because the selection
+  is remembered (req 12).
+
+  The parameters are deliberately **not** reverted: the role's values are the last thing the user
+  chose, and putting ShipIt's defaults back would undo a choice the user did not ask to undo. → req 18,
+  and the removal of the clause from req 15.
 
 - **2026-08-19 (second) — After the lock, are the parameters shown or asked for?** Asked for:
   "now the parameters are always visible, but I want them to be not visible unless the user clicks
