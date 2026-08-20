@@ -111,6 +111,47 @@ arbitrary repo-controlled code (the codegen hazard docs/198 documents), so
 running it as the cache owner hands the attacker exactly the write it wanted. It
 defends only against a compromised agent turn, not against a malicious repo.
 
+**Read-only permission bits are not enough — it must be a different owner.**
+Measured: with the session owning the store file's inode, `chmod 444` on the
+store file stops nothing. The session `chmod`s it back **through its own
+`node_modules` path** — the same inode, which it owns — and writes. So the store
+files must be owned by a ShipIt identity the session is not, which is the exact
+reverse of what docs/270 did when it added group write to keep sharing working
+(`shareOne`, `session-worker-uid.ts:381`).
+
+**The direct consequence: `node_modules` becomes read-only to the agent.** The
+`node_modules` entry and the store file are one inode, so a store file the
+session cannot write is a `node_modules` file the session cannot write or
+`chmod`. Editing a dependency in place to debug it, and `patch-package`-style
+workflows, both stop working. That collides with docs/270 req 10 — "everything
+the agent can do inside its own container today MUST still work" — so option B
+has to answer it rather than discover it later. pnpm's own escape hatches are
+`pnpm patch` and `package-import-method=copy`; the second is priced below.
+
+**Someone else has to fetch.** Sessions install constantly — `agent.install`, the
+agent adding a package mid-turn, the user's terminal. A read-only store means a
+package that is not already present cannot be fetched by the session at all.
+Pre-fetching from the lockfile covers the common case at no per-install cost, but
+`pnpm add <new package>` mid-turn still needs an on-demand call into the broker.
+And req 2 forbids a *silent* fallback to a private copy, which is precisely what
+pnpm does naturally when it cannot write the store — so the broker has to work,
+not degrade.
+
+### Variant — copy instead of hardlink
+
+`package-import-method=copy` makes `node_modules` entries copies rather than
+hardlinks. That alone kills **H3**: with no shared inode, poisoning the store
+cannot reach a session that already installed, and `node_modules` stays writable
+by the agent. **H2 survives** — a poisoned store is still copied in — so this is
+a partial, not a fix.
+
+Its cost is exactly the thing docs/198 Part 2 was written to remove. That doc
+measured pnpm degrading to full copies across the overlay boundary at **464 MB
+per session** and moved to the shared store specifically to get hardlinks back.
+Choosing copy-mode re-buys that cost deliberately. It is worth stating as an
+option because it is the only cheap way to close H3, but it trades directly
+against req 7 and against docs/198's whole rationale.
+
 **What it closes.** H1, H2 and H3 — and it is the **only** option that closes
 H3, because it is the only one that removes the session's write to the inode.
 It is also the only option that closes H2 without ShipIt reimplementing pnpm's

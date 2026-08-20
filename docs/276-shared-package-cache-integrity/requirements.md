@@ -125,9 +125,25 @@ repository-backed, is not an Ops session, and is detected as pnpm (a
   support already does this for us, and the other checks nothing at all, so we
   would be building the check ourselves for the half that matters most.
 - **(c) Stop sessions writing the shared copy at all.** Sessions read it; ShipIt
-  writes it. **← recommended.** This is the only option that actually closes the
-  problem, including for already-installed sessions. It is the most expensive,
-  and it changes how installs work.
+  writes it. **← recommended.** The only option that actually closes the problem,
+  including for sessions that already installed. Consequences you are choosing,
+  measured rather than estimated:
+  - ShipIt must **own** the shared files. Marking them read-only is not enough —
+    a session that owns a file can make it writable again through its own copy.
+  - **The agent can no longer edit installed packages.** Editing a dependency in
+    place to debug it stops working, because the installed file and the shared
+    file are the same file.
+  - **Something other than the session must fetch packages.** Adding a package
+    mid-conversation needs a request to ShipIt instead of a direct download.
+  - It touches the install path for every project, which is the most-used path
+    in the product.
+
+  *A cheaper middle exists if those consequences are unacceptable:* have each
+  session keep its **own copy** of installed packages instead of sharing the
+  files. Tampering then cannot reach a session that already installed, and the
+  agent keeps write access — but a session installing fresh can still be handed a
+  tampered package, and this re-buys a disk cost of roughly 464 MB per session
+  that an earlier change (docs/198) was made specifically to remove.
 
 **Q2 — May we require projects to pin their dependency versions?**
 A "lockfile" is a file recording exactly which package versions a project uses.
