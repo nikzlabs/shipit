@@ -135,8 +135,25 @@ sign-off before integrating on metered-only auth.
     harness actually offers" asserts a non-empty option list per harness) —
     verified at source; integrating such a CLI requires first extending the
     reviewer-default mechanism, a design decision, not a recipe step.
-13. **The remaining `AgentCapabilities` declarations**, answered honestly
-    up front: image input (`supportsImages`), mid-turn steering
+13. **The remaining `AgentCapabilities` declarations** — and every `false`
+    among them **states its basis in the comment beside it**, in one of
+    exactly three words, because the three are not interchangeable:
+    **probed** (a real turn exercised it and it failed — cite the probe),
+    **structural** (the adapter shape forecloses it, e.g. `startsOwnTurns`
+    needs a resident process), or **not-wired** (the CLI can, ShipIt has not
+    — deferred WORK, so it gets a tracked issue, never a bare `false`).
+    🚩 An undocumented `false` is the bug this rule exists for: `codex`
+    declares `supportsImages: false` with no comment while its own `--help`
+    advertises `-i, --image <FILE>...`, and `opencode`'s comment says to
+    "flip after a live probe" that was never run. `supportsReview` is
+    `false` on both newest harnesses for reasons that read as *not-wired*
+    ("no chat-native review flow wired yet", "unexercised at launch") — real
+    statements, but they describe unfinished work rather than an incapable
+    CLI, and nothing tracked them. Grok's `supportsImages` is the model to
+    copy: probed live, with a **negative control**, which caught two
+    apparent successes where the model had answered off the filesystem
+    instead of from the image.
+    The flags: image input (`supportsImages`), mid-turn steering
     (`supportsSteering`), resident-process turn behavior (`startsOwnTurns`),
     review usability (`supportsReview`), and the skill invocation prefix —
     each shapes UI and turn plumbing, and a wrong guess here surfaces as
