@@ -665,6 +665,34 @@ no container-local `grok login`):
   --effort high` is therefore assemblable; docs/275's completeness rule
   holds for subscription selections.
 
+  **Two layers, not one.** A Claude-pinned sibling on the same
+  deployment has no grok `auth.json` in `/credentials/.grok/` — only
+  leftover `sessions/` from a wiped consult — and its
+  `.shipit-resident-route.json` names only claude. That is docs/138:
+  the *resident* worker is provisioned with the pinned harness's
+  account and nothing else (`provisionAgentCredentials` copies "only
+  `agentId`'s files — the other agent's credentials never land in this
+  session's container"). Metered keys still reach every worker as
+  `SHIPIT_CREDENTIAL_*` env vars, which is why a Claude session can
+  *see* xAI key rows on disk-less evidence alone.
+
+  That missing file does **not** make a grok subscription consult
+  unassemblable. `GET /agent/params` is install-wide (the session id
+  is a 404 check); eligibility is the orchestrator's credential store,
+  not the calling worker's mount. And `shipit agent run` — role or
+  explicit — resolves the route server-side (`selectRouteForSelection`
+  / the role's frozen route) and copies the target harness's account
+  into the parent worker for the spawn (`provisionSubAgentCredentials`),
+  then wipes auth on the way out. `--role GrokSub` and
+  `--agent grok --service xai --billing-mode sub --model grok-4.6
+  --effort high` are the same credential path. The inverse was
+  observed in this container: a Claude reviewer consult left
+  `.claude/history.jsonl` and `projects/` behind, no Claude auth file,
+  and the grok account marker untouched.
+
+  Correct-as-designed; not a docs/275 gap. Do not provision every
+  account into every session to make the worker look like the listing.
+
 ### What the independent review caught, and why it was the right question to ask
 
 The brief for the out-of-family reviewer led with "did I miss a consumer of the
