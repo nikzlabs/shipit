@@ -118,17 +118,36 @@ repository-backed, is not an Ops session, and is detected as pnpm (a
 
 **Q1 — How much protection do you want?**
 
+*Really a choice between (a) and (c). Option (b) is kept, struck through, because
+"just check the packages" is the answer everyone reaches for first and the reason
+it fails is worth seeing once.*
+
 - **(a) Contain it.** Give the pnpm store a project key, so it matches what npm
   already does. A bad session then reaches only sessions of the *same project*,
   instead of every project on the machine. Cheapest to build. Uses more disk.
   Leaves the common case — several sessions on one project — open. Note that npm
   is *already* per-project and is still fully exploitable, which is the measured
   evidence that this alone is not a fix.
-- **(b) Check packages at install time.** Catches tampering when a session
-  installs, but not sessions that already installed. Sounds like the obvious
-  middle and is worth less than it sounds: one of the two package managers we
-  support already does this for us, and the other checks nothing at all, so we
-  would be building the check ourselves for the half that matters most.
+- **(b) Check packages at install time.** ~~Verify the bytes as a session
+  installs them, and refuse if they are wrong.~~ **Not a real option — it
+  collapses into something else, and you should know why before discounting it.**
+
+  A check needs something to check *against*, and that expected value sits in the
+  same shared, writable place as the bytes. Measured: changing the *expected
+  hash* made the check pass on the attacker's package and run its code. The check
+  worked perfectly; it was comparing against a number the attacker chose.
+
+  So the only question that matters is where the expected value comes from, and
+  there are three answers: the project's own lockfile (trustworthy, but does not
+  cover adding a package), a per-session copy of the resolution data
+  (trustworthy, and then the package manager's existing check does the work —
+  **this is the fix, already step 1 of the plan**), or asking the registry fresh
+  (priced and refuted).
+
+  For pnpm there is an extra cost, because it checks nothing today and ShipIt
+  would have to hash files itself: measured at ~1.5 s for a 32,310-file, 478 MB
+  tree with a warm cache, against an install whose warm floor is ~5–7 s. And it
+  would still be comparing against a value the attacker can write.
 - **(c) Give each session its own copy of installed packages.** Today sessions
   share the actual files; this would copy them instead. Tampering then cannot
   reach a session that already installed, and the agent keeps full control of its

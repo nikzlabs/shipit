@@ -7,9 +7,10 @@ answers to Q1 and Q2 decide which of these items exist at all. Requirement 9
 
 ## Blocked on the requester
 
-- [ ] **Q1 answered** — how much protection: contain it, check at install, or
-      per-session copies? *(Decides which option is viable. "Stop sessions
-      writing" was ruled out by requirement 9.)*
+- [ ] **Q1 answered** — how much protection: contain it, or per-session copies?
+      *(Decides which option is viable. "Stop sessions writing" was ruled out by
+      requirement 9; "check at install time" collapses into the per-session
+      resolution cache, because a check is only worth its expectation source.)*
 - [ ] **Q2 answered** — may we require projects to pin dependency versions?
 - [ ] **Q3 answered** — if the complete fix means sharing less, is that allowed
       (`docs/270-per-session-worker-uids` req 9)?
