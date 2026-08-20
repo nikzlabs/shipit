@@ -84,6 +84,7 @@ import {
   nativeServiceForHarness,
   reasoningOptionsFor,
   sameCanonicalModel,
+  selectionHonoursEffort,
   sameModelFamily,
   type ConfiguredCredential,
   type ModelFamily,
@@ -170,9 +171,11 @@ export interface ReviewerTarget {
   readonly harnessId: AgentId;
   readonly selection: Readonly<ModelSelection>;
   /**
-   * Complete (req 5): the pin's level, or this harness's ShipIt-authored
-   * default. Absent only when the harness declares no levels at all (docs/274)
-   * — "complete" then means the tuple names everything there is to name.
+   * Complete (req 5): the pin's level **where this selection offers it**, and
+   * otherwise the level re-derived for what this target actually resolved onto
+   * (planning#352). Absent only when the selection offers no level at all
+   * (docs/274) — "complete" then means the tuple names everything there is to
+   * name.
    */
   readonly reasoningEffort?: string;
   /** The service's display name, for the Settings row and the consult card. */
@@ -566,11 +569,7 @@ function firstRoutable(
   deps: ReviewerModelDeps,
   avoidHarnessId: AgentId | undefined,
 ): ReviewerCandidate | undefined {
-  const routeDeps = {
-    credentialStore: deps.credentialStore,
-    ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
-    ...(deps.env ? { env: deps.env } : {}),
-  };
+  const routeDeps = routeDepsOf(deps);
   for (const resolved of harnessesForSelection(selection, credentials, {
     ...(avoidHarnessId ? { avoidHarnessId } : {}),
   })) {
@@ -584,6 +583,14 @@ function firstRoutable(
     };
   }
   return undefined;
+}
+
+function routeDepsOf(deps: ReviewerModelDeps) {
+  return {
+    credentialStore: deps.credentialStore,
+    ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
+    ...(deps.env ? { env: deps.env } : {}),
+  };
 }
 
 /** Turn a slot's plan into a routed, complete target — or say why there is none. */
@@ -629,9 +636,10 @@ function buildTarget(
         candidate.route,
       )
     : undefined;
-  // A pinned level wins; otherwise the harness's authored default. Both can be
-  // absent, and only for a harness declaring no levels — see `defaultEffortFor`.
-  const effort = plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId, candidate.selection);
+  // A pinned level wins WHERE THIS SELECTION OFFERS IT; otherwise it is
+  // re-derived here (planning#352). Both branches can be absent, and only for a
+  // selection offering no level at all — see `defaultEffortFor`.
+  const effort = effortFor(plan.pin?.reasoningEffort, candidate);
   return Object.freeze({
     slot: plan.slot,
     source: plan.source,
@@ -642,9 +650,9 @@ function buildTarget(
     // and freezing neither would leave the "immutable through retries"
     // guarantee true of the wrapper only.
     selection: Object.freeze({ ...candidate.selection }),
-    // Req 5 — a derived reviewer is COMPLETE. The level follows the harness that
-    // was actually derived, so a slot that bent away from the implementer runs
-    // at that harness's default rather than at the other one's.
+    // Req 5 — a derived reviewer is COMPLETE, and the level follows what was
+    // ACTUALLY resolved: a slot that bent away from the implementer runs at a
+    // level that harness's row offers rather than at the other one's.
     ...(effort !== undefined ? { reasoningEffort: effort } : {}),
     serviceName: getService(candidate.selection.serviceId)?.name ?? candidate.selection.serviceId,
     route: Object.freeze({ ...candidate.route }),
@@ -653,6 +661,95 @@ function buildTarget(
     ...(serviceRouting ? { serviceRouting: Object.freeze(serviceRouting) } : {}),
     ...(credentialSecret ? { credentialSecret } : {}),
   });
+}
+
+/**
+ * **A pin applies as far as it can, and no further** (planning#352) — the level
+ * a resolved reviewer runs at, given the level its slot was pinned to.
+ *
+ * A pin is validated at save time against the harness derived THEN
+ * (`services/reviewer-settings.ts`), which is the only honest choice for a
+ * *setting*: a setting cannot know which implementer it will later be ranked
+ * against. But {@link selectReviewer} resolves each review on its own, so the
+ * target a pinned slot lands on may be one the pinned level was never checked
+ * against — and copying the level across verbatim is how a Claude-only `max`
+ * reached Codex, which declares none.
+ *
+ * So the pin is applied **partially**: the pinned model is kept, and only the
+ * level is re-derived. The two alternatives are both worse. Refusing the review
+ * loses it over a level nobody chose deliberately — the user pinned a model and
+ * the level came along with it. Substituting *invisibly* is the replacement req
+ * 5 and phase 2's `--effort` decision both rule out, which is why the Settings
+ * tab says what a pinned level becomes and where
+ * ({@link reviewerEffortSubstitutions}).
+ *
+ * **Asked of the resolved SELECTION, not of the resolved harness's vocabulary**
+ * (docs/274 req 14). Grok declares four levels that are real on a subscription
+ * row and dropped before the wire on a key-billed one, so a pinned level can
+ * stop applying with no harness change at all; a harness-level check would leave
+ * that case broken and satisfy req 5 with a field that changes nothing.
+ */
+function effortFor(pinned: string | undefined, candidate: ReviewerCandidate): string | undefined {
+  if (pinned !== undefined && selectionHonoursEffort(candidate.harnessId, candidate.selection, pinned)) {
+    return pinned;
+  }
+  return defaultEffortFor(candidate.harnessId, candidate.selection);
+}
+
+/** Where a pinned level does not apply, and what a review there runs at instead. */
+export interface ReviewerEffortSubstitution {
+  harnessId: AgentId;
+  /** Absent when that harness sends no level at all on this reviewer's row. */
+  reasoningEffort?: string;
+  /** That level's display label, from the same option list it was chosen from. */
+  reasoningLabel?: string;
+}
+
+/**
+ * Every harness this install could resolve `pin` onto whose row does **not**
+ * offer the pinned level, with what a review there would run at instead —
+ * planning#352's "say so" half.
+ *
+ * One list rather than one flag, because the Settings tab names ONE harness and
+ * a review derives its own: the tab's own resolution is implementer-independent
+ * (`avoidHarnessId: undefined`), while a review prefers a harness the reviewed
+ * session is not on. A note about only the harness the tab happens to name would
+ * stay silent about exactly the case that made this a defect — a pin accepted on
+ * Claude Code and run on Codex. The tab's own harness is included when it is one
+ * of them, so the same list answers both questions.
+ *
+ * Routable harnesses only, by the same rule the ranking uses: a harness that
+ * cannot authenticate this selection is one no review can land on, so warning
+ * about it would name a substitution that cannot happen.
+ */
+export function reviewerEffortSubstitutions(
+  pin: ReviewerPin,
+  deps: ReviewerModelDeps,
+): ReviewerEffortSubstitution[] {
+  const pinned = pin.reasoningEffort;
+  if (pinned === undefined) return [];
+  const credentials = listConfiguredCredentials(deps.credentialStore, deps.env ?? process.env);
+  const routeDeps = routeDepsOf(deps);
+  const out: ReviewerEffortSubstitution[] = [];
+  for (const resolved of harnessesForSelection(
+    { serviceId: pin.serviceId, billingMode: pin.billingMode, modelId: pin.modelId },
+    credentials,
+  )) {
+    if (selectionHonoursEffort(resolved.harnessId, resolved.selection, pinned)) continue;
+    if (!selectRouteForSelection(resolved.harnessId, resolved.selection, routeDeps).ok) continue;
+    // The SAME derivation `buildTarget` runs, so what the tab promises and what
+    // the review does cannot drift apart.
+    const effort = defaultEffortFor(resolved.harnessId, resolved.selection);
+    const label = reasoningOptionsFor(resolved.harnessId, resolved.selection).find(
+      (option) => option.value === effort,
+    )?.label;
+    out.push({
+      harnessId: resolved.harnessId,
+      ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+      ...(label ? { reasoningLabel: label } : {}),
+    });
+  }
+  return out;
 }
 
 /**

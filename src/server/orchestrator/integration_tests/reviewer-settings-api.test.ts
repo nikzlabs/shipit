@@ -217,17 +217,52 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     expect(credentialStore.getReviewerPin("second")).toBeUndefined();
   });
 
+  /**
+   * planning#352 at the API edge — a level the derived selection does not offer
+   * is **re-derived, not refused**.
+   *
+   * This case used to sit in the 400 table below. It is here instead because
+   * refusing it blocked an edit the user is entitled to make: a service change
+   * that keeps the model derives its own harness, and the level came along with
+   * the model rather than being chosen for the new one. The replacement is
+   * visible where it has to be — in the response and in the store, both of which
+   * report the level that is actually in force.
+   */
+  it("re-derives a level the derived selection does not offer, and says what it stored", async () => {
+    await addCredential("anthropic");
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: {
+        reviewers: {
+          first: {
+            serviceId: "anthropic",
+            billingMode: "key",
+            modelId: "claude-opus-5",
+            // Codex declares `minimal`; Claude Code, which this triple derives
+            // onto, does not.
+            reasoningEffort: "minimal",
+          },
+        },
+      },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+
+    const stored = credentialStore.getReviewerPin("first");
+    // The MODEL half of the pin landed — the edit is not lost over the level.
+    expect(stored?.modelId).toBe("claude-opus-5");
+    expect(stored?.reasoningEffort).toBeTruthy();
+    expect(stored?.reasoningEffort).not.toBe("minimal");
+    // And the caller is told, by being handed the pin that is actually in force
+    // rather than the one it sent.
+    expect((res.json().reviewers as ReviewerSlotView[])[0].resolved?.reasoningEffort).toBe(
+      stored?.reasoningEffort,
+    );
+  });
+
   it.each([
     ["an unknown slot", { third: null }],
     ["a malformed pin", { first: { serviceId: "anthropic", billingMode: "key" } }],
-    ["a level the derived harness does not offer", {
-      first: {
-        serviceId: "anthropic",
-        billingMode: "key",
-        modelId: "claude-opus-5",
-        reasoningEffort: "minimal",
-      },
-    }],
   ])("refuses %s with a 400", async (_label, reviewers) => {
     await addCredential("anthropic");
     const res = await app.inject({ method: "PUT", url: "/api/settings", payload: { reviewers } });

@@ -18,11 +18,14 @@
  * (reqs 6, 7). {@link validateRolePinnedParams} takes `harnessId` rather than
  * deriving one, which is the whole reason it is not `resolveReviewerPinPatch`:
  * that function derives a harness (`harnessesForSelection(patch, …)[0]`) and
- * validates the reasoning level against whichever it picked, so a level can be
- * checked against one harness and carried onto another. That is a live defect on
- * the reviewer-pin path — reachable today, since `deepseek-v4-flash` is offered
- * under both `anthropic-messages` and `openai-responses` and the two harnesses
- * declare different level sets. A role has no such gap by construction.
+ * checks the reasoning level against whichever it picked, so a level checked at
+ * save time can be *used* somewhere else — `deepseek-v4-flash` is offered under
+ * both `anthropic-messages` and `openai-responses`, and the two harnesses
+ * declare different level sets. On the reviewer path that gap is closed by
+ * re-deriving the level at every point of use (planning#352,
+ * `reviewer-model.ts`'s `effortFor`), which a *setting* needs because its
+ * harness is derived per review. A role has no such gap to close: it names its
+ * harness, so one check at save time is a check against what will run.
  *
  * **2. Saving checks COMPATIBILITY, never live availability.** Whether a
  * credential routes *right now* changes without anyone editing a role — a
@@ -537,19 +540,18 @@ export function resolveRoleByName(
     // the reason is worth stating precisely rather than as "it validates
     // itself", which is not true.
     //
-    // `selectReviewer` does guarantee an installed harness, an eligible model
-    // and a usable route. It does NOT guarantee the level: a user-pinned slot's
-    // `reasoningEffort` is validated against the *settings-time derived* harness
-    // and then copied onto whichever harness the ranking lands on
-    // (`reviewer-model.ts`'s `buildTarget`), which can differ. That is a live
-    // defect on the reviewer-pin path — reachable since `deepseek-v4-flash`
-    // became dual-harness — and it is tracked as planning#381.
+    // `selectReviewer` guarantees an installed harness, an eligible model, a
+    // usable route — and, since planning#352, the LEVEL as well: a user-pinned
+    // slot's `reasoningEffort` is applied only where the selection the ranking
+    // landed on offers it, and re-derived there otherwise
+    // (`reviewer-model.ts`'s `effortFor`). It used to be validated against the
+    // *settings-time derived* harness and then copied onto whichever harness the
+    // ranking chose, which is how a Claude-only `max` could reach Codex.
     //
-    // Running the role validator here would *mask* it by refusing the review
-    // instead, which is a behaviour change to the un-overridden reviewer that
-    // phase 1 is expressly not making: docs/261's ranking survives intact behind
-    // this branch. The fix belongs with planning#381, which owns the choice
-    // between refusing and substituting.
+    // Running the role validator here would still be wrong, and for the reason
+    // it always was: it would refuse the review rather than run it, which is a
+    // behaviour change to the un-overridden reviewer that phase 1 is expressly
+    // not making. docs/261's ranking survives intact behind this branch.
     return freezeTarget(role, base, false, chosen);
   }
   const params = validateRolePinnedParams(

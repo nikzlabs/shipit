@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CredentialRoute, ReviewerPin, ReviewerSlot } from "../shared/types.js";
-import { HARNESSES, catalogueEntriesForHarness, reasoningOptionsFor, resolveStyle } from "../shared/catalogue/index.js";
+import {
+  HARNESSES,
+  allServices,
+  catalogueEntriesForHarness,
+  reasoningOptionsFor,
+  resolveStyle,
+} from "../shared/catalogue/index.js";
 
 /**
  * docs/261 phase 1 (reqs 1, 3, 4, 5, 8) — the two reviewers and the distance
@@ -569,6 +575,294 @@ describe("reviewer harness derivation", () => {
       harnessesForSelection(selection, credentials),
     );
     expect(harnessesForSelection(selection, credentials)).toHaveLength(1);
+  });
+});
+
+/**
+ * planning#352 — **a pinned level applies only where the resolved selection
+ * offers it.**
+ *
+ * A pin's level is validated at save time against the harness derived THEN
+ * (`services/reviewer-settings.ts`), which is the only honest choice for a
+ * setting; a review then derives its own harness and its own row. Copying the
+ * level across that gap is the defect, and docs/261 predicted it would be fixed
+ * "by the commit that makes a model dual-harness". That commit landed —
+ * `deepseek-v4-flash` gained the third style — and **nothing failed**, which is
+ * why the fix ships with a guard rather than only with a test of the fix.
+ *
+ * The scan below is that guard: it is a statement about the real catalogue, so a
+ * fixture would let it pass here and disagree with what ShipIt does.
+ */
+describe("a pinned level does not cross onto a selection that refuses it (planning#352)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../shared/installed-harnesses.js");
+  });
+
+  const installAll = () =>
+    vi.doMock("../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["claude", "codex"],
+    }));
+
+  /**
+   * The issue's own reproduction, on the real catalogue: a DeepSeek key is the
+   * only credential, the pin is accepted at `max` (validated against `claude`,
+   * which offers it), and a review of Claude Code's work bends onto `codex`,
+   * whose levels stop at `xhigh`.
+   *
+   * Before the fix this produced `-c model_reasoning_effort=max` on a CLI that
+   * declares no such level. The pin still applies — same service, same model —
+   * which is the decision: partially, never refused, never silently.
+   */
+  it("keeps the pinned MODEL and re-derives the level when the review lands elsewhere", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    const result = selectReviewer(
+      {
+        harnessId: "claude",
+        selection: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      },
+      {
+        // BOTH slots, so the winner is a pinned one whichever way the ranking
+        // falls — the DeepSeek rows are one family, and slot 2 would otherwise
+        // derive onto the sibling model and answer a different question.
+        credentialStore: storeWith([DEEPSEEK_KEY], {
+          first: {
+            serviceId: "deepseek",
+            billingMode: "key",
+            modelId: "deepseek-v4-flash",
+            reasoningEffort: "max",
+          },
+          second: {
+            serviceId: "deepseek",
+            billingMode: "key",
+            modelId: "deepseek-v4-flash",
+            reasoningEffort: "max",
+          },
+        }),
+        env: {},
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The crossing the defect needs: validated on claude, resolved on codex.
+    expect(result.target.harnessId).toBe("codex");
+    expect(result.target.selection.modelId).toBe("deepseek-v4-flash");
+    expect(result.target.source).toBe("pinned");
+    expect(result.target.reasoningEffort).not.toBe("max");
+    expect(
+      reasoningOptionsFor("codex", result.target.selection).map((o) => o.value),
+    ).toContain(result.target.reasoningEffort);
+  });
+
+  /** The same pin where the review does NOT cross: nothing is re-derived. */
+  it("leaves the pinned level alone where the resolved selection offers it", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    const result = selectReviewer(
+      {
+        harnessId: "codex",
+        selection: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4" },
+      },
+      {
+        credentialStore: storeWith([DEEPSEEK_KEY], {
+          first: {
+            serviceId: "deepseek",
+            billingMode: "key",
+            modelId: "deepseek-v4-flash",
+            reasoningEffort: "max",
+          },
+        }),
+        env: {},
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.target.harnessId).toBe("claude");
+    expect(result.target.reasoningEffort).toBe("max");
+  });
+
+  /**
+   * The guard proper, and the one that would have gone red on the catalogue
+   * edit: **every** row two harnesses carry with different level sets, pinned at
+   * a level one of them does not offer, must still resolve to a level its own
+   * target honours.
+   *
+   * It scans rather than naming DeepSeek because naming a row is what failed
+   * last time: the defect became reachable through a catalogue edit nobody
+   * connected to this code, and a test that lists today's dual-harness rows
+   * cannot notice tomorrow's.
+   *
+   * The implementer is set to the harness that DOES offer the level, so the
+   * ranking prefers to bend away from it — that is the crossing being guarded.
+   * A row that cannot route on one credential simply produces no target and is
+   * skipped, so the counters below assert the scan was not vacuous.
+   */
+  it("holds for every dual-harness row in the catalogue", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+
+    let checked = 0;
+    let crossed = 0;
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        for (const model of mode.models) {
+          const selection = { serviceId: service.id, billingMode: mode.kind, modelId: model.id };
+          const carriers = HARNESSES.filter((h) => resolveStyle(h.id, model) !== undefined).map(
+            (h) => ({ id: h.id, levels: reasoningOptionsFor(h.id, selection).map((o) => o.value) }),
+          );
+          if (carriers.length < 2) continue;
+          for (const carrier of carriers) {
+            // A level SOME other carrier of this row does not offer — the one a
+            // crossing would have to drop.
+            const divergent = carrier.levels.find((level) =>
+              carriers.some((other) => other.id !== carrier.id && !other.levels.includes(level)),
+            );
+            if (!divergent) continue;
+            const result = selectReviewer(
+              { harnessId: carrier.id },
+              {
+                credentialStore: storeWith(
+                  [route({ serviceId: service.id, billingMode: mode.kind })],
+                  { first: { ...selection, reasoningEffort: divergent } },
+                ),
+                env: {},
+              },
+            );
+            if (!result.ok || result.target.source !== "pinned") continue;
+            checked += 1;
+            if (result.target.harnessId !== carrier.id) crossed += 1;
+            const offered = reasoningOptionsFor(
+              result.target.harnessId,
+              result.target.selection,
+            ).map((o) => o.value);
+            const where = `${service.id}/${mode.kind}/${model.id} pinned "${divergent}" on `
+              + `${carrier.id}, resolved on ${result.target.harnessId}`;
+            if (offered.length === 0) {
+              // Nothing to name — a row whose CLI drops the flag (key-billed
+              // grok). Carrying the pinned level here would put a dead flag on
+              // the wire, which docs/274 req 14 is exactly about.
+              expect(result.target.reasoningEffort, where).toBeUndefined();
+            } else {
+              expect(offered, where).toContain(result.target.reasoningEffort);
+            }
+          }
+        }
+      }
+    }
+    // Neither half may pass vacuously: rows were checked, and at least one
+    // review genuinely landed on a harness other than the one the level was
+    // validated against.
+    expect(checked, "no dual-harness rows with divergent levels were checked").toBeGreaterThan(0);
+    expect(crossed, "no pinned reviewer ever crossed onto another harness").toBeGreaterThan(0);
+  });
+});
+
+/**
+ * planning#352's other half — what the Reviewer tab is given so the
+ * substitution is visible rather than silent.
+ */
+describe("reviewerEffortSubstitutions", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../shared/installed-harnesses.js");
+  });
+
+  const installAll = () =>
+    vi.doMock("../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["claude", "codex"],
+    }));
+
+  it("names every harness the pinned level does not survive onto, and what it becomes", async () => {
+    installAll();
+    const { reviewerEffortSubstitutions } = await import("./reviewer-model.js");
+    const subs = reviewerEffortSubstitutions(
+      {
+        serviceId: "deepseek",
+        billingMode: "key",
+        modelId: "deepseek-v4-flash",
+        reasoningEffort: "max",
+      },
+      { credentialStore: storeWith([DEEPSEEK_KEY]), env: {} },
+    );
+
+    // Claude Code offers `max` and is absent; Codex does not and is named with
+    // the level a review there would actually use.
+    expect(subs.map((s) => s.harnessId)).not.toContain("claude");
+    const codex = subs.find((s) => s.harnessId === "codex");
+    expect(codex).toBeDefined();
+    expect(
+      reasoningOptionsFor("codex", {
+        serviceId: "deepseek",
+        billingMode: "key",
+        modelId: "deepseek-v4-flash",
+      }).map((o) => o.value),
+    ).toContain(codex?.reasoningEffort);
+    expect(codex?.reasoningLabel).toBeTruthy();
+  });
+
+  /**
+   * The docs/274 req 14 half, on the same row: Grok Build carries this gateway
+   * model and sends **no** level for it at all, so a review landing there runs
+   * without one. That is still a substitution to report — it is the case where
+   * "at High" would be the most misleading — and it is reported as a named
+   * harness with no level rather than as an absence.
+   */
+  it("names a harness that would send no level at all", async () => {
+    installAll();
+    const { reviewerEffortSubstitutions } = await import("./reviewer-model.js");
+    const subs = reviewerEffortSubstitutions(
+      {
+        serviceId: "deepseek",
+        billingMode: "key",
+        modelId: "deepseek-v4-flash",
+        reasoningEffort: "high",
+      },
+      { credentialStore: storeWith([DEEPSEEK_KEY]), env: {} },
+    );
+
+    // `high` is real on Claude Code, Codex and OpenCode for this row, so only
+    // the harness that honours none of them is named.
+    expect(subs.map((s) => s.harnessId)).toEqual(["grok"]);
+    expect(subs[0].reasoningEffort).toBeUndefined();
+  });
+
+  it("says nothing when the pinned level survives everywhere it could resolve", async () => {
+    installAll();
+    const { reviewerEffortSubstitutions } = await import("./reviewer-model.js");
+    expect(
+      reviewerEffortSubstitutions(
+        {
+          serviceId: "anthropic",
+          billingMode: "key",
+          modelId: "claude-opus-5",
+          reasoningEffort: "high",
+        },
+        { credentialStore: storeWith([ANTHROPIC_KEY]), env: {} },
+      ),
+    ).toEqual([]);
+  });
+
+  /** A levelless pin has nothing to substitute — and no note to make. */
+  it("says nothing for a pin that names no level", async () => {
+    installAll();
+    const { reviewerEffortSubstitutions } = await import("./reviewer-model.js");
+    expect(
+      reviewerEffortSubstitutions(
+        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+        { credentialStore: storeWith([DEEPSEEK_KEY]), env: {} },
+      ),
+    ).toEqual([]);
   });
 });
 
