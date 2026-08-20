@@ -493,13 +493,18 @@ export const SERVICES = [
         // Grok session gets and not only who pays — Nik was asked with that
         // caveat stated and chose it anyway (docs/274 Resolved questions).
         kind: "sub",
-        // NO usage API, declared rather than left dangling (req 16). Every
-        // candidate route 404s — the CLI's own surface reads its allowance
-        // through a session-authenticated web endpoint, not a per-account REST
-        // one — so ShipIt says nothing rather than rendering an empty or
-        // invented indicator. `null` is the answer, not an omission; see
-        // {@link BillingModeDef}.
-        quota: null,
+        // The weekly pool, read by `XaiLimitsProvider` (req 16).
+        //
+        // This row said `quota: null` — "the vendor publishes nothing to read" —
+        // for one release, on a probe that was wrong. `GET /v1/billing` on the
+        // host below answers 200 with a CALENDAR-MONTH credit object, all zeros
+        // on a subscription, and that 200 was read as proof there was nothing
+        // else. `GET /v1/billing?format=credits` — the same path, one query
+        // parameter — returns the weekly pool the CLI's own usage screen shows.
+        // The lesson is recorded where the reader lives: a 200 that answers a
+        // different question is more dangerous than a 404, because a 404 is
+        // never mistaken for an answer.
+        quota: "xai-plan-usage",
         // ONE style, and a different one from the key mode's. The subscription
         // is a genuinely separate product surface reached at
         // `cli-chat-proxy.grok.com` — a different host, speaking Responses —

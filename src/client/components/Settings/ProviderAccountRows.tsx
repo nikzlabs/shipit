@@ -4,7 +4,7 @@ import { XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from "../../../server/shared/types.js";
-import { getService, loginIntegrationForService, nativeServiceForHarness, subQuotaRefreshable } from "../../../server/shared/catalogue/index.js";
+import { getService, loginIntegrationForService, modeReportsQuota, nativeServiceForHarness, subQuotaRefreshable } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
 import { DropdownMenuItem } from "../ui/dropdown-menu.js";
 import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
@@ -839,7 +839,17 @@ export function ProviderAccountRows({
                   // Only a subscription reports a quota (req 10), and only a
                   // connected one has anything to report. `label` is omitted:
                   // the row to its left IS the account's name.
-                  billingMode === "sub" && account.status === "ready" ? (
+                  //
+                  // `modeReportsQuota` and not `billingMode === "sub"` alone:
+                  // a subscription can be one ShipIt has no reader for at all
+                  // (docs/274 req 16 — OpenCode Go, whose vendor publishes no
+                  // per-key usage API), and then the pill renders two blank
+                  // windows and no refresh button, which reads as lost numbers
+                  // rather than as absent ones. The credential row beside this
+                  // one in `ServicesPanel` already asks the question this way.
+                  billingMode === "sub"
+                  && account.status === "ready"
+                  && modeReportsQuota(account.serviceId, billingMode) ? (
                     <SubscriptionLimitPill
                       serviceId={account.serviceId}
                       routeId={account.id}

@@ -6,11 +6,11 @@
  * LOGIN (`xai-oauth`) rather than by this harness, which is why it is named for
  * xAI and not for Grok.
  *
- * Still no limits provider, and that omission is a decision rather than a gap
- * (docs/274 req 16): xAI publishes no per-account usage API — every candidate
- * route 404s — so the subscription mode declares `quota: null` and ShipIt
- * reports nothing instead of an invented indicator. It gains one if the vendor
- * ever ships a usage endpoint.
+ * The quota reader is NOT here, and that is the same rule GLM's follows: a
+ * reader belongs to the vendor's subscription rather than to a harness, so it
+ * lives in `orchestrator/limits/xai-limits-provider.ts` and declares its own
+ * `(xai, sub)`. This barrel is the harness-side code that happens to share a
+ * vendor with it.
  *
  * The session-side adapter lives in `src/server/session/agents/grok/`.
  */

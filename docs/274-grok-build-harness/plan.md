@@ -724,6 +724,376 @@ two unlikely states at once (a broken credential root *and* a stored key), which
 is exactly why it now logs explicitly rather than being left to be inferred from
 the resume warning beside it.
 
+### Quota: the empty pill, and the reader that turned out to exist (req 16)
+
+**Read this section knowing it reverses itself.** It was written on the finding
+that xAI publishes no subscription usage API — every candidate route 404s — and
+that finding was wrong. `GET /v1/billing?format=credits` returns the weekly
+pool; the earlier probe missed it by one query parameter. The investigation is
+kept in the order it happened, because the *shape* of the error is the reusable
+part and a tidied-up account would hide it.
+
+So the section has two halves. The empty pill WAS a real bug and its client-side
+fix stands unchanged — it is the general rule "a subscription ShipIt cannot read
+gets no meters", which still governs OpenCode Go. What changed is that xAI
+stopped being an instance of it: `xai:sub` now declares `xai-plan-usage`,
+`XaiLimitsProvider` reads it, and the card's apologetic notice is gone because
+there is a number to show instead.
+
+#### The bug as diagnosed (all of this still holds)
+
+At the time, `xai:sub` declared `quota: null` and no `LimitsProvider` existed
+for it, so no snapshot for an xAI account could exist.
+
+**What the user saw anyway**: a header pill reading `nik@x  5h · —  7d · —`
+with no refresh button, permanently. Reproduced in a unit render before the
+fix. Two surfaces asked the wrong question:
+
+| surface | asked | consequence |
+|---|---|---|
+| `SubscriptionLimitsBadge.buildPills` | "is there a connected account of a service with a `sub` mode?" | pill with two blank meters |
+| `ProviderAccountRows` row `quota=` | `billingMode === "sub" && status === "ready"` | the same blanks in Settings |
+| `ServicesPanel` credential row | `modeReportsQuota(...)` | **correct already** — and its comment says why: "an empty pill would say 'no usage' where the truth is 'not measured'" |
+
+So this was not a new design question. The third row had answered it in
+planning#339 for GLM's declared-but-unimplemented `zai-plan-usage`; the other
+two predate that reasoning and were never revisited. The fix is the same
+predicate in all three, plus one thing suppression alone cannot do — see below.
+
+**What the independent review changed** (Codex, out-of-family). It walked every
+credential state against both delivery shapes and found no case where a
+quota-reporting service loses a pill, and it confirmed that dropping the
+unconnected sign-in attempt from the container test is an improvement rather
+than a regression. Two things it did change:
+
+- **The rule now holds in every loop, not one.** `buildPills`'s snapshot-derived
+  loop was ungated — unreachable, since a mode with no reader has no
+  `LimitsProvider` and so no snapshot, but it renders a pill on nothing but the
+  map's say-so, so a stale entry or a service that loses a reader would put the
+  blanks straight back. Guarded, and pinned by a test that hands the badge a
+  snapshot which cannot legitimately exist.
+- **The glyph now follows the kind.** `MODE_NOTICES` entries carried
+  `kind: "hazard" | "absence"`; a hazard kept the warning triangle, an absence
+  got a neutral info glyph. The review asked what the warning was warning of,
+  which is the right question: a triangle says "act on this" about a fact there
+  is nothing to do about. *(Reverted with the notice it was written for — see
+  "What shipped in the end". The observation is still right; there is simply one
+  kind again.)*
+
+Its remaining note is accepted, not fixed: `AppLayout`'s status-affordance
+condition has no render test — it had none before this change either, and the
+number it now reads (`useSubscriptionPillCount`) is tested directly.
+
+**Removing a pill moves the emptiness up a level.** Two surfaces decided
+whether to show a subscription *container* by asking "any connected account, or
+any snapshot?" — `MobileStatusPanel`'s "Subscription" section and `AppLayout`'s
+collapsed status trigger. Both agreed with the pill until an account existed
+that renders none, and then the mobile dropdown put a heading above an empty
+box. Both now read `useSubscriptionPillCount`, which is the badge's own answer:
+one number, so the container and its contents cannot disagree. This is the
+general shape of the hazard, worth stating for the next no-reader service — a
+suppressed leaf leaves a frame around nothing unless the frame asks the leaf.
+
+**Hiding is necessary and not sufficient.** A user paying for SuperGrok goes
+looking for the figure the other cards show and finds a card with nothing where
+it should be, which does not distinguish "not measured" from "broken". Req 16
+says ShipIt *says so*; `MODE_NOTICES` is where the OpenCode Go hazard already
+says its equivalent (docs/272 req 6), so the xAI card got the second entry in
+that map and the map's docstring grew a second admissible kind: an absent
+read-out, not only a billing hazard.
+
+*Both are gone now* — the sentence and the second kind — because the reader
+made them unnecessary. The reasoning survives as a rule about when to reach for
+copy at all: **a line explaining why a surface is empty is a reasonable last
+resort and a poor substitute for filling it.** Write it only once the reader is
+genuinely impossible, not merely unwritten, because prose is much cheaper than
+a probe and that is exactly what makes it the tempting wrong answer.
+
+**The pill's other job survives.** `credentialStatusWord` puts "reconnect
+needed" in the same pill, and that is a statement about the SIGN-IN, not about
+quota — the header is the only place it is said (planning#429). So a no-reader
+subscription loses its meters and keeps that word.
+
+#### Every probe, and what it returned
+
+**A probe record must name its host.** The prior session's list — `/v1/usage`,
+`/v1/rate-limits`, `/v1/subscription`, `/v1/me` all 404 — is right about the
+subscription host and wrong as a general statement: `GET /v1/me` on **api.x.ai**
+returns **200** (`user_id`, `team_id`, `zdr_status`, `team_blocked`, redacted
+key), and 404s only on `cli-chat-proxy.grok.com`. The two hosts serve different
+route sets, so an unqualified path is not a fact about xAI.
+
+**Live route-existence sweep, 2026-08-20, `cli-chat-proxy.grok.com`** (the
+subscription host). Unauthenticated, which is the point: this proxy answers
+**401** for a route that exists and an nginx **404** for one that does not, so a
+sweep with no credential still separates the two.
+
+| exists (401, needs auth) | absent (404) |
+|---|---|
+| `/v1/models`, `/v1/settings`, `/v1/user` | `/v1/usage`, `/v1/rate-limits`, `/v1/limits`, `/v1/quota` |
+| **`/v1/billing`**, **`/v1/auto-topup-rule`** | `/v1/subscription`, `/v1/subscriptions`, `/v1/entitlements`, `/v1/plan` |
+| `/v1/responses`, `/v1/chat/completions` (405 on GET — POST-only) | `/v1/me`, `/v1/account`, `/v1/credits`, `/v1/billing/config`, `/v1/tools`, `/rest/*` |
+
+So **there is no usage route, and there are two account-shaped routes nobody had
+tried.** `/v1/billing` is the endpoint behind the CLI's billing extension
+described below; the prior session's four probes did not include it.
+
+**`api.x.ai`, authenticated with a real key** (key mode, for completeness):
+`/v1/me` → 200 and `/v1/api-key` → 200, both carrying identity and ACLs and **no
+quota field of any kind**; `/v1/usage`, `/v1/rate-limits`, `/v1/billing`,
+`/v1/user`, `/v1/subscription`, `/v1/credits`, `/v1/limits` → 404. A real
+`/v1/models` response carries **no `x-ratelimit-*` header** either. Key mode is
+metered, so it is owed no allowance — but it is worth recording that the passive
+reader does not exist there.
+
+*(Egress from this session is allowlisted per host: `api.x.ai` and
+`cli-chat-proxy.grok.com` are reachable, `docs.x.ai` / `x.ai` / `grok.com` are
+not. The vendor documentation was therefore not read; the probes above are the
+primary source, which is the stronger one anyway.)*
+
+Offline evidence, **verified against the installed binary**
+(`@xai-official/grok-linux-x64` 1.0.1 `e9444c5615`, `strings -n 4`, in-container
+2026-08-20) — the CLI is the strongest available witness, because anything
+xAI exposes to a subscriber it would consume here first:
+
+- **No usage/limits subcommand.** The full command list is agent, completions,
+  dashboard, doctor, du, export, help, inspect, leader, login, logout, mcp,
+  memory, models, plugin, sessions, setup, trace, update, version, worktree,
+  wrap. `grok login --help` offers `--oauth` and `--device-auth` and nothing
+  about a plan.
+- **No usage-shaped route in the binary.** Every literal REST path it carries:
+  `/rest/modes`, `/rest/skills`, `/rest/user-skills`, `/rest/workspaces`,
+  `/rest/app-chat/conversations{,/,soft/}`; OpenAI-shaped `/v1/chat/completions`,
+  `/v1/responses`, `/v1/models`, `/v1/messages`, `/v1/settings`, `/v1/tools`
+  (plus OTLP `/v1/{logs,metrics,traces}`). No `/v1/usage`, no `/v1/rate-limits`
+  — the same 404s, from the other side.
+- **No `x-ratelimit-*` header parsing anywhere.** The only retry-shaped header
+  it knows is `Retry-After`. So even the passive reader Anthropic's integration
+  could have used does not exist here.
+- **Its own "usage" surfaces are two other things.** `x.ai/session/usage` is
+  per-session token/cost for the open session ("Session usage is unavailable
+  until the session starts"), and for account usage the TUI **links out**:
+  `https://grok.com/?_s=usage`, beside `https://grok.com/supergrok?referrer=grok-build`.
+  A client that had the number would not send the user to a web app for it.
+- **The one genuine lead.** There IS a billing extension
+  (`crates/codegen/xai-grok-shell/src/extensions/billing.rs`, ACP methods
+  `x.ai/billing` and `x.ai/auto-topup-rule`) parsing an 11-field `BillingConfig`
+  — `creditUsagePercent`, `monthlyLimit`, `onDemandCap`, `onDemandUsed`,
+  `prepaidBalance`, `includedUsed`, `totalUsed`, `currentPeriod`,
+  `billingCycle`, `billingPeriodStart`, `isUnifiedBillingUser`, plus
+  `subscription_tier` and `on_demand_enabled` — behind "Billing data requires
+  auth with grok.com." Credit-shaped rather than allowance-shaped, but close
+  enough to be worth calling rather than guessing at. It was called; see below.
+
+#### Called with a live SuperGrok token
+
+The lead is closed. Run through `shipit agent run --role GrokSub`, whose spawn
+holds the real subscription login, 2026-08-20 — the only way to authenticate
+these routes, since the investigating container holds `XAI_API_KEY` and no
+`~/.grok/auth.json`. All four GETs returned **200**.
+
+- **`GET /v1/billing`** → a calendar-month spend object, and nothing else:
+  `config.monthlyLimit.val`, `config.used.val`, `config.onDemandCap.val`,
+  `billingPeriodStart` / `billingPeriodEnd` (`2026-08-01` → `2026-09-01`), and
+  `history[]` of `{billingCycle: {year, month}, includedUsed, onDemandUsed,
+  totalUsed}` for three prior months. Every figure `0` on a live SuperGrok
+  account that had run turns. Of the binary's field list, `creditUsagePercent`,
+  `prepaidBalance`, `currentPeriod`, `isUnifiedBillingUser`, `subscription_tier`
+  and `on_demand_enabled` are absent from the payload entirely.
+
+  **So it is the wrong number, twice over**: the window is a calendar month, not
+  a rolling one that resets, and the figures track *purchased credit spend* —
+  which a subscription turn does not consume, hence the zeros. A meter built on
+  it would read 0% forever and say nothing about the allowance a SuperGrok user
+  can actually exhaust.
+- **`GET /v1/auto-topup-rule`** → `{}`. No cap, threshold or balance.
+- **`GET /v1/user`** → identity only (`userId`, `email`, `firstName`,
+  `lastName`, `principalType`, `hasGrokCodeAccess: true`). No allowance.
+- **`GET /v1/settings`** → product flags, plus `on_demand_enabled: null`,
+  `subscription_watch_interval_secs: 60`, `usage_billing_redirect_url: null`,
+  and **`subscription_tier_display: "SuperGrok"`**. No used %, no window, no
+  reset — but see the correction below.
+
+**A correction to "No plan, and that is a finding" above.** That section says
+xAI reports no plan name; it is right about the auth *file* and the *token*, and
+wrong as a general claim — `/v1/settings` reports `subscription_tier_display:
+"SuperGrok"` to an authenticated client. Req 15 was *reworded* on the strength
+of the broader claim (receipt in requirements.md, 2026-08-19), so putting the
+plan name back on the account row is a requirements question for Nik and not a
+change to make here. Recorded, not acted on.
+- **The subscription check is a boolean, not a meter.**
+  `agent/subscription_check.rs` emits `paywall_check_result` /
+  `paywall_check_subscription_detected` — entitled or not, with no figure. What
+  the CLI shows a user at the limit is upsell copy ("You hit your free usage
+  limit.", "Buy more credits", "You can continue by increasing your spending
+  limit."), never a remaining balance.
+
+**Verdict, superseded 2026-08-20 — a reader DOES exist, and the first probe
+missed it by one query parameter.**
+
+```
+GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+Authorization: Bearer <the `key` from ~/.grok/auth.json>
+```
+
+returns, on a live SuperGrok account:
+
+```json
+{"config":{
+  "currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY",
+                   "start":"2026-08-18T09:41:48.430622+00:00",
+                   "end":"2026-08-25T09:41:48.430622+00:00"},
+  "creditUsagePercent":10.0,
+  "productUsage":[{"product":"GrokBuild","usagePercent":10.0},{"product":"GrokChat"}],
+  "onDemandCap":{"val":0},"onDemandUsed":{"val":0},"prepaidBalance":{"val":0},
+  "isUnifiedBillingUser":true,
+  "billingPeriodStart":"2026-08-18T09:41:48.430622+00:00",
+  "billingPeriodEnd":"2026-08-25T09:41:48.430622+00:00"}}
+```
+
+`creditUsagePercent` is the **weekly pool** percentage, `currentPeriod` is the
+window that resets, and `productUsage[]` breaks it down per product — Grok Build
+separately from Grok Chat. That is a 7-day window with a used percentage and a
+reset instant: exactly what `SubscriptionLimitsWindow` carries.
+
+**How the earlier verdict got it wrong, because the shape of the error matters
+more than the error.** Bare `/v1/billing` — no query parameter — returns a
+*different representation*: calendar-month credit spend, all zeros. That answer
+is real, so it never looked like a wrong call; it looked like a definitive
+negative. Three checks all passed *and all missed the parameter*: the route
+sweep tested paths and not query strings; the strings grep that found `/billing`
+matched a path-shaped pattern that stopped at the `?`; and the authenticated
+probe was written from that path list. **`/billing?format=credits` is a literal
+in the grok binary at offset 137169287, twenty-four bytes before
+`extensions/billing.rs`** — it was in the dump the whole time. The lesson is
+narrow and reusable: *a 200 that answers a different question is more dangerous
+than a 404*, and an endpoint's surface is its paths **and its parameters**.
+
+Corroboration arrived from the other direction too: xAI's own FAQ documents one
+shared weekly pool across Chat, Build, API, Imagine and Voice (June 2026,
+replacing per-product daily caps), visible at Settings → Usage as a percentage
+plus a reset date — the consumer view of this same figure.
+
+**What is NOT available**, so the next reader does not re-probe it: the
+grok.com web API refuses this credential by policy, not by absence —
+`POST https://grok.com/rest/rate-limits` (the 2-hour chat window, `requestKind`
+/ `modelName` → `remainingQueries` / `totalQueries`) answers **403
+`Action cannot be performed by OAuth2 token users`** for the CLI's token, on
+every body tried. `/v1/usage` and `/v1/rate-limits` remain nginx 404s on the
+subscription host, and `?format=weekly` / `?format=usage` fall back to the
+monthly object. So `format=credits` is the one door, and it is open.
+
+#### What shipped in the end (planning#454)
+
+Three changes, in the order they depend on each other.
+
+**1. `XaiLimitsProvider`** (`orchestrator/limits/xai-limits-provider.ts`) — a
+*pulled* reader on the `ZaiLimitsProvider` template: nothing pushes these
+numbers during a turn, so a reading only happens because something asked for
+one. It differs from GLM's in the credential: an xAI subscription is an
+ACCOUNT, so the provider is handed a credential **directory** and reads
+`.grok/auth.json` per request rather than holding a token. The CLI rewrites that
+file every few hours, and a token captured at registration would go stale
+between refreshes.
+
+It parses fail-closed, and two of the rules are worth stating because they are
+not the obvious choices. A percentage outside 0–100 is **refused, not clamped**
+— against an undocumented endpoint, out-of-range is the evidence that the field
+is not the one we think it is. And a `currentPeriod.type` that is not weekly is
+**refused outright**: the pill labels this window `7d`, so a monthly period
+would be mislabelled rather than merely imprecise. `billingPeriodStart`/`End`
+are deliberately not a fallback for a missing `currentPeriod` — they carry no
+`type`, so accepting them means guessing the length the previous rule exists to
+refuse.
+
+Registration follows GLM's, with one generalization: the sign-in→seed pairing in
+`bootstrap-managers.ts` searched only `buildAgentRuntime`'s per-`AgentId`
+providers, which would have left a **fresh** SuperGrok sign-in with an empty
+pill until the next boot. It now searches every registered reader. The boot seed
+likewise iterates the pulled providers as a set rather than naming one.
+
+**2. The pill draws the windows the plan HAS** (`windowsShown`). This is the
+shape note above, generalized on the user's instruction: *"the scope should
+include all APIs that didn't report 5h — in my case it is Codex and GLM too, but
+we shouldn't hard-code the names, we should just show what is available."* So
+the rule names no service. It could not have been a per-service list anyway —
+whether a ChatGPT plan reports a 5-hour window is a property of the PLAN, not of
+the vendor.
+
+**The first mechanism was derived, and it was wrong. This is the useful part of
+the section.** The reasoning went: a provider that HAS a window reports it as an
+object even when it has no number for it (`usedPct` is nullable for exactly
+that), so a `null` window inside a reading must already mean "this plan has no
+such window" — no new field needed, and the missing distinction is just between
+a null window and no reading at all. That is a claim about **every existing
+provider**, and the independent review checked it against the code instead of
+against the argument.
+
+It fails on Claude, which is the provider with the most users.
+`session/agents/claude/adapter.ts` handles `rate_limit_event` one window at a
+time — `five_hour` and `seven_day` arrive as separate events, and the adapter
+emits its sticky pair each time — so the FIRST reading of a session carries
+`weekly: null` on a plan that plainly has a weekly window. The derived rule
+would have deleted a real 7d meter for the whole of that turn, and for the
+~30-minute lockout if the `/api/oauth/usage` seed that fills the gap had been
+429'd, which that seed is explicitly designed to expect. Worth naming as a
+pattern: *the neighbouring guarantee I leaned on was one I inferred from a type,
+not one I read at its source* — the exact failure `CLAUDE.md` warns about under
+"Verify an inherited guarantee at the source".
+
+**So the provider states it, because only the provider can.**
+`SubscriptionLimits.availableWindows` names the windows the plan has, and the
+answer depends on the SOURCE rather than on the vendor:
+
+| reader | source | says |
+|---|---|---|
+| `XaiLimitsProvider` | one billing payload describes the plan | `["weekly"]` |
+| `ZaiLimitsProvider` | `data.limits[]` lists every window | what it saw |
+| `CodexLimitsProvider` | `rateLimits.primary` + `.secondary`, one notification | what it received |
+| `ClaudeLimitsProvider` | events, one window at a time | **nothing** |
+
+Silence means "draw everything", so Claude's pill is untouched, and a reading
+that carries only a lockout countdown still shows both slots pending — which the
+refresh button beside them can still make false. GLM's reader counts an
+*ambiguous* slot as present, because two entries landing in one slot is proof
+the window exists and only its number is unresolvable; reporting it absent would
+delete a meter on the strength of a parse failure.
+
+The cost is one optional wire field and four call sites. That is more than the
+derived rule, and the derived rule was free and wrong.
+
+**3. The catalogue tells the truth again.** `xai:sub` declares
+`xai-plan-usage`, which joins both `IMPLEMENTED_QUOTA_INTEGRATIONS` and
+`ON_DEMAND_QUOTA_INTEGRATIONS` — the second is the refresh button the user asked
+for by name. The `quota: null` arm of `BillingModeDef` is **removed**: it was
+introduced for xAI on the disproven finding, and with that mode gone it had no
+user. Its own docstring argued the arm should land with the mode that needs it,
+so it leaves the same way. What replaces it in `types.ts` is where the burden of
+proof sits — `null` asserts something about a VENDOR that no code review can
+check, so it is written only from a probe that looked for a reader and found
+none, never from one that stopped at the first plausible answer.
+
+Two things the reader does NOT do, so nobody re-derives them. It reports
+`plan: null` — the name is reachable at `/v1/settings` and was declined by the
+human (requirements.md, 2026-08-20 receipt), because it costs a second call to a
+second endpoint for a label nobody asked for. And it cannot support a
+"N of M left" surface: the figure is a percentage used, with no remaining count
+anywhere in the payload.
+
+**One adjacent gap, not fixed here.** The exhaustion classifier
+(`ws-handlers/agent-rate-limits.ts`) is text-pattern-based and harness-agnostic,
+and `AGENT_LIMIT_LABELS` already names grok — but its `EXHAUSTION_PATTERNS` were
+written against Claude's and Codex's wording. xAI's own limit strings include
+"usage limit reached" and "out of credits" (both matched today) alongside
+"You hit your free usage limit." and "usage balance exhausted" (neither
+matched). It was filed when that classifier was the *only* signal a SuperGrok
+subscription was spent; the reader has since demoted it to the second signal,
+which lowers its urgency without closing it — a percentage read at boot and on
+demand is not a substitute for noticing a refusal mid-turn. Filed as
+**planning#453**, not built: the wording needs a real
+exhausted subscription to verify against, and widening a list that benches a
+working subscription on a false positive is not something to guess at.
+
 ### Deliberately not built: a proactive refresher
 
 Claude and Codex each own an orchestrator-side OAuth refresher (docs/153,

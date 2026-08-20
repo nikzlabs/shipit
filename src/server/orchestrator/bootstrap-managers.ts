@@ -18,6 +18,7 @@ import type { ManagerSet } from "./app-di.js";
 import { buildAgentRuntime } from "./agents/index.js";
 import { LimitsRegistry } from "./limits-registry.js";
 import { ZaiLimitsProvider, ZAI_SERVICE_ID } from "./limits/zai-limits-provider.js";
+import { XaiLimitsProvider, XAI_SERVICE_ID } from "./limits/xai-limits-provider.js";
 import { limitsModeKey } from "../shared/types/usage-limits-types.js";
 import { credentialOwnerForRouteId } from "./service-routing.js";
 import { accountServiceForHarness } from "./provider-account-manager.js";
@@ -1235,8 +1236,43 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     secretForRoute: (routeId) => credentialStore.getCredentialSecret(routeId),
   });
 
+  /**
+   * planning#454 — SuperGrok's weekly pool. Built here for the same reason GLM's
+   * is: the allowance belongs to xAI's subscription, not to the Grok harness
+   * that happens to spend it.
+   *
+   * Unlike GLM's it is ACCOUNT-backed, so the credential is a directory rather
+   * than a stored string — the CLI rewrites `auth.json` in place every few
+   * hours, and the provider reads it per request so it always presents the same
+   * token the harness would.
+   *
+   * `list("xai")` takes the SERVICE id and `resolveCredentialRoot("grok", …)`
+   * the HARNESS id; the two differ here, which is exactly the conflation
+   * docs/252 req 10 removed.
+   */
+  const xaiLimitsProvider = new XaiLimitsProvider({
+    listRouteIds: () =>
+      providerAccountManager
+        ?.list(XAI_SERVICE_ID)
+        .filter((account) => account.status === "ready" || account.status === "authenticating")
+        .map((account) => account.id) ?? [],
+    credentialDirForRoute: (routeId) =>
+      providerAccountManager?.get(XAI_SERVICE_ID, routeId)
+        ? providerAccountManager.resolveCredentialRoot("grok", routeId)
+        : undefined,
+  });
+
+  /**
+   * The readers nothing PUSHES to — no harness event stream carries their
+   * numbers, so a reading only ever happens because something pulled one. That
+   * is what makes them the set seeded at boot below; the event-fed providers
+   * would spend an upstream call per account for a number their next turn
+   * supplies for free.
+   */
+  const pulledLimitsProviders = [zaiLimitsProvider, xaiLimitsProvider];
+
   const limitsProvidersByMode = new Map(
-    [...limitsProviders.values(), zaiLimitsProvider].map((p) => [limitsModeKey(p), p]),
+    [...limitsProviders.values(), ...pulledLimitsProviders].map((p) => [limitsModeKey(p), p]),
   );
   limitsRegistry = !isTestMode
     ? new LimitsRegistry({ providers: limitsProvidersByMode, sseBroadcast })
@@ -1259,7 +1295,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // each harness happened to have one vendor.
     for (const [loginId, mgr] of authManagers) {
       const loginServiceId = serviceForLoginIntegration(loginId);
-      const provider = [...limitsProviders.values()].find(
+      // Searched over EVERY registered reader, not just the per-`AgentId` ones.
+      // A reader built outside `buildAgentRuntime` is no less the reader for
+      // the subscription a login authenticates — and xAI's is exactly that, so
+      // the narrower search would have left a fresh SuperGrok sign-in with an
+      // empty pill until the next boot (planning#454).
+      const provider = [...limitsProvidersByMode.values()].find(
         (candidate) => candidate.serviceId === loginServiceId && candidate.billingMode === "sub",
       );
       if (!provider) continue;
@@ -1281,19 +1322,23 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
 
     /**
-     * planning#339 — the same once-per-credential baseline for GLM, at boot.
+     * planning#339 — the same once-per-credential baseline for the PULLED
+     * readers, at boot.
      *
-     * A sign-in is what seeds an account-backed reader, and a pasted key has
-     * none: the credential is simply *there* from the moment the process
-     * starts. Nothing else would ever call this reader — no event stream
-     * pushes GLM's numbers during a turn — so without this the pill would stay
-     * empty until the user pressed refresh. Fire-and-forget on purpose; a
+     * A sign-in seeds an account-backed reader, and it only fires once: a
+     * credential that was already connected when the process started has no
+     * sign-in to wait for, and a pasted key never had one — it is simply
+     * *there*. Nothing else would ever call these readers, since no event
+     * stream pushes their numbers during a turn, so without this the pill stays
+     * empty until the user presses refresh. Fire-and-forget on purpose; a
      * failed baseline is one empty pill, not a boot that stalls on an outbound
      * request.
      */
-    const zaiModeKey = limitsModeKey(zaiLimitsProvider);
-    for (const routeId of zaiLimitsProvider.routeIds()) {
-      void limitsRegistry.refreshNow(zaiModeKey, "seed", routeId);
+    for (const provider of pulledLimitsProviders) {
+      const modeKey = limitsModeKey(provider);
+      for (const routeId of provider.routeIds()) {
+        void limitsRegistry.refreshNow(modeKey, "seed", routeId);
+      }
     }
   }
 

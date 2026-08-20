@@ -101,6 +101,19 @@ export class CodexLimitsProvider implements LimitsProvider {
       plan,
       session: latest.session,
       weekly: latest.weekly,
+      // planning#454 — the app-server's `account/rateLimits/updated` carries
+      // BOTH windows in one notification (`rateLimits.primary` / `.secondary`),
+      // so a window missing from a reading is one the plan does not have, and
+      // the pill must not draw a `5h · —` nothing will ever fill.
+      //
+      // This is a statement Claude's reader deliberately does NOT make: its
+      // `rate_limit_event` delivers one window per event, so the same `null`
+      // there means "not yet". Same field, opposite answer, and the difference
+      // is a property of the SOURCE rather than of the vendor.
+      availableWindows: [
+        ...(latest.session ? (["session"] as const) : []),
+        ...(latest.weekly ? (["weekly"] as const) : []),
+      ],
       fetchedAt: latest.at,
     };
   }

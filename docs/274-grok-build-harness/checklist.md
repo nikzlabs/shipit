@@ -255,10 +255,21 @@ the expansion of every line, with file pointers and gotchas, is in
       id, `email` as the label, read from the scope-keyed file. **No plan**: xAI
       reports none anywhere, and `tier: 1` in the token is an opaque integer, so
       req 15 was reworded rather than half-met (receipt in requirements.md).
-- [x] Quota (req 16) — took the documented **no-reader** route: the `sub` mode
-      declares `quota: null`, a new explicit arm of `BillingModeDef`, rather
-      than a fourth `QuotaIntegrationId` nothing implements. `catalogue.test.ts`
-      asserts such a mode reports nothing and offers no refresh.
+- [x] Quota (req 16) — **reversed and rebuilt.** It first took the documented
+      no-reader route (`quota: null`, a new arm of `BillingModeDef`) on a probe
+      that had missed a query parameter. `GET /v1/billing?format=credits`
+      returns the weekly pool, so `xai:sub` now declares `xai-plan-usage` with
+      `XaiLimitsProvider` behind it, refreshable on demand; the `null` arm is
+      removed with the claim that motivated it. See plan.md, "Quota: the empty
+      pill, and the reader that turned out to exist".
+- [x] The pill draws only the windows the plan HAS (`windowsShown`) — not a
+      fixed 5h/7d pair. SuperGrok has one weekly pool and no short window, and
+      Codex and GLM plans exist that report no 5-hour figure either. The
+      provider STATES it (`SubscriptionLimits.availableWindows`), so no service
+      is named at the render site. Deriving it from a null window was tried
+      first and is wrong — Claude's events deliver one window per event, so a
+      null there means "not yet" and the derived rule dropped a real 7d meter
+      for a whole first turn. Caught by the independent review.
 - [x] Exhaustion-pattern channel finding (planning#453) — which matcher
       applies to a turn error vs. conversation text is answered from the code
       and recorded in plan.md ("Exhaustion is the only spent-plan signal"). Patterns were **not**

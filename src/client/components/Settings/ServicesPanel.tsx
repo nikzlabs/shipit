@@ -747,14 +747,23 @@ function ServiceModeCard({
 }
 
 /**
- * A standing **billing hazard** of one `(service, mode)` — something the service
- * does with the user's money that ShipIt cannot see, so it cannot be surfaced as
- * a number, a status or a failure and has to be said in words.
+ * A standing **billing hazard** on one `(service, mode)`: something the service
+ * does with the user's money out of ShipIt's sight, which no control on the card
+ * can carry because it is neither a number, a status, nor a failure.
  *
  * Deliberately a short, closed map rather than a `description` field on every
  * card: req 19 deleted per-card prose precisely because it printed something on
  * every service whether or not there was anything to say. An entry here is the
- * exception that earns its line, and today there is exactly one.
+ * exception that earns its line.
+ *
+ * A second kind briefly lived here — the **absence of a read-out**, to explain a
+ * quota pill ShipIt had suppressed because it had no reader (docs/274 req 16).
+ * It is gone with the case that needed it: xAI turned out to publish its weekly
+ * figure after all, so the pill now shows a number instead of a sentence
+ * apologising for having none. The lesson is worth more than the mechanism was —
+ * a line of copy explaining why a surface is empty is a reasonable last resort
+ * and a poor substitute for filling it, so reach for it only once the reader is
+ * genuinely impossible rather than merely unwritten.
  *
  * It also lives here rather than in the catalogue: the rows are routing data
  * (endpoints, credentials, models), and a sentence of user-facing copy is not
@@ -772,7 +781,7 @@ const MODE_NOTICES: Record<string, string> = {
     "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
 };
 
-/** The hazard line for a `(service, mode)`, or nothing where there is none. */
+/** The notice line for a `(service, mode)`, or nothing where there is none. */
 function ModeNotice({
   serviceId,
   billingMode,

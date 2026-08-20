@@ -20,7 +20,12 @@ import {
   type CredentialStatusWord,
 } from "../utils/credential-state.js";
 import { serviceLabel } from "../utils/service-label.js";
-import { allServices, nativeServiceForHarness, subQuotaRefreshable } from "../../server/shared/catalogue/index.js";
+import {
+  allServices,
+  modeReportsQuota,
+  nativeServiceForHarness,
+  subQuotaRefreshable,
+} from "../../server/shared/catalogue/index.js";
 
 /**
  * Stable ordering of pills in the header.
@@ -191,6 +196,22 @@ function buildPills(
   for (const modeKey of pillOrder()) {
     const serviceId = modeKey.slice(0, modeKey.lastIndexOf(":"));
     const byRoute = limits[modeKey];
+    /*
+      docs/274 req 16 — a subscription ShipIt has no reader for gets no METERS.
+      Without this the two windows render as `5h · —  7d · —` forever, with no
+      refresh button beside them (`subQuotaRefreshable` is already false), which
+      is a pill that looks broken rather than one that says nothing: the user
+      who reported it read the blanks as "ShipIt lost my numbers". They are not
+      pending — OpenCode Go's vendor publishes no per-key usage API, so nothing
+      will ever fill them. The Settings credential row reached this conclusion first
+      (`ServicesPanel`, `modeReportsQuota` rather than `billingMode === "sub"`):
+      an empty pill says "no usage" where the truth is "not measured".
+
+      Gated per mode rather than in `pillOrder`, because the pill still has a
+      second job that has nothing to do with quota — see the `attention` skip
+      below.
+    */
+    const reportsQuota = modeReportsQuota(serviceId, "sub");
     // planning#342 — an account row IS a credential of its service now, so
     // the pill matches on the service directly instead of mapping the row's
     // harness back to one.
@@ -204,10 +225,18 @@ function buildPills(
       (account) => account.serviceId === serviceId && !isUnconnectedAttempt(account),
     );
 
-    // Connected accounts define pill presence, not cached snapshots. A quiet
-    // account may have no quota event yet, but its pill must remain available
-    // so the user can request a refresh and see that usage is still unknown.
+    // Among the modes that report a quota at all, connected accounts define
+    // pill presence, not cached snapshots. A quiet account may have no quota
+    // event yet, but its pill must remain available so the user can request a
+    // refresh and see that usage is still unknown. That argument is what the
+    // gate above bounds: it holds only where a refresh can produce a number.
     for (const account of modeAccounts) {
+      // ...and the second job: a credential that cannot run a turn says so
+      // here, which is a statement about the SIGN-IN and not about quota. So a
+      // no-reader subscription keeps that pill and loses only the meters — an
+      // xAI account needing reconnection is exactly as worth saying as an
+      // Anthropic one, and this is the only place the header says it.
+      if (!reportsQuota && !credentialStatusWord(account)) continue;
       pills.push({
         key: `${modeKey}:${account.id}`,
         serviceId,
@@ -240,13 +269,21 @@ function buildPills(
       if (modeAccounts.some((account) => account.id === snapshot.routeId)) continue;
       fromSnapshot.add(snapshot.routeId);
       const secret = modeSecrets.get(snapshot.routeId);
+      const secretAttention = secret ? credentialStatusWord(secret) : undefined;
+      // Unreachable today and still worth writing: a mode with no reader has no
+      // `LimitsProvider`, so no snapshot of it can exist. But this loop derives
+      // a pill FROM a snapshot, so it would render one on nothing but the map's
+      // say-so — and a stale entry, or a service that loses a reader, would put
+      // the blank meters straight back. The rule is "no reader, no meters", and
+      // the code says it in every loop rather than in one loop and a doc.
+      if (!reportsQuota && !secretAttention) continue;
       pills.push({
         key: `${modeKey}:${snapshot.routeId}`,
         serviceId,
         routeId: snapshot.routeId,
         label: serviceLabel(serviceId),
         snapshot,
-        ...(secret && credentialStatusWord(secret) ? { attention: credentialStatusWord(secret) } : {}),
+        ...(secretAttention ? { attention: secretAttention } : {}),
       });
     }
 
@@ -306,10 +343,47 @@ interface SubscriptionLimitPillProps {
   attention?: CredentialStatusWord;
 }
 
+/**
+ * Which of the two meters this pill draws — **the windows the plan has**, never
+ * a fixed pair (planning#454).
+ *
+ * The pill drew both slots for every subscription, on the assumption that every
+ * plan has a 5-hour window and a weekly one. Several do not. SuperGrok has a
+ * single weekly pool and no short window at all; the user reporting this also
+ * had a ChatGPT plan and a GLM plan whose readings carry no 5-hour figure. All
+ * three rendered a `5h · —` that nothing could ever fill, beside a real weekly
+ * number — the same permanently-empty read-out as the pill this feature was
+ * opened to fix, just one slot narrower.
+ *
+ * **No service is named here, and the answer is not inferred here either.** The
+ * provider states it (`SubscriptionLimits.availableWindows`), because only the
+ * provider can. Deriving it from a null window was tried first and is WRONG:
+ * Claude's `rate_limit_event` carries one window per event, so the first
+ * reading of a session has the other side null on a plan that has both, and
+ * this function would have dropped a real 7d meter for the whole of that turn —
+ * longer if the `/api/oauth/usage` seed had been 429'd. A null window means
+ * "absent" from a reader whose payload describes the whole plan and "not yet"
+ * from one whose readings arrive piecemeal, and nothing at this end can tell
+ * those apart.
+ *
+ * Silence therefore means "draw everything": a provider that says nothing is
+ * treated as making no claim, so Claude's pill is untouched and a reading that
+ * carries only a lockout countdown still shows both slots pending — which the
+ * refresh button beside them can still make false.
+ */
+export function windowsShown(
+  snapshot: SubscriptionLimits | undefined,
+): { session: boolean; weekly: boolean } {
+  const declared = snapshot?.availableWindows;
+  if (declared === undefined || declared.length === 0) return { session: true, weekly: true };
+  return { session: declared.includes("session"), weekly: declared.includes("weekly") };
+}
+
 export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const resolvedServiceId = snapshot?.serviceId ?? serviceId;
   const resolvedRouteId = routeId ?? snapshot?.routeId;
+  const shows = windowsShown(snapshot);
 
   // A broken credential's meters are worse than nothing: the numbers are real
   // but frozen at whatever the account last reported, so the pill reads
@@ -351,22 +425,26 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
           {label}
         </span>
       )}
-      <Meter
-        shortLabel="5h"
-        longLabel="5h window"
-        window={snapshot?.session ?? null}
-        windowMs={SESSION_WINDOW_MS}
-        fetchedAt={snapshot?.fetchedAt}
-        now={now}
-      />
-      <Meter
-        shortLabel="7d"
-        longLabel="7d window"
-        window={snapshot?.weekly ?? null}
-        windowMs={WEEKLY_WINDOW_MS}
-        fetchedAt={snapshot?.fetchedAt}
-        now={now}
-      />
+      {shows.session && (
+        <Meter
+          shortLabel="5h"
+          longLabel="5h window"
+          window={snapshot?.session ?? null}
+          windowMs={SESSION_WINDOW_MS}
+          fetchedAt={snapshot?.fetchedAt}
+          now={now}
+        />
+      )}
+      {shows.weekly && (
+        <Meter
+          shortLabel="7d"
+          longLabel="7d window"
+          window={snapshot?.weekly ?? null}
+          windowMs={WEEKLY_WINDOW_MS}
+          fetchedAt={snapshot?.fetchedAt}
+          now={now}
+        />
+      )}
       {showRefresh && resolvedServiceId && (
         <LimitsRefreshButton
           serviceId={resolvedServiceId}

@@ -91,6 +91,7 @@ import type {
   LimitsRefreshResult,
   SubscriptionLimits,
   SubscriptionLimitsWindow,
+  SubscriptionWindowName,
 } from "../../shared/types.js";
 
 /** Z.ai's internal quota endpoint — see this module's docstring. */
@@ -125,6 +126,12 @@ interface WindowSnapshot {
    * arrives in the same response as the numbers.
    */
   plan: string | null;
+  /**
+   * The windows the plan HAS, as distinct from the windows this reading could
+   * put a number on (planning#454). Absent on an event-pushed reading, which
+   * carries no such statement.
+   */
+  windows?: SubscriptionWindowName[];
   at: number;
 }
 
@@ -217,6 +224,13 @@ export class ZaiLimitsProvider implements LimitsProvider {
       plan: latest?.plan ?? null,
       session: latest?.session ?? null,
       weekly: latest?.weekly ?? null,
+      // planning#454 — `data.limits[]` lists every window the plan has, so an
+      // unmentioned one is genuinely absent and the pill must not draw a
+      // `5h · —` for it. Only a reader whose payload is a COMPLETE statement
+      // may say this; Claude's event stream is not one and stays silent.
+      // Declared only when a reading exists — a lockout-only snapshot claims
+      // nothing, and silence draws both.
+      ...(latest?.windows ? { availableWindows: latest.windows } : {}),
       fetchedAt: latest?.at ?? 0,
       ...(locked ? { lockedUntil: lockedUntilNow } : {}),
     };
@@ -315,6 +329,7 @@ export class ZaiLimitsProvider implements LimitsProvider {
       session: parsed.session,
       weekly: parsed.weekly,
       plan: parsed.plan,
+      windows: parsed.windows,
       at: this.now(),
     });
     return { routeId, outcome: "updated" };
@@ -375,6 +390,8 @@ export function parseZaiQuota(
   session: SubscriptionLimitsWindow | null;
   weekly: SubscriptionLimitsWindow | null;
   plan: string | null;
+  /** See the `windows` note at the end of this function. */
+  windows: SubscriptionWindowName[];
 } | null {
   const root = readEnvelope(body);
   if (!root) return null;
@@ -402,7 +419,15 @@ export function parseZaiQuota(
   if (sessionAmbiguous) session = null;
   if (weeklyAmbiguous) weekly = null;
   if (!session && !weekly) return null;
-  return { session, weekly, plan: root.plan };
+  // The windows the plan HAS, which is a different question from the windows
+  // this parse could report (planning#454). An ambiguous slot counts as PRESENT
+  // — two entries landed in it, so the window plainly exists and only its
+  // number is unresolvable. Reporting it absent would delete the slot from the
+  // pill on the strength of a parse failure.
+  const windows: SubscriptionWindowName[] = [];
+  if (session || sessionAmbiguous) windows.push("session");
+  if (weekly || weeklyAmbiguous) windows.push("weekly");
+  return { session, weekly, plan: root.plan, windows };
 }
 
 /**

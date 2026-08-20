@@ -1964,6 +1964,69 @@ describe("the OpenCode Go billing hazard (docs/272 req 6)", () => {
 });
 
 /**
+ * planning#454 — the SuperGrok card carries a NUMBER, not a sentence about not
+ * having one.
+ *
+ * This card spent a release explaining an absence: ShipIt had concluded xAI
+ * published no usage API, suppressed the pill, and printed a line saying so.
+ * The conclusion was wrong — the weekly pool is one query parameter away — and
+ * these cases exist to keep the apology from coming back. A sentence explaining
+ * an empty surface is a last resort, and the reader is what makes it
+ * unnecessary.
+ */
+describe("the xAI subscription's weekly pool (planning#454)", () => {
+  it("prints no absence notice on the subscription card, because there is a reader", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("service-card-xai:sub")).toBeInTheDocument();
+    expect(screen.queryByTestId("mode-notice-xai:sub")).not.toBeInTheDocument();
+  });
+
+  it("says nothing on the metered xAI key card, which promises no allowance", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_xai", serviceId: "xai", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("service-card-xai:key")).toBeInTheDocument();
+    expect(screen.queryByTestId("mode-notice-xai:key")).not.toBeInTheDocument();
+  });
+
+  /**
+   * The weekly figure on the account row, and — the half that was the reported
+   * bug — NO second meter beside it. SuperGrok has one pool and no short
+   * window, so a `5h · —` here would be the same permanently-empty read-out the
+   * user reported, merely next to a real number.
+   */
+  it("shows the weekly figure on the account row, and no empty short window", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
+    ]);
+    useUiStore.getState().setSubscriptionLimits({
+      "xai:sub": {
+        acct_xai: {
+          // `plan: null` is deliberate, not a gap — see requirements.md, the
+          // 2026-08-20 receipt: the plan name is reachable and was declined.
+          serviceId: "xai", billingMode: "sub", routeId: "acct_xai", plan: null,
+          session: null,
+          weekly: { usedPct: 10, resetAt: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+          // The reader STATES the plan has one window; the pill does not infer
+          // it from the null (planning#454).
+          availableWindows: ["weekly"],
+          fetchedAt: Date.now(),
+        },
+      },
+    });
+    render(<ServicesPanel />);
+    const row = screen.getByTestId("provider-account-row-acct_xai");
+    expect(row).toHaveTextContent("nik@x");
+    expect(row).toHaveTextContent(/7d\s*10%/);
+    expect(row.textContent).not.toMatch(/5h/);
+  });
+});
+
+/**
  * docs/252 req 20's consequence for the panel: **"both shapes" means both
  * PRESENT, not both possible.**
  *
