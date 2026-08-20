@@ -247,10 +247,11 @@ No open questions remain.
     zero. The estimate is still never presented as money spent, and it is never added to a
     metered total — but the user keeps a live sense of what the session is consuming
     regardless of how it is paid for, which is what those surfaces are for. When a session
-    used **both**, the single running figure is the one belonging to the side that did the
-    work, measured in tokens: a session that ran almost entirely on a plan reads as a plan
-    session, however small a metered charge it also picked up. The other figures stay one
-    click away, and the two are still never added.
+    used **both**, the single running figure is the metered one, and it gives way only to a
+    figure that is larger in **both** money and tokens: a session that ran almost entirely on
+    a plan reads as a plan session however small a metered charge it also picked up, while a
+    session that really was billed never has that charge hidden behind cheaper high-volume
+    plan work. The other figures stay one click away, and the two are still never added.
 
     This holds at session scope and across all sessions, for usage recorded **from this
     feature onward**. Turns recorded before it carry no service and no billing mode — for
@@ -359,13 +360,21 @@ _None._
 
 - 2026-08-20 — Which figure does the running surface show for a **mixed** session? Req 16 named
   the subscription case and the metered case; the implementation resolved the overlap
-  money-first, unconditionally. **Chosen: the side that did the work, by tokens.** Stated
-  directly from a screenshot of the context dial — *"the $ numbers should say 131, not
-  0.004"*: a 39-turn plan session valued at ≈$131.58 was reporting `$0.004` on the dial and in
-  the composer, because one sub-agent consult had run on an API key. Money-first is not wrong
-  as a default, so it stays as the tiebreak; what it cannot do is decide a session's character
-  from a dollar sign when the plan side carried four orders of magnitude more of the work.
-  Req 16 amended.
+  money-first, unconditionally. **Chosen: money first, yielding only to a figure larger in
+  both money and tokens.** Stated directly from a screenshot of the context dial — *"the $
+  numbers should say 131, not 0.004"*: a 39-turn plan session valued at ≈$131.58 was reporting
+  `$0.004` on the dial and in the composer, because one sub-agent consult had run on an API
+  key. Money-first is not wrong as a default; what it cannot do is decide a session's
+  character from a dollar sign when the plan side carried four orders of magnitude more of the
+  work.
+
+  The first implementation ranked on **tokens alone**, and the cross-backend review rejected
+  it the same day: an expensive metered model billing $50 over 10K tokens would lose to cheap
+  plan work valued at $2 over 10M, putting `≈$2.00` — labelled *not billed* — on a session
+  that was billed $50. That inverts the failure rather than fixing it, and under-reporting
+  **money** is the worse direction of the two. Requiring dominance on both axes fires only
+  when the other side is unambiguously the session's story, so no case comes out worse than
+  money-first. Req 16 amended.
 
 - 2026-08-17 — GPT-5.3-Codex-Spark is available through a ChatGPT Pro
   subscription in the Codex CLI and IDE extension, but OpenAI marks it as

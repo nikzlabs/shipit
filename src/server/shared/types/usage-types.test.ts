@@ -56,10 +56,28 @@ describe("sessionRunningFigure (docs/252 req 16)", () => {
   });
 
   it("shows money when money moved, with the estimate left to the popover", () => {
-    // No token counts on either side, so nothing separates them but the
-    // money-first tiebreak — which is exactly what this asserts.
+    // No token counts on either side, so the estimate cannot dominate and the
+    // money-first default stands — which is also how an older totals payload,
+    // carrying dollars but no volume, keeps behaving as it always did.
     expect(sessionRunningFigure(totals({ meteredCostUsd: 0.42, atApiRatesUsd: 6.9 })))
       .toEqual({ usd: 0.42, kind: "metered" });
+    // Same when the session is genuinely balanced: dominance needs BOTH axes,
+    // so equal volume leaves the figure that is money in front.
+    expect(sessionRunningFigure(totals({
+      meteredCostUsd: 5, meteredTokens: 1_000_000,
+      atApiRatesUsd: 5, includedTokens: 1_000_000,
+    }))).toEqual({ usd: 5, kind: "metered" });
+  });
+
+  it("does not let cheap volume eclipse money that was genuinely billed", () => {
+    // The symmetric trap, and the reason the rule is not "most tokens wins"
+    // (cross-backend review, 2026-08-20): an expensive metered model spends $50
+    // over 10K tokens while cheap plan work runs 10M. Ranking on volume alone
+    // would put `≈$2.00` — labelled "not billed" — on a session billed $50.
+    expect(sessionRunningFigure(totals({
+      meteredCostUsd: 50, meteredTokens: 10_000,
+      atApiRatesUsd: 2, includedTokens: 10_000_000,
+    }))).toEqual({ usd: 50, kind: "metered" });
   });
 
   it("leads with the mode that did the work, not with whichever figure is money", () => {

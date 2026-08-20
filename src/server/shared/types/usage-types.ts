@@ -198,23 +198,29 @@ export function usageTotalsFrom(groups: readonly UsageGroup[]): UsageTotals {
  *    long-lived session does not silently lose a total the user has already
  *    seen; it is not merged into either figure above.
  *
- * **Which one, when a session is MIXED: the mode that did the work — by tokens,
- * the volume unit req 16 reports in.** The rule used to be money-first
- * unconditionally, and that read a session's character off a dollar sign rather
- * than off the session. One metered sub-agent consult inside a 39-turn plan
- * session made the dial say `$0.004` while the same popover said `≈$131.58`
- * — under-reporting consumption by four orders of magnitude and defeating the
- * exact purpose req 16 gives these surfaces ("a live sense of what the session
- * is consuming"). A session that ran 99.99% on a subscription *is* a
- * subscription session, so it shows the subscription figure.
+ * **Which one, when a session is MIXED: money first, unless another figure is
+ * larger in BOTH dollars and tokens.** Money-first alone read a session's
+ * character off a dollar sign rather than off the session: one metered
+ * sub-agent consult inside a 39-turn plan session made the dial say `$0.004`
+ * while the same popover said `≈$131.58` — under-reporting consumption by four
+ * orders of magnitude and defeating the exact purpose req 16 gives these
+ * surfaces ("a live sense of what the session is consuming").
  *
- * Money-first survives as the TIEBREAK, so a genuinely balanced session still
- * leads with the dollars, and a totals record carrying no token counts (an
- * older payload, a hand-built fixture) behaves exactly as before. Only a
- * candidate with a dollar figure competes: legacy volume is unpriced going
- * forward (planning#343), so its tokens must never win a comparison it has
- * nothing to show for. Nothing is ever summed — the popover and the usage modal
- * remain where the parts are separated.
+ * Requiring BOTH is what makes the override safe, and it is why the rule is not
+ * simply "most tokens wins". Volume alone inverts the failure instead of fixing
+ * it: an expensive metered model spending $50 over 10K tokens would lose to
+ * cheap plan work valued at $2 over 10M, and the dial would under-report *money
+ * actually billed* by 25× while labelled "not billed" (cross-backend review,
+ * 2026-08-20). Dominance on both axes cannot do that — it fires only when the
+ * other side is unambiguously the session's story, so no case comes out worse
+ * than it did under money-first.
+ *
+ * Two consequences worth stating. A totals record carrying no token counts (an
+ * older payload, a hand-built fixture) can never satisfy `tokens >` and so
+ * behaves exactly as before. And only a candidate with a dollar figure competes
+ * at all: legacy volume is unpriced going forward (planning#343), so its tokens
+ * must never win a slot it has nothing to show in. Nothing is ever summed — the
+ * popover and the usage modal remain where the parts are separated.
  *
  * The legacy bucket also takes forward-generated rows now (req 16,
  * planning#343 — work that resolved no model), so its *volume* is no longer only
@@ -234,10 +240,15 @@ export function sessionRunningFigure(
     { usd: totals.atApiRatesUsd, tokens: totals.includedTokens, kind: "at-api-rates" },
     { usd: totals.legacyCostUsd, tokens: totals.legacyTokens, kind: "earlier" },
   ];
+  // Source order IS the money-first priority: metered → estimate → earlier.
   const candidates = all.filter((c) => c.usd > 0);
   if (candidates.length === 0) return null;
-  // Stable sort + source order = the old money-first priority as the tiebreak.
-  const winner = [...candidates].sort((a, b) => b.tokens - a.tokens)[0];
+  const lead = candidates[0];
+  const dominant = candidates
+    .slice(1)
+    .filter((c) => c.usd > lead.usd && c.tokens > lead.tokens)
+    .sort((a, b) => b.tokens - a.tokens)[0];
+  const winner = dominant ?? lead;
   return { usd: winner.usd, kind: winner.kind };
 }
 
