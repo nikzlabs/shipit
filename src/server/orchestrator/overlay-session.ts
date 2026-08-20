@@ -39,7 +39,6 @@ import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./ov
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
-import { evaluateInstallGate } from "./agent-install-gate.js";
 import { readNodePin, parseVersion, satisfies } from "../shared/node-pin.js";
 
 // ---------------------------------------------------------------------------
@@ -773,24 +772,6 @@ export async function preStampInstallMarker(args: {
     return false;
   }
   if (installCommands.length === 0) return false;
-
-  // docs/271 — never stamp a list the trust gate is refusing to run. The marker
-  // is not only "these deps are installed"; it is also the gate's record of what
-  // this session has ACCEPTED, and the two roles were being conflated. On a
-  // fresh session the distinction is invisible (no marker, nothing accepted yet,
-  // the repo-trust decision covers the first list). It stops being invisible the
-  // moment something deletes an established session's marker — a base rotation
-  // or a disk reclaim — because the pre-stamp window reopens on a session a
-  // plugin has already written, and a base pointer's command list is enough to
-  // walk a list this session never accepted into its accepted list. Asking the
-  // gate is the whole guard; it reads the reset record those deleters leave, so
-  // it still knows the pre-delete accepted list.
-  //
-  // It costs nothing in dependency terms: a stamp here would only have skipped
-  // an install the gate is about to withhold anyway, so the deps on disk are the
-  // same either way. What refusing removes is the FALSE record of them — which
-  // is what left the incident session with no automatic way back.
-  if (evaluateInstallGate({ workspaceDir, requested: installCommands }).withheld) return false;
 
   // docs/198 — the content key for THIS workspace's dep files. Computed up front
   // so the per-spec gate can take the content path: a pointer whose recorded

@@ -59,7 +59,6 @@ import {
   recordAcceptedInstall,
   recordWithheldCommands,
 } from "./agent-install-gate.js";
-import { sameCommands } from "../shared/install-marker.js";
 import {
   dependencyGapNotice,
   dependencyGapSummary,
@@ -533,7 +532,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       || this.subAgentSpawnsInFlight > 0
       // The turn's terminal sequence and the auto-push it arms both happen once
       // `running` is false, and reclaim destroys both. See the interface doc.
-      || this._postTurnHold.active;
+      || this._postTurnHold.active
+      // An install in flight is work, and disposing it is not merely wasteful:
+      // `dispose()` resolves the completion as `unverified`, which is correct —
+      // nothing was observed — but it means the acceptance record is never
+      // written even though the worker may have finished and written its marker.
+      // Archive or eviction then removes `state/` with that marker, and the
+      // restored session has no acceptance source at all, so the docs/271 gate
+      // reads "first install" and allows a changed list. Same shape as the
+      // post-turn hold above: the answer to "is this runner busy?" and the
+      // answer to "may it be disposed?" must not be able to disagree.
+      || this._installInFlight;
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
   beginPostTurnWork(): void { this._postTurnHold.begin(); }
@@ -1900,6 +1909,32 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (record(failures)) this.emitMessage({ type: "plugin_repos_updated", sessionId: this.sessionId });
   }
 
+  /**
+   * Say once, per distinct command list, that a changed `agent.install` was not
+   * run (docs/271 reqs 7, 8). De-duplicated by the durable `.install-withheld`
+   * record so an idle session that resumes repeatedly does not collect one
+   * notice per resume.
+   *
+   * Contained: the hook reaches SQLite and the viewer transports, and
+   * `setupServiceManager` maps a throw out of `runInstall` to `{ ok: false }`,
+   * which latches every `dependsOnInstall` service to `error` — so a failure to
+   * REPORT must never become a failed install (req 7).
+   */
+  private reportWithheld(accepted: string[], requested: string[], alreadyReported: boolean): void {
+    if (alreadyReported) return;
+    // Recorded BEFORE reporting, so a throw in the hook cannot turn into a
+    // notice on every recreate.
+    recordWithheldCommands(this.sessionDir, requested);
+    try {
+      this.onInstallWithheld?.(installWithheldNotice(accepted, requested));
+    } catch (err) {
+      console.error(
+        `[install:${this.sessionId}] could not report the withheld agent.install:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   async runInstall(commands: string[]): Promise<InstallOutcome> {
     if (commands.length === 0) return { ok: true };
 
@@ -1923,58 +1958,46 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         `[install:${this.sessionId}] agent.install changed in a plugin-bearing session — withheld (${commands.length} command(s))`,
       );
       // The ops finding of 2026-08-20 — a withhold that lands on a session whose
-      // installed packages ShipIt itself discarded is a different event from the
+      // dependency tree nothing is vouching for is a different event from the
       // ordinary one, and the difference is the whole incident. Ordinarily the
-      // session keeps working on the dependencies it already has (req 7) and the
-      // one-per-list notice is proportionate. Here it has none of its own, and
-      // the `.install-withheld` de-duplication is precisely what silenced the
-      // recreate that actually broke the dev service: the user had seen that
-      // notice already, so the recreate said nothing at all.
+      // session keeps working on the dependencies it already has (req 7). Here
+      // the marker is gone, which means the install that was supposed to rebuild
+      // them is exactly the one being refused — so the session serves
+      // `sh: 1: vite: not found` and the log blames the user's project.
       //
-      // A dependency gap is the right surface rather than a second notice. It is
-      // already the session's "installed tree does not match this checkout"
-      // state, it reaches three places instead of one (persisted transcript,
-      // the service list the agent reads next to the failing service, and the
-      // agent's own turn prompt), and it lasts until an install answers it
-      // instead of until the reader scrolls past. Recorded FIRST so a throw in
-      // either notice hook cannot cost us the state.
-      if (verdict.afterDependencyReset) {
-        // `_dependencyGap` is runner-local and a container recreate builds a new
-        // runner, so the gap alone re-reports on every resume of a session that
-        // has not been repaired — one persisted notice per recreate, which is the
-        // accumulation `.install-withheld` exists to prevent. So the SAME durable
-        // per-list record gates this notice too; the gap itself is still recorded
-        // every time, because it is state the service list and the agent prompt
-        // read rather than a message.
-        this.recordDependencyGap(
-          {
-            reason: "install-withheld",
-            // The in-force list, never the withheld one — see `DependencyGap.commands`.
-            commands: [...verdict.accepted],
-            withheld: [...commands],
-          },
-          { notify: !verdict.alreadyReported },
+      // So ShipIt runs the list it ALREADY accepted. That is not the withheld
+      // command and it is not new authority: `verdict.accepted` is the list that
+      // last completed in this session, the one ShipIt re-runs unattended on
+      // every ordinary container recreate. Requirement 4 forbids running the
+      // CHANGED list on our own initiative, and this does not; requirement 8's
+      // remedy for getting the new command — the user asking the agent — is
+      // untouched. What it buys is the automatic repair path the incident found
+      // missing, instead of three surfaces narrating a dead service.
+      //
+      // `withheld: true` still rides on the return even when the replay
+      // succeeded, and that is load-bearing: `setupServiceManager` hands the
+      // overlay publish the CONFIG's command list, so publishing here would stamp
+      // the shared base pointer with the list that did not run.
+      if (verdict.afterDependencyReset && verdict.accepted.length > 0) {
+        console.warn(
+          `[install:${this.sessionId}] dependency tree is unvouched — re-running the ` +
+          `${verdict.accepted.length} accepted command(s) instead of the changed list`,
         );
-        if (!verdict.alreadyReported) recordWithheldCommands(this.sessionDir, commands);
-        return { ok: true, withheld: true };
-      }
-      if (!verdict.alreadyReported) {
-        // Record BEFORE reporting, so a throw in the notice hook cannot turn
-        // into a notice on every recreate.
-        recordWithheldCommands(this.sessionDir, commands);
-        try {
-          this.onInstallWithheld?.(installWithheldNotice(verdict.accepted, commands));
-        } catch (err) {
-          // The hook reaches SQLite and the viewer transports. A failure there
-          // must not become a FAILED INSTALL: `setupServiceManager` maps a throw
-          // to `{ ok: false }`, which latches every `dependsOnInstall` service
-          // to `error` — the opposite of req 7's "must not break the session".
-          console.error(
-            `[install:${this.sessionId}] could not report the withheld agent.install:`,
-            err instanceof Error ? err.message : String(err),
-          );
+        // The user is still told the changed list was not run, once per list.
+        this.reportWithheld(verdict.accepted, commands, verdict.alreadyReported);
+        const replay = await this.runInstall(verdict.accepted);
+        if (!replay.ok) {
+          // A genuine install failure: the compose gate latches dependent
+          // services to `error`, and the gap names what moved the tree.
+          this.recordDependencyGap({
+            reason: "install-failed",
+            commands: [...verdict.accepted],
+            rewrite: "dependency-reset",
+          });
         }
+        return { ok: replay.ok, withheld: true };
       }
+      this.reportWithheld(verdict.accepted, commands, verdict.alreadyReported);
       return { ok: true, withheld: true };
     }
 
@@ -2049,7 +2072,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // hanging the user's first turn forever.
       const result = await workerInstall(this.workerUrl, commands, {
         timeoutMs: INSTALL_POST_TIMEOUT_MS,
-      }) as { skipped?: boolean; started?: boolean; ok?: boolean };
+      }) as { skipped?: boolean; started?: boolean; ok?: boolean; joined?: boolean };
       this._installPostIssued = true;
       if (result.skipped) {
         // The worker's content-keyed marker matched, which IS the dependency
@@ -2076,10 +2099,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       void this.resyncInstallStateAfterReconnect();
       const outcome = await completion;
       // An install that ran and succeeded is the same proof a marker skip is —
-      // but only if it RAN. `unverified` marks the resolutions synthesized from
-      // no observation (reconnect resync with no last result, dispose), which
-      // resolve `ok: true` by default and are not evidence of anything.
-      if (outcome.ok && !outcome.unverified) this.clearDependencyGap(commands);
+      // but only if it RAN, and only if it ran OUR list. `unverified` marks the
+      // resolutions synthesized from no observation (reconnect resync with no
+      // last result, dispose), which resolve `ok: true` by default and are not
+      // evidence of anything. `joined` marks the other case: the worker was
+      // already installing a DIFFERENT list and coalesced us onto it, so the
+      // completion is real but it is not evidence about the commands we asked
+      // for — recording them would accept a list that never ran.
+      if (outcome.ok && !outcome.unverified) {
+        this.clearDependencyGap(result.joined ? undefined : commands);
+      }
       return outcome;
     } catch (err) {
       this.emitMessage({
@@ -2240,24 +2269,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * not cost us the state that the service list reads — that would restore
    * exactly the silence this is removing.
    */
-  private recordDependencyGap(gap: DependencyGap, opts: { notify?: boolean } = {}): void {
+  private recordDependencyGap(gap: DependencyGap): void {
     const prev = this._dependencyGap;
     this._dependencyGap = gap;
-    // The caller has a durable, cross-runner record saying this exact fact was
-    // already reported. The STATE is still refreshed above — the service list and
-    // the agent's turn prompt read it live, and a new runner starts with none.
-    if (opts.notify === false) return;
-    // The withheld list is part of the identity, not decoration: two DIFFERENT
-    // refused lists are two different facts, and comparing only reason+rewrite
-    // swallowed the second — while `.install-withheld`, the per-list rule this
-    // gap replaces for the reset case, would have reported it.
-    if (
-      prev?.reason === gap.reason &&
-      prev?.rewrite === gap.rewrite &&
-      sameCommands(prev?.withheld ?? [], gap.withheld ?? [])
-    ) {
-      return;
-    }
+    if (prev?.reason === gap.reason && prev?.rewrite === gap.rewrite) return;
     console.warn(
       `[container-runner:${this.sessionId}] dependencies unverified after ${gap.rewrite ?? "a dependency change"} (${gap.reason})`,
     );

@@ -270,6 +270,44 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     return { result, rows };
   }
 
+  /**
+   * docs/271 — a fork clones the parent's WORKSPACE, so it inherits every
+   * plugin-authored change to `shipit.yaml` the parent was refusing to run.
+   * Inheriting the mutation without the acceptance is the dangerous half: the
+   * gate finds no accepted list, reads that as "first install", and runs exactly
+   * what the parent withheld.
+   *
+   * Driven through `forkSession` rather than the copy helper on purpose —
+   * asserting the helper's behaviour would stay green if the production call
+   * site were deleted, which is the failure mode this test exists to rule out.
+   *
+   * The parent is laid out the way production lays one out — the clone at
+   * `<sessionDir>/workspace` — because the record's path is resolved from that
+   * and planning#288 makes any other shape an error rather than a fallback.
+   */
+  it("carries the parent's accepted agent.install into the fork", async () => {
+    const { bareDir } = setupParentOnFeatureBranch("main");
+    const parentRoot = path.join(tmpDir, "parent-session");
+    const parentDir = path.join(parentRoot, "workspace");
+    fs.mkdirSync(parentRoot, { recursive: true });
+    execSync(`git clone ${bareDir} ${parentDir}`, { stdio: "pipe" });
+    execSync("git checkout -b shipit/parent-desc", { cwd: parentDir, stdio: "pipe" });
+    // The parent accepted `npm ci`; its durable record is a session-root sibling.
+    fs.writeFileSync(
+      path.join(parentRoot, ".install-accepted"),
+      JSON.stringify({ commands: ["npm ci"], at: "2026-08-20T17:00:00.000Z" }),
+    );
+
+    const { result } = await fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir,
+    }, bareDir);
+
+    const forkRoot = path.dirname(result.session.workspaceDir!);
+    expect(JSON.parse(fs.readFileSync(path.join(forkRoot, ".install-accepted"), "utf8")))
+      .toMatchObject({ commands: ["npm ci"] });
+  });
+
   it("targets the repo's default branch, not the parent session's branch", async () => {
     const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
     const { result } = await fork(parentDir, {

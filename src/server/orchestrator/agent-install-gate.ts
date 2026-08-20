@@ -417,6 +417,34 @@ export function readAcceptedInstall(workspaceDir: string): AcceptedInstallRecord
 }
 
 /**
+ * Carry one session's acceptance into another — the fork case, and only that.
+ *
+ * A fork clones the parent's workspace, inheriting whatever a plugin wrote into
+ * `shipit.yaml` there. Inheriting the mutation without the acceptance is the
+ * dangerous half: the gate would find no accepted list, read "first install",
+ * and run the command list the parent was refusing. Best-effort and silent on a
+ * missing source — a parent that never completed an install has nothing to pass
+ * on, and the fork is then a first-install session for real.
+ *
+ * NOT a general copy primitive. A clone that changes OCCUPANTS must clear the
+ * record instead ({@link clearAcceptedInstall}); the difference is whether the
+ * new session continues the old one's work or replaces it.
+ */
+export function copyAcceptedInstall(fromWorkspaceDir: string | undefined, toWorkspaceDir: string): void {
+  if (!fromWorkspaceDir) return;
+  try {
+    const record = readAcceptedInstall(fromWorkspaceDir);
+    if (!record || record.commands.length === 0) return;
+    recordAcceptedInstall(toWorkspaceDir, record.commands);
+  } catch (err) {
+    console.warn(
+      "[install-gate] could not carry the accepted-install record into the fork:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+/**
  * Drop the acceptance record. Used only when the session's clone changes hands
  * (`claim-session.ts`) — a new occupant inherits nothing.
  */

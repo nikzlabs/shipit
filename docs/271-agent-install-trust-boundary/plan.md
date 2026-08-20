@@ -213,56 +213,51 @@ accepted a list *before* this record existed answers from its marker once, and
 `evaluateInstallGate` backfills a record from that answer so the session stops
 depending on a marker five paths delete.
 
-### Saying so, when the dependencies are in question
+### Repairing it, rather than narrating it
 
-`afterDependencyReset` is **derived, not stored**: it is simply whether the
-install marker is absent. That is what lets it cover every route into the state
-without enumerating them — including the worker's whiteout, which no
-orchestrator-side tombstone could ever have seen.
+A withhold that lands on a session whose install marker is gone is the incident:
+the install that would rebuild the dependency tree is exactly the one being
+refused, so the service dies on `sh: 1: vite: not found` and its log blames the
+user's project.
 
-A withhold landing there is the incident: the reinstall that was supposed to
-rebuild the tree did not run. Ordinarily the session keeps working on the
-dependencies it already has (req 7) and the once-per-list notice above is
-proportionate; here nothing has checked what it has. So this case records a
-`DependencyGap` (`dependency-staleness.ts`, reason `install-withheld`) instead —
-the session's existing "installed tree does not match this checkout" state, which
-reaches three surfaces rather than one (the persisted transcript, the line the
-service list carries beside the failing service, and the agent's own turn prompt)
-and lasts until an install answers it.
+**ShipIt re-runs the list it already accepted.** That is not the withheld command
+and it is not new authority — `verdict.accepted` is the list that last completed
+in this session, the one ShipIt re-runs unattended on every ordinary container
+recreate. Requirement 4 forbids running the CHANGED list on ShipIt's own
+initiative, and this does not; requirement 8's remedy for *getting* the new
+command — the user asking the agent — is untouched. The user is still told once,
+per distinct list, that the changed list was not run.
 
-The **notice** is still gated on the durable per-list `.install-withheld` record,
-not on the gap alone. `_dependencyGap` is runner-local and a container recreate
-builds a new runner, so the gap's own de-duplication sees nothing and would
-re-persist a notice on every resume of a session nobody has repaired. The gap
-*state* is still recorded every time, because the service list and the agent
-prompt read it live and a new runner starts with none.
+`afterDependencyReset` is **derived, not stored**: whether the install marker is
+absent. That covers every route into the state without enumerating them —
+including the worker's whiteout, which no orchestrator-side tombstone could see.
 
-**Requirement 4 is untouched, including in the wording.** The gap names the
-**in-force** list as the remedy, never the withheld one: having ShipIt instruct
-its own agent to run the command it just refused would be this boundary dressed
-up rather than observed. Requirement 8's remedy — the *user* asking for the new
-command — is unchanged, and the agent prompt says so explicitly.
+`withheld: true` still rides on the return even when the replay succeeded, and
+that is load-bearing: `setupServiceManager` hands the overlay publish the
+CONFIG's command list, so publishing here would stamp the shared base pointer
+with commands that did not run.
 
-### What ShipIt cannot tell, and does not claim
+**An earlier revision of this fix did not repair; it reported.** It added a third
+`DependencyGap` reason with three surfaces — a persisted transcript notice, a
+service-list line, and a per-turn agent prompt prefix telling the agent to run
+the install before trusting a missing-module error. A review pass asked the
+opposite question of every element, and that machinery did not survive it:
 
-An earlier revision carried a second field, `depsDiscarded`, meant to prove the
-harmless case by checking whether the reaped overlay upper layer had held
-anything. **It is not a proof and it is gone.** An empty upper says the **old**
-lower satisfied this checkout; it says nothing about the **new** generation being
-mounted, which may have been published from a tree that dropped the very package
-this branch needs. The same production symptom could recur with that check
-reporting "nothing lost".
+- It narrated a dead service instead of fixing one, while the fix was a command
+  ShipIt was already permitted to run.
+- The per-turn prefix repeated indefinitely, including after the user had
+  repaired the tree by hand, because a shell install writes no marker.
+- Worst, it **reproduced the incident**. The notice was de-duplicated per
+  command list, and the ordinary withhold had already recorded that list while
+  the marker was intact and the packages were fine — so on the recreate that
+  actually discarded them, `alreadyReported` was true and the user was told
+  nothing at all. Repair does not depend on having something to say, so it
+  happens either way.
 
-Nor may the surfaces name a cause. Four routes reach this state and only one of
-them replaces the shared base, so the text says ShipIt *stopped vouching for* the
-installed dependencies rather than naming a mechanism that is false for a disk
-reclaim or a failed reinstall.
-
-So the signal is *unverified*, full stop — and the wording follows: the remedy is
-framed as diagnostic ordering ("before you treat a missing-module error as a fault
-in the code, run these") rather than an order to reinstall every turn. `npm ci`
-deletes `node_modules` and rebuilds from scratch; that is not a free thing to
-instruct on a session that is working.
+A replay that FAILS is a genuine install failure and reaches the existing
+machinery: the compose gate latches dependent services to `error`, and the gap is
+recorded with the existing `install-failed` reason and a `dependency-reset`
+label, so the notice names what moved rather than inventing a fourth surface.
 
 ### Why the compose install gate still starts the services
 
@@ -358,6 +353,9 @@ skipped.
 - `src/server/orchestrator/warm-pool-manager.ts` — gates the pre-install.
 - `src/server/orchestrator/services/claim-session.ts` — drops the acceptance
   record when a clone changes hands, beside the marker unlink it already did.
+- `src/server/orchestrator/services/session-fork-merge.ts` — carries the record
+  into a fork, which inherits the parent's mutated workspace and would otherwise
+  read as a first install and run what the parent refused.
 - `src/server/orchestrator/overlay-session.ts` — `preStampInstallMarker` declines
   while the gate withholds.
 - `src/server/orchestrator/services/claim-session.ts` — clears the record when a

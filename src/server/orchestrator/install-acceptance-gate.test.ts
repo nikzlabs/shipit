@@ -29,11 +29,11 @@ import {
   INSTALL_ACCEPTED_FILE,
   acceptedInstallCommands,
   clearAcceptedInstall,
+  copyAcceptedInstall,
   evaluateInstallGate,
   readAcceptedInstall,
   recordAcceptedInstall,
 } from "./agent-install-gate.js";
-import { dependencyGapAgentPrefix, dependencyGapNotice } from "./dependency-staleness.js";
 import { reclaimBlockedSessionCaches, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 import { INSTALL_MARKER_VERSION, type InstallMarker } from "../shared/install-marker.js";
 
@@ -245,6 +245,38 @@ describe("acceptance survives every way the marker can be destroyed", () => {
     expect(evaluateInstallGate({ workspaceDir, requested: CHANGED }).withheld).toBe(true);
   });
 
+  /**
+   * A fork clones the parent's WORKSPACE, so it inherits every plugin-authored
+   * change to `shipit.yaml` the parent was refusing to run. Inheriting the
+   * mutation without the acceptance is the dangerous half: the gate finds no
+   * accepted list, reads "first install", and runs exactly what the parent
+   * withheld.
+   */
+  it("is carried into a fork, which inherits the parent's mutated workspace", () => {
+    installSucceeded(ACCEPTED);
+    const forkWorkspace = path.join(root, "sessions", "fork-1", "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    // The fork's clone carries the plugin's rewritten config, and its own
+    // plugin-data does not exist — a fork copies neither durable sibling.
+    fs.copyFileSync(
+      path.join(workspaceDir, "shipit.yaml"),
+      path.join(forkWorkspace, "shipit.yaml"),
+    );
+
+    copyAcceptedInstall(workspaceDir, forkWorkspace);
+
+    expect(readAcceptedInstall(forkWorkspace)).toMatchObject({ commands: ACCEPTED });
+    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED }).withheld).toBe(true);
+  });
+
+  it("carries nothing from a parent that never completed an install", () => {
+    const forkWorkspace = path.join(root, "sessions", "fork-2", "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    copyAcceptedInstall(workspaceDir, forkWorkspace);
+    // A first-install session for real — nothing to inherit, nothing invented.
+    expect(readAcceptedInstall(forkWorkspace)).toBeNull();
+  });
+
   it("is cleared when the clone changes hands", () => {
     installSucceeded(ACCEPTED);
     // Exactly what `claim-session.ts` does on a HEAD change: unlink the marker
@@ -369,24 +401,31 @@ describe("the gate", () => {
   });
 });
 
-describe("the pre-stamp cannot assert a tree the gate is refusing to build", () => {
-  it("declines while the gate is withholding, even on a perfect base hit", async () => {
+/**
+ * `preStampInstallMarker` writes a marker asserting the mounted base already
+ * satisfies this checkout. An earlier revision gated it on the trust verdict,
+ * because a marker written there used to BE the accepted list — so the base
+ * pointer could walk a command list into a session that never accepted it.
+ *
+ * With acceptance in its own record, that gate is redundant and was removed: the
+ * pre-stamp is a dependency-correctness mechanism again, and nothing it writes
+ * can move what this session has accepted.
+ */
+describe("the pre-stamp cannot move the accepted list", () => {
+  it("stamping a base pointer's list does not make that list accepted", async () => {
     rotateUnderSession();
-    // The pointer matches this checkout on every axis the pre-stamp checks —
-    // commit, generation, runtime key, and the command list. On the incident host
-    // that produced a marker six seconds after the gate had refused the install,
-    // which then suppressed every later attempt to repair the tree.
+    // The pointer matches on every axis the pre-stamp checks — commit,
+    // generation, runtime key, and the command list — for the CHANGED list.
     const stamped = await preStampInstallMarker({
       stateDir: path.join(root, "state"),
       workspaceDir,
       specs: [makeSpec(2)],
       readPointer: () => pointerFor(CHANGED, 2),
     });
-    expect(stamped).toBe(false);
-    expect(fs.existsSync(markerFile)).toBe(false);
-    // Which is what keeps the diagnosis alive: a marker here would say the tree
-    // is fine, and the gate reads its absence as "the reinstall never ran".
-    expect(evaluateInstallGate({ workspaceDir, requested: CHANGED }).afterDependencyReset).toBe(true);
+    expect(stamped).toBe(true);
+    // ...and the gate is unmoved: the record still says ACCEPTED.
+    expect(acceptedInstallCommands(workspaceDir)).toEqual(ACCEPTED);
+    expect(evaluateInstallGate({ workspaceDir, requested: CHANGED }).withheld).toBe(true);
   });
 
   it("still stamps the base hit when the list is one this session accepted", async () => {
@@ -410,67 +449,5 @@ describe("the pre-stamp cannot assert a tree the gate is refusing to build", () 
       readPointer: () => pointerFor(CHANGED, 1),
     });
     expect(stamped).toBe(true);
-  });
-});
-
-describe("what the withheld-after-reset gap says", () => {
-  const gap = {
-    reason: "install-withheld" as const,
-    commands: ACCEPTED,
-    withheld: CHANGED,
-  };
-
-  it("names the in-force list as the remedy and the withheld one as not run", () => {
-    const notice = dependencyGapNotice(gap);
-    const remedyAt = notice.indexOf(`    ${ACCEPTED[0]}`);
-    const withheldAt = notice.indexOf("Not run:");
-    expect(remedyAt).toBeGreaterThan(-1);
-    expect(withheldAt).toBeGreaterThan(remedyAt);
-    expect(notice).toContain(CHANGED[0]);
-    // The symptom the incident's user was handed, so the notice is findable from
-    // the thing they searched for.
-    expect(notice).toContain("exit 127");
-  });
-
-  it("tells the agent to run the in-force list and not the withheld one", () => {
-    const prefix = dependencyGapAgentPrefix(gap);
-    expect(prefix.startsWith("[System]")).toBe(true);
-    expect(prefix).toContain("Do NOT run the changed `agent.install`");
-    // Requirement 4 — the remedy is agent-mediated, and it restores the packages
-    // without adopting the plugin's change.
-    expect(prefix).toContain(ACCEPTED[0]);
-  });
-
-  /**
-   * Four different routes reach this state and only one of them replaces the
-   * shared base, so no surface may name that as the cause. The earlier wording
-   * did, which made it simply false for a disk reclaim or a failed reinstall.
-   */
-  it("does not claim a cause that is only true for one of the routes", () => {
-    for (const text of [
-      dependencyGapNotice(gap),
-      dependencyGapAgentPrefix(gap),
-    ]) {
-      expect(text).toContain("stopped vouching");
-      expect(text).not.toMatch(/^ShipIt replaced the shared dependency base/m);
-    }
-  });
-
-  /**
-   * ShipIt genuinely cannot tell a broken session from a healthy one here, so the
-   * wording must not order an unconditional reinstall every turn — `npm ci`
-   * deletes `node_modules` and rebuilds from scratch, which is not free to do to
-   * a session that is working.
-   */
-  it("frames the remedy as diagnostic ordering, not an unconditional instruction", () => {
-    for (const text of [dependencyGapNotice(gap), dependencyGapAgentPrefix(gap)]) {
-      expect(text).toMatch(/unverified|may be/i);
-      expect(text).not.toMatch(/Dependencies are incomplete/);
-    }
-    expect(dependencyGapAgentPrefix(gap)).toContain("Before you treat any");
-  });
-
-  it("says nothing at all for a healthy session", () => {
-    expect(dependencyGapAgentPrefix(null)).toBe("");
   });
 });
