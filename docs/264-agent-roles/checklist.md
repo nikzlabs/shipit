@@ -264,3 +264,8 @@ see it: the rule is stated in one phase and violated by another phase's layer in
       it, and the pair `--role` + `--no-role` is refused at both the shim and the parser. A role
       deleted since the parent started on it inherits nothing rather than recording a name with no
       instructions behind it
+
+      `noRole` is named at every hop it crosses — shim payload, worker relay body, orchestrator
+      route, parser — rather than riding the relay's pass-through. Cross-agent review caught the
+      worker hop, which is the hop this file already records `--model` going missing on for three
+      releases; a relay test now pins the boolean across it

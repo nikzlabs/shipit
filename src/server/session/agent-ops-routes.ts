@@ -664,6 +664,11 @@ export function registerAgentOpsRoutes(
       billingMode?: string;
       modelId?: string;
       reasoningEffort?: string;
+      // docs/264-agent-roles req 20 — `--no-role`: inherit the parent's
+      // parameters without the role it is running. Named here for the same
+      // reason every field above is, and it is the newest one, so it is the one
+      // a rename would drop first.
+      noRole?: boolean;
       // docs/205 — completely separate (parentless) spawn; forwarded verbatim.
       detached?: boolean;
     };
