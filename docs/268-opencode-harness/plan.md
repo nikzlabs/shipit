@@ -326,11 +326,16 @@ instead of its container path. Everything else — `validateImages`,
 `saveImagesToUploadsDir`, the prompt block, the adapter, the spawn — is ShipIt's
 own code unchanged.
 
-**What the modality claim costs.** It is declared for every routed model,
-because `ModelDef` carries no per-model modality. That is the bet Claude Code's
-`supportsImages: true` already makes, and it fails the same visible way: attach
-an image while routed to a text-only model and the service rejects the request.
-The alternative was silence for every model, vision-capable or not.
+**What the modality claim costs — planning#460.** It is declared for every
+routed model, because `ModelDef` carries no per-model modality. Attach an image
+while routed to a text-only model and the request is malformed, so the service
+rejects it; the trade is deliberate, since declaring nothing lost the image
+silently for every model, vision-capable or not. It is a *harder* failure than
+Claude Code's harness-level `supportsImages: true`, and the two should not be
+read as the same bet — Claude's delivery is a text block naming a file, so image
+bytes reach the API only if the agent reads it, while this declaration has the
+CLI hand the file part to the model directly. planning#460 tracks gating it per
+model once the catalogue can say which models see.
 
 ## Independent review outcomes (docs/268, same-day)
 

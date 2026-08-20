@@ -53,11 +53,18 @@ const OPENCODE_REASONING_LEVELS: readonly string[] = (
  * for the anthropic-messages block too — by inheritance, not by measurement.
  *
  * Declared for EVERY routed model rather than per model, because the catalogue
- * carries no per-model modality (`ModelDef` has no such field). That is the same
- * bet Claude Code's `supportsImages: true` already makes — a harness-level flag
- * over a model-level fact — and it fails the same visible way: attach an image
- * while routed to a text-only model and the service rejects the request. The
- * alternative on offer was silence for every model, vision-capable or not.
+ * carries no per-model modality (`ModelDef` has no such field). Attach an image
+ * while routed to a text-only model and the request itself is malformed, so the
+ * service rejects it — which is the deliberate trade: a visible error beats the
+ * silent drop that declaring nothing gave every model, vision-capable or not.
+ *
+ * Note the failure is HARDER than Claude Code's harness-level `supportsImages:
+ * true`, so do not read the two as the same bet (a review of planning#458 drew
+ * the distinction): Claude's delivery is a text block naming a file, so image
+ * bytes reach the API only if the agent chooses to read it, while this
+ * declaration has the CLI hand the file part to the model directly.
+ * **planning#460** tracks gating per model once `ModelDef` can say which models
+ * see.
  */
 const MODEL_MODALITIES = { input: ["text", "image"], output: ["text"] } as const;
 
