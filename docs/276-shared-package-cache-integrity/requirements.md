@@ -118,89 +118,46 @@ repository-backed, is not an Ops session, and is detected as pnpm (a
 
 **Q1 — How much protection do you want?**
 
-*Really a choice between (a) and (c). Option (b) is kept, struck through, because
-"just check the packages" is the answer everyone reaches for first and the reason
-it fails is worth seeing once.*
-
 - **(a) Contain it.** Give the pnpm store a project key, so it matches what npm
   already does. A bad session then reaches only sessions of the *same project*,
-  instead of every project on the machine. Cheapest to build. Uses more disk.
-  Leaves the common case — several sessions on one project — open. Note that npm
-  is *already* per-project and is still fully exploitable, which is the measured
-  evidence that this alone is not a fix.
-- **(b) Check packages at install time.** ~~Verify the bytes as a session
-  installs them, and refuse if they are wrong.~~ **Not a real option — it
-  collapses into something else, and you should know why before discounting it.**
-
-  A check needs something to check *against*, and that expected value sits in the
-  same shared, writable place as the bytes. Measured: changing the *expected
-  hash* made the check pass on the attacker's package and run its code. The check
-  worked perfectly; it was comparing against a number the attacker chose.
-
-  So the only question that matters is where the expected value comes from, and
-  there are three answers: the project's own lockfile (trustworthy, but does not
-  cover adding a package), a per-session copy of the resolution data
-  (trustworthy, and then the package manager's existing check does the work —
-  **this is the fix, already step 1 of the plan**), or asking the registry fresh
-  (priced and refuted).
-
-  For pnpm there is an extra cost, because it checks nothing today and ShipIt
-  would have to hash files itself: measured at ~1.5 s for a 32,310-file, 478 MB
-  tree with a warm cache, against an install whose warm floor is ~5–7 s. And it
-  would still be comparing against a value the attacker can write.
-- **(c) Give each session its own copy of installed packages.** Today sessions
+  instead of every project on the machine. Cheapest to build, uses more disk, and
+  it is **not a fix** — npm is already per-project and is still fully
+  exploitable. It leaves the common case open, since several sessions on one
+  project is normal use.
+- **(b) Give each session its own copy of installed packages.** Today sessions
   share the actual files; this would copy them instead. Tampering then cannot
   reach a session that already installed, and the agent keeps full control of its
-  own packages. **← recommended**, now that requirement 9 rules out the
-  alternative below. It costs disk — roughly 464 MB per session, a cost an
-  earlier change (docs/198) was made specifically to remove — and it does not
-  stop a session that installs *fresh* from being handed a tampered package.
-- **(d) Stop sessions writing the shared copy at all.** ~~Sessions read it;
-  ShipIt writes it.~~ **Ruled out by requirement 9** in its original form: it
-  required ShipIt to fetch packages in place of the session's own install
-  command. Measured consequences that made it unacceptable — ShipIt would have to
-  *own* the shared files (marking them read-only is not enough, because a session
-  that owns a file can make it writable again), and the agent would lose the
-  ability to edit installed packages, because the installed file and the shared
-  file are one file.
+  own packages. **← recommended.** Costs roughly 464 MB per session — a cost
+  docs/198 was made specifically to remove — and it does not stop a session
+  installing *fresh* from being handed a tampered package.
 
-  A **reshaped** form was then priced — ShipIt controls package downloads
-  invisibly, so `npm install` still works — and it **does not work either**. The
-  attacker never downloads anything; it writes to the shared files directly, so
-  controlling downloads is never consulted. Measured: a poisoned entry was served
-  with the network fully available, in about 400 ms, without asking anywhere.
+Both are compatible with requirement 9. Neither closes everything; what each does
+and does not close is the table in [plan.md](./plan.md).
 
-**One thing requirement 9 did not settle.** You rejected option (d) in response
-to a consequence about **editing files inside installed packages**, but stated
-the requirement as **running install commands**. Those are different
+**Two other approaches were considered and are closed** — kept out of the choice
+above because they are no longer live, with the full reasoning in plan.md:
+"verify the packages at install time" (a check is only worth its expected value,
+and that value sits in the same writable place as the bytes), and "stop sessions
+writing the shared copy" (ruled out by requirement 9; its reshaped form was
+priced and refuted).
+
+**One thing requirement 9 did not settle.** You rejected "stop sessions writing"
+in response to a consequence about **editing files inside installed packages**,
+but stated the requirement as **running install commands**. Those are different
 capabilities. If the agent must also be able to edit a dependency in place — to
 debug it, or for `patch-package`-style fixes — say so, because it further
 constrains the answer. I have not assumed it.
 
 **Q2 — May we require projects to pin their dependency versions?**
-*This is now the highest-value decision here, and it was not one of the three
-options the issue proposed.* A "lockfile" records exactly which package versions
-a project uses. Most projects have one and it is standard practice.
+A "lockfile" records exactly which package versions a project uses. Most projects
+have one, and it is standard practice.
 
-Measured, and **narrower than an earlier draft of this doc claimed**. A lockfile
-protects a package it already pins: the tampered entry is ignored and the correct
-package installs. It does **not** protect a package the lockfile cannot answer
-for. Verified, with the network available and a valid lockfile present:
-
-- `npm install <new-package>` — **not protected.** The attacker's code ran during
-  the install.
-- `npm install`, when `package.json` asks for something the lockfile does not
-  have — **not protected.** In the *same run*, the pinned package installed
-  correctly while the unpinned one was poisoned.
-
-**And the tampering writes itself into the lockfile.** After the poisoned add,
-the project's `package-lock.json` recorded the attacker's hash as the expected
-one. So it survives a cache wipe, and every later "safe" install faithfully
-reproduces it — and ShipIt commits the changed lockfile automatically.
-
-Forcing the package manager to re-check online is not a substitute either: an
-attacker pointing at a genuinely published package defeats it, installing a
-different package under the expected name (verified).
+Worth having, but **defence in depth, not the fix** — an earlier draft of this
+doc overstated it. Measured: a lockfile protects the packages it already pins,
+and nothing it has to resolve. `npm install <new-package>` ran the attacker's
+code anyway, and so did a plain `npm install` when `package.json` had drifted
+ahead of the lockfile. The real fix for that path costs nothing to decide and is
+not a question for you — it is step 1 of the plan.
 
 - **(a) Yes, require it.** A project without one installs without the shared copy,
   or gets a warning. **← recommended** — the protection is then maintained by the
@@ -208,15 +165,16 @@ different package under the expected name (verified).
 - **(b) No.** We build and maintain the protection for those projects. More work,
   ongoing.
 
-**Q3 — If the complete fix means sharing less, is that allowed?**
-You previously approved a rule that sessions must keep sharing these copies so
-installs stay fast (`docs/270-per-session-worker-uids` req 9). Option (c) above
-may end up as "shared for reading, but not for writing", and whether that still
-counts as sharing is your call, not mine.
+**Q3 — Does per-session copying conflict with the sharing rule you approved?**
+You approved a rule that sessions must keep sharing these copies so installs stay
+fast (`docs/270-per-session-worker-uids` req 9). My reading is that Q1 option (b)
+**does not break it literally** — the shared download store stays shared; what
+stops being shared is the installed files inside each project. But it spends the
+disk that rule's rationale was protecting, so the call is yours.
 
-- **(a) Keep the rule.** The fix works around it. **← recommended.**
-- **(b) Bend it** for the one shared area that is worst.
-- **(c) Reopen the rule.** Most expensive; it re-opens earlier design decisions.
+- **(a) It is compatible; proceed.** **← recommended**, on the reading above.
+- **(b) It conflicts — do not spend that disk.** This leaves Q1 with only "contain
+  it", and the problem substantially open.
 
 **Q4 — Should we hold the other planned change?**
 A separate planned change (`docs/266-orchestrator-git-trust-boundary` E4) would
@@ -236,7 +194,7 @@ Requirements 1–4 and 7 restate the problem or an already-approved requirement.
 Requirements 5, 6 and 8 were **supplied by the agent** and are the reason Q2 and
 Q4 exist — they are marked so a reviewer can see what a human did not say.
 
-Requirements 4, 5 and 6 exist because of three tests run against this
+Requirements 4, 5 and 6 exist because of tests run against this
 container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
 
 1. **npm content cache is already safe.** Overwriting a cached tarball under
