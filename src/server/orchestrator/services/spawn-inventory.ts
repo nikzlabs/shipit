@@ -36,18 +36,16 @@
  * and a model with no credential are not things an override may name, and
  * listing them would produce exactly the refusals the list exists to prevent.
  *
- * **The handler is not session-credential-scoped.** `GET /api/sessions/:id/agent/params`
- * 404s if the session does not exist, then returns {@link listSpawnParameters}
- * with no session argument. `eligibleModels` is the process-wide cache, filled
- * from `listConfiguredCredentials(credentialStore)` at `detect()` /
- * `refreshAuth()` — the install store, including account rows, not the
- * calling worker's mount (docs/138).
- *
- * Whether every worker *observes* the same listing is a separate, disputed
- * fact: a grok-pinned session and a claude-pinned sibling measured disagreeing
- * `grep xai` output at the same instant (planning#452). Do not cite this
- * function as proof that an ordinary session can name a grok subscription
- * target.
+ * **Install-wide, not the calling worker's mount.** `GET /agent/params` uses
+ * the session id only to 404; the listing is `agentRegistry.eligibleModels`.
+ * A Claude session therefore still sees Grok's xAI subscription rows, even
+ * though docs/138 never copies grok's `auth.json` into that worker. A
+ * `shipit agent run` onto that row provisions the subtree for the spawn and
+ * wipes it (docs/144) — the same path `--role GrokSub` already takes. The
+ * listing answering "what may an override name *here*" and the worker
+ * answering "what is on disk for the resident CLI" are two questions, and
+ * collapsing them would either hide a runnable consult or put every
+ * harness's account in every container.
  */
 
 import type { AgentId, RoleView } from "../../shared/types.js";
