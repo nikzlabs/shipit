@@ -97,6 +97,13 @@ check that already exists" — which turns out to be true of npm only.
 
 *Sessions read the caches; only a ShipIt-owned process populates them.*
 
+> **⚠️ Ruled out in this form by requirement 9** (2026-08-20): the agent must be
+> able to run `npm install` and equivalent commands, and they must work. This
+> option replaced the session's own install with a ShipIt-owned fetching step,
+> which is exactly what requirement 9 forbids. The section is kept because the
+> measurements below are what produced that requirement, and because a **reshaped**
+> variant survives — see [Reshaped B](#reshaped-b--mediate-the-fetch-not-the-write).
+
 **What it costs.** The most of the three, and the cost is concentrated in one
 place: `pnpm install` writes to the store as a matter of course, so making the
 store read-only to sessions means brokering the populate step through a process
@@ -137,7 +144,7 @@ And req 2 forbids a *silent* fallback to a private copy, which is precisely what
 pnpm does naturally when it cannot write the store — so the broker has to work,
 not degrade.
 
-### Variant — copy instead of hardlink
+### Variant — copy instead of hardlink *(now the leading candidate)*
 
 `package-import-method=copy` makes `node_modules` entries copies rather than
 hardlinks. That alone kills **H3**: with no shared inode, poisoning the store
@@ -163,8 +170,26 @@ private copy" that req 2 forbids, so the broker has to actually work rather than
 degrade. Whether "shared for reads, not for writes" satisfies
 `docs/270-per-session-worker-uids` req 9 is Q3, and is the requester's call.
 
-**Verdict.** The only complete answer, and expensive. Worth it only if Q1 is
-answered (c) — "stop sessions writing the shared copy".
+**Verdict.** The only complete answer, and **not available as written** —
+requirement 9 forbids replacing the session's install command. Its value now is
+that it defines what a complete answer would have to do, which is what "Reshaped
+B" has to reproduce without the session noticing.
+
+### Reshaped B — mediate the fetch, not the write
+
+Requirement 9 constrains what the agent **observes**, not how ShipIt implements
+it: if `npm install` runs in the session and works, the requirement is met, even
+if ShipIt supplies the bytes underneath. That leaves one route open — mediate at
+the **registry/network** layer rather than the **filesystem** layer, so the
+session keeps running its own install command and keeps owning its own
+`node_modules`, while what enters the shared store is fetched and verified by
+ShipIt.
+
+**This is unpriced.** It is named here so the option set is honest, not because
+it is recommended yet. Before it could be, three things need answering: whether
+every install path can be pointed at a mediating endpoint (including the agent's
+ad-hoc terminal use), what it costs a warm install (req 7), and whether it holds
+for package managers that bypass the registry (git and `file:` dependencies).
 
 ## Option C — narrow the blast radius (pnpm store key)
 
@@ -217,25 +242,35 @@ addresses neither demonstrated hole, and per-repo keying is already disproven by
      usefully forge. *(This is a mechanism proposed here, not a requirement; it
      needs a spike to confirm npm tolerates the split.)*
 
-2. **Treat the pnpm store as the serious half, and take Q1 to the requester
-   before designing for it.** H2 and H3 are both open, nothing in pnpm helps,
-   and option B is the only answer that closes them without ShipIt writing a
-   verifier pnpm does not have. If Q1 comes back (a) or (b), say so explicitly
-   in the requirements and document the residual — otherwise "we added integrity
+2. **Close H3 with per-session copies** (`package-import-method=copy`), unless
+   the requester asks for Reshaped B to be priced. Requirement 9 removed the
+   only other route: the session must keep managing its own packages, so the
+   shared files cannot be taken away from it, and once the session owns them
+   read-only permissions are worthless (measured — see option B). Copying breaks
+   the shared inode instead, which is what H3 actually depends on. The cost is
+   real and is the exact cost docs/198 removed: ~464 MB per session.
+
+3. **H2 has no cheap answer, and that must be said plainly.** With copies in
+   place a fresh install can still be handed tampered bytes, and pnpm verifies
+   nothing. Closing it means either ShipIt verifying store contents itself
+   (priced against req 7) or Reshaped B. If neither is taken, record the residual
+   in the requirements and in shipit-docs — otherwise "we added integrity
    checking" will read as though the store were covered, which is exactly the
    error `docs/198-dep-cache-content-keying-and-pnpm-store` already made.
 
-3. **Treat C as optional and orthogonal.** Ship it if cross-repo isolation is
-   independently wanted (Q1 answered (a)) and the disk cost is acceptable — not as this
-   issue's fix.
+4. **Treat C as optional and orthogonal.** Ship it if cross-repo isolation is
+   independently wanted (Q1 answered (a)) and the disk cost is acceptable — not
+   as this issue's fix. Note it stacks badly with step 2: per-repo keying and
+   per-session copies both spend disk, and together they spend it twice.
 
-4. **Hold `docs/266-orchestrator-git-trust-boundary` E4** until at least step 1
+5. **Hold `docs/266-orchestrator-git-trust-boundary` E4** until at least step 1
    lands and Q1 is answered (req 8, Q4).
 
 The one-line version: **the cheapest answer really is to stop defeating a check
 that already exists — but that is true of npm only. pnpm has no check to stop
 defeating: it verifies nothing on install, and hardlinks mean there is no read
-to check afterwards.**
+to check afterwards.** And after requirement 9, the way to deal with those
+hardlinks is to stop making them, not to take them away from the session.
 
 ## Key files
 

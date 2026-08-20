@@ -86,6 +86,11 @@ the two directly-writable surfaces unless they name the base.
    constraint between two open items, not a requirement to build E4 or to change
    it.)*
 
+9. The agent MUST be able to run `npm install` and equivalent package-manager
+   commands inside its own session, and they MUST work. *(Stated by the
+   requester, 2026-08-20 — see Resolved questions. This rules out any design in
+   which the session cannot manage its own installed packages.)*
+
 ## Open questions
 
 Four decisions, and they are yours. The reasoning and the costs are in
@@ -124,26 +129,33 @@ repository-backed, is not an Ops session, and is detected as pnpm (a
   middle and is worth less than it sounds: one of the two package managers we
   support already does this for us, and the other checks nothing at all, so we
   would be building the check ourselves for the half that matters most.
-- **(c) Stop sessions writing the shared copy at all.** Sessions read it; ShipIt
-  writes it. **← recommended.** The only option that actually closes the problem,
-  including for sessions that already installed. Consequences you are choosing,
-  measured rather than estimated:
-  - ShipIt must **own** the shared files. Marking them read-only is not enough —
-    a session that owns a file can make it writable again through its own copy.
-  - **The agent can no longer edit installed packages.** Editing a dependency in
-    place to debug it stops working, because the installed file and the shared
-    file are the same file.
-  - **Something other than the session must fetch packages.** Adding a package
-    mid-conversation needs a request to ShipIt instead of a direct download.
-  - It touches the install path for every project, which is the most-used path
-    in the product.
+- **(c) Give each session its own copy of installed packages.** Today sessions
+  share the actual files; this would copy them instead. Tampering then cannot
+  reach a session that already installed, and the agent keeps full control of its
+  own packages. **← recommended**, now that requirement 9 rules out the
+  alternative below. It costs disk — roughly 464 MB per session, a cost an
+  earlier change (docs/198) was made specifically to remove — and it does not
+  stop a session that installs *fresh* from being handed a tampered package.
+- **(d) Stop sessions writing the shared copy at all.** ~~Sessions read it;
+  ShipIt writes it.~~ **Ruled out by requirement 9** in its original form: it
+  required ShipIt to fetch packages in place of the session's own install
+  command. Measured consequences that made it unacceptable — ShipIt would have to
+  *own* the shared files (marking them read-only is not enough, because a session
+  that owns a file can make it writable again), and the agent would lose the
+  ability to edit installed packages, because the installed file and the shared
+  file are one file.
 
-  *A cheaper middle exists if those consequences are unacceptable:* have each
-  session keep its **own copy** of installed packages instead of sharing the
-  files. Tampering then cannot reach a session that already installed, and the
-  agent keeps write access — but a session installing fresh can still be handed a
-  tampered package, and this re-buys a disk cost of roughly 464 MB per session
-  that an earlier change (docs/198) was made specifically to remove.
+  It survives only in a **reshaped** form, which is **unpriced**: ShipIt mediates
+  *fetching* invisibly, so `npm install` still works from the agent's point of
+  view. Say so if you want that priced — it is the only route that closes the
+  problem completely.
+
+**One thing requirement 9 did not settle.** You rejected option (d) in response
+to a consequence about **editing files inside installed packages**, but stated
+the requirement as **running install commands**. Those are different
+capabilities. If the agent must also be able to edit a dependency in place — to
+debug it, or for `patch-package`-style fixes — say so, because it further
+constrains the answer. I have not assumed it.
 
 **Q2 — May we require projects to pin their dependency versions?**
 A "lockfile" is a file recording exactly which package versions a project uses.
@@ -218,4 +230,20 @@ container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
 
 ## Resolved questions
 
-None yet.
+**2026-08-20 — the agent must keep being able to install packages.**
+Shown the measured consequences of Q1 option (c) ("stop sessions writing the
+shared copy at all"), the requester rejected them, stating: *"the agent should be
+able to run `npm install` or similar"*. Recorded as **requirement 9**.
+
+What this settles, and what it does not:
+
+- Option (c) **as originally written** is dead. It required a ShipIt-owned
+  fetching step in place of the session's own install command.
+- It does **not** settle Q1. Three options remain, and (c) survives only in a
+  reshaped form where ShipIt mediates *fetching* invisibly and `npm install`
+  still works from the agent's point of view. That reshaping is unpriced.
+- The requester's words are about **running install commands**. They were said in
+  response to a consequence about **editing files inside installed packages**,
+  which is a related but distinct capability. Requirement 9 is written to what
+  was actually said; the editing capability is asked about separately in Q1, and
+  is not assumed.
