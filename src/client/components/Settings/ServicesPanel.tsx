@@ -790,14 +790,18 @@ const MODE_NOTICES: Record<string, { kind: ModeNoticeKind; text: string }> = {
     kind: "hazard",
     text: "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
   },
-  // docs/274 req 16 — the absence, said rather than drawn. xAI publishes no
-  // subscription usage API: every candidate route 404s, and the `grok` CLI
-  // itself has no reader either (it links out to grok.com for the figure).
-  // So this subscription shows no usage pill anywhere in ShipIt, and this
-  // sentence is what stops that from reading as a missing number.
+  // docs/274 req 16 — the absence, said rather than drawn.
+  //
+  // **This sentence used to say xAI publishes no usage API, and that was
+  // wrong.** `GET /v1/billing?format=credits` on the subscription host returns
+  // the weekly pool (`creditUsagePercent`, `currentPeriod.start`/`.end`,
+  // per-product breakdown) to the CLI's own token — the query parameter is a
+  // literal in the grok binary, and the first probe simply called the endpoint
+  // without it. So the absence is ShipIt's, not the vendor's, and the line says
+  // which. It is removed when `xai-plan-usage` has a reader (planning#454).
   [credentialModeKey("xai", "sub")]: {
     kind: "absence",
-    text: "ShipIt cannot read SuperGrok usage — xAI publishes no subscription usage API — so this card shows no remaining figure and no usage cutoffs. xAI's own grok CLI has no reader either; for a remaining allowance it sends you to grok.com.",
+    text: "ShipIt does not read SuperGrok usage yet, so this card shows no remaining figure and no usage cutoffs. xAI does publish the weekly figure — Settings → Usage at grok.com shows it — and a reader for it is planned.",
   },
 };
 

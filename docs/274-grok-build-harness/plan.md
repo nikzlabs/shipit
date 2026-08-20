@@ -907,16 +907,72 @@ change to make here. Recorded, not acted on.
   limit.", "Buy more credits", "You can continue by increasing your spending
   limit."), never a remaining balance.
 
-**Verdict: documented no-reader, honest surface.** `quota: null` stands, the
-three UI surfaces now agree with it, and the card says the absence in words.
-This is now a *closed* question rather than an unprobed one: the subscription
-host has no usage route, its one account-shaped route was called with a real
-token and returns calendar-month credit spend, the vendor's own CLI has no
-reader and links out for the figure, and no `x-ratelimit-*` header exists on
-either host. The reopening condition is a route appearing where these 404 —
-`/v1/usage` or `/v1/rate-limits` on `cli-chat-proxy.grok.com` — at which point
-`quota: null` becomes a `QuotaIntegrationId` and this section is the record of
-what was true before it.
+**Verdict, superseded 2026-08-20 — a reader DOES exist, and the first probe
+missed it by one query parameter.**
+
+```
+GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+Authorization: Bearer <the `key` from ~/.grok/auth.json>
+```
+
+returns, on a live SuperGrok account:
+
+```json
+{"config":{
+  "currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY",
+                   "start":"2026-08-18T09:41:48.430622+00:00",
+                   "end":"2026-08-25T09:41:48.430622+00:00"},
+  "creditUsagePercent":10.0,
+  "productUsage":[{"product":"GrokBuild","usagePercent":10.0},{"product":"GrokChat"}],
+  "onDemandCap":{"val":0},"onDemandUsed":{"val":0},"prepaidBalance":{"val":0},
+  "isUnifiedBillingUser":true,
+  "billingPeriodStart":"2026-08-18T09:41:48.430622+00:00",
+  "billingPeriodEnd":"2026-08-25T09:41:48.430622+00:00"}}
+```
+
+`creditUsagePercent` is the **weekly pool** percentage, `currentPeriod` is the
+window that resets, and `productUsage[]` breaks it down per product — Grok Build
+separately from Grok Chat. That is a 7-day window with a used percentage and a
+reset instant: exactly what `SubscriptionLimitsWindow` carries.
+
+**How the earlier verdict got it wrong, because the shape of the error matters
+more than the error.** Bare `/v1/billing` — no query parameter — returns a
+*different representation*: calendar-month credit spend, all zeros. That answer
+is real, so it never looked like a wrong call; it looked like a definitive
+negative. Three checks all passed *and all missed the parameter*: the route
+sweep tested paths and not query strings; the strings grep that found `/billing`
+matched a path-shaped pattern that stopped at the `?`; and the authenticated
+probe was written from that path list. **`/billing?format=credits` is a literal
+in the grok binary at offset 137169287, twenty-four bytes before
+`extensions/billing.rs`** — it was in the dump the whole time. The lesson is
+narrow and reusable: *a 200 that answers a different question is more dangerous
+than a 404*, and an endpoint's surface is its paths **and its parameters**.
+
+Corroboration arrived from the other direction too: xAI's own FAQ documents one
+shared weekly pool across Chat, Build, API, Imagine and Voice (June 2026,
+replacing per-product daily caps), visible at Settings → Usage as a percentage
+plus a reset date — the consumer view of this same figure.
+
+**What is NOT available**, so the next reader does not re-probe it: the
+grok.com web API refuses this credential by policy, not by absence —
+`POST https://grok.com/rest/rate-limits` (the 2-hour chat window, `requestKind`
+/ `modelName` → `remainingQueries` / `totalQueries`) answers **403
+`Action cannot be performed by OAuth2 token users`** for the CLI's token, on
+every body tried. `/v1/usage` and `/v1/rate-limits` remain nginx 404s on the
+subscription host, and `?format=weekly` / `?format=usage` fall back to the
+monthly object. So `format=credits` is the one door, and it is open.
+
+**Consequence for the catalogue.** `quota: null` is wrong for `xai:sub` and
+should become a real `QuotaIntegrationId` with an `XaiLimitsProvider` behind it
+— tracked as **planning#454**. Two shape notes for whoever builds it. The
+window is weekly and there is **no 5-hour window at all**, so the pill's short
+window is not "unreported" but *nonexistent*, and rendering `5h · —` beside a
+real `7d 10%` would repeat the exact dishonesty this section is about. And the
+figure is a **percentage used with no remaining count**, so a "N of M left"
+surface cannot be built from it.
+
+Until that reader ships, the suppression below stands and the card's notice says
+the absence is ShipIt's rather than the vendor's.
 
 **One adjacent gap, not fixed here.** The exhaustion classifier
 (`ws-handlers/agent-rate-limits.ts`) is text-pattern-based and harness-agnostic,

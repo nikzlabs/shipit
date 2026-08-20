@@ -1980,7 +1980,7 @@ describe("the xAI subscription's missing usage API (docs/274 req 16)", () => {
     ]);
     render(<ServicesPanel />);
     const notice = screen.getByTestId("mode-notice-xai:sub");
-    expect(notice).toHaveTextContent(/no subscription usage API/);
+    expect(notice).toHaveTextContent(/does not read SuperGrok usage yet/);
     expect(notice).toHaveTextContent(/grok\.com/);
   });
 
