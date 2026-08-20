@@ -96,57 +96,63 @@ import {
 export const INSTALL_WITHHELD_FILE = ".install-withheld";
 
 /**
- * Records that ShipIt deleted this session's install marker on purpose, and
- * what the marker said when it went. Written by every deleter that expects
- * `agent.install` to run again afterwards, and cleared by the next install that
- * completes with positive evidence.
+ * The command list this session has **accepted** — the durable answer to the one
+ * question the gate asks, kept independently of the install marker.
  *
- * **The marker was carrying two facts that are not the same claim**, and that is
- * the whole defect: "these dependencies are installed" and "the user accepted
- * this command list" both lived in `.install-done`, so deleting it for the first
- * reason destroyed the second. This file is the second one on its own — the list
- * that last ran to completion, which is the gate's entire anchor. Preserving it
- * keeps the withhold decision correct across a reset, and stops
- * `preStampInstallMarker` writing a fresh acceptance in the window the delete
- * opens (see the module docstring).
+ * ## Why this is not the marker, and not a tombstone beside it
  *
- * Its mere PRESENCE is the second signal: between a deliberate delete and the
- * next completed install, this session's dependencies are whatever the shared
- * base happens to carry, which nothing has checked against its checkout. That is
- * what a withheld reinstall then reports.
+ * The marker was being asked to carry two facts that are not the same claim:
+ * "these dependencies are installed" and "the user accepted this command list".
+ * The first is a property of a `node_modules` tree and is *correctly* discarded
+ * whenever that tree stops being trustworthy. The second is a property of the
+ * SESSION and must survive everything short of the session changing hands.
  *
- * ## Why it is NOT beside the install marker
+ * An earlier revision preserved it by writing a tombstone at each place that
+ * deletes the marker. That enumeration cannot be completed, which is the whole
+ * problem with it: four deleters exist (a base rotation, a blocked-session cache
+ * reclaim, disk-tier eviction of `state/`, and a claim handing the clone on), and
+ * the fifth is **in another process** — the session worker whiteouts the marker
+ * before every real reinstall and deliberately writes none if that reinstall
+ * fails (`install-controller.ts`). So a stale-marker reinstall that failed left
+ * an established, plugin-bearing session with no marker and no tombstone, where
+ * `null` reads as "first install" and ALLOWS. Enumerating deleters can only ever
+ * be a race against the next one somebody adds.
  *
- * The obvious home is `<sessionDir>/state/shared/`, with the marker and
- * {@link INSTALL_WITHHELD_FILE}. That subtree is in `REGENERABLE_SESSION_SUBDIRS`
- * (`disk-utils.ts`) — disk-tier eviction and archive delete all of it, correctly,
- * because every artifact in it can be rebuilt. **An acceptance record cannot.**
- * Worse, `plugin-data/` is a deliberately DURABLE sibling (`plugin-state.ts`), so
- * an evicted-and-restored session comes back still plugin-bearing with its anchor
- * gone — and a `null` anchor reads as "first install", which allows. Eviction
- * would hand the credential-bearing container a command list nobody accepted.
+ * So acceptance is recorded at the moment acceptance actually happens — when an
+ * install completes with positive evidence ({@link recordAcceptedInstall}, from
+ * `runInstall`). One writer, no enumeration, and no deletion of dependency state
+ * can move it. `null` here now means what it always claimed to: no install has
+ * ever completed in this session, which is exactly the first-time case the
+ * docs/178 repo-trust decision covers.
+ *
+ * ## Why it is NOT under `state/`
+ *
+ * That subtree is in `REGENERABLE_SESSION_SUBDIRS` (`disk-utils.ts`) — disk-tier
+ * eviction and archive delete all of it, correctly, because every artifact in it
+ * can be rebuilt. An acceptance record cannot. Worse, `plugin-data/` is a
+ * deliberately DURABLE sibling (`plugin-state.ts`), so an evicted-and-restored
+ * session comes back still plugin-bearing; if its anchor went with `state/`, the
+ * restore alone would hand the credential-bearing container a command list nobody
+ * accepted.
  *
  * So it goes where the other durable, non-git session data goes: a sibling of
  * `workspace/`, the `uploads/` convention (docs/217) that the reclaim allowlist
- * leaves alone. It still dies with a full reset or a session delete, which is
- * right — that is a new occupant, not this one. No plugin container mounts the
- * session root (the mount list is the workspace, the plugin's own `plugin-data`
- * subdir, and its settings file), so the containment property is unchanged.
+ * leaves alone. `claim-session.ts` clears it when a clone changes hands — a new
+ * occupant inherits no acceptance. No plugin container mounts the session root,
+ * so the containment property is unchanged.
  */
-export const INSTALL_RESET_FILE = ".install-reset";
+export const INSTALL_ACCEPTED_FILE = ".install-accepted";
 
-/** @see INSTALL_RESET_FILE */
-export interface InstallResetRecord {
+/** @see INSTALL_ACCEPTED_FILE */
+export interface AcceptedInstallRecord {
   /**
-   * The deleted marker's `installCommands`.
-   *
-   * `null` when there was no marker to read — nothing was ever accepted, so
-   * nothing was lost, and the gate allows exactly as it does for a first-time
-   * session. An EMPTY array is the different, deliberate answer for a record
-   * that exists but cannot be read: something was accepted and we no longer know
-   * what, which withholds. See {@link readInstallReset}.
+   * The list that last completed. An EMPTY array is the deliberate answer for a
+   * record that exists but cannot be read: something was accepted and we no
+   * longer know what, which withholds. See {@link readAcceptedInstall}.
    */
-  accepted: string[] | null;
+  commands: string[];
+  /** ISO timestamp — diagnostics only, never compared. */
+  at: string;
 }
 
 export interface InstallGateVerdict {
@@ -259,8 +265,16 @@ export function sessionHasPlugin(workspaceDir: string): boolean {
  * takes.
  */
 export function acceptedInstallCommands(workspaceDir: string): string[] | null {
-  const reset = readInstallReset(workspaceDir);
-  return reset ? reset.accepted : markerInstallCommands(workspaceDir);
+  const record = readAcceptedInstall(workspaceDir);
+  if (record) return record.commands;
+  // Migration only. A session that accepted a list BEFORE this record existed has
+  // no record and may still have the marker that list wrote; reading it keeps
+  // that session's anchor rather than silently promoting it to "never accepted
+  // anything". It is a strictly weaker source — the marker is deleted by five
+  // different paths — so it is the fallback and never the answer when a record
+  // exists. `evaluateInstallGate` backfills a record from it on the first
+  // withhold, after which this branch is dead for that session.
+  return markerInstallCommands(workspaceDir);
 }
 
 /**
@@ -319,51 +333,46 @@ export function recordWithheldCommands(workspaceDir: string, commands: string[])
  * flat-layout session on the host).
  *
  * Resolving it outside the `try` is not a style slip, it is a destructive bug.
- * `readInstallReset` is reached from `evaluateInstallGate`, which is reached from
- * the top of `runInstall`, whose caller maps a throw to `{ ok: false }` — and a
- * failed install latches every `dependsOnInstall` service to `error` with
- * "agent.install failed" on it. A layout ShipIt cannot service would take the
- * compose stack down under a diagnosis that names the wrong cause. Contained, it
- * degrades to the same answer the marker read has always given for an
- * unreadable state dir: no anchor, so allow.
+ * {@link readAcceptedInstall} is reached from {@link evaluateInstallGate}, which
+ * is reached from the top of `runInstall`, whose caller maps a throw to
+ * `{ ok: false }` — and a failed install latches every `dependsOnInstall` service
+ * to `error` with "agent.install failed" on it. A layout ShipIt cannot service
+ * would take the compose stack down under a diagnosis naming the wrong cause.
  */
-function resetRecordPath(workspaceDir: string): string {
-  return path.join(sessionRootForWorkspace(workspaceDir), INSTALL_RESET_FILE);
+function acceptedRecordPath(workspaceDir: string): string {
+  return path.join(sessionRootForWorkspace(workspaceDir), INSTALL_ACCEPTED_FILE);
 }
 
 /**
- * Note that ShipIt deleted this session's install marker and expects
- * `agent.install` to run again. Returns whether the record is durably on disk.
+ * Record that this session has accepted `commands` — called when an install
+ * completes with positive evidence that it ran (or that the worker's
+ * content-keyed marker proved the tree already matched).
  *
- * **Atomic**, because a torn write is indistinguishable from a corrupt one and
- * both land on a session whose dependencies are already in question: written to
- * a temp file and renamed, so a reader sees the old record or the new one and
- * never half of either.
+ * This is the ONLY writer, which is the design: acceptance is recorded where
+ * acceptance happens, so no amount of dependency-state deletion — by this
+ * process or the worker's — can move it. See {@link INSTALL_ACCEPTED_FILE}.
  *
- * Callers get the result rather than a swallowed error, and both of them log it —
- * but neither STOPS. That is deliberate, and it is the lesser of two bad states.
- * The alternative to deleting the marker is keeping it, and a marker that
- * outlives the dependencies it describes is precisely the dep-less session both
- * deleters exist to prevent: the dep dir remounts over a populated base, the
- * worker's present-but-empty contradiction check does not fire, and the install
- * is skipped silently. A lost anchor is narrower — it costs only a plugin-bearing
- * session, and only back to the behaviour that shipped before this record
- * existed. Keeping the marker costs every session its dependencies.
+ * **Atomic** (temp + rename), so a reader sees the old record or the new one and
+ * never half of either; a torn write would otherwise be indistinguishable from a
+ * corrupt one, which withholds. Best-effort: a failed write leaves the PREVIOUS
+ * accepted list standing, which withholds the new one until an install succeeds
+ * again. That is the safe direction — it costs a notice, never an execution.
  */
-export function recordInstallReset(workspaceDir: string, record: InstallResetRecord): boolean {
+export function recordAcceptedInstall(workspaceDir: string, commands: string[]): boolean {
   let tmp: string | null = null;
   try {
-    const file = resetRecordPath(workspaceDir);
+    const file = acceptedRecordPath(workspaceDir);
     tmp = `${file}.tmp`;
+    const record: AcceptedInstallRecord = { commands, at: new Date().toISOString() };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(tmp, JSON.stringify(record));
     fs.renameSync(tmp, file);
     return true;
   } catch (err) {
     if (tmp) { try { fs.rmSync(tmp, { force: true }); } catch { /* nothing more to do */ } }
-    console.error(
-      "[install-gate] could not persist the accepted-install record; this session's " +
-      "agent.install gate has lost its anchor and a changed list will be allowed:",
+    console.warn(
+      "[install-gate] could not persist the accepted-install record; the previously " +
+      "accepted list stays in force:",
       err instanceof Error ? err.message : String(err),
     );
     return false;
@@ -371,63 +380,69 @@ export function recordInstallReset(workspaceDir: string, record: InstallResetRec
 }
 
 /**
- * The outstanding reset, or `null` when there is none.
+ * What this session has accepted, or `null` when it has accepted nothing.
  *
- * A record that is PRESENT but unreadable resolves to `{ accepted: [] }`, not to
- * `null`, and the difference is the point. `null` means "nothing was ever
- * accepted", which allows — the right answer for a first-time session and the
- * wrong one here, where the file's existence is evidence that something WAS
- * accepted and we have lost track of what. An empty list matches no request, so
- * the gate withholds and the notice says the in-force list is unknown. It costs
- * a plugin-bearing session one "ask the agent"; reading it as `null` would cost
- * it an unaccepted execution.
+ * A record that is PRESENT but unreadable resolves to an EMPTY command list, not
+ * to `null`, and the difference is the point. `null` means "nothing was ever
+ * accepted", which allows — right for a first-time session and wrong here, where
+ * the file's existence is itself the evidence that something WAS accepted and we
+ * have lost track of what. An empty list matches no request, so the gate
+ * withholds and the notice says the in-force list is unknown.
  */
-export function readInstallReset(workspaceDir: string): InstallResetRecord | null {
+export function readAcceptedInstall(workspaceDir: string): AcceptedInstallRecord | null {
   let raw: string;
   try {
-    raw = fs.readFileSync(resetRecordPath(workspaceDir), "utf8");
+    raw = fs.readFileSync(acceptedRecordPath(workspaceDir), "utf8");
   } catch (err) {
-    // Absent is the ordinary case and means exactly that. A path that will not
-    // resolve at all is the unserviceable-layout throw described on
-    // `resetRecordPath` — no session root, so no record, so no anchor: the same
-    // answer the marker read gives, and never an exception into the install path.
+    // Absent is the ordinary case. A path that will not resolve at all is the
+    // unserviceable-layout throw described on `acceptedRecordPath` — no session
+    // root, so no record, and never an exception into the install path.
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === undefined) return null;
-    // Anything else (EACCES, EIO) is a record we cannot read rather than one
-    // that is not there.
-    return { accepted: [] };
+    // Anything else (EACCES, EIO) is a record we cannot read, not one absent.
+    return { commands: [], at: "" };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { accepted: [] };
+    return { commands: [], at: "" };
   }
-  if (!parsed || typeof parsed !== "object") return { accepted: [] };
+  if (!parsed || typeof parsed !== "object") return { commands: [], at: "" };
   const r = parsed as Record<string, unknown>;
-  if (r.accepted === null) return { accepted: null };
-  if (Array.isArray(r.accepted) && r.accepted.every((c) => typeof c === "string")) {
-    return { accepted: r.accepted };
+  if (Array.isArray(r.commands) && r.commands.every((c) => typeof c === "string")) {
+    return { commands: r.commands, at: typeof r.at === "string" ? r.at : "" };
   }
-  return { accepted: [] };
+  return { commands: [], at: "" };
 }
 
 /**
- * The reset is answered — an install completed with positive evidence that the
- * tree on disk is installed, so the marker it wrote is once again the honest
- * anchor.
- *
- * Best-effort. A record that survives the install that should have cleared it
- * anchors the gate on an older list and keeps the notice coming; it cannot cause
- * an install that should not have run. That is also why the runner's in-memory
- * "no gap" and this file can briefly disagree — they are retracted together, but
- * only one of them can fail.
+ * Drop the acceptance record. Used only when the session's clone changes hands
+ * (`claim-session.ts`) — a new occupant inherits nothing.
  */
-export function clearInstallReset(workspaceDir: string): void {
+export function clearAcceptedInstall(workspaceDir: string): void {
   try {
-    fs.rmSync(resetRecordPath(workspaceDir), { force: true });
+    fs.rmSync(acceptedRecordPath(workspaceDir), { force: true });
   } catch {
-    /* A repeated notice is the whole cost. */
+    /* Best-effort; the next completed install overwrites it anyway. */
+  }
+}
+
+/**
+ * Is the install marker absent — i.e. has the dependency tree stopped being
+ * vouched for?
+ *
+ * Derived rather than stored, which is what lets it cover every route to that
+ * state without enumerating them: a base rotation, a cache reclaim, disk-tier
+ * eviction, and the worker's own whiteout-before-reinstall (which writes no
+ * marker back if the install fails). A withhold landing here is the incident —
+ * the reinstall that was supposed to rebuild the tree did not run.
+ */
+function installMarkerAbsent(workspaceDir: string): boolean {
+  try {
+    return !fs.existsSync(path.join(sharedStateDirFor(workspaceDir), INSTALL_MARKER_FILE));
+  } catch {
+    return true;
   }
 }
 
@@ -447,12 +462,13 @@ export function evaluateInstallGate(args: {
   if (requested.length === 0) return ALLOW;
   if (!sessionHasPlugin(workspaceDir)) return ALLOW;
 
-  // Read once and derive both answers from it: an outstanding reset IS the
-  // accepted-list source while it exists, so "which list is in force" and "are
-  // we after a reset" cannot come apart.
-  const reset = readInstallReset(workspaceDir);
-  const accepted = reset ? reset.accepted : markerInstallCommands(workspaceDir);
+  const accepted = acceptedInstallCommands(workspaceDir);
   if (accepted === null) return ALLOW; // First install — the repo-trust decision covers it.
+  // Migration: a session that accepted a list before the record existed answers
+  // from its marker. Persist that answer the first time we need it, so the
+  // session stops depending on a marker five different paths delete. Cheap and
+  // idempotent — `readAcceptedInstall` short-circuits every later call.
+  if (readAcceptedInstall(workspaceDir) === null) recordAcceptedInstall(workspaceDir, accepted);
   if (sameCommands(accepted, requested)) return ALLOW;
 
   const reported = reportedWithheldCommands(workspaceDir);
@@ -460,7 +476,7 @@ export function evaluateInstallGate(args: {
     withheld: true,
     accepted,
     alreadyReported: reported !== null && sameCommands(reported, requested),
-    afterDependencyReset: reset !== null,
+    afterDependencyReset: installMarkerAbsent(workspaceDir),
   };
 }
 

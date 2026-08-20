@@ -45,7 +45,6 @@ import {
   supersededSessionOverlayLayers,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
-import { acceptedInstallCommands, recordInstallReset } from "./agent-install-gate.js";
 import {
   chownToSessionWorker,
   handWorkspaceBackToWorker,
@@ -851,27 +850,17 @@ export function prepareOverlayDirs(
  * which the worker's own gate (`overlay-dep-check.ts`) still backstops for the
  * empty-dep-dir case; throwing here would fail container creation outright.
  *
- * **The drop is announced, not silent** (the ops finding of 2026-08-20). Its
- * correctness rests entirely on `agent.install` running again, and one thing is
- * allowed to refuse: the docs/271 trust gate, on a plugin-bearing session whose
- * `agent.install` no longer matches what it last ran. Both sides are right on
- * their own and together they produced a session serving nothing but
- * `sh: 1: vite: not found`, with a marker written seconds later that suppressed
- * every later attempt to repair it. So the marker does not simply vanish: the
- * record it leaves keeps the gate's accepted list, closes the pre-stamp window
- * (`preStampInstallMarker`), and tells a withheld reinstall that this session's
- * packages really are missing so it can say so.
- *
- * The record is written FIRST, same ordering rule as the marker-before-reap one
- * above and for the same reason: a half-failure must land on the state that
- * changes nothing.
+ * **The drop cannot lose the trust gate's anchor** (the ops finding of
+ * 2026-08-20). It used to: the marker was also docs/271's record of the command
+ * list this session had ACCEPTED, so deleting it for dependency reasons erased a
+ * fact about the session, and a plugin-bearing session whose reinstall was then
+ * withheld could have a changed `agent.install` allowed on the next recreate.
+ * Acceptance now lives in its own durable record written when an install
+ * SUCCEEDS (`agent-install-gate.ts`), so this deletion says only what it means:
+ * the dependency tree is no longer vouched for.
  */
 function removeInstallMarkerForRotation(workspaceDir: string): void {
   try {
-    // `acceptedInstallCommands` already prefers a reset still outstanding over
-    // the marker, so a second rotation before any install re-records the list
-    // that last genuinely RAN rather than overwriting it with a newer one.
-    recordInstallReset(workspaceDir, { accepted: acceptedInstallCommands(workspaceDir) });
     const markerFile = path.join(
       sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
       INSTALL_MARKER_FILE,

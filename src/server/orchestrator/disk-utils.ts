@@ -17,7 +17,6 @@ import {
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
 } from "./session-state-dir.js";
-import { acceptedInstallCommands, recordInstallReset } from "./agent-install-gate.js";
 
 /**
  * docs/161 — default free-disk probe for the disk-pressure pass. Returns bytes
@@ -186,14 +185,14 @@ export async function reclaimRegenerableSessionDirs(
  * removals therefore live in one function rather than at the call site. Same
  * unlink `claim-session.ts` does when it hands a clone to a new session.
  *
- * **And the marker's OTHER role goes into a reset record** (the ops finding of
- * 2026-08-20). "`agent.install` will re-run" is an assumption, not a guarantee:
- * the docs/271 trust gate refuses a changed list on a plugin-bearing session, so
- * this reclaim can leave exactly the dep-less session the paragraph above says
- * it exists to prevent. The record is what lets the withheld reinstall report it
- * instead of leaving a dead service and a log that blames the user's project —
- * and it preserves the accepted command list the gate anchors on, which the
- * unlink alone was destroying.
+ * **"`agent.install` will re-run" is an assumption, not a guarantee** (the ops
+ * finding of 2026-08-20): the docs/271 trust gate refuses a changed list on a
+ * plugin-bearing session, so this reclaim can leave exactly the dep-less session
+ * the paragraph above exists to prevent. Two things make that survivable rather
+ * than silent. The gate reports a withhold landing on an absent marker, which is
+ * this state, so the session says what happened instead of dying on
+ * `sh: 1: vite: not found`. And docs/271's accepted-command record is no longer
+ * the marker, so this unlink no longer destroys it.
  *
  * Never rejects.
  */
@@ -210,12 +209,6 @@ export async function reclaimBlockedSessionCaches(
     const markerFile = path.join(
       sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)), INSTALL_MARKER_FILE,
     );
-    // Written FIRST and UNCONDITIONALLY — deliberately outside the marker-exists
-    // branch below. This function's destructive act is the overlay removal, and
-    // that happens whether or not a marker is there to delete: a session whose
-    // marker a rotation already dropped arrives here with no marker at all, and
-    // gating the record on one would skip it while the packages go.
-    recordInstallReset(workspaceDir, { accepted: acceptedInstallCommands(workspaceDir) });
     // Marker FIRST. If the second removal fails, the surviving state is
     // "no marker, deps present" — a harmless extra reinstall. The reverse
     // order's half-failure is "marker present, deps gone", which is the

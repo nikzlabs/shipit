@@ -93,11 +93,10 @@ Three properties were checked rather than assumed:
   at container create on a fresh session, before any plugin container has run.
 
   **This was wrong as written, and was corrected on 2026-08-20** (ops finding —
-  see [The reset record](#the-reset-record-2026-08-20) below). "A marker already
-  exists" is not a one-way door: three paths delete an *established* session's
-  marker on purpose — a base rotation, a blocked-session cache reclaim, and
-  disk-tier eviction of the whole `state/` subtree — and each re-opens the
-  pre-stamp window on a session a plugin container has already run in. Observed on the production host: the gate withheld a changed list at
+  see [The acceptance record](#the-acceptance-record-2026-08-20) below). "A marker already
+  exists" is not a one-way door: five paths delete an *established* session's
+  marker on purpose (tabulated below), and each re-opens the pre-stamp window on
+  a session a plugin container has already run in. Observed on the production host: the gate withheld a changed list at
   17:11:13 and a new marker recorded that same list as accepted at 17:11:19.
 
   The mitigation named at the time — a base pointer's `installCommands` can only
@@ -130,12 +129,12 @@ transcript again — so a user who has not acted accumulates one per resume. The
 record is compared by command list, so a *different* withheld list always
 produces a fresh notice.
 
-## The reset record (2026-08-20)
+## The acceptance record (2026-08-20)
 
 Found live in an ops session, on the production commit `a19702c5`. Session
-`fba1ee31`'s dev service died on `sh: 1: vite: not found`, exit 127, with
-nothing anywhere connecting that to ShipIt. Two subsystems, each correct on its
-own, disagreed and nothing reconciled them:
+`fba1ee31`'s dev service died on `sh: 1: vite: not found`, exit 127, with nothing
+anywhere connecting that to ShipIt. Two subsystems, each correct on its own,
+disagreed and nothing reconciled them:
 
 - `prepareOverlayDirs` (`container-lifecycle.ts`) reaps a session's superseded
   copy-on-write upper layer when the shared dependency base rotates, and drops
@@ -144,132 +143,140 @@ own, disagreed and nothing reconciled them:
   base's deps and none of its own".
 - This gate refuses to run it.
 
-The result is a session with known-incomplete dependencies, a dev service
-failing with an unrelated-looking error, and — because the marker delete
-re-opened the pre-stamp window — a fresh marker asserting the base satisfied the
-checkout, which suppressed every later attempt to repair it. `reclaimBlockedSessionCaches`
-(`disk-utils.ts`) is the same defect by the same mechanism under disk pressure.
+The result is a session with unverified dependencies, a dev service failing with
+an unrelated-looking error, and — because the marker delete re-opened the
+pre-stamp window — a fresh marker asserting the base satisfied the checkout,
+which suppressed every later attempt to repair it.
 
-**The cause is that the marker was carrying two facts.** "These dependencies are
-installed" and "the user accepted this command list" are not the same claim, and
-deleting the marker for the first reason destroyed the second. So the deleters
-now write `.install-reset` first (`agent-install-gate.ts`), carrying the second
-one on its own: `accepted`, the list that last ran to completion. The gate reads
-it **in preference to** the marker while it exists, so a marker written by
-anything other than a completed install cannot move what this session has
-accepted — which closes the pre-stamp route above, and needs no cooperation from
-the pre-stamp. Its mere presence is the other half of the signal: between a
-deliberate delete and the next completed install, this session's dependencies are
-whatever the shared base happens to carry, which nothing has checked.
+### The marker was carrying two facts
 
-**There are three anchor destroyers, not two**, and the third is why the record
-is not stored beside the marker:
+"These dependencies are installed" and "the user accepted this command list" are
+not the same claim. The first is a property of a `node_modules` tree, and it is
+*correctly* discarded whenever that tree stops being trustworthy. The second is a
+property of the **session**, and must survive everything short of the session
+changing hands. Storing both in `.install-done` meant every dependency-driven
+delete silently erased an acceptance.
 
-| Path | When |
+**The first attempt at this fix preserved acceptance by writing a tombstone at
+each place that deletes the marker. That was the wrong shape, and the second
+independent review is what showed it.** The enumeration cannot be completed:
+
+| Deleter | Where |
 |---|---|
-| `prepareOverlayDirs` | the shared dep base rotated under the session |
-| `reclaimBlockedSessionCaches` | disk pressure took the overlay upper |
-| `reclaimRegenerableSessionDirs` | disk-tier eviction deleted the whole `state/` subtree |
+| base-generation rotation | `container-lifecycle.ts` |
+| blocked-session cache reclaim | `disk-utils.ts` |
+| disk-tier eviction of `state/` | `disk-utils.ts` |
+| claim handing the clone on | `services/claim-session.ts` |
+| **whiteout before every real reinstall** | `session/install-controller.ts` — **another process** |
 
-The third deletes `state/` wholesale — it is in `REGENERABLE_SESSION_SUBDIRS`,
-correctly, because everything in it can be rebuilt. An acceptance record cannot.
-Worse, `plugin-data/` is a deliberately **durable** sibling, so an evicted and
-restored session comes back still plugin-bearing with its anchor gone — and a
-`null` anchor reads as "first install", which allows. Eviction alone would hand
-the credential-bearing container a command list nobody accepted. The record
-therefore lives where the other durable, non-git session data lives: a sibling of
-`workspace/`, the `uploads/` convention (docs/217) the reclaim allowlist leaves
-alone. `claim-session.ts` clears it when a clone changes hands, which is the one
-case where the previous occupant's history must not carry over.
+The last one is decisive. The worker removes the marker before running the
+commands and deliberately writes none back if they fail, and nothing
+orchestrator-side observes it. So a stale-marker reinstall that failed left an
+established, plugin-bearing session with no marker and no tombstone — where
+`null` reads as "first install" and **allows**. Enumerating deleters is a race
+against the next one somebody adds.
 
-Two failure directions are handled deliberately rather than by default:
+### So acceptance is recorded where acceptance happens
 
-- **The write is atomic** (temp + rename) and its result is returned, not
-  swallowed. Both callers log a failure naming the consequence — but neither
-  stops, because the alternative to deleting the marker is keeping it, and a
-  marker outliving the dependencies it describes is precisely the dep-less
-  session both deleters exist to prevent. A lost anchor costs only a
-  plugin-bearing session, and only back to the behaviour that shipped before this
-  record existed; a kept marker costs every session its dependencies.
-- **A record that is present but unreadable fails closed.** It resolves to an
+`INSTALL_ACCEPTED_FILE` (`.install-accepted`) is written by exactly one caller:
+`runInstall`, when an install completes with positive evidence that it ran — or
+that the worker's content-keyed marker proved the tree already matched. One
+writer, no enumeration, and no amount of dependency-state deletion by either
+process can move it. `null` now means what it always claimed to: no install has
+ever completed in this session, which is the first-time case the docs/178
+repo-trust decision covers.
+
+Three properties follow:
+
+- **It is not under `state/`.** That subtree is in `REGENERABLE_SESSION_SUBDIRS`,
+  so disk-tier eviction deletes all of it — correctly, since everything in it can
+  be rebuilt. An acceptance record cannot. And `plugin-data/` is a deliberately
+  **durable** sibling, so a restored session is still plugin-bearing: an anchor
+  stored beside the marker would mean eviction alone handed the credential-bearing
+  container a command list nobody accepted. It goes where the other durable,
+  non-git session data goes — a sibling of `workspace/`, the `uploads/` convention
+  (docs/217) the reclaim allowlist leaves alone.
+- **The write is atomic and a failure is safe.** Temp + rename, so a reader sees
+  one whole record or the other. A failed write leaves the *previous* accepted
+  list standing, which withholds the new one until an install succeeds again —
+  the safe direction. (The tombstone design had the opposite failure mode: a
+  failed write under disk pressure, where one of its callers ran *by definition*,
+  lost the anchor and allowed.)
+- **A record that exists but cannot be read fails closed.** It resolves to an
   empty accepted list, which matches no request and so withholds — not to
   "absent", which allows. The file's existence is itself the evidence that
   something was accepted and we have lost track of what.
 
-The record is cleared by the next install that completes with positive evidence
-(ran and succeeded, or the worker's content-keyed marker matched) — the same two
-outcomes that clear a dependency gap, and in the same place. The clear is
-best-effort, so the runner's in-memory answer and the file can briefly disagree;
-they are retracted together, but only one of them can fail, and a surviving
-record costs a repeated notice rather than a wrong execution.
-
-**That exclusion had to be made true first.** `clearDependencyGap`'s docstring
-already said a synthesized completion is not proof, but `signalInstallComplete`
-defaults to `ok = true` and three paths reported success having observed no
-install: the reconnect resync's "not running and no last result" branch, whose
-own comment says it cannot tell success from failure; `dispose()`; and the
-disposed-before-worker-ready return. All three cleared the #2429 gap from
-nothing. Harmless enough while the method only touched runner state; not harmless
-once it also drops the trust anchor, where a dropped SSE stream would be enough
-to let the next recreate run a withheld list. The exclusion now lives in the type
-(`InstallCompletion.unverified`) instead of in prose — and it gates the **overlay
-publish** too, which otherwise takes `installOk` at face value and would stamp a
-missing or half-installed tree as the shared base for the whole scope.
-
-### What ShipIt cannot tell, and does not claim
-
-An earlier revision of this fix carried a second field, `depsDiscarded`, meant to
-prove the harmless case by checking whether the reaped overlay upper layer had
-held anything. **It is not a proof and it is gone.** An empty upper says the
-**old** lower satisfied this checkout; it says nothing about the **new**
-generation being mounted, which may have been published from a tree that dropped
-the very package this branch needs. The same production symptom could recur with
-that check reporting "nothing lost".
-
-So the signal is *unverified*, full stop — and that is what the surfaces say. The
-wording matters more for being unconditional: the remedy is framed as diagnostic
-ordering ("before you treat a missing-module error as a fault in the code, run
-these") rather than as an order to reinstall every turn. `npm ci` deletes
-`node_modules` and rebuilds from scratch; that is not a free thing to instruct on
-a session that is working.
+`claim-session.ts` clears it when a clone changes hands, alongside the marker
+unlink it already did — a new occupant inherits no acceptance. A session that
+accepted a list *before* this record existed answers from its marker once, and
+`evaluateInstallGate` backfills a record from that answer so the session stops
+depending on a marker five paths delete.
 
 ### Saying so, when the dependencies are in question
 
-An outstanding reset is what makes this a different event from the ordinary
-withhold. Ordinarily the session keeps working on the dependencies it already
-has (req 7) and the once-per-list notice above is proportionate. Here nothing
-has checked what it has — and `.install-withheld` is *precisely* what silenced
-the recreate that broke the service, because the user had already seen that
-notice for the same list.
+`afterDependencyReset` is **derived, not stored**: it is simply whether the
+install marker is absent. That is what lets it cover every route into the state
+without enumerating them — including the worker's whiteout, which no
+orchestrator-side tombstone could ever have seen.
 
-So this case records a `DependencyGap` (`dependency-staleness.ts`, reason
-`install-withheld`) instead. It is the session's existing "installed tree does
-not match this checkout" state, it reaches three surfaces rather than one — the
-persisted transcript, the line the service list carries beside the failing
-service, and the agent's own turn prompt — and it lasts until an install answers
-it rather than until the reader scrolls past.
+A withhold landing there is the incident: the reinstall that was supposed to
+rebuild the tree did not run. Ordinarily the session keeps working on the
+dependencies it already has (req 7) and the once-per-list notice above is
+proportionate; here nothing has checked what it has. So this case records a
+`DependencyGap` (`dependency-staleness.ts`, reason `install-withheld`) instead —
+the session's existing "installed tree does not match this checkout" state, which
+reaches three surfaces rather than one (the persisted transcript, the line the
+service list carries beside the failing service, and the agent's own turn prompt)
+and lasts until an install answers it.
+
+The **notice** is still gated on the durable per-list `.install-withheld` record,
+not on the gap alone. `_dependencyGap` is runner-local and a container recreate
+builds a new runner, so the gap's own de-duplication sees nothing and would
+re-persist a notice on every resume of a session nobody has repaired. The gap
+*state* is still recorded every time, because the service list and the agent
+prompt read it live and a new runner starts with none.
 
 **Requirement 4 is untouched, including in the wording.** The gap names the
 **in-force** list as the remedy, never the withheld one: having ShipIt instruct
 its own agent to run the command it just refused would be this boundary dressed
-up rather than observed. Running the in-force list restores whatever the reset
-took and adopts nothing; requirement 8's remedy — the *user* asking for the new
+up rather than observed. Requirement 8's remedy — the *user* asking for the new
 command — is unchanged, and the agent prompt says so explicitly.
+
+### What ShipIt cannot tell, and does not claim
+
+An earlier revision carried a second field, `depsDiscarded`, meant to prove the
+harmless case by checking whether the reaped overlay upper layer had held
+anything. **It is not a proof and it is gone.** An empty upper says the **old**
+lower satisfied this checkout; it says nothing about the **new** generation being
+mounted, which may have been published from a tree that dropped the very package
+this branch needs. The same production symptom could recur with that check
+reporting "nothing lost".
+
+Nor may the surfaces name a cause. Four routes reach this state and only one of
+them replaces the shared base, so the text says ShipIt *stopped vouching for* the
+installed dependencies rather than naming a mechanism that is false for a disk
+reclaim or a failed reinstall.
+
+So the signal is *unverified*, full stop — and the wording follows: the remedy is
+framed as diagnostic ordering ("before you treat a missing-module error as a fault
+in the code, run these") rather than an order to reinstall every turn. `npm ci`
+deletes `node_modules` and rebuilds from scratch; that is not a free thing to
+instruct on a session that is working.
 
 ### Why the compose install gate still starts the services
 
 The obvious move is to close the gate as a failure when the reinstall was
 withheld, holding `dependsOnInstall` services instead of starting them into an
-exit 127. That is wrong, and the deciding evidence came from the same ops sweep:
-a **control session** took the same rotation and the same withhold and came up
+exit 127. That is wrong, and the deciding evidence came from the ops sweep: a
+**control session** took the same rotation and the same withhold and came up
 serving, because the shared base already satisfied its checkout. The signal is
-"unverified", never "broken" — see the section above for why no cheap check
-sharpens it. Latching on an unverified means definite outages for healthy
-sessions, at the scale of every session pinned to a superseded generation (34 on
-that host), and it takes the diagnosis down with them: a service latched before
-it ever starts produces no failure for anyone to read. Starting it costs a crash
-loop in the genuinely-broken case, by which point the reason is already in the
-three places the reader reaches first.
+"unverified", never "broken". Latching on an unverified means definite outages for
+healthy sessions, at the scale of every session pinned to a superseded generation
+(34 on that host), and it takes the diagnosis down with them: a service latched
+before it ever starts produces no failure for anyone to read. Starting it costs a
+crash loop in the genuinely-broken case, by which point the reason is already in
+the three places the reader reaches first.
 
 ## The notice (reqs 7, 8)
 
@@ -349,21 +356,19 @@ skipped.
   for a withheld install, and carries the note on why the compose install gate
   still releases its services when the packages were discarded.
 - `src/server/orchestrator/warm-pool-manager.ts` — gates the pre-install.
-- `src/server/orchestrator/container-lifecycle.ts` — `removeInstallMarkerForRotation`
-  writes the reset record before dropping the marker (2026-08-20).
-- `src/server/orchestrator/disk-utils.ts` — `reclaimBlockedSessionCaches`, the
-  same deleter under disk pressure.
+- `src/server/orchestrator/services/claim-session.ts` — drops the acceptance
+  record when a clone changes hands, beside the marker unlink it already did.
 - `src/server/orchestrator/overlay-session.ts` — `preStampInstallMarker` declines
   while the gate withholds.
 - `src/server/orchestrator/services/claim-session.ts` — clears the record when a
   clone changes hands.
 - `src/server/orchestrator/dependency-staleness.ts` — the `install-withheld`
   reason and its three surfaces.
-- `src/server/orchestrator/install-reset-gate.test.ts` — **new**. The seam
-  itself: rotation × gate × pre-stamp, including the ops sweep's control case
-  (same rotation, same withhold, base already satisfied the checkout). Each half
-  had thorough per-function coverage and each half was correct, which is why the
-  seam shipped.
+- `src/server/orchestrator/install-acceptance-gate.test.ts` — **new**. The seam
+  itself, written against the STATES the gate can find a session in rather than
+  the operations that produce them: the marker-destroyer table is data, so a
+  sixth way to lose the marker needs no sixth test. Each half had thorough
+  per-function coverage and each half was correct, which is why the seam shipped.
 
 ## What this does NOT close (req 9)
 
@@ -380,9 +385,9 @@ skipped.
    shape over an acceptance store, and is the price that choice names. **Owner:
    planning#400** — reopen if it bites.
 
-   **The 2026-08-20 reset record inherits this, one notch louder.** The agent
-   repairing the tree in a shell writes no marker, so the record is not cleared
-   and the gap keeps prefixing the agent's turns until an install reaches
+   **The 2026-08-20 acceptance record inherits this, one notch louder.** The agent
+   repairing the tree in a shell writes no marker, so the gap keeps prefixing the
+   agent's turns until an install reaches
    `/install` (a dependency-input change, or a container recreate after the
    lists agree again). The prefix is diagnostic ordering rather than an order —
    "run this before treating a missing-module error as a code fault" — which is

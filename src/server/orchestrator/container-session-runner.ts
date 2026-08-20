@@ -54,9 +54,9 @@ import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
-  clearInstallReset,
   evaluateInstallGate,
   installWithheldNotice,
+  recordAcceptedInstall,
   recordWithheldCommands,
 } from "./agent-install-gate.js";
 import { sameCommands } from "../shared/install-marker.js";
@@ -1939,12 +1939,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // instead of until the reader scrolls past. Recorded FIRST so a throw in
       // either notice hook cannot cost us the state.
       if (verdict.afterDependencyReset) {
-        this.recordDependencyGap({
-          reason: "install-withheld",
-          // The in-force list, never the withheld one — see `DependencyGap.commands`.
-          commands: [...verdict.accepted],
-          withheld: [...commands],
-        });
+        // `_dependencyGap` is runner-local and a container recreate builds a new
+        // runner, so the gap alone re-reports on every resume of a session that
+        // has not been repaired — one persisted notice per recreate, which is the
+        // accumulation `.install-withheld` exists to prevent. So the SAME durable
+        // per-list record gates this notice too; the gap itself is still recorded
+        // every time, because it is state the service list and the agent prompt
+        // read rather than a message.
+        this.recordDependencyGap(
+          {
+            reason: "install-withheld",
+            // The in-force list, never the withheld one — see `DependencyGap.commands`.
+            commands: [...verdict.accepted],
+            withheld: [...commands],
+          },
+          { notify: !verdict.alreadyReported },
+        );
+        if (!verdict.alreadyReported) recordWithheldCommands(this.sessionDir, commands);
         return { ok: true, withheld: true };
       }
       if (!verdict.alreadyReported) {
@@ -2044,7 +2055,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         // The worker's content-keyed marker matched, which IS the dependency
         // check — the installed tree provably matches this checkout, so any gap
         // we were carrying is answered (nikzlabs/shipit#2429).
-        this.clearDependencyGap();
+        this.clearDependencyGap(commands);
         this.emitMessage({
           type: "install_status",
           sessionId: this.sessionId,
@@ -2068,7 +2079,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // but only if it RAN. `unverified` marks the resolutions synthesized from
       // no observation (reconnect resync with no last result, dispose), which
       // resolve `ok: true` by default and are not evidence of anything.
-      if (outcome.ok && !outcome.unverified) this.clearDependencyGap();
+      if (outcome.ok && !outcome.unverified) this.clearDependencyGap(commands);
       return outcome;
     } catch (err) {
       this.emitMessage({
@@ -2229,9 +2240,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * not cost us the state that the service list reads — that would restore
    * exactly the silence this is removing.
    */
-  private recordDependencyGap(gap: DependencyGap): void {
+  private recordDependencyGap(gap: DependencyGap, opts: { notify?: boolean } = {}): void {
     const prev = this._dependencyGap;
     this._dependencyGap = gap;
+    // The caller has a durable, cross-runner record saying this exact fact was
+    // already reported. The STATE is still refreshed above — the service list and
+    // the agent's turn prompt read it live, and a new runner starts with none.
+    if (opts.notify === false) return;
     // The withheld list is part of the identity, not decoration: two DIFFERENT
     // refused lists are two different facts, and comparing only reason+rewrite
     // swallowed the second — while `.install-withheld`, the per-list rule this
@@ -2277,17 +2292,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * trust gate's accepted-list anchor on a synthesized completion would have
    * re-opened the escalation docs/271 exists to close.
    *
-   * The on-disk reset record goes with it, and for the same reason it was
-   * written: it says "ShipIt deleted this session's marker and is still waiting
-   * for the install that replaces it". This IS that install, so the marker on
-   * disk is once again an honest record of what ran, and the gate can go back to
-   * reading it. Clearing it here rather than at the two call sites keeps the
-   * runner-state and disk-state answers to "are this session's dependencies
-   * accounted for?" from being able to disagree.
+   * This is also where docs/271's ACCEPTANCE is recorded, because it is the same
+   * event: an install that completed with positive evidence is, by definition,
+   * the user's session running a command list to completion. Recording it here
+   * rather than at the places that delete the marker is what makes the gate's
+   * anchor independent of dependency state — see `INSTALL_ACCEPTED_FILE`.
    */
-  private clearDependencyGap(): void {
+  private clearDependencyGap(commands?: string[]): void {
     this._dependencyGap = null;
-    clearInstallReset(this.sessionDir);
+    if (commands && commands.length > 0) recordAcceptedInstall(this.sessionDir, commands);
   }
 
   /**

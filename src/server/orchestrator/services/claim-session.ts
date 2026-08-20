@@ -17,7 +17,7 @@
 
 import { existsSync, unlinkSync } from "node:fs";
 import { sessionStateDirForWorkspace, sessionSharedStateDir, INSTALL_MARKER_FILE } from "../session-state-dir.js";
-import { clearInstallReset } from "../agent-install-gate.js";
+import { clearAcceptedInstall } from "../agent-install-gate.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
@@ -263,12 +263,12 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       // docs/246 — the marker lives in the session state dir, outside the clone.
       const stateDir = sessionStateDirForWorkspace(sessionDir);
       try { unlinkSync(path.join(sessionSharedStateDir(stateDir), INSTALL_MARKER_FILE)); } catch { /* marker may not exist */ }
-      // ...and the docs/271 acceptance record with it. Unlike the marker that
-      // record is a durable session-root sibling, deliberately placed to outlive
-      // a state-dir reclaim — so it is the one piece of the previous occupant's
-      // install history that a claim would otherwise hand to the next one, as
-      // the accepted list its gate anchors on.
-      clearInstallReset(sessionDir);
+      // ...and the docs/271 acceptance record with it. That record is a durable
+      // session-root sibling, deliberately placed to outlive a state-dir reclaim,
+      // so it is the one piece of the previous occupant's install history a claim
+      // would otherwise hand to the next one — as the accepted list its gate
+      // anchors on.
+      clearAcceptedInstall(sessionDir);
     }
     return { headChanged, fetched, fetchDurationMs };
   }
