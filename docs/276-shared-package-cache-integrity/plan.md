@@ -72,9 +72,23 @@ fails closed.*
   one part of the npm cache that is not self-verifying.
 - *pnpm:* a great deal. There is no existing check to lean on — ShipIt would
   have to verify store contents itself, on every install, for every linked file.
-  That is a hash of the whole store's working set on a path whose entire purpose
-  is to be fast (req 7), and it means reimplementing what the package manager
-  was assumed to be doing.
+  Measured on a realistic tree (this repo's own `node_modules`): **32,310 files,
+  478 MB, ~1.5 s** to sha512 every file, single-threaded with a warm page cache,
+  so cold is worse. docs/198 put the warm-install floor at ~5–7 s, so this is a
+  20–30 % tax on the exact path the caches exist to make fast (req 7) — and it
+  means reimplementing what the package manager was assumed to be doing.
+
+**The deeper problem with "just verify it": a check needs a trustworthy
+expectation, and there isn't one.** The expected hash lives in the same shared,
+writable surface as the bytes. Measured: rewriting the *expected* value made
+npm's own verification pass on the attacker's package and execute it. The check
+was not bypassed — it was satisfied, against a value the attacker supplied. So
+verification is only worth what its expectation source is worth, and there are
+exactly three sources: the project's lockfile (trustworthy, does not cover
+`npm install <new-package>`), a per-session copy of the resolution data
+(trustworthy — and then npm's existing check suffices, which is why the
+per-session `index-v5` is the recommendation), or the registry (option D,
+refuted).
 
 **What it closes.** H1, completely and cheaply. H2 only by ShipIt building the
 verification pnpm does not provide.
