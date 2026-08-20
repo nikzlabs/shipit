@@ -14,6 +14,14 @@ vi.mock("monaco-editor", () => ({
     create: () => ({
       dispose: vi.fn(),
       onMouseDown: () => ({ dispose: vi.fn() }),
+      onMouseMove: () => ({ dispose: vi.fn() }),
+      onMouseLeave: () => ({ dispose: vi.fn() }),
+      // The comment widget keeps its cards sized to, and aligned with, the
+      // visible content area, so it subscribes to scroll and layout too.
+      onDidScrollChange: () => ({ dispose: vi.fn() }),
+      onDidLayoutChange: () => ({ dispose: vi.fn() }),
+      getLayoutInfo: () => ({ contentWidth: 800 }),
+      getScrollLeft: () => 0,
       updateOptions: vi.fn(),
       changeViewZones: vi.fn(),
       createDecorationsCollection: vi.fn(),
