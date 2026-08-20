@@ -1224,9 +1224,20 @@ exclusion is a property of the data rather than a filter someone has to remember
   this phase's diff and none of it is optional: every one of those readers was showing a
   figure whose meaning changed.
 - **The dial needed a rule, not a field.** Three kinds of figure and one slot, so
-  `sessionRunningFigure` picks money → estimate → pre-feature accounting, in that order, and
-  the popover lists whichever of the three exist as separate rows. The `earlier` case is what
-  stops a long-lived session silently losing a total the user has already seen.
+  `sessionRunningFigure` picks one and the popover lists whichever of the three exist as
+  separate rows. The `earlier` case is what stops a long-lived session silently losing a total
+  the user has already seen.
+
+  **The rule was money → estimate → pre-feature accounting, and that order was wrong for a
+  MIXED session** (2026-08-20 receipt in `requirements.md`). A single metered sub-agent consult
+  inside a 39-turn plan session put `$0.004` on the dial while the same popover said `≈$131.58`
+  — the session read as costing less than a cent. Priority now goes to whichever side did the
+  work **in tokens**, the volume unit req 16 reports in; money-first survives as the tiebreak,
+  so a balanced session (and any totals record with no token counts) behaves as before. Only a
+  candidate carrying a dollar figure competes, because forward-generated legacy rows have real
+  tokens and no price (planning#343) and must never win a slot they have nothing to show in.
+  `compareSessionsBySpend` inherits the change by construction — it ranks on this same
+  function, so the modal's session list keeps ordering by the figure each row renders.
 - **The pre-rehydration fallback had the same bug as the server would have.** `ContextDial`
   falls back to summing the turn series when session totals have not arrived; summing `costUsd`
   there reports a subscription session as having spent nothing. It now splits by

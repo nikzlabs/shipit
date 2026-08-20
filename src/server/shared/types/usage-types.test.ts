@@ -56,8 +56,39 @@ describe("sessionRunningFigure (docs/252 req 16)", () => {
   });
 
   it("shows money when money moved, with the estimate left to the popover", () => {
+    // No token counts on either side, so nothing separates them but the
+    // money-first tiebreak — which is exactly what this asserts.
     expect(sessionRunningFigure(totals({ meteredCostUsd: 0.42, atApiRatesUsd: 6.9 })))
       .toEqual({ usd: 0.42, kind: "metered" });
+  });
+
+  it("leads with the mode that did the work, not with whichever figure is money", () => {
+    // The bug: one metered sub-agent consult inside a plan session put `$0.004`
+    // on the dial while the popover said `≈$131.58` — a 39-turn session
+    // reported as costing less than a cent. Money-first read the session's
+    // character off a dollar sign instead of off the session.
+    expect(sessionRunningFigure(totals({
+      meteredCostUsd: 0.004, meteredTokens: 12_000,
+      atApiRatesUsd: 131.58, includedTokens: 208_600_000,
+    }))).toEqual({ usd: 131.58, kind: "at-api-rates" });
+  });
+
+  it("still leads with money when the metered side is the one that did the work", () => {
+    expect(sessionRunningFigure(totals({
+      meteredCostUsd: 12.5, meteredTokens: 900_000,
+      atApiRatesUsd: 0.9, includedTokens: 40_000,
+    }))).toEqual({ usd: 12.5, kind: "metered" });
+  });
+
+  it("never lets unpriced legacy volume win a comparison it has nothing to show for", () => {
+    // Forward-generated legacy rows (planning#343) carry real tokens and no
+    // price. The biggest token count in the record here is legacy's, and it
+    // must still not reach the dial: only a candidate with a dollar figure
+    // competes.
+    expect(sessionRunningFigure(totals({
+      atApiRatesUsd: 4, includedTokens: 100_000,
+      legacyCostUsd: 0, legacyTokens: 9_000_000,
+    }))).toEqual({ usd: 4, kind: "at-api-rates" });
   });
 
   it("keeps a pre-feature session's total visible rather than dropping it to nothing", () => {
