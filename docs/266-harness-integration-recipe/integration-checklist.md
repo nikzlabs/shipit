@@ -75,6 +75,9 @@ unchecked.
 - [ ] Extend the build-breaking parity tests (repick the installer test's
       bogus-id fixture if it collides); sibling auth/turn integration
       tests; client fixtures
+- [ ] Token freshness reader verified against a REAL captured credential
+      file, committed as its `token-freshness-guard.test.ts` fixture (a
+      reader written to the documented shape fails silently — planning#449)
 
 **10 — Verify empirically**
 - [ ] Skills-disclosure probe; stream-capture conformance test (incl. a
