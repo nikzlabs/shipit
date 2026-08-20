@@ -70,13 +70,44 @@ export const MODEL_FAMILY_IDS = [
   // lineage nobody disclosed, and reusing another family's handle would make
   // ShipIt refuse a review pairing on a guess.
   //
-  // Note what the honest answer costs. A family of its own makes Ox Alpha read
-  // as maximally distant from everything (docs/261 req 4), so if it turns out
-  // to be a re-badged model ShipIt already lists, a review it gives is less
-  // independent than the ranking believed. That is the direction the error
-  // falls in, and it is the one that does not require inventing a fact.
+  // It is NOT a claim of distance either, and that distinction is the whole of
+  // {@link UNDISCLOSED_LINEAGE} below: a family of its own makes every
+  // comparison report "different family", which is the ideal reviewer tier
+  // (docs/261 req 4) awarded on something nobody established. So `ox` is
+  // declared here AND named as undisclosed, and the ranking degrades what it
+  // *claims* rather than what it *chooses*.
   "ox",
 ] as const;
+
+/**
+ * Families that stand for "the vendor has not said who trained this", not for a
+ * lineage anyone knows.
+ *
+ * `family` answers "what does this share its training with", and a stealth
+ * release has no answer. The catalogue still has to write one — the field is
+ * required, and every alternative spelling asserts more than the vendor did —
+ * so the honest shape is a family of its own PLUS this set, which is how the
+ * ranking can tell a decided difference from an undecided one.
+ *
+ * What it changes: nothing about which reviewer is chosen. `sameModelFamily`
+ * still reports `false` against every disclosed family, so the ORDERING is
+ * untouched. What degrades is the `tierBasis` a selection reports — the field
+ * `reviewer-model.ts` added precisely so that a tier of 1 is never read as "a
+ * different family was established" when it wasn't. Without this, a stealth
+ * model is the one identity that is *present* and still undecidable, and it
+ * would sail past a check written for identities that are *absent*.
+ *
+ * Note the residual: two undisclosed models would compare as one family and
+ * rank as closer than they might be. That is the conservative direction — it
+ * refuses to claim independence rather than inventing it — and there is one
+ * such model today.
+ */
+export const UNDISCLOSED_LINEAGE: ReadonlySet<string> = new Set<string>(["ox"]);
+
+/** True when this identity's family stands for an undisclosed lineage. */
+export function lineageIsUndisclosed(identity: ModelIdentity | undefined): boolean {
+  return identity !== undefined && UNDISCLOSED_LINEAGE.has(identity.family);
+}
 
 export type ModelFamily = (typeof MODEL_FAMILY_IDS)[number];
 
@@ -173,12 +204,17 @@ export const MODEL_IDENTITIES = {
   kimiK3: identity("kimi-k3", "kimi"),
   qwen38max: identity("qwen3.8-max", "qwen"),
 
-  // OpenCode Zen's stealth model, served ONLY there (2026-08-21). The key is the
-  // vendor's product name rather than its wire id `x-preview-f-free`, which is
-  // the one case the docstring above allows for: the id carries Zen's `-free`
-  // tier marker, and a model leaving stealth would change the id while staying
-  // the same model. `MODEL_ID_ALIASES` carries the id→key claim.
-  oxAlpha: identity("ox-alpha", "ox"),
+  // OpenCode Zen's stealth model, served ONLY there (2026-08-21), and keyed by
+  // its wire id rather than by the vendor's product name "Ox Alpha Free".
+  //
+  // The readable `ox-alpha` was tried first and is wrong here, for the reason
+  // this file gives itself: an alias entry is "a claim a reviewer should check",
+  // and the only claim available today is that the display name and the wire id
+  // name one model. Dropping `preview` and `free` from the key would assert
+  // something further — that a model leaving stealth under a new id is still
+  // THIS model — which no source establishes and nothing yet needs. When the id
+  // does change, that is the moment to decide it, with facts.
+  oxAlpha: identity("x-preview-f-free", "ox"),
 } as const;
 
 /**
@@ -209,11 +245,6 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   // second model: Zen is a gateway serving Anthropic's own Haiku 4.5, at
   // Anthropic's own rate.
   "claude-haiku-4-5": "claude-haiku-4.5",
-  // The claim to check here is a naming one, and the vendor's own table makes
-  // it: `opencode.ai/docs/zen` lists the model **Ox Alpha Free** with model id
-  // `x-preview-f-free`, and models.dev names the same id "Ox Alpha Free". One
-  // model under a product name and a wire id, not two models.
-  "x-preview-f-free": "ox-alpha",
 };
 
 /**

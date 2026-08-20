@@ -121,24 +121,24 @@ Zen authenticates and then answers `AI_APICallError: Insufficient balance`.
       checking against the other harnesses before deciding where the text is
       being dropped
 
-## Ox Alpha (2026-08-21)
-
-Zen's stealth model, and the first free row the maintained subset takes — it
-duplicates no paid row and the vendor publishes it as a frontier coding model,
-so it clears the subset rule rather than being an exception to it.
+## Ox Alpha — req 8 (2026-08-21)
 
 - [x] `x-preview-f-free` on Zen's `key` mode, `O_CC` only, 1M context, every
-      rate $0 — id, style, efforts and cost all measured live against
+      rate $0 — id, style, efforts and cost each measured live against
       `/zen/v1/chat/completions`, with a bogus id as the negative control
-- [x] A family of its own (`ox`) and an id→key alias, because a stealth model's
-      lineage is undisclosed and every alternative asserts one —
-      `catalogue/model-identity.ts` records which way that error falls for
-      docs/261's reviewer ranking
-- [x] `reasoningEfforts: ["max", "high", "low"]`, which is load-bearing here:
-      `medium` is in OpenCode's harness vocabulary and fails the request with
-      the `[1210]` refusal above
-- [x] The per-million price floor exempts an all-zero row — all four rates
-      together, so a half-authored `input: 0` still fails the build
+- [x] `reasoningEfforts: ["max", "high", "low"]` — `medium` is in OpenCode's
+      harness vocabulary and fails the request outright, so without the field
+      the picker renders a level that cannot start a turn
+- [x] Family `ox`, named in `UNDISCLOSED_LINEAGE`, and `selectReviewer`
+      degrading `tierBasis` to `harness-only` on either side — a stealth
+      identity is present and undecidable at once, which the existing check
+      (implementer identity ABSENT) does not catch
+- [x] Keyed by the wire id. `ox-alpha` plus an alias was tried and asserts more
+      than the sources do — that a model leaving stealth under a new id is
+      still this one
+- [x] The per-million price floor exempts an all-zero row only when it is also
+      named in the test's `FREE_ROWS`, so a zeroed row nobody vouched for still
+      fails
 - [x] The per-model effort invariant is scoped to harnesses that can actually
       carry the row, not every harness that joins it by style (grok sees Zen's
       chat-completions rows and can carry none of them)

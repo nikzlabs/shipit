@@ -81,6 +81,7 @@ import {
   allServices,
   getService,
   modelIdentityFor,
+  lineageIsUndisclosed,
   nativeServiceForHarness,
   reasoningOptionsFor,
   sameCanonicalModel,
@@ -272,6 +273,11 @@ export interface ReviewerModelDeps {
  * implementer, so the *ordering* is unaffected; what is affected is what the
  * number means. {@link ReviewerSelection}'s `tierBasis` is where that is said
  * out loud, because this function is given one pair and cannot say it.
+ *
+ * A **stealth** model is the second way in, and it does not look like the first:
+ * its identity is present and its family is a real value, so every check here
+ * treats it as decided while the vendor has disclosed nothing. `selectReviewer`
+ * degrades `tierBasis` for it too — see {@link UNDISCLOSED_LINEAGE}.
  */
 export function reviewerDistanceTier(
   implementer: { harnessId: AgentId; identity?: ModelIdentity | undefined },
@@ -334,7 +340,14 @@ export function selectReviewer(
     ? undefined
     : soleFamilyOfService(nativeServiceForHarness(implementer.harnessId));
 
-  let best: { target: ReviewerTarget; tier: ReviewerTier; avoidsLikelyFamily: boolean } | undefined;
+  let best:
+    | {
+        target: ReviewerTarget;
+        tier: ReviewerTier;
+        avoidsLikelyFamily: boolean;
+        identity: ModelIdentity | undefined;
+      }
+    | undefined;
   for (const plan of slotPlans(credentials, deps)) {
     const resolved = resolveSlotPlan(plan, credentials, deps, implementer.harnessId);
     if (!resolved.target) continue;
@@ -349,15 +362,30 @@ export function selectReviewer(
       && candidateIdentity !== undefined
       && candidateIdentity.family !== likelyFamily;
     if (beatsIncumbentReviewer({ tier, avoidsLikelyFamily }, best)) {
-      best = { target: resolved.target, tier, avoidsLikelyFamily };
+      best = { target: resolved.target, tier, avoidsLikelyFamily, identity: candidateIdentity };
     }
   }
   if (!best) return { ok: false, reason: "no_reviewer_available" };
+  // An identity ShipIt HAS but whose lineage the vendor never disclosed decides
+  // the model axis no better than a missing one does — see
+  // {@link UNDISCLOSED_LINEAGE}. It reaches here as a family like any other, so
+  // without this clause a stealth model on either side reports the model axis as
+  // established and a tier of 1 reads as a family difference nobody proved:
+  // exactly the shape cross-backend review already caught once, arriving through
+  // the one door the `implementerIdentity` check does not cover.
+  //
+  // The ORDERING above is deliberately untouched. `sameModelFamily` is still the
+  // only thing that picks a reviewer, so this changes what the answer claims,
+  // never which reviewer runs.
+  const modelAxisDecided =
+    implementerIdentity !== undefined
+    && !lineageIsUndisclosed(implementerIdentity)
+    && !lineageIsUndisclosed(best.identity);
   return {
     ok: true,
     target: best.target,
     tier: best.tier,
-    tierBasis: implementerIdentity ? "model-and-harness" : "harness-only",
+    tierBasis: modelAxisDecided ? "model-and-harness" : "harness-only",
   };
 }
 

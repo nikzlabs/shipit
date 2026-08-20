@@ -91,6 +91,21 @@ function everyRow(): { service: ServiceDef; mode: BillingModeDef; model: ModelDe
   );
 }
 
+/**
+ * Rows the vendor charges nothing for, as `service/mode/model`.
+ *
+ * The human confirmation behind an all-zero price — the same job
+ * `MODEL_ID_ALIASES` does for an id that does not match its key. Zero is a real
+ * rate, so it cannot be told from an accident by inspection; naming the row here
+ * is what makes it a stated fact.
+ *
+ * `opencode/key/x-preview-f-free` — Ox Alpha, ✅ live 2026-08-21: a completion
+ * on it answers `"cost": "0"`, and the vendor's own table prices every column
+ * Free. Promotional ("free … for a limited time"), so this entry leaves when the
+ * rates do.
+ */
+const FREE_ROWS: readonly string[] = ["opencode/key/x-preview-f-free"];
+
 describe("no shipped row still carries a sentinel", () => {
   // The sentinels are negative rather than zero precisely so a forgotten row is
   // loud. Zero is a real answer for `cacheWrite` (OpenAI charges nothing to
@@ -119,16 +134,25 @@ describe("no shipped row still carries a sentinel", () => {
       //
       // A row the vendor charges NOTHING for is exempt from the lower bound and
       // only from it — a free model's input rate is 0, which is indistinguishable
-      // from a per-token slip by magnitude alone. The exemption is deliberately
-      // all-or-nothing: every rate must be zero together, so `input: 0` beside a
-      // priced output still fails, and that half-authored row is the mistake this
-      // bound is really for. (OpenCode Zen's Ox Alpha, the only such row today.)
-      const free =
+      // from a per-token slip by magnitude alone.
+      //
+      // Two conditions, not one, because "all four rates are zero" alone is a
+      // shape an accident can also produce (a zero-initialised object, a
+      // constant wired to the wrong row): the row must ALSO be named in
+      // {@link FREE_ROWS}, which is where a human states that the vendor charges
+      // nothing. So a half-authored `input: 0` beside a priced output fails on
+      // the rates, and a wholly zeroed row nobody vouched for fails on the list.
+      const allZero =
         model.price.input === 0 &&
         model.price.output === 0 &&
         model.price.cacheRead === 0 &&
         model.price.cacheWrite === 0;
-      if (!free) expect(model.price.input, where).toBeGreaterThan(0.001);
+      if (allZero) {
+        expect(FREE_ROWS, `${where} prices everything at zero but is not a declared free row`)
+          .toContain(where);
+      } else {
+        expect(model.price.input, where).toBeGreaterThan(0.001);
+      }
       expect(model.price.input, where).toBeLessThan(1000);
       expect(model.price.output, where).toBeGreaterThanOrEqual(model.price.input);
       expect(model.price.cacheRead, where).toBeLessThanOrEqual(model.price.input);

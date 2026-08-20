@@ -1023,12 +1023,16 @@ export const SERVICES = [
         //     rows of this mode (2026-08-17 receipt) and left unauthored — each
         //     duplicates a paid row in a rate-limited form, and none is a
         //     frontier coding model, which is the subset rule this list follows.
-        //     **Ox Alpha is the one exception** (2026-08-21), and it is an
-        //     exception because it fails BOTH halves of that sentence rather
-        //     than because free rows were reconsidered: it duplicates no paid
-        //     row — nothing else on Zen serves it — and the vendor publishes it
-        //     as a frontier stealth reasoning model for coding and tool use.
-        //     The subset rule is unchanged; the other six stay out.
+        //     **Ox Alpha is here on req 8** (2026-08-21) — the human named it,
+        //     which is a different warrant from the subset rule and not a
+        //     narrowing of it. It would fail that rule: the rule keeps the set
+        //     to models overlapping ShipIt's existing FAMILIES, and a stealth
+        //     model overlaps none by construction. Two things are true of it
+        //     that are not true of the other six, and neither is why it is
+        //     here: it duplicates no paid row (nothing else on Zen serves it),
+        //     and models.dev describes it as a "stealth reasoning model for
+        //     coding, agentic tasks, and tool use" rather than a rate-limited
+        //     copy. The rule is unamended and the other six stay out.
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           // Zen undercuts Anthropic's own rate here (2/10 against 3/15) — the
@@ -1043,8 +1047,10 @@ export const SERVICES = [
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4pro },
           { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.glm52 },
-          // Ox Alpha — a stealth model with no maker named, hence its own
-          // family (`model-identity.ts` says what that costs). ✅ live
+          // Ox Alpha (req 8) — a stealth model with no maker named, hence its
+          // own family, which `model-identity.ts` pairs with an explicit
+          // "undisclosed" marker so the reviewer ranking stops short of
+          // claiming a lineage difference it cannot establish. ✅ live
           // 2026-08-21, all four facts on this row measured rather than read:
           //
           //  - **Served here, under this id.** A completion on

@@ -1049,6 +1049,37 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
   });
 
   /**
+   * The same claim, through the door the check above does not cover: a STEALTH
+   * implementer. Its identity is present and its family is a real value, so
+   * `implementerIdentity` is defined and every model-axis check reports a
+   * decided answer — while the vendor has disclosed no lineage at all.
+   *
+   * Both halves matter. The reviewer must still be CHOSEN on the model axis (the
+   * tier is 1, and the ordering is untouched), and the basis must still say the
+   * model axis was not established — otherwise a tier of 1 reads as "a different
+   * family was proved" about a model nobody knows the maker of.
+   */
+  it("marks the ranking as harness-only when the implementer's lineage is undisclosed", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    const result = selectReviewer(
+      {
+        harnessId: "opencode",
+        selection: { serviceId: "opencode", billingMode: "key", modelId: "x-preview-f-free" },
+      },
+      { credentialStore: storeWith([ANTHROPIC_KEY, OPENAI_KEY]), env: {} },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tierBasis).toBe("harness-only");
+    // Chosen, not refused: a different harness and a family that does not match
+    // still rank at the top rung.
+    expect(result.tier).toBe(1);
+    expect(result.target.harnessId).not.toBe("opencode");
+  });
+
+  /**
    * planning#408 — the harness-only tie-break is a weak PRIOR, and these are its
    * fences: it must never override a known-identity comparison, and it must
    * never outrank a real tier difference.
