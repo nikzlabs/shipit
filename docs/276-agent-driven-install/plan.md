@@ -49,6 +49,33 @@ cloning it is a change. `--describe` runs before the first `apt-get`, needs no
 root, and writes nothing. `SHIPIT_DESCRIBE=1` does the same, for the
 `bash -c "$(curl …)"` form that cannot pass an argument.
 
+### How an agent finds `--describe`
+
+A self-describing installer is worth nothing if the flag is never typed, and this
+is the weakest link in the feature. Three paths, deliberately overlapping,
+because an agent told "install ShipIt" may take any of them:
+
+1. **The README.** "Let an agent install it" is the **first** item under
+   Quickstart, ahead of both one-liners, and `deployment/README.md` carries the
+   procedure and the full variable table. This is the path an agent takes when it
+   searches for how to install ShipIt at all.
+2. **`--help` on the installer itself.** An agent reaches for `--help` long
+   before it reads a README, so both installers answer it with the flags, the
+   answer variables, and a sentence saying what to do when you are installing for
+   someone else. An unknown argument prints the same flag names, so a wrong guess
+   also lands on the right answer.
+3. **The installer says so when it is about to skip the questions.** No terminal
+   and no answers supplied is exactly what an agent's shell looks like. Both
+   installers print, *before* anything on the machine changes, that every
+   question is about to take its default and that `--describe` is how to ask them
+   instead.
+
+What none of these do is *force* the issue: an agent that reads nothing still
+gets a working install with the approved default set, and the person is simply
+never asked. Closing that would mean a blind run with no answers **stopping**
+rather than defaulting, which reverses req 16 and breaks the documented
+`curl | bash` path, so it is not done here.
+
 ### The document
 
 ```jsonc

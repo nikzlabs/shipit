@@ -607,14 +607,53 @@ JSON
 # Both branches run before the saved config is even read, so they need no root
 # and touch no file. Everything they print comes from the same functions the real
 # install uses.
+# --help is here for discovery, not for politeness: an agent told "install
+# ShipIt" reaches for --help far sooner than it reads a README, and --describe is
+# useless to it if it never learns the flag exists. The unknown-argument error
+# names the same options for the same reason.
+shipit_help() {
+  cat <<'HELP'
+ShipIt — VPS provisioning (Ubuntu 24.04, run as root)
+
+  Installs Docker, clones ShipIt to /opt/shipit, sets up the access layer you
+  choose, and starts ShipIt. Safe to re-run.
+
+Options
+  --dry-run    Ask the questions, print what a real run would do, change nothing.
+  --describe   Print the questions as JSON and exit. Use this when you are
+               running the install for someone else: ask them the questions it
+               lists, then re-run with their answers in the variables it names.
+  --help       This text.
+
+  None of the three needs root, and none writes anything.
+
+Answers (set before the command; an answered question is not asked)
+  SHIPIT_ACCESS       cloudflare, tailscale, both, or none
+  SHIPIT_HARNESSES    which agent CLIs to install, comma-separated
+  SHIPIT_EGRESS       on|off — asked only if this host cannot contain the agent
+                      network. Unset keeps containment ON.
+  SHIPIT_CF_DOMAIN, SHIPIT_CF_API_TOKEN, SHIPIT_CF_ACCOUNT_ID,
+  SHIPIT_CF_ALLOWED_EMAIL   the Cloudflare answers, when access includes it.
+                            The token is a secret: never log or store it.
+
+Other settings
+  SHIPIT_REPO_URL             install a fork
+  SHIPIT_TAILSCALE_AUTHKEY    join the tailnet without a browser sign-in
+HELP
+}
+
 DRY_RUN=0
 DESCRIBE=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --describe) DESCRIBE=1 ;;
+    --help | -h)
+      shipit_help
+      exit 0
+      ;;
     *)
-      echo "Error: unknown argument '$arg' (the options are --dry-run and --describe)" >&2
+      echo "Error: unknown argument '$arg' (the options are --dry-run, --describe and --help)" >&2
       exit 1
       ;;
   esac
@@ -686,6 +725,19 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  Cloudflare step asks for — run this with --describe instead."
   echo ""
   exit 0
+fi
+
+# --- Running blind? Say so, before anything changes (docs/276) --------------
+# The one case where the questions are about to be skipped without anyone having
+# seen them: no terminal to draw a picker on, and no answers supplied. That is
+# exactly what an agent's shell looks like, so this is where --describe is named
+# for a reader who never opened the README.
+if [ ! -t 0 ] && [ -z "${SHIPIT_ACCESS:-}" ] && [ -z "${SHIPIT_HARNESSES:-}" ]; then
+  echo "==> No terminal to ask on, so every question will use its default."
+  echo "    Installing this for someone else? Nothing has changed yet — stop,"
+  echo "    run this again with --describe to get the questions and their"
+  echo "    options, ask them, then run it with their answers."
+  echo ""
 fi
 
 # --- Load saved config from previous run, if any ---

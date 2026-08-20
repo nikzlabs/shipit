@@ -9,6 +9,8 @@
 
 ## Self-description
 - [x] `--describe` and `SHIPIT_DESCRIBE=1` on both installers, before any host-touching step
+- [x] `--dry-run` on the local installer, matching the VPS one
+- [x] Discovery of `--describe`: `--help` on both installers, the same names in the unknown-argument error, and a notice when a blind run is about to skip the questions
 - [x] One schema (`shipit.installer/1`) for both, with `askedWhen`, `secret`, options and defaults
 - [x] `instructions` telling the agent to ask the person and to protect secrets
 - [x] `parameters` and `followUps` (local Tailscale access)

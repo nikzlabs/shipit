@@ -19,6 +19,12 @@ Tell an agent (Claude Code, Codex, or any other) "install ShipIt", and it can do
 for you: ask you the questions in chat, then run the install. Nothing here is a separate mode —
 an agent-run install is the ordinary install with the answers already supplied.
 
+**0. How the agent finds this.** `--help` on either installer lists the flags and every answer
+variable, and an installer that is about to skip its questions — no terminal, no answers — says
+so and names `--describe` before it changes anything. So an agent that never read this page still
+has two ways to arrive at the right command. It is not forced, though: an agent that reads
+nothing installs the approved defaults and asks you nothing.
+
 **1. The installer describes its own questions.** `--describe` prints them as JSON and exits. It
 needs no root, installs nothing, writes no file, and clones nothing, so it is safe to run before
 you have decided to install at all:
@@ -178,6 +184,13 @@ Set `SHIPIT_ALLOWED_ORIGINS` (comma-separated) in two cases:
 
 Write the scheme (`https://shipit.example.com`) and it is matched exactly for the cross-origin
 rule; write a bare `host:port` and either scheme is accepted. Either form declares the hostname.
+
+To see the question, and what a real run would do, without installing anything — it needs no
+Docker and writes nothing:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh) --dry-run
+```
 
 Day-to-day, from your checkout (default `~/.shipit`):
 

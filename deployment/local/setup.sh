@@ -9,8 +9,10 @@
 # updates are applied by re-running deployment/local/update.sh. Installing a
 # fork? Set SHIPIT_REPO_URL before the command.
 #
-# `--describe` prints this installer's questions as JSON and exits, so an agent
-# can ask the person instead of a terminal picker asking them (docs/276).
+# --dry-run   ask the question, print what a real run would do, change nothing.
+# --describe  print the questions as JSON and exit, so an agent can ask the
+#             person instead of a terminal picker asking them (docs/276).
+# Both run before the preflight, so neither needs Docker.
 set -euo pipefail
 
 DEFAULT_REPO_URL="https://github.com/nikzlabs/shipit.git"
@@ -460,19 +462,57 @@ JSON
 }
 
 # --- Arguments (docs/276) ---------------------------------------------------
+# --help is here for discovery, not for politeness: an agent told "install
+# ShipIt" reaches for --help far sooner than it reads a README, and --describe is
+# useless to it if it never learns the flag exists. The unknown-argument error
+# names the same options for the same reason.
+shipit_help() {
+  cat <<'HELP'
+ShipIt — local install (macOS, Linux, WSL2)
+
+  Clones ShipIt to ~/.shipit, builds the images, and starts it at
+  http://localhost:4123. Docker must already be installed.
+
+Options
+  --dry-run    Ask the questions, print what a real run would do, change nothing.
+  --describe   Print the questions as JSON and exit. Use this when you are
+               running the install for someone else: ask them the questions it
+               lists, then re-run with their answers in the variables it names.
+  --help       This text.
+
+  Neither --dry-run nor --describe needs Docker, and neither writes anything.
+
+Answers (set before the command; an answered question is not asked)
+  SHIPIT_HARNESSES   which agent CLIs to install, comma-separated
+  SHIPIT_EGRESS      on|off — asked only if this machine cannot contain the
+                     agent network. Unset keeps containment ON.
+
+Other settings
+  SHIPIT_HOME        where to install (default ~/.shipit)
+  SHIPIT_REPO_URL    install a fork
+HELP
+}
+
 DESCRIBE=0
+DRY_RUN=0
 for arg in "$@"; do
   case "$arg" in
     --describe) DESCRIBE=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    --help | -h)
+      shipit_help
+      exit 0
+      ;;
     *)
-      echo "Error: unknown argument '$arg' (the only option is --describe)" >&2
+      echo "Error: unknown argument '$arg' (the options are --dry-run, --describe and --help)" >&2
       exit 1
       ;;
   esac
 done
-# The env form exists for the `bash -c "$(curl …)"` shape, which cannot pass an
+# The env forms exist for the `bash -c "$(curl …)"` shape, which cannot pass an
 # argument.
 if [ "${SHIPIT_DESCRIBE:-}" = "1" ]; then DESCRIBE=1; fi
+if [ "${SHIPIT_DRY_RUN:-}" = "1" ]; then DRY_RUN=1; fi
 
 if [ "$DESCRIBE" = "1" ]; then
   shipit_describe
@@ -488,6 +528,55 @@ if [ -n "${SHIPIT_HARNESSES:-}" ] &&
   ! harnesses_valid "$(printf '%s' "$SHIPIT_HARNESSES" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"; then
   echo "Error: SHIPIT_HARNESSES must be a comma-separated list of: $(echo "$SUPPORTED_HARNESSES" | tr ' ' ',') (got '$SHIPIT_HARNESSES')" >&2
   exit 1
+fi
+
+# --- Dry run: ask, report, change nothing (docs/276) ------------------------
+# The counterpart of the VPS installer's --dry-run, and it sits BEFORE the
+# preflight on purpose: the machine may have no Docker yet, and the question this
+# previews needs none. What you answer here is drawn by the same picker the real
+# install uses, so it is also the way to try the list itself.
+if [ "$DRY_RUN" = "1" ]; then
+  echo "==========================================="
+  echo "  ShipIt — Local install  (DRY RUN)"
+  echo "==========================================="
+  echo ""
+  echo "  Nothing will be installed, started, or written."
+  echo ""
+  resolve_harnesses
+  echo ""
+  echo "==========================================="
+  echo "  Dry run complete — nothing was changed."
+  echo "==========================================="
+  echo ""
+  echo "  A real run would:"
+  echo "    - check for git and Docker, and stop with instructions if either is missing"
+  echo "    - clone ShipIt to $SHIPIT_HOME and build the images with harnesses:"
+  echo "      $HARNESS_CHOICE ($HARNESS_SOURCE)"
+  echo "    - start ShipIt detached at http://localhost:4123"
+  echo ""
+  echo "  It would also — only if this machine cannot run the NET_ADMIN egress"
+  echo "  sidecar — ask one more y/N question about containment. That question"
+  echo "  cannot be previewed, because it depends on a Docker probe."
+  echo ""
+  echo "  To run the real install with this answer and no questions, set:"
+  echo "    SHIPIT_HARNESSES=$HARNESS_CHOICE"
+  echo ""
+  echo "  For the same questions as JSON, run this with --describe instead."
+  echo ""
+  exit 0
+fi
+
+# --- Running blind? Say so, before anything changes (docs/276) --------------
+# The one case where the questions are about to be skipped without anyone having
+# seen them: no terminal to draw a picker on, and no answers supplied. That is
+# exactly what an agent's shell looks like, so this is where --describe is named
+# for a reader who never opened the README.
+if [ ! -t 0 ] && [ -z "${SHIPIT_HARNESSES:-}" ]; then
+  echo "==> No terminal to ask on, so every question will use its default."
+  echo "    Installing this for someone else? Nothing has changed yet — stop,"
+  echo "    run this again with --describe to get the questions and their"
+  echo "    options, ask them, then run it with their answers."
+  echo ""
 fi
 
 echo "==========================================="

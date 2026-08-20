@@ -219,6 +219,22 @@ describe("installers describe their own questions (docs/276)", () => {
     expect(block, "a literal fractional -t reaches bash 3.2").not.toMatch(/-t\s+[0-9]*\.[0-9]/);
   });
 
+  for (const { name, script } of INSTALLERS) {
+    it(`${name}: --help names --describe, which is how an agent finds it`, () => {
+      // Discovery is the weak link in the whole feature: --describe is useless to
+      // an agent that never learns it exists, and an agent reaches for --help
+      // long before it reads a README. The unknown-argument error carries the
+      // same names, so a wrong guess also lands on the right answer.
+      const help = execFileSync("bash", [script, "--help"], { encoding: "utf8" });
+      expect(help).toContain("--describe");
+      expect(help).toContain("--dry-run");
+      expect(help).toContain("SHIPIT_HARNESSES");
+      const bad = spawnSync("bash", [script, "--nope"], { encoding: "utf8" });
+      expect(bad.status).not.toBe(0);
+      expect(bad.stderr).toContain("--describe");
+    });
+  }
+
   it("marks the Cloudflare token secret and never stores it (req 11)", () => {
     const token = describeInstaller(VPS_SETUP).questions.find(
       (q) => q.id === "cloudflare_api_token",
@@ -255,14 +271,32 @@ describe("--describe changes nothing (req 6)", () => {
   });
 
   for (const { name, script } of INSTALLERS) {
-    it(`${name}: writes no file and clones nothing`, () => {
-      const target = path.join(home, "shipit");
-      execFileSync("bash", [script, "--describe"], {
-        encoding: "utf8",
-        env: { ...process.env, HOME: home, SHIPIT_HOME: target },
+    for (const flag of ["--describe", "--dry-run"]) {
+      it(`${name} ${flag}: writes no file and clones nothing`, () => {
+        // Both previews sit ahead of the preflight, so they also run on a machine
+        // with no Docker — which is most of the machines someone previews on.
+        const target = path.join(home, "shipit");
+        const out = execFileSync("bash", [script, flag], {
+          encoding: "utf8",
+          env: { ...process.env, HOME: home, SHIPIT_HOME: target },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        expect(out.length).toBeGreaterThan(0);
+        expect(fs.existsSync(target), `the installer cloned during ${flag}`).toBe(false);
+        expect(fs.readdirSync(home)).toEqual([]);
       });
-      expect(fs.existsSync(target), "the installer cloned during a describe").toBe(false);
-      expect(fs.readdirSync(home)).toEqual([]);
+    }
+
+    it(`${name} --dry-run: reports the harness answer it would use`, () => {
+      // The line an operator checks before committing to the install. With no
+      // terminal the question falls through to the approved default, which is
+      // exactly what a real non-interactive run would build.
+      const out = execFileSync("bash", [script, "--dry-run"], {
+        encoding: "utf8",
+        env: { ...process.env, HOME: home, SHIPIT_HOME: path.join(home, "shipit") },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      expect(out).toContain(`SHIPIT_HARNESSES=${defaultHarnesses().join(",")}`);
     });
   }
 });
