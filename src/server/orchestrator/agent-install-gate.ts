@@ -309,7 +309,24 @@ export function recordWithheldCommands(workspaceDir: string, commands: string[])
   }
 }
 
-/** Where the durable acceptance record lives — a session-root sibling. */
+/**
+ * Where the durable acceptance record lives — a session-root sibling.
+ *
+ * **This THROWS**, and every caller resolves it inside its own `try` for that
+ * reason: `sessionStateDirForWorkspace` refuses a clone that does not sit at
+ * `<sessionDir>/workspace` (planning#288 — such a session is deliberately
+ * unserviceable rather than silently sharing one state dir with every other
+ * flat-layout session on the host).
+ *
+ * Resolving it outside the `try` is not a style slip, it is a destructive bug.
+ * `readInstallReset` is reached from `evaluateInstallGate`, which is reached from
+ * the top of `runInstall`, whose caller maps a throw to `{ ok: false }` — and a
+ * failed install latches every `dependsOnInstall` service to `error` with
+ * "agent.install failed" on it. A layout ShipIt cannot service would take the
+ * compose stack down under a diagnosis that names the wrong cause. Contained, it
+ * degrades to the same answer the marker read has always given for an
+ * unreadable state dir: no anchor, so allow.
+ */
 function resetRecordPath(workspaceDir: string): string {
   return path.join(sessionRootForWorkspace(workspaceDir), INSTALL_RESET_FILE);
 }
@@ -334,15 +351,16 @@ function resetRecordPath(workspaceDir: string): string {
  * existed. Keeping the marker costs every session its dependencies.
  */
 export function recordInstallReset(workspaceDir: string, record: InstallResetRecord): boolean {
-  const file = resetRecordPath(workspaceDir);
-  const tmp = `${file}.tmp`;
+  let tmp: string | null = null;
   try {
+    const file = resetRecordPath(workspaceDir);
+    tmp = `${file}.tmp`;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(tmp, JSON.stringify(record));
     fs.renameSync(tmp, file);
     return true;
   } catch (err) {
-    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing more to do */ }
+    if (tmp) { try { fs.rmSync(tmp, { force: true }); } catch { /* nothing more to do */ } }
     console.error(
       "[install-gate] could not persist the accepted-install record; this session's " +
       "agent.install gate has lost its anchor and a changed list will be allowed:",
@@ -365,14 +383,18 @@ export function recordInstallReset(workspaceDir: string, record: InstallResetRec
  * it an unaccepted execution.
  */
 export function readInstallReset(workspaceDir: string): InstallResetRecord | null {
-  const file = resetRecordPath(workspaceDir);
   let raw: string;
   try {
-    raw = fs.readFileSync(file, "utf8");
+    raw = fs.readFileSync(resetRecordPath(workspaceDir), "utf8");
   } catch (err) {
-    // Absent is the ordinary case and means exactly that. Anything else (EACCES,
-    // EIO) is a record we cannot read rather than one that is not there.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    // Absent is the ordinary case and means exactly that. A path that will not
+    // resolve at all is the unserviceable-layout throw described on
+    // `resetRecordPath` — no session root, so no record, so no anchor: the same
+    // answer the marker read gives, and never an exception into the install path.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === undefined) return null;
+    // Anything else (EACCES, EIO) is a record we cannot read rather than one
+    // that is not there.
     return { accepted: [] };
   }
   let parsed: unknown;

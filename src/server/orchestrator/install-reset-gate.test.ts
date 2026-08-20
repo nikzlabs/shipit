@@ -292,6 +292,41 @@ describe("the trust gate keeps its anchor across the reset", () => {
     });
   });
 
+  /**
+   * `sessionStateDirForWorkspace` THROWS for a clone that does not sit at
+   * `<sessionDir>/workspace` (planning#288, deliberately). The record's path
+   * resolver inherits that, and the gate is called from the top of `runInstall`,
+   * whose caller maps a throw to a FAILED install — which latches every
+   * `dependsOnInstall` service to `error` under "agent.install failed". An
+   * unserviceable layout must degrade to "no anchor", exactly as the marker read
+   * has always done, not take the compose stack down naming the wrong cause.
+   */
+  it("does not throw out of the gate for a session layout it cannot resolve", () => {
+    const flat = path.join(root, "sessions", "flat-layout");
+    fs.mkdirSync(flat, { recursive: true });
+    fs.writeFileSync(
+      path.join(flat, "shipit.yaml"),
+      [
+        "agent:",
+        `  install:\n    - ${JSON.stringify(CHANGED[0])}`,
+        "plugins:",
+        "  repos:",
+        "    - repo: nikzlabs/tools",
+        "      name: tools",
+        "  use:",
+        "    - plugin: probe",
+        "      from: tools",
+        "",
+      ].join("\n"),
+    );
+    // Plugin-bearing by DECLARATION, so `sessionHasPlugin` answers true without
+    // touching the session root — the gate then reaches the record read.
+    expect(() => evaluateInstallGate({ workspaceDir: flat, requested: CHANGED })).not.toThrow();
+    expect(evaluateInstallGate({ workspaceDir: flat, requested: CHANGED }).withheld).toBe(false);
+    expect(() => readInstallReset(flat)).not.toThrow();
+    expect(readInstallReset(flat)).toBeNull();
+  });
+
   // The overwhelming majority of sessions. A reset record is not a reason to
   // start gating a session that has no plugin in it — the whole boundary exists
   // because a plugin container can write `shipit.yaml`, and there isn't one.
