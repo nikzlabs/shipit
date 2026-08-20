@@ -46,11 +46,10 @@ answers to Q1 and Q2 decide which of these items exist at all. Requirement 9
 - [ ] H3 (req 4), if Q1 is answered (c): switch to per-session copies
       (`package-import-method=copy`), and measure the actual disk cost per
       session before committing to it — docs/198 measured ~464 MB.
-- [ ] Only if the requester asks for it: price **Reshaped B** (mediate the fetch
-      at the registry layer, so `npm install` still works — req 9). Open
-      sub-questions are in plan.md: every install path pointed at the mediator,
-      the warm-install cost, and git / `file:` dependencies that bypass the
-      registry.
+- [x] Price **registry mediation** (mediate the fetch so `npm install` still
+      works — req 9). Done: plan.md option D. **Refuted** — it closes none of the
+      three holes, because the attacker writes the shared files directly and
+      never asks the registry. Do not build it for this issue.
 - [ ] Record the residual explicitly in `requirements.md` and in shipit-docs
       whenever H2 is left open, so "integrity checking" is not read as covering
       the store.
