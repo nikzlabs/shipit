@@ -159,8 +159,12 @@ it.
       `anthropic/claude-opus-5`), and re-deriving identity in the browser is a second
       implementation of a rule the catalogue authors
 - [x] Pinning stays atomic: the service control writes the whole tuple, and carries the pinned
-      level only when the model survives by canonical key — a level the derived harness rejects
-      is refused by the server rather than silently replaced (req 5)
+      level only when the model survives by canonical key — a level the derived selection does
+      not offer is re-derived by the server and named in the response, rather than refused or
+      silently replaced (req 5, planning#352)
+- [x] planning#352 — a pinned level applies only where the resolved selection offers it, on the
+      review path and the settings path alike, with the substitution named in the Reviewer tab
+      and a catalogue-wide guard that fails on the next dual-harness edit
 - [x] Req 13 is **guarded**, not asserted in prose: `picker-consistency.test.tsx` compares the
       rendered `className` of all eight triggers against `PICKER_TRIGGER_CLASS`, and forbids a
       native `<select>` on either Settings surface. Verified by injecting a divergent class and

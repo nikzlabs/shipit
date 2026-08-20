@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReviewerSection } from "./ReviewerSection.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
+import { useUiStore } from "../../../stores/ui-store.js";
 import type { AgentOption } from "../../../agent-types.js";
 import type { ReviewerSlotView } from "../../../../server/shared/types/agent-types.js";
 
@@ -169,6 +170,9 @@ function okFetch(reviewers: ReviewerSlotView[] = []) {
 
 beforeEach(() => {
   useSettingsStore.getState().setReviewers([]);
+  // Toasts outlive a test otherwise, so "no toast was raised" would pass on the
+  // *previous* test's toast — the assertion that must not be blind.
+  useUiStore.getState().setToast(null);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -264,6 +268,154 @@ describe("ReviewerSection", () => {
     expect(screen.getByTestId("reviewer-resolution-first").textContent).not.toMatch(
       /running on Claude Code/i,
     );
+  });
+
+  /**
+   * planning#352 — the pin applies partially, and the tab says where.
+   *
+   * The same incident row as above, and the same reason it is used: this view
+   * resolves onto Claude Code, which offers `max`, while a Claude session's
+   * review runs on Codex, which does not. Stating "at Max" and stopping there is
+   * what made the substitution silent, so the harness that re-derives is named
+   * along with what the level becomes there.
+   */
+  it("names where a pinned level does not survive, and what it becomes", () => {
+    useSettingsStore.getState().setReviewers([
+      autoSlot("first", {
+        source: "pinned",
+        pin: {
+          serviceId: "deepseek",
+          billingMode: "key",
+          modelId: "deepseek-v4-flash",
+          reasoningEffort: "max",
+        },
+        resolved: {
+          serviceId: "deepseek",
+          billingMode: "key",
+          modelId: "deepseek-v4-flash",
+          serviceName: "DeepSeek",
+          label: "V4 Flash",
+          harnessId: "claude",
+          harnessName: "Claude Code",
+          reasoningEffort: "max",
+          reasoningLabel: "Max",
+          effortSubstitutions: [
+            { harnessId: "codex", harnessName: "Codex", reasoningEffort: "high", reasoningLabel: "High" },
+            { harnessId: "grok", harnessName: "Grok Build" },
+          ],
+        },
+      }),
+      autoSlot("second"),
+    ]);
+    render(<ReviewerSection agentList={agents} />);
+
+    const codex = screen.getByTestId("reviewer-effort-substituted-first-codex").textContent ?? "";
+    expect(codex).toContain("Codex");
+    // Both halves: the level that does not apply, and the one that does there.
+    expect(codex).toContain("Max");
+    expect(codex).toContain("High");
+    // A harness that sends no level at all says that rather than naming one.
+    const grok = screen.getByTestId("reviewer-effort-substituted-first-grok").textContent ?? "";
+    expect(grok).toMatch(/no level/i);
+    // The slot's own resolution still reads as the pin, because here it is one.
+    expect(screen.getByTestId("reviewer-resolution-first").textContent).toContain("at Max");
+  });
+
+  /** Nothing to warn about when the pin applies wherever a review could land. */
+  it("says nothing about substitutions when the pinned level survives", () => {
+    useSettingsStore.getState().setReviewers([
+      autoSlot("first", {
+        source: "pinned",
+        pin: { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5", reasoningEffort: "high" },
+      }),
+      autoSlot("second"),
+    ]);
+    render(<ReviewerSection agentList={agents} />);
+
+    expect(screen.queryByTestId("reviewer-effort-substituted-first-codex")).toBeNull();
+    expect(screen.getByTestId("reviewer-resolution-first").textContent).not.toMatch(
+      /does not offer/i,
+    );
+  });
+
+  /**
+   * planning#352's settings-path half. A service change that keeps the model
+   * carries the level along; where the newly derived selection does not offer
+   * it, the server re-derives rather than refusing — so the edit lands, and the
+   * one thing that changed under it has to be said out loud.
+   *
+   * A COMPARISON of what was sent against what came back, which is all this file
+   * is allowed to know: which harness offers which level stays the server's rule
+   * (req 8).
+   */
+  it("says so when the server stored a different level than the one sent", async () => {
+    const user = userEvent.setup();
+    const answered: ReviewerSlotView[] = [
+      autoSlot("first", {
+        source: "pinned",
+        // Sent `high` with the model; stored `medium`, because the newly
+        // derived selection does not offer `high`.
+        pin: {
+          serviceId: "openrouter",
+          billingMode: "key",
+          modelId: "anthropic/claude-opus-5",
+          reasoningEffort: "medium",
+        },
+        resolved: {
+          serviceId: "openrouter",
+          billingMode: "key",
+          modelId: "anthropic/claude-opus-5",
+          serviceName: "OpenRouter",
+          label: "Opus 5",
+          harnessId: "codex",
+          harnessName: "Codex",
+          reasoningEffort: "medium",
+          reasoningLabel: "Medium",
+        },
+      }),
+      autoSlot("second"),
+    ];
+    const fetchMock = okFetch(answered);
+    vi.stubGlobal("fetch", fetchMock);
+    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+
+    render(<ReviewerSection agentList={agents} />);
+    // The same model on another service, so the level rides along — the exact
+    // edit the old refusal made impossible without lowering the level first.
+    await user.click(screen.getByTestId("reviewer-first-service-trigger"));
+    await user.click(screen.getByTestId("reviewer-first-service-option-openrouter:key"));
+
+    expect(bodyOf(fetchMock)).toMatchObject({
+      reviewers: { first: { reasoningEffort: "high" } },
+    });
+    const { useUiStore } = await import("../../../stores/ui-store.js");
+    const toast = useUiStore.getState().toast?.message ?? "";
+    expect(toast).toContain("high");
+    expect(toast).toContain("Medium");
+  });
+
+  /** No toast when the level the server stored is the level that was sent. */
+  it("stays quiet when the level came back unchanged", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      okFetch([
+        autoSlot("first", {
+          source: "pinned",
+          pin: { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4", reasoningEffort: "high" },
+          resolved: deepseekResolution,
+        }),
+        autoSlot("second"),
+      ]),
+    );
+    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+
+    render(<ReviewerSection agentList={agents} />);
+    await user.click(screen.getByTestId("reviewer-reasoning-trigger-first"));
+    await user.click(screen.getByTestId("reviewer-reasoning-option-first-high"));
+
+    const { useUiStore } = await import("../../../stores/ui-store.js");
+    expect(useUiStore.getState().toast).toBeNull();
   });
 
   it("labels a pinned slot pinned, and offers the way back", () => {

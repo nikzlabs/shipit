@@ -68,6 +68,7 @@ import { useUiStore } from "../../../stores/ui-store.js";
 import type { AgentOption, EligibleModelOption } from "../../../agent-types.js";
 import type {
   ReviewerPinPatch,
+  ReviewerResolved,
   ReviewerSlotView,
 } from "../../../../server/shared/types/agent-types.js";
 
@@ -89,6 +90,40 @@ async function refetchReviewers(): Promise<void> {
   } catch {
     // Still offline. The next `agent_list` push or reload reconciles.
   }
+}
+
+/**
+ * planning#352 — say it when the level the server stored is not the level this
+ * tab asked for.
+ *
+ * A pinned level the newly derived selection does not offer is **re-derived
+ * rather than refused**, so a service change that carries the level along
+ * succeeds now instead of failing until the user lowered the level first. The
+ * cost of that is a change the user did not ask for, and this is what stops it
+ * being a silent one (req 5).
+ *
+ * A COMPARISON, not a derivation: the tab knows what it sent and what came back,
+ * and that is all it needs to know — which harness offers which level is still
+ * the server's rule, and re-deriving it here is what req 8 rules out.
+ */
+function reportEffortChange(
+  slot: string,
+  requested: ReviewerPinPatch | null,
+  views: ReviewerSlotView[],
+): void {
+  const asked = requested?.reasoningEffort;
+  if (!asked) return;
+  const view = views.find((v) => v.slot === slot);
+  const stored = view?.pin?.reasoningEffort;
+  if (!view || stored === asked) return;
+  const where = view.resolved?.harnessName ?? "the harness it derives";
+  const model = view.resolved?.label ?? view.pin?.modelId ?? "that model";
+  const level = view.resolved?.reasoningLabel ?? stored;
+  useUiStore.getState().setToast({
+    message: level
+      ? `${where} does not offer ${asked} on ${model} — pinned at ${level} instead.`
+      : `${where} sends no reasoning level on ${model} — pinned without one.`,
+  });
 }
 
 const SLOT_TITLE: Record<string, string> = {
@@ -170,6 +205,7 @@ export function ReviewerSection({
       const result = (await res.json()) as { reviewers?: ReviewerSlotView[] };
       if (result.reviewers && write === latestWrite.current) {
         useSettingsStore.getState().setReviewers(result.reviewers);
+        reportEffortChange(slot, value, result.reviewers);
       }
     } catch (err) {
       useUiStore.getState().setToast({
@@ -250,8 +286,9 @@ function ReviewerSlotCard({
    *
    * Not `reasoning.options`, which is the harness's vocabulary: a harness can
    * declare levels and send none on a given row (grok, key-billed), and
-   * `resolveReviewerPinPatch` refuses a level in exactly that case — so reading
-   * the vocabulary here renders a menu whose every value comes back a 400.
+   * `resolveReviewerPinPatch` re-derives a level in exactly that case — so
+   * reading the vocabulary here renders a menu whose every value is discarded on
+   * arrival, offering a choice that cannot be made.
    */
   const reviewerLevels = () =>
     resolved
@@ -287,9 +324,10 @@ function ReviewerSlotCard({
    * "The same model" is the canonical key, not the id: moving Opus 5 from
    * Anthropic to a gateway changes the id and nothing else, and dropping the
    * level there would silently downgrade a level the user pinned deliberately —
-   * which is the one thing req 5 rules out. If the level does not survive the
-   * derived harness the server refuses and says so, which is visible and
-   * recoverable in a way a silent replacement is not.
+   * which is the one thing req 5 rules out. Where the level does not survive the
+   * newly derived selection the server re-derives it instead of refusing the
+   * service change (planning#352), and `reportEffortChange` names both levels —
+   * so the edit lands and the one thing that changed under it is said out loud.
    */
   const changeService = (service: ServiceChoice) => {
     const next = modelAfterServiceChange(currentModel, modelsOfService(models, service));
@@ -305,6 +343,18 @@ function ReviewerSlotCard({
         : {}),
     });
   };
+
+  /**
+   * The pinned level as the resolution line above spells it, where this view's
+   * own harness offers it — a raw `max` sitting beside "at Max" reads as a
+   * second, different setting. A level this harness does not offer has no label
+   * here at all, so the stored value is the honest thing to name.
+   */
+  const pinnedEffortLabel =
+    view.pin?.reasoningEffort !== undefined
+    && resolved?.reasoningEffort === view.pin.reasoningEffort
+      ? (resolved?.reasoningLabel ?? view.pin.reasoningEffort)
+      : view.pin?.reasoningEffort;
 
   // The derived answer, named. Rendered even on a pinned slot — as the *Reset
   // to auto* affordance's subject — because "what would happen if I un-pinned
@@ -366,18 +416,17 @@ function ReviewerSlotCard({
               promise that a Codex review then broke, and the user reported it
               as their settings change failing to apply.
 
-              **The reasoning level is a second, latent prediction — left
-              stated flat here deliberately.** `buildTarget` sets it to
-              `plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId)`
-              against the review-time harness, so an auto slot's level follows
-              whichever harness the review bent to (invisible only because both
-              harnesses currently default to `high`), and a pinned slot's level
-              is validated against the harness derived HERE and then copied onto
-              the one derived THERE — a level the second harness may not declare
-              at all. That is planning#381, which owns the choice between
-              refusing and substituting; hedging the level before that choice is
-              made would describe behaviour ShipIt has not settled on. So the
-              defect is named here rather than papered over in the copy.
+              **The reasoning level follows the same derivation, and where it
+              cannot survive it is NAMED rather than left to be discovered**
+              (planning#352). `buildTarget` keeps a pinned level only where the
+              selection it resolved onto offers it, and re-derives it otherwise —
+              a pin applies partially, because refusing the review would lose it
+              over a level nobody chose deliberately and substituting invisibly
+              is what req 5 rules out. The value stated here is this view's own
+              resolution; every harness where the pinned level does NOT survive
+              is listed after it, including this one, since a review derives its
+              own harness and a note scoped to the one named here would stay
+              silent about exactly the crossing that made this a defect.
 
               So the rule is stated and the value is given as its no-conflict
               case. Dropping the harness instead would have been the smaller
@@ -416,6 +465,15 @@ function ReviewerSlotCard({
                     · harness selected per review, preferring one the reviewed session is
                     not on — {resolved.harnessName} with no session to avoid
                   </span>
+                  {pinnedEffortLabel
+                    && resolved.effortSubstitutions?.map((sub) => (
+                      <EffortSubstitutionNote
+                        key={sub.harnessId}
+                        slot={view.slot}
+                        pinnedEffort={pinnedEffortLabel}
+                        substitution={sub}
+                      />
+                    ))}
                 </>
               ) : view.unavailableReason === "pin_unavailable" ? (
                 <span className="text-(--color-warning)">
@@ -478,9 +536,9 @@ function ReviewerSlotCard({
 
           {/* docs/274 req 14 — the levels THIS reviewer's selection honours, not
               the harness's raw vocabulary. A harness can declare levels and send
-              none on a given row (grok, key-billed), and the server refuses such
-              a pin — so offering it here would render a control whose every
-              value comes back a 400. */}
+              none on a given row (grok, key-billed), and the server re-derives
+              such a level on arrival — so offering it here would render a
+              control whose every value is replaced by the one already shown. */}
           {reasoning && reviewerLevels().length > 0 && (
             <ReasoningMenu
               slot={view.slot}
@@ -518,6 +576,36 @@ function ReviewerSlotCard({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * planning#352 — one harness the pinned level does not reach, and what a review
+ * there runs at instead.
+ *
+ * Warning-toned rather than neutral, and for the same reason the unavailable-pin
+ * line is: the slot is not doing what its pin says. It is not an *error* — the
+ * review still happens, on the pinned model — so it sits inside the resolution
+ * line rather than replacing it.
+ */
+function EffortSubstitutionNote({
+  slot,
+  pinnedEffort,
+  substitution,
+}: {
+  slot: string;
+  pinnedEffort: string;
+  substitution: NonNullable<ReviewerResolved["effortSubstitutions"]>[number];
+}) {
+  const instead = substitution.reasoningLabel ?? substitution.reasoningEffort;
+  return (
+    <span
+      className="text-(--color-warning)"
+      data-testid={`reviewer-effort-substituted-${slot}-${substitution.harnessId}`}
+    >
+      · {substitution.harnessName} does not offer {pinnedEffort} here —{" "}
+      {instead ? `a review there runs at ${instead}` : "a review there sets no level"}
+    </span>
   );
 }
 

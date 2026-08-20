@@ -173,6 +173,52 @@ describe("buildReviewerSettings (req 8)", () => {
   });
 
   /**
+   * planning#352 — the tab is told where a pinned level does NOT survive.
+   *
+   * The tab names one harness (its derivation is implementer-independent) while
+   * a review derives its own, so the note cannot be scoped to what this view
+   * resolved onto: on this very row a pin accepted at `max` against Claude Code
+   * runs on Codex, which declares no `max`. Reporting the level flat here is
+   * what made the substitution silent.
+   */
+  it("names, on a pinned slot, every harness the pinned level does not survive onto", async () => {
+    installAll();
+    const { buildReviewerSettings } = await import("./reviewer-settings.js");
+    const pin: ReviewerPin = {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+      reasoningEffort: "max",
+    };
+    const views = buildReviewerSettings({
+      credentialStore: storeWith([DEEPSEEK_KEY], { first: pin }),
+      env: {},
+    });
+
+    // This view's own harness offers `max`, so the level it reports is the pin's.
+    expect(views[0].resolved?.harnessId).toBe("claude");
+    expect(views[0].resolved?.reasoningEffort).toBe("max");
+    const subs = views[0].resolved?.effortSubstitutions ?? [];
+    const codex = subs.find((s) => s.harnessId === "codex");
+    expect(codex, "a review on Codex runs at another level and the tab is not told").toBeDefined();
+    // Named for the user, not by id — this string is rendered.
+    expect(codex?.harnessName).toBeTruthy();
+    expect(codex?.reasoningEffort).not.toBe("max");
+    expect(subs.map((s) => s.harnessId)).not.toContain("claude");
+  });
+
+  /** Nothing to say on a slot nobody pinned: there is no level to substitute. */
+  it("says nothing about substitutions on an auto-configured slot", async () => {
+    installAll();
+    const { buildReviewerSettings } = await import("./reviewer-settings.js");
+    const views = buildReviewerSettings({
+      credentialStore: storeWith([DEEPSEEK_KEY]),
+      env: {},
+    });
+    expect(views.map((v) => v.resolved?.effortSubstitutions)).toEqual([undefined, undefined]);
+  });
+
+  /**
    * A pin whose credential went away and an install that can run nothing read
    * very differently to the user — "the reviewer you chose is gone" versus "add
    * a credential" — so they are not collapsed into one absence.
@@ -264,28 +310,70 @@ describe("resolveReviewerPinPatch (reqs 5, 8)", () => {
   });
 
   /**
-   * docs/217's rule elsewhere is "an unrecognized level means pass no flag".
-   * Under req 5 that would be a level silently *replaced*, which is the same
-   * failure as one silently supplied — so it is refused.
+   * planning#352 — a level the derived selection does not offer is **re-derived,
+   * not refused**.
+   *
+   * This used to be a 400, on the reading that a silent replacement is as bad as
+   * a silent supply. What that missed is the edit it blocks: a service change
+   * that keeps the model can derive a different harness, so the change failed
+   * until the user lowered the level first — req 11 blocked by req 5, over a
+   * level that came along with the model rather than being chosen for the new
+   * one. The replacement is not silent because this **returns** the pin that was
+   * stored, and the tab reports a level that changed under an edit.
    */
-  it("refuses a level the derived harness does not offer", async () => {
+  it("re-derives a level the derived selection does not offer", async () => {
     installAll();
     const { resolveReviewerPinPatch } = await import("./reviewer-settings.js");
-    expectRefusal(
-      () =>
-        resolveReviewerPinPatch(
-          {
-            serviceId: "anthropic",
-            billingMode: "key",
-            modelId: "claude-opus-5",
-            // Codex declares `minimal`; Claude Code does not.
-            reasoningEffort: "minimal",
-          },
-          storeWith([ANTHROPIC_KEY]),
-          {},
-        ),
-      /minimal is not a reasoning level/,
+    const { REVIEWER_DEFAULT_EFFORT } = await import("../reviewer-model.js");
+    const pin = resolveReviewerPinPatch(
+      {
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+        // Codex declares `minimal`; Claude Code does not.
+        reasoningEffort: "minimal",
+      },
+      storeWith([ANTHROPIC_KEY]),
+      {},
     );
+
+    expect(pin.reasoningEffort).toBe(REVIEWER_DEFAULT_EFFORT.claude);
+    // The MODEL half of the pin is untouched — the pin applies as far as it can
+    // and no further, which is what makes this an edit that lands rather than
+    // one that fails.
+    expect(pin).toMatchObject({
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: "claude-opus-5",
+    });
+  });
+
+  /**
+   * The docs/274 req 14 end of the same rule: a row whose CLI drops the flag
+   * before the wire offers no level to name, so one that arrives anyway is
+   * dropped rather than refused. Pinning such a reviewer must stay possible —
+   * it is perfectly runnable, with one field fewer.
+   */
+  it("drops a level on a selection that offers none, and still pins", async () => {
+    // Grok Build alone, so the row derives onto the one harness that sends no
+    // reasoning flag at all under key billing.
+    vi.doMock("../../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: (id: string) => id === "grok",
+      readInstalledHarnesses: () => ["grok"],
+    }));
+    const { resolveReviewerPinPatch } = await import("./reviewer-settings.js");
+    const { reasoningOptionsFor } = await import("../../shared/catalogue/index.js");
+    const selection = { serviceId: "xai", billingMode: "key" as const, modelId: "grok-4.6" };
+    // The premise, asserted rather than assumed.
+    expect(reasoningOptionsFor("grok", selection)).toEqual([]);
+
+    expect(
+      resolveReviewerPinPatch(
+        { ...selection, reasoningEffort: "high" },
+        storeWith([route({ serviceId: "xai", billingMode: "key" })]),
+        {},
+      ),
+    ).toEqual(selection);
   });
 
   it("refuses a triple the catalogue does not carry", async () => {

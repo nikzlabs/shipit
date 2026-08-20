@@ -261,11 +261,33 @@ export interface ReviewerResolved {
   harnessId: AgentId;
   harnessName: string;
   /**
-   * Req 5 — the pin's level, or the harness's ShipIt-authored review default.
-   * Absent only for a harness that declares no levels (docs/274).
+   * Req 5 — the pin's level, or the review default derived for what this slot
+   * resolved onto. Absent only for a selection that offers no level (docs/274).
    */
   reasoningEffort?: string;
-  /** That level's display label on this harness, when the harness declares one. */
+  /** That level's display label on this selection, when there is one. */
+  reasoningLabel?: string;
+  /**
+   * planning#352 — every harness this reviewer could resolve onto that does
+   * **not** offer the pinned level, and what a review there runs at instead.
+   *
+   * Present only on a pinned slot, and empty (omitted) when the pin applies
+   * everywhere. It exists because a pin is applied *partially*: the pinned model
+   * is kept and the level is re-derived per resolution, so the tab has to say
+   * what the level became rather than report a pin that is not in force. The
+   * harness this view names is included when it is one of them — the tab names
+   * ONE harness while a review derives its own, so a note scoped to the tab's
+   * own resolution would stay silent about the crossing that made this a defect.
+   */
+  effortSubstitutions?: ReviewerEffortElsewhere[];
+}
+
+/** planning#352 — one harness a pinned level does not survive onto. */
+export interface ReviewerEffortElsewhere {
+  harnessId: AgentId;
+  harnessName: string;
+  /** What a review there runs at; absent when that row carries no level at all. */
+  reasoningEffort?: string;
   reasoningLabel?: string;
 }
 

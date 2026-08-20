@@ -36,6 +36,7 @@ import {
 import {
   REVIEWER_DEFAULT_EFFORT,
   resolveReviewerSlots,
+  reviewerEffortSubstitutions,
   type ReviewerModelDeps,
   type ReviewerSlotResolution,
 } from "../reviewer-model.js";
@@ -73,31 +74,43 @@ export function buildReviewerSettings(deps: ReviewerSettingsDeps): ReviewerSlotV
       unavailableReason: "nothing_eligible" as const,
     }));
   }
-  return resolveReviewerSlots(modelDeps).map(toSlotView);
+  return resolveReviewerSlots(modelDeps).map((resolution) => toSlotView(resolution, modelDeps));
 }
 
 /**
  * Turn one edit into the complete pin to store, or throw a `ServiceError`
  * naming what is wrong with it.
  *
- * Three ways an edit is refused, and each is a different mistake:
+ * **The MODEL is refused; the LEVEL is re-derived** (planning#352). Two ways an
+ * edit is refused, and both are the same mistake — a model this install cannot
+ * pin:
  *
  *  - the triple names no catalogue row, or no **installed, credentialed**
  *    harness can run it — a pin that would fail on every review, and one the UI
- *    never offers, so it is API misuse rather than a state to persist;
- *  - the reasoning level is not one the derived harness declares. docs/217's
- *    rule elsewhere is "an unrecognized level means pass no flag", which here
- *    would be a level silently *replaced* — the same failure as one silently
- *    supplied, so it is refused instead;
- *  - the level is omitted, which is **not** a refusal: it is the model-changed
- *    case, and the harness's ShipIt-authored review default completes the tuple.
+ *    never offers, so it is API misuse rather than a state to persist.
+ *
+ * The level is never a refusal. Omitting it is the model-changed case, and the
+ * ShipIt-authored review default for the derived selection completes the tuple.
+ * Naming a level the derived selection does not offer takes the *same* answer,
+ * and that is planning#352's decision applied to the settings path: a service
+ * change that keeps the model can derive a different harness, and refusing there
+ * made the change fail until the user lowered the level first — req 11 blocked
+ * by req 5, over a level that came along with the model rather than being chosen
+ * for the new one.
+ *
+ * That is not the silent replacement req 5 rules out, because **the response is
+ * the record**: this returns the complete pin that was stored, the tab renders
+ * it, and a level that changed under an edit is reported there (the tab raises a
+ * toast naming both levels). Nothing is filled in where the caller cannot see
+ * it, which is the property req 5 is protecting.
  *
  * The harness derivation is deliberately the implementer-independent one
  * (`harnessesForSelection` with no `avoidHarnessId`): a *setting* has to have
  * one answer whether or not a session is in front of the user. The review-time
  * preference for a harness that is not the implementer's is applied per review,
- * in `selectReviewer` — which is also why the level validated here follows the
- * derived harness rather than the one a given review ends up on.
+ * in `selectReviewer`, which re-derives the level again for whatever it resolves
+ * onto — so a level stored here is what the setting means, not a promise about
+ * every review.
  */
 export function resolveReviewerPinPatch(
   patch: ReviewerPinPatch,
@@ -127,43 +140,17 @@ export function resolveReviewerPinPatch(
   // would then report as in force while the review ran at the CLI's default.
   const options = reasoningOptionsFor(runnable.harnessId, patch);
   // An EMPTY option set pins without a level (docs/274 req 8) — there is none to
-  // name. This used to be a 400, on the reading that a levelless reviewer is an
-  // incomplete one; with Grok Build shipping such a selection it would have
-  // refused to pin a perfectly runnable reviewer. What stays a 400 is naming a
-  // level anyway: that is a false claim, and silently dropping it would make the
-  // Settings screen report a pin the user did not make.
+  // name, so a level that arrived anyway is dropped rather than refused.
   //
-  // The wording says "on this selection", not "declares none", and the
-  // difference is req 14's: since planning#435 grok DOES declare four levels and
-  // still honours none of them on a key-billed row, so a message blaming the
-  // harness would send the user looking for a harness setting that is not the
-  // problem.
-  if (options.length === 0) {
-    if (patch.reasoningEffort !== undefined) {
-      throw new ServiceError(
-        400,
-        `${runnable.harnessId} offers no reasoning levels on ${patch.serviceId}/${patch.billingMode}/${patch.modelId}, so a reviewer on it cannot name one`,
-      );
-    }
-    return selectionOf(patch);
-  }
-  if (patch.reasoningEffort === undefined) {
-    const derived = defaultReviewerEffort(runnable.harnessId, patch);
-    if (!derived) {
-      throw new ServiceError(
-        400,
-        `${runnable.harnessId} offers no reasoning levels on ${patch.serviceId}/${patch.billingMode}/${patch.modelId}, so a reviewer on it cannot name one (docs/261 req 5)`,
-      );
-    }
-    return { ...selectionOf(patch), reasoningEffort: derived };
-  }
-  if (!options.some((option) => option.value === patch.reasoningEffort)) {
-    throw new ServiceError(
-      400,
-      `${patch.reasoningEffort} is not a reasoning level ${runnable.harnessId} offers on ${patch.serviceId}/${patch.billingMode}/${patch.modelId}`,
-    );
-  }
-  return { ...selectionOf(patch), reasoningEffort: patch.reasoningEffort };
+  // "On this selection", not "the harness declares none", and the difference is
+  // req 14's: since planning#435 grok DOES declare four levels and still honours
+  // none of them on a key-billed row.
+  if (options.length === 0) return selectionOf(patch);
+  const kept =
+    patch.reasoningEffort !== undefined
+    && options.some((option) => option.value === patch.reasoningEffort);
+  const effort = kept ? patch.reasoningEffort : defaultReviewerEffort(runnable.harnessId, patch);
+  return { ...selectionOf(patch), ...(effort !== undefined ? { reasoningEffort: effort } : {}) };
 }
 
 /**
@@ -249,7 +236,10 @@ function reviewerModelDeps(deps: ReviewerSettingsDeps): ReviewerModelDeps | unde
   };
 }
 
-function toSlotView(resolution: ReviewerSlotResolution): ReviewerSlotView {
+function toSlotView(
+  resolution: ReviewerSlotResolution,
+  deps: ReviewerModelDeps,
+): ReviewerSlotView {
   if (!resolution.target) {
     return {
       slot: resolution.slot,
@@ -260,9 +250,25 @@ function toSlotView(resolution: ReviewerSlotResolution): ReviewerSlotView {
   }
   const { target } = resolution;
   const harness = getHarness(target.harnessId);
-  const reasoningLabel = harness?.capabilities.reasoning?.options.find(
+  // The levels THIS SELECTION offers, not the harness's raw vocabulary (docs/274
+  // req 14). The two lists carry the same label objects, so this is not a nicer
+  // label — it is the honest one: a level the selection does not offer has no
+  // label here, and since planning#352 no such level can reach a target anyway.
+  const reasoningLabel = reasoningOptionsFor(target.harnessId, target.selection).find(
     (option) => option.value === target.reasoningEffort,
   )?.label;
+  // planning#352 — a pin applies partially, so the tab reports where the pinned
+  // level does not survive and what it becomes there. Computed from the PIN, not
+  // from this resolution: this view names one harness and a review derives its
+  // own, and the crossing is the case that matters most.
+  const substitutions = resolution.pin
+    ? reviewerEffortSubstitutions(resolution.pin, deps).map((entry) => ({
+        harnessId: entry.harnessId,
+        harnessName: getHarness(entry.harnessId)?.name ?? entry.harnessId,
+        ...(entry.reasoningEffort !== undefined ? { reasoningEffort: entry.reasoningEffort } : {}),
+        ...(entry.reasoningLabel ? { reasoningLabel: entry.reasoningLabel } : {}),
+      }))
+    : [];
   return {
     slot: resolution.slot,
     source: resolution.source,
@@ -277,6 +283,7 @@ function toSlotView(resolution: ReviewerSlotResolution): ReviewerSlotView {
       harnessName: harness?.name ?? target.harnessId,
       ...(target.reasoningEffort !== undefined ? { reasoningEffort: target.reasoningEffort } : {}),
       ...(reasoningLabel ? { reasoningLabel } : {}),
+      ...(substitutions.length > 0 ? { effortSubstitutions: substitutions } : {}),
     },
   };
 }
