@@ -45,8 +45,19 @@
  * says `running`. So the fact has to be pushed into the turn.
  */
 
-/** Why the dependencies could not be verified after the rewrite. */
-export type DependencyGapReason = "not-content-keyed" | "install-failed";
+/**
+ * Why the dependencies could not be verified.
+ *
+ * `install-withheld` is the odd one out and is not about a rewrite at all (the
+ * ops finding of 2026-08-20): ShipIt itself discarded the session's installed
+ * packages — a shared dep base rotated under it, or a disk reclaim took the
+ * overlay upper — and then the reinstall that was supposed to restore them was
+ * refused by the docs/271 trust gate. It shares this type because it is the same
+ * fact by a different route (dependencies on disk are not the ones this checkout
+ * needs) and wants the same three surfaces, with the same lifetime: told until an
+ * install answers it.
+ */
+export type DependencyGapReason = "not-content-keyed" | "install-failed" | "install-withheld";
 
 /** A session's unverified-dependency state — `null` when there is nothing to say. */
 export interface DependencyGap {
@@ -57,8 +68,24 @@ export interface DependencyGap {
    * the file watcher reported rather than a rewrite ShipIt performed.
    */
   rewrite?: string;
-  /** `agent.install` as declared — the remedy to name. */
+  /**
+   * The commands to name as the remedy.
+   *
+   * For `install-withheld` that is deliberately NOT the declared `agent.install`
+   * but the list already **in force** — the one the session last ran to
+   * completion. Naming the withheld list here would have ShipIt instruct its own
+   * agent to run the command it just refused, which is docs/271's boundary
+   * dressed up rather than observed: requirement 8's remedy is the *user* asking
+   * for the new command, not ShipIt asking on their behalf. The in-force list
+   * restores the discarded packages and adopts nothing.
+   */
   commands: string[];
+  /**
+   * `install-withheld` only — the declared `agent.install` that was refused,
+   * named so the reader can see both lists and decide about the new one. Never a
+   * remedy; see {@link commands}.
+   */
+  withheld?: string[];
 }
 
 /**
@@ -98,12 +125,50 @@ const CONSEQUENCE =
   "pre-rewrite contents.";
 
 /**
+ * The `install-withheld` consequence, and deliberately a different sentence from
+ * {@link CONSEQUENCE}.
+ *
+ * A rewrite leaves the WRONG packages installed, which is why that one is about
+ * a service that keeps reporting `running` while its requests fail. A discarded
+ * upper layer leaves packages MISSING, so the failure is louder and earlier and
+ * lands somewhere else entirely: the service never starts, and its log is a bare
+ * `command not found` naming a tool from this project — which is what sent the
+ * incident's diagnosis into the user's own code instead of into ShipIt.
+ */
+const WITHHELD_CONSEQUENCE =
+  "Dependencies are incomplete right now. A service can fail to start at all — " +
+  "`sh: 1: <tool>: not found`, exit 127 — and its log will read like a fault in this " +
+  "project rather than a missing package.";
+
+/**
  * The transcript notice. Persisted, because the whole failure is one nobody can
  * reconstruct later: it names what moved the tree, why the dependencies were not
  * re-checked, the command to run now, and the one-line config change that lets
  * ShipIt do the check itself next time.
  */
 export function dependencyGapNotice(gap: DependencyGap): string {
+  if (gap.reason === "install-withheld") {
+    return [
+      "ShipIt discarded this session's installed packages and did **not** reinstall them.",
+      "",
+      "The shared dependency base this session was built on was replaced, so the packages " +
+        "it had installed on top of that base went with it. ShipIt reinstalls them straight " +
+        "away — except here it did not: this session has a plugin, plugin containers can " +
+        "write `shipit.yaml`, and `agent.install` has changed since the list that last ran. " +
+        "A changed install command runs in the container holding this session's credentials, " +
+        "so ShipIt does not run it on its own.",
+      "",
+      WITHHELD_CONSEQUENCE,
+      "",
+      "Ask the agent to run the commands that were already in force — that restores the " +
+        "packages without adopting the change:",
+      "",
+      renderCommands(gap.commands),
+      "",
+      "Not run:",
+      renderCommands(gap.withheld ?? []),
+    ].join("\n");
+  }
   const where = rewritePhrase(gap.rewrite);
   const head =
     gap.reason === "install-failed"
@@ -148,6 +213,14 @@ export function dependencyGapNotice(gap: DependencyGap): string {
  * the row itself cannot be trusted to explain the failure.
  */
 export function dependencyGapSummary(gap: DependencyGap): string {
+  if (gap.reason === "install-withheld") {
+    return (
+      "ShipIt discarded this session's installed packages when the shared dependency base " +
+      "rotated, and the reinstall was withheld — `agent.install` changed in a plugin-bearing " +
+      "session. A dependent service may fail to start with a missing-binary error (exit 127) " +
+      "that reads like a fault in this project; ask the user before running the changed install."
+    );
+  }
   const where = rewritePhrase(gap.rewrite);
   return gap.reason === "install-failed"
     ? `\`agent.install\` failed after ${where}, so installed dependencies may not match this tree. ` +
@@ -181,6 +254,25 @@ export function dependencyGapSummary(gap: DependencyGap): string {
  */
 export function dependencyGapAgentPrefix(gap: DependencyGap | null | undefined): string {
   if (!gap) return "";
+  if (gap.reason === "install-withheld") {
+    return [
+      "[System] ShipIt replaced the shared dependency base under this session and discarded " +
+        "the packages installed on top of it. The reinstall did NOT run: this session has a " +
+        "plugin, `agent.install` has changed since the list that last ran, and ShipIt does not " +
+        "run a changed install command unattended. Dependencies are incomplete. Run the " +
+        "commands that were already in force before you treat any missing-module or " +
+        "missing-binary error as a fault in the code:",
+      "",
+      renderCommands(gap.commands),
+      "",
+      "Do NOT run the changed `agent.install` on your own initiative — nobody has accepted it, " +
+        "and a plugin container can write `shipit.yaml`. It is:",
+      "",
+      renderCommands(gap.withheld ?? []),
+      "",
+      "If the user asks for that one, running it is theirs to ask for and yours to do.",
+    ].join("\n");
+  }
   const where = rewritePhrase(gap.rewrite);
   const cause =
     gap.reason === "install-failed"

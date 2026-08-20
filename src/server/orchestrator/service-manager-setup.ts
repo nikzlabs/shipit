@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ContainerSessionRunner } from "./container-session-runner.js";
+import { ContainerSessionRunner, type InstallOutcome } from "./container-session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
 import { ServiceManager } from "./service-manager.js";
@@ -218,7 +218,7 @@ export function adoptExistingServiceManager(
     composeStopPromises: Map<string, Promise<void>>;
     containerManager: SessionContainerManager | null;
     broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
-    installPromise: Promise<{ ok: boolean; withheld?: boolean }> | null;
+    installPromise: Promise<InstallOutcome> | null;
     /**
      * Fresh closure that reads the session's latest secrets (the OLD
      * closure baked into `mgr` references the disposed runner; safe today
@@ -644,7 +644,7 @@ export function setupServiceManager(
   // window around it below so dev servers that race install on a shared
   // bind mount get retried instead of latching to `error`.
   const installCommands = shipitConfig.agent.install;
-  let installPromise: Promise<{ ok: boolean; withheld?: boolean }> | null = null;
+  let installPromise: Promise<InstallOutcome> | null = null;
   // docs/183 — orchestrator-observed install wall-clock for the overlay
   // measurement line below. Captured at kickoff; a marker-skip resolves in ~ms,
   // a real install in seconds, so duration classifies the warm-vs-cold scenario.
@@ -949,6 +949,23 @@ export function setupServiceManager(
   // of being marked `error`. Once install resolves, the gate closes and the
   // manager does one explicit restart pass on services still in `error` /
   // pending-retry state. Skip when there's nothing to wait for.
+  //
+  // The ops finding of 2026-08-20 asked whether `res.depsIncomplete` — a
+  // withheld reinstall over packages ShipIt discarded — should close this gate
+  // as a FAILURE, holding the gated services instead of starting them into an
+  // exit 127. It should not, and the deciding evidence is in the finding itself:
+  // a second session took the same rotation and the same withhold and came up
+  // serving, because the shared base already satisfied its checkout. The flag
+  // means "may be short of packages", never "is", and there is no cheap check
+  // that would sharpen it — a populated base is exactly what defeats the
+  // worker's present-but-empty contradiction check too. Latching on a `may`
+  // takes a working preview down, and does it to whole classes of session at
+  // once (34 on that host were pinned to a superseded generation). Starting the
+  // service costs a crash loop in the genuinely-broken case, and by then the
+  // reason is already in three places the reader will reach first: the
+  // transcript notice, the line the service list carries beside the failing
+  // service, and the agent's own turn prompt. Requirement 2 asked for a
+  // diagnostic that connects the two, and that is what those are.
   if (installPromise) {
     mgr.setInstallRunning(true);
     const p = installPromise;

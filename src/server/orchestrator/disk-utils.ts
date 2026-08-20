@@ -17,6 +17,7 @@ import {
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
 } from "./session-state-dir.js";
+import { acceptedInstallCommands, recordInstallReset } from "./agent-install-gate.js";
 
 /**
  * docs/161 — default free-disk probe for the disk-pressure pass. Returns bytes
@@ -185,6 +186,16 @@ export async function reclaimRegenerableSessionDirs(
  * removals therefore live in one function rather than at the call site. Same
  * unlink `claim-session.ts` does when it hands a clone to a new session.
  *
+ * **And the marker's OTHER role goes into a reset record** (the ops finding of
+ * 2026-08-20). "`agent.install` will re-run" is an assumption, not a guarantee:
+ * the docs/271 trust gate refuses a changed list on a plugin-bearing session, so
+ * this reclaim can leave exactly the dep-less session the paragraph above says
+ * it exists to prevent. The record is what lets the withheld reinstall report it
+ * instead of leaving a dead service and a log that blames the user's project —
+ * and it preserves the accepted command list the gate anchors on, which the
+ * unlink alone was destroying. Unlike the rotation this reclaim always takes the
+ * live upper, so `depsDiscarded` is unconditional here.
+ *
  * Never rejects.
  */
 export async function reclaimBlockedSessionCaches(
@@ -200,6 +211,20 @@ export async function reclaimBlockedSessionCaches(
     const markerFile = path.join(
       sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)), INSTALL_MARKER_FILE,
     );
+    // The reset record is written FIRST and UNCONDITIONALLY — deliberately
+    // outside the marker-exists branch below. This function's destructive act is
+    // the overlay removal, and that happens whether or not a marker is there to
+    // delete: a session whose marker a rotation already dropped reaches here with
+    // no marker and a reset saying `depsDiscarded: false` (the rotation reaped an
+    // empty upper), and the reclaim then deletes the CURRENT generation's upper,
+    // which is not empty. Gating this on the marker left that record saying
+    // nothing was lost while the packages were being deleted underneath it.
+    // Merged rather than overwritten for the same reason the rotation merges:
+    // `depsDiscarded` accumulates and never regresses.
+    recordInstallReset(workspaceDir, {
+      accepted: acceptedInstallCommands(workspaceDir),
+      depsDiscarded: true,
+    });
     // Marker FIRST. If the second removal fails, the surviving state is
     // "no marker, deps present" — a harmless extra reinstall. The reverse
     // order's half-failure is "marker present, deps gone", which is the

@@ -91,6 +91,32 @@ Three properties were checked rather than assumed:
   returns `false` when a marker already exists
   (`overlay-session.ts:549-550`), so it can only ever write the *first* marker —
   at container create on a fresh session, before any plugin container has run.
+
+  **This was wrong as written, and was corrected on 2026-08-20** (ops finding —
+  see [The reset record](#the-reset-record-2026-08-20) below). "A marker already
+  exists" is not a one-way door: two paths delete an *established* session's
+  marker on purpose — `prepareOverlayDirs` when the shared dependency base
+  rotates under it, and `reclaimBlockedSessionCaches` under disk pressure — and
+  each re-opens the pre-stamp window on a session a plugin container has already
+  run in. Observed on the production host: the gate withheld a changed list at
+  17:11:13 and a new marker recorded that same list as accepted at 17:11:19.
+
+  The mitigation named at the time — a base pointer's `installCommands` can only
+  come from an install that genuinely ran (`service-manager-setup.ts` skips the
+  publish when the install was withheld) — holds, and it does mean a plugin
+  cannot inject an *arbitrary* command by this route. It is not sufficient. A
+  fresh plugin-bearing session allows its `agent.install` by design, publishes a
+  base from it, and the pointer then carries that list; the pre-stamp would
+  promote it into an *established* session's accepted list, which is the one
+  thing this gate exists to prevent. The claim is now enforced rather than
+  inferred: the pre-stamp asks the gate directly and declines while it is
+  withholding.
+
+  Two things the independent review sharpened, so the bar is not overstated. The
+  pointer match is not generic — it needs the same commit (or byte-identical dep
+  inputs) **and** the generation the mount actually pinned, so this is not an
+  arbitrary-injection primitive. And the production timeline cleared that bar
+  anyway: same session, same commit, the generation it had just been moved onto.
 - **An unparseable marker is a miss, not an allow.** `parseMarker` returns
   `null` for a legacy, corrupt or future-version file, and this gate treats
   `null` the same as absent — which is the same direction the existing skip gate
@@ -104,6 +130,90 @@ it the notice re-fires on every container recreate — an idle session resumes,
 transcript again — so a user who has not acted accumulates one per resume. The
 record is compared by command list, so a *different* withheld list always
 produces a fresh notice.
+
+## The reset record (2026-08-20)
+
+Found live in an ops session, on the production commit `a19702c5`. Session
+`fba1ee31`'s dev service died on `sh: 1: vite: not found`, exit 127, with
+nothing anywhere connecting that to ShipIt. Two subsystems, each correct on its
+own, disagreed and nothing reconciled them:
+
+- `prepareOverlayDirs` (`container-lifecycle.ts`) reaps a session's superseded
+  copy-on-write upper layer when the shared dependency base rotates, and drops
+  the install marker **because `agent.install` must run again** — its own
+  docstring names the failure it is preventing, "leaving the session with the
+  base's deps and none of its own".
+- This gate refuses to run it.
+
+The result is a session with known-incomplete dependencies, a dev service
+failing with an unrelated-looking error, and — because the marker delete
+re-opened the pre-stamp window — a fresh marker asserting the base satisfied the
+checkout, which suppressed every later attempt to repair it. `reclaimBlockedSessionCaches`
+(`disk-utils.ts`) is the same defect by the same mechanism under disk pressure.
+
+**The cause is that the marker was carrying two facts.** "These dependencies are
+installed" and "the user accepted this command list" are not the same claim, and
+deleting the marker for the first reason destroyed the second. So the deleters
+now write `.install-reset` beside it first (`agent-install-gate.ts`), carrying:
+
+| Field | What it is for |
+|---|---|
+| `accepted` | The list that last ran to completion. The gate reads it **in preference to** the marker while the record exists, so a marker written by anything other than a completed install cannot move what this session has accepted. This is what closes the pre-stamp route above, and it needs no cooperation from the pre-stamp. |
+| `depsDiscarded` | Whether the delete actually threw packages away. `false` is a proof, not a guess: a reaped upper layer with nothing in it held no install delta. |
+
+The record is cleared by the next install that completes with positive evidence
+(ran and succeeded, or the worker's content-keyed marker matched) — the same two
+outcomes that clear a dependency gap, and in the same place, so the runner's
+answer and the disk's answer cannot disagree.
+
+**That exclusion had to be made true first.** `clearDependencyGap`'s docstring
+already said a synthesized completion is not proof, but `signalInstallComplete`
+defaults to `ok = true` and two paths called it bare having observed nothing: the
+reconnect resync's "not running and no last result" branch, whose own comment
+says it cannot tell success from failure, and `dispose()`. Both therefore cleared
+the #2429 gap from no evidence. Harmless enough while the method only touched
+runner state; not harmless once it also drops the trust anchor, where a dropped
+SSE stream would have been enough to let the next recreate run a withheld list.
+The exclusion now lives in the type (`InstallCompletion.unverified`) instead of
+in prose.
+
+### Saying so, when the session really is short of packages
+
+`depsDiscarded` is what makes this a different event from the ordinary withhold.
+Ordinarily the session keeps working on the dependencies it already has (req 7)
+and the once-per-list notice above is proportionate. Here it has none of its
+own — and `.install-withheld` is *precisely* what silenced the recreate that
+broke the service, because the user had already seen that notice for the same
+list.
+
+So this case records a `DependencyGap` (`dependency-staleness.ts`, reason
+`install-withheld`) instead. It is the session's existing "installed tree does
+not match this checkout" state, it reaches three surfaces rather than one — the
+persisted transcript, the line the service list carries beside the failing
+service, and the agent's own turn prompt — and it lasts until an install answers
+it rather than until the reader scrolls past.
+
+**Requirement 4 is untouched, including in the wording.** The gap names the
+**in-force** list as the remedy, never the withheld one: having ShipIt instruct
+its own agent to run the command it just refused would be this boundary dressed
+up rather than observed. Running the in-force list restores the discarded
+packages and adopts nothing; requirement 8's remedy — the *user* asking for the
+new command — is unchanged, and the agent prompt says so explicitly.
+
+### Why the compose install gate still starts the services
+
+The obvious move is to close the gate as a failure when the install was withheld
+over discarded packages, holding `dependsOnInstall` services instead of starting
+them into an exit 127. That is wrong, and the deciding evidence came from the
+same ops sweep: a **control session** took the same rotation and the same
+withhold and came up serving, because the shared base already satisfied its
+checkout. `depsDiscarded` means "may be short", never "is" — and there is no
+cheap check that sharpens it, since a populated base is exactly what defeats the
+worker's present-but-empty contradiction check too. Latching on a *may* takes a
+working preview down, at the scale of every session pinned to a superseded
+generation (34 on that host). Starting the service costs a crash loop in the
+genuinely-broken case, by which point the reason is already in the three places
+the reader reaches first.
 
 ## The notice (reqs 7, 8)
 
@@ -180,8 +290,22 @@ skipped.
   which latches every `dependsOnInstall` service to `error` — so a failure to
   *report* must never become a failed install (req 7).
 - `src/server/orchestrator/service-manager-setup.ts` — skips the overlay publish
-  for a withheld install.
+  for a withheld install, and carries the note on why the compose install gate
+  still releases its services when the packages were discarded.
 - `src/server/orchestrator/warm-pool-manager.ts` — gates the pre-install.
+- `src/server/orchestrator/container-lifecycle.ts` — `removeInstallMarkerForRotation`
+  writes the reset record before dropping the marker (2026-08-20).
+- `src/server/orchestrator/disk-utils.ts` — `reclaimBlockedSessionCaches`, the
+  same deleter under disk pressure.
+- `src/server/orchestrator/overlay-session.ts` — `preStampInstallMarker` declines
+  while the gate withholds; `supersededLayerHeldDeps` answers `depsDiscarded`.
+- `src/server/orchestrator/dependency-staleness.ts` — the `install-withheld`
+  reason and its three surfaces.
+- `src/server/orchestrator/install-reset-gate.test.ts` — **new**. The seam
+  itself: rotation × gate × pre-stamp, including the ops sweep's control case
+  (same rotation, same withhold, base already satisfied the checkout). Each half
+  had thorough per-function coverage and each half was correct, which is why the
+  seam shipped.
 
 ## What this does NOT close (req 9)
 
@@ -197,6 +321,15 @@ skipped.
    is a consequence of the requester's 2026-08-17 choice of the transcript-card
    shape over an acceptance store, and is the price that choice names. **Owner:
    planning#400** — reopen if it bites.
+
+   **The 2026-08-20 reset record inherits this, one notch louder.** The agent
+   repairing the tree in a shell writes no marker, so the record is not cleared
+   and the gap keeps prefixing the agent's turns until an install reaches
+   `/install` (a dependency-input change, or a container recreate after the
+   lists agree again). The prefix is an instruction to re-run a cheap, cached
+   install before misreading a missing-module error, so a stale one costs a
+   no-op; it is stated here so it is not mistaken for a defect. It resolves with
+   the same acceptance store this item is waiting on.
 2. **`agent.install-inputs` is not gated.** A plugin can still change which
    files trigger a reinstall, which changes *when* the accepted commands run,
    never *what* runs. Out of scope of requirement 1, recorded so it is not

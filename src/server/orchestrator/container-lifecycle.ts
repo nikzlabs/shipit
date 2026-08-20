@@ -42,9 +42,15 @@ import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } f
 import {
   preStampInstallMarker,
   sortOverlayDepDirs,
+  supersededLayerHeldDeps,
   supersededSessionOverlayLayers,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
+import {
+  acceptedInstallCommands,
+  readInstallReset,
+  recordInstallReset,
+} from "./agent-install-gate.js";
 import {
   chownToSessionWorker,
   handWorkspaceBackToWorker,
@@ -789,8 +795,11 @@ export function prepareOverlayDirs(
       : [],
   );
   if (superseded.length > 0) {
+    // Asked BEFORE the reap, obviously, but also before the marker drop: it is
+    // an input to the record that replaces the marker.
+    const depsDiscarded = superseded.some(supersededLayerHeldDeps);
     // Marker first — see the ordering rule in the docstring.
-    if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir);
+    if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir, depsDiscarded);
     for (const dir of superseded) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -849,9 +858,35 @@ export function prepareOverlayDirs(
  * marker we failed to remove costs a skipped install we would rather have run,
  * which the worker's own gate (`overlay-dep-check.ts`) still backstops for the
  * empty-dep-dir case; throwing here would fail container creation outright.
+ *
+ * **The drop is announced, not silent** (the ops finding of 2026-08-20). Its
+ * correctness rests entirely on `agent.install` running again, and one thing is
+ * allowed to refuse: the docs/271 trust gate, on a plugin-bearing session whose
+ * `agent.install` no longer matches what it last ran. Both sides are right on
+ * their own and together they produced a session serving nothing but
+ * `sh: 1: vite: not found`, with a marker written seconds later that suppressed
+ * every later attempt to repair it. So the marker does not simply vanish: the
+ * record it leaves keeps the gate's accepted list, closes the pre-stamp window
+ * (`preStampInstallMarker`), and tells a withheld reinstall that this session's
+ * packages really are missing so it can say so.
+ *
+ * The record is written FIRST, same ordering rule as the marker-before-reap one
+ * above and for the same reason: a half-failure must land on the state that
+ * changes nothing.
  */
-function removeInstallMarkerForRotation(workspaceDir: string): void {
+function removeInstallMarkerForRotation(workspaceDir: string, depsDiscarded: boolean): void {
   try {
+    // Merged with any reset still outstanding rather than overwriting it. Two
+    // rotations before a single install is exactly the case where overwriting
+    // loses: the accepted list to keep is the one that last genuinely RAN (which
+    // `acceptedInstallCommands` already prefers), and packages discarded by the
+    // first rotation are still missing after the second, however empty the
+    // second one's upper layer was.
+    const prior = readInstallReset(workspaceDir);
+    recordInstallReset(workspaceDir, {
+      accepted: acceptedInstallCommands(workspaceDir),
+      depsDiscarded: depsDiscarded || prior?.depsDiscarded === true,
+    });
     const markerFile = path.join(
       sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
       INSTALL_MARKER_FILE,
