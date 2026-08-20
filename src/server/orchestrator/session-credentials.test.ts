@@ -1721,8 +1721,22 @@ describe("session-credentials", () => {
    */
   describe("docs/274 req 13 — a rotating Grok subscription token", () => {
     const account = "acct_grok";
+    // The REAL file shape (live `grok login --device-auth`, planning#435):
+    // unguessable scope key, access token under `key`, ISO-8601 `expires_at`
+    // string. The first fixture used `grok-build` / `access_token` / a number,
+    // which the reader also accepts as a fallback — so those tests could not
+    // catch a regression that only broke the live file (planning#449).
+    const GROK_SCOPE = "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828";
     const grokAuth = (tag: string, expiresAt: number) =>
-      JSON.stringify({ "grok-build": { access_token: `tok-${tag}`, refresh_token: `ref-${tag}`, expires_at: expiresAt } });
+      JSON.stringify({
+        [GROK_SCOPE]: {
+          key: `tok-${tag}`,
+          refresh_token: `ref-${tag}`,
+          expires_at: new Date(expiresAt).toISOString(),
+          auth_mode: "oidc",
+          user_id: "user-fixture",
+        },
+      });
 
     function seedAccount(expiresAt: number, tag = "SOURCE"): string {
       const accountRoot = path.join(root, "provider-accounts", "grok", account);

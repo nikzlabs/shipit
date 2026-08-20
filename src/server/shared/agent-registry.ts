@@ -500,12 +500,14 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     if (!nativeService) return [];
     // A native service is not enough: what this translates a probe INTO is an
     // account of a subscription, so the service must actually have a login
-    // flow. Neither OpenCode's native service (docs/272) nor xAI (docs/274)
-    // has one — both are pasted keys — and the `false` branch below already
-    // returns nothing for either today, so this guard changes no behaviour. It is here because the two conditions
-    // must not drift: a third probe branch added later would otherwise mint an
-    // account credential for a service that has no accounts, and every turn
-    // routed onto it would fail `auth_required`.
+    // flow. OpenCode's native service still has none (docs/272 — a pasted
+    // key). xAI gained one in planning#435 (`xai-oauth`); grok has no legacy
+    // probe of its own, so the `false` branch below is what still returns
+    // nothing for it. Eligibility for a SuperGrok login comes from
+    // `listCredentials` (the account row), not from a probe. The guard stays
+    // because the two conditions must not drift: a third probe branch added
+    // later would otherwise mint an account credential for a service that has
+    // no accounts, and every turn routed onto it would fail `auth_required`.
     if (!loginIntegrationForService(nativeService)) return [];
     const probed = id === "claude" ? this.checkClaudeAuth() : id === "codex" ? this.checkCodexAuth() : false;
     if (!probed) return [];

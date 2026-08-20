@@ -644,6 +644,27 @@ req 13's machinery is covered by unit tests against the real file shape
 (`session-credentials.test.ts`), not by that turn, and the container path is
 where it first runs for real.
 
+**Verified later on a fresh session-worker container** (2026-08-20, role GrokSub,
+no container-local `grok login`):
+
+- **Req 12** — the account reached the new container. Resident route
+  `{"grok":{"kind":"account",…}}`, `~/.grok` → `/credentials/.grok`,
+  `GROK_HOME/auth.json` a symlink onto the same file, `XAI_API_KEY` unset
+  (the subscription scrub). The live `auth.json` matches the shape above
+  (scope key, `key`, ISO `expires_at`); `create_time` → `expires_at` is
+  again exactly six hours. No refresh was observed in the first hour.
+- **`shipit agent params` lists xAI `--billing-mode sub` for Grok, and
+  only Grok.** Codex lists xAI key rows only — that is the
+  `carriers: ["grok"]` join, not a missing account credential.
+  OpenCode also lists no xAI sub row, but because it has no account
+  target at all (docs/268), not because of that clause.
+  `listSpawnParameters` is a thin map over `eligibleModels`, and
+  `catalogue.test.ts` now pins both directions of the carriers refusal
+  (Grok withheld from ChatGPT; Codex withheld from SuperGrok). A
+  role-less `--agent grok --service xai --billing-mode sub --model grok-4.6
+  --effort high` is therefore assemblable; docs/275's completeness rule
+  holds for subscription selections.
+
 ### What the independent review caught, and why it was the right question to ask
 
 The brief for the out-of-family reviewer led with "did I miss a consumer of the
