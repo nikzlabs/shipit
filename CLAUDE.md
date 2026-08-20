@@ -242,7 +242,7 @@ The scan surfaces **every** `.md` file in the workspace, not just `docs/` — so
 
 ### Every new feature is under requirements discipline
 
-Requirements discipline is a rule of this repository, written here and in [`docs/241-spec-discipline/workflow.md`](docs/241-spec-discipline/workflow.md) — document format, the open-question flow, and the review brief (docs/241-spec-discipline req 11). **It is mandatory for every new feature**: if the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Materially reworking an older feature that has none starts by writing them.
+If the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Materially reworking an older feature that has none starts by writing them. Full workflow: [`docs/241-spec-discipline/workflow.md`](docs/241-spec-discipline/workflow.md).
 
 **At the start of each turn that touches feature work**, identify the one active feature — from the session's issue or feature context, or the one the user named — and check its folder for `requirements.md`. Bullets under `## Open questions` block implementation code whether or not *you* raised them; resolve them at step 3 below. Only the active feature is gated: don't scan unrelated features for blockers.
 
