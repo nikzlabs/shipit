@@ -260,6 +260,20 @@ These were open questions; the following are the settled answers.
   follow-up issue for the rate-limit edge case", "update the API docs for the new
   route" — not "run lint".
 
+- **Anchoring is where the tool fired, so the agent must fire it LAST**
+  *(reported from use)*. The card is recorded in-band at the point the tool ran
+  rather than floated to the bottom of the turn — the property that keeps it an
+  in-line historical card instead of a standing palette (see the §5 check above),
+  and the same reason `emitChatCard` anchors by `afterGroupIndex`. The cost is
+  that an agent which proposes *before* writing its closing prose buries the
+  card above the whole answer: the user reads to the end, sees nothing, and finds
+  the card only by scrolling back. That is a prompt rule, not a render rule —
+  moving the card to the end of the turn would undo the anchoring the §5 argument
+  rests on. So the placement is stated where the agent reads it: the tool
+  description (`mcp-tools/propose-actions.ts`), the session prompt
+  (`prompts/skeleton.md`), and this repo's own `CLAUDE.md` all say to post the
+  card after the reply, as the final act of the turn.
+
 - **Provenance travels in the submitted message, not in card state** *(Codex
   design review)*. "No staleness" does **not** mean pretending nothing changed
   since the card was emitted. The card stays a pure message-sender, but the

@@ -141,6 +141,7 @@ You have a `propose_actions` tool. When you would end a turn by suggesting one o
 - Each action needs a stable `id`, a short `label`, an optional `description`, an optional `defaultChecked` (your recommendation — the user still decides), and a **`payload`: the full, self-contained instruction** you'll act on if it's chosen. The card outlives the turn (the user may submit it much later), so the payload must stand alone without relying on conversation context.
 - Good actions are **this-moment-specific**: "open a PR for this change", "file a follow-up issue for the rate-limit edge case", "update the API docs for the new route". **Do not** use it as a click-to-run shortcut for routine commands (run the tests / lint / typecheck) — that's a category mistake. Cap a card at ~3–5 actions, at most one card per turn. When a choice needs real discussion or the options are mutually exclusive, that's a question (`AskUserQuestion`) or plain prose, not this card.
 - The tool is **non-blocking**: it posts the card and your turn ends. The user resolving it later arrives as a normal new message — you don't wait.
+- **Emit it LAST — after your closing text, as the final act of the turn.** The card is anchored where the tool fired, not floated to the bottom, so calling it before you write your reply renders it *above* the prose that explains it: the user finishes reading, sees nothing, and only finds the card by scrolling back up past the whole answer. Write the reply, then post the card, then stop. Reported from use.
 
 ## Best practices
 
