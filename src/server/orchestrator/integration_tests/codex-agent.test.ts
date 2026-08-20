@@ -48,7 +48,7 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
   readonly agentId: AgentId = "codex";
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    supportsImages: false,
+    supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
@@ -687,7 +687,7 @@ describe("Integration: Codex agent — validation and default agent", () => {
 
   it("Codex capabilities report correct feature support", () => {
     const codex = new FakeCodexProcess();
-    expect(codex.capabilities.supportsImages).toBe(false);
+    expect(codex.capabilities.supportsImages).toBe(true);
     expect(codex.capabilities.supportsResume).toBe(true);
     expect(codex.capabilities.supportsPermissionModes).toBe(false);
     expect(codex.capabilities.models).toContain("codex-mini-latest");

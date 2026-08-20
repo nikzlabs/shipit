@@ -18,7 +18,13 @@ function block(routing: ServiceRouting, modelId = "claude-haiku-4-5") {
   return (config?.shipit ?? {}) as {
     npm?: string;
     options?: { baseURL?: string; apiKey?: string };
-    models?: Record<string, { variants?: Record<string, Record<string, unknown>> }>;
+    models?: Record<
+      string,
+      {
+        variants?: Record<string, Record<string, unknown>>;
+        modalities?: { input?: readonly string[]; output?: readonly string[] };
+      }
+    >;
   };
 }
 
@@ -28,6 +34,19 @@ describe("opencodeProviderConfig", () => {
     expect(block({ ...ROUTING, style: "openai-chat-completions", baseUrl: "https://opencode.ai/zen/v1" }).options?.baseURL).toBe(
       "https://opencode.ai/zen/v1",
     );
+  });
+
+  it("declares image input, which is what makes an attachment reach the model (planning#458)", () => {
+    // The block is the ONLY source of modality for a synthetic `shipit/<id>` —
+    // there is no models.dev entry to fall back to, and OpenCode resolves a
+    // missing declaration to image:false, which silently drops the `read` tool's
+    // file part. Probed live 2026-08-20 (CLI 1.18.18): without this the model is
+    // blind to an attached image; with it, it reads pixel-only content verbatim.
+    for (const style of ["anthropic-messages", "openai-chat-completions"] as const) {
+      const modalities = block({ ...ROUTING, style }).models?.["claude-haiku-4-5"]?.modalities;
+      expect(modalities?.input).toEqual(["text", "image"]);
+      expect(modalities?.output).toEqual(["text"]);
+    }
   });
 
   it("never inlines the secret — the key is OpenCode's {env:VAR} indirection", () => {

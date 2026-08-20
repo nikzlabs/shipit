@@ -70,8 +70,10 @@ export class OpencodeAdapter
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    // Mirrors the catalogue row (docs/268): unobserved, so declared false.
-    supportsImages: false,
+    // Mirrors the catalogue row (docs/268), where the live probe is recorded:
+    // observed at last, and true once ShipIt's provider block declares the image
+    // input modality (planning#458).
+    supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],

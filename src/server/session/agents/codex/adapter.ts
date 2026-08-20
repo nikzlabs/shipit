@@ -166,7 +166,10 @@ export class CodexAdapter
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    supportsImages: false,
+    // Mirrors the catalogue row (docs/252 → `catalogue/harnesses.ts`), where the
+    // live probe is recorded: ShipIt's `<attached_images>` block, opened by
+    // Codex's own image tool, reaches the model as vision (planning#458).
+    supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
