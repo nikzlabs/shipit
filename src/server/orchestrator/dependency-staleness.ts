@@ -136,7 +136,8 @@ const CONSEQUENCE =
  * incident's diagnosis into the user's own code instead of into ShipIt.
  */
 const WITHHELD_CONSEQUENCE =
-  "Dependencies are incomplete right now. A service can fail to start at all — " +
+  "The packages this session had installed on top of that base may be gone, and nothing " +
+  "has checked what the replacement carries. A service can fail to start at all — " +
   "`sh: 1: <tool>: not found`, exit 127 — and its log will read like a fault in this " +
   "project rather than a missing package.";
 
@@ -151,17 +152,17 @@ export function dependencyGapNotice(gap: DependencyGap): string {
     return [
       "ShipIt discarded this session's installed packages and did **not** reinstall them.",
       "",
-      "The shared dependency base this session was built on was replaced, so the packages " +
-        "it had installed on top of that base went with it. ShipIt reinstalls them straight " +
-        "away — except here it did not: this session has a plugin, plugin containers can " +
-        "write `shipit.yaml`, and `agent.install` has changed since the list that last ran. " +
-        "A changed install command runs in the container holding this session's credentials, " +
-        "so ShipIt does not run it on its own.",
+      "The shared dependency base this session was built on was replaced. ShipIt reinstalls " +
+        "straight away when that happens — except here it did not: this session has a " +
+        "plugin, plugin containers can write `shipit.yaml`, and `agent.install` has changed " +
+        "since the list that last ran. A changed install command runs in the container " +
+        "holding this session's credentials, so ShipIt does not run it on its own.",
       "",
       WITHHELD_CONSEQUENCE,
       "",
-      "Ask the agent to run the commands that were already in force — that restores the " +
-        "packages without adopting the change:",
+      "If anything fails on a missing module or a missing binary, that is why. Ask the agent " +
+        "to run the commands that were already in force — they restore the packages without " +
+        "adopting the change:",
       "",
       renderCommands(gap.commands),
       "",
@@ -215,9 +216,9 @@ export function dependencyGapNotice(gap: DependencyGap): string {
 export function dependencyGapSummary(gap: DependencyGap): string {
   if (gap.reason === "install-withheld") {
     return (
-      "ShipIt discarded this session's installed packages when the shared dependency base " +
-      "rotated, and the reinstall was withheld — `agent.install` changed in a plugin-bearing " +
-      "session. A dependent service may fail to start with a missing-binary error (exit 127) " +
+      "ShipIt replaced this session's shared dependency base and the reinstall was withheld — " +
+      "`agent.install` changed in a plugin-bearing session — so the installed packages are " +
+      "unverified. A dependent service may fail to start with a missing-binary error (exit 127) " +
       "that reads like a fault in this project; ask the user before running the changed install."
     );
   }
@@ -256,12 +257,13 @@ export function dependencyGapAgentPrefix(gap: DependencyGap | null | undefined):
   if (!gap) return "";
   if (gap.reason === "install-withheld") {
     return [
-      "[System] ShipIt replaced the shared dependency base under this session and discarded " +
-        "the packages installed on top of it. The reinstall did NOT run: this session has a " +
-        "plugin, `agent.install` has changed since the list that last ran, and ShipIt does not " +
-        "run a changed install command unattended. Dependencies are incomplete. Run the " +
-        "commands that were already in force before you treat any missing-module or " +
-        "missing-binary error as a fault in the code:",
+      "[System] ShipIt replaced the shared dependency base under this session, discarding " +
+        "whatever was installed on top of it, and the reinstall did NOT run: this session has " +
+        "a plugin, `agent.install` has changed since the list that last ran, and ShipIt does " +
+        "not run a changed install command unattended. The installed packages are therefore " +
+        "unverified — they may be complete, and nothing has checked. Before you treat any " +
+        "missing-module or missing-binary error as a fault in the code, run the commands that " +
+        "were already in force:",
       "",
       renderCommands(gap.commands),
       "",

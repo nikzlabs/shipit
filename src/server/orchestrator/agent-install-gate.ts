@@ -97,47 +97,56 @@ export const INSTALL_WITHHELD_FILE = ".install-withheld";
 
 /**
  * Records that ShipIt deleted this session's install marker on purpose, and
- * what the marker said when it went. Written by the two deleters that expect
- * `agent.install` to run again afterwards — `prepareOverlayDirs` on a base
- * rotation, `reclaimBlockedSessionCaches` on disk pressure — and cleared by the
- * next install that completes with positive evidence.
+ * what the marker said when it went. Written by every deleter that expects
+ * `agent.install` to run again afterwards, and cleared by the next install that
+ * completes with positive evidence.
  *
- * It carries the two halves the deleted marker was carrying, which are not the
- * same fact and had been conflated:
+ * **The marker was carrying two facts that are not the same claim**, and that is
+ * the whole defect: "these dependencies are installed" and "the user accepted
+ * this command list" both lived in `.install-done`, so deleting it for the first
+ * reason destroyed the second. This file is the second one on its own — the list
+ * that last ran to completion, which is the gate's entire anchor. Preserving it
+ * keeps the withhold decision correct across a reset, and stops
+ * `preStampInstallMarker` writing a fresh acceptance in the window the delete
+ * opens (see the module docstring).
  *
- *  - the **trust** half (`accepted`) — the list the user's session last ran to
- *    completion, which is the gate's whole anchor. Deleting the marker deleted
- *    it, so the gate lost its memory at exactly the moment a stale-deps session
- *    was most exposed. Preserving it here is what keeps the withhold decision
- *    correct across a rotation, and what stops `preStampInstallMarker` writing a
- *    new one in the window (see the module docstring).
- *  - the **dependency** half (`depsDiscarded`) — whether the delete actually
- *    threw away installed packages. Only then is a withheld reinstall a
- *    dependency gap worth reporting.
+ * Its mere PRESENCE is the second signal: between a deliberate delete and the
+ * next completed install, this session's dependencies are whatever the shared
+ * base happens to carry, which nothing has checked against its checkout. That is
+ * what a withheld reinstall then reports.
  *
- * Beside the install marker, for the same reason {@link INSTALL_WITHHELD_FILE}
- * is: outside the clone and outside every plugin container's mount set.
+ * ## Why it is NOT beside the install marker
+ *
+ * The obvious home is `<sessionDir>/state/shared/`, with the marker and
+ * {@link INSTALL_WITHHELD_FILE}. That subtree is in `REGENERABLE_SESSION_SUBDIRS`
+ * (`disk-utils.ts`) — disk-tier eviction and archive delete all of it, correctly,
+ * because every artifact in it can be rebuilt. **An acceptance record cannot.**
+ * Worse, `plugin-data/` is a deliberately DURABLE sibling (`plugin-state.ts`), so
+ * an evicted-and-restored session comes back still plugin-bearing with its anchor
+ * gone — and a `null` anchor reads as "first install", which allows. Eviction
+ * would hand the credential-bearing container a command list nobody accepted.
+ *
+ * So it goes where the other durable, non-git session data goes: a sibling of
+ * `workspace/`, the `uploads/` convention (docs/217) that the reclaim allowlist
+ * leaves alone. It still dies with a full reset or a session delete, which is
+ * right — that is a new occupant, not this one. No plugin container mounts the
+ * session root (the mount list is the workspace, the plugin's own `plugin-data`
+ * subdir, and its settings file), so the containment property is unchanged.
  */
 export const INSTALL_RESET_FILE = ".install-reset";
 
 /** @see INSTALL_RESET_FILE */
 export interface InstallResetRecord {
   /**
-   * The deleted marker's `installCommands`, or `null` when there was no marker
-   * to read or it could not be parsed. `null` means "no anchor was lost", which
-   * is the same input the gate already treats as ALLOW — an unreadable marker is
-   * a miss in both directions, exactly as before.
+   * The deleted marker's `installCommands`.
+   *
+   * `null` when there was no marker to read — nothing was ever accepted, so
+   * nothing was lost, and the gate allows exactly as it does for a first-time
+   * session. An EMPTY array is the different, deliberate answer for a record
+   * that exists but cannot be read: something was accepted and we no longer know
+   * what, which withholds. See {@link readInstallReset}.
    */
   accepted: string[] | null;
-  /**
-   * Did the delete discard installed packages? `false` is a proof, not a guess:
-   * a superseded overlay upper layer with nothing in it held no install delta,
-   * so the session's dependencies are whatever the shared base carries either
-   * way and a withheld reinstall costs it nothing. Distinguishes the incident
-   * session from the control session that took the same rotation, the same
-   * withhold, and came up serving (ops sweep, 2026-08-20).
-   */
-  depsDiscarded: boolean;
 }
 
 export interface InstallGateVerdict {
@@ -148,10 +157,8 @@ export interface InstallGateVerdict {
   /** True when this exact list was already reported; suppresses a repeat. */
   alreadyReported: boolean;
   /**
-   * True when this withhold lands on a session whose installed packages ShipIt
-   * itself discarded and has not rebuilt — a {@link INSTALL_RESET_FILE} record
-   * with `depsDiscarded`. Only meaningful when `withheld` is true; the allow
-   * path does not pay the read.
+   * True when this withhold lands on a session whose install marker ShipIt
+   * deleted and has not replaced — an outstanding {@link INSTALL_RESET_FILE}.
    *
    * This is the combination that produced the incident: two subsystems each
    * behaving correctly (delete the marker so the install re-runs / refuse to run
@@ -159,15 +166,23 @@ export interface InstallGateVerdict {
    * requirement 4 is that a plugin's command never runs unattended — so what the
    * flag buys is the ability to say so instead of leaving the user with
    * `sh: 1: vite: not found`.
+   *
+   * Note what it deliberately does NOT claim: that the dependencies ARE broken.
+   * An earlier revision tried to prove the harmless case by checking whether the
+   * reaped overlay upper layer had held anything, and that check is unsound — an
+   * empty upper says the OLD lower satisfied this checkout, and says nothing at
+   * all about the NEW one the session is about to mount. ShipIt cannot tell.
+   * Saying "unverified" is the honest signal, and it is the one the
+   * `DependencyGap` surfaces are built to carry.
    */
-  afterDepsDiscarded: boolean;
+  afterDependencyReset: boolean;
 }
 
 const ALLOW: InstallGateVerdict = {
   withheld: false,
   accepted: [],
   alreadyReported: false,
-  afterDepsDiscarded: false,
+  afterDependencyReset: false,
 };
 
 /**
@@ -245,7 +260,14 @@ export function sessionHasPlugin(workspaceDir: string): boolean {
  */
 export function acceptedInstallCommands(workspaceDir: string): string[] | null {
   const reset = readInstallReset(workspaceDir);
-  if (reset) return reset.accepted;
+  return reset ? reset.accepted : markerInstallCommands(workspaceDir);
+}
+
+/**
+ * The `installCommands` of the marker on disk, or `null` when there is none to
+ * read (absent, unreadable, or not a current stamped marker).
+ */
+function markerInstallCommands(workspaceDir: string): string[] | null {
   try {
     const raw = fs.readFileSync(
       path.join(sharedStateDirFor(workspaceDir), INSTALL_MARKER_FILE),
@@ -254,66 +276,6 @@ export function acceptedInstallCommands(workspaceDir: string): string[] | null {
     return parseMarker(raw)?.installCommands ?? null;
   } catch {
     return null;
-  }
-}
-
-/**
- * Note that ShipIt deleted this session's install marker and expects
- * `agent.install` to run again. Best-effort, and never throws into a container
- * create or a disk sweep: a record we failed to write costs the protections it
- * carries, but a throw costs the session its container.
- *
- * Written BEFORE the marker is removed at both call sites, so a half-failure
- * lands on "record present, marker present" — the gate withholds against a list
- * that is still the live one, which changes nothing — rather than on "marker
- * gone, no record", which is today's defect.
- */
-export function recordInstallReset(workspaceDir: string, record: InstallResetRecord): void {
-  try {
-    const dir = sharedStateDirFor(workspaceDir);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, INSTALL_RESET_FILE), JSON.stringify(record));
-  } catch (err) {
-    console.warn(
-      "[install-gate] could not record the dependency reset:",
-      err instanceof Error ? err.message : String(err),
-    );
-  }
-}
-
-/** The outstanding reset, or `null` when there is none. */
-export function readInstallReset(workspaceDir: string): InstallResetRecord | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(
-      fs.readFileSync(path.join(sharedStateDirFor(workspaceDir), INSTALL_RESET_FILE), "utf8"),
-    );
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const r = parsed as Record<string, unknown>;
-  const accepted =
-    Array.isArray(r.accepted) && r.accepted.every((c) => typeof c === "string")
-      ? r.accepted
-      : null;
-  return { accepted, depsDiscarded: r.depsDiscarded === true };
-}
-
-/**
- * The reset is answered — an install completed with positive evidence that the
- * tree on disk is installed, so the marker it wrote is once again the honest
- * anchor and the discarded packages are back.
- *
- * Best-effort for the same reason the write is. A leftover record costs a
- * withhold against an older list plus a repeated notice; it cannot cause an
- * install that should not have run.
- */
-export function clearInstallReset(workspaceDir: string): void {
-  try {
-    fs.rmSync(path.join(sharedStateDirFor(workspaceDir), INSTALL_RESET_FILE), { force: true });
-  } catch {
-    /* A repeated notice is the whole cost. */
   }
 }
 
@@ -347,6 +309,106 @@ export function recordWithheldCommands(workspaceDir: string, commands: string[])
   }
 }
 
+/** Where the durable acceptance record lives — a session-root sibling. */
+function resetRecordPath(workspaceDir: string): string {
+  return path.join(sessionRootForWorkspace(workspaceDir), INSTALL_RESET_FILE);
+}
+
+/**
+ * Note that ShipIt deleted this session's install marker and expects
+ * `agent.install` to run again. Returns whether the record is durably on disk.
+ *
+ * **Atomic**, because a torn write is indistinguishable from a corrupt one and
+ * both land on a session whose dependencies are already in question: written to
+ * a temp file and renamed, so a reader sees the old record or the new one and
+ * never half of either.
+ *
+ * Callers get the result rather than a swallowed error, and both of them log it —
+ * but neither STOPS. That is deliberate, and it is the lesser of two bad states.
+ * The alternative to deleting the marker is keeping it, and a marker that
+ * outlives the dependencies it describes is precisely the dep-less session both
+ * deleters exist to prevent: the dep dir remounts over a populated base, the
+ * worker's present-but-empty contradiction check does not fire, and the install
+ * is skipped silently. A lost anchor is narrower — it costs only a plugin-bearing
+ * session, and only back to the behaviour that shipped before this record
+ * existed. Keeping the marker costs every session its dependencies.
+ */
+export function recordInstallReset(workspaceDir: string, record: InstallResetRecord): boolean {
+  const file = resetRecordPath(workspaceDir);
+  const tmp = `${file}.tmp`;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify(record));
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing more to do */ }
+    console.error(
+      "[install-gate] could not persist the accepted-install record; this session's " +
+      "agent.install gate has lost its anchor and a changed list will be allowed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
+
+/**
+ * The outstanding reset, or `null` when there is none.
+ *
+ * A record that is PRESENT but unreadable resolves to `{ accepted: [] }`, not to
+ * `null`, and the difference is the point. `null` means "nothing was ever
+ * accepted", which allows — the right answer for a first-time session and the
+ * wrong one here, where the file's existence is evidence that something WAS
+ * accepted and we have lost track of what. An empty list matches no request, so
+ * the gate withholds and the notice says the in-force list is unknown. It costs
+ * a plugin-bearing session one "ask the agent"; reading it as `null` would cost
+ * it an unaccepted execution.
+ */
+export function readInstallReset(workspaceDir: string): InstallResetRecord | null {
+  const file = resetRecordPath(workspaceDir);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    // Absent is the ordinary case and means exactly that. Anything else (EACCES,
+    // EIO) is a record we cannot read rather than one that is not there.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return { accepted: [] };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { accepted: [] };
+  }
+  if (!parsed || typeof parsed !== "object") return { accepted: [] };
+  const r = parsed as Record<string, unknown>;
+  if (r.accepted === null) return { accepted: null };
+  if (Array.isArray(r.accepted) && r.accepted.every((c) => typeof c === "string")) {
+    return { accepted: r.accepted };
+  }
+  return { accepted: [] };
+}
+
+/**
+ * The reset is answered — an install completed with positive evidence that the
+ * tree on disk is installed, so the marker it wrote is once again the honest
+ * anchor.
+ *
+ * Best-effort. A record that survives the install that should have cleared it
+ * anchors the gate on an older list and keeps the notice coming; it cannot cause
+ * an install that should not have run. That is also why the runner's in-memory
+ * "no gap" and this file can briefly disagree — they are retracted together, but
+ * only one of them can fail.
+ */
+export function clearInstallReset(workspaceDir: string): void {
+  try {
+    fs.rmSync(resetRecordPath(workspaceDir), { force: true });
+  } catch {
+    /* A repeated notice is the whole cost. */
+  }
+}
+
 /**
  * Decide whether `requested` may be handed to the worker.
  *
@@ -363,7 +425,11 @@ export function evaluateInstallGate(args: {
   if (requested.length === 0) return ALLOW;
   if (!sessionHasPlugin(workspaceDir)) return ALLOW;
 
-  const accepted = acceptedInstallCommands(workspaceDir);
+  // Read once and derive both answers from it: an outstanding reset IS the
+  // accepted-list source while it exists, so "which list is in force" and "are
+  // we after a reset" cannot come apart.
+  const reset = readInstallReset(workspaceDir);
+  const accepted = reset ? reset.accepted : markerInstallCommands(workspaceDir);
   if (accepted === null) return ALLOW; // First install — the repo-trust decision covers it.
   if (sameCommands(accepted, requested)) return ALLOW;
 
@@ -372,7 +438,7 @@ export function evaluateInstallGate(args: {
     withheld: true,
     accepted,
     alreadyReported: reported !== null && sameCommands(reported, requested),
-    afterDepsDiscarded: readInstallReset(workspaceDir)?.depsDiscarded === true,
+    afterDependencyReset: reset !== null,
   };
 }
 

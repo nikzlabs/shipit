@@ -59,6 +59,7 @@ import {
   installWithheldNotice,
   recordWithheldCommands,
 } from "./agent-install-gate.js";
+import { sameCommands } from "../shared/install-marker.js";
 import {
   dependencyGapNotice,
   dependencyGapSummary,
@@ -100,20 +101,19 @@ const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
  * What {@link ContainerSessionRunner.runInstall} tells its caller.
  *
  * `ok` is the compose install gate's input and stays deliberately generous: a
- * withheld install is not a failure, because the session keeps working on the
- * dependencies it already has (docs/271 req 7) and latching every
+ * withheld install is not a failure, because the session usually keeps working
+ * on the dependencies it already has (docs/271 req 7) and latching every
  * `dependsOnInstall` service to `error` over a `shipit.yaml` edit would be the
- * loud opposite of that.
- *
- * `depsIncomplete` is the case where that reasoning does not hold — the withhold
- * landed on a session whose packages ShipIt had just discarded, so there is no
- * "dependencies it already has". It is reported rather than acted on: see the
- * gate's own note in `service-manager-setup.ts` for why the services still
- * start.
+ * loud opposite of that. See the note at that gate for why it stays that way
+ * even when the dependencies are in question.
  */
 export interface InstallOutcome extends InstallCompletion {
+  /**
+   * The docs/271 gate refused these commands, so nothing ran. Its consumer is
+   * the overlay publish, which must never stamp a shared base pointer with a
+   * command list that did not execute.
+   */
   withheld?: boolean;
-  depsIncomplete?: boolean;
 }
 
 /**
@@ -1938,14 +1938,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // agent's own turn prompt), and it lasts until an install answers it
       // instead of until the reader scrolls past. Recorded FIRST so a throw in
       // either notice hook cannot cost us the state.
-      if (verdict.afterDepsDiscarded) {
+      if (verdict.afterDependencyReset) {
         this.recordDependencyGap({
           reason: "install-withheld",
           // The in-force list, never the withheld one — see `DependencyGap.commands`.
           commands: [...verdict.accepted],
           withheld: [...commands],
         });
-        return { ok: true, withheld: true, depsIncomplete: true };
+        return { ok: true, withheld: true };
       }
       if (!verdict.alreadyReported) {
         // Record BEFORE reporting, so a throw in the notice hook cannot turn
@@ -1992,8 +1992,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // runner is being torn down, and its replacement runs `setupServiceManager`
       // → `runInstall` against a fresh container, so there is no state for a gap
       // to describe and none to carry forward.
-      this.signalInstallComplete();
-      return { ok: true };
+      //
+      // `unverified` because this is the THIRD path that reports success having
+      // observed no install, and the only one that returns directly instead of
+      // through the completion promise. It must not reach the overlay publish as
+      // though it were an installed tree.
+      this.signalInstallComplete(true, { unverified: true });
+      return { ok: true, unverified: true };
     }
     // Same gate-resolved-by-dispose caveat as `_doStartAgentViaProxy`: a runner
     // whose container never came up is not disposed in every path, so check the
@@ -2227,7 +2232,17 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private recordDependencyGap(gap: DependencyGap): void {
     const prev = this._dependencyGap;
     this._dependencyGap = gap;
-    if (prev?.reason === gap.reason && prev?.rewrite === gap.rewrite) return;
+    // The withheld list is part of the identity, not decoration: two DIFFERENT
+    // refused lists are two different facts, and comparing only reason+rewrite
+    // swallowed the second — while `.install-withheld`, the per-list rule this
+    // gap replaces for the reset case, would have reported it.
+    if (
+      prev?.reason === gap.reason &&
+      prev?.rewrite === gap.rewrite &&
+      sameCommands(prev?.withheld ?? [], gap.withheld ?? [])
+    ) {
+      return;
+    }
     console.warn(
       `[container-runner:${this.sessionId}] dependencies unverified after ${gap.rewrite ?? "a dependency change"} (${gap.reason})`,
     );

@@ -318,41 +318,6 @@ export function supersededSessionOverlayLayers(
 }
 
 /**
- * Did a layer {@link supersededSessionOverlayLayers} is about to reap actually
- * hold installed packages?
- *
- * The reap is safe in itself — the upper is a disposable install delta — but
- * whether it discarded anything decides whether a reinstall the trust gate then
- * withholds (docs/271) leaves the session short of dependencies or costs it
- * nothing.
- * The ops sweep of 2026-08-20 has both: one session whose branch depended on
- * packages only its upper carried (dev service dead, exit 127) and one that took
- * the identical rotation and withhold and came up serving, because the shared
- * base already satisfied its checkout.
- *
- * An EMPTY upper is a proof of the harmless case, which is why this is worth
- * asking: no delta, so the session's dependencies are the base's either way.
- * A non-empty one is not the converse proof — a copy-up of a file the base also
- * has looks identical from here — so it only ever means "may be short", which is
- * exactly what a {@link DependencyGap} says.
- *
- * A missing `upper/` is the never-mounted generation, i.e. nothing lost. Any
- * OTHER read failure counts as content: a missed report is the defect being
- * fixed, an extra one is a notice.
- */
-export function supersededLayerHeldDeps(layerDir: string): boolean {
-  const name = path.basename(layerDir);
-  // The legacy bare `work/` is kernel bookkeeping, never install output.
-  if (name === "work") return false;
-  const upperDir = name === "upper" ? layerDir : path.join(layerDir, "upper");
-  try {
-    return fs.readdirSync(upperDir).length > 0;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== "ENOENT";
-  }
-}
-
-/**
  * Container path the workspace mounts at, and therefore the parent every dep-dir
  * overlay nests under (`/workspace/<dep-dir>`). Named once so
  * {@link buildOverlaySpecs} (which composes the mount target) and

@@ -111,6 +111,60 @@ describe("setupServiceManager trust gate (docs/178)", () => {
 });
 
 /**
+ * The overlay publish hook must not treat a synthesized install success as an
+ * installed tree (found by review, 2026-08-20).
+ *
+ * `publishOverlayBases` takes `installOk` at face value and stamps the base
+ * pointer's `markerStamp.installCommands` with the declared list — and that
+ * pointer is exactly what `preStampInstallMarker` later reads to decide that a
+ * fresh session's dependencies are already installed AND that its command list
+ * is accepted. Three paths resolve `ok: true` having observed no install at all
+ * (dispose, dispose-before-worker-ready, and the reconnect resync that cannot
+ * tell success from failure), so without the `unverified` gate a dropped SSE
+ * stream could publish a missing or half-installed dep tree as the SHARED base
+ * for the whole scope.
+ */
+describe("setupServiceManager — overlay publish gate", () => {
+  function runnerWithInstall(): ContainerSessionRunner {
+    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  install:\n    - npm ci\n");
+    return new ContainerSessionRunner({
+      sessionId: "s1",
+      sessionDir: tmpDir,
+      defaultAgentId: "claude",
+      workerUrl: "http://127.0.0.1:1",
+    });
+  }
+
+  async function publishCallsFor(outcome: {
+    ok: boolean; withheld?: boolean; unverified?: boolean;
+  }): Promise<number> {
+    repoStore.add(REMOTE);
+    repoStore.setTrusted(REMOTE, true);
+    const runner = runnerWithInstall();
+    vi.spyOn(runner, "runInstall").mockResolvedValue(outcome);
+    vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+    const publishOverlayBases = vi.fn(async () => []);
+    setupServiceManager(runner, { ...makeDeps(REMOTE), publishOverlayBases });
+    // The publish rides an un-awaited async IIFE hanging off the install promise.
+    await vi.waitFor(() => expect(runner.runInstall).toHaveBeenCalled());
+    await new Promise((r) => setImmediate(r));
+    return publishOverlayBases.mock.calls.length;
+  }
+
+  it("publishes when the install genuinely ran", async () => {
+    expect(await publishCallsFor({ ok: true })).toBe(1);
+  });
+
+  it("does NOT publish an install that was never observed", async () => {
+    expect(await publishCallsFor({ ok: true, unverified: true })).toBe(0);
+  });
+
+  it("does NOT publish a withheld install (docs/271)", async () => {
+    expect(await publishCallsFor({ ok: true, withheld: true })).toBe(0);
+  });
+});
+
+/**
  * `applyShipitConfigChange` — the incremental "the workspace config moved under
  * us" path, driven both by the in-container file watcher and by
  * orchestrator-side workspace rewrites (rebase / rollback).

@@ -42,15 +42,10 @@ import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } f
 import {
   preStampInstallMarker,
   sortOverlayDepDirs,
-  supersededLayerHeldDeps,
   supersededSessionOverlayLayers,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
-import {
-  acceptedInstallCommands,
-  readInstallReset,
-  recordInstallReset,
-} from "./agent-install-gate.js";
+import { acceptedInstallCommands, recordInstallReset } from "./agent-install-gate.js";
 import {
   chownToSessionWorker,
   handWorkspaceBackToWorker,
@@ -795,11 +790,8 @@ export function prepareOverlayDirs(
       : [],
   );
   if (superseded.length > 0) {
-    // Asked BEFORE the reap, obviously, but also before the marker drop: it is
-    // an input to the record that replaces the marker.
-    const depsDiscarded = superseded.some(supersededLayerHeldDeps);
     // Marker first — see the ordering rule in the docstring.
-    if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir, depsDiscarded);
+    if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir);
     for (const dir of superseded) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -874,19 +866,12 @@ export function prepareOverlayDirs(
  * above and for the same reason: a half-failure must land on the state that
  * changes nothing.
  */
-function removeInstallMarkerForRotation(workspaceDir: string, depsDiscarded: boolean): void {
+function removeInstallMarkerForRotation(workspaceDir: string): void {
   try {
-    // Merged with any reset still outstanding rather than overwriting it. Two
-    // rotations before a single install is exactly the case where overwriting
-    // loses: the accepted list to keep is the one that last genuinely RAN (which
-    // `acceptedInstallCommands` already prefers), and packages discarded by the
-    // first rotation are still missing after the second, however empty the
-    // second one's upper layer was.
-    const prior = readInstallReset(workspaceDir);
-    recordInstallReset(workspaceDir, {
-      accepted: acceptedInstallCommands(workspaceDir),
-      depsDiscarded: depsDiscarded || prior?.depsDiscarded === true,
-    });
+    // `acceptedInstallCommands` already prefers a reset still outstanding over
+    // the marker, so a second rotation before any install re-records the list
+    // that last genuinely RAN rather than overwriting it with a newer one.
+    recordInstallReset(workspaceDir, { accepted: acceptedInstallCommands(workspaceDir) });
     const markerFile = path.join(
       sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
       INSTALL_MARKER_FILE,

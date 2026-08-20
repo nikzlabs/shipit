@@ -705,6 +705,16 @@ export function setupServiceManager(
       // commands installed — which is precisely the anchor this gate reads, so
       // the gate would launder the plugin's list into its own accepted list.
       if (res.withheld) return;
+      // ...and an UNVERIFIED one observed no install either, which the publisher
+      // cannot tell from a real success: it takes `installOk` at face value and
+      // stamps the pointer's `markerStamp.installCommands` with the declared
+      // list. Three paths resolve `ok: true` having watched nothing happen —
+      // dispose, dispose-before-worker-ready, and the reconnect resync that
+      // cannot tell success from failure — so without this a dropped SSE stream
+      // could snapshot a missing or half-installed dep tree, publish it as the
+      // SHARED base for the whole scope, and hand every later session at this
+      // commit a pre-stamped marker asserting those commands installed.
+      if (res.unverified) return;
       try {
         const outcomes = await publishOverlayBases({
           runner: r,
@@ -950,22 +960,28 @@ export function setupServiceManager(
   // manager does one explicit restart pass on services still in `error` /
   // pending-retry state. Skip when there's nothing to wait for.
   //
-  // The ops finding of 2026-08-20 asked whether `res.depsIncomplete` — a
-  // withheld reinstall over packages ShipIt discarded — should close this gate
-  // as a FAILURE, holding the gated services instead of starting them into an
-  // exit 127. It should not, and the deciding evidence is in the finding itself:
-  // a second session took the same rotation and the same withhold and came up
-  // serving, because the shared base already satisfied its checkout. The flag
-  // means "may be short of packages", never "is", and there is no cheap check
-  // that would sharpen it — a populated base is exactly what defeats the
-  // worker's present-but-empty contradiction check too. Latching on a `may`
-  // takes a working preview down, and does it to whole classes of session at
-  // once (34 on that host were pinned to a superseded generation). Starting the
-  // service costs a crash loop in the genuinely-broken case, and by then the
-  // reason is already in three places the reader will reach first: the
-  // transcript notice, the line the service list carries beside the failing
-  // service, and the agent's own turn prompt. Requirement 2 asked for a
-  // diagnostic that connects the two, and that is what those are.
+  // The ops finding of 2026-08-20 asked whether a withheld reinstall on a session
+  // whose packages ShipIt discarded should close this gate as a FAILURE, holding
+  // the gated services rather than starting them into an exit 127. It should
+  // not, and the deciding evidence is in the finding itself: a second session
+  // took the same rotation and the same withhold and came up SERVING, because
+  // the shared base already satisfied its checkout.
+  //
+  // ShipIt cannot tell those two apart. The tempting proof — "the reaped overlay
+  // upper was empty, so nothing was lost" — is not one: an empty upper says the
+  // OLD lower satisfied this checkout and says nothing about the NEW generation
+  // being mounted, which may have been published from a tree that dropped the
+  // very package this branch needs. The signal is "unverified", full stop.
+  //
+  // Latching on an unverified means definite outages for healthy sessions, at
+  // the scale of every session pinned to a superseded generation (34 on that
+  // host), and it takes the diagnosis down with them — a service latched before
+  // it ever starts produces no failure for anyone to read. Starting it costs a
+  // crash loop in the genuinely-broken case, by which point the reason is
+  // already in the three places the reader reaches first: the transcript notice,
+  // the line the service list carries beside the failing service, and the
+  // agent's own turn prompt. Requirement 2 asked for a diagnostic connecting the
+  // service failure to the withheld install; those are it.
   if (installPromise) {
     mgr.setInstallRunning(true);
     const p = installPromise;
