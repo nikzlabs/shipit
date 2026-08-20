@@ -23,7 +23,6 @@ import { Logo } from "./components/Logo.js";
 import { QuickCaptureOverlay } from "./components/QuickCaptureOverlay.js";
 import { MobileContentPanels } from "./components/MobileContentPanels.js";
 import { MobileSessionsPanel } from "./components/MobileSessionsPanel.js";
-import { useSettingsStore } from "./stores/settings-store.js";
 
 /**
  * docs/150 — at which viewport width the header's status group (subscription
@@ -173,10 +172,14 @@ export function AppLayout({
   onCreateNewRepo,
   toast,
 }: AppLayoutProps) {
-  const hasProviderAccounts = useSettingsStore((s) => s.providerAccounts.length > 0);
-  const { statusInline, statusCollapsed } = statusGroupBreakpoint(
-    useSubscriptionPillCount(subscriptionLimits),
-  );
+  // One number, two questions: how wide the status group is, and whether it has
+  // anything in it at all. They were separate reads — the second was "any
+  // connected account, or any snapshot" — and docs/274 req 16 made them
+  // disagree: an xAI subscription is an account ShipIt can read no quota for,
+  // so it renders no pill, and the old test opened a dropdown with nothing
+  // subscription-shaped inside.
+  const subscriptionPills = useSubscriptionPillCount(subscriptionLimits);
+  const { statusInline, statusCollapsed } = statusGroupBreakpoint(subscriptionPills);
 
   return (
     <>
@@ -227,7 +230,7 @@ export function AppLayout({
             {processStartedAt !== null && <UptimeBadge processStartedAt={processStartedAt} />}
             {dockerMemory && <DockerMemoryBadge stats={dockerMemory} />}
           </div>
-          {(processStartedAt !== null || dockerMemory !== null || hasProviderAccounts || Object.values(subscriptionLimits).some((s) => s)) && (
+          {(processStartedAt !== null || dockerMemory !== null || subscriptionPills > 0) && (
             <div className={statusCollapsed}>
               <Popover>
                 <PopoverTrigger asChild>

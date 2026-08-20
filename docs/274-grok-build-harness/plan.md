@@ -724,6 +724,121 @@ two unlikely states at once (a broken credential root *and* a stored key), which
 is exactly why it now logs explicitly rather than being left to be inferred from
 the resume warning beside it.
 
+### Quota: no reader exists, and the empty pill was the bug (req 16)
+
+The catalogue answered this correctly and three UI surfaces did not. `xai:sub`
+declares `quota: null` — the no-reader arm `BillingModeDef` grew for exactly
+this case — so `modeReportsQuota("xai", "sub")` is false and the server
+registers no `LimitsProvider` for grok (verified at
+`orchestrator/agents/index.ts:87`, whose map holds claude and codex only). No
+snapshot for an xAI account can therefore ever exist.
+
+**What the user saw anyway**: a header pill reading `nik@x  5h · —  7d · —`
+with no refresh button, permanently. Reproduced in a unit render before the
+fix. Two surfaces asked the wrong question:
+
+| surface | asked | consequence |
+|---|---|---|
+| `SubscriptionLimitsBadge.buildPills` | "is there a connected account of a service with a `sub` mode?" | pill with two blank meters |
+| `ProviderAccountRows` row `quota=` | `billingMode === "sub" && status === "ready"` | the same blanks in Settings |
+| `ServicesPanel` credential row | `modeReportsQuota(...)` | **correct already** — and its comment says why: "an empty pill would say 'no usage' where the truth is 'not measured'" |
+
+So this was not a new design question. The third row had answered it in
+planning#339 for GLM's declared-but-unimplemented `zai-plan-usage`; the other
+two predate that reasoning and were never revisited. The fix is the same
+predicate in all three, plus one thing suppression alone cannot do — see below.
+
+**Removing a pill moves the emptiness up a level.** Two surfaces decided
+whether to show a subscription *container* by asking "any connected account, or
+any snapshot?" — `MobileStatusPanel`'s "Subscription" section and `AppLayout`'s
+collapsed status trigger. Both agreed with the pill until an account existed
+that renders none, and then the mobile dropdown put a heading above an empty
+box. Both now read `useSubscriptionPillCount`, which is the badge's own answer:
+one number, so the container and its contents cannot disagree. This is the
+general shape of the hazard, worth stating for the next no-reader service — a
+suppressed leaf leaves a frame around nothing unless the frame asks the leaf.
+
+**Hiding is necessary and not sufficient.** A user paying for SuperGrok goes
+looking for the figure the other cards show and finds a card with nothing where
+it should be, which does not distinguish "not measured" from "broken". Req 16
+says ShipIt *says so*; `MODE_NOTICES` is where the OpenCode Go hazard already
+says its equivalent (docs/272 req 6), so the xAI card gets the second entry in
+that map and the map's docstring grows the second admissible kind: an absent
+read-out, not only a billing hazard.
+
+**The pill's other job survives.** `credentialStatusWord` puts "reconnect
+needed" in the same pill, and that is a statement about the SIGN-IN, not about
+quota — the header is the only place it is said (planning#429). So a no-reader
+subscription loses its meters and keeps that word.
+
+#### Every probe, and what it returned
+
+Vendor-side, from the prior session (recorded in planning#435): `/v1/usage`,
+`/v1/rate-limits`, `/v1/subscription`, `/v1/me` all **404**; `/v1/settings`
+returns client config with no plan or usage field.
+
+New evidence this round, **verified against the installed binary**
+(`@xai-official/grok-linux-x64` 1.0.1 `e9444c5615`, `strings -n 4`, in-container
+2026-08-20) — the CLI is the strongest available witness, because anything
+xAI exposes to a subscriber it would consume here first:
+
+- **No usage/limits subcommand.** The full command list is agent, completions,
+  dashboard, doctor, du, export, help, inspect, leader, login, logout, mcp,
+  memory, models, plugin, sessions, setup, trace, update, version, worktree,
+  wrap. `grok login --help` offers `--oauth` and `--device-auth` and nothing
+  about a plan.
+- **No usage-shaped route in the binary.** Every literal REST path it carries:
+  `/rest/modes`, `/rest/skills`, `/rest/user-skills`, `/rest/workspaces`,
+  `/rest/app-chat/conversations{,/,soft/}`; OpenAI-shaped `/v1/chat/completions`,
+  `/v1/responses`, `/v1/models`, `/v1/messages`, `/v1/settings`, `/v1/tools`
+  (plus OTLP `/v1/{logs,metrics,traces}`). No `/v1/usage`, no `/v1/rate-limits`
+  — the same 404s, from the other side.
+- **No `x-ratelimit-*` header parsing anywhere.** The only retry-shaped header
+  it knows is `Retry-After`. So even the passive reader Anthropic's integration
+  could have used does not exist here.
+- **Its own "usage" surfaces are two other things.** `x.ai/session/usage` is
+  per-session token/cost for the open session ("Session usage is unavailable
+  until the session starts"), and for account usage the TUI **links out**:
+  `https://grok.com/?_s=usage`, beside `https://grok.com/supergrok?referrer=grok-build`.
+  A client that had the number would not send the user to a web app for it.
+- **The one genuine lead, and why it is not this number.** There IS a billing
+  extension (`crates/codegen/xai-grok-shell/src/extensions/billing.rs`, ACP
+  methods `x.ai/billing` and `x.ai/auto-topup-rule`) returning an 11-field
+  `BillingConfig`: `creditUsagePercent`, `monthlyLimit`, `onDemandCap`,
+  `onDemandUsed`, `prepaidBalance`, `includedUsed`, `totalUsed`, `currentPeriod`,
+  `billingCycle`, `billingPeriodStart`, `isUnifiedBillingUser`, plus
+  `subscription_tier` and `on_demand_enabled`. Its error string is "Billing data
+  requires auth with grok.com." That vocabulary is **spend and credits on a
+  monthly cycle**, not a SuperGrok 5h/7d allowance — the shape ShipIt's pill
+  renders. Whether it carries anything usable for a subscriber is the **one
+  question the offline evidence cannot close**, and it needs two things this
+  session had neither of: egress to grok.com and a live SuperGrok login (the
+  probe container holds `XAI_API_KEY` only, and `~/.grok/auth.json` is absent).
+  It does not change the verdict below — a monthly credit balance is not the
+  5h/7d allowance the pill renders, so even a readable `BillingConfig` would
+  need its own surface rather than filling these meters.
+- **The subscription check is a boolean, not a meter.**
+  `agent/subscription_check.rs` emits `paywall_check_result` /
+  `paywall_check_subscription_detected` — entitled or not, with no figure. What
+  the CLI shows a user at the limit is upsell copy ("You hit your free usage
+  limit.", "Buy more credits", "You can continue by increasing your spending
+  limit."), never a remaining balance.
+
+**Verdict: documented no-reader, honest surface.** `quota: null` stands, the
+three UI surfaces now agree with it, and the card says the absence in words.
+
+**One adjacent gap, not fixed here.** The exhaustion classifier
+(`ws-handlers/agent-rate-limits.ts`) is text-pattern-based and harness-agnostic,
+and `AGENT_LIMIT_LABELS` already names grok — but its `EXHAUSTION_PATTERNS` were
+written against Claude's and Codex's wording. xAI's own limit strings include
+"usage limit reached" and "out of credits" (both matched today) alongside
+"You hit your free usage limit." and "usage balance exhausted" (neither
+matched). With no quota to read, that classifier is the *only* signal a
+SuperGrok subscription is spent, so its coverage matters more here than for a
+service with a meter. Filed as **planning#453**, not built: the wording needs a real
+exhausted subscription to verify against, and widening a list that benches a
+working subscription on a false positive is not something to guess at.
+
 ### Deliberately not built: a proactive refresher
 
 Claude and Codex each own an orchestrator-side OAuth refresher (docs/153,

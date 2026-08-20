@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, cleanup, waitFor } from "@testing-library/react";
 import {
   SubscriptionLimitsBadge,
   SubscriptionLimitPill,
+  useSubscriptionPillCount,
   tierColor,
   formatPct,
   formatResetCountdown,
@@ -901,5 +902,77 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
     render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(1);
+  });
+});
+
+/**
+ * docs/274 req 16 — the reported failure: a connected SuperGrok subscription
+ * put a pill in the header reading `nik@x  5h · —  7d · —`, with no refresh
+ * button beside it, and stayed that way forever. The blanks were not pending
+ * numbers: xAI publishes no subscription usage API, so no reader exists and
+ * none is coming. A pill that can only ever say "—" is not an honest absence,
+ * it is a broken-looking one, which is how it was reported.
+ */
+describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () => {
+  const now = Date.now();
+
+  function connectXai(overrides: Partial<CredentialRoute> = {}): void {
+    useSettingsStore.getState().setProviderAccounts([
+      {
+        id: "acct-xai",
+        serviceId: "xai",
+        billingMode: "sub",
+        via: "account",
+        label: "nik@x",
+        isPrimary: true,
+        status: "ready",
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      },
+    ]);
+  }
+
+  it("renders no pill at all for a healthy connected account", () => {
+    connectXai();
+    const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(container.innerHTML).toBe("");
+    expect(screen.queryByText("nik@x")).toBeNull();
+    expect(screen.queryByText(/5h · —/)).toBeNull();
+    expect(screen.queryByText(/7d · —/)).toBeNull();
+  });
+
+  it("still says when that account cannot run a turn", () => {
+    // The pill's second job is about the SIGN-IN, not about quota, so it
+    // survives: an xAI account needing reconnection is exactly as worth saying
+    // as an Anthropic one, and the header is the only place that says it.
+    connectXai({ status: "auth_failed" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("nik@x")).toBeInTheDocument();
+    expect(screen.getByText("reconnect needed")).toBeInTheDocument();
+    expect(screen.queryByText(/5h/)).toBeNull();
+  });
+
+  it("does not count toward the header's pill budget", () => {
+    // `AppLayout` sizes the status group on this number; a pill that never
+    // renders must not reserve room for itself.
+    connectXai();
+    const { result } = renderHook(() => useSubscriptionPillCount({}));
+    expect(result.current).toBe(0);
+  });
+
+  it("leaves a service that DOES report a quota untouched", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
+    // The quiet Anthropic account keeps its `—` meters: there its blanks mean
+    // "no reading yet", and the refresh button beside them is what makes that
+    // true rather than decorative.
+    expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
+    expect(screen.getByLabelText("Refresh subscription usage")).toBeInTheDocument();
   });
 });

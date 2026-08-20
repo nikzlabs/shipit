@@ -1964,6 +1964,47 @@ describe("the OpenCode Go billing hazard (docs/272 req 6)", () => {
 });
 
 /**
+ * docs/274 req 16 — the notice's second kind: an absent read-out, not a billing
+ * hazard.
+ *
+ * Suppressing a quota pill ShipIt cannot fill is correct and, on its own,
+ * silent — a user paying for SuperGrok goes looking for the figure the other
+ * services show and finds a card with nothing where it should be. The sentence
+ * is what tells "not measured" from "broken", which is the distinction the
+ * empty pill destroyed when this was reported.
+ */
+describe("the xAI subscription's missing usage API (docs/274 req 16)", () => {
+  it("says on the card that there is no figure to show, and where one is", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
+    ]);
+    render(<ServicesPanel />);
+    const notice = screen.getByTestId("mode-notice-xai:sub");
+    expect(notice).toHaveTextContent(/no subscription usage API/);
+    expect(notice).toHaveTextContent(/grok\.com/);
+  });
+
+  it("says nothing on the metered xAI key card, which promises no allowance", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_xai", serviceId: "xai", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("service-card-xai:key")).toBeInTheDocument();
+    expect(screen.queryByTestId("mode-notice-xai:key")).not.toBeInTheDocument();
+  });
+
+  it("shows no quota read-out on the subscription's account row", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
+    ]);
+    render(<ServicesPanel />);
+    const row = screen.getByTestId("provider-account-row-acct_xai");
+    expect(row).toHaveTextContent("nik@x");
+    expect(row.querySelector("[data-meter-pct]")).toBeNull();
+  });
+});
+
+/**
  * docs/252 req 20's consequence for the panel: **"both shapes" means both
  * PRESENT, not both possible.**
  *

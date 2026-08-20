@@ -747,14 +747,22 @@ function ServiceModeCard({
 }
 
 /**
- * A standing **billing hazard** of one `(service, mode)` — something the service
- * does with the user's money that ShipIt cannot see, so it cannot be surfaced as
- * a number, a status or a failure and has to be said in words.
+ * A standing fact about one `(service, mode)` that no control on the card can
+ * carry — a **billing hazard** the service performs with the user's money out
+ * of ShipIt's sight, or the **absence of a read-out** where the user has every
+ * reason to expect one. Both are things ShipIt cannot show as a number, a
+ * status or a failure, so they are said in words.
+ *
+ * The second kind is what a hidden control leaves behind. Suppressing a quota
+ * pill ShipIt cannot fill is right (docs/274 req 16) and it is also silent: a
+ * user paying for a subscription goes looking for the figure and finds nothing
+ * where the other services put theirs, with no way to tell "not measured" from
+ * "broken". Req 16 asks ShipIt to *say so*, and this is where.
  *
  * Deliberately a short, closed map rather than a `description` field on every
  * card: req 19 deleted per-card prose precisely because it printed something on
  * every service whether or not there was anything to say. An entry here is the
- * exception that earns its line, and today there is exactly one.
+ * exception that earns its line.
  *
  * It also lives here rather than in the catalogue: the rows are routing data
  * (endpoints, credentials, models), and a sentence of user-facing copy is not
@@ -770,6 +778,13 @@ const MODE_NOTICES: Record<string, string> = {
   // ShipIt cannot prevent this one, so it says so where the credential lives.
   [credentialModeKey("opencode", "sub")]:
     "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
+  // docs/274 req 16 — the absence, said rather than drawn. xAI publishes no
+  // subscription usage API: every candidate route 404s, and the `grok` CLI
+  // itself has no reader either (it links out to grok.com for the figure).
+  // So this subscription shows no usage pill anywhere in ShipIt, and this
+  // sentence is what stops that from reading as a missing number.
+  [credentialModeKey("xai", "sub")]:
+    "ShipIt cannot read SuperGrok usage — xAI publishes no subscription usage API — so this card shows no remaining figure and no usage cutoffs. Your remaining allowance is visible only at grok.com.",
 };
 
 /** The hazard line for a `(service, mode)`, or nothing where there is none. */

@@ -20,7 +20,12 @@ import {
   type CredentialStatusWord,
 } from "../utils/credential-state.js";
 import { serviceLabel } from "../utils/service-label.js";
-import { allServices, nativeServiceForHarness, subQuotaRefreshable } from "../../server/shared/catalogue/index.js";
+import {
+  allServices,
+  modeReportsQuota,
+  nativeServiceForHarness,
+  subQuotaRefreshable,
+} from "../../server/shared/catalogue/index.js";
 
 /**
  * Stable ordering of pills in the header.
@@ -191,6 +196,22 @@ function buildPills(
   for (const modeKey of pillOrder()) {
     const serviceId = modeKey.slice(0, modeKey.lastIndexOf(":"));
     const byRoute = limits[modeKey];
+    /*
+      docs/274 req 16 — a subscription ShipIt has no reader for gets no METERS.
+      Without this the two windows render as `5h · —  7d · —` forever, with no
+      refresh button beside them (`subQuotaRefreshable` is already false), which
+      is a pill that looks broken rather than one that says nothing: the user
+      who reported it read the blanks as "ShipIt lost my numbers". They are not
+      pending — xAI publishes no subscription usage API, so nothing will ever
+      fill them. The Settings credential row reached this same conclusion first
+      (`ServicesPanel`, `modeReportsQuota` rather than `billingMode === "sub"`):
+      an empty pill says "no usage" where the truth is "not measured".
+
+      Gated per mode rather than in `pillOrder`, because the pill still has a
+      second job that has nothing to do with quota — see the `attention` skip
+      below.
+    */
+    const reportsQuota = modeReportsQuota(serviceId, "sub");
     // planning#342 — an account row IS a credential of its service now, so
     // the pill matches on the service directly instead of mapping the row's
     // harness back to one.
@@ -208,6 +229,12 @@ function buildPills(
     // account may have no quota event yet, but its pill must remain available
     // so the user can request a refresh and see that usage is still unknown.
     for (const account of modeAccounts) {
+      // ...and the second job: a credential that cannot run a turn says so
+      // here, which is a statement about the SIGN-IN and not about quota. So a
+      // no-reader subscription keeps that pill and loses only the meters — an
+      // xAI account needing reconnection is exactly as worth saying as an
+      // Anthropic one, and this is the only place the header says it.
+      if (!reportsQuota && !credentialStatusWord(account)) continue;
       pills.push({
         key: `${modeKey}:${account.id}`,
         serviceId,

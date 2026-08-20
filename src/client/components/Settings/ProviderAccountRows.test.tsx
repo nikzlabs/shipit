@@ -313,3 +313,56 @@ describe("ProviderAccountRows stale-credential escape hatch", () => {
     expect(screen.queryByTestId("provider-stale-credentials-claude")).toBeNull();
   });
 });
+
+/**
+ * docs/274 req 16 — the same absence, on the Settings row.
+ *
+ * The header pill was where it was reported, but this row rendered the identical
+ * empty `5h · —  7d · —` for the same reason: it asked `billingMode === "sub"`,
+ * on the belief that every subscription reports a quota. xAI's does not, and
+ * that is settled rather than pending — its usage routes 404 and no reader
+ * exists to write.
+ */
+describe("a subscription with no quota reader (docs/274 req 16)", () => {
+  function xaiAccount(overrides: Partial<CredentialRoute> = {}): CredentialRoute {
+    return {
+      id: "acct-xai",
+      serviceId: "xai",
+      billingMode: "sub",
+      via: "account",
+      label: "nik@x",
+      isPrimary: true,
+      status: "ready",
+      createdAt: 0,
+      updatedAt: 0,
+      ...overrides,
+    };
+  }
+
+  it("renders the row with no quota read-out", () => {
+    useSettingsStore.getState().setProviderAccounts([xaiAccount()]);
+    render(
+      <ProviderAccountRows
+        provider="grok"
+        agent={{ id: "grok", name: "Grok Build", installed: true, hasRunnableModels: true, models: [], supportsReview: true }}
+        billingMode="sub"
+        onReconnect={vi.fn()}
+      />,
+    );
+    const row = screen.getByTestId("provider-account-row-acct-xai");
+    expect(row).toHaveTextContent("nik@x");
+    expect(row).not.toHaveTextContent(/5h/);
+    expect(row).not.toHaveTextContent(/7d/);
+    expect(row.querySelector("[data-meter-pct]")).toBeNull();
+  });
+
+  it("keeps the read-out on a subscription that does report one", () => {
+    useSettingsStore.getState().setProviderAccounts([account("a", true)]);
+    renderRows();
+    // The Anthropic row's blanks mean "no reading yet" and have a refresh
+    // button beside them, which is what makes them a pending state rather than
+    // a permanent one.
+    const row = screen.getByTestId("provider-account-row-a");
+    expect(row.querySelector("[data-meter-pct]")).not.toBeNull();
+  });
+});

@@ -113,3 +113,48 @@ describe("MobileStatusPanel", () => {
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
   });
 });
+
+/**
+ * docs/274 req 16 — the heading has to follow the pill, not the account list.
+ *
+ * A subscription ShipIt can read no quota for renders no pill (xAI publishes no
+ * usage API), so a panel that asked "any connected account?" put a
+ * "Subscription" heading above an empty box — the same empty-affordance failure
+ * as the blank pill, one level up.
+ */
+describe("MobileStatusPanel with a no-quota subscription", () => {
+  const now = Date.now();
+
+  it("drops the Subscription section when the only account reports no quota", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    render(
+      <MobileStatusPanel
+        subscriptionLimits={{}}
+        dockerMemory={null}
+        processStartedAt={Date.parse("2026-05-19T12:00:00Z")}
+      />,
+    );
+    expect(screen.queryByText("Subscription")).toBeNull();
+    // The panel is not empty — it still has the section it does have data for.
+    expect(screen.getByText("Uptime")).toBeInTheDocument();
+  });
+
+  it("keeps the section when an account beside it does report one", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    render(
+      <MobileStatusPanel
+        subscriptionLimits={{ "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) }}
+        dockerMemory={null}
+        processStartedAt={null}
+      />,
+    );
+    expect(screen.getByText("Subscription")).toBeInTheDocument();
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.queryByText("nik@x")).toBeNull();
+  });
+});
