@@ -1282,6 +1282,34 @@ function AddServiceDialog({
    * with no end.
    */
   const [reconnectLeftReady, setReconnectLeftReady] = useState(reconnectAccountId === undefined);
+  /**
+   * **This dialog has asked for a login and has not yet seen it take effect.**
+   *
+   * Everything `signInStalled` reads — the row's status, the challenge slot, the
+   * filed reason — describes *an* attempt, and until the one we just started
+   * shows up, every one of them still describes the **previous** one. That is
+   * not a corner: reconnect exists precisely because the last attempt failed, so
+   * the state the dialog opens over is a failure by default, and Claude's wizard
+   * takes about six seconds to replace it. Both shapes were reproducible:
+   *
+   * - a stale `authError` from the failure that prompted the reconnect (only
+   *   ever cleared when the *next* challenge arrives), and
+   * - a row still reading `auth_failed`, which is `status !== "authenticating"`.
+   *
+   * Either one drew the flow's failure screen, with a live *Try again*, over a
+   * sign-in that was running normally — the user's press had worked, and the one
+   * thing on screen inviting a press said otherwise. `reconnectLeftReady` did
+   * not cover it: "has left `ready`" is answered `true` by `auth_failed`, and it
+   * is about the *account*, while this is about the *attempt*.
+   *
+   * Armed at every start (so *Try again* re-arms it) and disarmed by the first
+   * evidence the attempt is real — `authenticating`, a challenge, or a reason,
+   * which is now necessarily this attempt's because `startSignIn` clears the
+   * previous one's. A start that throws disarms it in the catch, so a genuine
+   * failure to start still reaches the stalled panel rather than waiting for a
+   * broadcast that is not coming.
+   */
+  const [attemptUnseen, setAttemptUnseen] = useState(reconnectAccountId !== undefined);
 
   /**
    * **Choosing the mode starts its sign-in, when signing in is all the step
@@ -1432,8 +1460,14 @@ function AddServiceDialog({
    * `true`, so it changes nothing there; a start that genuinely throws sets it
    * (see `startSignIn`'s catch), which is what keeps the real failure reachable.
    */
+  // Adjusted during render, like `reconnectLeftReady` above and for the same
+  // reason: the answer has to be frame-exact, and a frame late is a frame of the
+  // failure screen.
+  if (attemptUnseen && (signInAccount?.status === "authenticating" || pendingAuth || authError)) {
+    setAttemptUnseen(false);
+  }
   const signInStalled = !!signInAccount && !signedIn && !pendingAuth && !startingSignIn
-    && reconnectLeftReady
+    && reconnectLeftReady && !attemptUnseen
     && (!!authError || signInAccount.status !== "authenticating");
 
   /**
@@ -1492,6 +1526,9 @@ function AddServiceDialog({
     // Read now, not at the last render, for the same reason.
     const known = providerAccountsOf(useSettingsStore.getState().providerAccounts, provider);
     setStartingSignIn(true);
+    // Nothing on screen describes this attempt yet — see `attemptUnseen`. Set
+    // before the first request, so the window it covers has no gap at its start.
+    setAttemptUnseen(true);
     setError("");
     try {
       /**
@@ -1502,6 +1539,32 @@ function AddServiceDialog({
        * and, otherwise, no attempt yet, so make one.
        */
       const existing = adoptableAttempt(known, signInAccountId);
+      /**
+       * **A new attempt invalidates the last one's reason — and it has to be
+       * gone before this dialog next renders.**
+       *
+       * `providerAccountAuthErrors` is written by `agent_auth_failed` and
+       * cleared only when the *next* challenge arrives (`agent_auth_pending`),
+       * which for Claude is about six seconds away. Until then the previous
+       * attempt's reason is still filed against this account, and
+       * `signInStalled` reads it as this attempt's outcome — the failure screen,
+       * with a live *Try again*, over a sign-in that is running. On reconnect
+       * that is the ordinary case: the reason you reconnect is that the last
+       * attempt failed.
+       *
+       * Synchronously, before the first `await`, because `attemptUnseen`
+       * disarms on the first evidence of an attempt and a leftover error is
+       * exactly what it would mistake for evidence. Clearing it after the
+       * cancel round-trip left the latch already disarmed, with nothing to
+       * re-arm it — the retry then showed the failure screen again.
+       *
+       * Only for an adopted row: an account created a moment ago cannot carry a
+       * reason under an id that did not exist.
+       */
+      const startingLoginId = loginForProvider(provider);
+      if (existing && startingLoginId) {
+        useSettingsStore.getState().setProviderAccountAuthError(startingLoginId, existing.id, null);
+      }
       const account = existing ?? await createAccount(provider, known.map((a) => a.id));
       // Recorded the moment it is true, and never unset: from here on this
       // dialog is entitled to delete the row on the way out. A *Try again*
@@ -1558,6 +1621,10 @@ function AddServiceDialog({
       await startAccountLogin(provider, account.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the sign-in");
+      // The attempt is over before anything could be observed of it, so stop
+      // waiting to observe one: this is what keeps the stalled panel — and its
+      // *Try again* — reachable on a start that never got off the ground.
+      setAttemptUnseen(false);
       // The reconnect is over and it failed, so stop suppressing the stalled
       // panel: that is where its *Try again* lives, and without this a failed
       // start would wait for a broadcast that is never coming.

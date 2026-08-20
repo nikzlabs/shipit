@@ -1745,6 +1745,106 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
   });
 
   /**
+   * **The state a reconnect opens over belongs to the PREVIOUS attempt.**
+   *
+   * `providerAccountAuthErrors` is written by `agent_auth_failed` and cleared
+   * only when the *next* challenge arrives — and the reason anyone presses
+   * *Reconnect* is usually that the last attempt failed, so the reason it failed
+   * is still filed against the account. `signInStalled` read it as this
+   * attempt's outcome, so for the ~6 s Claude's wizard takes to print its link
+   * the dialog drew its failure screen with a live *Try again*: the press had
+   * worked, and the one control on screen inviting another press said it had
+   * not. Reported from use.
+   */
+  it("does not show a failed attempt's reason over a reconnect that is running", async () => {
+    seedConnected();
+    // The credential expired; the toast that offers a reconnect is the reason
+    // the user is here, and the failure is still in the store.
+    useSettingsStore.getState().setProviderAccountAuthError(
+      "anthropic-oauth", "acct_1", "Your Anthropic session expired.",
+    );
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+    // The server's `authenticating` broadcast lands — the sign-in is under way,
+    // and the link has not been printed yet.
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([
+        { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "authenticating", externalId: "ext-1", createdAt: now, updatedAt: now },
+      ]);
+    });
+
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-signin-stalled")).toBeNull();
+    // The rule the dialog states for itself: while a sign-in runs there is one
+    // button and it says Cancel.
+    expect(screen.queryByTestId("add-service-sign-in")).toBeNull();
+  });
+
+  /**
+   * The same defect wearing the row's status instead of a filed reason. An
+   * expired credential sits at `auth_failed`, which is `status !==
+   * "authenticating"` — so between the login request returning and the
+   * broadcast landing, the dialog judged the attempt by the state the *previous*
+   * one left. `reconnectLeftReady` does not cover this: "has left `ready`" is
+   * answered `true` by `auth_failed` before the user presses anything.
+   */
+  it("does not judge the attempt by the status the last one left", async () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+    ]);
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "auth_failed", externalId: "ext-1", createdAt: now, updatedAt: now },
+    ]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    // No broadcast yet — the row still says what the last attempt did.
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-signin-stalled")).toBeNull();
+    expect(screen.queryByTestId("add-service-sign-in")).toBeNull();
+  });
+
+  /**
+   * The other half of the same rule, and what stops the fix above from being a
+   * dialog that can never say a sign-in failed: a failure arriving *during* the
+   * attempt is this attempt's, and it must land on the stalled panel with its
+   * *Try again* — which then re-arms the whole guard for the retry.
+   */
+  it("still reaches Try again when the attempt itself fails, and hides it again on the retry", async () => {
+    seedConnected();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([
+        { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "authenticating", externalId: "ext-1", createdAt: now, updatedAt: now },
+      ]);
+    });
+    // The CLI gives up: the row fails and the reason is filed.
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([
+        { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "auth_failed", externalId: "ext-1", createdAt: now, updatedAt: now },
+      ]);
+      useSettingsStore.getState().setProviderAccountAuthError(
+        "anthropic-oauth", "acct_1", "The authorization code expired.",
+      );
+    });
+    expect(screen.getByTestId("add-service-signin-stalled")).toHaveTextContent("The authorization code expired.");
+
+    // Pressing it starts a second attempt, and the second attempt is no more
+    // judged by the first one's wreckage than the first was by the one before.
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-signin-stalled")).toBeNull();
+    expect(screen.queryByTestId("add-service-sign-in")).toBeNull();
+  });
+
+  /**
    * The one thing that could go badly wrong. `AddServiceDialog` abandons the
    * attempt IT created; a connected account is not an attempt
    * (`isUnconnectedAttempt` is false once it has an `externalId`), so cancelling
