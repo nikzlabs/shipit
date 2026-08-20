@@ -1,4 +1,5 @@
 ---
+issue: planning#456
 title: Agent-driven install
 description: The local installer asks which agent CLIs to install, and both installers describe themselves so an agent can run the install for the user
 ---
@@ -42,35 +43,53 @@ Two asks, made together on 2026-08-20:
 9. The local install and the VPS install describe themselves in the same format,
    so one agent procedure is sufficient for both.
 
+### The questions an agent must be able to answer
+
+10. Every answer the Cloudflare setup needs — the domain, the account ID, the API
+    token, and the allowed email — can be given in advance. An agent-run install
+    that selects Cloudflare completes without a stop.
+11. The API token is a secret. The install must not write it to a log, a
+    committed file, or the agent's own transcript.
+12. On a host that cannot contain the agent network, an agent may answer the
+    security question in advance, but only with an explicit answer that the
+    person gave. With no answer given, the install keeps containment on. It never
+    assumes the downgrade.
+13. The description tells the agent that remote access over Tailscale is
+    available for a local install, so the agent can offer it and set it up.
+
 ### Behaviour that must not change
 
-10. A person who installs by hand sees no change: the same one-line commands,
+14. A person who installs by hand sees no change: the same one-line commands,
     the same questions, and the same defaults.
-11. A pre-set answer (for example `SHIPIT_HARNESSES`) continues to skip its
+15. A pre-set answer (for example `SHIPIT_HARNESSES`) continues to skip its
     question and is used as given.
-12. An install with no terminal continues with the defaults. It does not stop
+16. An install with no terminal continues with the defaults. It does not stop
     and it does not fail.
 
 ## Out of scope
 
-- A new question about remote access in the local installer. The local install
-  binds to localhost, and `docs/254-local-bind-and-tailnet-access` req 3 keeps
-  Tailscale out of the default local path on purpose.
+- A new **question** about remote access in the hand-run local installer. The
+  local install binds to localhost, and `docs/254-local-bind-and-tailnet-access`
+  req 3 keeps Tailscale out of the default local path on purpose. Req 13 makes it
+  visible to an agent, which is a different surface.
 - A change to what the installers do after each answer.
 
 ## Open questions
 
-- **Cloudflare answers.** The Cloudflare setup asks for a domain, an account ID,
-  an API token, and an allowed email. None of them can be given in advance
-  today, so an agent that selects Cloudflare cannot complete the install. Must
-  agent mode cover these too?
-- **The egress-containment question.** On a host that cannot run the containment
-  sidecar, the installer asks the person to accept a security downgrade. May an
-  agent answer this question in advance, on behalf of the person?
-- **Local remote access.** Tailscale access for a local install is a separate
-  script today. Must the agent see it as a parameter it can present, or is it
-  outside agent mode?
+None.
 
 ## Resolved questions
 
-None yet.
+**2026-08-20 — must agent mode cover the Cloudflare answers?** Nik: yes, cover
+them. Requirements 10 and 11 record this. The consequence he was shown with the
+question: the agent then handles a Cloudflare API token, which is a secret — so
+req 11 states where it must not end up.
+
+**2026-08-20 — may an agent answer the egress-containment question?** Nik: yes,
+with an explicit answer. Requirement 12 records both halves: the person decides
+and the answer is passed explicitly, and an install with no answer keeps
+containment on rather than assuming the downgrade.
+
+**2026-08-20 — is Tailscale for a local install a parameter the agent may
+present?** Nik: yes, the agent may offer it. Requirement 13 records this. The
+hand-run installer still asks nothing about it, so docs/254 req 3 is unchanged.

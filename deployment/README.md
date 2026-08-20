@@ -8,6 +8,72 @@ Two install paths, deliberately aligned:
 - **VPS** (`deployment/vps/`) — an always-on Linux server with optional Cloudflare Tunnel and/or
   Tailscale access and UI-driven self-updates.
 
+Either path can be run **by an agent** instead of by hand — see
+[Installing with an agent](#installing-with-an-agent).
+
+---
+
+## Installing with an agent
+
+Tell an agent (Claude Code, Codex, or any other) "install ShipIt", and it can do the whole thing
+for you: ask you the questions in chat, then run the install. Nothing here is a separate mode —
+an agent-run install is the ordinary install with the answers already supplied.
+
+**1. The installer describes its own questions.** `--describe` prints them as JSON and exits. It
+needs no root, installs nothing, writes no file, and clones nothing, so it is safe to run before
+you have decided to install at all:
+
+```bash
+# Local
+bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh) --describe
+
+# VPS (the one-liner shape cannot pass an argument, so use the variable)
+SHIPIT_DESCRIBE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
+```
+
+Each question carries its options, its default, the variable that answers it, and `askedWhen` —
+which says whether it is always asked or only in one case (the Cloudflare questions, and the
+containment question on a host that cannot contain the agent network). An agent should collect
+the conditional answers up front, because an install that has started cannot stop to ask.
+
+**2. You decide, not the agent.** The document tells the agent to show every question and to use
+your answer. Two of them matter more than the rest:
+
+- **The agent CLIs** are built into the images, so this is an install-time choice. Changing it
+  later means editing the answer and running the deploy or update again.
+- **Agent network containment** is only asked on a host that cannot run the containment sidecar.
+  Answering `off` there means a prompt-injected agent could send your credentials out. With **no**
+  answer the install keeps containment **on** — an agent cannot disable it by leaving the question
+  out.
+
+**3. The install runs with the answers as variables.** Same command everyone else uses:
+
+```bash
+SHIPIT_HARNESSES=claude,codex \
+  bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
+```
+
+An answered question is never asked. A mistyped option id fails in a second, before anything on
+the machine changes.
+
+### Every answer, in one place
+
+| Variable | Installer | Answers |
+|---|---|---|
+| `SHIPIT_HARNESSES` | both | which agent CLIs to install (`claude`, `codex`, `opencode`, `grok`) |
+| `SHIPIT_EGRESS` | both | `on` or `off` — the containment question, asked only on a host that cannot contain the agent network |
+| `SHIPIT_ACCESS` | VPS | `cloudflare`, `tailscale`, both, or `none` |
+| `SHIPIT_CF_DOMAIN` | VPS | the domain Cloudflare publishes ShipIt at |
+| `SHIPIT_CF_API_TOKEN` | VPS | **secret** — the Cloudflare token that creates the Zero Trust application |
+| `SHIPIT_CF_ACCOUNT_ID` | VPS | the Cloudflare account ID |
+| `SHIPIT_CF_ALLOWED_EMAIL` | VPS | who may sign in — an email address or an email domain |
+| `SHIPIT_TAILSCALE_AUTHKEY` | VPS | joins the tailnet without a browser sign-in |
+| `SHIPIT_HOME` | local | where to install (default `~/.shipit`) |
+| `SHIPIT_REPO_URL` | both | install a fork |
+
+The Cloudflare token is a secret. Export it for the one command; do not write it into a file, a
+log, or a commit. The installer never stores it and never echoes it.
+
 ---
 
 ## Local install (macOS + Linux)
@@ -167,12 +233,15 @@ It is a **build input, not a setting** — the CLIs are baked into the images �
 editing the env file and re-running the deploy, and there is nothing in Settings that adds or
 removes a harness:
 
-- **VPS**: the installer asks once — a checklist you move through with the arrow keys, toggle with
-  the space bar, and confirm with Enter — and persists your answer as `SHIPIT_HARNESSES` in
-  `/etc/shipit/shipit.env`. To change it later, edit that line and run
-  `bash /opt/shipit/deployment/vps/deploy.sh`. Presetting the variable
-  (`SHIPIT_HARNESSES=codex bash setup.sh`) skips the prompt.
-- **Local**: set it in `~/.shipit/.shipit.env` and re-run `deployment/local/update.sh`.
+**Both installers ask the question once** — a checklist you move through with the arrow keys,
+toggle with the space bar, and confirm with Enter — and keep your answer, so an update does not
+change the set you selected. Presetting the variable (`SHIPIT_HARNESSES=codex bash setup.sh`)
+skips the prompt, and so does having an agent run the install for you.
+
+- **VPS**: the answer is persisted as `SHIPIT_HARNESSES` in `/etc/shipit/shipit.env`. To change it
+  later, edit that line and run `bash /opt/shipit/deployment/vps/deploy.sh`.
+- **Local**: the answer is persisted in `~/.shipit/.shipit.env`. To change it later, edit that
+  line and run `deployment/local/update.sh`.
 
 A harness that is not installed offers no models and does not appear in the model picker; a
 deployment must install at least one, and an unrecognized name fails the build rather than quietly

@@ -60,6 +60,12 @@ const CLI_IMAGES = [
   "Dockerfile.session-worker.dev",
 ];
 
+/** Both installers ask the harness question, so both carry the two lists. */
+const INSTALLERS: [string, string][] = [
+  ["VPS", "deployment/vps/setup.sh"],
+  ["local", "deployment/local/setup.sh"],
+];
+
 describe("installer script ↔ catalogue", () => {
   it("KNOWN_HARNESSES lists exactly the catalogue's harnesses", () => {
     const match = /^KNOWN_HARNESSES="([^"]*)"/m.exec(scriptSource());
@@ -68,14 +74,14 @@ describe("installer script ↔ catalogue", () => {
     expect(declared).toEqual(HARNESSES.map((h) => h.id).slice().sort());
   });
 
-  it("the VPS installer offers exactly the catalogue's harnesses", () => {
+  it.each(INSTALLERS)("the %s installer offers exactly the catalogue's harnesses", (_name, file) => {
     // A third list of harness ids (the interactive prompt validates the answer
     // before persisting it, so it cannot ask the catalogue at runtime). Without
     // this assertion a new harness would install correctly and still be
     // unofferable — `setup.sh` would reject the operator's answer as invalid.
-    const setup = fs.readFileSync(path.join(REPO_ROOT, "deployment/vps/setup.sh"), "utf8");
+    const setup = fs.readFileSync(path.join(REPO_ROOT, file), "utf8");
     const match = /^HARNESS_ROWS=\(\n([\s\S]*?)^\)/m.exec(setup);
-    expect(match, "HARNESS_ROWS not found in deployment/vps/setup.sh").toBeTruthy();
+    expect(match, `HARNESS_ROWS not found in ${file}`).toBeTruthy();
     const offered = [...(match?.[1] ?? "").matchAll(/^\s*"([a-z]+)\|/gm)]
       .map((m) => m[1])
       .sort();
@@ -94,14 +100,14 @@ describe("installer script ↔ catalogue", () => {
     expect(defaultHarnesses().length).toBeGreaterThan(0);
   });
 
-  it("the VPS installer preselects exactly the approved default set", () => {
-    // Two copies exist because setup.sh asks its question before the repo is
-    // cloned, so it cannot read install-agent-clis.sh. They must agree, or an
-    // operator who accepts the prompt's defaults gets a different install from
-    // one who never sees the prompt.
-    const setup = fs.readFileSync(path.join(REPO_ROOT, "deployment/vps/setup.sh"), "utf8");
+  it.each(INSTALLERS)("the %s installer preselects exactly the approved default set", (_name, file) => {
+    // Three copies exist because each setup.sh describes and asks its question
+    // while it is a string piped from curl, so neither can read
+    // install-agent-clis.sh. They must agree, or an operator who accepts the
+    // prompt's defaults gets a different install from one who never sees it.
+    const setup = fs.readFileSync(path.join(REPO_ROOT, file), "utf8");
     const match = /^HARNESS_DEFAULT="([^"]*)"/m.exec(setup);
-    expect(match, "HARNESS_DEFAULT not found in deployment/vps/setup.sh").toBeTruthy();
+    expect(match, `HARNESS_DEFAULT not found in ${file}`).toBeTruthy();
     const preselected = (match?.[1] ?? "").split(",").filter(Boolean).sort();
     expect(preselected).toEqual(defaultHarnesses().slice().sort());
   });
