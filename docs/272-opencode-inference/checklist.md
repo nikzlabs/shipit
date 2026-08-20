@@ -121,27 +121,23 @@ Zen authenticates and then answers `AI_APICallError: Insufficient balance`.
       checking against the other harnesses before deciding where the text is
       being dropped
 
-## Ox Alpha — req 8 (2026-08-21)
+## Ox Alpha — req 8 (2026-08-20)
 
 - [x] `x-preview-f-free` on Zen's `key` mode, `O_CC` only, 1M context, every
       rate $0 — id, style, efforts and cost each measured live against
       `/zen/v1/chat/completions`, with a bogus id as the negative control
-- [x] `reasoningEfforts: ["max", "high", "low"]` — `medium` is in OpenCode's
-      harness vocabulary and fails the request outright, so without the field
-      the picker renders a level that cannot start a turn
-- [x] Family `ox`, named in `UNDISCLOSED_LINEAGE`, and `selectReviewer`
-      degrading `tierBasis` to `harness-only` on either side — a stealth
-      identity is present and undecidable at once, which the existing check
-      (implementer identity ABSENT) does not catch
-- [x] Keyed by the wire id. `ox-alpha` plus an alias was tried and asserts more
-      than the sources do — that a model leaving stealth under a new id is
-      still this one
-- [x] The per-million price floor exempts an all-zero row only when it is also
-      named in the test's `FREE_ROWS`, so a zeroed row nobody vouched for still
-      fails
-- [x] The per-model effort invariant is scoped to harnesses that can actually
-      carry the row, not every harness that joins it by style (grok sees Zen's
-      chat-completions rows and can carry none of them)
+- [x] `reasoningEfforts: ["max", "high", "low"]` — the row's `medium` is a live
+      refusal, not an omission
+- [x] Family `ox`, declared in `UNDISCLOSED_LINEAGE` — see plan.md for why
+- [x] `selectReviewer` degrades `tierBasis` to `harness-only` when either
+      side's lineage is undisclosed
+- [x] The harness-only tie-break gives an undisclosed candidate no credit for
+      "provably differs", with a test that fails without the clause
+- [x] Canonical key = the wire id, no alias
+- [x] `FREE_ROWS` in `catalogue.test.ts`, checked both ways: an all-zero row
+      must be declared, and a declaration must still name an all-zero row
+- [x] The per-model effort invariant is scoped to the harnesses that can carry
+      a row, not every harness that joins it by style
 
 ## One key, no choice (req 7) — the follow-up this PR was scoped out of
 

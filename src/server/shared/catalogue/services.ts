@@ -249,7 +249,7 @@ const OPENCODE_ZEN_PRICES = {
   // Ox Alpha, free while it is in stealth. Every rate is 0 because the vendor
   // charges nothing — the same "real answer" `cacheWrite: 0` already means, and
   // the reason the missing-value sentinel is negative rather than zero. ✅ live
-  // 2026-08-21: a real completion on this id answers `"cost": "0"` in the
+  // 2026-08-20: a real completion on this id answers `"cost": "0"` in the
   // response body, which is the same field the harness reports spend from
   // (docs/272 §5), so ShipIt's own accounting agrees with the published table.
   //
@@ -1023,11 +1023,13 @@ export const SERVICES = [
         //     rows of this mode (2026-08-17 receipt) and left unauthored — each
         //     duplicates a paid row in a rate-limited form, and none is a
         //     frontier coding model, which is the subset rule this list follows.
-        //     **Ox Alpha is here on req 8** (2026-08-21) — the human named it,
+        //     **Ox Alpha is here on req 8** (2026-08-20) — the human named it,
         //     which is a different warrant from the subset rule and not a
         //     narrowing of it. It would fail that rule: the rule keeps the set
         //     to models overlapping ShipIt's existing FAMILIES, and a stealth
-        //     model overlaps none by construction. Two things are true of it
+        //     model can be shown to overlap none of them — unknown rather than
+        //     absent, since it may well BE a lineage listed here. Two things
+        //     are true of it
         //     that are not true of the other six, and neither is why it is
         //     here: it duplicates no paid row (nothing else on Zen serves it),
         //     and models.dev describes it as a "stealth reasoning model for
@@ -1051,7 +1053,7 @@ export const SERVICES = [
           // own family, which `model-identity.ts` pairs with an explicit
           // "undisclosed" marker so the reviewer ranking stops short of
           // claiming a lineage difference it cannot establish. ✅ live
-          // 2026-08-21, all four facts on this row measured rather than read:
+          // 2026-08-20, all four facts on this row measured rather than read:
           //
           //  - **Served here, under this id.** A completion on
           //    `/zen/v1/chat/completions` returns `model: "x-preview-f-free"`;

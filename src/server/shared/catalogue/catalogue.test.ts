@@ -99,7 +99,7 @@ function everyRow(): { service: ServiceDef; mode: BillingModeDef; model: ModelDe
  * rate, so it cannot be told from an accident by inspection; naming the row here
  * is what makes it a stated fact.
  *
- * `opencode/key/x-preview-f-free` — Ox Alpha, ✅ live 2026-08-21: a completion
+ * `opencode/key/x-preview-f-free` — Ox Alpha, ✅ live 2026-08-20: a completion
  * on it answers `"cost": "0"`, and the vendor's own table prices every column
  * Free. Promotional ("free … for a limited time"), so this entry leaves when the
  * rates do.
@@ -153,6 +153,25 @@ describe("no shipped row still carries a sentinel", () => {
       } else {
         expect(model.price.input, where).toBeGreaterThan(0.001);
       }
+    }
+  });
+
+  // The other direction, and the one the list would otherwise lose quietly.
+  // Free is PROMOTIONAL here, so the expected end of this entry is that Zen
+  // starts charging — at which point the row above simply passes the ordinary
+  // bounds and nothing would ever mention the stale declaration again. A
+  // declaration that no longer describes a free row is a claim about the vendor
+  // that has gone out of date, so it fails until someone removes it.
+  it("names no free row that has stopped being free, or stopped existing", () => {
+    const rows = new Map(everyRow().map((r) => [`${r.service.id}/${r.mode.kind}/${r.model.id}`, r.model]));
+    for (const where of FREE_ROWS) {
+      const model = rows.get(where);
+      expect(model, `${where} is declared free but is not in the catalogue`).toBeDefined();
+      if (!model) continue;
+      expect(
+        [model.price.input, model.price.output, model.price.cacheRead, model.price.cacheWrite],
+        `${where} is declared free but carries a rate`,
+      ).toEqual([0, 0, 0, 0]);
       expect(model.price.input, where).toBeLessThan(1000);
       expect(model.price.output, where).toBeGreaterThanOrEqual(model.price.input);
       expect(model.price.cacheRead, where).toBeLessThanOrEqual(model.price.input);
@@ -1228,7 +1247,7 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
   it("offers Ox Alpha only the three reasoning levels it accepts", () => {
     // The narrowing on this row is not cosmetic, which is why it is pinned
     // separately from the grok rows that share the mechanism. Measured live
-    // 2026-08-21: `low`, `high` and `max` each returned a completion, while
+    // 2026-08-20: `low`, `high` and `max` each returned a completion, while
     // `medium` — a level OpenCode's harness vocabulary offers, so the DEFAULT
     // for a row that names nothing — failed the request outright with `[1210]
     // This model always engages in thinking and cannot be disabled`. Drop

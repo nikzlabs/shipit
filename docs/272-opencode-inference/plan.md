@@ -215,21 +215,22 @@ excludes, and `nativeService` staying deferred. Key files:
       stay unauthored: each duplicates a paid row in rate-limited form, and
       none is a frontier coding model, which is the subset rule the list
       follows.
-    - **Ox Alpha, added 2026-08-21** (`x-preview-f-free`, `O_CC`, 1M context,
+    - **Ox Alpha, added 2026-08-20** (`x-preview-f-free`, `O_CC`, 1M context,
       $0 on every rate) — the one free row authored, and on **req 8** rather
       than on the sentence above: it does not satisfy that rule, because a
-      stealth model overlaps none of ShipIt's existing families by
-      construction. Free here is promotional ("for a limited time" ✅ vendor
-      docs), so a priced Ox Alpha is an edit to `OPENCODE_ZEN_PRICES` and not a
-      new model. What it forced elsewhere is in the checklist below; the design
-      consequence worth stating here is that a **stealth model is an identity
-      ShipIt has and still cannot decide on** — present, with a real `family`
-      value, and nothing disclosed behind it. `UNDISCLOSED_LINEAGE`
-      (`catalogue/model-identity.ts`) is where that is said, and
-      `selectReviewer` reads it to degrade `tierBasis` to `harness-only`. The
-      reviewer CHOICE is deliberately unchanged — `sameModelFamily` still
-      decides it — so this narrows what a tier claims, never which reviewer
-      runs.
+      stealth model cannot be shown to overlap any existing family — unknown
+      rather than absent. Free here is promotional ("for a limited time" ✅
+      vendor docs), so a priced Ox Alpha is an edit to `OPENCODE_ZEN_PRICES`
+      and not a new model. The design consequence worth stating here is that a
+      **stealth model is an identity ShipIt has and still cannot decide on** —
+      present, with a real `family` value, and nothing disclosed behind it. The
+      two guards it needed were both places this tree already demanded proof
+      and got a bare `!== undefined`: the `tierBasis` a selection reports, and
+      the harness-only tie-break's "provable difference". Whether the TIER
+      itself should also become conservative was raised and declined, with the
+      reasoning in `UNDISCLOSED_LINEAGE` — it would rank a stealth model below
+      one ShipIt cannot identify at all, and that is a change to docs/261's
+      ranking rather than to this row.
   - `{ kind: "sub", quota: <new "opencode-go-usage"> }` — OpenCode Go, the
     GLM-coding-plan shape (sub-via-string, same key). Endpoints as above with
     `/zen/go`. Quota: **decided (req 6)** — a new `QuotaIntegrationId`

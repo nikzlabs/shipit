@@ -356,10 +356,17 @@ export function selectReviewer(
       { harnessId: implementer.harnessId, identity: implementerIdentity },
       { harnessId: resolved.target.harnessId, identity: candidateIdentity },
     );
-    // A PROVABLE difference only: an unidentifiable candidate gets no credit.
+    // A PROVABLE difference only: an unidentifiable candidate gets no credit —
+    // and neither does one whose family is real but stands for a lineage the
+    // vendor never disclosed ({@link UNDISCLOSED_LINEAGE}). The second clause
+    // is the first one's blind spot rather than a new rule: a stealth candidate
+    // HAS an identity, so it satisfied `!== undefined` and collected credit for
+    // a difference nobody established, in the one place this file already says
+    // it wants proof.
     const avoidsLikelyFamily =
       likelyFamily !== undefined
       && candidateIdentity !== undefined
+      && !lineageIsUndisclosed(candidateIdentity)
       && candidateIdentity.family !== likelyFamily;
     if (beatsIncumbentReviewer({ tier, avoidsLikelyFamily }, best)) {
       best = { target: resolved.target, tier, avoidsLikelyFamily, identity: candidateIdentity };

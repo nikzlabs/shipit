@@ -97,12 +97,29 @@ export const MODEL_FAMILY_IDS = [
  * model is the one identity that is *present* and still undecidable, and it
  * would sail past a check written for identities that are *absent*.
  *
+ * **Why the TIER is deliberately left alone**, which review has now asked twice.
+ * The objection is real on its face: an undisclosed candidate can outrank a
+ * candidate whose different family IS established, so ShipIt may prefer the
+ * unproven second opinion. But `reviewer-model.ts` already answers this for the
+ * identical epistemic state — an identity it cannot resolve at all, where
+ * `sameCanonicalModel` and `sameModelFamily` both report `false` and the pair
+ * lands on the same top rung, documented as failing "toward *using* a reviewer
+ * rather than refusing one". A stealth model is that state with a row attached.
+ * Ranking it below a model ShipIt cannot identify at all would mean knowing more
+ * about a model made it a worse reviewer, and changing BOTH is a change to
+ * docs/261's ranking, not to this row. So the claim degrades and the tier does
+ * not.
+ *
  * Note the residual: two undisclosed models would compare as one family and
  * rank as closer than they might be. That is the conservative direction — it
  * refuses to claim independence rather than inventing it — and there is one
  * such model today.
+ *
+ * Typed by {@link ModelFamily} and not by `string`, so a family named here that
+ * the catalogue does not declare is a compile error rather than a safeguard that
+ * silently matches nothing.
  */
-export const UNDISCLOSED_LINEAGE: ReadonlySet<string> = new Set<string>(["ox"]);
+export const UNDISCLOSED_LINEAGE: ReadonlySet<ModelFamily> = new Set<ModelFamily>(["ox"]);
 
 /** True when this identity's family stands for an undisclosed lineage. */
 export function lineageIsUndisclosed(identity: ModelIdentity | undefined): boolean {
@@ -204,7 +221,7 @@ export const MODEL_IDENTITIES = {
   kimiK3: identity("kimi-k3", "kimi"),
   qwen38max: identity("qwen3.8-max", "qwen"),
 
-  // OpenCode Zen's stealth model, served ONLY there (2026-08-21), and keyed by
+  // OpenCode Zen's stealth model, served ONLY there (2026-08-20), and keyed by
   // its wire id rather than by the vendor's product name "Ox Alpha Free".
   //
   // The readable `ox-alpha` was tried first and is wrong here, for the reason
