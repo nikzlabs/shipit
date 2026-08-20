@@ -60,6 +60,15 @@ export const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   // where the next container never sees it. Declaring the file here is what puts
   // grok on the same per-turn sync-in / publish-back path Claude and Codex use.
   //
+  // planning#448 — declaring the file is not enough on its own. The session
+  // adapter's throwaway GROK_HOME *symlinks* auth.json at this path, and the
+  // CLI's refresh is an atomic rename onto $GROK_HOME/auth.json, which replaces
+  // the symlink with a regular file. The rotation then lives only in the
+  // throwaway root, this path never moves, and publish-back is a no-op. The
+  // adapter copies a replaced file back onto this path (freshness-guarded)
+  // before deleting the throwaway home, which is what makes the declaration
+  // actually observe a grok rotation.
+  //
   // Only `auth.json` — NOT the rest of `.grok`, which holds config.toml,
   // sessions and logs the CLI writes in place and must never be clobbered.
   grok: [".grok/auth.json"],

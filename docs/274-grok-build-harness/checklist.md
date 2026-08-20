@@ -296,12 +296,17 @@ the expansion of every line, with file pointers and gotchas, is in
       credentials scrubbed` with `XAI_API_KEY` present in the environment; and
       the CLI's own session store records `reasoning_effort: "xhigh"` for the
       turn.
-- [ ] **Open, and deliberately not built here**: whether grok needs an
-      orchestrator-owned proactive refresher (the docs/153 / docs/154 shape).
-      The token lives six hours, so whether the CLI's refresh ROTATES the
-      refresh token — the property that makes an N-session stampede destructive
-      — cannot be observed without waiting for an expiry. `grok models` is the
-      obvious tier-1 probe, mirroring `codex login status`.
+- [x] **Settled 2026-08-20 (planning#448): grok does NOT need an
+      orchestrator-owned proactive refresher.** File-level rotation is real
+      (the CLI replaces `refresh_token` on expiry), but the old refresh token
+      is **not** server-revoked — a second session reused the pre-rotation
+      token ~4 min later and refreshed successfully. The stampede docs/153
+      centralizes refresh to prevent therefore does not apply. What WAS
+      broken is that the CLI's refresh rename replaces the spawn-home
+      `auth.json` *symlink*, so the existing sync-in / publish-back path
+      never saw the rotation; the adapter now copies a replaced file back
+      onto the shared root (freshness-guarded) so that path can. Evidence
+      and the decision in plan.md, "No orchestrator-side refresher".
 - [ ] **Open, waiting on a live capture** (planning#453): the verbatim
       SuperGrok *subscription* exhaustion string on the headless `-p` wire,
       and which channel it arrives on. Fill

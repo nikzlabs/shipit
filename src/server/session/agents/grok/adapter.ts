@@ -37,6 +37,15 @@
  *    one. Verified live: MCP servers connect, session state writes through the
  *    link, and `-r` resumes a conversation started under a *different*
  *    throwaway root.
+ *
+ *    **`auth.json` is not safe as a symlink alone** (planning#448). The CLI
+ *    refreshes by atomic-rename onto `$GROK_HOME/auth.json`, which *replaces*
+ *    the symlink with a regular file. The live token then lives only in the
+ *    throwaway root — the session credentials copy the orchestrator watches
+ *    never moves, so publish-back is a no-op and `rmSync` at turn end would
+ *    delete the rotation. `publishSpawnAuthBack` copies a replaced file back
+ *    onto the shared root (freshness-guarded) so the existing token-sync path
+ *    can see it.
  */
 
 import { EventEmitter } from "node:events";
@@ -171,6 +180,56 @@ const COMPAT_TOGGLES: Record<string, string> = {
  */
 const RESULT_EXIT_GRACE_MS = 5_000;
 
+/**
+ * How often to stat `$GROK_HOME/auth.json` for a CLI rotation that replaced
+ * the symlink (planning#448). Bounds the window the mid-turn publisher
+ * (docs/153) cannot see to roughly this plus its own poll. Cleanup always
+ * publishes once more, so a missed poll cannot strand the token.
+ */
+const SPAWN_AUTH_WATCH_MS = 1_000;
+
+/**
+ * Best-effort `expires_at` from a grok `auth.json`, for copy-back ordering
+ * only.
+ *
+ * The orchestrator's `readXaiTokenFreshnessFile` is the reader that guards
+ * publish-back; this one exists so the session adapter does not import the
+ * orchestrator package to answer a single question — "is the throwaway copy
+ * newer than the shared root?". Both walk the same scope-keyed `expires_at`
+ * ISO string the live file actually writes. A parse failure here fails
+ * closed (do not overwrite a dest we cannot prove is older).
+ */
+function grokAuthExpiryMs(file: string): number | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    for (const rec of Object.values(parsed as Record<string, unknown>)) {
+      if (!rec || typeof rec !== "object" || Array.isArray(rec)) continue;
+      const raw = (rec as Record<string, unknown>).expires_at;
+      if (typeof raw !== "string" || raw.length === 0) continue;
+      const t = Date.parse(raw);
+      if (Number.isFinite(t) && t > 0) return t;
+    }
+  } catch {
+    // missing / unreadable / not JSON
+  }
+  return null;
+}
+
+/** Copy `src` onto `dst` via temp + rename so a concurrent reader never sees a partial write. */
+function atomicCopyFile(src: string, dst: string): void {
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  const tmp = `${dst}.tmp-${process.pid}-${Date.now()}`;
+  fs.copyFileSync(src, tmp);
+  fs.chmodSync(tmp, 0o600);
+  try {
+    fs.renameSync(tmp, dst);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 export class GrokAdapter
   extends EventEmitter<AgentProcessEvents>
   implements AgentProcess
@@ -209,6 +268,14 @@ export class GrokAdapter
   private systemPromptPath: string | null = null;
   /** This turn's throwaway config root, removed wholesale at turn end. */
   private spawnHome: string | null = null;
+  /**
+   * The shared-root `auth.json` this turn linked (and must copy a CLI rotation
+   * back onto). Null in key mode and on the self-contained fallback, where
+   * there is no durable file to publish to.
+   */
+  private spawnAuthDest: string | null = null;
+  /** Stat-poller that copies a CLI-replaced `auth.json` back mid-turn. */
+  private spawnAuthWatch: { path: string; listener: () => void } | null = null;
   /**
    * Whether this turn's config root reaches a real `auth.json` — i.e. whether a
    * subscription login is what authenticates it.
@@ -511,9 +578,11 @@ export class GrokAdapter
    * It holds this turn's `config.toml` — the only way to deliver MCP servers —
    * and symlinks the two things that must OUTLIVE the turn back to the real
    * root: `sessions/`, without which `-r` could not resume, and `auth.json`
-   * when one exists (key mode has none; subscription mode will, planning#435).
-   * Everything else the CLI writes there (logs, caches, its bundled docs) is
-   * genuinely per-run and goes away with the directory.
+   * when one exists (key mode has none). The `auth.json` link is the starting
+   * state, not the finishing one: the CLI's refresh rename replaces it, and
+   * {@link publishSpawnAuthBack} is what makes the rotation durable
+   * (planning#448). Everything else the CLI writes there (logs, caches, its
+   * bundled docs) is genuinely per-run and goes away with the directory.
    *
    * **It never returns a root it has just proven unusable** (planning#444).
    *
@@ -545,6 +614,8 @@ export class GrokAdapter
    */
   private makeSpawnHome(realRoot: string): string | null {
     this.spawnHomeHasAuth = false;
+    this.unwatchSpawnAuth();
+    this.spawnAuthDest = null;
     let spawnHome: string;
     try {
       spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-home-"));
@@ -569,6 +640,8 @@ export class GrokAdapter
       if (fs.existsSync(auth)) {
         fs.symlinkSync(auth, path.join(spawnHome, "auth.json"));
         this.spawnHomeHasAuth = true;
+        this.spawnAuthDest = auth;
+        this.watchSpawnAuth(path.join(spawnHome, "auth.json"));
       }
     } catch (err) {
       console.warn(
@@ -890,6 +963,84 @@ export class GrokAdapter
     this.watchdog = null;
   }
 
+  /**
+   * Stat-poll `$GROK_HOME/auth.json` so a CLI rotation that replaced the
+   * symlink is copied back onto the shared root *during* the turn, not only
+   * at cleanup. `fs.watch` (inotify) would follow the original symlink's
+   * inode and miss the rename; path-based `watchFile` sees both.
+   */
+  private watchSpawnAuth(spawnAuth: string): void {
+    this.unwatchSpawnAuth();
+    const listener = (): void => {
+      this.publishSpawnAuthBack();
+    };
+    this.spawnAuthWatch = { path: spawnAuth, listener };
+    fs.watchFile(spawnAuth, { interval: SPAWN_AUTH_WATCH_MS, persistent: false }, listener);
+  }
+
+  private unwatchSpawnAuth(): void {
+    const watch = this.spawnAuthWatch;
+    if (!watch) return;
+    this.spawnAuthWatch = null;
+    try {
+      fs.unwatchFile(watch.path, watch.listener);
+    } catch {
+      // Best-effort — an unwatch failure leaves at most one stat poller.
+    }
+  }
+
+  /**
+   * If the CLI replaced `$GROK_HOME/auth.json` (the symlink is now a regular
+   * file) with a strictly fresher token, copy it onto the shared root the
+   * orchestrator watches. No-op when the link is intact (the CLI wrote
+   * through it, so the dest is already current) or when this turn has no
+   * durable auth file (key mode / self-contained fallback).
+   *
+   * Freshness-guarded so a concurrent spawn that already published a newer
+   * rotation cannot be clobbered by this one's stale rewrite (planning#448).
+   */
+  private publishSpawnAuthBack(): void {
+    const spawnHome = this.spawnHome;
+    const dest = this.spawnAuthDest;
+    if (!spawnHome || !dest) return;
+    const spawnAuth = path.join(spawnHome, "auth.json");
+    try {
+      const st = fs.lstatSync(spawnAuth);
+      if (st.isSymbolicLink() || !st.isFile()) return;
+    } catch {
+      return; // gone already (cleanup raced the watcher)
+    }
+    const spawnAt = grokAuthExpiryMs(spawnAuth);
+    if (spawnAt === null) {
+      // Cannot prove it's newer — don't risk burying a live dest. Same
+      // direction as the orchestrator's unorderable-spawn refusal.
+      console.warn(
+        "[grok] CLI replaced GROK_HOME/auth.json but the copy is unreadable as a token; "
+          + "not publishing over the shared root",
+      );
+      return;
+    }
+    if (fs.existsSync(dest)) {
+      const destAt = grokAuthExpiryMs(dest);
+      if (destAt === null) {
+        console.warn(
+          "[grok] shared-root auth.json is unreadable as a token; refusing to overwrite it "
+            + "with the throwaway copy",
+        );
+        return;
+      }
+      if (spawnAt <= destAt) return;
+    }
+    try {
+      atomicCopyFile(spawnAuth, dest);
+      console.log("[grok] published CLI-rotated auth.json from throwaway GROK_HOME back to the shared root");
+    } catch (err) {
+      console.warn(
+        `[grok] failed to publish rotated auth.json back to ${dest}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   private cleanupTurnFiles(): void {
     for (const p of [this.promptPath, this.systemPromptPath]) {
       if (p) {
@@ -902,9 +1053,14 @@ export class GrokAdapter
     }
     this.promptPath = null;
     this.systemPromptPath = null;
+    // Publish BEFORE deleting the throwaway root: if the CLI replaced the
+    // auth.json symlink, the live token lives only there (planning#448).
+    this.unwatchSpawnAuth();
+    this.publishSpawnAuthBack();
+    this.spawnAuthDest = null;
     // The whole throwaway root goes, config and links together. `rmSync` does
-    // not follow symlinks, so the real `sessions/` and `auth.json` are
-    // untouched — which is the property the whole arrangement rests on.
+    // not follow remaining symlinks, so the real `sessions/` (and an
+    // unpublished `auth.json` we still held as a link) are untouched.
     if (this.spawnHome) {
       try {
         fs.rmSync(this.spawnHome, { recursive: true, force: true });
