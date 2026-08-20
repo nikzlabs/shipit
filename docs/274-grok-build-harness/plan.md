@@ -774,3 +774,118 @@ on it is refused by name — the explicit path now mirrors the role rule req 8
 established. If subscription mode turns out to have real levels (planning#435),
 `--effort` becomes part of a complete Grok target with nothing further to
 change.
+
+## Exhaustion is the only spent-plan signal (req 16)
+
+The `sub` mode declares `quota: null` — an explicit arm of `BillingModeDef`,
+not a fourth `QuotaIntegrationId` nothing implements. xAI publishes no
+per-account usage API (every candidate route 404s; probed with planning#435).
+The usage pill is therefore empty on purpose: an honest absence, not an
+invented indicator. For Claude and Codex the exhaustion classifier is a
+*second* signal beside a meter. For a SuperGrok subscription it is the
+**only** signal that the plan is spent.
+
+### Two channels, and they do not share a matcher (planning#453)
+
+Answered from the code; no live capture required.
+
+A spent-plan notice can arrive two ways, and the `agent_result` detection
+sites (`agent-listeners.ts` req-7 stamp, `turn-executor.ts` req-14 retry,
+`services/sub-agent.ts` consult fallback) ask **exactly one** of them:
+
+| Channel | When | Matcher | How Grok can populate it |
+|---|---|---|---|
+| **Turn error** | `agent_result.error` is set | `detectHardExhaustion` → unanchored `EXHAUSTION_PATTERNS` | A `result` event with `is_error: true` (or a non-success `subtype`). The adapter copies `raw.result` onto `error`. Generic API language (`quota exceeded`, `out of credits`) is in this list. |
+| **Conversation text** | there is **no** error | `detectHardExhaustionInTurnText` → anchored `TURN_TEXT_NOTICE_PATTERNS`, ≤ `MAX_LIMIT_NOTICE_CHARS` (240) | The last `agent_assistant` text (`runner.turnSummary`). The error is checked *instead of*, never before-falling-through-to, the text. |
+
+A third site, independent of `agent_result`: `willRetryOnQuotaError`
+(`turn-executor.ts`) runs the unanchored error matcher on the adapter's
+`error` **event** message. That is spawn/process failure, not a CLI result.
+Grok's fatal stream `{"type":"error","message":…}` currently does **not**
+take this path — it is logged, then the close handler synthesizes an
+`agent_result` whose wording is `Grok exited with code N…`. Forwarding
+`message_text` could go via an adapter `error` emit *or* `agent_result.error`.
+
+On an errored turn the adapter copies `raw.result` onto `error` — the same
+field that carries the model's summary on success (identical to Claude). A
+`subtype: "error_max_turns"` turn whose trailing text mentions "out of
+credits" would therefore hit the unanchored error-channel patterns.
+Pre-existing, not Grok-specific, not repaired here.
+
+The text matcher is the PROVIDER_NOTICE-style one: it must be the *start* of
+a short message (`^[^a-z0-9]*`, so a bullet or emoji may precede it but no
+word may). That is what tells "You've hit your session limit · resets 5:10pm
+(UTC)" apart from "The Vercel deploy failed because your account is out of
+credits". Generic credit/quota phrasings are **dropped** from this channel
+on purpose — they are how an API reports a spent balance, never something a
+CLI writes into the chat.
+
+The optional provider prefix on the first text pattern is Claude's and
+Codex's own notice grammar (`claude` / `claude ai` / `claude code` /
+`codex`). **`grok` is not in it.** Bare `usage limit reached` still matches
+both channels (the prefix is optional; the error pattern is a substring).
+`Grok usage limit reached` as conversation text would miss the text
+channel today — adding the word is how an ordinary short summary that
+happens to start with the harness name would bench a working subscription.
+
+### What the grok binary contains, and what that is not
+
+Read out of the installed `@xai-official/grok-linux-x64` 1.0.1 binary
+(`strings`, 2026-08-20). Neighbouring literals classify them; none of this
+is a captured headless emission.
+
+**TUI pager** (`crates/codegen/xai-grok-pager/src/app/dispatch/status.rs`) —
+not proven to appear on the `grok -p` wire:
+
+| string | class | matched today? |
+|---|---|---|
+| `You hit your free usage limit.` | free tier (`free-usage-upsell`, next to "Unlock all features with SuperGrok.") | no |
+| `You hit your weekly limit.` | plausible SuperGrok copy (next to "Upgrade to a higher tier for more usage") | no — `you'?ve` requires the contraction; `weekly usage limit` requires the word `usage` |
+| `You've hit the credit limit for your plan.` | credits | no |
+| `You've hit your spending cap.` | pay-as-you-go | no |
+| `You can continue by increasing your spending limit.` / `…enabling pay-as-you-go usage.` / `…purchasing more credits.` | CTAs, not the wall itself | no |
+
+**Agent shell** (`crates/codegen/xai-grok-shell/src/session/compaction.rs`) —
+looks like API-error matching for suppressing auto-compaction; more likely
+to appear as a turn error if the API returns these phrases:
+
+| string | class | matched today? |
+|---|---|---|
+| `usage limit reached` | already in `EXHAUSTION_PATTERNS` | yes, both channels when it is the whole short message |
+| `out of credits` | already in `EXHAUSTION_PATTERNS` | error channel only — the text channel drops generic credit language |
+| `usage balance exhausted` | credit balance | no |
+| `out of credits or over your spending limit. Add credits and retry.` | credits / spending cap | error channel, via `out of credits` |
+
+Phase 0 captures (`src/server/session/agents/grok/__fixtures__/tool-tour-*.ndjson`)
+are successful tool-tours. No fixture under `docs/274-*`, and no prior
+session transcript, carries an xAI limit notice. This session did not hit
+one.
+
+### What was not changed, and why
+
+`EXHAUSTION_PATTERNS` / `TURN_TEXT_NOTICE_PATTERNS` were **not** widened.
+The list is deliberately narrow: a false positive benches a working
+subscription for 15 minutes (`UNKNOWN_RESET_LOCKOUT_MS`), and the
+error-channel docstring already records one production miss caused by
+widening too late rather than too early. Guessing that the TUI's `You hit
+your weekly limit.` is what headless emits — or that `usage balance
+exhausted` is a subscription rather than a credit balance — is how that
+risk gets realized.
+
+The one-assignment change that turns a future capture into a lock lives in
+`agent-rate-limits.test.ts` as `GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE`.
+Fill `{ channel: "error" | "text", text: "<verbatim>" }` from a real
+headless SuperGrok refusal, pasted byte-exact (the grok binary stores
+U+2019 in its contracted copy; `/you'?ve/i` does not match `you’ve`). The
+skipped test then fails until the matcher covers that exact string; the
+always-on negatives pin the free-tier and credit-balance copy that a
+loosening must still refuse. How to obtain the string is a human decision.
+
+### Related gap, not repaired here
+
+A fatal `{"type":"error","message":…}` event (the unauthenticated shape,
+verified) is logged and then dropped. The close handler synthesizes
+`Grok exited with code N before producing a result`, so neither matcher
+ever sees the provider's wording. Forwarding `message_text` onto
+`agent_result.error` would still need a captured string to match against;
+it is a separate change.

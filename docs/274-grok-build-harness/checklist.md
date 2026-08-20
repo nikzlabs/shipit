@@ -253,6 +253,12 @@ the expansion of every line, with file pointers and gotchas, is in
       declares `quota: null`, a new explicit arm of `BillingModeDef`, rather
       than a fourth `QuotaIntegrationId` nothing implements. `catalogue.test.ts`
       asserts such a mode reports nothing and offers no refresh.
+- [x] Exhaustion-pattern channel finding (planning#453) — which matcher
+      applies to a turn error vs. conversation text is answered from the code
+      and recorded in plan.md ("Exhaustion is the only spent-plan signal"). Patterns were **not**
+      widened: no SuperGrok headless capture exists. Test scaffolding in
+      `agent-rate-limits.test.ts` (`GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE`)
+      makes a future capture a one-assignment change.
 - [x] ServicesPanel device-code sign-in UX (req 11) — verified live: *Add a
       service → xAI* offers **Subscription · API key**, and choosing Subscription
       renders the challenge with URL, code and both models. The surface was
@@ -279,3 +285,10 @@ the expansion of every line, with file pointers and gotchas, is in
       refresh token — the property that makes an N-session stampede destructive
       — cannot be observed without waiting for an expiry. `grok models` is the
       obvious tier-1 probe, mirroring `codex login status`.
+- [ ] **Open, waiting on a live capture** (planning#453): the verbatim
+      SuperGrok *subscription* exhaustion string on the headless `-p` wire,
+      and which channel it arrives on. Fill
+      `GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE` in `agent-rate-limits.test.ts`
+      and widen the matcher against that exact text. Do not paste TUI copy
+      from `strings` on the grok binary. How to obtain the string (wait for
+      a natural hit vs. deliberately exhaust the plan) is a human decision.
