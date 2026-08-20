@@ -54,10 +54,12 @@ import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
+  acceptedInstallCommands,
   evaluateInstallGate,
   installWithheldNotice,
   recordAcceptedInstall,
   recordWithheldCommands,
+  sessionHasPlugin,
 } from "./agent-install-gate.js";
 import {
   dependencyGapNotice,
@@ -2045,9 +2047,41 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // That is the gate's ordinary behaviour arriving one event earlier, and the
     // remedy is unchanged (req 8 — ask the agent).
     if (!recordAcceptedInstall(this.sessionDir, commands)) {
-      // Not fatal — the install is authorized either way, and a session that
-      // already had a record keeps it. Worth a line because a session that had
-      // NONE stays anchored on a marker five paths delete.
+      // A failed write is survivable only while something ELSE still anchors the
+      // gate — an earlier record, or a marker the migration can read. Re-read
+      // rather than assume, because which of those is true decides whether
+      // proceeding is safe.
+      //
+      // Found by review, and it is the hole this whole change claims to close,
+      // surviving one layer down: `recordAcceptedInstall` is best-effort, so a
+      // first install whose write failed proceeded with NO durable
+      // authorization. If the attempt then resolved unverified — or failed after
+      // the worker whiteouted the marker — the session was left with neither
+      // source, and the next list a plugin wrote read as a first install and
+      // ran. Logging louder does not close that; not proceeding does.
+      //
+      // So the invariant is: **no unattended install runs in a session that
+      // needs a gate unless its authorization is durably recorded.** Refused as
+      // a failed install, so `dependsOnInstall` services latch with a cause
+      // rather than being released into a tree nothing vouches for. Same shape
+      // as `copyAcceptedInstall`'s throw, and for the same reason.
+      if (acceptedInstallCommands(this.sessionDir) === null && sessionHasPlugin(this.sessionDir)) {
+        console.error(
+          `[install:${this.sessionId}] refusing to install: this session has a plugin and its ` +
+          `accepted-install list could not be persisted, so nothing would anchor the gate afterwards`,
+        );
+        // Returned directly, WITHOUT `signalInstallComplete` — same as the
+        // withheld branches above and for the same reason: the completion
+        // promise is not armed until the concurrency guard below, so signalling
+        // here would either do nothing or resolve a CONCURRENT caller's promise
+        // with a failure that is not theirs.
+        return { ok: false };
+      }
+      // The survivable half. A plugin-free session's gate allows on its first
+      // line regardless, and a session that already had an anchor keeps it — in
+      // which case the PREVIOUS list stays in force, which withholds rather than
+      // allows. Still worth a line: it is how a session ends up depending on a
+      // marker five paths delete.
       console.error(
         `[install:${this.sessionId}] could not record the accepted install list; this ` +
         `session's gate still depends on its install marker`,

@@ -1210,6 +1210,12 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
         vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
         const install = runner.runInstall(["npm ci"]);
         await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+        // Asserted BEFORE the completion is signalled, and that ordering is the
+        // test. Checking only at the end would pass an implementation that
+        // records on an `unverified` completion instead of at the ALLOW — which
+        // is the very thing being replaced, and which leaves every path that
+        // never reaches a completion unrecorded.
+        expect(fs.existsSync(path.join(dir, ".install-accepted"))).toBe(true);
         // The resolution that carries no evidence about the tree.
         priv(runner).signalInstallComplete(true, { unverified: true });
         expect(await install).toMatchObject({ ok: true, unverified: true });
@@ -1234,6 +1240,94 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
         workspaceDir: workspace,
         requested: ["npm ci && node ./node_modules/tools/x.js"],
       })).toMatchObject({ withheld: true, accepted: ["npm ci"], afterDependencyReset: true });
+    });
+
+    /**
+     * Found by review, one layer under the fix above. `recordAcceptedInstall` is
+     * best-effort — it logs and returns `false` — so a first install whose write
+     * failed used to proceed with NO durable authorization. If it then resolved
+     * unverified, or failed after the worker whiteouted the marker, the session
+     * was left with neither source and the next list a plugin wrote read as a
+     * first install. Recording earlier does not help if the recording fails.
+     *
+     * The invariant: no unattended install runs in a session that NEEDS a gate
+     * unless its authorization is durably recorded.
+     *
+     * The worker here answers `{ skipped: true }`, which is a SUCCESS. That is
+     * the point: the fixture's default `workerUrl` refuses connections, so a
+     * test run against it would see `{ ok: false }` whether the refusal fired or
+     * the POST simply failed — passing for the wrong reason.
+     */
+    it("refuses a first install it cannot record, rather than running unanchored", async () => {
+      fs.rmSync(path.join(dir, ".install-accepted"), { force: true });
+      fs.rmSync(path.join(dir, "state", "shared", ".install-done"), { force: true });
+      fs.writeFileSync(
+        path.join(dir, "workspace", "shipit.yaml"),
+        "agent:\n  install:\n    - \"npm ci\"\nplugins:\n  use:\n    - plugin: probe\n      from: tools\n",
+      );
+      const server = http.createServer((req, res) => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(req.url === "/install" ? { skipped: true } : { running: false }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const addr = server.address();
+      if (typeof addr === "string" || !addr) throw new Error("no server address");
+      try {
+        const runner = runnerIn(dir);
+        runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+        vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+        vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const rename = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+          throw new Error("ENOSPC: no space left on device");
+        });
+        try {
+          expect(await runner.runInstall(["npm ci"])).toEqual({ ok: false });
+        } finally {
+          rename.mockRestore();
+        }
+      } finally {
+        server.close();
+      }
+      // Nothing anchors the gate — which is precisely why proceeding was
+      // refused, rather than something to repair afterwards.
+      expect(fs.existsSync(path.join(dir, ".install-accepted"))).toBe(false);
+    });
+
+    /**
+     * The other side of that condition, and the reason it is not simply "refuse
+     * on any failed write". A session with no plugin is allowed by the gate's
+     * first line whatever the record says, so a failed write costs it nothing
+     * and must not cost it its install. Without this, the refusal above could be
+     * implemented unconditionally and still look correct.
+     */
+    it("still installs when the record cannot be written but no plugin needs the gate", async () => {
+      fs.rmSync(path.join(dir, ".install-accepted"), { force: true });
+      fs.rmSync(path.join(dir, "state", "shared", ".install-done"), { force: true });
+      fs.rmSync(path.join(dir, "plugin-data"), { recursive: true, force: true });
+      fs.writeFileSync(path.join(dir, "workspace", "shipit.yaml"), "agent:\n  install:\n    - \"npm ci\"\n");
+      const server = http.createServer((req, res) => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(req.url === "/install" ? { skipped: true } : { running: false }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const addr = server.address();
+      if (typeof addr === "string" || !addr) throw new Error("no server address");
+      try {
+        const runner = runnerIn(dir);
+        runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+        vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+        vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const rename = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+          throw new Error("ENOSPC: no space left on device");
+        });
+        try {
+          expect(await runner.runInstall(["npm ci"])).toEqual({ ok: true });
+        } finally {
+          rename.mockRestore();
+        }
+      } finally {
+        server.close();
+      }
     });
 
     /**
@@ -1272,6 +1366,11 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
         vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
         const install = runner.runInstall(["npm ci"]);
         await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+        // Before the completion, for the same reason as the test above: the
+        // final file is identical whether it was written at the ALLOW or after a
+        // successful joined completion, so only the ordering distinguishes them.
+        const early = JSON.parse(fs.readFileSync(path.join(dir, ".install-accepted"), "utf8"));
+        expect(early.commands).toEqual(["npm ci"]);
         priv(runner).signalInstallComplete(true);
         expect(await install).toEqual({ ok: true });
         const record = JSON.parse(fs.readFileSync(path.join(dir, ".install-accepted"), "utf8"));

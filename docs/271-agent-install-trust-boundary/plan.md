@@ -499,6 +499,25 @@ skipped.
    which stops mattering once the record means "authorized". Guard:
    `container-session-runner.test.ts` → "records acceptance on a first install
    that completes with no evidence", written as the incident's own sequence.
+
+   **Recording earlier is not enough on its own, because the recording can
+   fail.** `recordAcceptedInstall` is best-effort — it logs and returns `false` —
+   so a first install whose write failed proceeded with no durable
+   authorization, and if it then resolved unverified (or failed after the worker
+   whiteouted the marker) the session was left with neither source and the next
+   plugin-written list read as a first install. Found by the review of the fix
+   itself. The invariant is therefore **no unattended install runs in a session
+   that needs a gate unless its authorization is durably recorded**: on a failed
+   write `runInstall` re-reads the anchor, and if there is none AND the session
+   is plugin-bearing it returns `{ ok: false }` so `dependsOnInstall` services
+   latch with a cause. Both halves of that condition are load-bearing and both
+   are guarded — a plugin-free session's failed write must NOT cost it its
+   install, since the gate's first line allows it regardless.
+
+   The refusal returns directly, without `signalInstallComplete`, for the same
+   reason the withheld branches above it do: the completion promise is not armed
+   until the concurrency guard, so signalling there would either do nothing or
+   resolve a *concurrent* caller's promise with a failure that is not theirs.
 6. **CLOSED (2026-08-20).** *A well-formed record that merely lacked
    `pluginBearing` was not fail-closed.* Same review. `readAcceptedInstall` fails
    closed on every *unparseable* record — bad JSON, a directory, `EACCES`, a
@@ -509,17 +528,48 @@ skipped.
    Now parsed as `!== false`: only an EXPLICIT `false` leaves a record ungated,
    so the two halves of the reader agree instead of contradicting each other.
 
-   **The migration cost this was originally deferred for turned out to be zero.**
-   The concern was that every record written before the flag existed would start
-   gating — but the acceptance record has never shipped (`git show
+   **The migration cost this was originally deferred for is nil for every
+   released session, and non-zero for pre-merge ones.** The record has never
+   reached `main` (`git show
    origin/main:src/server/orchestrator/agent-install-gate.ts` matches none of
-   `install-accepted`, `INSTALL_ACCEPTED`, `pluginBearing`), so no on-disk record
-   anywhere predates the field and there is nothing to migrate. The schema-version
-   alternative was not needed. Guarded in both directions —
-   `install-acceptance-gate.test.ts` gates a flagless record AND keeps allowing an
-   explicitly plugin-free one, so "fail closed" cannot be satisfied by gating
-   everything.
-7. **The route is closed for `agent.install` only.** The other two routes are
+   `install-accepted`, `INSTALL_ACCEPTED`, `pluginBearing`; the record-adding
+   commits are ancestors of no tag and of neither `main` nor `origin/main`), so
+   no released session can hold a record at all and the schema-version
+   alternative was not needed.
+
+   **The stronger claim — "no on-disk record anywhere predates the field" — was
+   wrong, and an earlier revision of this paragraph asserted it.** Commit
+   `94d199c0`, already pushed on this branch, wrote `{ commands, at }` with no
+   `pluginBearing`. A dogfood or preview instance that ran that revision against
+   a persistent session root, and is then upgraded, holds a flagless record — and
+   under `!== false` that session starts gating where it did not before. Fails
+   closed, costs a pre-merge environment one "ask the agent", and is named here
+   rather than smoothed over: the verification supported the narrow claim and the
+   broad one was assumed on top of it.
+
+   Guarded in both directions, and across every non-`false` shape rather than
+   just the absent one — `install-acceptance-gate.test.ts` gates a record whose
+   flag is absent, `null`, `"false"`, `0` or an object, AND keeps allowing an
+   explicitly plugin-free one, AND gates that same session once live plugin
+   evidence appears. So "fail closed" cannot be satisfied by gating everything,
+   and "default the missing one" cannot be satisfied by special-casing
+   `undefined`.
+7. **A plugin-free session whose record is damaged now gates, where before it
+   had no record to damage.** Found by the review of the remainder-5 fix, and it
+   is the cost of writing the record for *every* session rather than only for
+   ones that completed an install. Sequence: a session that never had a plugin
+   writes `{ commands: A, pluginBearing: false }` at its first ALLOW; the record
+   then becomes unreadable through a permission or ownership fault; it resolves
+   to `UNREADABLE`, whose flag is `true` and whose command list is empty; so
+   retrying A is withheld, and with no marker it comes back `{ ok: false,
+   withheld: true }`. A plugin-free session is then stuck behind a gate it has no
+   plugin to justify.
+
+   Needs a **second** storage fault to reach, and the alternative is worse: the
+   only way to avoid it is to make `UNREADABLE` allow, which reopens the
+   fail-open that a record's mere existence is evidence against. Accepted, and
+   named so it is not rediscovered as a surprise. **Owner: planning#400.**
+8. **The route is closed for `agent.install` only.** The other two routes are
    docs/266 (`.git`, shipped) and planning#386 (the compose file, closed). This
    design does not make `/project` safe to write in general, and docs/262 req 29
    still stands: what a plugin writes to the project is untrusted content the

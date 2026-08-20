@@ -451,27 +451,43 @@ describe("acceptance survives every way the marker can be destroyed", () => {
    * left that can gate it. Costs nothing to migrate: the record has never
    * shipped, so no on-disk record predates the field.
    */
-  it("gates a record that parses but has lost its plugin flag", () => {
-    const forkRoot = path.join(root, "sessions", "flagless");
-    const forkWorkspace = path.join(forkRoot, "workspace");
-    fs.mkdirSync(forkWorkspace, { recursive: true });
-    fs.writeFileSync(
-      path.join(forkWorkspace, "shipit.yaml"),
-      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
-    );
-    // Valid JSON with a valid `commands`, so it does NOT resolve to UNREADABLE.
-    fs.writeFileSync(
-      path.join(forkRoot, INSTALL_ACCEPTED_FILE),
-      JSON.stringify({ commands: ACCEPTED, at: "2026-08-20T00:00:00.000Z" }),
-    );
+  // Every non-`false` shape, not just the absent one. A parser that special-cases
+  // `undefined` and leaves `null`/`"false"`/`0`/`{}` reading as false passes a
+  // single absent-field test while still failing open on a partially corrupted
+  // record — which is the only way this state arises at all.
+  const NOT_FALSE: { name: string; value: unknown }[] = [
+    { name: "absent", value: undefined },
+    { name: "null", value: null },
+    { name: "the string \"false\"", value: "false" },
+    { name: "0", value: 0 },
+    { name: "an object", value: {} },
+  ];
 
-    expect(sessionHasPlugin(forkWorkspace)).toBe(false);
-    expect(readAcceptedInstall(forkWorkspace)).toMatchObject({ commands: ACCEPTED, pluginBearing: true });
-    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED })).toMatchObject({
-      withheld: true,
-      accepted: ACCEPTED,
+  for (const { name, value } of NOT_FALSE) {
+    it(`gates a record whose plugin flag is ${name}`, () => {
+      const otherRoot = path.join(root, "sessions", `flagless-${name.replace(/\W+/g, "-")}`);
+      const otherWorkspace = path.join(otherRoot, "workspace");
+      fs.mkdirSync(otherWorkspace, { recursive: true });
+      fs.writeFileSync(
+        path.join(otherWorkspace, "shipit.yaml"),
+        `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
+      );
+      // Valid JSON with a valid `commands`, so it does NOT resolve to UNREADABLE
+      // — this is the branch that parses successfully. `undefined` drops the key
+      // on the way through `JSON.stringify`, which is the absent case.
+      fs.writeFileSync(
+        path.join(otherRoot, INSTALL_ACCEPTED_FILE),
+        JSON.stringify({ commands: ACCEPTED, at: "2026-08-20T00:00:00.000Z", pluginBearing: value }),
+      );
+
+      expect(sessionHasPlugin(otherWorkspace)).toBe(false);
+      expect(readAcceptedInstall(otherWorkspace)).toMatchObject({ commands: ACCEPTED, pluginBearing: true });
+      expect(evaluateInstallGate({ workspaceDir: otherWorkspace, requested: CHANGED })).toMatchObject({
+        withheld: true,
+        accepted: ACCEPTED,
+      });
     });
-  });
+  }
 
   /**
    * The other direction, and the reason the field is not simply ignored: an
@@ -494,6 +510,17 @@ describe("acceptance survives every way the marker can be destroyed", () => {
 
     expect(readAcceptedInstall(otherWorkspace)).toMatchObject({ pluginBearing: false });
     expect(evaluateInstallGate({ workspaceDir: otherWorkspace, requested: CHANGED }).withheld).toBeFalsy();
+
+    // But an explicit `false` is the record's answer about the PAST, never a
+    // standing exemption: give the same session live plugin evidence and it
+    // gates. Without this, the allow above could be implemented as "return ALLOW
+    // for any explicitly plugin-free record" and still look right.
+    fs.mkdirSync(path.join(otherRoot, "plugin-data", "probe"), { recursive: true });
+    expect(sessionHasPlugin(otherWorkspace)).toBe(true);
+    expect(evaluateInstallGate({ workspaceDir: otherWorkspace, requested: CHANGED })).toMatchObject({
+      withheld: true,
+      accepted: ACCEPTED,
+    });
   });
 
   it("does not gate a fork whose parent never had a plugin", () => {
