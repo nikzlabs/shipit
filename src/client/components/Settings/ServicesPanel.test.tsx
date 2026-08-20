@@ -1845,6 +1845,83 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
   });
 
   /**
+   * **A reconnect that never started is not a reconnect that succeeded.**
+   *
+   * The provider runs one login at a time, so pressing *Reconnect* while another
+   * account is signing in makes the `POST …/login` a refusal. The row is
+   * untouched by that — still `ready`, because the old credential is still
+   * there — and the catch then set `reconnectLeftReady`, which is the other half
+   * of `signedIn`. So the dialog answered a refused request with the flow's
+   * SUCCESS screen: "Connected. Anthropic subscription is ready — its models are
+   * selectable now." over a *Done* button, with the refusal in small text
+   * underneath. Nothing on it offered another try.
+   *
+   * The old credential really is still usable, which is what makes the wrong
+   * screen plausible enough to ship. It is still the wrong one: the user asked
+   * to re-authenticate, that did not happen, and the way back has to be on
+   * screen.
+   */
+  it("reports a refused reconnect as failed, not as connected", async () => {
+    seedConnected();
+    // The provider is busy with the other account, so the login is refused.
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      const refused = (init?.method ?? "GET") === "POST" && url.endsWith("/login");
+      return Promise.resolve({
+        ok: !refused,
+        status: refused ? 409 : 200,
+        json: () => Promise.resolve(
+          refused ? { error: 'Claude is already signing in on "Personal". Finish or cancel that sign-in first.' } : { routes: [] },
+        ),
+      });
+    });
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    // The refusal is the outcome, and the way back is the flow's own retry.
+    expect(screen.getByTestId("add-service-signin-stalled")).toBeInTheDocument();
+    expect(screen.getByTestId("add-service-sign-in")).toHaveTextContent("Try again");
+    expect(screen.queryByTestId("add-service-signed-in")).toBeNull();
+    expect(screen.queryByTestId("add-service-done")).toBeNull();
+    // Said once, in the reason line the stalled panel is built around, rather
+    // than as an aside under a screen claiming the opposite.
+    expect(screen.getByTestId("add-service-error")).toHaveTextContent("already signing in");
+  });
+
+  /**
+   * The other half of the case above, and the one that must not regress while
+   * fixing it: a refused *start* changes nothing about the credential. It was
+   * connected before the press and it is connected after — the dialog reports a
+   * failed attempt, it does not revoke anything.
+   */
+  it("leaves the credential connected when the reconnect is refused", async () => {
+    seedConnected();
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      const refused = (init?.method ?? "GET") === "POST" && url.endsWith("/login");
+      return Promise.resolve({
+        ok: !refused,
+        status: refused ? 409 : 200,
+        json: () => Promise.resolve(refused ? { error: "Busy." } : { routes: [] }),
+      });
+    });
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+    await userEvent.click(screen.getByText("Cancel"));
+
+    const rows = screen.getAllByTestId(/^provider-account-row-acct_\d+$/);
+    expect(rows.map((r) => r.getAttribute("data-testid"))).toEqual([
+      "provider-account-row-acct_1",
+      "provider-account-row-acct_2",
+    ]);
+    expect(fetchCalls.filter((c) => c.method === "DELETE")).toEqual([]);
+  });
+
+  /**
    * The one thing that could go badly wrong. `AddServiceDialog` abandons the
    * attempt IT created; a connected account is not an attempt
    * (`isUnconnectedAttempt` is false once it has an `externalId`), so cancelling

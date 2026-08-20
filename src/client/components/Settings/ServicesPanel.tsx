@@ -1285,10 +1285,14 @@ function AddServiceDialog({
    * flow's LAST screen at the moment the user asked to start it again.
    *
    * Adjusted during render rather than in an effect, which is what makes it a
-   * frame-exact answer instead of a frame-late one. A start that fails outright
-   * leaves the account `ready` and this `false`, which is precisely the
-   * `signInStalled` shape — so that path ends on *Try again*, not on a wait
-   * with no end.
+   * frame-exact answer instead of a frame-late one.
+   *
+   * **It gates `signedIn` and nothing else.** A start that fails outright leaves
+   * the account `ready` and this `false` — correctly, because the reconnect did
+   * not take effect — and the failure is reported by `attemptUnseen` instead.
+   * While this flag was also read by `signInStalled`, that same "still `ready`"
+   * state had to mean *both* "not connected yet" and "the attempt is over", so
+   * the catch set it and turned a refused login into the success screen.
    */
   const [reconnectLeftReady, setReconnectLeftReady] = useState(reconnectAccountId === undefined);
   /**
@@ -1458,25 +1462,29 @@ function AddServiceDialog({
   const authStatus = useAuthStatus(signInProvider === "claude" ? signInAccountId : undefined);
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
-  /**
-   * `reconnectLeftReady` is in the test for the same reason `startingSignIn`
-   * is, one beat later. A reconnect starts from a `ready` account, and the
-   * server's `authenticating` broadcast arrives AFTER `startSignIn` resolves —
-   * so in the window between them the row is `ready`, nothing is pending and
-   * nothing is starting, which is this predicate exactly. The dialog flashed
-   * "The sign-in stopped before the account connected." with a *Try again*
-   * over a sign-in that was proceeding normally. For an add it is initialised
-   * `true`, so it changes nothing there; a start that genuinely throws sets it
-   * (see `startSignIn`'s catch), which is what keeps the real failure reachable.
-   */
   // Adjusted during render, like `reconnectLeftReady` above and for the same
   // reason: the answer has to be frame-exact, and a frame late is a frame of the
   // failure screen.
   if (attemptUnseen && (signInAccount?.status === "authenticating" || pendingAuth || authError)) {
     setAttemptUnseen(false);
   }
+  /**
+   * **`reconnectLeftReady` is deliberately NOT in this test.** It used to be,
+   * and the two questions it was answering pull in opposite directions.
+   *
+   * It guards the SUCCESS direction: "has the reconnect taken effect?", so the
+   * dialog cannot open on "Connected … Done" for the 50 ms before the account
+   * leaves `ready`. Reading it here made it guard the FAILURE direction too —
+   * "is the attempt over?" — and a reconnect whose start is *refused* leaves the
+   * row `ready`, which is the one state where the same flag cannot answer both.
+   * The catch therefore had to set it to reach this panel, and setting it
+   * completed `signedIn` instead: a refused login answered with the flow's
+   * success screen. `attemptUnseen` now owns the failure direction on its own —
+   * it is armed by the start rather than inferred from the row, so it is true of
+   * the attempt and not of the credential.
+   */
   const signInStalled = !!signInAccount && !signedIn && !pendingAuth && !startingSignIn
-    && reconnectLeftReady && !attemptUnseen
+    && !attemptUnseen
     && (!!authError || signInAccount.status !== "authenticating");
 
   /**
@@ -1638,11 +1646,13 @@ function AddServiceDialog({
       // The attempt is over before anything could be observed of it, so stop
       // waiting to observe one: this is what keeps the stalled panel — and its
       // *Try again* — reachable on a start that never got off the ground.
+      //
+      // And `reconnectLeftReady` is deliberately NOT set here. It once was, to
+      // reach that same panel, back when `signInStalled` read it — but a refused
+      // start leaves the row `ready`, so setting it completed `signedIn` and the
+      // dialog answered the refusal with "Connected … Done". The flag says the
+      // reconnect took effect; a start that never happened did not.
       setAttemptUnseen(false);
-      // The reconnect is over and it failed, so stop suppressing the stalled
-      // panel: that is where its *Try again* lives, and without this a failed
-      // start would wait for a broadcast that is never coming.
-      setReconnectLeftReady(true);
     } finally {
       setStartingSignIn(false);
     }
