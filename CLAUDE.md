@@ -242,7 +242,24 @@ The scan surfaces **every** `.md` file in the workspace, not just `docs/` — so
 
 ### Every new feature is under requirements discipline
 
-If the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Materially reworking an older feature that has none starts by writing them. Full workflow: [`docs/241-spec-discipline/workflow.md`](docs/241-spec-discipline/workflow.md).
+If the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Materially reworking an older feature that has none starts by writing them. The shape:
+
+```markdown
+# Feature name
+
+1. A numbered, plain-language statement of what the feature must do.
+2. Another observable requirement — what, never how.
+
+## Open questions
+
+- A decision the human has not made yet.
+
+## Resolved questions
+
+- YYYY-MM-DD — the question, the human's answer, and any constraint it carries.
+```
+
+The numbers are the IDs: keep them stable, append rather than renumber, and cite them as `docs/241-spec-discipline req 3`.
 
 **At the start of each turn that touches feature work**, identify the one active feature — from the session's issue or feature context, or the one the user named — and check its folder for `requirements.md`. Bullets under `## Open questions` block implementation code whether or not *you* raised them; resolve them at step 3 below. Only the active feature is gated: don't scan unrelated features for blockers.
 

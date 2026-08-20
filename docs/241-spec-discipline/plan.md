@@ -17,10 +17,9 @@ This is entirely a workflow the agent follows from instructions. There is no val
 
 ### Where the rules live
 
-The whole feature is prose in **this repository**, and deliberately nowhere in the product (req 11):
+The whole feature is one section of **`CLAUDE.md`** — *Every new feature is under requirements discipline* — holding the turn-start check, the document shape, and the five ordered steps (req 11). `CLAUDE.md` is symlinked as `AGENTS.md`, so both backends read it, and it is the file every session already loads.
 
-- **`CLAUDE.md` › *Every new feature is under requirements discipline*** — the always-on rules: the turn-start check, the five ordered steps, and the pointer below. `CLAUDE.md` is symlinked as `AGENTS.md`, so both backends read it.
-- **`docs/241-spec-discipline/workflow.md`** — the long-form reference: document format, the open-question flow and its clarification receipt, and the brief for the independent review.
+It lives there rather than in a doc this folder points at: a `docs/NNN-*` folder is the record of one feature at one time, and rules the agent must follow on every turn cannot depend on it still being read years later. The review brief the discipline uses is already in `CLAUDE.md` › *Get an independent review*, so the section states only what is specific to requirements work.
 
 **The first version put both in ShipIt's product surface** — a `prompts/spec-discipline.md` fragment composed into every system-instruction variant, and a `shipit-docs/spec-discipline.md` page baked into the session-worker image — which handed the workflow to every repository ShipIt runs on, whether or not it wanted one. Deleting them, and the tests that existed only to pin them, is the whole of the 2026-08-20 change; nothing replaced them, because a removal that leaves machinery behind has not removed anything. What ShipIt still provides is the *mechanism* the discipline uses and would provide anyway: the structured-question flow, and `shipit agent run --role reviewer`.
 
@@ -43,5 +42,4 @@ The instructions name `shipit agent run` as *the* mechanism and say explicitly t
 ## Key files
 
 - `CLAUDE.md` — the always-on rules (symlinked as `AGENTS.md`, so both backends read them)
-- `docs/241-spec-discipline/workflow.md` — the long-form workflow reference
 - `docs/241-spec-discipline/` — this feature's own documents, doubling as the worked example
