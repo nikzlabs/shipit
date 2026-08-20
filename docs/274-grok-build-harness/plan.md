@@ -1121,9 +1121,9 @@ symlink, not a missing refresher.** Confirmed at source rather than inherited:
 `readXaiTokenFreshnessFile`, so grok is on the same sync-in / mid-turn watch /
 publish-back path as Claude and Codex. The path watches the *session
 credentials* file. `makeSpawnHome` only *symlinks* `$GROK_HOME/auth.json` at
-that file. The CLI then atomic-renames onto `$GROK_HOME/auth.json`, which
-**replaces the symlink with a regular file**. Observed this session
-(`c7698a40…`, 13:23:38Z):
+that file. The CLI's refresh then **replaces that symlink with a regular file**
+(rename vs unlink+create are not distinguishable from the observation;
+`watchFile` covers both). Observed this session (`c7698a40…`, 13:23:38Z):
 
 | copy | `auth.json` | refresh_token sha256 (prefix) | `expires_at` |
 |---|---|---|---|
@@ -1143,25 +1143,40 @@ planning#449's fail-safe (an unorderable reader must not overwrite) is a
 separate guard on that path; it is not a substitute for the copy-back, and it
 did not cause this miss.
 
-**3. The old refresh token is not server-revoked.** The sibling rotated the
-06:46Z token at 13:19:08Z (new `refresh_token` sha256 `6a127259…`). This
-session, four minutes later, still held that *pre-rotation* token in its
-session credentials (because of (2)), used it, and `oidc try_refresh_pure
-succeeded` — a third `refresh_token` (`1fab029c…`), `jti`
-`68c404fd-c050-4df5-9627-041ec9dc75a6`, `expires_at` 19:23:38Z. A
-single-use / revoked-old-token IdP would have rejected that reuse and this
-turn would have 401'd. It did not. That is a natural experiment, not a probe
-against Nik's live login: no second home was pointed at a suspected-dead
-token on purpose.
+**3. The old refresh token was still accepted ~4 minutes after rotation.**
+The sibling rotated the 06:46Z token at 13:19:08Z (new `refresh_token`
+sha256 `6a127259…`). This session, four minutes later, still held that
+*pre-rotation* token in its session credentials (because of (2)), used it,
+and `oidc try_refresh_pure succeeded` — a third `refresh_token`
+(`1fab029c…`), `jti` `68c404fd-c050-4df5-9627-041ec9dc75a6`, `expires_at`
+19:23:38Z. That is a natural experiment, not a probe against Nik's live
+login: no second home was pointed at a suspected-dead token on purpose.
 
-**Decision.** Grok does not need a docs/153/154 orchestrator-side refresher.
-The property those refreshers exist to prevent — N sessions stampeding a
-rotating *single-use* refresh token and invalidating each other — is not
-present: two sessions can refresh the same token independently without
-killing the source. File-level rotation is real, and the spawn-home copy-back
-is what makes the existing sync path observe it. Revisit only if a later
-observation shows the old refresh token *is* revoked (the next session that
-reuses a just-rotated token and gets `invalid_grant` is the signal).
+This rules out *immediate* server-side revocation (a zero-grace single-use
+IdP would have 401'd this turn). It does **not** prove unbounded reuse — a
+grace window of minutes would produce the same observation.
+
+**Decision.** Grok does not need the *stampede-prevention* half of a
+docs/153/154 orchestrator-side refresher on current evidence. File-level
+rotation is real, but two sessions reused the same refresh token four minutes
+apart without `invalid_grant`, so N sessions refreshing independently is not
+the Claude-shaped mutual-invalidation failure those refreshers exist to
+prevent. The spawn-home copy-back is what makes the existing sync path
+observe the rotation, which is the other half of req 13 (a session outliving
+one access token keeps working, and the source is what the next container
+inherits).
+
+Two things this does **not** settle, and neither is a reason to build a
+refresher today:
+
+- Whether xAI applies a reuse-grace window rather than never-revoking.
+  Signal: the next session that reuses a just-rotated token and gets
+  `invalid_grant`.
+- Whether the refresh token itself expires from disuse (an account connected
+  and then idle for weeks). The access token is 6h and a cold CLI refreshes
+  it at process start; the refresh token's lifetime was not measured.
+
+Revisit if either signal appears.
 
 ## Composer is not served on the xAI subscription (probed 2026-08-20)
 

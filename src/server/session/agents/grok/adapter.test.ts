@@ -797,6 +797,90 @@ describe("GrokAdapter — the per-spawn config root", () => {
     expect(fs.readFileSync(path.join(configRoot, "auth.json"), "utf8")).toBe(newer);
   });
 
+  it("copies a rotation written in the committed live grok.json shape", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    const fixturePath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "..",
+      "..",
+      "orchestrator",
+      "__fixtures__",
+      "token-freshness",
+      "grok.json",
+    );
+    const fixture = fs.readFileSync(fixturePath, "utf8");
+    fs.writeFileSync(path.join(configRoot, "auth.json"), fixture);
+    const later = JSON.parse(fixture) as Record<string, Record<string, unknown>>;
+    const scope = Object.keys(later)[0];
+    later[scope] = { ...later[scope], expires_at: "2026-08-20T19:23:38.000Z", key: "rotated" };
+
+    const { adapter, child, env } = build();
+    adapter.run({ prompt: "p", cwd: "/workspace" });
+    const spawnAuth = path.join(env().GROK_HOME, "auth.json");
+    fs.unlinkSync(spawnAuth);
+    fs.writeFileSync(spawnAuth, JSON.stringify(later), { mode: 0o600 });
+    child.close(0);
+
+    expect(JSON.parse(fs.readFileSync(path.join(configRoot, "auth.json"), "utf8"))).toEqual(later);
+  });
+
+  it("quarantines an unreadable replaced auth.json instead of deleting it", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    const dest = path.join(configRoot, "auth.json");
+    const ordered = JSON.stringify({
+      "https://auth.x.ai::test": { key: "live", expires_at: "2026-08-20T19:23:38.000Z" },
+    });
+    fs.writeFileSync(dest, ordered);
+
+    const { adapter, child, env } = build();
+    adapter.run({ prompt: "p", cwd: "/workspace" });
+    const spawnAuth = path.join(env().GROK_HOME, "auth.json");
+    fs.unlinkSync(spawnAuth);
+    fs.writeFileSync(spawnAuth, '{"future_shape":{"token":"opaque"}}', { mode: 0o600 });
+    child.close(0);
+
+    expect(fs.readFileSync(dest, "utf8")).toBe(ordered);
+    const stranded = fs.readdirSync(configRoot).filter((n) => n.startsWith("auth.json.stranded-"));
+    expect(stranded).toHaveLength(1);
+    expect(fs.readFileSync(path.join(configRoot, stranded[0]), "utf8")).toBe(
+      '{"future_shape":{"token":"opaque"}}',
+    );
+  });
+
+  it("cleans the throwaway root when a routed spawn has no credential", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(configRoot, "auth.json"),
+      JSON.stringify({
+        "https://auth.x.ai::test": { key: "sub", expires_at: "2026-08-20T19:23:38.000Z" },
+      }),
+    );
+    const before = new Set(fs.readdirSync("/tmp").filter((n) => n.startsWith("grok-home-")));
+    const { adapter } = build();
+    const required: string[] = [];
+    adapter.on("auth_required", () => required.push("auth_required"));
+    adapter.run({
+      prompt: "p",
+      cwd: "/workspace",
+      serviceRouting: {
+        serviceId: "xai",
+        serviceName: "xAI",
+        billingMode: "key",
+        style: "openai-chat-completions",
+        baseUrl: "https://api.x.ai/v1",
+        credentialSourceEnv: "SHIPIT_TEST_GROK_MISSING_CRED",
+        credentialTarget: { kind: "env", name: "XAI_API_KEY" },
+      },
+    });
+    expect(required).toEqual(["auth_required"]);
+    const leaked = fs.readdirSync("/tmp").filter((n) => n.startsWith("grok-home-") && !before.has(n));
+    expect(leaked).toEqual([]);
+  });
+
   it("gives two concurrent spawns two different roots", () => {
     // The container case this design exists for: a turn and a `shipit agent
     // run` sub-agent alive at the same time, both built with the same home.

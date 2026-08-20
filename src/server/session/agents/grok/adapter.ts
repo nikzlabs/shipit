@@ -451,6 +451,7 @@ export class GrokAdapter
           `[grok] no credential in the environment for ${routing.serviceId}` +
             `/${routing.billingMode} (expected ${routing.credentialSourceEnv})`,
         );
+        this.cleanupTurnFiles();
         this.emit("auth_required");
         return;
       }
@@ -976,6 +977,10 @@ export class GrokAdapter
     };
     this.spawnAuthWatch = { path: spawnAuth, listener };
     fs.watchFile(spawnAuth, { interval: SPAWN_AUTH_WATCH_MS, persistent: false }, listener);
+    // `watchFile` takes its baseline stat asynchronously, so a write that
+    // lands between this call and that baseline is invisible to the poller
+    // forever (same reason session-token-publisher.ts publishes at arm time).
+    this.publishSpawnAuthBack();
   }
 
   private unwatchSpawnAuth(): void {
@@ -992,51 +997,74 @@ export class GrokAdapter
   /**
    * If the CLI replaced `$GROK_HOME/auth.json` (the symlink is now a regular
    * file) with a strictly fresher token, copy it onto the shared root the
-   * orchestrator watches. No-op when the link is intact (the CLI wrote
-   * through it, so the dest is already current) or when this turn has no
-   * durable auth file (key mode / self-contained fallback).
+   * orchestrator watches.
    *
-   * Freshness-guarded so a concurrent spawn that already published a newer
-   * rotation cannot be clobbered by this one's stale rewrite (planning#448).
+   * Returns `"strand"` when the spawn copy is a replaced regular file that we
+   * refused (or failed) to publish — the caller MUST quarantine it before
+   * `rmSync` of the throwaway root, otherwise the only live token is deleted
+   * (planning#448 review). `"done"` covers everything else, including "still
+   * a symlink, dest is already current" and "older than dest, safe to drop".
    */
-  private publishSpawnAuthBack(): void {
+  private publishSpawnAuthBack(): "done" | "strand" {
     const spawnHome = this.spawnHome;
     const dest = this.spawnAuthDest;
-    if (!spawnHome || !dest) return;
+    if (!spawnHome || !dest) return "done";
     const spawnAuth = path.join(spawnHome, "auth.json");
     try {
       const st = fs.lstatSync(spawnAuth);
-      if (st.isSymbolicLink() || !st.isFile()) return;
+      if (st.isSymbolicLink() || !st.isFile()) return "done";
     } catch {
-      return; // gone already (cleanup raced the watcher)
+      return "done"; // gone already (cleanup raced the watcher)
     }
     const spawnAt = grokAuthExpiryMs(spawnAuth);
     if (spawnAt === null) {
-      // Cannot prove it's newer — don't risk burying a live dest. Same
-      // direction as the orchestrator's unorderable-spawn refusal.
       console.warn(
         "[grok] CLI replaced GROK_HOME/auth.json but the copy is unreadable as a token; "
-          + "not publishing over the shared root",
+          + "not publishing over the shared root — quarantining the rotation so cleanup cannot delete it",
       );
-      return;
+      return "strand";
     }
     if (fs.existsSync(dest)) {
       const destAt = grokAuthExpiryMs(dest);
       if (destAt === null) {
         console.warn(
           "[grok] shared-root auth.json is unreadable as a token; refusing to overwrite it "
-            + "with the throwaway copy",
+            + "with the throwaway copy — quarantining the rotation so cleanup cannot delete it",
         );
-        return;
+        return "strand";
       }
-      if (spawnAt <= destAt) return;
+      if (spawnAt <= destAt) return "done";
     }
     try {
       atomicCopyFile(spawnAuth, dest);
       console.log("[grok] published CLI-rotated auth.json from throwaway GROK_HOME back to the shared root");
+      return "done";
     } catch (err) {
       console.warn(
-        `[grok] failed to publish rotated auth.json back to ${dest}: ${err instanceof Error ? err.message : String(err)}`,
+        `[grok] failed to publish rotated auth.json back to ${dest}: ${err instanceof Error ? err.message : String(err)}`
+          + " — quarantining the rotation so cleanup cannot delete it",
+      );
+      return "strand";
+    }
+  }
+
+  /**
+   * Copy a replaced `$GROK_HOME/auth.json` next to the shared root instead of
+   * letting `rmSync` destroy it. The dest itself is left untouched (the
+   * publish was refused). Next-turn diagnosis can diff the two.
+   */
+  private quarantineSpawnAuth(): void {
+    const spawnHome = this.spawnHome;
+    const dest = this.spawnAuthDest;
+    if (!spawnHome || !dest) return;
+    const spawnAuth = path.join(spawnHome, "auth.json");
+    const quarantined = `${dest}.stranded-${Date.now()}`;
+    try {
+      atomicCopyFile(spawnAuth, quarantined);
+      console.warn(`[grok] quarantined unpublishable auth.json at ${quarantined}`);
+    } catch (err) {
+      console.warn(
+        `[grok] failed to quarantine ${spawnAuth} to ${quarantined}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -1056,7 +1084,7 @@ export class GrokAdapter
     // Publish BEFORE deleting the throwaway root: if the CLI replaced the
     // auth.json symlink, the live token lives only there (planning#448).
     this.unwatchSpawnAuth();
-    this.publishSpawnAuthBack();
+    if (this.publishSpawnAuthBack() === "strand") this.quarantineSpawnAuth();
     this.spawnAuthDest = null;
     // The whole throwaway root goes, config and links together. `rmSync` does
     // not follow remaining symlinks, so the real `sessions/` (and an

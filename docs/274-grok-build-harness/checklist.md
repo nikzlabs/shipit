@@ -296,17 +296,20 @@ the expansion of every line, with file pointers and gotchas, is in
       credentials scrubbed` with `XAI_API_KEY` present in the environment; and
       the CLI's own session store records `reasoning_effort: "xhigh"` for the
       turn.
-- [x] **Settled 2026-08-20 (planning#448): grok does NOT need an
-      orchestrator-owned proactive refresher.** File-level rotation is real
-      (the CLI replaces `refresh_token` on expiry), but the old refresh token
-      is **not** server-revoked — a second session reused the pre-rotation
-      token ~4 min later and refreshed successfully. The stampede docs/153
-      centralizes refresh to prevent therefore does not apply. What WAS
-      broken is that the CLI's refresh rename replaces the spawn-home
-      `auth.json` *symlink*, so the existing sync-in / publish-back path
-      never saw the rotation; the adapter now copies a replaced file back
-      onto the shared root (freshness-guarded) so that path can. Evidence
-      and the decision in plan.md, "No orchestrator-side refresher".
+- [x] **Settled 2026-08-20 (planning#448): grok does not need the
+      stampede-prevention half of an orchestrator-owned refresher.**
+      File-level rotation is real (the CLI replaces `refresh_token` on
+      expiry). A second session reused the pre-rotation token ~4 min later
+      and refreshed successfully — that rules out *immediate* revocation, not
+      unbounded reuse (a grace window would look the same). The docs/153
+      stampede therefore does not apply on current evidence. What WAS broken
+      is that the CLI's refresh replaces the spawn-home `auth.json`
+      *symlink*, so the existing sync-in / publish-back path never saw the
+      rotation; the adapter now copies a replaced file back onto the shared
+      root (freshness-guarded, quarantined on refusal so cleanup cannot
+      delete it). Refresh-token idle lifetime and a possible reuse-grace
+      window are unobserved; revisit on `invalid_grant`. Evidence in
+      plan.md, "No orchestrator-side refresher".
 - [ ] **Open, waiting on a live capture** (planning#453): the verbatim
       SuperGrok *subscription* exhaustion string on the headless `-p` wire,
       and which channel it arrives on. Fill
