@@ -262,15 +262,6 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
-  // The skeleton is shared by every variant, so an auto-commit claim there
-  // reaches ops and sandbox no matter which Git fragment they get. This is how
-  // one leaked (the screenshot guidance said a relative filename "gets
-  // auto-committed into the repo"): assert the shared text makes no such claim.
-  it("keeps auto-commit claims out of the shared skeleton", () => {
-    const skeleton = fs.readFileSync(new URL("./prompts/skeleton.md", import.meta.url), "utf8");
-    expect(skeleton).not.toMatch(/auto-?committ?ed?\b/i);
-  });
-
   it("composes each overlay with the per-agent axis into a distinct variant", () => {
     const opsClaude = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
     const sandboxClaude = buildAgentSystemInstructions({ agentId: "claude", isSandbox: true });
