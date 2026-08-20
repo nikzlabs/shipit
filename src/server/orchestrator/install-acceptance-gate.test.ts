@@ -18,7 +18,7 @@
  * an enumeration is exactly what a test can accidentally share with the code.
  */
 
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -369,6 +369,78 @@ describe("acceptance survives every way the marker can be destroyed", () => {
 
     expect(sessionHasPlugin(forkWorkspace)).toBe(false);
     expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED }).withheld).toBe(true);
+  });
+
+  /**
+   * Found by review. The same fail-closed-becomes-fail-open shape as the test
+   * above, one layer down: there the parent's record was unreadable, here the
+   * CHILD's write fails. `recordAcceptedInstall` is best-effort by design — it
+   * logs and returns `false` — which is survivable everywhere else because the
+   * session's previous record is still on disk. On a fork there is no previous
+   * record, and the copy discarded that `false`.
+   */
+  it("fails the fork rather than creating one that has lost the acceptance", () => {
+    installSucceeded(ACCEPTED);
+    const forkWorkspace = path.join(root, "sessions", "fork-unwritable", "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    fs.writeFileSync(
+      path.join(forkWorkspace, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
+    );
+
+    // The disk refuses the record. Spied rather than staged on disk (an occupied
+    // path, a read-only parent) because every on-disk way to make the write fail
+    // leaves an artifact that itself gates the fork, which would let this test
+    // pass with the throw removed.
+    const rename = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw new Error("ENOSPC: no space left on device");
+    });
+    try {
+      expect(() => copyAcceptedInstall(workspaceDir, forkWorkspace)).toThrow(/fork was not created/);
+    } finally {
+      rename.mockRestore();
+    }
+
+    // Why it must throw rather than warn: the child is left with no record, and
+    // its workspace carries neither the plugin declaration nor `plugin-data/`,
+    // so nothing else can gate it. These two assertions are the fail-open state
+    // itself — the throw is what stops a session ever reaching it.
+    expect(readAcceptedInstall(forkWorkspace)).toBe(null);
+    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED }).withheld).toBeFalsy();
+  });
+
+  /**
+   * Found by review. The copy read only the RECORD while the gate resolves
+   * record-then-marker, so a parent whose acceptance survives only in the marker
+   * — one that accepted its list before this record existed, or whose own record
+   * write failed — went on withholding via the fallback while its fork inherited
+   * the mutated workspace and nothing to withhold with.
+   */
+  it("carries a parent whose acceptance survives only in the marker", () => {
+    writeMarker(ACCEPTED);
+    // Deliberately asserted through `acceptedInstallCommands`, not the gate:
+    // `evaluateInstallGate` backfills a record from the marker on its first
+    // withhold, which would destroy the premise before the fork is taken.
+    expect(readAcceptedInstall(workspaceDir)).toBe(null);
+    expect(acceptedInstallCommands(workspaceDir)).toEqual(ACCEPTED);
+
+    const forkWorkspace = path.join(root, "sessions", "fork-marker-only", "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    fs.writeFileSync(
+      path.join(forkWorkspace, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
+    );
+    copyAcceptedInstall(workspaceDir, forkWorkspace);
+
+    // A fork copies neither durable sibling, so it has no marker and no
+    // plugin-data of its own: the carried record is the only thing left that can
+    // gate it, and it must carry the parent's live plugin evidence too.
+    expect(sessionHasPlugin(forkWorkspace)).toBe(false);
+    expect(readAcceptedInstall(forkWorkspace)).toMatchObject({ commands: ACCEPTED, pluginBearing: true });
+    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED })).toMatchObject({
+      withheld: true,
+      accepted: ACCEPTED,
+    });
   });
 
   it("does not gate a fork whose parent never had a plugin", () => {

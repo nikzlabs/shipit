@@ -369,13 +369,22 @@ skipped.
   record when a clone changes hands, beside the marker unlink it already did.
 - `src/server/orchestrator/services/session-fork-merge.ts` — carries the record
   into a fork, which inherits the parent's mutated workspace and would otherwise
-  read as a first install and run what the parent refused.
-- `src/server/orchestrator/overlay-session.ts` — `preStampInstallMarker` declines
-  while the gate withholds.
-- `src/server/orchestrator/services/claim-session.ts` — clears the record when a
-  clone changes hands.
-- `src/server/orchestrator/dependency-staleness.ts` — the `install-withheld`
-  reason and its three surfaces.
+  read as a first install and run what the parent refused. The copy resolves the
+  parent's acceptance the same way the gate does (record, then marker) and
+  **throws** if the child's write fails, aborting the fork before
+  `sessionManager.track()`: a failed record write is survivable in-session
+  because the previous one is still on disk, and on a fork there is no previous
+  one, so the same failure would hand the child a clean-looking first install.
+- `src/server/orchestrator/overlay-session.ts` — nothing. `preStampInstallMarker`
+  used to consult the gate; that call was **removed** once the record outranked
+  the marker, because a pre-stamped marker can no longer move what the session
+  has accepted. Listed to say so: the earlier revision of this doc claimed the
+  check was still there.
+- `src/server/orchestrator/dependency-staleness.ts` — the gap surfaces. There is
+  no `install-withheld` reason: an earlier revision had one, and it was removed
+  when the design changed from *narrating* the withhold to *repairing* it. The
+  reasons are `not-content-keyed` and `install-failed`, and `dependency-reset` is
+  a rewrite phrase rather than a reason.
 - `src/server/orchestrator/install-acceptance-gate.test.ts` — **new**. The seam
   itself, written against the STATES the gate can find a session in rather than
   the operations that produce them: the marker-destroyer table is data, so a
@@ -436,7 +445,43 @@ skipped.
    `docs/251-worker-trust-boundary/plan.md` §"Token resolution, and failing
    closed". The route is still not gated by *this* design — what changed is that
    the guarantee it borrows can now fail a build.
-5. **The route is closed for `agent.install` only.** The other two routes are
+5. **A first install that completed UNVERIFIED leaves no record, so a later
+   marker loss re-opens the first-install allow.** Found by the 2026-08-20
+   security review of the acceptance record. When a completion is synthesized
+   rather than observed (dispose before the worker was ready, `dispose()`, a
+   resync with no last result) ShipIt deliberately records no acceptance — it has
+   no evidence anything ran. The worker may nonetheless have written the marker.
+   If the *next* gate call happens while that marker exists, the migration
+   backfills a record and the window shuts; if disk eviction takes `state/`
+   first, the session reaches the gate plugin-bearing with neither source and
+   reads as a first install, so a list a plugin has since written to
+   `shipit.yaml` runs unattended.
+
+   Narrower than it first looks: the gate backfills on *every* call that
+   resolves an accepted list, so this needs the session's **first** install to be
+   the unverified one — any earlier verified install leaves a record that no
+   marker deletion can move. It is nonetheless the incident's own class, and the
+   eviction half is the exact path that caused it.
+
+   **Not fixed here, because the fix is a change to what acceptance MEANS.** The
+   cheap closure is to record the *requested* list when the gate ALLOWED it,
+   rather than when the install completes — the gate had already authorized that
+   list, so recording it grants no new authority, and it makes a later mutated
+   list mismatch. That moves the record from "what ran" to "what was
+   authorized", which is a trust-model decision for the requester (req 4's
+   author), not one to self-promote inside a bug fix. **Owner: planning#400.**
+6. **A well-formed record that merely lacks `pluginBearing` is not fail-closed.**
+   Same review. `readAcceptedInstall` fails closed on every *unparseable* record
+   — bad JSON, a directory, `EACCES`, a `commands` that is not a string array all
+   resolve to `UNREADABLE`, which gates — but valid JSON whose `pluginBearing` is
+   absent reads as `false`, and if the session's live plugin evidence is also
+   gone (the fork case) nothing gates it. The only writer is the orchestrator and
+   it always serializes the field, so producing this state needs a corrupted
+   write that stays valid JSON, or a hand-authored file at a path no container
+   mounts. Recorded rather than fixed: making an absent flag mean `true` would
+   also make every pre-flag record gate, which is a migration cost for a state
+   nothing produces.
+7. **The route is closed for `agent.install` only.** The other two routes are
    docs/266 (`.git`, shipped) and planning#386 (the compose file, closed). This
    design does not make `/project` safe to write in general, and docs/262 req 29
    still stands: what a plugin writes to the project is untrusted content the

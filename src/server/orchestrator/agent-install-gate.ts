@@ -418,9 +418,13 @@ export function recordAcceptedInstall(
     return true;
   } catch (err) {
     if (tmp) { try { fs.rmSync(tmp, { force: true }); } catch { /* nothing more to do */ } }
+    // Says what happened, not what it means. For an in-session write the
+    // previous record is still on disk and stays in force; for the fork copy
+    // there is no previous record and the caller turns this `false` into a
+    // thrown fork. Asserting the first reading here made the log actively
+    // misleading on the path where the consequence was worst.
     console.warn(
-      "[install-gate] could not persist the accepted-install record; the previously " +
-      "accepted list stays in force:",
+      "[install-gate] could not persist the accepted-install record:",
       err instanceof Error ? err.message : String(err),
     );
     return false;
@@ -482,9 +486,17 @@ const UNREADABLE: AcceptedInstallRecord = { commands: [], at: "", pluginBearing:
  * A fork clones the parent's workspace, inheriting whatever a plugin wrote into
  * `shipit.yaml` there. Inheriting the mutation without the acceptance is the
  * dangerous half: the gate would find no accepted list, read "first install",
- * and run the command list the parent was refusing. Best-effort and silent on a
- * missing source — a parent that never completed an install has nothing to pass
- * on, and the fork is then a first-install session for real.
+ * and run the command list the parent was refusing. Silent on a missing source —
+ * a parent that never completed an install has nothing to pass on, and the fork
+ * is then a first-install session for real.
+ *
+ * NOT best-effort on the WRITE. Everywhere else a failed
+ * {@link recordAcceptedInstall} is survivable because the session's previous
+ * record is still on disk and stays in force; here there is no previous record,
+ * so the same failure leaves the child with nothing and its gate reads "first
+ * install". THROWS instead, which aborts the fork before
+ * `sessionManager.track()` — an orphan directory that is never a session beats a
+ * session that runs a list nobody accepted.
  *
  * NOT a general copy primitive. A clone that changes OCCUPANTS must clear the
  * record instead ({@link clearAcceptedInstall}); the difference is whether the
@@ -492,8 +504,21 @@ const UNREADABLE: AcceptedInstallRecord = { commands: [], at: "", pluginBearing:
  */
 export function copyAcceptedInstall(fromWorkspaceDir: string | undefined, toWorkspaceDir: string): void {
   if (!fromWorkspaceDir) return;
+  let carry: { commands: string[]; pluginBearing: boolean };
   try {
     const record = readAcceptedInstall(fromWorkspaceDir);
+    // Resolved exactly as `acceptedInstallCommands` resolves it for the gate,
+    // and that agreement is the point. Reading only the RECORD left a parent
+    // whose acceptance lives in the marker — one that accepted its list before
+    // this record existed, or whose own record write failed — passing nothing to
+    // a fork that had inherited its plugin-mutated `shipit.yaml`. The parent went
+    // on withholding via the marker fallback while the child, holding the same
+    // tree and none of the reason, read "first install" and ALLOWED.
+    //
+    // The record still wins wherever it answers, so an UNREADABLE parent keeps
+    // its empty (matches-nothing) list rather than falling through to a marker
+    // that would look like a real acceptance.
+    const commands = record ? record.commands : markerInstallCommands(fromWorkspaceDir);
     // Only a parent that has genuinely accepted NOTHING passes nothing on. A
     // parent whose record exists but cannot be read is the opposite case and
     // used to fall through here on `commands.length === 0`: the fork inherited
@@ -501,7 +526,7 @@ export function copyAcceptedInstall(fromWorkspaceDir: string | undefined, toWork
     // install" and ALLOWED. Fail-closed on the parent turning into fail-open on
     // the child is the worst shape available, so the unknown state is copied
     // verbatim — an empty list matches no request, and the fork withholds.
-    if (!record) return;
+    if (commands === null) return;
     // The flag rides along explicitly: the fork has no `plugin-data/` of its
     // own, so recomputing it THERE would answer `false` and drop the very fact
     // this copy exists to carry.
@@ -516,13 +541,30 @@ export function copyAcceptedInstall(fromWorkspaceDir: string | undefined, toWork
     // `false`, find no plugin evidence of its own, and run the very list the
     // parent was refusing. This is the last moment the parent's live evidence is
     // in reach, so it is where the two are reconciled.
-    recordAcceptedInstall(toWorkspaceDir, record.commands, {
-      pluginBearing: record.pluginBearing || sessionHasPlugin(fromWorkspaceDir),
-    });
+    carry = {
+      commands,
+      pluginBearing: record?.pluginBearing === true || sessionHasPlugin(fromWorkspaceDir),
+    };
   } catch (err) {
+    // READ-side only, and deliberately not fatal. The one error that reaches
+    // here is `acceptedRecordPath` refusing a workspace that is not at
+    // `<sessionDir>/workspace` (planning#288) — and a parent whose record path
+    // cannot be resolved has no record for its OWN gate to read either, so it is
+    // already running as a first-install session. Failing the fork would not
+    // make the parent safer; it would only refuse a fork of a session ShipIt is
+    // already treating as ungated.
     console.warn(
-      "[install-gate] could not carry the accepted-install record into the fork:",
+      "[install-gate] could not read the accepted-install record to carry into the fork:",
       err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
+  // Outside the try on purpose: this throw must reach `forkSession`, not the
+  // catch above. See the fail-closed paragraph in this function's docstring.
+  if (!recordAcceptedInstall(toWorkspaceDir, carry.commands, { pluginBearing: carry.pluginBearing })) {
+    throw new Error(
+      "Could not carry this session's accepted `agent.install` list into the fork, so the fork was "
+      + "not created. Retrying is safe; if it keeps failing, check free disk space on the host.",
     );
   }
 }
