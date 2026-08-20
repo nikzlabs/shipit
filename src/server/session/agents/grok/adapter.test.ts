@@ -30,6 +30,20 @@ import type { AgentEvent, AgentRunParams } from "../agent-process.js";
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "__fixtures__");
 
+// `grokHome()` honours `process.env.GROK_HOME` first. A grok-pinned session
+// (and this test file, when run from one) exports it as the throwaway spawn
+// root of the *parent* CLI, which would make every adapter here treat that
+// live directory as its shared config root — including copying a test fixture
+// over a real `auth.json`. Pin it off for the file (planning#448).
+const ORIGINAL_GROK_HOME = process.env.GROK_HOME;
+beforeEach(() => {
+  delete process.env.GROK_HOME;
+});
+afterEach(() => {
+  if (ORIGINAL_GROK_HOME === undefined) delete process.env.GROK_HOME;
+  else process.env.GROK_HOME = ORIGINAL_GROK_HOME;
+});
+
 function capture(name: string): string[] {
   return fs.readFileSync(path.join(FIXTURES, name), "utf8").split("\n").filter((l) => l.trim());
 }
@@ -728,6 +742,143 @@ describe("GrokAdapter — the per-spawn config root", () => {
     // them would delete this session's resume history and its credentials.
     expect(fs.existsSync(path.join(configRoot, "sessions", "conversation.json"))).toBe(true);
     expect(fs.readFileSync(path.join(configRoot, "auth.json"), "utf8")).toBe('{"scope":{"key":"secret"}}');
+  });
+
+  /**
+   * planning#448 — the grok CLI refreshes by atomic-rename onto
+   * `$GROK_HOME/auth.json`, which replaces the symlink `makeSpawnHome` created
+   * with a regular file. Without a copy-back, the live token lives only in the
+   * throwaway root: the session credentials the orchestrator watches never
+   * move, publish-back is a no-op, and `rmSync` at turn end deletes the
+   * rotation.
+   */
+  it("copies a CLI-replaced auth.json back onto the shared root before deleting the throwaway home", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    const stale = JSON.stringify({
+      "https://auth.x.ai::test": { key: "stale", expires_at: "2026-08-20T12:46:05.000Z" },
+    });
+    const fresh = JSON.stringify({
+      "https://auth.x.ai::test": { key: "fresh", expires_at: "2026-08-20T19:23:38.000Z" },
+    });
+    fs.writeFileSync(path.join(configRoot, "auth.json"), stale);
+
+    const { adapter, child, env } = build();
+    adapter.run({ prompt: "p", cwd: "/workspace" });
+    const spawnAuth = path.join(env().GROK_HOME, "auth.json");
+    expect(fs.lstatSync(spawnAuth).isSymbolicLink()).toBe(true);
+
+    fs.unlinkSync(spawnAuth);
+    fs.writeFileSync(spawnAuth, fresh, { mode: 0o600 });
+    child.close(0);
+
+    expect(fs.existsSync(env().GROK_HOME)).toBe(false);
+    expect(fs.readFileSync(path.join(configRoot, "auth.json"), "utf8")).toBe(fresh);
+  });
+
+  it("does not copy a replaced auth.json that is older than the shared root", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    const newer = JSON.stringify({
+      "https://auth.x.ai::test": { key: "newer", expires_at: "2026-08-20T19:23:38.000Z" },
+    });
+    const older = JSON.stringify({
+      "https://auth.x.ai::test": { key: "older", expires_at: "2026-08-20T12:46:05.000Z" },
+    });
+    fs.writeFileSync(path.join(configRoot, "auth.json"), newer);
+
+    const { adapter, child, env } = build();
+    adapter.run({ prompt: "p", cwd: "/workspace" });
+    const spawnAuth = path.join(env().GROK_HOME, "auth.json");
+    fs.unlinkSync(spawnAuth);
+    fs.writeFileSync(spawnAuth, older, { mode: 0o600 });
+    child.close(0);
+
+    expect(fs.readFileSync(path.join(configRoot, "auth.json"), "utf8")).toBe(newer);
+  });
+
+  it("copies a rotation written in the committed live grok.json shape", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    const fixturePath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "..",
+      "..",
+      "orchestrator",
+      "__fixtures__",
+      "token-freshness",
+      "grok.json",
+    );
+    const fixture = fs.readFileSync(fixturePath, "utf8");
+    fs.writeFileSync(path.join(configRoot, "auth.json"), fixture);
+    const later = JSON.parse(fixture) as Record<string, Record<string, unknown>>;
+    const scope = Object.keys(later)[0];
+    later[scope] = { ...later[scope], expires_at: "2026-08-20T19:23:38.000Z", key: "rotated" };
+
+    const { adapter, child, env } = build();
+    adapter.run({ prompt: "p", cwd: "/workspace" });
+    const spawnAuth = path.join(env().GROK_HOME, "auth.json");
+    fs.unlinkSync(spawnAuth);
+    fs.writeFileSync(spawnAuth, JSON.stringify(later), { mode: 0o600 });
+    child.close(0);
+
+    expect(JSON.parse(fs.readFileSync(path.join(configRoot, "auth.json"), "utf8"))).toEqual(later);
+  });
+
+  it("quarantines an unreadable replaced auth.json instead of deleting it", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    const dest = path.join(configRoot, "auth.json");
+    const ordered = JSON.stringify({
+      "https://auth.x.ai::test": { key: "live", expires_at: "2026-08-20T19:23:38.000Z" },
+    });
+    fs.writeFileSync(dest, ordered);
+
+    const { adapter, child, env } = build();
+    adapter.run({ prompt: "p", cwd: "/workspace" });
+    const spawnAuth = path.join(env().GROK_HOME, "auth.json");
+    fs.unlinkSync(spawnAuth);
+    fs.writeFileSync(spawnAuth, '{"future_shape":{"token":"opaque"}}', { mode: 0o600 });
+    child.close(0);
+
+    expect(fs.readFileSync(dest, "utf8")).toBe(ordered);
+    const stranded = fs.readdirSync(configRoot).filter((n) => n.startsWith("auth.json.stranded-"));
+    expect(stranded).toHaveLength(1);
+    expect(fs.readFileSync(path.join(configRoot, stranded[0]), "utf8")).toBe(
+      '{"future_shape":{"token":"opaque"}}',
+    );
+  });
+
+  it("cleans the throwaway root when a routed spawn has no credential", () => {
+    const configRoot = path.join(home, ".grok");
+    fs.mkdirSync(configRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(configRoot, "auth.json"),
+      JSON.stringify({
+        "https://auth.x.ai::test": { key: "sub", expires_at: "2026-08-20T19:23:38.000Z" },
+      }),
+    );
+    const before = new Set(fs.readdirSync("/tmp").filter((n) => n.startsWith("grok-home-")));
+    const { adapter } = build();
+    const required: string[] = [];
+    adapter.on("auth_required", () => required.push("auth_required"));
+    adapter.run({
+      prompt: "p",
+      cwd: "/workspace",
+      serviceRouting: {
+        serviceId: "xai",
+        serviceName: "xAI",
+        billingMode: "key",
+        style: "openai-chat-completions",
+        baseUrl: "https://api.x.ai/v1",
+        credentialSourceEnv: "SHIPIT_TEST_GROK_MISSING_CRED",
+        credentialTarget: { kind: "env", name: "XAI_API_KEY" },
+      },
+    });
+    expect(required).toEqual(["auth_required"]);
+    const leaked = fs.readdirSync("/tmp").filter((n) => n.startsWith("grok-home-") && !before.has(n));
+    expect(leaked).toEqual([]);
   });
 
   it("gives two concurrent spawns two different roots", () => {
