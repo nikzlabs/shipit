@@ -99,11 +99,26 @@ because the files are shared rather than copied, this also hits sessions that
 **already** installed, without them installing again. Running several sessions
 on one project is normal ShipIt use, and those sessions share the most.
 
+**How far does it reach today?** Not equally, and the difference matters for Q1:
+
+| Project type | What it shares | Who can affect it |
+|---|---|---|
+| npm / yarn | the download cache | **Only sessions of the same project.** The key already includes the project. |
+| pnpm | the package store | **Every pnpm project on the same ShipIt instance.** The key is the runtime only — there is no project in it. |
+
+So a private project and an untrusted one opened in another session share one
+store, if both use pnpm. A pnpm project gets the shared store only when it is
+repository-backed, is not an Ops session, and is detected as pnpm (a
+`packageManager` field, a pnpm install command, or a `pnpm-lock.yaml`).
+
 **Q1 — How much protection do you want?**
 
-- **(a) Contain it.** A bad session can only reach other sessions of the *same
-  project*, instead of every project on the machine. Cheapest to build. Uses
-  more disk. Leaves the common case — several sessions on one project — open.
+- **(a) Contain it.** Give the pnpm store a project key, so it matches what npm
+  already does. A bad session then reaches only sessions of the *same project*,
+  instead of every project on the machine. Cheapest to build. Uses more disk.
+  Leaves the common case — several sessions on one project — open. Note that npm
+  is *already* per-project and is still fully exploitable, which is the measured
+  evidence that this alone is not a fix.
 - **(b) Check packages at install time.** Catches tampering when a session
   installs, but not sessions that already installed. Sounds like the obvious
   middle and is worth less than it sounds: one of the two package managers we
