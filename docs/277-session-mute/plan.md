@@ -30,6 +30,12 @@ A `muted_at` column on `sessions` (ISO instant, `NULL` = not muted), surfaced as
 it is free and answers "since when" if a later surface wants it — the same shape
 as `pinned_at` (docs/110).
 
+`setMuted()` compares the flag's **presence**, not the stored instant, so
+re-muting an already-muted session is a genuine no-op. Comparing values instead
+rewrites the timestamp on every call and reports a change nobody asked for —
+which also makes the "nothing changed" path pass or fail on whether two calls
+land in the same millisecond.
+
 Server-side storage is what makes the mute survive a reload and match on a
 phone and a laptop. It also puts the flag where the *turn* can clear it: the
 clearing event happens on the server, in a turn that may have been started by

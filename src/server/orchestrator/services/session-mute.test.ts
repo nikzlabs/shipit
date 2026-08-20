@@ -51,10 +51,16 @@ describe("setSessionMuted", () => {
   });
 
   it("is idempotent rather than a 404 when the state already matches", () => {
-    // `SessionManager.setMuted` returns null both for "no such session" and "no
-    // change"; the service must not read the second as the first.
-    const first = setSessionMuted(sessionManager, "a", true, false).session.mutedAt;
-    const again = setSessionMuted(sessionManager, "a", true, false).session;
+    // Two things at once. `SessionManager.setMuted` returns null both for "no
+    // such session" and "no change", and the service must not read the second as
+    // the first. And re-muting must not REWRITE the instant: the flag is what
+    // matters, so a second mute is a no-op — an earlier version compared the
+    // stored value instead of its presence and moved the timestamp on every
+    // call, which passed only while both calls landed in the same millisecond.
+    const first = setSessionMuted(sessionManager, "a", true, false, new Date("2026-01-01T00:00:00.000Z"))
+      .session.mutedAt;
+    const again = setSessionMuted(sessionManager, "a", true, false, new Date("2026-06-01T00:00:00.000Z"))
+      .session;
     expect(again.mutedAt).toBe(first);
   });
 

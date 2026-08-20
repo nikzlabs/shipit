@@ -100,6 +100,7 @@ describe("same-turn quota failover (docs/252 phase 5, req 12)", () => {
           setLastTurnErrored: vi.fn(),
           get: vi.fn(() => ({ id: "s1", agentId: "claude", ...session })),
           track: vi.fn(),
+          setMuted: vi.fn(),
           list: vi.fn().mockReturnValue([]),
         } as never,
         chatHistoryManager: {

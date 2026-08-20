@@ -915,10 +915,15 @@ export class SessionManager {
    * overwhelmingly common case: an ordinary turn on an unmuted session.
    */
   setMuted(id: string, mutedAt: string | null): SessionInfo | null {
-    const result = this.db.prepare(
-      "UPDATE sessions SET muted_at = ? WHERE id = ? AND muted_at IS NOT ?",
-    ).run(mutedAt, id, mutedAt);
-    if (result.changes === 0) return null;
+    const current = this.get(id);
+    if (!current) return null;
+    // Compare on PRESENCE, not on the value. Muting is a flag whose timestamp is
+    // incidental, so a second mute of an already-muted session must be a no-op:
+    // gating the UPDATE on the value instead (`muted_at IS NOT ?`) rewrote the
+    // instant every time, which reported a change that nothing had asked for and
+    // made the no-op path depend on two calls landing in the same millisecond.
+    if (!!current.mutedAt === !!mutedAt) return null;
+    this.db.prepare("UPDATE sessions SET muted_at = ? WHERE id = ?").run(mutedAt, id);
     return this.get(id) ?? null;
   }
 
