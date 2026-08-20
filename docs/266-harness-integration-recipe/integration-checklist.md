@@ -20,6 +20,8 @@ unchecked.
 - [ ] `supportsCompaction` (item 14) settled by a REAL probe, not a `--help`
       sweep — `/compact` as a resumed headless turn's prompt, outcome proven,
       CLI version recorded
+- [ ] Every capability `false` (item 13) says WHY beside it — probed /
+      structural / not-wired — and each `not-wired` has a tracked issue
 
 **1 — Types**
 - [ ] Widen `AgentId` (+ `LoginIntegrationId`/`QuotaIntegrationId` if the
