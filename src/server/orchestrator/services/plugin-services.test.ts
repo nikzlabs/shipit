@@ -7,7 +7,7 @@
  * so the whole path runs against the integration fakes the way plan §5 asks.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Docker from "dockerode";
 import fs from "node:fs";
 import os from "node:os";
@@ -368,6 +368,50 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
 
     expect(services).toEqual([]);
     expect(getPluginServiceFailures(SESSION_ID, "tools")[0]).toContain("writable layer is not available");
+  });
+
+  // planning#451 — the catch used to return `{}`, which is also the legitimate
+  // "no workspace volume" answer. Under the opts-match skip that is a mismatch
+  // against a live overlay translated onto daemon-host paths, so a transient
+  // inspect failure would delete or recreate a volume a CLI container still
+  // holds. Skip ensure entirely: the empty map is the same degradation the
+  // test above already asked for.
+  it("does not touch a live overlay when the workspace-volume inspect fails", async () => {
+    publishTrackedGeneration();
+    writeConfig(TRACKED_DECLARATION);
+    const creates: string[] = [];
+    const removes: string[] = [];
+    const docker = {
+      getVolume: (name: string) => ({
+        inspect: async () => {
+          if (name === "shipit-workspace-vol") {
+            throw new Error("Cannot connect to the Docker daemon");
+          }
+          return {
+            Mountpoint: `/var/lib/docker/volumes/${name}/_data`,
+            Options: { type: "overlay", o: "lowerdir=/already-correct" },
+          };
+        },
+        remove: async () => { removes.push(name); },
+      }),
+      createVolume: async (spec: { Name: string }) => { creates.push(spec.Name); },
+    } as unknown as Docker;
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+        containEgress: false,
+        docker,
+        workspaceVolume: "shipit-workspace-vol",
+        stateRoot: path.dirname(sessionDir),
+      });
+      expect(services).toEqual([]);
+      expect(getPluginServiceFailures(SESSION_ID, "tools")[0]).toContain("writable layer is not available");
+      expect(creates).toEqual([]);
+      expect(removes).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("leaves out a repository whose generation is being pruned right now", async () => {

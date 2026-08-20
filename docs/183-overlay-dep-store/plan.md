@@ -432,24 +432,24 @@ container and then **every** overlay volume, which is the load-bearing half: lea
 impostor behind would make the next attempt reuse it. `createContainerForRunner` retries three times,
 so a genuinely transient loss self-heals and a standing one surfaces in the health strip.
 
-**The plugin runtime overlay has the same exposure and is NOT covered by this** (review finding,
-2026-08-19; tracked as planning#451). `ensurePluginRuntimeOverlay` (`plugin-overlay.ts`) skips on
-`volumeExists` — existence only — and a plain impostor satisfies that, so unlike the dep-dir path it
-never repairs itself: not on a restart, not on the next create. It latches for the life of the
-generation. Its docstring argues the skip is safe because "the NAME carries the generation", which is
-right about *stale opts* and does not reach a volume that stopped existing and came back as something
-else.
+**The plugin runtime overlay had the same exposure; planning#451 closed it (2026-08-20).**
+`ensurePluginRuntimeOverlay` (`plugin-overlay.ts`) used to skip on `volumeExists` — existence only —
+and a plain impostor satisfied that, so unlike the dep-dir path it never repaired itself. The skip is
+now `overlayVolumeState === "match"`. The 409 window that made that look unsafe is not reachable for
+a healthy shared volume: the per-name queue serializes inspect-then-create, the two runtime callers
+(`plugin-services.ts:ensurePluginVolumes`, `plugin-cli-run.ts`) compute the same spec for a
+generation, and attach happens after ensure returns, so the second caller sees match and never enters
+`createOverlayVolume`. A held mismatch is therefore a volume that is already not the overlay we
+created (this section's shape), and throwing after the converge loop — still without `releaseHolders`
+— is the loud failure that path wants. An unattached impostor is repaired on the next ensure. The
+CLI path also re-verifies after `createContainer` and before `start()`, the same placement as the
+dep-dir check; it does not remove the volume on failure, because a plugin service may share it.
 
 What it is NOT is the install-time volume leaking into a runtime mount. That looks live — `plugin-install.ts`
 builds a spec with the **same** `pluginOverlayVolumeName(session, repo, generationId)` but a different
 lowerdir stack (`job.stagingDir`, no dep bases) — and it is closed: install removes that volume before
 publishing and treats a failed removal as an install failure rather than a warning
 (`plugin-install.ts:429-443`, `removePluginOverlay`), so a published generation never has one alive.
-The remaining decision is narrower and belongs to planning#451: tightening the skip to an opts match
-makes the shared service+CLI path throw on a mismatch (`createPluginOverlay` deliberately does not
-release holders, so the removal 409s), which is a loud failure where there is now a silent plain mount
-— the right direction, but a real change to a path with no observed failure. Left alone here; #2495 is
-the dep-dir path.
 
 The dep-dir check is deliberately **trigger-independent**: it does not care what removed the volume, only that what
 the container was built with is not what we created. The trigger itself is **not** identified. Two
