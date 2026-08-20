@@ -122,7 +122,7 @@ The product shape should be:
 The human-stated requirements for this feature live in
 [`requirements.md`](./requirements.md) and are the source of truth; this doc is
 design. Open questions in that file block implementation until the user answers
-them (see `/shipit-docs/spec-discipline.md`).
+them (see [`docs/241-spec-discipline/workflow.md`](../241-spec-discipline/workflow.md)).
 
 The original requirement was automatic failover among multiple authenticated
 subscriptions. A follow-up user requirement made the policy explicit:
