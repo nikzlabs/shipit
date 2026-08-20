@@ -80,6 +80,18 @@ describe("OpencodeAdapter", () => {
     vi.useRealTimers();
   });
 
+  it("declares supportsReview, and names the two tools that earn it", () => {
+    // planning#459 / docs/266 item 15 — chat-native review needs a shell tool
+    // and a subagent primitive, and (since docs/220) no MCP surface at all.
+    // Probed live at depth 0: an opencode session ran
+    // `shipit agent run --role reviewer --prompt-file -` itself and returned
+    // material findings; on a non-zero exit it fell back to `task`.
+    const { adapter } = makeAdapter();
+    expect(adapter.capabilities.supportsReview).toBe(true);
+    expect(adapter.capabilities.toolNames).toContain("bash");
+    expect(adapter.capabilities.toolNames).toContain("task");
+  });
+
   it("maps a full captured turn and synthesizes the terminal result from exit", () => {
     const { adapter, child, events } = makeAdapter();
     adapter.run(RUN_PARAMS);

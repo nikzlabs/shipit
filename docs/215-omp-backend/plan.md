@@ -84,7 +84,8 @@ Adding a backend means implementing the established adapter surface (mirror the
 ### Cross-agent surfaces that come "for free" but need verifying
 - Skills auto-disclosure (`.claude/skills/` is read by both backends today,
   `docs/209`); confirm omp reads the same dir or add a mapping.
-- Review bridge / chat-native review (`supportsReview`).
+- Chat-native review (`supportsReview`) — no bridge is involved; what it needs
+  is a shell tool and a subagent primitive (docs/266 item 15).
 - `shipit agent run --agent omp` one-shot consultation path.
 
 ## Auth — concrete options

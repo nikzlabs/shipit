@@ -81,7 +81,8 @@ export class OpencodeAdapter
     // live adapter (ProxyAgentProcess hardcodes its own stub).
     models: [],
     ...(OPENCODE_REASONING ? { reasoning: OPENCODE_REASONING } : {}),
-    supportsReview: false,
+    // Mirrors the catalogue row, where the probe is recorded (planning#459).
+    supportsReview: true,
     supportsSteering: false,
     // docs/276 — via the server's `POST /session/{id}/summarize`, spawned per
     // compaction. NOT via `opencode run`; see `compaction.ts`.

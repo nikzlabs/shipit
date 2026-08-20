@@ -308,7 +308,7 @@ Initial Cursor capabilities should be conservative:
   supportedPermissionModes: [],
   toolNames: ["shell", "file_read", "file_write", "file_edit"],
   models: ["auto"],              // replace with verified Cursor model ids
-  supportsReview: false,         // keep off until subagent + MCP review bridge is proven
+  supportsReview: false,         // until a shell tool + subagent primitive are proven (docs/266 item 15 — NOT an MCP bridge; that requirement died with docs/220)
   supportsSteering: false,       // keep off until mid-turn input behavior is proven
 }
 ```

@@ -108,6 +108,20 @@ describe("GrokAdapter — spawn shape", () => {
     for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
   });
 
+  it("declares supportsReview, and names the two tools that earn it", () => {
+    // planning#459 / docs/266 item 15 — chat-native review needs a shell tool
+    // and a subagent primitive, and (since docs/220) no MCP surface at all.
+    // Probed live at depth 0: a grok session ran
+    // `shipit agent run --role reviewer --prompt-file -` itself and returned
+    // material findings; on a non-zero exit it fell back to `spawn_subagent`.
+    const h = makeHarness();
+    homes.push(h.home);
+    expect(h.adapter.capabilities.supportsReview).toBe(true);
+    expect(h.adapter.capabilities.toolNames).toContain("run_terminal_command");
+    expect(h.adapter.capabilities.toolNames).toContain("spawn_subagent");
+    h.child.close(0);
+  });
+
   it("passes the prompt as a FILE, never on argv", () => {
     const h = makeHarness({ prompt: "x".repeat(300_000) });
     homes.push(h.home);

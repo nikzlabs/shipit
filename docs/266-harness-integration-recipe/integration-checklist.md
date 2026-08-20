@@ -14,12 +14,14 @@ name tracks docs/266's own branch work, and this template's boxes stay
 unchecked.
 
 **Phase 0 — assess (before any code)**
-- [ ] Candidate passes the 14-point capability checklist; start-blockers
+- [ ] Candidate passes the 15-point capability checklist; start-blockers
       cleared or explicitly signed off (stream schema, auth injection,
       pinnable install, reasoning levels)
 - [ ] `supportsCompaction` (item 14) settled by a REAL probe, not a `--help`
       sweep — `/compact` as a resumed headless turn's prompt, outcome proven,
       CLI version recorded
+- [ ] `supportsReview` (item 15) settled by a depth-0 probe with the real
+      composed review message — shell tool + subagent primitive, NOT MCP
 - [ ] Every capability `false` (item 13) says WHY beside it — probed /
       structural / not-wired — and each `not-wired` has a tracked issue
 
