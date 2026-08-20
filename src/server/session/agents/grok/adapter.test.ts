@@ -837,6 +837,98 @@ describe("GrokAdapter — the per-spawn config root", () => {
   });
 });
 
+/**
+ * docs/276 — compaction. The fixture is a real capture of a manual `/compact`
+ * run (CLI 1.0.1, `--output-format streaming-messages-json`, the format this
+ * adapter parses), replayed byte-for-byte like every other capture here.
+ *
+ * The assertion that earns its keep is the TRIGGER one. Grok stamps
+ * `compact_metadata.trigger: "auto"` on the wire even for a compaction ShipIt
+ * asked for — the fixture line says `"auto"` and was produced by an explicit
+ * `/compact` — so a mapping that forwarded the field would mislabel every
+ * user-triggered compaction as spontaneous. If a future version starts telling
+ * the truth there, this test still passes and the correlation stays correct;
+ * what it forbids is trusting the field.
+ */
+describe("GrokAdapter — compaction (docs/276)", () => {
+  const homes: string[] = [];
+  afterEach(() => {
+    for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
+  });
+
+  it("needs no special argv — `/compact` rides the prompt file", () => {
+    const h = makeHarness({ prompt: "/compact", sessionId: "01a01f5d-b222-72c1-ba3d-a00426df1c32", compact: true });
+    homes.push(h.home);
+    // The trigger is in-band (Claude's shape), so the spawn is an ordinary
+    // resumed turn whose prompt happens to be the slash command.
+    expect(h.args).toContain("--prompt-file");
+    const promptPath = h.args[h.args.indexOf("--prompt-file") + 1];
+    expect(fs.readFileSync(promptPath, "utf8")).toBe("/compact");
+    expect(h.args).toContain("-r");
+    h.child.close(0);
+  });
+
+  it("announces the compaction up front, because Grok emits no progress event", () => {
+    const h = makeHarness({ prompt: "/compact", sessionId: "s-1", compact: true });
+    homes.push(h.home);
+    expect(h.events).toContainEqual({ type: "agent_compaction_started", trigger: "manual" });
+    h.child.close(0);
+  });
+
+  it("maps compact_boundary to agent_compacted, labeling MANUAL by correlation", () => {
+    const h = makeHarness({ prompt: "/compact", sessionId: "s-1", compact: true });
+    homes.push(h.home);
+    h.child.emitStdout(capture("compact-boundary-grok-4.20.ndjson"));
+    h.child.close(0);
+
+    const compacted = h.events.filter((e) => e.type === "agent_compacted");
+    expect(compacted).toHaveLength(1);
+    expect(compacted[0]).toEqual({
+      type: "agent_compacted",
+      // NOT the wire's "auto" — this fixture line came from an explicit
+      // `/compact`, which is precisely why the field cannot be forwarded.
+      trigger: "manual",
+      preTokens: 12322,
+    });
+    // Grok reports no post-compaction figure and no duration; the card degrades
+    // rather than inventing them.
+    expect(compacted[0]).not.toHaveProperty("postTokens");
+    expect(compacted[0]).not.toHaveProperty("durationMs");
+  });
+
+  it("labels an UNSOLICITED mid-turn compaction as auto", () => {
+    const h = makeHarness({ prompt: "do the tour", sessionId: "s-1" });
+    homes.push(h.home);
+    h.child.emitStdout(capture("compact-boundary-grok-4.20.ndjson"));
+    h.child.close(0);
+
+    const compacted = h.events.filter((e) => e.type === "agent_compacted");
+    expect(compacted).toHaveLength(1);
+    expect(compacted[0]).toMatchObject({ trigger: "auto" });
+    // And an ordinary turn must not claim ShipIt asked for it.
+    expect(h.events).not.toContainEqual({ type: "agent_compaction_started", trigger: "manual" });
+  });
+
+  it("still emits agent_init from the same stream — the boundary is not swallowing it", () => {
+    const h = makeHarness({ prompt: "/compact", sessionId: "s-1", compact: true });
+    homes.push(h.home);
+    h.child.emitStdout(capture("compact-boundary-grok-4.20.ndjson"));
+    h.child.close(0);
+    expect(h.events.filter((e) => e.type === "agent_init")).toHaveLength(1);
+  });
+
+  it("no-ops a mid-turn compact() instead of throwing — there is no resident process", () => {
+    const child = new FakeChild();
+    const errors: Error[] = [];
+    const adapter = new GrokAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    adapter.on("error", (e) => errors.push(e));
+    // Unlike sendUserMessage, this must NOT emit an error: a best-effort
+    // compaction failing must not tear down the turn it was asked about.
+    expect(() => adapter.compact()).not.toThrow();
+    expect(errors).toHaveLength(0);
+  });
+});
+
 describe("GrokAdapter — the contract it declines", () => {
   it("refuses steering loudly rather than dropping the message", () => {
     const child = new FakeChild();

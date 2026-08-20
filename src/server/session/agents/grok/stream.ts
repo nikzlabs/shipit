@@ -50,8 +50,23 @@ export interface GrokMessage {
  */
 export interface GrokEvent {
   type: string;
-  /** `init` on the handshake; `success` / an error kind on the result. */
+  /**
+   * `init` on the handshake; `success` / an error kind on the result;
+   * `compact_boundary` on a context compaction (docs/276).
+   */
   subtype?: string;
+  /**
+   * docs/276 — payload of a `system`/`compact_boundary` event. Same field names
+   * as Claude's, but Grok fills fewer of them: `pre_tokens` only, with no
+   * `post_tokens` and no `duration_ms`. `trigger` is present and is ALWAYS
+   * `"auto"`, even for a compaction ShipIt requested — the adapter labels by
+   * correlation instead and deliberately never reads this field.
+   */
+  compact_metadata?: {
+    trigger?: string;
+    pre_tokens?: number;
+    post_tokens?: number;
+  };
   session_id?: string;
   model?: string;
   tools?: string[];

@@ -369,3 +369,161 @@ describe("OpencodeAdapter", () => {
     expect(events).toHaveLength(0);
   });
 });
+
+/**
+ * docs/276 — the compaction spawn. `compaction.test.ts` covers the HTTP
+ * mechanism; what matters here is that this path SETTLES THE TURN on every
+ * exit, including the ones that never reach the server.
+ *
+ * That is the load-bearing part. A compaction spawn starts no long-lived
+ * `this.proc` whose `exit` would synthesize `agent_result` for it, and the
+ * orchestrator's whole post-turn sequence — the local commit above all
+ * (CLAUDE.md post-turn invariant 2) — hangs off that event. A refusal that
+ * returned quietly would strand the session `running` forever.
+ */
+describe("OpencodeAdapter — compaction (docs/276)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const COMPACT_PARAMS: AgentRunParams = {
+    prompt: "/compact",
+    cwd: "/workspace",
+    sessionId: SESSION,
+    model: "anthropic/claude-sonnet-4",
+    compact: true,
+  };
+
+  it("never spawns `opencode run` — the trigger is not a turn", () => {
+    const child = new FakeChild();
+    const spawned: string[][] = [];
+    const adapter = new OpencodeAdapter({
+      spawnFn: (_cmd, args) => {
+        spawned.push(args);
+        return child as unknown as ChildProcess;
+      },
+    });
+    adapter.run(COMPACT_PARAMS);
+    expect(spawned).toHaveLength(1);
+    // `serve`, never `run`: `/compact` as an ordinary prompt would reach the
+    // model verbatim and burn a turn (verified — see compaction.ts).
+    expect(spawned[0][0]).toBe("serve");
+    expect(spawned[0]).not.toContain("run");
+  });
+
+  it("settles the turn with an error when there is no session to compact", () => {
+    const { adapter, events } = makeAdapter();
+    adapter.run({ ...COMPACT_PARAMS, sessionId: undefined });
+    const result = events.filter((e) => e.type === "agent_result");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ status: "error" });
+    expect((result[0] as { error: string }).error).toMatch(/has not run a turn yet/);
+  });
+
+  it("settles the turn with an error when no model is selected", () => {
+    const { adapter, events } = makeAdapter();
+    adapter.run({ ...COMPACT_PARAMS, model: undefined });
+    const result = events.filter((e) => e.type === "agent_result");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ status: "error" });
+    expect((result[0] as { error: string }).error).toMatch(/no model is selected/);
+  });
+
+  it("emits started -> compacted -> success result on the happy path", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve("true") }),
+    );
+    const child = new FakeChild();
+    const { adapter, events } = {
+      adapter: new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess }),
+      events: [] as AgentEvent[],
+    };
+    adapter.on("event", (e) => events.push(e));
+    adapter.run(COMPACT_PARAMS);
+    child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
+    await vi.waitFor(() => expect(events.some((e) => e.type === "agent_result")).toBe(true));
+
+    expect(events.map((e) => e.type)).toEqual([
+      "agent_compaction_started",
+      "agent_compacted",
+      "agent_result",
+    ]);
+    // OpenCode's summarize answers a bare `true` — no figures to report, so the
+    // card degrades rather than inventing them.
+    expect(events[1]).toEqual({ type: "agent_compacted", trigger: "manual" });
+    expect(events[2]).toMatchObject({ status: "success", sessionId: SESSION });
+  });
+
+  it("reports a failed compaction as a failed RESULT, never a compacted card", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: false, status: 503, text: () => Promise.resolve("not available yet") }),
+    );
+    const child = new FakeChild();
+    const events: AgentEvent[] = [];
+    const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    adapter.on("event", (e) => events.push(e));
+    adapter.run(COMPACT_PARAMS);
+    child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
+    await vi.waitFor(() => expect(events.some((e) => e.type === "agent_result")).toBe(true));
+
+    // The whole point: no "Context compacted" card over work that did not happen.
+    expect(events.some((e) => e.type === "agent_compacted")).toBe(false);
+    const result = events.find((e) => e.type === "agent_result");
+    expect(result).toMatchObject({ status: "error" });
+    expect((result as { error: string }).error).toMatch(/Compaction failed.*503/s);
+  });
+
+  it("kill() stops the transient server, which settles the turn exactly once", async () => {
+    vi.useRealTimers();
+    let rejectFetch: ((e: Error) => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((_res, rej) => { rejectFetch = rej; })));
+    const child = new FakeChild();
+    const events: AgentEvent[] = [];
+    const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    adapter.on("event", (e) => events.push(e));
+    adapter.run(COMPACT_PARAMS);
+    child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+
+    // A compaction sets no `this.proc`, so before docs/276 this was a no-op and
+    // the turn hung for the whole summarize window.
+    adapter.kill();
+    expect(child.kill).toHaveBeenCalled();
+
+    // Killing the server aborts the request; the turn settles through the
+    // ordinary failure path rather than hanging.
+    rejectFetch?.(new Error("socket hang up"));
+    await vi.waitFor(() => expect(events.some((e) => e.type === "agent_result")).toBe(true));
+    expect(events.filter((e) => e.type === "agent_result")).toHaveLength(1);
+    expect(events.some((e) => e.type === "agent_compacted")).toBe(false);
+  });
+
+  it("interrupt() stops the transient server too", async () => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => { /* never settles */ })));
+    const child = new FakeChild();
+    const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    adapter.run(COMPACT_PARAMS);
+    child.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"));
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    adapter.interrupt();
+    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it("no-ops a mid-turn compact() instead of throwing", () => {
+    const child = new FakeChild();
+    const errors: Error[] = [];
+    const adapter = new OpencodeAdapter({ spawnFn: () => child as unknown as ChildProcess });
+    adapter.on("error", (e) => errors.push(e));
+    expect(() => adapter.compact()).not.toThrow();
+    expect(errors).toHaveLength(0);
+  });
+});
