@@ -1,19 +1,20 @@
 # Checklist — shared package cache integrity
 
 Implementation steps for [plan.md](./plan.md). **Nothing here may start** until
-the [open questions](./requirements.md#open-questions) are answered — the
-answers to Q1 and Q2 decide which of these items exist at all. Requirement 9
-(2026-08-20) already removed one option — see requirements.md.
+the [open questions](./requirements.md#open-questions) are answered — **Q1 and Q3
+together** decide which of these items exist at all. Requirement 9 (2026-08-20)
+already removed one option — see requirements.md.
 
 ## Blocked on the requester
 
 - [ ] **Q1 answered** — how much protection: contain it, or per-session copies?
-      *(Decides which option is viable. "Stop sessions writing" was ruled out by
-      requirement 9; "check at install time" collapses into the per-session
-      resolution cache, because a check is only worth its expectation source.)*
+      *(Two live options. "Stop sessions writing" was ruled out by requirement 9;
+      "check at install time" collapses into the per-session resolution cache,
+      because a check is only worth its expectation source.)*
 - [ ] **Q2 answered** — may we require projects to pin dependency versions?
-- [ ] **Q3 answered** — if the complete fix means sharing less, is that allowed
-      (`docs/270-per-session-worker-uids` req 9)?
+      *(Defence in depth, not the fix — measured. Not urgent.)*
+- [ ] **Q3 answered** — is per-session copying compatible with
+      `docs/270-per-session-worker-uids` req 9? *(Gates Q1 option (b).)*
 - [ ] **Q4 answered** — hold `docs/266-orchestrator-git-trust-boundary` E4
       (req 8)?
 - [ ] Answers recorded as dated receipts under `## Resolved questions`, with the
@@ -54,7 +55,7 @@ answers to Q1 and Q2 decide which of these items exist at all. Requirement 9
 - [ ] H2 (poisoned store content installed normally) has no upstream fix to lean
       on. Decide whether ShipIt verifies store contents itself, or closes the
       write via option B — pricing the verification against req 7 first.
-- [ ] H3 (req 4), if Q1 is answered (c): switch to per-session copies
+- [ ] H3 (req 4), if Q1 is answered (b): switch to per-session copies
       (`package-import-method=copy`), and measure the actual disk cost per
       session before committing to it — docs/198 measured ~464 MB.
 - [x] Price **registry mediation** (mediate the fetch so `npm install` still
