@@ -98,7 +98,11 @@ export function useFileReviewControls({
   const agentRunning = useSessionStore((s) => s.isLoading);
 
   // Ask-review is gated on the active agent backend's `supportsReview`
-  // capability (Codex hides the affordance entirely — docs/125).
+  // capability. Every shipped harness declares it (docs/266 item 15 — the flow
+  // needs a shell tool and a subagent primitive, not MCP), so today this only
+  // guards the `?? false` default and whatever harness comes next. Note the
+  // asymmetry it creates: `/review` in the composer is UNGATED and composes the
+  // identical prompt, so a `false` here hides a button rather than the feature.
   const activeAgentId = useUiStore((s) => s.activeAgentId);
   const agentList = useUiStore((s) => s.agentList);
   const activeAgentSupportsReview =

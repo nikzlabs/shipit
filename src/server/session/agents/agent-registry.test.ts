@@ -119,17 +119,27 @@ describe("AgentRegistry", () => {
     expect(codex.capabilities.toolNames).toContain("shell");
   });
 
-  it("both Claude and Codex report supportsReview=true", async () => {
-    // 125 — chat-native AI review needs both a subagent primitive and custom
-    // MCP tool registration. Claude Code provides both (Task tool + mcpConfig);
-    // Codex provides both too (the `spawn_agent` collab tool + `[mcp_servers.*]`
-    // config). The capability gates the file-preview "Ask agent to review"
-    // affordance, so a regression flipping either back to false would silently
-    // hide the feature on that backend.
-    const registry = createRegistry({ installedBinaries: ["claude", "codex"] });
+  it("every shipped harness reports supportsReview=true", async () => {
+    // docs/266 item 15 — chat-native review needs a shell tool and a subagent
+    // primitive, and since docs/220 removed the last `submit_review` write path
+    // it needs NO MCP surface: the flow is a plain chat message
+    // (`compose-review-body.ts`). docs/125's "subagents AND custom MCP tools"
+    // rule is what kept this false on opencode and grok, and planning#459
+    // probed both live at depth 0 — each ran
+    // `shipit agent run --role reviewer --prompt-file -` itself and returned
+    // material findings.
+    //
+    // The flag gates the file-preview / Present "Ask agent to review"
+    // affordance, so a regression flipping any of these back to false silently
+    // hides the button on that backend while `/review` — which is ungated —
+    // keeps working, which is the confusing half of the bug.
+    const registry = createRegistry({
+      installedBinaries: ["claude", "codex", "opencode", "grok"],
+    });
     await registry.detect();
-    expect(registry.get("claude")!.capabilities.supportsReview).toBe(true);
-    expect(registry.get("codex")!.capabilities.supportsReview).toBe(true);
+    for (const id of ["claude", "codex", "opencode", "grok"] as const) {
+      expect(registry.get(id)!.capabilities.supportsReview).toBe(true);
+    }
   });
 });
 

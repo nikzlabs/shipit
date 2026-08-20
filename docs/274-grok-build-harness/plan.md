@@ -256,7 +256,10 @@ session-title side-call rides every run (OpenCode-class cost noise); on
   `supportsImages: false` (unprobed), `supportsSystemPrompt: true`
   (`--system-prompt-override`; wire-verify at implementation),
   `reasoning: []` (req 8 — with the reviewer-default no-levels extension),
-  `supportsReview: false` at launch (unexercised as reviewer),
+  `supportsReview: false` at launch (unexercised as reviewer) — **now `true`**
+  (planning#459: the flag never gated *being* a reviewer, and the flow it does
+  gate needs `run_terminal_command` + `spawn_subagent`, not MCP. Probed live at
+  depth 0 — docs/266 item 15),
   `supportsSteering: false` (one-shot argv prompt), `startsOwnTurns:
   false`, `supportsCompaction: false` (config-driven autocompact only; no
   on-demand trigger found), `skillsDirName: ".grok"`,

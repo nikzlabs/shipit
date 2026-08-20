@@ -109,8 +109,9 @@ export class ClaudeAdapter
     supportedPermissionModes: CLAUDE_PERMISSION_MODES,
     toolNames: [...CLAUDE_TOOL_NAMES],
     models: CLAUDE_MODELS,
-    // Claude Code has both a subagent primitive (the Task tool) and custom
-    // MCP tool registration via mcpConfigPath, which 125 needs.
+    // docs/266 item 15 — the chat-native review flow needs a shell tool and a
+    // subagent primitive; since docs/220 it needs no MCP surface. Claude Code
+    // has Bash and Task.
     supportsReview: true,
     supportsSteering: true,
     // docs/178 — the CLI exposes `/compact` and emits `system/compact_boundary`

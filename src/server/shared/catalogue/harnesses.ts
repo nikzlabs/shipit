@@ -132,9 +132,10 @@ export const HARNESSES = [
           { value: "xhigh", label: "Extra high" },
         ],
       },
-      // docs/125 — Codex ships subagents (model-invoked via the `spawn_agent`
-      // collab tool) AND MCP servers, so the chat-native review flow works on
-      // both backends.
+      // docs/266 item 15 — the chat-native review flow needs a shell tool and a
+      // subagent primitive (`spawn_agent`), and no MCP surface: docs/220
+      // deleted the last `submit_review` write path, so the flow is a plain
+      // chat message the harness answers with its ordinary tools.
       supportsReview: true,
       supportsSteering: true,
       // docs/140 Phase 6.11 — the app-server is killed at `turn/completed`, and
@@ -235,8 +236,25 @@ export const HARNESSES = [
           { value: "max", label: "Max" },
         ],
       },
-      // No chat-native review flow wired for this backend yet.
-      supportsReview: false,
+      // PROBED true (planning#459, CLI 1.18.15, 2026-08-20). The old comment
+      // here — "no chat-native review flow wired for this backend yet" — was
+      // inherited from docs/125's rule that review needs subagents AND custom
+      // MCP tool registration. That rule is dead: docs/220 removed the last
+      // `submit_review` write path, so the flow is a plain chat message
+      // (`compose-review-body.ts`) and no MCP tool is involved at all. What it
+      // actually needs is a shell tool and a subagent primitive — docs/266
+      // item 15 — and OpenCode has `bash` and `task`.
+      //
+      // Probed at depth 0, with the real composed message, because a
+      // `shipit agent run` nested inside one is refused by the caller-depth
+      // guard whatever the harness: an `opencode` session given
+      // `composeReviewMessage(path, { mode: "role" })` ran
+      // `shipit agent run --role reviewer --prompt-file -` itself (brief on
+      // stdin via heredoc), exit 0, and came back with four material findings.
+      // A second run exercised the other branch — on a non-zero exit it fell
+      // back to a `task` subagent and returned markdown only, as the prompt
+      // instructs.
+      supportsReview: true,
       // One-shot spawn per turn, prompt as argv — no mid-turn steering
       // channel.
       supportsSteering: false,
@@ -348,8 +366,24 @@ export const HARNESSES = [
         ],
         billingModes: ["sub"],
       },
-      // Unexercised as a reviewer at launch.
-      supportsReview: false,
+      // PROBED true (planning#459, CLI 1.0.1, 2026-08-20). "Unexercised as a
+      // reviewer at launch" described the wrong thing twice over: this flag is
+      // not about being a reviewer — a reviewer is a MODEL whose harness is
+      // derived, and `reviewer-model.ts` never reads it — and the flow it does
+      // gate needs no MCP surface since docs/220 deleted the last
+      // `submit_review` write path. The requirement is a shell tool and a
+      // subagent primitive (docs/266 item 15); Grok has `run_terminal_command`
+      // and `spawn_subagent`.
+      //
+      // Probed at depth 0, with the real composed message, because a nested
+      // `shipit agent run` is refused by the caller-depth guard whatever the
+      // harness: a `grok` session given
+      // `composeReviewMessage(path, { mode: "role" })` ran
+      // `shipit agent run --role reviewer --prompt-file -` itself, exit 0, and
+      // came back with three material findings. A second run exercised the
+      // other branch — on a non-zero exit it fell back to `spawn_subagent` and
+      // returned markdown only, as the prompt instructs.
+      supportsReview: true,
       // One-shot spawn per turn, prompt as argv — no mid-turn steering channel.
       supportsSteering: false,
       // The process exits at turn end; it cannot start a turn ShipIt never

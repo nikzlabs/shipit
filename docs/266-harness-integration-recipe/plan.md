@@ -145,20 +145,22 @@ sign-off before integrating on metered-only auth.
     🚩 An undocumented `false` is the bug this rule exists for: `codex`
     declares `supportsImages: false` with no comment while its own `--help`
     advertises `-i, --image <FILE>...`, and `opencode`'s comment says to
-    "flip after a live probe" that was never run. `supportsReview` is
+    "flip after a live probe" that was never run. `supportsReview` was
     `false` on both newest harnesses for reasons that read as *not-wired*
     ("no chat-native review flow wired yet", "unexercised at launch") — real
     statements, but they describe unfinished work rather than an incapable
-    CLI, and nothing tracked them. Grok's `supportsImages` is the model to
+    CLI, and nothing tracked them; planning#459 tracked them, both were
+    probed, and both are now `true` (item 15 is what that probe established).
+    Grok's `supportsImages` is the model to
     copy: probed live, with a **negative control**, which caught two
     apparent successes where the model had answered off the filesystem
     instead of from the image.
     The flags: image input (`supportsImages`), mid-turn steering
     (`supportsSteering`), resident-process turn behavior (`startsOwnTurns`),
-    review usability (`supportsReview`), and the skill invocation prefix —
-    each shapes UI and turn plumbing, and a wrong guess here surfaces as
-    runtime behavior, not a type error. (`supportsCompaction` was in this
-    list and is now item 14 — see why there.)
+    and the skill invocation prefix — each shapes UI and turn plumbing, and a
+    wrong guess here surfaces as runtime behavior, not a type error.
+    (`supportsCompaction` was in this list and is now item 14, `supportsReview`
+    item 15 — see why there.)
 14. **On-demand compaction (`supportsCompaction`) — TEST it, don't search
     for it.** ShipIt's composer `/compact` path calls
     `AgentProcess.compact()`, and there are two proven implementations:
@@ -176,6 +178,55 @@ sign-off before integrating on metered-only auth.
     that silently ignores an unknown slash command still exits 0. Record the
     CLI version you tested: this is upstream-drift territory, so a version
     bump can change the answer (docs/272's recipe is how you re-check).
+15. **Chat-native review (`supportsReview`) — a shell and a subagent, and
+    *not* MCP.** docs/125's rule ("the feature requires both subagents and
+    MCP tools") is the reason this flag was twice declared `false` for the
+    wrong reason, and it has been superseded twice over. Since docs/220
+    removed the last `submit_review` write path there is **no review MCP tool
+    at all** — `session/mcp-tools/` holds ask, bug, permission, present,
+    propose-actions and voice, and no review. Pressing **Ask agent to
+    review** (or typing `/review`) composes a plain chat message
+    (`client/utils/compose-review-body.ts`) and sends it as an ordinary turn
+    to the session's own agent. The harness calls no ShipIt tool, and the
+    review never touches the MCP transport. Do not audit a candidate's MCP
+    support to answer this flag.
+
+    What the flow does require of the **active** harness is three things:
+
+    a. **A shell/exec tool whose stdout, stderr and exit code reach the
+       model.** That is how `shipit agent run --role reviewer --prompt-file -`
+       is invoked (brief on stdin, heredoc) and how the reviewer's markdown
+       comes back. This is the Multi-agent-sessions-ON branch.
+    b. **A model-invoked subagent primitive with fresh context.** This is the
+       Multi-agent-OFF branch, and it is also the fallback the composed
+       prompt mandates when `shipit agent run` exits non-zero *for any
+       reason*. A harness with neither (a) nor (b) cannot serve the flow; one
+       with only (b) serves it degraded, never cross-model.
+    c. **Read-only file tools** (read/grep/glob/shell). The reviewer is
+       handed a path, not a payload — it opens the file itself.
+
+    **The reviewer side imposes nothing, so this flag is not "can review".**
+    A reviewer is a *model* whose harness is derived (docs/261), and
+    `reviewer-model.ts` never reads `supportsReview` — a harness declaring
+    `false` can already be, and is, selected as the reviewer (that module's
+    own planning#408 worked example routes a review onto OpenCode).
+
+    **And it gates one affordance, not the feature.** Its only behavioural
+    reader is `showAskReview` in `client/hooks/use-file-review-controls.ts` —
+    the file-viewer / Present-tab button. The `/review` composer command
+    (`App.tsx`) is ungated and composes the identical prompt, so a `false`
+    hides a button while leaving the whole flow one typed command away. That
+    asymmetry is why "unexercised as a reviewer at launch" was never a
+    sufficient basis: nothing was being held back.
+
+    🚩 **Probe it at depth 0, with the real composed message.** Send
+    `composeReviewMessage(path, { mode: "role", … })` verbatim as a session
+    turn and require the harness to run the command itself. A `shipit agent
+    run` issued from *inside* another `shipit agent run` is refused by the
+    caller-depth guard (`services/sub-agent.ts` — "Sub-agents cannot spawn
+    further sub-agents") no matter which harness is calling, so a probe run
+    as a sub-agent can only ever exercise branch (b) and will look like a
+    harness failure when it is ShipIt's own guard.
 
 ## The recipe
 

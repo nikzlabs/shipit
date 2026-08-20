@@ -177,13 +177,13 @@ export class CodexAdapter
     // Mirror of agent-registry.ts. Keep in sync with the registry; both feed
     // the same picker in the UI.
     models: CODEX_MODELS,
-    // docs/125 — Codex satisfies both ingredients the chat-native review flow
-    // needs: subagents (model spawns them via the `spawn_agent` collab tool on
-    // explicit instruction — exactly what the composed review prompt asks for)
-    // and custom MCP tools (`[mcp_servers.*]` in config.toml). The worker
-    // writes the consolidated `shipit` bridge into the Codex config before spawn
-    // (see CodexAdapter.writeMcpConfig), so the shipit tools are available to the
-    // parent and any subagent it spawns.
+    // docs/266 item 15 — Codex has both ingredients the chat-native review flow
+    // needs: a shell tool (to run `shipit agent run --role reviewer` and read
+    // its stdout) and subagents (model spawns them via the `spawn_agent` collab
+    // tool on explicit instruction — exactly what the composed review prompt's
+    // fallback branch asks for). MCP is NOT one of them, docs/125
+    // notwithstanding: docs/220 deleted the last `submit_review` write path, so
+    // the flow is a plain chat message and calls no ShipIt tool.
     supportsReview: true,
     supportsSteering: true,
     // docs/178 — the app-server exposes `thread/compact/start` and emits

@@ -192,7 +192,8 @@ export class GrokAdapter
     // live adapter (ProxyAgentProcess hardcodes its own stub).
     models: [],
     ...(GROK_REASONING ? { reasoning: GROK_REASONING } : {}),
-    supportsReview: false,
+    // Mirrors the catalogue row, where the probe is recorded (planning#459).
+    supportsReview: true,
     supportsSteering: false,
     supportsCompaction: false,
     skillsDirName: ".grok",

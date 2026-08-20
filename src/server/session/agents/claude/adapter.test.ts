@@ -46,10 +46,14 @@ describe("ClaudeAdapter", () => {
     expect(adapter.capabilities.supportedPermissionModes).toContain("guarded");
     expect(adapter.capabilities.toolNames).toContain("Write");
     expect(adapter.capabilities.toolNames).toContain("Bash");
-    // 125 — chat-native AI review needs both subagent + MCP support, both
-    // of which Claude Code provides. The flag drives the file-preview
-    // modal's "Ask agent to review" affordance.
+    // docs/266 item 15 — chat-native review needs a shell tool (to run
+    // `shipit agent run --role reviewer`) and a subagent primitive (the
+    // fallback branch), and since docs/220 deleted the last `submit_review`
+    // write path it needs no MCP surface at all. Claude Code has Bash and
+    // Task. The flag drives the file-preview modal's "Ask agent to review"
+    // affordance.
     expect(adapter.capabilities.supportsReview).toBe(true);
+    expect(adapter.capabilities.toolNames).toContain("Agent");
   });
 
   it("maps system event to agent_init", () => {

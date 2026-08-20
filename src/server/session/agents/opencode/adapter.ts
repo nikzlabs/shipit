@@ -80,7 +80,8 @@ export class OpencodeAdapter
     // live adapter (ProxyAgentProcess hardcodes its own stub).
     models: [],
     ...(OPENCODE_REASONING ? { reasoning: OPENCODE_REASONING } : {}),
-    supportsReview: false,
+    // Mirrors the catalogue row, where the probe is recorded (planning#459).
+    supportsReview: true,
     supportsSteering: false,
     supportsCompaction: false,
     skillsDirName: ".opencode",

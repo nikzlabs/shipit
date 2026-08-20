@@ -115,7 +115,10 @@ redirected endpoint. Nothing is recalled from docs.
   observed — honest false until probed; review finding), `supportsSystemPrompt:
   true` (config `instructions`; verified live), `supportsPermissionModes:
   false` + `[]` (headless runs `--auto`), `reasoning` as found above,
-  `supportsReview: false`, `supportsSteering: false` (one-shot argv prompt),
+  `supportsReview: false` — **now `true`** (planning#459 probed it live at
+  depth 0: the harness ran `shipit agent run --role reviewer` itself and
+  returned material findings; the flow needs `bash` + `task`, not MCP —
+  docs/266 item 15), `supportsSteering: false` (one-shot argv prompt),
   `startsOwnTurns: false` (process exits at turn end), `supportsCompaction:
   false` (autocompact exists but there is no on-demand trigger in run mode),
   `skillsDirName: ".opencode"`, `skillInvocationPrefix: "/"`.
