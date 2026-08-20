@@ -30,7 +30,12 @@ interface FakeDecoration {
  * and lets us drive onMouseDown/decorations to assert behavior.
  */
 function makeFakeEditor() {
-  const zones = new Map<string, { afterLineNumber: number; domNode: HTMLElement; heightInPx: number }>();
+  const zones = new Map<string, {
+    afterLineNumber: number;
+    domNode: HTMLElement;
+    heightInPx: number;
+    suppressMouseDown?: boolean;
+  }>();
   /** Zone ids passed to `layoutZone`, in order. */
   const layoutCalls: string[] = [];
   let nextId = 0;
@@ -60,7 +65,12 @@ function makeFakeEditor() {
   const updateOptions = vi.fn();
 
   const accessor = {
-    addZone(zone: { afterLineNumber: number; domNode: HTMLElement; heightInPx: number }): string {
+    addZone(zone: {
+      afterLineNumber: number;
+      domNode: HTMLElement;
+      heightInPx: number;
+      suppressMouseDown?: boolean;
+    }): string {
       const id = `zone-${++nextId}`;
       zones.set(id, zone);
       return id;
@@ -862,6 +872,14 @@ describe("MonacoCommentWidgets", () => {
       // `.view-lines` is a later sibling covering the same rows, so without a
       // z-index it wins every hit test over the panel underneath it.
       expect(domNode.style.zIndex).toBe("10");
+    });
+
+    it("never asks Monaco to handle a press on the zone", () => {
+      makeManager().openCommentInput(4);
+      // `suppressMouseDown: true` reads like "Monaco, keep off" and means the
+      // opposite: Monaco answers it by focusing its own textarea, starting a
+      // cursor operation and calling preventDefault() on the press.
+      expect([...fake.zones.values()][0].suppressMouseDown).toBe(false);
     });
 
     it("keeps a press on the panel away from the editor's mouse handler", () => {

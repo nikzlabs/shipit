@@ -247,7 +247,14 @@ export function createCommentWidgetManager(
       afterLineNumber,
       heightInPx: estimateInPx,
       domNode,
-      suppressMouseDown: true,
+      // `suppressMouseDown` stays OFF, and its name is why this needs saying:
+      // it does not stop Monaco handling a press on the zone, it is the flag
+      // that makes Monaco handle it — `mouseHandler.js` answers a true here by
+      // focusing its own textarea, starting a cursor operation and calling
+      // `preventDefault()` on the press. On a widget with its own textarea and
+      // buttons that is exactly the wrong answer: it was what pulled focus out
+      // of the panel and left the press producing no click.
+      suppressMouseDown: false,
     };
     let id = "";
     editor.changeViewZones((accessor) => {
