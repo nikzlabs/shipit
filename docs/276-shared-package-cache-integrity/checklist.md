@@ -2,12 +2,14 @@
 
 Implementation steps for [plan.md](./plan.md). **Nothing here may start** until
 the [open questions](./requirements.md#open-questions) are answered — the
-answers to Q1 and Q2 decide which of these items exist at all.
+answers to Q1 and Q2 decide which of these items exist at all. Requirement 9
+(2026-08-20) already removed one option — see requirements.md.
 
 ## Blocked on the requester
 
 - [ ] **Q1 answered** — how much protection: contain it, check at install, or
-      stop sessions writing the shared copy? *(Decides which option is viable.)*
+      per-session copies? *(Decides which option is viable. "Stop sessions
+      writing" was ruled out by requirement 9.)*
 - [ ] **Q2 answered** — may we require projects to pin dependency versions?
 - [ ] **Q3 answered** — if the complete fix means sharing less, is that allowed
       (`docs/270-per-session-worker-uids` req 9)?
@@ -41,14 +43,17 @@ answers to Q1 and Q2 decide which of these items exist at all.
 - [ ] H2 (poisoned store content installed normally) has no upstream fix to lean
       on. Decide whether ShipIt verifies store contents itself, or closes the
       write via option B — pricing the verification against req 7 first.
-- [ ] H3 (req 4), only if Q1 is answered (c): scope option B properly as its own
-      design — a cache-owning identity, the brokered populate step, and how the
-      agent's own ad-hoc `npm install` keeps working (docs/270 req 10).
-- [ ] Verify against req 2 that pnpm does not silently fall back to a private
-      per-session store when the shared store is read-only.
-- [ ] If Q1 is answered (a) or (b) instead: record the residual explicitly in
-      `requirements.md` and in shipit-docs, so "integrity checking" is not read
-      as covering it.
+- [ ] H3 (req 4), if Q1 is answered (c): switch to per-session copies
+      (`package-import-method=copy`), and measure the actual disk cost per
+      session before committing to it — docs/198 measured ~464 MB.
+- [ ] Only if the requester asks for it: price **Reshaped B** (mediate the fetch
+      at the registry layer, so `npm install` still works — req 9). Open
+      sub-questions are in plan.md: every install path pointed at the mediator,
+      the warm-install cost, and git / `file:` dependencies that bypass the
+      registry.
+- [ ] Record the residual explicitly in `requirements.md` and in shipit-docs
+      whenever H2 is left open, so "integrity checking" is not read as covering
+      the store.
 
 ## Step 3 — optional, orthogonal (Q1 answered (a))
 
