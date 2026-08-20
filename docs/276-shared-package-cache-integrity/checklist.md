@@ -6,11 +6,13 @@ answers to Q1 and Q2 decide which of these items exist at all.
 
 ## Blocked on the requester
 
-- [ ] **Q1 answered** — does the fix have to hold without a lockfile?
-- [ ] **Q2 answered** — must the live hardlink channel (req 4) be closed?
-- [ ] **Q3 answered** — per-repo or per-session blast radius?
-- [ ] **Q4 answered** — does `docs/270-per-session-worker-uids` req 9 bend?
-- [ ] **Q5 answered** — accept the E4 sequencing constraint (req 8)?
+- [ ] **Q1 answered** — how much protection: contain it, check at install, or
+      stop sessions writing the shared copy? *(Decides which option is viable.)*
+- [ ] **Q2 answered** — may we require projects to pin dependency versions?
+- [ ] **Q3 answered** — if the complete fix means sharing less, is that allowed
+      (`docs/270-per-session-worker-uids` req 9)?
+- [ ] **Q4 answered** — hold `docs/266-orchestrator-git-trust-boundary` E4
+      (req 8)?
 - [ ] Answers recorded as dated receipts under `## Resolved questions`, with the
       open-question bullets removed and any requirement change in the same diff.
 
@@ -20,8 +22,8 @@ answers to Q1 and Q2 decide which of these items exist at all.
       shared `content-v2`, and measure what warm-install time it actually costs
       (req 7). If it does not, this step needs a different mechanism.
 - [ ] Make ShipIt's install path lockfile-pinned (`npm ci` semantics), subject
-      to Q1's answer.
-- [ ] Decide and implement the no-lockfile behaviour Q1 selects (install without
+      to Q2's answer.
+- [ ] Decide and implement the no-lockfile behaviour Q2 selects (install without
       the shared cache, or warn).
 - [ ] Regression test that reproduces the packument-poisoning RCE and asserts it
       now fails closed — the test must poison `dist.integrity` **and**
@@ -39,16 +41,16 @@ answers to Q1 and Q2 decide which of these items exist at all.
 - [ ] H2 (poisoned store content installed normally) has no upstream fix to lean
       on. Decide whether ShipIt verifies store contents itself, or closes the
       write via option B — pricing the verification against req 7 first.
-- [ ] H3 (req 4), only if Q2 is answered (a): scope option B properly as its own
+- [ ] H3 (req 4), only if Q1 is answered (c): scope option B properly as its own
       design — a cache-owning identity, the brokered populate step, and how the
       agent's own ad-hoc `npm install` keeps working (docs/270 req 10).
 - [ ] Verify against req 2 that pnpm does not silently fall back to a private
       per-session store when the shared store is read-only.
-- [ ] If Q2 is answered (b) or (c) instead: record the residual explicitly in
+- [ ] If Q1 is answered (a) or (b) instead: record the residual explicitly in
       `requirements.md` and in shipit-docs, so "integrity checking" is not read
       as covering it.
 
-## Step 3 — optional, orthogonal (Q3)
+## Step 3 — optional, orthogonal (Q1 answered (a))
 
 - [ ] Add the repo hash to `pnpmStoreDirForRuntime`
       (`src/server/orchestrator/overlay-session.ts:607`).
@@ -59,4 +61,4 @@ answers to Q1 and Q2 decide which of these items exist at all.
 ## Sequencing guard
 
 - [ ] `docs/266-orchestrator-git-trust-boundary` E4 stays unshipped until step 1
-      lands and Q2 is answered (req 8).
+      lands and Q1 is answered (req 8).

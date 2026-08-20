@@ -64,12 +64,12 @@ the two directly-writable surfaces unless they name the base.
 
 5. Requirement 1 MUST hold for a repo that has no lockfile, or whose lockfile
    does not pin an integrity hash for every dependency. *(Supplied — see
-   Provenance and Q1. Today the protection that exists is exactly the protection
+   Provenance and Q2. Today the protection that exists is exactly the protection
    a lockfile provides, so a repo without one has none.)*
 
 6. Requirement 1 MUST hold against writes to cached **resolution data** (what
    version and what bytes a dependency name resolves to), not only against
-   writes to cached package content. *(Supplied — see Provenance and Q1. Stated
+   writes to cached package content. *(Supplied — see Provenance and Q2. Stated
    separately because the content half is already safe and the resolution half
    is the demonstrated hole; a requirement naming only "the cache" would be read
    as satisfied by the half that already works.)*
@@ -82,94 +82,77 @@ the two directly-writable surfaces unless they name the base.
 8. ShipIt MUST NOT let a project's own git hooks fire on the orchestrator-side
    auto-commit path (`docs/266-orchestrator-git-trust-boundary` E4) while a
    session can still place executable content in another session's dependency
-   directory. *(Supplied — see Provenance and Q5. This is a sequencing
+   directory. *(Supplied — see Provenance and Q4. This is a sequencing
    constraint between two open items, not a requirement to build E4 or to change
    it.)*
 
 ## Open questions
 
-None of these may be answered by inference. Each blocks implementation; none
-blocks further design.
+Four decisions, and they are yours. The reasoning and the costs are in
+[plan.md](./plan.md); this section keeps only what you need in order to choose.
+Each blocks implementation. None may be answered by inference.
 
-**Q1 — Does the fix have to hold without a lockfile?**
-Measured: with a lockfile that pins `integrity`, npm already fails closed on a
-poisoned cache entry. Without one, a poisoned cache gives arbitrary code
-execution at install time (Provenance, test 2). So the cheapest real answer to
-the npm half is "require lockfile-pinned installs", which is a **product**
-decision about what repos ShipIt supports, not a security mechanism.
+**The problem in one paragraph.** To keep installs fast, sessions share one copy
+of downloaded packages on disk. They share the *actual files*, not copies. So a
+session that tampers with a shared file changes what other sessions run — and
+because the files are shared rather than copied, this also hits sessions that
+**already** installed, without them installing again. Running several sessions
+on one project is normal ShipIt use, and those sessions share the most.
 
-- **(a) Yes — it must hold with no lockfile.** Costs a ShipIt-owned mechanism,
-  because no package manager protects this case for us.
-- **(b) No — pin the requirement to lockfile-pinned installs**, and make a repo
-  without one either install without the shared cache or warn. Cheap, and
-  matches what CI everywhere already assumes. **← recommended**, because the
-  protection is then something npm/pnpm maintain rather than something ShipIt
-  reimplements, and reqs 5 and 6 are largely satisfied for free.
-- **(c) No, and do nothing** — accept it, document it. Not recommended: the
-  exploit is a working install-time RCE, not a theoretical one.
+**Q1 — How much protection do you want?**
 
-**Q2 — Must the live hardlink channel be closed (req 4), or only the install path?**
-This is the question the whole design turns on. Measured: writing to a shared
-pnpm store file instantly changes the contents of an already-installed
-`node_modules` file in another session, with no install taking place at all
-(Provenance, test 3). No integrity-check-on-install design can close this —
-there is no install event to hook. Note when answering that pnpm also verifies
-nothing on the install path (Provenance, test 4), so answering (b) leaves *both*
-pnpm channels open unless ShipIt writes the verification pnpm lacks.
+- **(a) Contain it.** A bad session can only reach other sessions of the *same
+  project*, instead of every project on the machine. Cheapest to build. Uses
+  more disk. Leaves the common case — several sessions on one project — open.
+- **(b) Check packages at install time.** Catches tampering when a session
+  installs, but not sessions that already installed. Sounds like the obvious
+  middle and is worth less than it sounds: one of the two package managers we
+  support already does this for us, and the other checks nothing at all, so we
+  would be building the check ourselves for the half that matters most.
+- **(c) Stop sessions writing the shared copy at all.** Sessions read it; ShipIt
+  writes it. **← recommended.** This is the only option that actually closes the
+  problem, including for already-installed sessions. It is the most expensive,
+  and it changes how installs work.
 
-- **(a) Yes, close it.** Only achievable by making the store not writable by
-  sessions (plan.md option B). Expensive, and strains req 2.
-- **(b) No — install path only**, accept that a session sharing a store with a
-  malicious session can have its already-linked files rewritten. Cheap, and
-  leaves the largest hole open.
-- **(c) Close it only across repos**, i.e. accept it between sessions of the
-  same repo. **← recommended** as the honest middle, but only if Q3 is answered
-  the same way; see plan.md for why this is a reduction and not a fix.
+**Q2 — May we require projects to pin their dependency versions?**
+A "lockfile" is a file recording exactly which package versions a project uses.
+Most projects have one and it is standard practice. When it exists, the existing
+tooling already refuses tampered packages and we get that protection free. When
+it is missing, we would have to build the protection ourselves.
 
-**Q3 — Is per-repo blast radius the target, or per-session?**
-The issue calls narrowing the pnpm store key the cheapest partial step. Priced
-in plan.md option C. Note before answering: `/dep-cache` is **already** per-repo
-and is still fully exploitable (Provenance, test 2), so per-repo keying is
-demonstrably not sufficient on its own.
+- **(a) Yes, require it.** A project without one installs without the shared copy,
+  or gets a warning. **← recommended** — the protection is then maintained by the
+  package manager rather than by us.
+- **(b) No.** We build and maintain the protection for those projects. More work,
+  ongoing.
 
-- **(a) Per-repo is the target** — sessions of one repo may affect each other.
-  **← recommended** as the first shipped step, on the explicit understanding
-  that it is a blast-radius reduction. Several sessions on one repo is ShipIt's
-  normal workflow, so this leaves the common case open.
-- **(b) Per-session is the target** — cross-session must be closed even within a
-  repo. Rules out C as sufficient and forces B.
+**Q3 — If the complete fix means sharing less, is that allowed?**
+You previously approved a rule that sessions must keep sharing these copies so
+installs stay fast (`docs/270-per-session-worker-uids` req 9). Option (c) above
+may end up as "shared for reading, but not for writing", and whether that still
+counts as sharing is your call, not mine.
 
-**Q4 — If fully meeting req 1 turns out to require giving up sharing, does
-`docs/270-per-session-worker-uids` req 9 bend?**
-Req 9 is human-approved, so this is not a decision this work may take. Asking it
-explicitly because option B may end up shaped as "shared for reads, not shared
-for writes", which is a partial answer to req 9 depending on how it is read.
+- **(a) Keep the rule.** The fix works around it. **← recommended.**
+- **(b) Bend it** for the one shared area that is worst.
+- **(c) Reopen the rule.** Most expensive; it re-opens earlier design decisions.
 
-- **(a) No — req 9 is firm.** Sharing survives; the fix works around it.
-  **← recommended.**
-- **(b) It bends for the pnpm store only**, which spans repos today and is the
-  surface with the worst channel.
-- **(c) Reopen req 9.** Most expensive; re-prices docs/198 entirely.
+**Q4 — Should we hold the other planned change?**
+A separate planned change (`docs/266-orchestrator-git-trust-boundary` E4) would
+let a project's own scripts run automatically each time ShipIt saves your work.
+Those scripts run programs out of the project's installed packages — exactly the
+files this problem lets another session tamper with. So that change would turn
+"bad code sits on disk" into "bad code runs on a schedule ShipIt chose".
 
-**Q5 — Accept the E4 sequencing constraint (req 8)?**
-`docs/266-orchestrator-git-trust-boundary` E4 is open
-(`docs/266-orchestrator-git-trust-boundary/checklist.md:110`). Real `pre-commit`
-hooks run binaries out of `node_modules/.bin`, and those are the files this
-issue lets another session control — so E4 would turn "a poisoned dependency
-sits on disk" into "a poisoned dependency runs on a schedule ShipIt chose". It
-does not breach docs/266 req 11: the hook script is the session's own and runs
-as the session's uid; what changes is what the script *invokes*.
-
-- **(a) Accept — E4 waits for this.** **← recommended.**
-- **(b) E4 proceeds, with `node_modules/.bin` kept off the hook's PATH.**
-  Plausible but unverified by this work, and husky/lint-staged rely on that PATH.
-- **(c) E4 proceeds unchanged.** Not recommended.
+- **(a) Hold it** until this is fixed. **← recommended.**
+- **(b) Ship it with a safeguard** that keeps those programs out of reach. I have
+  not verified this is possible, and common tools depend on that reach.
+- **(c) Ship it unchanged.** Not recommended.
 
 ## Provenance
 
 Requirements 1–4 and 7 restate the problem or an already-approved requirement.
-Requirements 5, 6 and 8 were **supplied by the agent** and are the reason Q1 and
-Q5 exist — they are marked so a reviewer can see what a human did not say.
+Requirements 5, 6 and 8 were **supplied by the agent** and are the reason Q2 and
+Q4 exist — they are marked so a reviewer can see what a human did not say.
 
 Requirements 4, 5 and 6 exist because of three tests run against this
 container's own npm 11.12.1 / pnpm 11.22.0, not because a document claimed it:
