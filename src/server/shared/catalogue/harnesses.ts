@@ -383,6 +383,12 @@ export const HARNESSES = [
       // came back with three material findings. A second run exercised the
       // other branch — on a non-zero exit it fell back to `spawn_subagent` and
       // returned markdown only, as the prompt instructs.
+      //
+      // Worth knowing when a review here looks stuck: that run took 240s and
+      // `run_terminal_command` gives up the foreground after 120s. It does not
+      // kill the process — it backgrounds it, and the model reads it to
+      // completion with `get_command_or_subagent_output`. That is why the flag
+      // is true; a shell tool that killed instead would fail the branch.
       supportsReview: true,
       // One-shot spawn per turn, prompt as argv — no mid-turn steering channel.
       supportsSteering: false,

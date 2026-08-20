@@ -194,9 +194,16 @@ sign-off before integrating on metered-only auth.
     What the flow does require of the **active** harness is three things:
 
     a. **A shell/exec tool whose stdout, stderr and exit code reach the
-       model.** That is how `shipit agent run --role reviewer --prompt-file -`
-       is invoked (brief on stdin, heredoc) and how the reviewer's markdown
-       comes back. This is the Multi-agent-sessions-ON branch.
+       model — and that survives a command running for minutes.** That is how
+       `shipit agent run --role reviewer --prompt-file -` is invoked (brief on
+       stdin, heredoc) and how the reviewer's markdown comes back. This is the
+       Multi-agent-sessions-ON branch. The duration half is not hypothetical:
+       a real review is a whole agent turn, and the probed ones took 240s
+       against Grok's **120s** default foreground timeout. Grok passes because
+       its timeout *backgrounds* the process and `get_command_or_subagent_output`
+       reads it to completion — a harness whose shell tool **kills** on timeout,
+       or drops the output, fails this branch no matter what its `--help` says.
+       Check the timeout behaviour, not just the timeout.
     b. **A model-invoked subagent primitive with fresh context.** This is the
        Multi-agent-OFF branch, and it is also the fallback the composed
        prompt mandates when `shipit agent run` exits non-zero *for any
