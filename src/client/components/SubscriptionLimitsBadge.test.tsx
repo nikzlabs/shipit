@@ -390,15 +390,33 @@ describe("SubscriptionLimitPill", () => {
    * Drawing a dash for it is the permanently-empty read-out the user reported.
    * "Not reported yet" is the no-reading-at-all case, and it still draws both.
    */
-  it("drops a window the reading does not carry, and keeps the one it does", () => {
+  it("drops a window the reader says the plan does not have", () => {
     render(
       <SubscriptionLimitPill
-        label="Claude"
-        snapshot={makeSnap({ session: null, weekly: { usedPct: 40, resetAt: "x" } })}
+        label="nik@x"
+        snapshot={makeSnap({ session: null, weekly: { usedPct: 40, resetAt: "x" }, availableWindows: ["weekly"] })}
       />,
     );
     expect(screen.queryByText(/5h/)).toBeNull();
     expect(screen.getByText(/7d 40%/)).toBeInTheDocument();
+  });
+
+  /*
+    The case the independent review caught, and the reason the rule is declared
+    rather than derived. Claude's `rate_limit_event` carries ONE window per
+    event, so this snapshot — a five_hour reading with nothing weekly yet — is
+    what a first turn actually produces on a plan that HAS both. Its reader
+    states no `availableWindows`, and the 7d meter must survive.
+  */
+  it("keeps both windows when the reader makes no claim about them", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({ session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET }, weekly: null })}
+      />,
+    );
+    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
+    expect(screen.getByText(/7d · —/)).toBeInTheDocument();
   });
 
   it("still says 'not reported yet' for a window the provider reported without a number", () => {
@@ -1040,30 +1058,30 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
  * difference between a null window and no reading.
  */
 describe("a plan whose reading carries only some of the windows (planning#454)", () => {
-  it("draws the weekly meter alone when the reading has no short window", () => {
+  it("draws the weekly meter alone when the reader says there is no short window", () => {
     render(
       <SubscriptionLimitPill
         label="nik@x"
-        snapshot={makeSnap({ serviceId: "xai", session: null, weekly: { usedPct: 10, resetAt: FUTURE_WEEKLY_RESET } })}
+        snapshot={makeSnap({ serviceId: "xai", session: null, weekly: { usedPct: 10, resetAt: FUTURE_WEEKLY_RESET }, availableWindows: ["weekly"] })}
       />,
     );
     expect(screen.getByText(/7d\s*10%/)).toBeInTheDocument();
     expect(screen.queryByText(/5h/)).toBeNull();
   });
 
-  it("draws the short meter alone when the reading has no weekly window", () => {
+  it("draws the short meter alone when the reader says there is no weekly window", () => {
     render(
       <SubscriptionLimitPill
         label="Work"
-        snapshot={makeSnap({ weekly: null, session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET } })}
+        snapshot={makeSnap({ weekly: null, session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET }, availableWindows: ["session"] })}
       />,
     );
     expect(screen.getByText(/5h\s*30%/)).toBeInTheDocument();
     expect(screen.queryByText(/7d/)).toBeNull();
   });
 
-  it("draws both when the reading has both", () => {
-    render(<SubscriptionLimitPill label="Work" snapshot={makeSnap()} />);
+  it("draws both when the reader names both", () => {
+    render(<SubscriptionLimitPill label="Work" snapshot={makeSnap({ availableWindows: ["session", "weekly"] })} />);
     expect(screen.getByText(/5h\s*30%/)).toBeInTheDocument();
     expect(screen.getByText(/7d\s*50%/)).toBeInTheDocument();
   });
@@ -1120,7 +1138,7 @@ describe("a plan whose reading carries only some of the windows (planning#454)",
         label="nik@x"
         serviceId="xai"
         showRefresh
-        snapshot={makeSnap({ serviceId: "xai", session: null, weekly: { usedPct: 10, resetAt: FUTURE_WEEKLY_RESET } })}
+        snapshot={makeSnap({ serviceId: "xai", session: null, weekly: { usedPct: 10, resetAt: FUTURE_WEEKLY_RESET }, availableWindows: ["weekly"] })}
       />,
     );
     expect(screen.getByLabelText("Refresh subscription usage")).toBeInTheDocument();
@@ -1130,11 +1148,12 @@ describe("a plan whose reading carries only some of the windows (planning#454)",
     const win = { usedPct: 1, resetAt: FUTURE_WEEKLY_RESET };
 
     it.each([
-      ["no reading", undefined, { session: true, weekly: true }],
-      ["both windows", makeSnap(), { session: true, weekly: true }],
-      ["weekly only", makeSnap({ session: null, weekly: win }), { session: false, weekly: true }],
-      ["session only", makeSnap({ session: win, weekly: null }), { session: true, weekly: false }],
-      ["neither", makeSnap({ session: null, weekly: null }), { session: true, weekly: true }],
+      ["no reading at all", undefined, { session: true, weekly: true }],
+      ["a reader that claims nothing", makeSnap({ session: win, weekly: null }), { session: true, weekly: true }],
+      ["both named", makeSnap({ availableWindows: ["session", "weekly"] }), { session: true, weekly: true }],
+      ["weekly only", makeSnap({ session: null, weekly: win, availableWindows: ["weekly"] }), { session: false, weekly: true }],
+      ["session only", makeSnap({ session: win, weekly: null, availableWindows: ["session"] }), { session: true, weekly: false }],
+      ["an empty claim, which is no claim", makeSnap({ availableWindows: [] }), { session: true, weekly: true }],
     ])("%s", (_name, snapshot, expected) => {
       expect(windowsShown(snapshot)).toEqual(expected);
     });

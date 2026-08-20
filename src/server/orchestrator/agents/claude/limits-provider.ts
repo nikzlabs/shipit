@@ -189,6 +189,15 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     );
 
     const fetchedAt = Math.max(eventLatest?.at ?? 0, apiLatest?.at ?? 0);
+    // No `availableWindows` here, and the omission is the decision
+    // (planning#454). Every other reader states which windows its plan has, so
+    // the pill can drop a slot the plan does not have. This one CANNOT say it:
+    // `rate_limit_event` carries one window per event, so a null side means
+    // "not delivered yet" on a plan that has both — and the `/api/oauth/usage`
+    // seed that would fill the gap is rate-limited to a handful of calls before
+    // a ~30 minute lockout. Claiming completeness here would have hidden a real
+    // 7d meter for the whole of a first turn. Silence draws both, which is what
+    // this pill has always done.
     return {
       serviceId: this.serviceId,
       billingMode: this.billingMode,

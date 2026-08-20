@@ -192,6 +192,9 @@ describe("XaiLimitsProvider", () => {
     // The half that was the reported bug: a `session` window here would put a
     // permanently-empty `5h · —` beside a real number.
     expect(snap?.session).toBeNull();
+    // The reader STATES it, and the pill does not infer it from the null:
+    // Claude's null means "not delivered yet" on the same field.
+    expect(snap?.availableWindows).toEqual(["weekly"]);
     expect(snap?.serviceId).toBe("xai");
     expect(snap?.billingMode).toBe("sub");
     // Declined on purpose — see requirements.md, 2026-08-20.
@@ -258,6 +261,9 @@ describe("XaiLimitsProvider", () => {
     const snap = await provider.fetch(ROUTE);
     expect(snap?.lockedUntil).toBe(NOW + 120_000);
     expect(snap?.weekly).toBeNull();
+    // ...and it claims nothing about the plan's windows, so the pill draws both
+    // as pending rather than declaring an unmetered plan.
+    expect(snap?.availableWindows).toBeUndefined();
 
     expect(await provider.refreshNow("manual", ROUTE)).toMatchObject({ outcome: "locked" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);

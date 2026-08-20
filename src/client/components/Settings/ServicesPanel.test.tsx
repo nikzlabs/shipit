@@ -2011,6 +2011,9 @@ describe("the xAI subscription's weekly pool (planning#454)", () => {
           serviceId: "xai", billingMode: "sub", routeId: "acct_xai", plan: null,
           session: null,
           weekly: { usedPct: 10, resetAt: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+          // The reader STATES the plan has one window; the pill does not infer
+          // it from the null (planning#454).
+          availableWindows: ["weekly"],
           fetchedAt: Date.now(),
         },
       },

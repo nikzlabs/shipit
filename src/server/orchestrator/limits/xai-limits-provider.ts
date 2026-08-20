@@ -85,6 +85,7 @@ import type {
   LimitsRefreshResult,
   SubscriptionLimits,
   SubscriptionLimitsWindow,
+  SubscriptionWindowName,
 } from "../../shared/types.js";
 
 /** xAI's subscription billing endpoint — see this module's docstring. */
@@ -205,6 +206,11 @@ export class XaiLimitsProvider implements LimitsProvider {
       plan: null,
       session: latest?.session ?? null,
       weekly: latest?.weekly ?? null,
+      // One payload describes the whole plan, so this reader can say what the
+      // plan HAS — which is the only thing that keeps the pill from drawing a
+      // `5h · —` nothing will ever fill. Declared only when a reading exists:
+      // a lockout-only snapshot makes no claim, and silence draws both.
+      ...(latest ? { availableWindows: namedWindows(latest) } : {}),
       fetchedAt: latest?.at ?? 0,
       ...(locked ? { lockedUntil: lockedUntilNow } : {}),
     };
@@ -316,6 +322,14 @@ export class XaiLimitsProvider implements LimitsProvider {
     });
     return { routeId, outcome: "updated" };
   }
+}
+
+/** The windows a parsed reading actually describes. */
+function namedWindows(snap: WindowSnapshot): SubscriptionWindowName[] {
+  const out: SubscriptionWindowName[] = [];
+  if (snap.session) out.push("session");
+  if (snap.weekly) out.push("weekly");
+  return out;
 }
 
 /** The more recent of two snapshots, either of which may be absent. */

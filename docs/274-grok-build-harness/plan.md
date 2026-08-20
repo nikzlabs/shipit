@@ -1012,39 +1012,55 @@ providers, which would have left a **fresh** SuperGrok sign-in with an empty
 pill until the next boot. It now searches every registered reader. The boot seed
 likewise iterates the pulled providers as a set rather than naming one.
 
-**2. The pill draws the windows a reading carries** (`windowsShown`). This is
-the shape note above, generalized on the user's instruction: *"the scope should
+**2. The pill draws the windows the plan HAS** (`windowsShown`). This is the
+shape note above, generalized on the user's instruction: *"the scope should
 include all APIs that didn't report 5h — in my case it is Codex and GLM too, but
 we shouldn't hard-code the names, we should just show what is available."* So
 the rule names no service. It could not have been a per-service list anyway —
 whether a ChatGPT plan reports a 5-hour window is a property of the PLAN, not of
 the vendor.
 
-The mechanism is the distinction the pill was missing, and it needed no new
-field. A provider that HAS a window reports it as an object even when it has no
-number for it — `SubscriptionLimitsWindow.usedPct` is nullable for exactly that
-reason — so a `null` window inside a reading already means "this plan has no
-such window". What the pill lacked was the difference between **a null window
-and no reading**: with no snapshot at all, both slots still draw `—`, because
-nothing is known yet and the refresh button can still change that.
+**The first mechanism was derived, and it was wrong. This is the useful part of
+the section.** The reasoning went: a provider that HAS a window reports it as an
+object even when it has no number for it (`usedPct` is nullable for exactly
+that), so a `null` window inside a reading must already mean "this plan has no
+such window" — no new field needed, and the missing distinction is just between
+a null window and no reading at all. That is a claim about **every existing
+provider**, and the independent review checked it against the code instead of
+against the argument.
 
-One fallback earns its place: a reading carrying NEITHER window draws both as
-unread. That is not a plan without windows, it is a read that produced none —
-the concrete case is a route 429'd before it ever reported, whose snapshot
-exists only to carry the lockout countdown. Drawing nothing there would claim
-the plan is unmetered.
+It fails on Claude, which is the provider with the most users.
+`session/agents/claude/adapter.ts` handles `rate_limit_event` one window at a
+time — `five_hour` and `seven_day` arrive as separate events, and the adapter
+emits its sticky pair each time — so the FIRST reading of a session carries
+`weekly: null` on a plan that plainly has a weekly window. The derived rule
+would have deleted a real 7d meter for the whole of that turn, and for the
+~30-minute lockout if the `/api/oauth/usage` seed that fills the gap had been
+429'd, which that seed is explicitly designed to expect. Worth naming as a
+pattern: *the neighbouring guarantee I leaned on was one I inferred from a type,
+not one I read at its source* — the exact failure `CLAUDE.md` warns about under
+"Verify an inherited guarantee at the source".
 
-**The trade-off, stated rather than discovered later.** Every provider drops a
-window it cannot parse COMPLETELY: Claude's `parseWindow` returns null without a
-`resets_at`, Codex's `parseRateWindow` without a finite `usedPercent`, and GLM's
-parser nulls a slot whose two candidate entries cannot be told apart. On such a
-reading, a plan that genuinely HAS a short window now renders no `5h` slot at
-all, where before it rendered `5h · —`. This is judged acceptable and not
-papered over: the slot returns on the next well-formed reading, and the
-alternative — remembering per route which windows have ever been seen — buys a
-narrow malformed-payload case at the cost of state that has to be invalidated
-when a user changes plan. The failure mode is a missing slot for one refresh
-cycle, not a wrong number.
+**So the provider states it, because only the provider can.**
+`SubscriptionLimits.availableWindows` names the windows the plan has, and the
+answer depends on the SOURCE rather than on the vendor:
+
+| reader | source | says |
+|---|---|---|
+| `XaiLimitsProvider` | one billing payload describes the plan | `["weekly"]` |
+| `ZaiLimitsProvider` | `data.limits[]` lists every window | what it saw |
+| `CodexLimitsProvider` | `rateLimits.primary` + `.secondary`, one notification | what it received |
+| `ClaudeLimitsProvider` | events, one window at a time | **nothing** |
+
+Silence means "draw everything", so Claude's pill is untouched, and a reading
+that carries only a lockout countdown still shows both slots pending — which the
+refresh button beside them can still make false. GLM's reader counts an
+*ambiguous* slot as present, because two entries landing in one slot is proof
+the window exists and only its number is unresolvable; reporting it absent would
+delete a meter on the strength of a parse failure.
+
+The cost is one optional wire field and four call sites. That is more than the
+derived rule, and the derived rule was free and wrong.
 
 **3. The catalogue tells the truth again.** `xai:sub` declares
 `xai-plan-usage`, which joins both `IMPLEMENTED_QUOTA_INTEGRATIONS` and

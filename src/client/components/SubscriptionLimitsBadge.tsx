@@ -344,8 +344,8 @@ interface SubscriptionLimitPillProps {
 }
 
 /**
- * Which of the two meters this pill draws — **the windows the reading actually
- * carries**, never a fixed pair (planning#454).
+ * Which of the two meters this pill draws — **the windows the plan has**, never
+ * a fixed pair (planning#454).
  *
  * The pill drew both slots for every subscription, on the assumption that every
  * plan has a 5-hour window and a weekly one. Several do not. SuperGrok has a
@@ -355,28 +355,28 @@ interface SubscriptionLimitPillProps {
  * number — the same permanently-empty read-out as the pill this feature was
  * opened to fix, just one slot narrower.
  *
- * **The rule is derived from the reading, so no service is named anywhere.** A
- * provider that has a window reports it as an OBJECT even when it has no
- * percentage to put in it — `SubscriptionLimitsWindow.usedPct` is nullable
- * precisely so "the window exists, its number is not known yet" is sayable — so
- * a `null` window in a snapshot already means "this plan has no such window".
- * The distinction the pill was missing is not a new field; it is the difference
- * between a null window and no snapshot.
+ * **No service is named here, and the answer is not inferred here either.** The
+ * provider states it (`SubscriptionLimits.availableWindows`), because only the
+ * provider can. Deriving it from a null window was tried first and is WRONG:
+ * Claude's `rate_limit_event` carries one window per event, so the first
+ * reading of a session has the other side null on a plan that has both, and
+ * this function would have dropped a real 7d meter for the whole of that turn —
+ * longer if the `/api/oauth/usage` seed had been 429'd. A null window means
+ * "absent" from a reader whose payload describes the whole plan and "not yet"
+ * from one whose readings arrive piecemeal, and nothing at this end can tell
+ * those apart.
  *
- * Hence the fallback: a snapshot carrying NEITHER window is not a plan with no
- * windows, it is a reading that failed to produce any. A route that was 429'd
- * before it ever reported gets exactly such a snapshot, whose only content is
- * the lockout countdown, and drawing nothing there would claim the plan is
- * unmetered. Both slots stay, saying "not read yet" — which the refresh button
- * beside them can still make false.
+ * Silence therefore means "draw everything": a provider that says nothing is
+ * treated as making no claim, so Claude's pill is untouched and a reading that
+ * carries only a lockout countdown still shows both slots pending — which the
+ * refresh button beside them can still make false.
  */
 export function windowsShown(
   snapshot: SubscriptionLimits | undefined,
 ): { session: boolean; weekly: boolean } {
-  const session = (snapshot?.session ?? null) !== null;
-  const weekly = (snapshot?.weekly ?? null) !== null;
-  if (!session && !weekly) return { session: true, weekly: true };
-  return { session, weekly };
+  const declared = snapshot?.availableWindows;
+  if (declared === undefined || declared.length === 0) return { session: true, weekly: true };
+  return { session: declared.includes("session"), weekly: declared.includes("weekly") };
 }
 
 export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention }: SubscriptionLimitPillProps) {

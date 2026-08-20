@@ -262,12 +262,14 @@ the expansion of every line, with file pointers and gotchas, is in
       `XaiLimitsProvider` behind it, refreshable on demand; the `null` arm is
       removed with the claim that motivated it. See plan.md, "Quota: the empty
       pill, and the reader that turned out to exist".
-- [x] The pill draws only the windows a reading carries (`windowsShown`) — not
-      a fixed 5h/7d pair. SuperGrok has one weekly pool and no short window, and
-      Codex and GLM plans exist that report no 5-hour figure either. Derived
-      from the reading, so no service is named: a `null` window inside a
-      snapshot means "this plan has no such window", while NO snapshot still
-      draws both as unread.
+- [x] The pill draws only the windows the plan HAS (`windowsShown`) — not a
+      fixed 5h/7d pair. SuperGrok has one weekly pool and no short window, and
+      Codex and GLM plans exist that report no 5-hour figure either. The
+      provider STATES it (`SubscriptionLimits.availableWindows`), so no service
+      is named at the render site. Deriving it from a null window was tried
+      first and is wrong — Claude's events deliver one window per event, so a
+      null there means "not yet" and the derived rule dropped a real 7d meter
+      for a whole first turn. Caught by the independent review.
 - [x] Exhaustion-pattern channel finding (planning#453) — which matcher
       applies to a turn error vs. conversation text is answered from the code
       and recorded in plan.md ("Exhaustion is the only spent-plan signal"). Patterns were **not**
