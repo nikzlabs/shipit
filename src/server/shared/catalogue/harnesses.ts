@@ -113,7 +113,27 @@ export const HARNESSES = [
     },
     capabilities: {
       supportsResume: true,
-      supportsImages: false,
+      // VERIFIED true by live probe (planning#458; 2026-08-20, codex-cli
+      // 0.147.0, dogfood inner instance, `gpt-5.6-sol` over two services). The
+      // CLI's own `-i, --image <FILE>...` is a red herring — ShipIt spawns
+      // `app-server`, which takes no such argv, and never passes it. Delivery is
+      // the harness-agnostic path every backend gets: the orchestrator writes
+      // the attachment into the session's uploads dir and names that path in an
+      // `<attached_images>` block (`orchestrator/prompt-assembly.ts`), and Codex
+      // opens it with its own image tool. The first probe run proved that link
+      // by failing AT it and nowhere else — `codex_core::tools::router: unable
+      // to locate image at /uploads/…`, the dogfood host being RUNTIME_MODE=local
+      // with no `/uploads` bind mount (`container-lifecycle.ts`, Target
+      // "/uploads").
+      //
+      // Given a resolvable path the model named all four randomly-chosen
+      // quadrant colours of an image whose content exists ONLY in its pixels, in
+      // order, on two independent runs. NEGATIVE CONTROL, mandatory after the
+      // trap docs/274 records: the same file sitting in the session's uploads
+      // dir with NO attachment on the message answered "unknown", so the answer
+      // came from the delivered image and not off the filesystem. No shell or
+      // decode tool ran in either positive turn.
+      supportsImages: true,
       supportsSystemPrompt: true,
       supportsPermissionModes: false,
       supportedPermissionModes: [],
@@ -204,11 +224,24 @@ export const HARNESSES = [
       // `-s <sessionID>` verified live (docs/268 Phase 0): recall across
       // processes.
       supportsResume: true,
-      // Honest per docs/268 req 6: `-f` exists but an image turn was never
-      // OBSERVED (no vision model reachable in the verification container),
-      // and a wrong true surfaces as broken attachments at runtime. Flip after
-      // a live probe.
-      supportsImages: false,
+      // VERIFIED true by live probe (planning#458; 2026-08-20, opencode-ai
+      // 1.18.18, dogfood inner instance) — the probe docs/268 req 6 deferred,
+      // run at last. It first reproduced the `false`: on two vision models over
+      // two services the CLI's `read` tool opened the attached path, answered
+      // "Image read successfully", and the model still said it could not see an
+      // image. The cause was ShipIt's own provider block, not the CLI — see
+      // MODEL_MODALITIES in `shared/opencode-spawn-shaping.ts`, which now
+      // declares the image input modality that made the same probe return all
+      // four pixel-only colours AND the digit strip verbatim.
+      //
+      // NEGATIVE CONTROL, run again AFTER that fix because the fix is exactly
+      // what lets `read` see an image at all: the same file in the session's
+      // uploads dir with NO attachment on the message answered "unknown".
+      //
+      // As with every harness here this is a CLI-level flag, not a promise about
+      // the routed model: `-f` is not the delivery path either (ShipIt uses the
+      // `<attached_images>` block, same as the other backends).
+      supportsImages: true,
       // Config `instructions` array — the adapter points it at the rendered
       // system-prompt file.
       supportsSystemPrompt: true,

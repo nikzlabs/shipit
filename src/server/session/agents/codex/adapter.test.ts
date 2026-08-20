@@ -179,7 +179,7 @@ describe("CodexAdapter", () => {
   it("reports Codex capabilities", () => {
     adapter = new CodexAdapter();
     expect(adapter.capabilities.supportsResume).toBe(true);
-    expect(adapter.capabilities.supportsImages).toBe(false);
+    expect(adapter.capabilities.supportsImages).toBe(true);
     expect(adapter.capabilities.supportsSystemPrompt).toBe(true);
     expect(adapter.capabilities.supportsPermissionModes).toBe(false);
     expect(adapter.capabilities.toolNames).toContain("shell");

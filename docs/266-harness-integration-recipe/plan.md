@@ -142,10 +142,19 @@ sign-off before integrating on metered-only auth.
     **structural** (the adapter shape forecloses it, e.g. `startsOwnTurns`
     needs a resident process), or **not-wired** (the CLI can, ShipIt has not
     — deferred WORK, so it gets a tracked issue, never a bare `false`).
-    🚩 An undocumented `false` is the bug this rule exists for: `codex`
-    declares `supportsImages: false` with no comment while its own `--help`
-    advertises `-i, --image <FILE>...`, and `opencode`'s comment says to
-    "flip after a live probe" that was never run. `supportsReview` was
+    🚩 An undocumented `false` is the bug this rule exists for, and
+    `supportsImages` is the worked example (planning#458, settled
+    2026-08-20): `codex` declared `false` with no comment while its own
+    `--help` advertised `-i, --image <FILE>...`, and `opencode`'s comment
+    said to "flip after a live probe" that was never run. Probed, **both
+    were wrong** — and neither for the reason the `--help` sweep suggests,
+    since ShipIt passes neither `-i` nor `-f`: attachments ride the
+    harness-agnostic `<attached_images>` block, so the question a capability
+    probe must ask is whether the CLI opens that path and the pixels reach
+    the model. Codex did, unchanged. OpenCode opened the file and dropped it,
+    because ShipIt's own provider block declared no input modality — a
+    one-field fix in `opencode-spawn-shaping.ts`, i.e. the `false` was
+    *not-wired* and nothing tracked it. `supportsReview` was
     `false` on both newest harnesses for reasons that read as *not-wired*
     ("no chat-native review flow wired yet", "unexercised at launch") — real
     statements, but they describe unfinished work rather than an incapable

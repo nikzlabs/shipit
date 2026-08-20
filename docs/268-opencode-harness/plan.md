@@ -111,8 +111,9 @@ redirected endpoint. Nothing is recalled from docs.
   `shipit/<modelId>`, see below). `spawn.endpoint`: config-file — the adapter
   writes a provider block; there is no env override.
 - Capabilities (each empirically grounded above): `supportsResume: true`,
-  `supportsImages: false` (the `-f` flag exists but an image turn was never
-  observed — honest false until probed; review finding), `supportsSystemPrompt:
+  `supportsImages: true` (**since planning#458** — the deferred probe was run;
+  see [Image attachments](#image-attachments-planning458) below. It was
+  `false` at launch because an image turn had never been observed), `supportsSystemPrompt:
   true` (config `instructions`; verified live), `supportsPermissionModes:
   false` + `[]` (headless runs `--auto`), `reasoning` as found above,
   `supportsReview: false` — **now `true`** (planning#459 probed it live at
@@ -278,7 +279,58 @@ synthesized-result paths, and BOTH styles' reasoning payloads at the recorder
 (`reasoning_effort` on chat-completions; `output_config: {effort}` on
 Messages). Deferred to the dogfood pass, stated rather than skipped silently:
 a `shipit agent run` cross-agent spawn in a real install and an
-image-attachment turn (`supportsImages` stays false until observed).
+image-attachment turn (`supportsImages` stayed false until observed — that
+probe has since been run, below).
+
+## Image attachments (planning#458)
+
+The deferred probe, run 2026-08-20 against CLI **1.18.18** on the dogfood inner
+instance. It ends `supportsImages: false` and changes one line of spawn
+shaping.
+
+**What ShipIt delivers.** Not `-f`. Attachments take the harness-agnostic path
+every backend gets: the orchestrator writes the file into the session's uploads
+dir and names that path in an `<attached_images>` block
+(`orchestrator/prompt-assembly.ts`), leaving the harness to open it with its own
+tool.
+
+**What was actually wrong.** OpenCode did open it. Its `read` tool resolved the
+path, answered *"Image read successfully"*, and returned the image as a
+`{type:"file"}` part — and the model still reported it could not see an image.
+The drop is on ShipIt's side: OpenCode resolves a model's input modalities from
+the config entry first and its models.dev entry second, and a synthetic
+`shipit/<modelId>` has no models.dev entry, so a block that declares nothing
+resolves to `image: false`. `opencodeProviderConfig` declared nothing. Adding
+`attachment: true` alone did **not** fix it (tried; still blind); declaring
+`modalities: { input: ["text", "image"], output: ["text"] }` did, first try. That
+declaration is now `MODEL_MODALITIES` in `shared/opencode-spawn-shaping.ts`,
+with a guard test.
+
+**The probe, and its negative control.** The image was a 2×2 grid of four
+randomly-chosen colours plus a bitmap digit strip — content existing ONLY in the
+pixels, generated outside the session so nothing on disk named the answer. Before
+the fix: two vision-capable models over two services (`claude-sonnet-5` via
+Vercel, `gemini-3.7-flash` via OpenRouter), both blind. After: all four colours
+in order AND the digits, verbatim. The negative control — the same file sitting
+in the session's uploads dir with NO attachment on the message — answered
+`unknown`, and it was re-run *after* the fix on purpose, because the fix is
+exactly what lets `read` see an image at all (the trap docs/274 records, where
+two apparent successes turned out to be filesystem reads). That control run is
+not a model that sat still, either: it went hunting — `read /uploads`, `glob
+**/*`, `glob /tmp/**/*` — and still could not answer.
+
+**One seam, named.** The probe ran on the dogfood host, which is
+`RUNTIME_MODE=local` and therefore has no `/uploads` bind mount
+(`container-lifecycle.ts`), so the turn carried the attachment's host path
+instead of its container path. Everything else — `validateImages`,
+`saveImagesToUploadsDir`, the prompt block, the adapter, the spawn — is ShipIt's
+own code unchanged.
+
+**What the modality claim costs.** It is declared for every routed model,
+because `ModelDef` carries no per-model modality. That is the bet Claude Code's
+`supportsImages: true` already makes, and it fails the same visible way: attach
+an image while routed to a text-only model and the service rejects the request.
+The alternative was silence for every model, vision-capable or not.
 
 ## Independent review outcomes (docs/268, same-day)
 

@@ -35,6 +35,33 @@ const OPENCODE_REASONING_LEVELS: readonly string[] = (
 ).map((o) => o.value);
 
 /**
+ * What a model routed through ShipIt's provider block can take IN and give OUT.
+ *
+ * Load-bearing for image attachments, and the reason `supportsImages` was false
+ * for this harness until planning#458. OpenCode resolves a model's input
+ * modalities from the config entry first and its models.dev entry second
+ * (`input:{text: C.modalities?.input?.includes("text") ?? …, image: …}` in the
+ * shipped binary); a synthetic `shipit/<id>` has no models.dev entry, so an
+ * entry that declares nothing resolves to image:false. The `read` tool still
+ * OPENS the attachment and still answers "Image read successfully" — it just
+ * returns the `{type:"file"}` part into a model the CLI believes cannot take
+ * one, and the pixels are dropped in silence. Probed live, 2026-08-20, CLI
+ * 1.18.18: identical failure on two vision models over two services, and
+ * declaring these modalities is what flips it (`attachment: true` alone does
+ * NOT — tried, still blind). Both probes routed `openai-chat-completions`;
+ * this is model metadata rather than a style-specific field, so it is written
+ * for the anthropic-messages block too — by inheritance, not by measurement.
+ *
+ * Declared for EVERY routed model rather than per model, because the catalogue
+ * carries no per-model modality (`ModelDef` has no such field). That is the same
+ * bet Claude Code's `supportsImages: true` already makes — a harness-level flag
+ * over a model-level fact — and it fails the same visible way: attach an image
+ * while routed to a text-only model and the service rejects the request. The
+ * alternative on offer was silence for every model, vision-capable or not.
+ */
+const MODEL_MODALITIES = { input: ["text", "image"], output: ["text"] } as const;
+
+/**
  * Levels a style's AI-SDK package REFUSES, so they are never declared as
  * variants for it.
  *
@@ -115,7 +142,7 @@ export function opencodeProviderConfig(
         apiKey: `{env:${routing.credentialTarget.name}}`,
       },
       models: {
-        [modelId]: { name: modelId, variants },
+        [modelId]: { name: modelId, variants, modalities: MODEL_MODALITIES },
       },
     },
   };
