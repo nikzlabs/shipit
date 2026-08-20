@@ -977,11 +977,12 @@ export function setupServiceManager(
   // the scale of every session pinned to a superseded generation (34 on that
   // host), and it takes the diagnosis down with them — a service latched before
   // it ever starts produces no failure for anyone to read. Starting it costs a
-  // crash loop in the genuinely-broken case, by which point the reason is
-  // already in the three places the reader reaches first: the transcript notice,
-  // the line the service list carries beside the failing service, and the
-  // agent's own turn prompt. Requirement 2 asked for a diagnostic connecting the
-  // service failure to the withheld install; those are it.
+  // crash loop in the genuinely-broken case — and by then ShipIt has usually
+  // REPAIRED it instead: a withhold landing on an unvouched tree re-runs the
+  // already-accepted list. The two states that reach here without a repair say
+  // so through `ok`: a replay that failed, and a tree whose accepted list is
+  // unknown and therefore unrepairable, both return `ok: false` and latch with a
+  // cause attached.
   if (installPromise) {
     mgr.setInstallRunning(true);
     const p = installPromise;

@@ -106,9 +106,15 @@ Three properties were checked rather than assumed:
   fresh plugin-bearing session allows its `agent.install` by design, publishes a
   base from it, and the pointer then carries that list; the pre-stamp would
   promote it into an *established* session's accepted list, which is the one
-  thing this gate exists to prevent. The claim is now enforced rather than
-  inferred: the pre-stamp asks the gate directly and declines while it is
-  withholding.
+  thing this gate exists to prevent.
+
+  **It is closed by the acceptance record, not by a check on the pre-stamp.** An
+  intermediate revision did gate `preStampInstallMarker` on the trust verdict;
+  that was removed once the record existed, because the record outranks any
+  marker and a pre-stamped one therefore cannot move what a session has accepted.
+  Redundant security-shaped code is a liability, not depth — it reads as the
+  thing holding the boundary, and the next person to touch it has to re-derive
+  that it is not.
 
   Two things the independent review sharpened, so the bar is not overstated. The
   pointer match is not generic — it needs the same commit (or byte-identical dep
@@ -208,10 +214,18 @@ Three properties follow:
   something was accepted and we have lost track of what.
 
 `claim-session.ts` clears it when a clone changes hands, alongside the marker
-unlink it already did — a new occupant inherits no acceptance. A session that
-accepted a list *before* this record existed answers from its marker once, and
-`evaluateInstallGate` backfills a record from that answer so the session stops
-depending on a marker five paths delete.
+unlink it already did — a new occupant inherits no acceptance.
+
+**Migration, and its honest limit.** A session that accepted a list *before* this
+record existed answers from its marker once, and `evaluateInstallGate` backfills
+a record from that answer. That covers a session whose marker is still intact
+when it next reaches the gate — the overwhelming majority, since the gate runs at
+every session setup. It does **not** cover the other ordering: a pre-record
+session whose marker is destroyed *before* its first post-upgrade gate evaluation
+has neither source, reads as a first install, and allows. That is exactly the
+behaviour that shipped before this record existed, so it is a window that fails
+to close rather than a regression — but it is a window, it is not closed by the
+backfill, and an earlier draft of this section claimed otherwise.
 
 ### Repairing it, rather than narrating it
 

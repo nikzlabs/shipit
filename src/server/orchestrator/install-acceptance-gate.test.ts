@@ -300,6 +300,77 @@ describe("acceptance survives every way the marker can be destroyed", () => {
     });
   });
 
+  /**
+   * Found by review, and the reason the copy re-reads the parent's LIVE
+   * evidence rather than trusting the record alone.
+   *
+   * The flag is refreshed only when an install completes. A session that
+   * accepted its list while plugin-free carries `false` until the next
+   * successful install — and a plugin arriving in that window is withheld on the
+   * parent (its `plugin-data/` is live evidence) but never causes an accept, so
+   * nothing updates the record. A fork taken then inherited `false`, found no
+   * evidence of its own, and ran exactly what the parent was refusing.
+   */
+  it("gates a fork taken after a plugin arrived but before the next install", () => {
+    // The session accepted its list while genuinely plugin-free.
+    fs.rmSync(path.join(sessionRoot, "plugin-data"), { recursive: true, force: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(ACCEPTED[0])}\n`,
+    );
+    installSucceeded(ACCEPTED);
+    expect(readAcceptedInstall(workspaceDir)).toMatchObject({ pluginBearing: false });
+
+    // A plugin then arrives, changes `agent.install`, and hides its declaration.
+    // No install completes, so the stale `false` is never refreshed.
+    fs.mkdirSync(path.join(sessionRoot, "plugin-data", "probe"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
+    );
+    // The parent is protected by its live on-disk evidence.
+    expect(evaluateInstallGate({ workspaceDir, requested: CHANGED }).withheld).toBe(true);
+
+    const forkWorkspace = path.join(root, "sessions", "fork-window", "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    fs.copyFileSync(
+      path.join(workspaceDir, "shipit.yaml"),
+      path.join(forkWorkspace, "shipit.yaml"),
+    );
+    copyAcceptedInstall(workspaceDir, forkWorkspace);
+
+    // The fork has neither declaration nor plugin-data of its own.
+    expect(sessionHasPlugin(forkWorkspace)).toBe(false);
+    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED })).toMatchObject({
+      withheld: true,
+      accepted: ACCEPTED,
+    });
+  });
+
+  /**
+   * Found by review. Fail-closed on the parent must not become fail-open on the
+   * child. An unreadable parent record resolves to an EMPTY command list, and
+   * the copy used to treat that the same as "nothing to carry" — so the fork
+   * inherited the plugin-mutated workspace and no record at all, read as a first
+   * install, and ran the changed list.
+   */
+  it("carries the gated-unknown state when the parent's record is unreadable", () => {
+    installSucceeded(ACCEPTED);
+    fs.writeFileSync(acceptedFile, "{tru");
+    expect(readAcceptedInstall(workspaceDir)).toMatchObject({ commands: [], pluginBearing: true });
+
+    const forkWorkspace = path.join(root, "sessions", "fork-corrupt", "workspace");
+    fs.mkdirSync(forkWorkspace, { recursive: true });
+    fs.writeFileSync(
+      path.join(forkWorkspace, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`,
+    );
+    copyAcceptedInstall(workspaceDir, forkWorkspace);
+
+    expect(sessionHasPlugin(forkWorkspace)).toBe(false);
+    expect(evaluateInstallGate({ workspaceDir: forkWorkspace, requested: CHANGED }).withheld).toBe(true);
+  });
+
   it("does not gate a fork whose parent never had a plugin", () => {
     // The flag is the ONLY thing that can gate a plugin-free session, so it must
     // not be set by a session that never had one.

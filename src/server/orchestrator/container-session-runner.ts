@@ -1978,6 +1978,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // succeeded, and that is load-bearing: `setupServiceManager` hands the
       // overlay publish the CONFIG's command list, so publishing here would stamp
       // the shared base pointer with the list that did not run.
+      // Nothing to replay AND nothing vouching for the tree. This is not the
+      // ordinary withhold — that one leaves a session working on dependencies it
+      // still has — and it is not repairable either, because the accepted list
+      // is unknown (an unreadable record resolves to an empty list, which is
+      // right for the gate's execute/refuse decision and useless here). Reported
+      // as a FAILED install so dependent services latch with a cause attached,
+      // rather than being released as successful into an exit 127 nobody can
+      // explain. Deliberately different from the repairable case below, where
+      // latching would take healthy sessions down at scale on a mere "unvouched".
+      if (verdict.afterDependencyReset && verdict.accepted.length === 0) {
+        console.error(
+          `[install:${this.sessionId}] dependency tree is unvouched and the accepted ` +
+          `install list is unknown — cannot repair`,
+        );
+        this.reportWithheld(verdict.accepted, commands, verdict.alreadyReported);
+        return { ok: false, withheld: true };
+      }
       if (verdict.afterDependencyReset && verdict.accepted.length > 0) {
         console.warn(
           `[install:${this.sessionId}] dependency tree is unvouched — re-running the ` +
@@ -1995,7 +2012,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             rewrite: "dependency-reset",
           });
         }
-        return { ok: replay.ok, withheld: true };
+        // `unverified` rides through: a replay that resolved from no observation
+        // is not evidence the tree is installed, and the overlay publish reads
+        // that as well as `withheld`.
+        return { ok: replay.ok, withheld: true, ...(replay.unverified ? { unverified: true } : {}) };
       }
       this.reportWithheld(verdict.accepted, commands, verdict.alreadyReported);
       return { ok: true, withheld: true };
@@ -2402,7 +2422,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const rewrite = this._lastRewriteLabel;
     this._lastRewriteLabel = undefined;
     mgr?.setInstallRunning(true);
-    let res: { ok: boolean } = { ok: true };
+    let res: InstallOutcome = { ok: true };
     try {
       res = await this.runInstall(this._depReinstallCommands);
     } catch {
@@ -2410,6 +2430,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     } finally {
       mgr?.setInstallRunning(false, { failed: !res.ok });
     }
+    // A WITHHELD outcome means these commands did not run — so a failure here is
+    // not theirs. `runInstall` either replayed the accepted list (and recorded
+    // the gap against that list itself) or could not repair at all; attributing
+    // it to `_depReinstallCommands` would overwrite that with a second, false
+    // notice saying ShipIt re-ran the withheld command and it failed.
+    if (res.withheld) return;
     // nikzlabs/shipit#2429 — a failed re-install leaves the tree and its dependencies
     // out of step just as surely as never running one. The gate latches
     // `dependsOnInstall` services to `error`, which is the loud half, but it

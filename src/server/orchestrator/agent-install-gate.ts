@@ -53,9 +53,9 @@
  * so it only ever writes the FIRST one — at container create on a fresh
  * session, before any plugin container has run.
  *
- * **That last paragraph was wrong, and {@link INSTALL_RESET_FILE} is what makes
- * it true again** (the ops finding of 2026-08-20). Two paths delete the marker
- * on an ESTABLISHED session — `prepareOverlayDirs` when the shared dep base
+ * **That last paragraph was wrong, and {@link INSTALL_ACCEPTED_FILE} is what
+ * makes it true again** (the ops finding of 2026-08-20). Several paths delete
+ * the marker on an ESTABLISHED session — `prepareOverlayDirs` when the shared dep base
  * rotates under it, and `reclaimBlockedSessionCaches` when disk pressure takes
  * the upper layer — and each one re-opens the pre-stamp's "no marker yet"
  * window on a session a plugin container has already run in. Observed on the
@@ -66,9 +66,9 @@
  * session (which docs/271 allows by design, the repo-trust decision covering
  * it) does reach the pointer, and from there the pre-stamp would promote it
  * into an established session's accepted list without anyone accepting it.
- * That is the escalation this gate exists to stop, so both deleters now record
- * the outgoing list here first and the gate reads it in preference to the
- * marker.
+ * That is the escalation this gate exists to stop, and what stops it is that
+ * acceptance now lives in its own durable record which the gate reads in
+ * preference to the marker — so no marker, however it was written, can move it.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -373,9 +373,13 @@ function acceptedRecordPath(workspaceDir: string): string {
  * completes with positive evidence that it ran (or that the worker's
  * content-keyed marker proved the tree already matched).
  *
- * This is the ONLY writer, which is the design: acceptance is recorded where
- * acceptance happens, so no amount of dependency-state deletion — by this
- * process or the worker's — can move it. See {@link INSTALL_ACCEPTED_FILE}.
+ * The only writer of a NEW acceptance, which is the design: acceptance is
+ * recorded where acceptance happens, so no amount of dependency-state deletion —
+ * by this process or the worker's — can move it. Two other callers reach this
+ * function without accepting anything new: the migration backfill, which
+ * persists a list the marker already vouched for, and {@link copyAcceptedInstall},
+ * which carries one session's acceptance into its fork. Neither invents a list.
+ * See {@link INSTALL_ACCEPTED_FILE}.
  *
  * **Atomic** (temp + rename), so a reader sees the old record or the new one and
  * never half of either; a torn write would otherwise be indistinguishable from a
@@ -391,7 +395,11 @@ export function recordAcceptedInstall(
   let tmp: string | null = null;
   try {
     const file = acceptedRecordPath(workspaceDir);
-    tmp = `${file}.tmp`;
+    // Per-process temp name. A fixed one lets two writers interleave as
+    // write(A) · write(B) · rename(A), so A's rename moves B's bytes. Both are
+    // real completed lists so the worst case is a stale record, which inverts
+    // into a withhold rather than an allow — but the class is free to remove.
+    tmp = `${file}.${process.pid}.tmp`;
     // Sticky, and OR-ed from three sources: what the caller carried in (the fork
     // copy), what this session already recorded, and what it looks like now.
     // Only ever gains the flag — see the field's docstring.
@@ -486,12 +494,30 @@ export function copyAcceptedInstall(fromWorkspaceDir: string | undefined, toWork
   if (!fromWorkspaceDir) return;
   try {
     const record = readAcceptedInstall(fromWorkspaceDir);
-    if (!record || record.commands.length === 0) return;
+    // Only a parent that has genuinely accepted NOTHING passes nothing on. A
+    // parent whose record exists but cannot be read is the opposite case and
+    // used to fall through here on `commands.length === 0`: the fork inherited
+    // the plugin-mutated workspace and no record at all, so its gate read "first
+    // install" and ALLOWED. Fail-closed on the parent turning into fail-open on
+    // the child is the worst shape available, so the unknown state is copied
+    // verbatim — an empty list matches no request, and the fork withholds.
+    if (!record) return;
     // The flag rides along explicitly: the fork has no `plugin-data/` of its
-    // own, so recomputing it there would answer `false` and drop the very fact
+    // own, so recomputing it THERE would answer `false` and drop the very fact
     // this copy exists to carry.
+    //
+    // It is also re-read from the PARENT's live evidence here, and that is not
+    // belt-and-braces — the record alone is stale by construction. The flag is
+    // refreshed only when an install completes, so a session that accepted its
+    // list while plugin-free carries `false` for as long as no further install
+    // succeeds. A plugin arriving in that window is withheld on the parent
+    // (`sessionHasPlugin` sees `plugin-data/` live) but never causes an accept,
+    // so nothing updates the record — and a fork taken then would inherit
+    // `false`, find no plugin evidence of its own, and run the very list the
+    // parent was refusing. This is the last moment the parent's live evidence is
+    // in reach, so it is where the two are reconciled.
     recordAcceptedInstall(toWorkspaceDir, record.commands, {
-      pluginBearing: record.pluginBearing,
+      pluginBearing: record.pluginBearing || sessionHasPlugin(fromWorkspaceDir),
     });
   } catch (err) {
     console.warn(
@@ -563,7 +589,15 @@ export function evaluateInstallGate(args: {
   // from its marker. Persist that answer the first time we need it, so the
   // session stops depending on a marker five different paths delete. Cheap and
   // idempotent — `readAcceptedInstall` short-circuits every later call.
-  if (record === null) recordAcceptedInstall(workspaceDir, accepted);
+  if (record === null && !recordAcceptedInstall(workspaceDir, accepted)) {
+    // Worth saying: this session keeps answering from a marker that five paths
+    // delete, and if one of them wins before the write next succeeds it has no
+    // acceptance source at all — which reads as a first install and allows.
+    console.error(
+      "[install-gate] could not persist the migrated accepted-install record; this " +
+      "session still depends on its install marker for the gate's anchor",
+    );
+  }
   if (sameCommands(accepted, requested)) return ALLOW;
 
   const reported = reportedWithheldCommands(workspaceDir);
