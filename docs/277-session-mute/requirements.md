@@ -19,21 +19,31 @@ terms. Design lives in `plan.md`.
 4. A mute ends when a new turn starts in that session, whatever started that
    turn. From that moment the session needs attention again by the usual rules.
 5. The user can unmute a session before that.
+6. Only a session that is asking for the user's attention, and whose agent is
+   not working, can be muted.
+7. A mute is stored with the session, not with the browser: a session muted on
+   one device is muted on every other one.
+8. A muted session carries no mute mark in the session list. It looks like a
+   session with nothing pending.
 
 ## Open questions
 
-- **Q1 — What does a mute silence?** Everything that says "this session needs
-  you" (the amber row marker, the "Needs you" count and view, the browser
-  notification and the voice note), or only the interruptions (notification and
-  voice note), keeping the marker on the row?
-- **Q2 — Does a mute follow the user, or the browser?** Stored with the session
-  on the server (the same session looks muted on a phone and on a laptop), or
-  stored in this browser only (each device mutes for itself)?
-- **Q3 — Is a muted session marked as muted?** A quiet icon on the row, or no
-  visible mark at all?
-- **Q4 — Can the user mute a session that is not asking for anything yet?** For
-  example while its agent still runs, so that it stays quiet when it stops.
+_(none — see the receipts below)_
 
 ## Resolved questions
 
-_(none yet)_
+- **2026-08-20 · Q4 — can a session be muted before it asks for anything?** No.
+  Nik: *"only a session which agent is not active can be muted"*, *"only while
+  it needs attention"* → requirement 6. The two halves are one rule in this
+  product: a session whose agent is working never needs attention in the first
+  place, and a session held at a permission prompt has a working agent, so
+  neither can be muted.
+- **2026-08-20 · Q2 — does a mute follow the user or the browser?** The user.
+  Nik: *"On the server, per session"* → requirement 7.
+- **2026-08-20 · Q3 — is a muted session marked as muted?** No. Nik: *"No
+  visible mark"* → requirement 8.
+- **2026-08-20 · Q1 — what does a mute silence?** Everything. Not asked again
+  after the answers above: requirement 2 is the human's own opening sentence
+  ("so it doesn't require attention"), and requirement 8 settles the rest — a
+  row that kept its amber marker would be wearing a visible mark of exactly the
+  kind requirement 8 rules out.

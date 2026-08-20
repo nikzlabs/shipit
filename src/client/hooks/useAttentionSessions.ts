@@ -42,6 +42,7 @@ export function useAttentionSessions(sessions: SessionInfo[]): Set<string> {
         autoFixEnabled,
         autoResolveEnabled,
         resolved: isTerminalPrResolved(session),
+        muted: !!session.mutedAt,
       });
       if (reason !== null) ids.add(session.id);
     }

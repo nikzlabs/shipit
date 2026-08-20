@@ -167,6 +167,14 @@ export interface SessionInfo {
    * pin protects list/disk persistence, while this flag consumes live capacity.
    */
   keepPreviewRunning?: boolean;
+  /**
+   * docs/277 — ISO instant the user muted the session; absent = not muted.
+   * A muted session is suppressed from `computeAttentionReason`, so it drops
+   * out of the row marker, the "Needs you" view and its count, and the
+   * notification/voice-note watcher together (req 2). Cleared at the START of
+   * the session's next turn, whatever started that turn (req 4).
+   */
+  mutedAt?: string;
   /** Branch name for sessions cloned from a repo. */
   branch?: string;
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */

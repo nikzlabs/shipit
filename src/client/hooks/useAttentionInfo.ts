@@ -33,6 +33,13 @@ export interface AttentionInputs {
    * group that means "done".
    */
   resolved: boolean;
+  /**
+   * docs/277 — the user muted this session (`SessionInfo.mutedAt` is set). The
+   * mute is a deliberate "I am not picking this up soon", so it silences every
+   * attention surface at once (req 2) and is cleared server-side at the start of
+   * the session's next turn (req 4).
+   */
+  muted: boolean;
 }
 
 /**
@@ -58,7 +65,16 @@ export function computeAttentionReason({
   autoFixEnabled,
   autoResolveEnabled,
   resolved,
+  muted,
 }: AttentionInputs): string | null {
+  // docs/277 (req 2) — a mute outranks every reason below, including the
+  // permission prompt: it is the user's own statement that this session is not
+  // theirs to look at right now. Placed here, in the one shared derivation,
+  // rather than at each surface — the row marker, the "Needs you" view and its
+  // count, and the notification watcher all go quiet together precisely because
+  // there is nothing else to teach.
+  if (muted) return null;
+
   const checks = card?.checks;
   const autoFix = card?.autoFix;
   const autoResolve = card?.autoResolve;
@@ -132,8 +148,18 @@ export function computeAttentionReason({
   return "Waiting for your input";
 }
 
-/** Returns the highest-priority attention reason for a session, or null if no attention needed. */
-export function useAttentionInfo(sessionId: string): string | null {
+/**
+ * Returns the highest-priority attention reason for a session, or null if no
+ * attention needed.
+ *
+ * `muted` (docs/277) is passed in rather than looked up here on purpose: the
+ * only caller is a session ROW, which already holds the `SessionInfo` it
+ * renders. A row can come from `allSessions` (the All Sessions dialog) or from a
+ * list the store has not caught up with, so a lookup by id would read `false`
+ * for a session the row itself knows is muted — and the row would wear an amber
+ * marker its own menu says is silenced.
+ */
+export function useAttentionInfo(sessionId: string, muted = false): string | null {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
@@ -145,5 +171,5 @@ export function useAttentionInfo(sessionId: string): string | null {
     const session = s.sessions.find((sess) => sess.id === sessionId);
     return session ? isTerminalPrResolved(session) : false;
   });
-  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved });
+  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved, muted });
 }

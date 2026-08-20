@@ -271,6 +271,17 @@ export async function executeAgentTurn(
   // any result exists. This is unconditional because echo rendering is not a
   // lifecycle signal, and abnormal exits must retain the start activity.
   deps.listenerDeps.sessionManager.track(sessionId);
+  // docs/277 (req 4) — a mute lasts until the session's next turn STARTS, and it
+  // ends here whatever started that turn: this is the one line both the WS path
+  // and the dispatch path (`shipit session message`, the CI-fix loop, a
+  // merge-wake, a queue drain) run through. `setMuted` returns null when the row
+  // was already unmuted, so the broadcast — and only the broadcast — is skipped
+  // on the ordinary turn, which is every turn but the rare muted one.
+  if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
+    deps.listenerDeps.sseBroadcast("session_list", {
+      sessions: deps.listenerDeps.sessionManager.list(),
+    });
+  }
   const useStreaming = input.useStreaming ?? false;
   /**
    * docs/140 Phase 6.11 — may a turn the CLI starts on its own be ADOPTED here

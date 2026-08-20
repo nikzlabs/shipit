@@ -638,6 +638,45 @@ export function setKeepPreviewRunning(
 }
 
 /**
+ * docs/277 — mute or unmute a session (reqs 1, 5).
+ *
+ * `agentWorking` is resolved by the caller from the session's runner and carries
+ * req 6's server-side half: a session whose agent is working cannot be muted. It
+ * covers three states that all mean "the agent will speak again on its own" —
+ * a running turn, a turn held at a permission prompt (the agent IS running,
+ * blocked inside the gated tool call), and outstanding background work.
+ *
+ * Req 6's other half — "is asking for the user's attention" — is deliberately
+ * NOT re-derived here. Attention is computed in the browser from PR/CI state the
+ * orchestrator does not hold in that shape, and docs/260 req 9 requires exactly
+ * one definition of it; a second one here could disagree with the marker the
+ * user is looking at. The client enforces that half by only offering the
+ * control on a row that needs attention.
+ *
+ * Unmuting is never gated: a mute that could not be lifted because the session
+ * started working would outlive the state that justified it — and a turn start
+ * clears it anyway.
+ */
+export function setSessionMuted(
+  sessionManager: SessionManager,
+  sessionId: string,
+  muted: boolean,
+  agentWorking: boolean,
+  now = new Date(),
+): { session: SessionInfo; sessions: SessionInfo[] } {
+  const current = sessionManager.get(sessionId);
+  if (!current) throw new ServiceError(404, "Session not found");
+  if (muted && agentWorking) {
+    throw new ServiceError(409, "A session whose agent is working cannot be muted");
+  }
+
+  // `setMuted` returns null when the row is already in the requested state, so
+  // fall back to the row we just read rather than treating a no-op as a 404.
+  const updated = sessionManager.setMuted(sessionId, muted ? now.toISOString() : null) ?? current;
+  return { session: updated, sessions: sessionManager.list() };
+}
+
+/**
  * docs/110 Phase 2 — reorder a repo's pinned sessions to the order in `ids`.
  * Returns the refreshed sidebar list for the caller to broadcast.
  */

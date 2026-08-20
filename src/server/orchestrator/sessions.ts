@@ -104,6 +104,8 @@ interface SessionRow {
   pinned_at: string | null;
   /** docs/241 — 1 while the session owns an always-on preview reservation. */
   keep_preview_running: number;
+  /** docs/277 — ISO instant the user muted the session; NULL = not muted. */
+  muted_at: string | null;
   /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
   merge_watch: string | null;
   /** docs/213 — JSON `SessionSecretBlock` while auto-commit is refused, or NULL. */
@@ -387,6 +389,7 @@ export class SessionManager {
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
     if (row.pinned_at) info.pinnedAt = row.pinned_at;
     if (row.keep_preview_running) info.keepPreviewRunning = true;
+    if (row.muted_at) info.mutedAt = row.muted_at;
     if (row.merge_watch) {
       try {
         info.mergeWatch = JSON.parse(row.merge_watch) as SessionInfo["mergeWatch"];
@@ -897,6 +900,24 @@ export class SessionManager {
     const result = this.db.prepare(
       "UPDATE sessions SET pinned_at = ? WHERE id = ?",
     ).run(pinnedAt, id);
+    if (result.changes === 0) return null;
+    return this.get(id) ?? null;
+  }
+
+  /**
+   * docs/277 — mute or unmute a session. Pass an ISO instant to mute, or null to
+   * unmute. Records nothing but the flag: a mute suppresses the session's
+   * attention signals (req 2) and changes no other property of the session
+   * (req 3), so pin, disk tier and the idle clocks are all left alone.
+   *
+   * Returns the updated session, or null if not found. Also returns null when
+   * nothing changed — the caller uses that to skip the SSE broadcast on the
+   * overwhelmingly common case: an ordinary turn on an unmuted session.
+   */
+  setMuted(id: string, mutedAt: string | null): SessionInfo | null {
+    const result = this.db.prepare(
+      "UPDATE sessions SET muted_at = ? WHERE id = ? AND muted_at IS NOT ?",
+    ).run(mutedAt, id, mutedAt);
     if (result.changes === 0) return null;
     return this.get(id) ?? null;
   }
