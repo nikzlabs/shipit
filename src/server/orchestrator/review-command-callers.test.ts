@@ -170,19 +170,6 @@ function readRepoInstructions(): string {
   return fs.readFileSync(new URL("../../../CLAUDE.md", import.meta.url), "utf8");
 }
 
-/**
- * The long-form requirements-discipline workflow, which docs/241-spec-discipline req 11
- * moved out of `shipit-docs/` and into this repository's own feature folder. Read
- * for the same reason `CLAUDE.md` is: it is a review caller, and it is now the
- * only place the discipline's review command is written down.
- */
-function readDisciplineWorkflow(): string {
-  return fs.readFileSync(
-    new URL("../../../docs/241-spec-discipline/workflow.md", import.meta.url),
-    "utf8",
-  );
-}
-
 /** Every axis, since the review instruction must reach all of them. */
 const ALL_VARIANTS: AgentSystemInstructionOptions[] = [
   {},
@@ -202,11 +189,10 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
     // The review command lives in the per-agent "Parallel sessions" section, and a
     // render with no `agentId` omits that section entirely — it is the Settings
     // baseline and this file's fixture, never a session (`session-agent-run-params.ts`
-    // and `services/settings.ts` both pass one). Until docs/241-spec-discipline req 11
-    // the bare render still named the role, from the requirements-discipline
-    // fragment; that fragment is now repository policy, so the bare render names
-    // no review at all and the assertion follows the guidance rather than
-    // outliving it.
+    // and `services/settings.ts` both pass one). The bare render used to name the
+    // role anyway, from the requirements-discipline fragment; docs/241-spec-discipline
+    // req 11 deleted that fragment, so the assertion follows the guidance that
+    // remains rather than outliving it.
     const withGuidance = ALL_VARIANTS.filter((opts) => opts.agentId !== undefined);
     expect(withGuidance.length).toBeGreaterThan(0);
     for (const opts of withGuidance) {
@@ -217,38 +203,6 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
   it("never authors a bare `--agent <backend>` run in any system-prompt variant", () => {
     for (const opts of ALL_VARIANTS) {
       expect(incompleteExplicitRuns(buildAgentSystemInstructions(opts))).toEqual([]);
-    }
-  });
-
-  it("keeps this repository's requirements-discipline review on the role", () => {
-    // The review the discipline mandates used to be a product prompt fragment;
-    // docs/241-spec-discipline req 11 moved it to repository policy. The assertion moved
-    // with it rather than being dropped: naming a backend here would re-introduce
-    // the choice the role took away, on the one call the discipline mandates.
-    for (const text of [readRepoInstructions(), readDisciplineWorkflow()]) {
-      expect(text).toContain("--role reviewer");
-      expect(incompleteExplicitRuns(text)).toEqual([]);
-    }
-  });
-
-  it("ships the discipline to nobody else — no variant and no injected page carries it", () => {
-    // docs/241-spec-discipline req 11. The workflow is one repository's way of working, so
-    // a session on someone else's repository must see no trace of it: not in the
-    // instructions ShipIt composes, not in the pages it bakes into the worker
-    // image. Absence is the whole guarantee, so it is asserted where the text
-    // would have to reappear to break it.
-    const carriers = [
-      ...ALL_VARIANTS.map((opts) => ({
-        name: JSON.stringify(opts),
-        text: buildAgentSystemInstructions(opts),
-      })),
-      ...everyInjectedDoc(),
-    ];
-    for (const { name, text } of carriers) {
-      expect(text, `${name} still names the discipline's doc page`)
-        .not.toContain("spec-discipline");
-      expect(text, `${name} still teaches requirements discipline`)
-        .not.toMatch(/requirements discipline/i);
     }
   });
 

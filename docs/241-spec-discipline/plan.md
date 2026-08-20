@@ -22,7 +22,7 @@ The whole feature is prose in **this repository**, and deliberately nowhere in t
 - **`CLAUDE.md` › *Every new feature is under requirements discipline*** — the always-on rules: the turn-start check, the five ordered steps, and the pointer below. `CLAUDE.md` is symlinked as `AGENTS.md`, so both backends read it.
 - **`docs/241-spec-discipline/workflow.md`** — the long-form reference: document format, the open-question flow and its clarification receipt, and the brief for the independent review.
 
-**The first version put both in ShipIt's product surface** — a `prompts/spec-discipline.md` fragment composed into every system-instruction variant, and a `shipit-docs/spec-discipline.md` page baked into the session-worker image — which handed the workflow to every repository ShipIt runs on, whether or not it wanted one. Removing them is the whole of the 2026-08-20 change: the orchestrator composes no such fragment, the worker image bakes no such page, and `review-command-callers.test.ts` fails if either returns. What ShipIt still provides is the *mechanism* the discipline uses and would provide anyway: the structured-question flow, and `shipit agent run --role reviewer`.
+**The first version put both in ShipIt's product surface** — a `prompts/spec-discipline.md` fragment composed into every system-instruction variant, and a `shipit-docs/spec-discipline.md` page baked into the session-worker image — which handed the workflow to every repository ShipIt runs on, whether or not it wanted one. Deleting them, and the tests that existed only to pin them, is the whole of the 2026-08-20 change; nothing replaced them, because a removal that leaves machinery behind has not removed anything. What ShipIt still provides is the *mechanism* the discipline uses and would provide anyway: the structured-question flow, and `shipit agent run --role reviewer`.
 
 A project that wants the discipline writes it into its own agent instructions; this folder is the copy to start from.
 
@@ -45,4 +45,3 @@ The instructions name `shipit agent run` as *the* mechanism and say explicitly t
 - `CLAUDE.md` — the always-on rules (symlinked as `AGENTS.md`, so both backends read them)
 - `docs/241-spec-discipline/workflow.md` — the long-form workflow reference
 - `docs/241-spec-discipline/` — this feature's own documents, doubling as the worked example
-- `src/server/orchestrator/review-command-callers.test.ts` — the guard: no system-instruction variant and no injected page carries the discipline, and the two repository documents keep the review on `--role reviewer`

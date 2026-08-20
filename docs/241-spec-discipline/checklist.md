@@ -13,5 +13,5 @@
 - [x] Delete `src/server/orchestrator/prompts/spec-discipline.md` and drop `{{SPEC_DISCIPLINE}}` from `skeleton.md` + `agent-instructions.ts`
 - [x] Delete `src/server/shipit-docs/spec-discipline.md` and its bullet in the skeleton's platform-docs list
 - [x] Move the long-form workflow to `docs/241-spec-discipline/workflow.md`, and carry the always-on rules in `CLAUDE.md`
-- [x] Guard tests: no variant and no injected page carries the discipline; `CLAUDE.md` + `workflow.md` keep the review on `--role reviewer`; narrow the "every variant names the role" assertion to the variants that have spawn guidance
+- [x] Delete the tests that existed only to pin the fragment and the page; add none — the only test edit that remains is narrowing "every variant names the role" to the variants that still have spawn guidance, which the deletion forces
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`

@@ -242,7 +242,7 @@ The scan surfaces **every** `.md` file in the workspace, not just `docs/` — so
 
 ### Every new feature is under requirements discipline
 
-Requirements discipline is **this repository's way of working, not a ShipIt feature** (docs/241-spec-discipline req 11). ShipIt's product code carries none of it — no fragment in the system instructions it composes, no page in `src/server/shipit-docs/` — so a session on another repository sees no trace of it, and the rules live here instead. Full workflow, document format, and review brief: [`docs/241-spec-discipline/workflow.md`](docs/241-spec-discipline/workflow.md). Don't re-add it to a prompt or an injected page; a guard test in `review-command-callers.test.ts` fails if you do.
+Requirements discipline is **this repository's way of working, not a ShipIt feature** (docs/241-spec-discipline req 11). ShipIt's product code carries none of it — no fragment in the system instructions it composes, no page in `src/server/shipit-docs/` — so a session on another repository sees no trace of it, and the rules live here instead. Full workflow, document format, and review brief: [`docs/241-spec-discipline/workflow.md`](docs/241-spec-discipline/workflow.md).
 
 **It is mandatory for every new feature here**: if the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Existing features without one are not retroactively required to have it — but the moment you materially rework one, write its requirements first.
 
