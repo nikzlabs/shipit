@@ -47,6 +47,7 @@ function deps(): AgentListenerDeps {
       setModel: vi.fn(),
       get: vi.fn(() => null),
       track: vi.fn(),
+      setMuted: vi.fn(),
       list: vi.fn(() => []),
     } as any,
     chatHistoryManager: {

@@ -149,6 +149,7 @@ function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"
       setLastTurnErrored: vi.fn(),
       get: vi.fn(),
       track: vi.fn(),
+      setMuted: vi.fn(),
       list: vi.fn().mockReturnValue([]),
     } as never,
     chatHistoryManager: {

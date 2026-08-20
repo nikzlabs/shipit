@@ -16,6 +16,7 @@ import {
   renameSessionByAgent,
   setSessionPinned,
   setKeepPreviewRunning,
+  setSessionMuted,
   reorderSessionPins,
   archiveSession,
   applyTemplate,
@@ -282,6 +283,40 @@ export async function registerSessionCrudRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to update preview reservation: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // PUT /api/sessions/:id/muted — docs/277 mute toggle. The runner answers
+  // req 6's server-side half ("its agent is not working"): a running turn, a
+  // turn held at a permission prompt, or outstanding background work all mean
+  // the session will speak again on its own and so cannot be muted.
+  app.put<{ Params: { id: string }; Body: { muted?: unknown } }>(
+    "/api/sessions/:id/muted",
+    async (request, reply) => {
+      try {
+        if (typeof request.body?.muted !== "boolean") {
+          throw new ServiceError(400, "muted must be a boolean");
+        }
+        const runner = deps.runnerRegistry.get(request.params.id);
+        const agentWorking = !!runner
+          && (runner.running
+            || runner.awaitingPermissionIds.size > 0
+            || runner.backgroundWorkDescriptions.length > 0);
+        const result = setSessionMuted(
+          sessionManager,
+          request.params.id,
+          request.body.muted,
+          agentWorking,
+        );
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        return { session: result.session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to update session mute: ${getErrorMessage(err)}` });
       }
     },
   );

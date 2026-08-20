@@ -236,6 +236,12 @@ interface SessionState {
   /** docs/241 — reserve/release the session runtime for its managed preview. */
   setKeepPreviewRunning: (sessionId: string, enabled: boolean) => Promise<void>;
   /**
+   * docs/277 — mute/unmute a session: while muted it is suppressed from every
+   * "needs you" surface. Optimistic; the server clears the mute on its own at
+   * the start of the session's next turn and broadcasts `session_list`.
+   */
+  setMuted: (sessionId: string, muted: boolean) => Promise<void>;
+  /**
    * docs/110 Phase 2 — reorder a repo's pinned sessions to the given id order
    * (top-first). Optimistic; the authoritative `session_list` broadcast
    * reconciles.
@@ -542,6 +548,39 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.error("[session-store] Preview reservation toggle failed:", err);
       patch(prev);
       useUiStore.getState().setToast({ message: "Failed to update preview reservation" });
+    }
+  },
+
+  setMuted: async (sessionId, muted) => {
+    // Patched in both lists for the same reason as the reservation toggle above:
+    // the sidebar renders `sessions` and the All Sessions dialog renders
+    // `allSessions`, and either row can carry the control.
+    const patch = (value: string | undefined) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, mutedAt: value } : s)),
+        allSessions: state.allSessions.map((s) => (s.id === sessionId ? { ...s, mutedAt: value } : s)),
+      }));
+    const prev = (get().sessions.find((s) => s.id === sessionId)
+      ?? get().allSessions.find((s) => s.id === sessionId))?.mutedAt;
+    // Optimistic: the row's attention marker goes quiet on the click, not on the
+    // round-trip. The server's `session_list` broadcast reconciles the real
+    // timestamp a moment later.
+    patch(muted ? new Date().toISOString() : undefined);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/muted`, {
+        method: "PUT",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ muted }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        patch(prev);
+        useUiStore.getState().setToast({ message: data.error ?? "Failed to update session mute" });
+      }
+    } catch (err) {
+      console.error("[session-store] Mute toggle failed:", err);
+      patch(prev);
+      useUiStore.getState().setToast({ message: "Failed to update session mute" });
     }
   },
 
