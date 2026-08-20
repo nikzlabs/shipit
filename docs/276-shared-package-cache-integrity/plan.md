@@ -258,10 +258,11 @@ Publishing a package is trivial, so this raises the bar and does not close it �
 and a mediator is in exactly the same position, because it would be asked for a
 legitimate package with legitimate integrity.
 
-**What actually closes H1 is the lockfile, not the network.** Measured: with a
-valid lockfile present, the same poisoned packument is simply ignored — npm uses
-the lockfile's `resolved` and `integrity`, and the correct package installs. That
-is Q2, and it costs nothing to build.
+**What defeats it locally is the lockfile, not the network** — but only for the
+packages the lockfile already pins. See
+[Exactly which installs a lockfile protects](#exactly-which-installs-a-lockfile-protects);
+it is a partial mitigation, not a fix, and the fix is the per-session resolution
+cache.
 
 **What it would cost anyway**, for the record:
 
@@ -288,6 +289,60 @@ if that threat is ever in scope it should be re-priced on its own terms. It is
 not a candidate here, and it is worse than copies: more mechanism, a new
 credential concentration, a new single point of failure, and zero holes closed.
 
+## Exactly which installs a lockfile protects
+
+An earlier draft of this plan said lockfile-pinned installs "close H1 outright".
+**That was too strong.** A lockfile answers for the packages it pins; whenever npm
+has to *resolve* — because the name is new, or the range is not pinned — it reads
+the packument again, and the packument is the poisoned surface. Measured, all
+with a valid lockfile present and the network available:
+
+| The agent runs… | Protected? | Measured result |
+|---|---|---|
+| `npm ci` | **Yes** | Resolves only from the lockfile. |
+| `npm install` (lockfile matches `package.json`) | **Yes** | Poisoned packument ignored; correct package installed. |
+| `npm install <new-package>` | **No** | Attacker's `postinstall` ran; attacker's code installed. |
+| `npm install` (lockfile out of sync with `package.json`) | **No** | Same. In the *same run* the pinned package was clean and the unpinned one poisoned. |
+| `npm update`, `npm install <pkg>@latest`, an unpinned range | **No** | Same resolution path as adding. Not separately measured. |
+
+**The un-protected row is the one requirement 9 exists to protect.** The requester
+added req 9 so the agent can run `npm install` to *add* something — which is
+precisely the case a lockfile does not cover. So "make installs lockfile-pinned"
+and "the agent can add packages" do not overlap as neatly as they appear to: the
+second is the hole in the first.
+
+### It also persists into the lockfile
+
+After the poisoned `npm install is-even`, the project's `package-lock.json`
+recorded **the attacker's hash** as the expected integrity for that package
+(verified by comparing the lockfile entry against the attacker's digest). Three
+consequences, and they make this worse than a cache-scoped problem:
+
+- It **outlives the cache**. Wiping or re-keying the shared cache does not undo it.
+- Every later `npm ci` — the protected path — now faithfully reproduces the
+  attacker's package, because the lockfile pins the attacker's hash.
+- **ShipIt commits it.** The post-turn auto-commit picks up the changed
+  `package-lock.json` and pushes it, so a cross-session cache write becomes a
+  committed change to the user's repository, reaching CI and every other clone.
+
+### What closes the remainder, cheaply
+
+The **per-session npm resolution cache** — step 1 of the recommendation, and the
+thing the lockfile was standing in for. Give each session its own
+`_cacache/index-v5` while continuing to share `content-v2`. The poisoned
+packument then simply does not exist in the session that reads it, so *every* row
+in the table above is protected, including adding a package.
+
+It keeps the download saving, because the bytes are in `content-v2`, and tarballs
+are found there **by digest without an index entry** — demonstrated incidentally
+by the H1 exploit itself, which served content placed at its hash with no index
+entry backing it. What remains per-session is one small metadata fetch per
+package, not the tarball.
+
+Still needs a spike to confirm npm tolerates the split cleanly and to measure the
+warm-install cost against req 7 — but it is cheap, and it is the only cheap thing
+that covers the adding case.
+
 ## The three options side by side
 
 | | **Copies** (`package-import-method=copy`) | **Registry mediation** | **Narrow the store key** |
@@ -300,10 +355,11 @@ credential concentration, a new single point of failure, and zero holes closed.
 | Compatible with req 9 | ✓ | ✓ | ✓ |
 | New failure modes | none | mediator down ⇒ no installs anywhere | none |
 
-**And the row that is not one of the three:** lockfile-pinned installs (Q2) close
-**H1** outright, cost nothing to build, and are the only thing here that closes a
-demonstrated remote-code-execution path. The three options were framed as the
-menu; the cheapest real win is not on it.
+**And the row that is not one of the three:** the **per-session resolution cache**
+closes **H1** — including `npm install <new-package>`, which a lockfile does not
+cover — and it is cheap. Lockfile pinning (Q2) is worth having beside it as
+defence in depth, but on its own it protects only reproducible installs. The
+three options were framed as the menu; the cheapest real win is not on it.
 
 ## Recommendation
 
@@ -312,9 +368,13 @@ addresses neither demonstrated hole, and per-repo keying is already disproven by
 `/dep-cache`. Sequence by what is actually open instead:
 
 1. **Close H1 first — cheap, and it is a working RCE.** Two parts, neither of
-   which is a new integrity subsystem:
+   which is a new integrity subsystem. **Order matters: the per-session
+   resolution cache is the fix and the lockfile is the supplement, not the other
+   way round** — a lockfile does nothing for `npm install <new-package>`, which
+   is exactly what req 9 protects.
    - Make ShipIt's installs lockfile-pinned, so npm trusts the lockfile rather
-     than the cached packument (subject to **Q2**).
+     than the cached packument (subject to **Q2**). Defence in depth: it covers
+     `npm ci` and in-sync `npm install`, and nothing else.
    - **Stop sharing the npm resolution cache while continuing to share the
      content cache.** These live in one directory today but are not equally
      trustworthy: `content-v2` is self-verifying by construction, whereas

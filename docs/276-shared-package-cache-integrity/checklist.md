@@ -22,9 +22,19 @@ answers to Q1 and Q2 decide which of these items exist at all. Requirement 9
 
 - [ ] Spike: confirm npm tolerates a per-session `_cacache/index-v5` with a
       shared `content-v2`, and measure what warm-install time it actually costs
-      (req 7). If it does not, this step needs a different mechanism.
+      (req 7). If it does not, this step needs a different mechanism. **This is
+      the fix, not the lockfile** — it is the only cheap thing that also covers
+      `npm install <new-package>`.
 - [ ] Make ShipIt's install path lockfile-pinned (`npm ci` semantics), subject
-      to Q2's answer.
+      to Q2's answer. Defence in depth only: measured to cover `npm ci` and
+      in-sync `npm install`, and **not** adding a package or an out-of-sync
+      lockfile.
+- [ ] Regression test for the **adding** case specifically: with a valid lockfile
+      present, `npm install <new-package>` against a poisoned packument must not
+      execute the attacker's `postinstall`.
+- [ ] Check whether a poisoned integrity can still reach `package-lock.json`, and
+      therefore ShipIt's auto-commit. Measured today: it can, which turns a cache
+      write into a committed change to the user's repository.
 - [ ] Decide and implement the no-lockfile behaviour Q2 selects (install without
       the shared cache, or warn).
 - [ ] Regression test that reproduces the packument-poisoning RCE and asserts it
