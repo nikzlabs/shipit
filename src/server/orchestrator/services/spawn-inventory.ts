@@ -35,6 +35,17 @@
  * Both reads report **this install**, not the catalogue: an uninstalled harness
  * and a model with no credential are not things an override may name, and
  * listing them would produce exactly the refusals the list exists to prevent.
+ *
+ * **Install-wide, not the calling worker's mount.** `GET /agent/params` uses
+ * the session id only to 404; the listing is `agentRegistry.eligibleModels`.
+ * A Claude session therefore still sees Grok's xAI subscription rows, even
+ * though docs/138 never copies grok's `auth.json` into that worker. A
+ * `shipit agent run` onto that row provisions the subtree for the spawn and
+ * wipes it (docs/144) — the same path `--role GrokSub` already takes. The
+ * listing answering "what may an override name *here*" and the worker
+ * answering "what is on disk for the resident CLI" are two questions, and
+ * collapsing them would either hide a runnable consult or put every
+ * harness's account in every container.
  */
 
 import type { AgentId, RoleView } from "../../shared/types.js";

@@ -1469,6 +1469,7 @@ describe("credentials", () => {
       // own home. Re-keying them would orphan every connected account.
       expect(credentialHarnessForLogin("anthropic-oauth")).toBe("claude");
       expect(credentialHarnessForLogin("openai-chatgpt")).toBe("codex");
+      expect(credentialHarnessForLogin("xai-oauth")).toBe("grok");
     });
 
     it("fans a completed sign-in out to every harness that can use the credential", () => {
@@ -1482,6 +1483,7 @@ describe("credentials", () => {
       // the expectation.
       expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude"]);
       expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex"]);
+      expect(harnessesForLoginIntegration("xai-oauth")).toEqual(["grok"]);
     });
 
     it("restricts an account credential to the harnesses that can present it", () => {
@@ -1492,16 +1494,36 @@ describe("credentials", () => {
       // style join alone would offer it a ChatGPT subscription — a guaranteed
       // 401, the same class as docs/268's Anthropic-on-OpenCode hole.
       //
-      // This pins the DECLARATION rather than the refusal, deliberately: with
-      // no second account-bearing harness in the catalogue yet, every harness
-      // the clause would exclude is already excluded for lacking an `account`
-      // target, so a behavioural assertion would pass with the clause deleted.
-      // The refusal becomes testable in the change that gives Grok its account
-      // target, and this is what stops the declaration being dropped meanwhile.
+      // The declaration pin is still load-bearing (dropping `carriers` from
+      // the row while leaving the harnessCanCarry clause would also pass a
+      // refusal-only test). The refusal is no longer vacuous: Grok now has
+      // an `account` target, so without the clause it WOULD join ChatGPT.
       const chatgpt = getService("openai")?.modes
         .find((m) => m.kind === "sub")
         ?.credentials.find((c) => c.via === "account");
       expect(chatgpt?.carriers).toEqual(["codex"]);
+      expect(harnessCanCarry("grok", {
+        serviceId: "openai", billingMode: "sub", via: "account",
+      })).toBe(false);
+      expect(eligibleEntriesForHarness("grok", [{
+        serviceId: "openai", billingMode: "sub", via: "account",
+      }])).toEqual([]);
+
+      const xaiAccount = getService("xai")?.modes
+        .find((m) => m.kind === "sub")
+        ?.credentials.find((c) => c.via === "account");
+      expect(xaiAccount?.carriers).toEqual(["grok"]);
+      // The other direction — a SuperGrok login is not a Codex credential.
+      // `shipit agent params` listing only `xai --billing-mode key` on Codex
+      // is this clause, not a missing account row. OpenCode is excluded
+      // earlier (no `account` target at all, docs/268) and is not asserted
+      // here: that refusal would still pass with the clause deleted.
+      expect(harnessCanCarry("codex", {
+        serviceId: "xai", billingMode: "sub", via: "account",
+      })).toBe(false);
+      expect(harnessCanCarry("grok", {
+        serviceId: "xai", billingMode: "sub", via: "account",
+      })).toBe(true);
 
       // Anthropic deliberately has NONE — see the row's comment. Adding one
       // deletes the only real-catalogue pair where "selected service" and
@@ -1510,6 +1532,37 @@ describe("credentials", () => {
         .find((m) => m.kind === "sub")
         ?.credentials.find((c) => c.via === "account");
       expect(anthropic?.carriers).toBeUndefined();
+    });
+
+    it("an xAI account makes subscription models eligible on Grok only", () => {
+      // The join `listSpawnParameters` reads: grok's eligibleModels, given
+      // this credential. An xAI account credential produces `--billing-mode
+      // sub` rows on Grok (grok-4.6 and grok-4.5). A params dump that only
+      // looked at Codex's xAI rows would read as "key only" — that is the
+      // carriers refusal below, not a missing account. The listing is
+      // install-wide; docs/138's worker mount is a different layer.
+      const xaiAccount = { serviceId: "xai", billingMode: "sub" as const, via: "account" as const };
+      const xaiKey = { serviceId: "xai", billingMode: "key" as const, via: "string" as const };
+
+      const grokSub = eligibleEntriesForHarness("grok", [xaiAccount]);
+      expect(grokSub.map((e) => e.model.id).sort()).toEqual(["grok-4.5", "grok-4.6"]);
+      expect(grokSub.every((e) => e.selection.billingMode === "sub")).toBe(true);
+      // Codex is the load-bearing refusal (it has an `account` target and
+      // speaks `openai-responses`). Claude and OpenCode also get nothing, but
+      // from earlier clauses (style join / no account target) and are not
+      // what pins `carriers`.
+      expect(eligibleEntriesForHarness("codex", [xaiAccount])).toEqual([]);
+
+      // Key mode is unchanged — every harness that speaks xAI's key style
+      // still gets the metered rows from a stored key.
+      expect(eligibleEntriesForHarness("grok", [xaiKey]).some((e) => e.model.id === "grok-4.6")).toBe(true);
+      expect(eligibleEntriesForHarness("codex", [xaiKey]).some((e) => e.model.id === "grok-4.6")).toBe(true);
+
+      expect(harnessServiceSupport("grok", "xai")).toBe("all");
+      expect(harnessServiceSupport("codex", "xai")).toBe("some");
+      expect(harnessServiceSupport("opencode", "xai")).toBe("some");
+      expect(harnessSupportsMode("grok", "xai", "sub")).toBe(true);
+      expect(harnessSupportsMode("codex", "xai", "sub")).toBe(false);
     });
 
     /**

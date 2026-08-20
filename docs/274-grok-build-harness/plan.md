@@ -644,6 +644,46 @@ req 13's machinery is covered by unit tests against the real file shape
 (`session-credentials.test.ts`), not by that turn, and the container path is
 where it first runs for real.
 
+**Verified later on a fresh session-worker container** (2026-08-20, role GrokSub,
+no container-local `grok login`):
+
+- **Req 12** — the account reached the new container. Resident route
+  `{"grok":{"kind":"account",…}}`, `~/.grok` → `/credentials/.grok`,
+  `GROK_HOME/auth.json` a symlink onto the same file, `XAI_API_KEY` unset
+  (the subscription scrub). The live `auth.json` matches the shape above
+  (scope key, `key`, ISO `expires_at`); `create_time` → `expires_at` is
+  again exactly six hours. No refresh was observed in the first hour.
+- **`shipit agent params` lists xAI `--billing-mode sub` for Grok, and
+  only Grok — install-wide.** Grok Build lists grok-4.6 and grok-4.5
+  as `--billing-mode sub`, plus the key rows. Codex lists xAI key
+  rows only — that is the `carriers: ["grok"]` join, not a missing
+  account credential. OpenCode also lists no xAI sub row, but because
+  it has no account target at all (docs/268), not because of that
+  clause. `GET /api/sessions/:id/agent/params` uses the session id
+  only to 404; `listSpawnParameters` reads the process-wide
+  `eligibleModels` cache. A Claude-pinned sibling on the same
+  deployment lists the same two sub rows. A role-less
+  `--agent grok --service xai --billing-mode sub --model grok-4.6
+  --effort high` is therefore assemblable from any session; docs/275's
+  completeness rule holds for subscription selections.
+  `catalogue.test.ts` pins both directions of the carriers refusal
+  (Grok withheld from ChatGPT; Codex withheld from SuperGrok).
+
+  **Two layers, and they must stay separate.** A Claude-pinned
+  sibling has no grok `auth.json` in `/credentials/.grok/` (only a
+  leftover `sessions/` dir; pointer files name only claude). That is
+  docs/138: `provisionAgentCredentials` copies "only `agentId`'s
+  files — the other agent's credentials never land in this session's
+  container". Metered keys still reach every worker as
+  `SHIPIT_CREDENTIAL_*`. The listing is not that mount: an ordinary
+  session can still *name* a grok subscription target, and
+  `shipit agent run` — role or explicit — resolves the route
+  server-side and copies the grok account in for the spawn
+  (`provisionSubAgentCredentials`), then wipes auth on the way out.
+  `--role GrokSub` and the explicit four-plus-effort form are the
+  same credential path. Do not provision every account into every
+  session to make the worker look like the listing.
+
 ### What the independent review caught, and why it was the right question to ask
 
 The brief for the out-of-family reviewer led with "did I miss a consumer of the
