@@ -225,9 +225,11 @@ function buildPills(
       (account) => account.serviceId === serviceId && !isUnconnectedAttempt(account),
     );
 
-    // Connected accounts define pill presence, not cached snapshots. A quiet
-    // account may have no quota event yet, but its pill must remain available
-    // so the user can request a refresh and see that usage is still unknown.
+    // Among the modes that report a quota at all, connected accounts define
+    // pill presence, not cached snapshots. A quiet account may have no quota
+    // event yet, but its pill must remain available so the user can request a
+    // refresh and see that usage is still unknown. That argument is what the
+    // gate above bounds: it holds only where a refresh can produce a number.
     for (const account of modeAccounts) {
       // ...and the second job: a credential that cannot run a turn says so
       // here, which is a statement about the SIGN-IN and not about quota. So a
@@ -267,13 +269,21 @@ function buildPills(
       if (modeAccounts.some((account) => account.id === snapshot.routeId)) continue;
       fromSnapshot.add(snapshot.routeId);
       const secret = modeSecrets.get(snapshot.routeId);
+      const secretAttention = secret ? credentialStatusWord(secret) : undefined;
+      // Unreachable today and still worth writing: a mode with no reader has no
+      // `LimitsProvider`, so no snapshot of it can exist. But this loop derives
+      // a pill FROM a snapshot, so it would render one on nothing but the map's
+      // say-so — and a stale entry, or a service that loses a reader, would put
+      // the blank meters straight back. The rule is "no reader, no meters", and
+      // the code says it in every loop rather than in one loop and a doc.
+      if (!reportsQuota && !secretAttention) continue;
       pills.push({
         key: `${modeKey}:${snapshot.routeId}`,
         serviceId,
         routeId: snapshot.routeId,
         label: serviceLabel(serviceId),
         snapshot,
-        ...(secret && credentialStatusWord(secret) ? { attention: credentialStatusWord(secret) } : {}),
+        ...(secretAttention ? { attention: secretAttention } : {}),
       });
     }
 

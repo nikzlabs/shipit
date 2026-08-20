@@ -115,7 +115,26 @@ They are recorded here as requirements, not relitigated.
 
 ## Open questions
 
-None.
+- **2026-08-20 — xAI does report a plan name after all. Should req 15's row show
+  it?** The 2026-08-19 receipt below reworded req 15 on the finding that "xAI
+  publishes no plan name", and closed with *"a plan reader lands if xAI ever
+  reports one"*. That condition is now met: `GET /v1/settings` on
+  `cli-chat-proxy.grok.com` returns `subscription_tier_display: "SuperGrok"` to
+  an authenticated client (probed with a live subscription token, 2026-08-20 —
+  see plan.md "Called with a live SuperGrok token"). The receipt is right about
+  the credential file and the token and wrong as a general claim.
+
+  It is not a straight application of the receipt, which is why it is a question
+  rather than a change already made. The receipt assumed the plan would arrive
+  the way Claude's and Codex's do — free, in a file ShipIt already reads. This
+  one costs an authenticated network call per account, with its own caching,
+  failure and staleness behaviour, and req 15's stated purpose (telling two
+  subscriptions apart) is **already met** by the identity the row shows. So:
+  build the reader, or leave req 15 as reworded and record that the plan name is
+  reachable but not worth a live call?
+
+  *Nothing is blocked on this.* Req 16's work shipped independently; this only
+  decides whether a later change is worth making.
 
 ## Resolved questions
 

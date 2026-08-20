@@ -1984,6 +1984,24 @@ describe("the xAI subscription's missing usage API (docs/274 req 16)", () => {
     expect(notice).toHaveTextContent(/grok\.com/);
   });
 
+  /*
+    The glyph follows the kind. A hazard is a warning — something is happening
+    to the user's money they would want to stop. An absence is an explanation,
+    and a warning triangle over one says "act on this" about a fact there is
+    nothing to do about. Found by the independent review.
+  */
+  it("marks the absence as an explanation and the Go hazard as a warning", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
+    ]);
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_go", serviceId: "opencode", billingMode: "sub", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("mode-notice-xai:sub")).toHaveAttribute("data-notice-kind", "absence");
+    expect(screen.getByTestId("mode-notice-opencode:sub")).toHaveAttribute("data-notice-kind", "hazard");
+  });
+
   it("says nothing on the metered xAI key card, which promises no allowance", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_xai", serviceId: "xai", billingMode: "key", via: "string" }),

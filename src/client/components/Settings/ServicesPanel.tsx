@@ -768,7 +768,17 @@ function ServiceModeCard({
  * (endpoints, credentials, models), and a sentence of user-facing copy is not
  * something a spawn ever reads.
  */
-const MODE_NOTICES: Record<string, string> = {
+/**
+ * The two kinds, and the glyph each earns. A hazard is a warning — something is
+ * happening to the user's money that they would want to stop. An absence is an
+ * explanation, and dressing one as a warning is its own small dishonesty: the
+ * triangle says "act on this" about a fact there is nothing to do about. Found
+ * by the independent review, which read the xAI line and asked what the warning
+ * was warning of.
+ */
+type ModeNoticeKind = "hazard" | "absence";
+
+const MODE_NOTICES: Record<string, { kind: ModeNoticeKind; text: string }> = {
   // docs/272 req 6. Two halves, both load-bearing. OpenCode publishes no
   // per-key usage API (plan.md §8), so a Go card carries no remaining-quota
   // figure and ShipIt learns of exhaustion only from the plan's own 429 — and
@@ -776,18 +786,22 @@ const MODE_NOTICES: Record<string, string> = {
   // spend server-side, with no error and no signal ShipIt could read. That is
   // the "silent shift onto metered billing" docs/252 req 12 refuses to make;
   // ShipIt cannot prevent this one, so it says so where the credential lives.
-  [credentialModeKey("opencode", "sub")]:
-    "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
+  [credentialModeKey("opencode", "sub")]: {
+    kind: "hazard",
+    text: "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
+  },
   // docs/274 req 16 — the absence, said rather than drawn. xAI publishes no
   // subscription usage API: every candidate route 404s, and the `grok` CLI
   // itself has no reader either (it links out to grok.com for the figure).
   // So this subscription shows no usage pill anywhere in ShipIt, and this
   // sentence is what stops that from reading as a missing number.
-  [credentialModeKey("xai", "sub")]:
-    "ShipIt cannot read SuperGrok usage — xAI publishes no subscription usage API — so this card shows no remaining figure and no usage cutoffs. Your remaining allowance is visible only at grok.com.",
+  [credentialModeKey("xai", "sub")]: {
+    kind: "absence",
+    text: "ShipIt cannot read SuperGrok usage — xAI publishes no subscription usage API — so this card shows no remaining figure and no usage cutoffs. xAI's own grok CLI has no reader either; for a remaining allowance it sends you to grok.com.",
+  },
 };
 
-/** The hazard line for a `(service, mode)`, or nothing where there is none. */
+/** The notice line for a `(service, mode)`, or nothing where there is none. */
 function ModeNotice({
   serviceId,
   billingMode,
@@ -797,17 +811,21 @@ function ModeNotice({
 }) {
   const notice = MODE_NOTICES[credentialModeKey(serviceId, billingMode)];
   if (!notice) return null;
+  const Glyph = notice.kind === "hazard" ? WarningIcon : InfoIcon;
   return (
     <p
       className="flex items-start gap-1.5 text-[11px] text-(--color-text-tertiary)"
       data-testid={`mode-notice-${credentialModeKey(serviceId, billingMode)}`}
+      data-notice-kind={notice.kind}
     >
-      <WarningIcon
+      <Glyph
         aria-hidden
         size={ICON_SIZE.XS}
-        className="mt-0.5 shrink-0 text-(--color-warning)"
+        className={`mt-0.5 shrink-0 ${
+          notice.kind === "hazard" ? "text-(--color-warning)" : "text-(--color-text-tertiary)"
+        }`}
       />
-      <span>{notice}</span>
+      <span>{notice.text}</span>
     </p>
   );
 }

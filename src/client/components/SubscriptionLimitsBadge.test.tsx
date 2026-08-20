@@ -972,7 +972,25 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
     // true rather than decorative.
     expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
     expect(screen.getByText("Work")).toBeInTheDocument();
+    // The direct form of the same claim, independent of the DOM shape above.
+    expect(screen.queryByText("nik@x")).toBeNull();
     expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
     expect(screen.getByLabelText("Refresh subscription usage")).toBeInTheDocument();
+  });
+
+  /*
+    The snapshot loop is the one the review asked about: it derives a pill FROM
+    a snapshot, so it renders on the map's say-so alone. No reader means no
+    `LimitsProvider` and so no snapshot, which makes this unreachable through
+    the server — but a stale entry, or a service that loses its reader, would
+    put the blank meters straight back. Asserted by handing the badge a
+    snapshot that cannot legitimately exist.
+  */
+  it("ignores a snapshot for a mode with no reader, however it got there", () => {
+    const limits: SubscriptionLimitsMap = {
+      "xai:sub": routed(makeSnap({ serviceId: "xai", routeId: "xai-reserved" })),
+    };
+    const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(container.innerHTML).toBe("");
   });
 });

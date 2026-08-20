@@ -748,6 +748,28 @@ planning#339 for GLM's declared-but-unimplemented `zai-plan-usage`; the other
 two predate that reasoning and were never revisited. The fix is the same
 predicate in all three, plus one thing suppression alone cannot do — see below.
 
+**What the independent review changed** (Codex, out-of-family). It walked every
+credential state against both delivery shapes and found no case where a
+quota-reporting service loses a pill, and it confirmed that dropping the
+unconnected sign-in attempt from the container test is an improvement rather
+than a regression. Two things it did change:
+
+- **The rule now holds in every loop, not one.** `buildPills`'s snapshot-derived
+  loop was ungated — unreachable, since a mode with no reader has no
+  `LimitsProvider` and so no snapshot, but it renders a pill on nothing but the
+  map's say-so, so a stale entry or a service that loses a reader would put the
+  blanks straight back. Guarded, and pinned by a test that hands the badge a
+  snapshot which cannot legitimately exist.
+- **The glyph now follows the kind.** `MODE_NOTICES` entries carry
+  `kind: "hazard" | "absence"`; a hazard keeps the warning triangle, an absence
+  gets a neutral info glyph. The review asked what the warning was warning of,
+  which is the right question: a triangle says "act on this" about a fact there
+  is nothing to do about.
+
+Its remaining note is accepted, not fixed: `AppLayout`'s status-affordance
+condition has no render test — it had none before this change either, and the
+number it now reads (`useSubscriptionPillCount`) is tested directly.
+
 **Removing a pill moves the emptiness up a level.** Two surfaces decided
 whether to show a subscription *container* by asking "any connected account, or
 any snapshot?" — `MobileStatusPanel`'s "Subscription" section and `AppLayout`'s
@@ -773,11 +795,42 @@ subscription loses its meters and keeps that word.
 
 #### Every probe, and what it returned
 
-Vendor-side, from the prior session (recorded in planning#435): `/v1/usage`,
-`/v1/rate-limits`, `/v1/subscription`, `/v1/me` all **404**; `/v1/settings`
-returns client config with no plan or usage field.
+**A probe record must name its host.** The prior session's list — `/v1/usage`,
+`/v1/rate-limits`, `/v1/subscription`, `/v1/me` all 404 — is right about the
+subscription host and wrong as a general statement: `GET /v1/me` on **api.x.ai**
+returns **200** (`user_id`, `team_id`, `zdr_status`, `team_blocked`, redacted
+key), and 404s only on `cli-chat-proxy.grok.com`. The two hosts serve different
+route sets, so an unqualified path is not a fact about xAI.
 
-New evidence this round, **verified against the installed binary**
+**Live route-existence sweep, 2026-08-20, `cli-chat-proxy.grok.com`** (the
+subscription host). Unauthenticated, which is the point: this proxy answers
+**401** for a route that exists and an nginx **404** for one that does not, so a
+sweep with no credential still separates the two.
+
+| exists (401, needs auth) | absent (404) |
+|---|---|
+| `/v1/models`, `/v1/settings`, `/v1/user` | `/v1/usage`, `/v1/rate-limits`, `/v1/limits`, `/v1/quota` |
+| **`/v1/billing`**, **`/v1/auto-topup-rule`** | `/v1/subscription`, `/v1/subscriptions`, `/v1/entitlements`, `/v1/plan` |
+| `/v1/responses`, `/v1/chat/completions` (405 on GET — POST-only) | `/v1/me`, `/v1/account`, `/v1/credits`, `/v1/billing/config`, `/v1/tools`, `/rest/*` |
+
+So **there is no usage route, and there are two account-shaped routes nobody had
+tried.** `/v1/billing` is the endpoint behind the CLI's billing extension
+described below; the prior session's four probes did not include it.
+
+**`api.x.ai`, authenticated with a real key** (key mode, for completeness):
+`/v1/me` → 200 and `/v1/api-key` → 200, both carrying identity and ACLs and **no
+quota field of any kind**; `/v1/usage`, `/v1/rate-limits`, `/v1/billing`,
+`/v1/user`, `/v1/subscription`, `/v1/credits`, `/v1/limits` → 404. A real
+`/v1/models` response carries **no `x-ratelimit-*` header** either. Key mode is
+metered, so it is owed no allowance — but it is worth recording that the passive
+reader does not exist there.
+
+*(Egress from this session is allowlisted per host: `api.x.ai` and
+`cli-chat-proxy.grok.com` are reachable, `docs.x.ai` / `x.ai` / `grok.com` are
+not. The vendor documentation was therefore not read; the probes above are the
+primary source, which is the stronger one anyway.)*
+
+Offline evidence, **verified against the installed binary**
 (`@xai-official/grok-linux-x64` 1.0.1 `e9444c5615`, `strings -n 4`, in-container
 2026-08-20) — the CLI is the strongest available witness, because anything
 xAI exposes to a subscriber it would consume here first:
@@ -801,22 +854,52 @@ xAI exposes to a subscriber it would consume here first:
   until the session starts"), and for account usage the TUI **links out**:
   `https://grok.com/?_s=usage`, beside `https://grok.com/supergrok?referrer=grok-build`.
   A client that had the number would not send the user to a web app for it.
-- **The one genuine lead, and why it is not this number.** There IS a billing
-  extension (`crates/codegen/xai-grok-shell/src/extensions/billing.rs`, ACP
-  methods `x.ai/billing` and `x.ai/auto-topup-rule`) returning an 11-field
-  `BillingConfig`: `creditUsagePercent`, `monthlyLimit`, `onDemandCap`,
-  `onDemandUsed`, `prepaidBalance`, `includedUsed`, `totalUsed`, `currentPeriod`,
+- **The one genuine lead.** There IS a billing extension
+  (`crates/codegen/xai-grok-shell/src/extensions/billing.rs`, ACP methods
+  `x.ai/billing` and `x.ai/auto-topup-rule`) parsing an 11-field `BillingConfig`
+  — `creditUsagePercent`, `monthlyLimit`, `onDemandCap`, `onDemandUsed`,
+  `prepaidBalance`, `includedUsed`, `totalUsed`, `currentPeriod`,
   `billingCycle`, `billingPeriodStart`, `isUnifiedBillingUser`, plus
-  `subscription_tier` and `on_demand_enabled`. Its error string is "Billing data
-  requires auth with grok.com." That vocabulary is **spend and credits on a
-  monthly cycle**, not a SuperGrok 5h/7d allowance — the shape ShipIt's pill
-  renders. Whether it carries anything usable for a subscriber is the **one
-  question the offline evidence cannot close**, and it needs two things this
-  session had neither of: egress to grok.com and a live SuperGrok login (the
-  probe container holds `XAI_API_KEY` only, and `~/.grok/auth.json` is absent).
-  It does not change the verdict below — a monthly credit balance is not the
-  5h/7d allowance the pill renders, so even a readable `BillingConfig` would
-  need its own surface rather than filling these meters.
+  `subscription_tier` and `on_demand_enabled` — behind "Billing data requires
+  auth with grok.com." Credit-shaped rather than allowance-shaped, but close
+  enough to be worth calling rather than guessing at. It was called; see below.
+
+#### Called with a live SuperGrok token
+
+The lead is closed. Run through `shipit agent run --role GrokSub`, whose spawn
+holds the real subscription login, 2026-08-20 — the only way to authenticate
+these routes, since the investigating container holds `XAI_API_KEY` and no
+`~/.grok/auth.json`. All four GETs returned **200**.
+
+- **`GET /v1/billing`** → a calendar-month spend object, and nothing else:
+  `config.monthlyLimit.val`, `config.used.val`, `config.onDemandCap.val`,
+  `billingPeriodStart` / `billingPeriodEnd` (`2026-08-01` → `2026-09-01`), and
+  `history[]` of `{billingCycle: {year, month}, includedUsed, onDemandUsed,
+  totalUsed}` for three prior months. Every figure `0` on a live SuperGrok
+  account that had run turns. Of the binary's field list, `creditUsagePercent`,
+  `prepaidBalance`, `currentPeriod`, `isUnifiedBillingUser`, `subscription_tier`
+  and `on_demand_enabled` are absent from the payload entirely.
+
+  **So it is the wrong number, twice over**: the window is a calendar month, not
+  a rolling one that resets, and the figures track *purchased credit spend* —
+  which a subscription turn does not consume, hence the zeros. A meter built on
+  it would read 0% forever and say nothing about the allowance a SuperGrok user
+  can actually exhaust.
+- **`GET /v1/auto-topup-rule`** → `{}`. No cap, threshold or balance.
+- **`GET /v1/user`** → identity only (`userId`, `email`, `firstName`,
+  `lastName`, `principalType`, `hasGrokCodeAccess: true`). No allowance.
+- **`GET /v1/settings`** → product flags, plus `on_demand_enabled: null`,
+  `subscription_watch_interval_secs: 60`, `usage_billing_redirect_url: null`,
+  and **`subscription_tier_display: "SuperGrok"`**. No used %, no window, no
+  reset — but see the correction below.
+
+**A correction to "No plan, and that is a finding" above.** That section says
+xAI reports no plan name; it is right about the auth *file* and the *token*, and
+wrong as a general claim — `/v1/settings` reports `subscription_tier_display:
+"SuperGrok"` to an authenticated client. Req 15 was *reworded* on the strength
+of the broader claim (receipt in requirements.md, 2026-08-19), so putting the
+plan name back on the account row is a requirements question for Nik and not a
+change to make here. Recorded, not acted on.
 - **The subscription check is a boolean, not a meter.**
   `agent/subscription_check.rs` emits `paywall_check_result` /
   `paywall_check_subscription_detected` — entitled or not, with no figure. What
@@ -826,6 +909,14 @@ xAI exposes to a subscriber it would consume here first:
 
 **Verdict: documented no-reader, honest surface.** `quota: null` stands, the
 three UI surfaces now agree with it, and the card says the absence in words.
+This is now a *closed* question rather than an unprobed one: the subscription
+host has no usage route, its one account-shaped route was called with a real
+token and returns calendar-month credit spend, the vendor's own CLI has no
+reader and links out for the figure, and no `x-ratelimit-*` header exists on
+either host. The reopening condition is a route appearing where these 404 —
+`/v1/usage` or `/v1/rate-limits` on `cli-chat-proxy.grok.com` — at which point
+`quota: null` becomes a `QuotaIntegrationId` and this section is the record of
+what was true before it.
 
 **One adjacent gap, not fixed here.** The exhaustion classifier
 (`ws-handlers/agent-rate-limits.ts`) is text-pattern-based and harness-agnostic,
