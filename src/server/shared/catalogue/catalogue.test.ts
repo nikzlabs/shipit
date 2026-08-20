@@ -385,39 +385,21 @@ describe("every mode can be authenticated", () => {
   });
 
   /**
-   * Every subscription ANSWERS the quota question — with a reader id, or with an
-   * explicit `null` meaning "the vendor publishes nothing to read" (docs/274
-   * req 16).
+   * Every subscription NAMES the reader that fills req 10's indicator.
    *
-   * `toBeTruthy()` would have refused the second answer, and the point of the
-   * third `BillingModeDef` arm is that refusing it is what drove the previous
-   * two no-reader subscriptions to declare an id nothing implements. So the
-   * assertion moves to what actually matters: the field is PRESENT and is one of
-   * the two honest shapes, never `undefined`.
+   * A `quota: null` arm meaning "the vendor publishes nothing to read" existed
+   * for one release and was removed with the claim that motivated it: xAI does
+   * publish its weekly pool, and the probe that said otherwise had missed a
+   * query parameter (planning#454). So the field is a reader id again, always —
+   * and a subscription with no reader yet declares an id nothing implements,
+   * which `modeReportsQuota` is what actually gates on.
    */
-  it("a subscription mode answers the quota question — a reader id, or an explicit null", () => {
+  it("a subscription mode names the reader that fills its indicator", () => {
     for (const service of CATALOGUE) {
       for (const mode of service.modes) {
         if (mode.kind !== "sub") continue;
         expect(Object.hasOwn(mode, "quota"), `${service.id}/sub declares no quota field`).toBe(true);
-        expect(
-          mode.quota === null || typeof mode.quota === "string",
-          `${service.id}/sub quota must be a reader id or null`,
-        ).toBe(true);
-      }
-    }
-  });
-
-  /**
-   * A no-reader subscription reports NOTHING, rather than an empty indicator —
-   * the behavioural half of req 16, which the declaration alone does not give.
-   */
-  it("a no-reader subscription reports no quota and offers no refresh", () => {
-    for (const service of CATALOGUE) {
-      for (const mode of service.modes) {
-        if (mode.kind !== "sub" || mode.quota !== null) continue;
-        expect(modeReportsQuota(service.id, "sub"), `${service.id}/sub`).toBe(false);
-        expect(subQuotaRefreshable(service.id), `${service.id}/sub`).toBe(false);
+        expect(typeof mode.quota, `${service.id}/sub quota must be a reader id`).toBe("string");
       }
     }
   });
@@ -449,6 +431,10 @@ describe("quota integrations that are implemented, and those that can be re-read
     // per-key usage API at all (docs/272 req 6), so it reports nothing by
     // decision rather than while waiting for one.
     ["opencode", false, false],
+    // planning#454 — SuperGrok reads its weekly pool on demand. Pinned here
+    // because this row spent a release at `false, false` on a probe that was
+    // wrong, and the pill it produced was the bug the user reported.
+    ["xai", true, true],
   ])("%s: reports quota %s, refreshable %s", (serviceId, reports, refreshable) => {
     expect(modeReportsQuota(serviceId, "sub")).toBe(reports);
     expect(subQuotaRefreshable(serviceId)).toBe(refreshable);

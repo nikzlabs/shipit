@@ -404,6 +404,7 @@ const IMPLEMENTED_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
   "anthropic-oauth-usage",
   "openai-chatgpt-usage",
   "zai-plan-usage",
+  "xai-plan-usage",
 ]);
 
 /**
@@ -424,6 +425,9 @@ const IMPLEMENTED_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
 const ON_DEMAND_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
   "anthropic-oauth-usage",
   "zai-plan-usage",
+  // Pulled, like GLM's: nothing pushes SuperGrok's numbers during a turn, so
+  // the button is the only thing that can move them between boot seeds.
+  "xai-plan-usage",
 ]);
 
 /**
@@ -438,10 +442,7 @@ const ON_DEMAND_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
  */
 export function modeReportsQuota(serviceId: string, billingMode: BillingMode): boolean {
   const mode = getMode(serviceId, billingMode);
-  // `quota: null` is the declared no-reader subscription (docs/274 req 16 —
-  // xAI's, whose every usage route 404s). It is not a lookup miss and must not
-  // be treated as one: the answer is "nothing to read", arrived at on purpose.
-  return mode?.kind === "sub" && mode.quota !== null && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota);
+  return mode?.kind === "sub" && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota);
 }
 
 /**
@@ -454,7 +455,6 @@ export function modeReportsQuota(serviceId: string, billingMode: BillingMode): b
 export function subQuotaRefreshable(serviceId: string): boolean {
   const mode = getMode(serviceId, "sub");
   return mode?.kind === "sub"
-    && mode.quota !== null
     && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota)
     && ON_DEMAND_QUOTA_INTEGRATIONS.has(mode.quota);
 }

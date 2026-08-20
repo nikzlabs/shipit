@@ -202,8 +202,8 @@ function buildPills(
       refresh button beside them (`subQuotaRefreshable` is already false), which
       is a pill that looks broken rather than one that says nothing: the user
       who reported it read the blanks as "ShipIt lost my numbers". They are not
-      pending — xAI publishes no subscription usage API, so nothing will ever
-      fill them. The Settings credential row reached this same conclusion first
+      pending — OpenCode Go's vendor publishes no per-key usage API, so nothing
+      will ever fill them. The Settings credential row reached this conclusion first
       (`ServicesPanel`, `modeReportsQuota` rather than `billingMode === "sub"`):
       an empty pill says "no usage" where the truth is "not measured".
 
@@ -343,10 +343,47 @@ interface SubscriptionLimitPillProps {
   attention?: CredentialStatusWord;
 }
 
+/**
+ * Which of the two meters this pill draws — **the windows the reading actually
+ * carries**, never a fixed pair (planning#454).
+ *
+ * The pill drew both slots for every subscription, on the assumption that every
+ * plan has a 5-hour window and a weekly one. Several do not. SuperGrok has a
+ * single weekly pool and no short window at all; the user reporting this also
+ * had a ChatGPT plan and a GLM plan whose readings carry no 5-hour figure. All
+ * three rendered a `5h · —` that nothing could ever fill, beside a real weekly
+ * number — the same permanently-empty read-out as the pill this feature was
+ * opened to fix, just one slot narrower.
+ *
+ * **The rule is derived from the reading, so no service is named anywhere.** A
+ * provider that has a window reports it as an OBJECT even when it has no
+ * percentage to put in it — `SubscriptionLimitsWindow.usedPct` is nullable
+ * precisely so "the window exists, its number is not known yet" is sayable — so
+ * a `null` window in a snapshot already means "this plan has no such window".
+ * The distinction the pill was missing is not a new field; it is the difference
+ * between a null window and no snapshot.
+ *
+ * Hence the fallback: a snapshot carrying NEITHER window is not a plan with no
+ * windows, it is a reading that failed to produce any. A route that was 429'd
+ * before it ever reported gets exactly such a snapshot, whose only content is
+ * the lockout countdown, and drawing nothing there would claim the plan is
+ * unmetered. Both slots stay, saying "not read yet" — which the refresh button
+ * beside them can still make false.
+ */
+export function windowsShown(
+  snapshot: SubscriptionLimits | undefined,
+): { session: boolean; weekly: boolean } {
+  const session = (snapshot?.session ?? null) !== null;
+  const weekly = (snapshot?.weekly ?? null) !== null;
+  if (!session && !weekly) return { session: true, weekly: true };
+  return { session, weekly };
+}
+
 export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const resolvedServiceId = snapshot?.serviceId ?? serviceId;
   const resolvedRouteId = routeId ?? snapshot?.routeId;
+  const shows = windowsShown(snapshot);
 
   // A broken credential's meters are worse than nothing: the numbers are real
   // but frozen at whatever the account last reported, so the pill reads
@@ -388,22 +425,26 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
           {label}
         </span>
       )}
-      <Meter
-        shortLabel="5h"
-        longLabel="5h window"
-        window={snapshot?.session ?? null}
-        windowMs={SESSION_WINDOW_MS}
-        fetchedAt={snapshot?.fetchedAt}
-        now={now}
-      />
-      <Meter
-        shortLabel="7d"
-        longLabel="7d window"
-        window={snapshot?.weekly ?? null}
-        windowMs={WEEKLY_WINDOW_MS}
-        fetchedAt={snapshot?.fetchedAt}
-        now={now}
-      />
+      {shows.session && (
+        <Meter
+          shortLabel="5h"
+          longLabel="5h window"
+          window={snapshot?.session ?? null}
+          windowMs={SESSION_WINDOW_MS}
+          fetchedAt={snapshot?.fetchedAt}
+          now={now}
+        />
+      )}
+      {shows.weekly && (
+        <Meter
+          shortLabel="7d"
+          longLabel="7d window"
+          window={snapshot?.weekly ?? null}
+          windowMs={WEEKLY_WINDOW_MS}
+          fetchedAt={snapshot?.fetchedAt}
+          now={now}
+        />
+      )}
       {showRefresh && resolvedServiceId && (
         <LimitsRefreshButton
           serviceId={resolvedServiceId}

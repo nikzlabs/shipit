@@ -1964,42 +1964,24 @@ describe("the OpenCode Go billing hazard (docs/272 req 6)", () => {
 });
 
 /**
- * docs/274 req 16 — the notice's second kind: an absent read-out, not a billing
- * hazard.
+ * planning#454 — the SuperGrok card carries a NUMBER, not a sentence about not
+ * having one.
  *
- * Suppressing a quota pill ShipIt cannot fill is correct and, on its own,
- * silent — a user paying for SuperGrok goes looking for the figure the other
- * services show and finds a card with nothing where it should be. The sentence
- * is what tells "not measured" from "broken", which is the distinction the
- * empty pill destroyed when this was reported.
+ * This card spent a release explaining an absence: ShipIt had concluded xAI
+ * published no usage API, suppressed the pill, and printed a line saying so.
+ * The conclusion was wrong — the weekly pool is one query parameter away — and
+ * these cases exist to keep the apology from coming back. A sentence explaining
+ * an empty surface is a last resort, and the reader is what makes it
+ * unnecessary.
  */
-describe("the xAI subscription's missing usage API (docs/274 req 16)", () => {
-  it("says on the card that there is no figure to show, and where one is", () => {
+describe("the xAI subscription's weekly pool (planning#454)", () => {
+  it("prints no absence notice on the subscription card, because there is a reader", () => {
     useSettingsStore.getState().setProviderAccounts([
       route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
     ]);
     render(<ServicesPanel />);
-    const notice = screen.getByTestId("mode-notice-xai:sub");
-    expect(notice).toHaveTextContent(/does not read SuperGrok usage yet/);
-    expect(notice).toHaveTextContent(/grok\.com/);
-  });
-
-  /*
-    The glyph follows the kind. A hazard is a warning — something is happening
-    to the user's money they would want to stop. An absence is an explanation,
-    and a warning triangle over one says "act on this" about a fact there is
-    nothing to do about. Found by the independent review.
-  */
-  it("marks the absence as an explanation and the Go hazard as a warning", () => {
-    useSettingsStore.getState().setProviderAccounts([
-      route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
-    ]);
-    useSettingsStore.getState().setCredentialRoutes([
-      route({ id: "cred_go", serviceId: "opencode", billingMode: "sub", via: "string" }),
-    ]);
-    render(<ServicesPanel />);
-    expect(screen.getByTestId("mode-notice-xai:sub")).toHaveAttribute("data-notice-kind", "absence");
-    expect(screen.getByTestId("mode-notice-opencode:sub")).toHaveAttribute("data-notice-kind", "hazard");
+    expect(screen.getByTestId("service-card-xai:sub")).toBeInTheDocument();
+    expect(screen.queryByTestId("mode-notice-xai:sub")).not.toBeInTheDocument();
   });
 
   it("says nothing on the metered xAI key card, which promises no allowance", () => {
@@ -2011,14 +1993,33 @@ describe("the xAI subscription's missing usage API (docs/274 req 16)", () => {
     expect(screen.queryByTestId("mode-notice-xai:key")).not.toBeInTheDocument();
   });
 
-  it("shows no quota read-out on the subscription's account row", () => {
+  /**
+   * The weekly figure on the account row, and — the half that was the reported
+   * bug — NO second meter beside it. SuperGrok has one pool and no short
+   * window, so a `5h · —` here would be the same permanently-empty read-out the
+   * user reported, merely next to a real number.
+   */
+  it("shows the weekly figure on the account row, and no empty short window", () => {
     useSettingsStore.getState().setProviderAccounts([
       route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
     ]);
+    useUiStore.getState().setSubscriptionLimits({
+      "xai:sub": {
+        acct_xai: {
+          // `plan: null` is deliberate, not a gap — see requirements.md, the
+          // 2026-08-20 receipt: the plan name is reachable and was declined.
+          serviceId: "xai", billingMode: "sub", routeId: "acct_xai", plan: null,
+          session: null,
+          weekly: { usedPct: 10, resetAt: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+          fetchedAt: Date.now(),
+        },
+      },
+    });
     render(<ServicesPanel />);
     const row = screen.getByTestId("provider-account-row-acct_xai");
     expect(row).toHaveTextContent("nik@x");
-    expect(row.querySelector("[data-meter-pct]")).toBeNull();
+    expect(row).toHaveTextContent(/7d\s*10%/);
+    expect(row.textContent).not.toMatch(/5h/);
   });
 });
 

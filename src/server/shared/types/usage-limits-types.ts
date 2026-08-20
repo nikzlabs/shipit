@@ -66,9 +66,21 @@ export interface SubscriptionLimits {
    * determine it.
    */
   plan: string | null;
-  /** Rolling short-window quota (Claude: 5h, Codex: 5h). */
+  /**
+   * Rolling short-window quota (Claude: 5h, Codex: 5h).
+   *
+   * **`null` means this plan HAS no such window** — not "no number yet", which
+   * is `{ usedPct: null, resetAt }` on the window itself. The pill renders the
+   * distinction (`windowsShown` in `SubscriptionLimitsBadge.tsx`): a null window
+   * draws no meter, a numberless one draws `5h · —`. SuperGrok is the plain
+   * case — one weekly pool, no short window at all — and drawing a dash for it
+   * produced the permanently-empty read-out planning#454 fixed.
+   *
+   * A reading where BOTH are null is read as "nothing was read", not as an
+   * unmetered plan; a route 429'd before it ever reported produces exactly that.
+   */
   session: SubscriptionLimitsWindow | null;
-  /** Weekly quota across all models. */
+  /** Weekly quota across all models. `null` as for {@link SubscriptionLimits.session}. */
   weekly: SubscriptionLimitsWindow | null;
   /** Epoch ms when this snapshot was last updated. */
   fetchedAt: number;

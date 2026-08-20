@@ -98,11 +98,18 @@ They are recorded here as requirements, not relitigated.
     the same upstream subscription are distinguishable (the docs/150 req 22
     duplicate-detection contract every other provider row already meets).
     *(Reworded 2026-08-19 — see Resolved questions: the original said "identity
-    and plan", and xAI reports no plan name for a row to show.)*
+    and plan". The reason given then, that xAI reports no plan name at all, was
+    too broad; the rewording stands anyway on the 2026-08-20 receipt, where the
+    plan name was found to be reachable and declined.)*
 16. **Quota is reported honestly or not at all.** If xAI exposes no usage API
     for the subscription, ShipIt says so rather than rendering an empty or
     invented indicator — a declared reader that reads nothing is the state
     `catalogue/types.ts` warns against, not a placeholder to fill in later.
+    *(The condition turned out false: xAI does expose one, at
+    `/v1/billing?format=credits`, so the branch this requirement takes is the
+    reported figure. The requirement is unchanged — it was written to cover
+    either outcome, and it is what refused the empty indicator in the
+    meantime.)*
 
 17. **A connected Grok subscription ranks above the metered xAI key**, the
     way every other connected account ranks above a metered key. Because the
@@ -115,28 +122,25 @@ They are recorded here as requirements, not relitigated.
 
 ## Open questions
 
-- **2026-08-20 — xAI does report a plan name after all. Should req 15's row show
-  it?** The 2026-08-19 receipt below reworded req 15 on the finding that "xAI
-  publishes no plan name", and closed with *"a plan reader lands if xAI ever
-  reports one"*. That condition is now met: `GET /v1/settings` on
-  `cli-chat-proxy.grok.com` returns `subscription_tier_display: "SuperGrok"` to
-  an authenticated client (probed with a live subscription token, 2026-08-20 —
-  see plan.md "Called with a live SuperGrok token"). The receipt is right about
-  the credential file and the token and wrong as a general claim.
-
-  It is not a straight application of the receipt, which is why it is a question
-  rather than a change already made. The receipt assumed the plan would arrive
-  the way Claude's and Codex's do — free, in a file ShipIt already reads. This
-  one costs an authenticated network call per account, with its own caching,
-  failure and staleness behaviour, and req 15's stated purpose (telling two
-  subscriptions apart) is **already met** by the identity the row shows. So:
-  build the reader, or leave req 15 as reworded and record that the plan name is
-  reachable but not worth a live call?
-
-  *Nothing is blocked on this.* Req 16's work shipped independently; this only
-  decides whether a later change is worth making.
+*None.*
 
 ## Resolved questions
+
+- **2026-08-20 — xAI does report a plan name after all. Should req 15's row show
+  it?** **No.** The 2026-08-19 receipt below reworded req 15 on the finding that
+  "xAI publishes no plan name", and closed with *"a plan reader lands if xAI ever
+  reports one"*. That condition turned out to be met — `GET /v1/settings` on
+  `cli-chat-proxy.grok.com` returns `subscription_tier_display: "SuperGrok"` to
+  an authenticated client (probed with a live subscription token, 2026-08-20) —
+  so the receipt is right about the credential file and the token and wrong as a
+  general claim. Put to the human with that correction, and answered directly:
+  *"I don't care much about the plan name. What I care about is the up-to-date
+  numbers of the limits usage with an ability to refresh them on demand."* So req
+  15 stands as reworded, the plan name is recorded as reachable-but-not-fetched,
+  and the effort went to req 16's numbers instead. `XaiLimitsProvider` reports
+  `plan: null` deliberately — it reads the billing endpoint, and a second call to
+  a second endpoint for a label nobody asked for is exactly the cost this
+  question declined.
 
 - **2026-08-19 — Can the account row show a PLAN (req 15)?** **No, and the
   requirement was reworded rather than half-met.** Resolved by reading a real

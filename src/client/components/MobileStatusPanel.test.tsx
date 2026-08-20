@@ -127,7 +127,7 @@ describe("MobileStatusPanel with a no-quota subscription", () => {
 
   it("drops the Subscription section when the only account reports no quota", () => {
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-go", serviceId: "opencode", billingMode: "sub", via: "account", label: "nik@go", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     render(
       <MobileStatusPanel
@@ -143,7 +143,7 @@ describe("MobileStatusPanel with a no-quota subscription", () => {
 
   it("keeps the section when an account beside it does report one", () => {
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-go", serviceId: "opencode", billingMode: "sub", via: "account", label: "nik@go", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
       { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     render(
@@ -155,6 +155,6 @@ describe("MobileStatusPanel with a no-quota subscription", () => {
     );
     expect(screen.getByText("Subscription")).toBeInTheDocument();
     expect(screen.getByText("Work")).toBeInTheDocument();
-    expect(screen.queryByText("nik@x")).toBeNull();
+    expect(screen.queryByText("nik@go")).toBeNull();
   });
 });

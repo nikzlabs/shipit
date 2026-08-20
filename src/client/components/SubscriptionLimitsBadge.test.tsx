@@ -11,6 +11,7 @@ import {
   meterDisplay,
   timeElapsedPct,
   resetAutoRefreshThrottle,
+  windowsShown,
   AUTO_REFRESH_MIN_INTERVAL_MS,
 } from "./SubscriptionLimitsBadge.js";
 import type { CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
@@ -378,14 +379,36 @@ describe("SubscriptionLimitPill", () => {
     expect(screen.getByText(/7d 90%/)).not.toHaveTextContent(/resets in/);
   });
 
-  it("keeps both window blocks visible when session usage has not been reported", () => {
+  /**
+   * REVERSED by planning#454, deliberately. This case used to assert that a
+   * `null` session inside a reading still drew `5h · —`, on the reading that a
+   * missing window means "not reported yet".
+   *
+   * It does not. A provider with a window reports it as an object even when it
+   * has no number for it — `{ usedPct: null, resetAt }`, the case immediately
+   * below — so `null` here is the provider saying the plan HAS no such window.
+   * Drawing a dash for it is the permanently-empty read-out the user reported.
+   * "Not reported yet" is the no-reading-at-all case, and it still draws both.
+   */
+  it("drops a window the reading does not carry, and keeps the one it does", () => {
     render(
       <SubscriptionLimitPill
         label="Claude"
         snapshot={makeSnap({ session: null, weekly: { usedPct: 40, resetAt: "x" } })}
       />,
     );
-    expect(screen.getByText(/5h · —/)).toHaveAttribute("title", expect.stringContaining("usage not reported yet"));
+    expect(screen.queryByText(/5h/)).toBeNull();
+    expect(screen.getByText(/7d 40%/)).toBeInTheDocument();
+  });
+
+  it("still says 'not reported yet' for a window the provider reported without a number", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({ session: { usedPct: null, resetAt: FUTURE_SESSION_RESET }, weekly: { usedPct: 40, resetAt: "x" } })}
+      />,
+    );
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
     expect(screen.getByText(/7d 40%/)).toBeInTheDocument();
   });
 
@@ -906,24 +929,28 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
 });
 
 /**
- * docs/274 req 16 — the reported failure: a connected SuperGrok subscription
- * put a pill in the header reading `nik@x  5h · —  7d · —`, with no refresh
- * button beside it, and stayed that way forever. The blanks were not pending
- * numbers: xAI publishes no subscription usage API, so no reader exists and
- * none is coming. A pill that can only ever say "—" is not an honest absence,
- * it is a broken-looking one, which is how it was reported.
+ * docs/274 req 16 — the reported failure: a connected subscription put a pill in
+ * the header reading `label  5h · —  7d · —`, with no refresh button beside it,
+ * and stayed that way forever. A pill that can only ever say "—" is not an
+ * honest absence, it is a broken-looking one, which is how it was reported.
+ *
+ * The example is OpenCode Go, and it changed. This was written against xAI on
+ * the finding that xAI published no usage API; the finding was wrong
+ * (planning#454), so the durable case is Go, where the vendor really does
+ * publish no per-key usage endpoint (docs/272 req 6). The rule under test never
+ * was about a service — it is `modeReportsQuota`.
  */
 describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () => {
   const now = Date.now();
 
-  function connectXai(overrides: Partial<CredentialRoute> = {}): void {
+  function connectGo(overrides: Partial<CredentialRoute> = {}): void {
     useSettingsStore.getState().setProviderAccounts([
       {
-        id: "acct-xai",
-        serviceId: "xai",
+        id: "acct-go",
+        serviceId: "opencode",
         billingMode: "sub",
         via: "account",
-        label: "nik@x",
+        label: "nik@go",
         isPrimary: true,
         status: "ready",
         createdAt: now,
@@ -934,21 +961,21 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
   }
 
   it("renders no pill at all for a healthy connected account", () => {
-    connectXai();
+    connectGo();
     const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
     expect(container.innerHTML).toBe("");
-    expect(screen.queryByText("nik@x")).toBeNull();
+    expect(screen.queryByText("nik@go")).toBeNull();
     expect(screen.queryByText(/5h · —/)).toBeNull();
     expect(screen.queryByText(/7d · —/)).toBeNull();
   });
 
   it("still says when that account cannot run a turn", () => {
     // The pill's second job is about the SIGN-IN, not about quota, so it
-    // survives: an xAI account needing reconnection is exactly as worth saying
+    // survives: a Go account needing reconnection is exactly as worth saying
     // as an Anthropic one, and the header is the only place that says it.
-    connectXai({ status: "auth_failed" });
+    connectGo({ status: "auth_failed" });
     render(<SubscriptionLimitsBadge limits={{}} />);
-    expect(screen.getByText("nik@x")).toBeInTheDocument();
+    expect(screen.getByText("nik@go")).toBeInTheDocument();
     expect(screen.getByText("reconnect needed")).toBeInTheDocument();
     expect(screen.queryByText(/5h/)).toBeNull();
   });
@@ -956,7 +983,7 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
   it("does not count toward the header's pill budget", () => {
     // `AppLayout` sizes the status group on this number; a pill that never
     // renders must not reserve room for itself.
-    connectXai();
+    connectGo();
     const { result } = renderHook(() => useSubscriptionPillCount({}));
     expect(result.current).toBe(0);
   });
@@ -964,7 +991,7 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
   it("leaves a service that DOES report a quota untouched", () => {
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-      { id: "acct-xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-go", serviceId: "opencode", billingMode: "sub", via: "account", label: "nik@go", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
     const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
     // The quiet Anthropic account keeps its `—` meters: there its blanks mean
@@ -973,7 +1000,7 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
     expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
     expect(screen.getByText("Work")).toBeInTheDocument();
     // The direct form of the same claim, independent of the DOM shape above.
-    expect(screen.queryByText("nik@x")).toBeNull();
+    expect(screen.queryByText("nik@go")).toBeNull();
     expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
     expect(screen.getByLabelText("Refresh subscription usage")).toBeInTheDocument();
   });
@@ -988,9 +1015,128 @@ describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () =
   */
   it("ignores a snapshot for a mode with no reader, however it got there", () => {
     const limits: SubscriptionLimitsMap = {
-      "xai:sub": routed(makeSnap({ serviceId: "xai", routeId: "xai-reserved" })),
+      "opencode:sub": routed(makeSnap({ serviceId: "opencode", routeId: "go-reserved" })),
     };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
     expect(container.innerHTML).toBe("");
+  });
+});
+
+/**
+ * planning#454 — **the pill draws the windows the reading carries, and no
+ * others.**
+ *
+ * Reported by a user looking at three subscriptions at once: SuperGrok, a
+ * ChatGPT plan and a GLM plan, each showing a `5h · —` that nothing would ever
+ * fill, two of them beside a real weekly number. The pill drew a fixed pair of
+ * meters on the assumption that every plan has both windows. Several do not —
+ * SuperGrok has a single weekly pool and no short window at all.
+ *
+ * No service is named in the rule or in these cases, which is the point: a
+ * provider that HAS a window reports it as an object even when it has no number
+ * for it yet (`SubscriptionLimitsWindow.usedPct` is nullable for exactly that),
+ * so a `null` window inside a reading already means "this plan has no such
+ * window". What the pill was missing was not a new field — it was the
+ * difference between a null window and no reading.
+ */
+describe("a plan whose reading carries only some of the windows (planning#454)", () => {
+  it("draws the weekly meter alone when the reading has no short window", () => {
+    render(
+      <SubscriptionLimitPill
+        label="nik@x"
+        snapshot={makeSnap({ serviceId: "xai", session: null, weekly: { usedPct: 10, resetAt: FUTURE_WEEKLY_RESET } })}
+      />,
+    );
+    expect(screen.getByText(/7d\s*10%/)).toBeInTheDocument();
+    expect(screen.queryByText(/5h/)).toBeNull();
+  });
+
+  it("draws the short meter alone when the reading has no weekly window", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Work"
+        snapshot={makeSnap({ weekly: null, session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET } })}
+      />,
+    );
+    expect(screen.getByText(/5h\s*30%/)).toBeInTheDocument();
+    expect(screen.queryByText(/7d/)).toBeNull();
+  });
+
+  it("draws both when the reading has both", () => {
+    render(<SubscriptionLimitPill label="Work" snapshot={makeSnap()} />);
+    expect(screen.getByText(/5h\s*30%/)).toBeInTheDocument();
+    expect(screen.getByText(/7d\s*50%/)).toBeInTheDocument();
+  });
+
+  /*
+    A window that EXISTS but has no number yet is not an absent window, and the
+    two are distinguished by shape rather than by a service list: the provider
+    sends `{ usedPct: null, resetAt }`. Claude below a warning threshold is
+    exactly this, and its `5h · —` is a pending state the refresh button can
+    still change.
+  */
+  it("keeps a window the provider reported without a number", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Work"
+        snapshot={makeSnap({ session: { usedPct: null, resetAt: FUTURE_SESSION_RESET } })}
+      />,
+    );
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
+    expect(screen.getByText(/7d\s*50%/)).toBeInTheDocument();
+  });
+
+  it("draws both as unread when there is no reading at all", () => {
+    // The connected-but-quiet account. Nothing is known yet, which is not the
+    // same as a plan with no windows — a refresh can still fill these.
+    render(<SubscriptionLimitPill label="Work" serviceId="anthropic" showRefresh />);
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
+    expect(screen.getByText(/7d · —/)).toBeInTheDocument();
+  });
+
+  /*
+    The case that makes the fallback load-bearing rather than defensive. A route
+    429'd before it ever reported gets a real snapshot whose only content is the
+    lockout countdown. Drawing nothing there would say the plan is unmetered.
+  */
+  it("draws both as unread for a lockout-only reading, not neither", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Work"
+        serviceId="anthropic"
+        showRefresh
+        snapshot={makeSnap({ session: null, weekly: null, lockedUntil: Date.now() + 600_000 })}
+      />,
+    );
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
+    expect(screen.getByText(/7d · —/)).toBeInTheDocument();
+  });
+
+  it("keeps the refresh button beside a single meter", () => {
+    // The half the user asked for by name: a number, and something to press to
+    // make it current. Losing a slot must not lose the button with it.
+    render(
+      <SubscriptionLimitPill
+        label="nik@x"
+        serviceId="xai"
+        showRefresh
+        snapshot={makeSnap({ serviceId: "xai", session: null, weekly: { usedPct: 10, resetAt: FUTURE_WEEKLY_RESET } })}
+      />,
+    );
+    expect(screen.getByLabelText("Refresh subscription usage")).toBeInTheDocument();
+  });
+
+  describe("windowsShown", () => {
+    const win = { usedPct: 1, resetAt: FUTURE_WEEKLY_RESET };
+
+    it.each([
+      ["no reading", undefined, { session: true, weekly: true }],
+      ["both windows", makeSnap(), { session: true, weekly: true }],
+      ["weekly only", makeSnap({ session: null, weekly: win }), { session: false, weekly: true }],
+      ["session only", makeSnap({ session: win, weekly: null }), { session: true, weekly: false }],
+      ["neither", makeSnap({ session: null, weekly: null }), { session: true, weekly: true }],
+    ])("%s", (_name, snapshot, expected) => {
+      expect(windowsShown(snapshot)).toEqual(expected);
+    });
   });
 });

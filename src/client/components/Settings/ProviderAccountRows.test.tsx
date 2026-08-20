@@ -315,22 +315,27 @@ describe("ProviderAccountRows stale-credential escape hatch", () => {
 });
 
 /**
- * docs/274 req 16 — the same absence, on the Settings row.
+ * docs/274 req 16 — a subscription ShipIt has no reader for gets no read-out on
+ * this row either.
  *
  * The header pill was where it was reported, but this row rendered the identical
  * empty `5h · —  7d · —` for the same reason: it asked `billingMode === "sub"`,
- * on the belief that every subscription reports a quota. xAI's does not, and
- * that is settled rather than pending — its usage routes 404 and no reader
- * exists to write.
+ * on the belief that every subscription reports a quota.
+ *
+ * The example is OpenCode Go, and it changed: this was written against xAI,
+ * whose reader turned out to be one query parameter away (planning#454). Go is
+ * the durable case — the vendor publishes no per-key usage API at all, so it is
+ * missing by decision rather than by backlog (docs/272 req 6). The rule under
+ * test is `modeReportsQuota`, not the service.
  */
 describe("a subscription with no quota reader (docs/274 req 16)", () => {
-  function xaiAccount(overrides: Partial<CredentialRoute> = {}): CredentialRoute {
+  function goAccount(overrides: Partial<CredentialRoute> = {}): CredentialRoute {
     return {
-      id: "acct-xai",
-      serviceId: "xai",
+      id: "acct-go",
+      serviceId: "opencode",
       billingMode: "sub",
       via: "account",
-      label: "nik@x",
+      label: "nik@go",
       isPrimary: true,
       status: "ready",
       createdAt: 0,
@@ -340,17 +345,17 @@ describe("a subscription with no quota reader (docs/274 req 16)", () => {
   }
 
   it("renders the row with no quota read-out", () => {
-    useSettingsStore.getState().setProviderAccounts([xaiAccount()]);
+    useSettingsStore.getState().setProviderAccounts([goAccount()]);
     render(
       <ProviderAccountRows
-        provider="grok"
-        agent={{ id: "grok", name: "Grok Build", installed: true, hasRunnableModels: true, models: [], supportsReview: true }}
+        provider="opencode"
+        agent={{ id: "opencode", name: "OpenCode", installed: true, hasRunnableModels: true, models: [], supportsReview: true }}
         billingMode="sub"
         onReconnect={vi.fn()}
       />,
     );
-    const row = screen.getByTestId("provider-account-row-acct-xai");
-    expect(row).toHaveTextContent("nik@x");
+    const row = screen.getByTestId("provider-account-row-acct-go");
+    expect(row).toHaveTextContent("nik@go");
     expect(row).not.toHaveTextContent(/5h/);
     expect(row).not.toHaveTextContent(/7d/);
     expect(row.querySelector("[data-meter-pct]")).toBeNull();

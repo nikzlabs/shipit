@@ -81,7 +81,13 @@ export type QuotaIntegrationId =
   // in before planning#339 wrote its reader, except that here there is nothing
   // to read rather than nobody to write it. ShipIt reacts to the service's own
   // 429 instead.
-  | "opencode-go-usage";
+  | "opencode-go-usage"
+  // planning#435 — SuperGrok's weekly pool, from `/v1/billing?format=credits`
+  // on the subscription host. Read by `XaiLimitsProvider`. One window, not two:
+  // the plan has a weekly allowance and no short window at all, which the
+  // provider reports by leaving the session slot empty rather than by filling
+  // it with a dash the pill would draw for ever.
+  | "xai-plan-usage";
 
 /**
  * Per-model unit rates, USD per million tokens. **Always the service's API rate
@@ -345,25 +351,24 @@ interface ModeCommon {
  * difference — `IMPLEMENTED_QUOTA_INTEGRATIONS` in `./index.ts` is what
  * actually decides whether a mode shows a read-out.
  *
- * So if a future service has a subscription with no usage API at all, the fix
- * is an explicit no-reader variant of this union, not another dangling id.
- * xAI's subscription is exactly that case (planning#435 probed it: every usage
- * route 404s), so the variant lands in the same change as the mode that needs
- * it rather than ahead of it — it is the third arm below.
+ * A third arm — `quota: null`, "the vendor publishes nothing to read" — lived
+ * here for one release and has been removed, because the service it was written
+ * for turned out not to be that case: xAI does publish its weekly pool, and the
+ * probe that said otherwise had missed a query parameter (planning#454). It is
+ * recorded here rather than silently dropped, because the argument for it was
+ * sound and a future service may genuinely need it. What the episode adds is
+ * where the burden of proof sits: `null` asserts something about the VENDOR
+ * that no amount of code review can check, so it should be written only from a
+ * probe that looked for a reader and found none — not from one that stopped at
+ * the first plausible answer.
  *
- * **`quota: null` is a declaration, not an omission** (docs/274 req 16). The
- * field stays REQUIRED on every `sub` arm, so a subscription still cannot be
- * written without answering the question; what the third arm adds is a way to
- * answer it with "there is nothing to read". The distinction it preserves is
- * the one `opencode-go-usage` could only make in a comment: a named id that
- * nothing implements reads, from the type alone, exactly like one whose reader
- * is merely late — and `IMPLEMENTED_QUOTA_INTEGRATIONS` is a second list to
- * keep in step. `null` needs neither.
+ * Until then a subscription with no reader declares an id nothing implements,
+ * the way `opencode-go-usage` does, and `IMPLEMENTED_QUOTA_INTEGRATIONS` in
+ * `./index.ts` is the single list that decides what a user actually sees.
  */
 export type BillingModeDef =
   | (ModeCommon & { kind: "key" })
-  | (ModeCommon & { kind: "sub"; quota: QuotaIntegrationId })
-  | (ModeCommon & { kind: "sub"; quota: null });
+  | (ModeCommon & { kind: "sub"; quota: QuotaIntegrationId });
 
 
 export interface ServiceDef {

@@ -747,38 +747,29 @@ function ServiceModeCard({
 }
 
 /**
- * A standing fact about one `(service, mode)` that no control on the card can
- * carry — a **billing hazard** the service performs with the user's money out
- * of ShipIt's sight, or the **absence of a read-out** where the user has every
- * reason to expect one. Both are things ShipIt cannot show as a number, a
- * status or a failure, so they are said in words.
- *
- * The second kind is what a hidden control leaves behind. Suppressing a quota
- * pill ShipIt cannot fill is right (docs/274 req 16) and it is also silent: a
- * user paying for a subscription goes looking for the figure and finds nothing
- * where the other services put theirs, with no way to tell "not measured" from
- * "broken". Req 16 asks ShipIt to *say so*, and this is where.
+ * A standing **billing hazard** on one `(service, mode)`: something the service
+ * does with the user's money out of ShipIt's sight, which no control on the card
+ * can carry because it is neither a number, a status, nor a failure.
  *
  * Deliberately a short, closed map rather than a `description` field on every
  * card: req 19 deleted per-card prose precisely because it printed something on
  * every service whether or not there was anything to say. An entry here is the
  * exception that earns its line.
  *
+ * A second kind briefly lived here — the **absence of a read-out**, to explain a
+ * quota pill ShipIt had suppressed because it had no reader (docs/274 req 16).
+ * It is gone with the case that needed it: xAI turned out to publish its weekly
+ * figure after all, so the pill now shows a number instead of a sentence
+ * apologising for having none. The lesson is worth more than the mechanism was —
+ * a line of copy explaining why a surface is empty is a reasonable last resort
+ * and a poor substitute for filling it, so reach for it only once the reader is
+ * genuinely impossible rather than merely unwritten.
+ *
  * It also lives here rather than in the catalogue: the rows are routing data
  * (endpoints, credentials, models), and a sentence of user-facing copy is not
  * something a spawn ever reads.
  */
-/**
- * The two kinds, and the glyph each earns. A hazard is a warning — something is
- * happening to the user's money that they would want to stop. An absence is an
- * explanation, and dressing one as a warning is its own small dishonesty: the
- * triangle says "act on this" about a fact there is nothing to do about. Found
- * by the independent review, which read the xAI line and asked what the warning
- * was warning of.
- */
-type ModeNoticeKind = "hazard" | "absence";
-
-const MODE_NOTICES: Record<string, { kind: ModeNoticeKind; text: string }> = {
+const MODE_NOTICES: Record<string, string> = {
   // docs/272 req 6. Two halves, both load-bearing. OpenCode publishes no
   // per-key usage API (plan.md §8), so a Go card carries no remaining-quota
   // figure and ShipIt learns of exhaustion only from the plan's own 429 — and
@@ -786,23 +777,8 @@ const MODE_NOTICES: Record<string, { kind: ModeNoticeKind; text: string }> = {
   // spend server-side, with no error and no signal ShipIt could read. That is
   // the "silent shift onto metered billing" docs/252 req 12 refuses to make;
   // ShipIt cannot prevent this one, so it says so where the credential lives.
-  [credentialModeKey("opencode", "sub")]: {
-    kind: "hazard",
-    text: "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
-  },
-  // docs/274 req 16 — the absence, said rather than drawn.
-  //
-  // **This sentence used to say xAI publishes no usage API, and that was
-  // wrong.** `GET /v1/billing?format=credits` on the subscription host returns
-  // the weekly pool (`creditUsagePercent`, `currentPeriod.start`/`.end`,
-  // per-product breakdown) to the CLI's own token — the query parameter is a
-  // literal in the grok binary, and the first probe simply called the endpoint
-  // without it. So the absence is ShipIt's, not the vendor's, and the line says
-  // which. It is removed when `xai-plan-usage` has a reader (planning#454).
-  [credentialModeKey("xai", "sub")]: {
-    kind: "absence",
-    text: "ShipIt does not read SuperGrok usage yet, so this card shows no remaining figure and no usage cutoffs. xAI does publish the weekly figure — Settings → Usage at grok.com shows it — and a reader for it is planned.",
-  },
+  [credentialModeKey("opencode", "sub")]:
+    "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
 };
 
 /** The notice line for a `(service, mode)`, or nothing where there is none. */
@@ -815,21 +791,17 @@ function ModeNotice({
 }) {
   const notice = MODE_NOTICES[credentialModeKey(serviceId, billingMode)];
   if (!notice) return null;
-  const Glyph = notice.kind === "hazard" ? WarningIcon : InfoIcon;
   return (
     <p
       className="flex items-start gap-1.5 text-[11px] text-(--color-text-tertiary)"
       data-testid={`mode-notice-${credentialModeKey(serviceId, billingMode)}`}
-      data-notice-kind={notice.kind}
     >
-      <Glyph
+      <WarningIcon
         aria-hidden
         size={ICON_SIZE.XS}
-        className={`mt-0.5 shrink-0 ${
-          notice.kind === "hazard" ? "text-(--color-warning)" : "text-(--color-text-tertiary)"
-        }`}
+        className="mt-0.5 shrink-0 text-(--color-warning)"
       />
-      <span>{notice.text}</span>
+      <span>{notice}</span>
     </p>
   );
 }

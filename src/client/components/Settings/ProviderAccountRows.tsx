@@ -842,11 +842,11 @@ export function ProviderAccountRows({
                   //
                   // `modeReportsQuota` and not `billingMode === "sub"` alone:
                   // a subscription can be one ShipIt has no reader for at all
-                  // (docs/274 req 16 — xAI's, whose every usage route 404s),
-                  // and then the pill renders two blank windows and no refresh
-                  // button, which reads as lost numbers rather than as absent
-                  // ones. The credential row beside this one in `ServicesPanel`
-                  // already asks the question this way.
+                  // (docs/274 req 16 — OpenCode Go, whose vendor publishes no
+                  // per-key usage API), and then the pill renders two blank
+                  // windows and no refresh button, which reads as lost numbers
+                  // rather than as absent ones. The credential row beside this
+                  // one in `ServicesPanel` already asks the question this way.
                   billingMode === "sub"
                   && account.status === "ready"
                   && modeReportsQuota(account.serviceId, billingMode) ? (

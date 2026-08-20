@@ -724,14 +724,26 @@ two unlikely states at once (a broken credential root *and* a stored key), which
 is exactly why it now logs explicitly rather than being left to be inferred from
 the resume warning beside it.
 
-### Quota: no reader exists, and the empty pill was the bug (req 16)
+### Quota: the empty pill, and the reader that turned out to exist (req 16)
 
-The catalogue answered this correctly and three UI surfaces did not. `xai:sub`
-declares `quota: null` — the no-reader arm `BillingModeDef` grew for exactly
-this case — so `modeReportsQuota("xai", "sub")` is false and the server
-registers no `LimitsProvider` for grok (verified at
-`orchestrator/agents/index.ts:87`, whose map holds claude and codex only). No
-snapshot for an xAI account can therefore ever exist.
+**Read this section knowing it reverses itself.** It was written on the finding
+that xAI publishes no subscription usage API — every candidate route 404s — and
+that finding was wrong. `GET /v1/billing?format=credits` returns the weekly
+pool; the earlier probe missed it by one query parameter. The investigation is
+kept in the order it happened, because the *shape* of the error is the reusable
+part and a tidied-up account would hide it.
+
+So the section has two halves. The empty pill WAS a real bug and its client-side
+fix stands unchanged — it is the general rule "a subscription ShipIt cannot read
+gets no meters", which still governs OpenCode Go. What changed is that xAI
+stopped being an instance of it: `xai:sub` now declares `xai-plan-usage`,
+`XaiLimitsProvider` reads it, and the card's apologetic notice is gone because
+there is a number to show instead.
+
+#### The bug as diagnosed (all of this still holds)
+
+At the time, `xai:sub` declared `quota: null` and no `LimitsProvider` existed
+for it, so no snapshot for an xAI account could exist.
 
 **What the user saw anyway**: a header pill reading `nik@x  5h · —  7d · —`
 with no refresh button, permanently. Reproduced in a unit render before the
@@ -760,11 +772,13 @@ than a regression. Two things it did change:
   map's say-so, so a stale entry or a service that loses a reader would put the
   blanks straight back. Guarded, and pinned by a test that hands the badge a
   snapshot which cannot legitimately exist.
-- **The glyph now follows the kind.** `MODE_NOTICES` entries carry
-  `kind: "hazard" | "absence"`; a hazard keeps the warning triangle, an absence
-  gets a neutral info glyph. The review asked what the warning was warning of,
+- **The glyph now follows the kind.** `MODE_NOTICES` entries carried
+  `kind: "hazard" | "absence"`; a hazard kept the warning triangle, an absence
+  got a neutral info glyph. The review asked what the warning was warning of,
   which is the right question: a triangle says "act on this" about a fact there
-  is nothing to do about.
+  is nothing to do about. *(Reverted with the notice it was written for — see
+  "What shipped in the end". The observation is still right; there is simply one
+  kind again.)*
 
 Its remaining note is accepted, not fixed: `AppLayout`'s status-affordance
 condition has no render test — it had none before this change either, and the
@@ -784,9 +798,16 @@ suppressed leaf leaves a frame around nothing unless the frame asks the leaf.
 looking for the figure the other cards show and finds a card with nothing where
 it should be, which does not distinguish "not measured" from "broken". Req 16
 says ShipIt *says so*; `MODE_NOTICES` is where the OpenCode Go hazard already
-says its equivalent (docs/272 req 6), so the xAI card gets the second entry in
-that map and the map's docstring grows the second admissible kind: an absent
+says its equivalent (docs/272 req 6), so the xAI card got the second entry in
+that map and the map's docstring grew a second admissible kind: an absent
 read-out, not only a billing hazard.
+
+*Both are gone now* — the sentence and the second kind — because the reader
+made them unnecessary. The reasoning survives as a rule about when to reach for
+copy at all: **a line explaining why a surface is empty is a reasonable last
+resort and a poor substitute for filling it.** Write it only once the reader is
+genuinely impossible, not merely unwritten, because prose is much cheaper than
+a probe and that is exactly what makes it the tempting wrong answer.
 
 **The pill's other job survives.** `credentialStatusWord` puts "reconnect
 needed" in the same pill, and that is a statement about the SIGN-IN, not about
@@ -962,17 +983,86 @@ every body tried. `/v1/usage` and `/v1/rate-limits` remain nginx 404s on the
 subscription host, and `?format=weekly` / `?format=usage` fall back to the
 monthly object. So `format=credits` is the one door, and it is open.
 
-**Consequence for the catalogue.** `quota: null` is wrong for `xai:sub` and
-should become a real `QuotaIntegrationId` with an `XaiLimitsProvider` behind it
-— tracked as **planning#454**. Two shape notes for whoever builds it. The
-window is weekly and there is **no 5-hour window at all**, so the pill's short
-window is not "unreported" but *nonexistent*, and rendering `5h · —` beside a
-real `7d 10%` would repeat the exact dishonesty this section is about. And the
-figure is a **percentage used with no remaining count**, so a "N of M left"
-surface cannot be built from it.
+#### What shipped in the end (planning#454)
 
-Until that reader ships, the suppression below stands and the card's notice says
-the absence is ShipIt's rather than the vendor's.
+Three changes, in the order they depend on each other.
+
+**1. `XaiLimitsProvider`** (`orchestrator/limits/xai-limits-provider.ts`) — a
+*pulled* reader on the `ZaiLimitsProvider` template: nothing pushes these
+numbers during a turn, so a reading only happens because something asked for
+one. It differs from GLM's in the credential: an xAI subscription is an
+ACCOUNT, so the provider is handed a credential **directory** and reads
+`.grok/auth.json` per request rather than holding a token. The CLI rewrites that
+file every few hours, and a token captured at registration would go stale
+between refreshes.
+
+It parses fail-closed, and two of the rules are worth stating because they are
+not the obvious choices. A percentage outside 0–100 is **refused, not clamped**
+— against an undocumented endpoint, out-of-range is the evidence that the field
+is not the one we think it is. And a `currentPeriod.type` that is not weekly is
+**refused outright**: the pill labels this window `7d`, so a monthly period
+would be mislabelled rather than merely imprecise. `billingPeriodStart`/`End`
+are deliberately not a fallback for a missing `currentPeriod` — they carry no
+`type`, so accepting them means guessing the length the previous rule exists to
+refuse.
+
+Registration follows GLM's, with one generalization: the sign-in→seed pairing in
+`bootstrap-managers.ts` searched only `buildAgentRuntime`'s per-`AgentId`
+providers, which would have left a **fresh** SuperGrok sign-in with an empty
+pill until the next boot. It now searches every registered reader. The boot seed
+likewise iterates the pulled providers as a set rather than naming one.
+
+**2. The pill draws the windows a reading carries** (`windowsShown`). This is
+the shape note above, generalized on the user's instruction: *"the scope should
+include all APIs that didn't report 5h — in my case it is Codex and GLM too, but
+we shouldn't hard-code the names, we should just show what is available."* So
+the rule names no service. It could not have been a per-service list anyway —
+whether a ChatGPT plan reports a 5-hour window is a property of the PLAN, not of
+the vendor.
+
+The mechanism is the distinction the pill was missing, and it needed no new
+field. A provider that HAS a window reports it as an object even when it has no
+number for it — `SubscriptionLimitsWindow.usedPct` is nullable for exactly that
+reason — so a `null` window inside a reading already means "this plan has no
+such window". What the pill lacked was the difference between **a null window
+and no reading**: with no snapshot at all, both slots still draw `—`, because
+nothing is known yet and the refresh button can still change that.
+
+One fallback earns its place: a reading carrying NEITHER window draws both as
+unread. That is not a plan without windows, it is a read that produced none —
+the concrete case is a route 429'd before it ever reported, whose snapshot
+exists only to carry the lockout countdown. Drawing nothing there would claim
+the plan is unmetered.
+
+**The trade-off, stated rather than discovered later.** Every provider drops a
+window it cannot parse COMPLETELY: Claude's `parseWindow` returns null without a
+`resets_at`, Codex's `parseRateWindow` without a finite `usedPercent`, and GLM's
+parser nulls a slot whose two candidate entries cannot be told apart. On such a
+reading, a plan that genuinely HAS a short window now renders no `5h` slot at
+all, where before it rendered `5h · —`. This is judged acceptable and not
+papered over: the slot returns on the next well-formed reading, and the
+alternative — remembering per route which windows have ever been seen — buys a
+narrow malformed-payload case at the cost of state that has to be invalidated
+when a user changes plan. The failure mode is a missing slot for one refresh
+cycle, not a wrong number.
+
+**3. The catalogue tells the truth again.** `xai:sub` declares
+`xai-plan-usage`, which joins both `IMPLEMENTED_QUOTA_INTEGRATIONS` and
+`ON_DEMAND_QUOTA_INTEGRATIONS` — the second is the refresh button the user asked
+for by name. The `quota: null` arm of `BillingModeDef` is **removed**: it was
+introduced for xAI on the disproven finding, and with that mode gone it had no
+user. Its own docstring argued the arm should land with the mode that needs it,
+so it leaves the same way. What replaces it in `types.ts` is where the burden of
+proof sits — `null` asserts something about a VENDOR that no code review can
+check, so it is written only from a probe that looked for a reader and found
+none, never from one that stopped at the first plausible answer.
+
+Two things the reader does NOT do, so nobody re-derives them. It reports
+`plan: null` — the name is reachable at `/v1/settings` and was declined by the
+human (requirements.md, 2026-08-20 receipt), because it costs a second call to a
+second endpoint for a label nobody asked for. And it cannot support a
+"N of M left" surface: the figure is a percentage used, with no remaining count
+anywhere in the payload.
 
 **One adjacent gap, not fixed here.** The exhaustion classifier
 (`ws-handlers/agent-rate-limits.ts`) is text-pattern-based and harness-agnostic,
@@ -980,9 +1070,11 @@ and `AGENT_LIMIT_LABELS` already names grok — but its `EXHAUSTION_PATTERNS` we
 written against Claude's and Codex's wording. xAI's own limit strings include
 "usage limit reached" and "out of credits" (both matched today) alongside
 "You hit your free usage limit." and "usage balance exhausted" (neither
-matched). With no quota to read, that classifier is the *only* signal a
-SuperGrok subscription is spent, so its coverage matters more here than for a
-service with a meter. Filed as **planning#453**, not built: the wording needs a real
+matched). It was filed when that classifier was the *only* signal a SuperGrok
+subscription was spent; the reader has since demoted it to the second signal,
+which lowers its urgency without closing it — a percentage read at boot and on
+demand is not a substitute for noticing a refusal mid-turn. Filed as
+**planning#453**, not built: the wording needs a real
 exhausted subscription to verify against, and widening a list that benches a
 working subscription on a false positive is not something to guess at.
 
