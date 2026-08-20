@@ -188,17 +188,39 @@ export function usageTotalsFrom(groups: readonly UsageGroup[]): UsageTotals {
  * The ONE dollar figure a compact running surface can show for a session — the
  * context dial's trigger, the modal's per-session "Cost" — and what it means.
  *
- * req 16: a subscription session shows its at-API-rates estimate, labelled as
- * such, rather than a blank or a zero. So the priority is money first, estimate
- * second, pre-feature accounting last:
+ * req 16: a session on a subscription shows its at-API-rates estimate, labelled
+ * as such, rather than a blank or a zero. The three figures it can carry:
  *
- *  - `metered` — money left the account this session. The estimate is still
- *    reachable in the popover; the trigger carries the figure that is money.
- *  - `at-api-rates` — nothing was billed, so the estimate is the live sense of
- *    consumption those surfaces exist to give. Rendered with `≈` and labelled.
+ *  - `metered` — money left the account this session. The figure that is money.
+ *  - `at-api-rates` — plan work, valued at the service's API rates. Rendered
+ *    with `≈` and labelled; never presented as money spent.
  *  - `earlier` — only pre-feature rows have a dollar value here. Shown so a
  *    long-lived session does not silently lose a total the user has already
  *    seen; it is not merged into either figure above.
+ *
+ * **Which one, when a session is MIXED: money first, unless another figure is
+ * larger in BOTH dollars and tokens.** Money-first alone read a session's
+ * character off a dollar sign rather than off the session: one metered
+ * sub-agent consult inside a 39-turn plan session made the dial say `$0.004`
+ * while the same popover said `≈$131.58` — under-reporting consumption by four
+ * orders of magnitude and defeating the exact purpose req 16 gives these
+ * surfaces ("a live sense of what the session is consuming").
+ *
+ * Requiring BOTH is what makes the override safe, and it is why the rule is not
+ * simply "most tokens wins". Volume alone inverts the failure instead of fixing
+ * it: an expensive metered model spending $50 over 10K tokens would lose to
+ * cheap plan work valued at $2 over 10M, and the dial would under-report *money
+ * actually billed* by 25× while labelled "not billed" (cross-backend review,
+ * 2026-08-20). Dominance on both axes cannot do that — it fires only when the
+ * other side is unambiguously the session's story, so no case comes out worse
+ * than it did under money-first.
+ *
+ * Two consequences worth stating. A totals record carrying no token counts (an
+ * older payload, a hand-built fixture) can never satisfy `tokens >` and so
+ * behaves exactly as before. And only a candidate with a dollar figure competes
+ * at all: legacy volume is unpriced going forward (planning#343), so its tokens
+ * must never win a slot it has nothing to show in. Nothing is ever summed — the
+ * popover and the usage modal remain where the parts are separated.
  *
  * The legacy bucket also takes forward-generated rows now (req 16,
  * planning#343 — work that resolved no model), so its *volume* is no longer only
@@ -213,10 +235,21 @@ export type RunningFigureKind = "metered" | "at-api-rates" | "earlier";
 export function sessionRunningFigure(
   totals: UsageTotals,
 ): { usd: number; kind: RunningFigureKind } | null {
-  if (totals.meteredCostUsd > 0) return { usd: totals.meteredCostUsd, kind: "metered" };
-  if (totals.atApiRatesUsd > 0) return { usd: totals.atApiRatesUsd, kind: "at-api-rates" };
-  if (totals.legacyCostUsd > 0) return { usd: totals.legacyCostUsd, kind: "earlier" };
-  return null;
+  const all: { usd: number; tokens: number; kind: RunningFigureKind }[] = [
+    { usd: totals.meteredCostUsd, tokens: totals.meteredTokens, kind: "metered" },
+    { usd: totals.atApiRatesUsd, tokens: totals.includedTokens, kind: "at-api-rates" },
+    { usd: totals.legacyCostUsd, tokens: totals.legacyTokens, kind: "earlier" },
+  ];
+  // Source order IS the money-first priority: metered → estimate → earlier.
+  const candidates = all.filter((c) => c.usd > 0);
+  if (candidates.length === 0) return null;
+  const lead = candidates[0];
+  const dominant = candidates
+    .slice(1)
+    .filter((c) => c.usd > lead.usd && c.tokens > lead.tokens)
+    .sort((a, b) => b.tokens - a.tokens)[0];
+  const winner = dominant ?? lead;
+  return { usd: winner.usd, kind: winner.kind };
 }
 
 /**

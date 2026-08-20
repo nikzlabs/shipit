@@ -279,7 +279,11 @@ export function ContextDial({
           type="button"
           className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 hover:bg-(--color-bg-hover) transition-colors ${INSET_FOCUS_RING}`}
           aria-label={`Context usage: ${Math.round(percentage)}%${
-            running ? `, ${RUNNING_FIGURE_TITLE[running.kind]}: ${formatCost(running.usd)}` : ""
+            running
+              ? `, ${RUNNING_FIGURE_TITLE[running.kind]}: ${
+                running.kind === "at-api-rates" ? formatEstimate(running.usd) : formatCost(running.usd)
+              }`
+              : ""
           }`}
           data-testid="context-dial"
           data-level={level}

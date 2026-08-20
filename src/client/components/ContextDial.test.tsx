@@ -219,6 +219,27 @@ describe("ContextDial — the running figure (docs/252 req 16)", () => {
     expect(figure).toHaveAttribute("data-figure-kind", "metered");
   });
 
+  it("does not let a stray metered consult eclipse the plan work on the trigger", () => {
+    // The reported bug: a 39-turn plan session whose popover read `≈$131.58`
+    // put `$0.004` on the trigger, because one sub-agent consult ran on a key.
+    render(
+      <ContextDial
+        modelInfo={window200k}
+        turnUsage={[makeTurn(10_000)]}
+        sessionTotals={totals({
+          meteredCostUsd: 0.004, meteredTurns: 1, meteredTokens: 12_000,
+          atApiRatesUsd: 131.58, includedTurns: 39, includedTokens: 208_600_000,
+        })}
+      />,
+    );
+    const figure = screen.getByTestId("context-dial-cost");
+    expect(figure).toHaveTextContent("≈$131.58");
+    expect(figure).toHaveAttribute("data-figure-kind", "at-api-rates");
+    // The metered sliver is not lost — it is a row of its own in the popover.
+    fireEvent.click(screen.getByTestId("context-dial"));
+    expect(screen.getByTestId("context-dial-cost-metered")).toHaveTextContent("$0.004");
+  });
+
   it("breaks the parts out in the popover and never sums them", () => {
     render(
       <ContextDial

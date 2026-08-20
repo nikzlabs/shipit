@@ -34,8 +34,12 @@ export function formatEstimate(usd: number): string {
 /** What the "≈" on a running figure means, spelled out for a tooltip or aria-label. */
 export const RUNNING_FIGURE_TITLE: Record<RunningFigureKind, string> = {
   metered: "Metered spend — ShipIt's estimate of what you were charged",
+  // Says "this work", not "this session": the figure is also what a MIXED
+  // session leads with when the plan side did the tokens, and there a claim
+  // that nothing was billed would be false. Any metered spend is a row of its
+  // own on the same surface, so the qualifier costs nothing.
   "at-api-rates":
-    "Nothing was billed — this ran on a subscription. Shown at this service's API rates, for comparison.",
+    "Covered by a subscription, not billed — shown at this service's API rates, for comparison. Metered spend is listed separately.",
   earlier: "Recorded before ShipIt tracked where usage went — earlier accounting",
 };
 
