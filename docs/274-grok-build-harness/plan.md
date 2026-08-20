@@ -653,45 +653,51 @@ no container-local `grok login`):
   (the subscription scrub). The live `auth.json` matches the shape above
   (scope key, `key`, ISO `expires_at`); `create_time` → `expires_at` is
   again exactly six hours. No refresh was observed in the first hour.
-- **`shipit agent params` lists xAI `--billing-mode sub` for Grok, and
-  only Grok.** Codex lists xAI key rows only — that is the
-  `carriers: ["grok"]` join, not a missing account credential.
+- **`shipit agent params`, measured from this grok-pinned session.**
+  Grok Build lists `--service xai --billing-mode sub` for grok-4.6 and
+  grok-4.5, plus the key rows. Codex lists xAI key rows only — that is
+  the `carriers: ["grok"]` join, not a missing account credential.
   OpenCode also lists no xAI sub row, but because it has no account
   target at all (docs/268), not because of that clause.
-  `listSpawnParameters` is a thin map over `eligibleModels`, and
-  `catalogue.test.ts` now pins both directions of the carriers refusal
-  (Grok withheld from ChatGPT; Codex withheld from SuperGrok). A
-  role-less `--agent grok --service xai --billing-mode sub --model grok-4.6
-  --effort high` is therefore assemblable; docs/275's completeness rule
-  holds for subscription selections.
-
-  **Two layers, not one.** A Claude-pinned sibling on the same
-  deployment has no grok `auth.json` in `/credentials/.grok/` — only
-  leftover `sessions/` from a wiped consult — and its
-  `.shipit-resident-route.json` names only claude. That is docs/138:
-  the *resident* worker is provisioned with the pinned harness's
-  account and nothing else (`provisionAgentCredentials` copies "only
-  `agentId`'s files — the other agent's credentials never land in this
-  session's container"). Metered keys still reach every worker as
-  `SHIPIT_CREDENTIAL_*` env vars, which is why a Claude session can
-  *see* xAI key rows on disk-less evidence alone.
-
-  That missing file does **not** make a grok subscription consult
-  unassemblable. `GET /agent/params` is install-wide (the session id
-  is a 404 check); eligibility is the orchestrator's credential store,
-  not the calling worker's mount. And `shipit agent run` — role or
-  explicit — resolves the route server-side (`selectRouteForSelection`
-  / the role's frozen route) and copies the target harness's account
-  into the parent worker for the spawn (`provisionSubAgentCredentials`),
-  then wipes auth on the way out. `--role GrokSub` and
+  `catalogue.test.ts` pins both directions of the carriers refusal
+  (Grok withheld from ChatGPT; Codex withheld from SuperGrok).
+  **From this vantage** a role-less
   `--agent grok --service xai --billing-mode sub --model grok-4.6
-  --effort high` are the same credential path. The inverse was
-  observed in this container: a Claude reviewer consult left
-  `.claude/history.jsonl` and `projects/` behind, no Claude auth file,
-  and the grok account marker untouched.
+  --effort high` is assemblable. Do not promote that to "docs/275
+  holds for subscription selections": see the sibling measurement
+  below.
 
-  Correct-as-designed; not a docs/275 gap. Do not provision every
-  account into every session to make the worker look like the listing.
+  **Resident files vs listing are two layers, and they disagree
+  across sessions (planning#452).** A Claude-pinned sibling on the
+  same deployment, same minute, has no grok `auth.json` (only a
+  leftover `sessions/` dir; pointer files name only claude) **and**
+  its `shipit agent params | grep xai` lists only `--billing-mode key`
+  rows — no Grok Build sub row at all. The missing file is docs/138:
+  `provisionAgentCredentials` copies "only `agentId`'s files — the
+  other agent's credentials never land in this session's container".
+  Metered keys still reach every worker as `SHIPIT_CREDENTIAL_*`.
+  That layer is correct-as-designed.
+
+  The listing layer is not. `GET /api/sessions/:id/agent/params`
+  404s on an unknown session, then returns
+  `listSpawnParameters(agentRegistry)` with **no session argument**;
+  `eligibleModels` is a process-wide cache over the install
+  credential store. The handler is written install-wide, not
+  per-session-credential-scoped. The two greps at the same instant
+  are then a contradiction of that handler, not a proof of it. The
+  grok-pinned worker cannot fetch the sibling's params (own-session
+  403), so the sibling's grep stands as the ordinary-session
+  evidence. Until planning#452 is explained, an ordinary session
+  cannot *see* a grok subscription target to name (docs/264 req 12),
+  even though `--role GrokSub` still works — the role path does not
+  require the caller to name the triple, and the spawn still
+  provisions the account server-side (docs/144).
+
+  Do not provision every account into every session to make the
+  worker look like the listing (that undoes docs/138). Do not treat
+  "use --role" as the params design — the handler is written to
+  list the install. Do not claim docs/275 holds for subscription
+  selections unqualified.
 
 ### What the independent review caught, and why it was the right question to ask
 

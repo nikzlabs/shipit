@@ -1535,11 +1535,13 @@ describe("credentials", () => {
     });
 
     it("an xAI account makes subscription models eligible on Grok only", () => {
-      // The join `listSpawnParameters` actually reads: grok's eligibleModels,
-      // not a filter in the listing. An xAI account credential in the install
-      // produces `--billing-mode sub` rows on Grok (grok-4.6 and grok-4.5).
-      // A params dump that only looked at Codex's xAI rows would read as
-      // "key only" — that is the carriers refusal below, not a missing account.
+      // The join `listSpawnParameters` reads: grok's eligibleModels, given
+      // this credential. An xAI account credential produces `--billing-mode
+      // sub` rows on Grok (grok-4.6 and grok-4.5) in that cache. A params
+      // dump that only looked at Codex's xAI rows would read as "key only"
+      // — that is the carriers refusal below, not a missing account.
+      // Whether every *worker* observes that cache is planning#452, not
+      // this join.
       const xaiAccount = { serviceId: "xai", billingMode: "sub" as const, via: "account" as const };
       const xaiKey = { serviceId: "xai", billingMode: "key" as const, via: "string" as const };
 
