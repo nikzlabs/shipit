@@ -14,6 +14,11 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import { WorkerAbortedError } from "./worker-http.js";
 import { clearActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
 import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
+import {
+  hasTokenWriteBackWatch,
+  startTokenWriteBackWatch,
+  stopAllTokenWriteBackWatches,
+} from "./session-token-publisher.js";
 import type { WsServerMessage } from "../shared/types.js";
 import {
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
@@ -914,5 +919,58 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
       withheld: true,
     });
     expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * docs/153 — the token write-back watch outlives its turn on purpose (a
+ * resident CLI rotates the shared OAuth token between turns), so the runner is
+ * where it has to END. Two exits, because a process can leave two ways.
+ */
+describe("ContainerSessionRunner — token write-back watch release (docs/153)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-watch-release-"));
+    const file = path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ claudeAiOauth: { expiresAt: 1_000 } }));
+  });
+
+  afterEach(() => {
+    stopAllTokenWriteBackWatches();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function armWatch(): void {
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude",
+      pollIntervalMs: 10_000, debounceMs: 10_000,
+    });
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+  }
+
+  it("releases the watch when a non-streaming turn's process exits", () => {
+    const runner = makeRunner();
+    armWatch();
+    // The real lifecycle: `finalizeSessionAgentEnvironment` ran at
+    // `agent_result` with the process still installed (so it kept the watch),
+    // and the slot is not cleared until `done`.
+    runner.setAgent(null);
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
+  it("keeps the watch while a streaming process survives the slot being cleared", () => {
+    const runner = makeRunner();
+    runner.isStreamingActive = true;
+    armWatch();
+    // A WS reload recreates the proxy without the worker's CLI going anywhere.
+    runner.setAgent(null);
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+
+    // Its genuine exit is the flag clearing — every caller kills or releases
+    // the resident process first.
+    runner.isStreamingActive = false;
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });
 });

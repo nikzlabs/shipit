@@ -255,6 +255,28 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
     expect(readExpiry(sourceFile())).toBe(1_000);
   });
 
+  it("rebinds the disposed backstop when the same route re-arms on a new runner", async () => {
+    // A watch now outlives its turn, so the container it was armed against can
+    // be destroyed and rebuilt underneath it. Keeping the first binding would
+    // leave the only teardown signal attached to a dead emitter.
+    writeToken(sourceFile(), 1_000);
+    writeToken(sessionFile(), 1_000);
+    const first = new EventEmitter();
+    const second = new EventEmitter();
+
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", runner: first, ...FAST,
+    });
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", runner: second, ...FAST,
+    });
+
+    first.emit("disposed"); // the retired runner must no longer speak for this session
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+    second.emit("disposed");
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
   it("is idempotent for the same session + route, and re-arms on a route change", async () => {
     writeToken(sourceFile(), 1_000);
     writeToken(accountSourceFile("acct-b"), 1_000);

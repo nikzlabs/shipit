@@ -34,11 +34,40 @@
  * token file per {@link TOKEN_WATCH_POLL_INTERVAL_MS} for the duration of a
  * turn is negligible.
  *
- * Lifecycle: started by `prepareSessionAgentEnvironment` on the turn's own
- * pre-spawn step, stopped by `finalizeSessionAgentEnvironment` at turn end,
- * with the runner's `disposed` event as a backstop — idle cleanup destroys
- * containers aggressively, and a turn cut short that way never reaches
- * finalize.
+ * Lifecycle: the watch lives as long as the CLI PROCESS that can rotate the
+ * token, not as long as the turn. Started by `prepareSessionAgentEnvironment`
+ * on the turn's own pre-spawn step. Stopped at each point the process can end:
+ *
+ *   - `finalizeSessionAgentEnvironment`, when no agent process survives the turn;
+ *   - `ContainerSessionRunner.setAgent(null)` — a NON-streaming turn's process
+ *     exits after finalize has already run, so finalize sees it installed and
+ *     keeps the watch; this is where that one is released;
+ *   - `ContainerSessionRunner.isStreamingActive = false` — the resident
+ *     streaming CLI's genuine exit (every caller has just killed or released it);
+ *   - the runner's `disposed` event — the container went with the process;
+ *   - a route change, which re-arms against the new account's source.
+ *
+ * Four stops for one process because the process has four ways to end, and the
+ * cost of missing one is asymmetric: an extra stat poll on an idle file is
+ * nothing, while stopping early re-opens the bug below.
+ *
+ * Ending it AT turn end was the docs/153 gap that made Claude accounts need a
+ * reconnect roughly daily. A streaming `claude --print --input-format
+ * stream-json` process outlives its turn — that is what live steering is — and
+ * it refreshes ON ITS OWN SCHEDULE, hours later, with no turn in sight
+ * (observed in production: a session whose last turn ran 17h earlier rewrote
+ * its `.credentials.json` with a new refresh token at 01:09). Anthropic's
+ * refresh tokens are single-use, so that rotation invalidated the copy the
+ * orchestrator was still holding; six minutes later the refresher spent that
+ * dead copy, the CLI blanked the account's source file, and the next tick read
+ * it as `missing_credentials` and asked the user to sign in again. With no
+ * observer between turns, the rotation was invisible to every part of the
+ * system that needed it.
+ *
+ * The cost of the longer lifetime is one `stat` per token file per
+ * {@link TOKEN_WATCH_POLL_INTERVAL_MS} for as long as a CLI is resident, and
+ * nothing else: an idle session's file does not change, so the poller never
+ * schedules a publish.
  */
 
 import fs from "node:fs";
@@ -75,6 +104,14 @@ interface TokenWatch {
   paths: string[];
   listener: (curr: fs.Stats, prev: fs.Stats) => void;
   debounce: NodeJS.Timeout | null;
+  /**
+   * The runner whose `disposed` event tears this watch down. Compared on re-arm:
+   * now that a watch outlives its turn, a session can re-arm against a DIFFERENT
+   * runner (the container was destroyed and rebuilt), and keeping the old
+   * binding would leave the backstop attached to an emitter that will never fire
+   * again.
+   */
+  runner: TokenWatchRunner | undefined;
   /** Detach the runner's `disposed` backstop, if one was registered. */
   detachRunner: () => void;
 }
@@ -98,7 +135,11 @@ export interface StartTokenWriteBackWatchOptions {
    * not refresher-managed and has no source file to publish to.
    */
   accountId?: string;
-  /** Runner whose `disposed` event tears the watch down if the turn never ends. */
+  /**
+   * Runner whose `disposed` event tears the watch down. Since the watch now
+   * outlives its turn, this is the primary stop for an idle session that keeps
+   * a resident CLI, not just a backstop for a turn that never reaches finalize.
+   */
   runner?: TokenWatchRunner;
   /** Overridable for tests. */
   pollIntervalMs?: number;
@@ -107,9 +148,11 @@ export interface StartTokenWriteBackWatchOptions {
 
 /**
  * Begin publishing this session's token rotations to the source as they
- * happen. Idempotent: re-arming for the same session + route is a no-op, so
- * the per-turn `prepareSessionAgentEnvironment` call can run unconditionally.
- * A route change (account failover) restarts the watch against the new source.
+ * happen — for the lifetime of the CLI process, not of the turn. Idempotent:
+ * re-arming for the same session + route + runner is a no-op, so the per-turn
+ * `prepareSessionAgentEnvironment` call can run unconditionally and a watch
+ * left running by the previous turn simply continues. A route change (account
+ * failover) restarts the watch against the new source.
  *
  * Never throws.
  */
@@ -118,7 +161,9 @@ export function startTokenWriteBackWatch(opts: StartTokenWriteBackWatchOptions):
   const routeKey = `${agentId}:${accountId ?? ""}`;
   const existing = watches.get(sessionId);
   if (existing) {
-    if (existing.routeKey === routeKey) return; // already watching this exact route
+    // Same route AND same runner — already watching exactly this. A different
+    // runner re-arms so the `disposed` backstop follows the live container.
+    if (existing.routeKey === routeKey && existing.runner === opts.runner) return;
     stopTokenWriteBackWatch(sessionId);
   }
 
@@ -139,6 +184,7 @@ export function startTokenWriteBackWatch(opts: StartTokenWriteBackWatchOptions):
     paths,
     listener: () => {},
     debounce: null,
+    runner: opts.runner,
     detachRunner: () => {},
   };
 
@@ -212,8 +258,12 @@ export function startTokenWriteBackWatch(opts: StartTokenWriteBackWatchOptions):
 /**
  * Stop publishing for a session. Safe to call when no watch exists (the common
  * case — local runtime, non-container runners, agents without a token file).
- * Cancels any pending debounced publish: the caller (turn end) runs the
- * authoritative sync-back itself.
+ * Cancels any pending debounced publish.
+ *
+ * Callers are listed in the module docstring — every point at which the CLI
+ * process can end, plus route change and shutdown. A turn end that DOES leave a
+ * process resident must not call this: that process is exactly the one that
+ * rotates between turns.
  */
 export function stopTokenWriteBackWatch(sessionId: string): void {
   const watch = watches.get(sessionId);
