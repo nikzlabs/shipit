@@ -34,6 +34,10 @@ Tracks the four-axis rollout from `plan.md`. Order follows the plan's
       `@playwright/mcp` need no scripts. Browsers are still fetched explicitly
       via `playwright install-deps` / `playwright-mcp install-browser` (worker
       images only). Verified end-to-end on x86_64.
+- [x] Validate `docker/agent-cli/` in CI and release gates with the production
+      `npm ci --ignore-scripts` command in dry-run mode. This catches missing
+      optional platform records before a deployment while avoiding large binary
+      extraction in the merge gate.
 - [ ] (Higher effort, optional) provenance / SBOM verification + image scan.
 
 > Note: with `npm ci` driving freshness deterministically, the per-package

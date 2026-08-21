@@ -131,6 +131,12 @@ jobs:
           key: node-modules-ubuntu24-node24-${{ hashFiles('package-lock.json') }}
       - if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
+      # The production images install this nested manifest with npm ci. Run its
+      # lockfile validation here too, but skip extraction of the large platform
+      # binaries: a split upstream publish can otherwise leave Renovate's lock
+      # missing optional platform records and fail only during deployment.
+      - run: npm ci --ignore-scripts --dry-run
+        working-directory: docker/agent-cli
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run check-deps
