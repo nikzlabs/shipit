@@ -860,6 +860,13 @@ export function PreviewFrame({
               top: "50%",
               transform: `translate(-50%, -50%) scale(${deviceScale})`,
               transformOrigin: "center center",
+              // Tailwind's preflight sizes everything border-box, so the
+              // frame's 1px border would eat into the declared size and the
+              // page would see 373×665 inside a nominal 375×667 viewport.
+              // The feature's whole point is an exact CSS-pixel surface;
+              // content-box puts the border OUTSIDE the number the user
+              // picked. Measured live: innerWidth then reports exactly 375.
+              boxSizing: "content-box",
             }
             : undefined;
           return (

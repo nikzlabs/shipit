@@ -515,7 +515,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
 
-  setCustomSize: (customSize) => set({ customSize }),
+  setCustomSize: (customSize) =>
+    // A typed W×H is an exact request — carrying over a previous preset's
+    // landscape rotation would silently transpose it (measured live: typing
+    // 500×400 after rotating iPhone SE produced a 400×500 surface). Named
+    // presets keep rotation across switches; freeform entry starts upright.
+    set({ customSize, isLandscape: false }),
 
   setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 
