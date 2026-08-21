@@ -12,7 +12,7 @@
   "rangeStrategy": "pin",
   "packageRules": [
     {
-      "description": "uv (Astral) is COPYed into both session-worker images from ghcr.io/astral-sh/uv. It used to be an unpinned `:latest`, which — because deploy.sh builds with --pull — re-resolved on every uv release and invalidated every layer below it (agent CLIs, Playwright+Chrome, JDK, Android SDK, Gradle). It is pinned now, so the job of this rule is to keep that pin from rotting. Both Dockerfiles must move together, so group them into one PR; a human reviews and merges. `minimumReleaseAgeBehaviour: timestamp-optional` is load-bearing, NOT boilerplate: the cooldown is evaluated against a `releaseTimestamp`, and Renovate's Docker datasource is not guaranteed to supply one outside Docker Hub. Under the default `timestamp-required`, a candidate with no timestamp is held as pending indefinitely and NO PR is ever raised — the pin would rot silently, which is the exact failure this rule exists to prevent. `timestamp-optional` applies the 7-day cooldown when a timestamp exists and lets the update through when it does not; `automerge: false` keeps a human as the real gate either way.",
+      "description": "uv (Astral) is COPYed into both session-worker images from ghcr.io/astral-sh/uv. It used to be an unpinned `:latest`, which — because deploy.sh builds with --pull — re-resolved on every uv release and invalidated every layer below it (agent CLIs, Playwright+Chrome, JDK, Android SDK, Gradle). It is pinned now, so the job of this rule is to keep that pin from rotting. Both Dockerfiles must move together, so group them into one PR; a human reviews and merges. `minimumReleaseAgeBehaviour: timestamp-optional` is load-bearing, NOT boilerplate: the cooldown is evaluated against a `releaseTimestamp`, and Renovate's Docker datasource is not guaranteed to supply one outside Docker Hub. Under the default `timestamp-required`, a candidate with no timestamp is held as pending indefinitely and NO PR is ever raised — the pin would rot silently, which is the exact failure this rule exists to prevent. `timestamp-optional` applies the 7-day cooldown when a timestamp exists and lets the update through when it does not; `automerge: false` keeps a human as the real gate either way. Observed consequence, recorded so nobody reads the 7 days as a guarantee: it does not currently bind for uv. 0.12.5 was released 2026-08-14 and its PR was raised and merged on 2026-08-18 — 4 days, not 7 — which is the no-timestamp branch of the behaviour above doing exactly what it says. The cooldown is best-effort for this package; the human on `automerge: false` is the only gate that always holds.",
       "matchFileNames": [
         "docker/Dockerfile.session-worker.prod",
         "docker/Dockerfile.session-worker.dev"
@@ -43,13 +43,8 @@
       "enabled": false
     },
     {
-      "description": "Agent CLIs baked into ShipIt session-worker/orchestrator images (docs/141-cli-version-strategy). Hold every new version for the 7-day supply-chain cooldown, group all three into a single PR, and keep the bump as exact pins so docker/agent-cli/package-lock.json is regenerated with fresh integrity hashes. Auto-merge stays OFF until the Axis-3 CLI contract test is wired as a required status check — until then a human reviews + merges the bump PR.",
+      "description": "Agent CLIs baked into ShipIt session-worker/orchestrator images (docs/141-cli-version-strategy). Hold every new version for the 7-day supply-chain cooldown, group them into a single PR, and keep the bump as exact pins so docker/agent-cli/package-lock.json is regenerated with fresh integrity hashes. Auto-merge stays OFF until the Axis-3 CLI contract test is wired as a required status check — until then a human reviews + merges the bump PR. Matched by FILE, not by an explicit `matchPackageNames` list: every dependency in this manifest is by definition an agent CLI, and the list form silently rots the moment one is added. It already had — `opencode-ai` was in the manifest but absent from the list, so it alone got no cooldown and no grouping, and its bumps arrived as ungrouped same-day `renovate/opencode-ai-1.x` PRs (e.g. 1.18.18, merged at 2 days old). Matching the file covers whatever the manifest holds next, so a CLI added for a new harness inherits the cooldown instead of quietly opting out of it.",
       "matchFileNames": ["docker/agent-cli/package.json"],
-      "matchPackageNames": [
-        "@anthropic-ai/claude-code",
-        "@openai/codex",
-        "@playwright/mcp"
-      ],
       "groupName": "agent CLIs",
       "minimumReleaseAge": "7 days",
       "automerge": false
