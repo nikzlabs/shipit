@@ -8,6 +8,7 @@ import { handleAgentInterrupted } from "./agent-interrupted.js";
 import { handleActionChecklistCard } from "./action-checklist-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
 import { handleSessionRenamedCard } from "./session-renamed-card.js";
+import { handleSessionSettingsChangeCard } from "./session-settings-change-card.js";
 import { handleBranchSyncedCard } from "./branch-synced-card.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleAutoResolveResult } from "./auto-resolve-result.js";
@@ -129,6 +130,7 @@ export const messageHandlers: MessageHandlerMap = {
   auto_resolve_started: handleAutoResolveStarted,
   branch_auto_reset_card: handleBranchAutoResetCard,
   session_renamed_card: handleSessionRenamedCard,
+  session_settings_change_card: handleSessionSettingsChangeCard,
   branch_synced_card: handleBranchSyncedCard,
   agent_event: handleAgentEvent,
   turn_snapshot: handleTurnSnapshot,
@@ -264,6 +266,7 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "release_card",
   "self_merge_watch_card",
   "session_renamed_card",
+  "session_settings_change_card",
   "session_report_card",
   "non_turn_failure_card",
   "non_turn_failure_dismissed",

@@ -12,6 +12,7 @@ export * from "./marketplace.js";
 export * from "./install-session.js";
 export * from "./session.js";
 export * from "./session-title.js";
+export * from "./session-settings.js";
 export * from "./session-report.js";
 export * from "./spawn-telemetry.js";
 export * from "./claim-session.js";

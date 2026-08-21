@@ -1474,6 +1474,25 @@ const MIGRATIONS: Migration[] = [
       END;
     `);
   },
+  // docs/279 — the "this session's settings changed" transcript card: a sandbox
+  // capability grant moving after creation, or a regular session's network
+  // containment mode changing. Both are trust-boundary changes the user makes
+  // from the Session settings dialog, and both were previously invisible in the
+  // scrollback — the capability set because it could not change at all, the
+  // network mode because its route only persisted the override.
+  //
+  // One column for both, because they are one card type: the transcript answers
+  // "what was this session allowed to do, and when did that change?" the same way
+  // for either. NULL = ordinary (non-card) message.
+  //
+  // Guarded like every migration appended since docs/252: the migration tests
+  // rewind `user_version` to re-run an earlier step, which replays every step
+  // after it against a table that already has the column.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "session_settings_change")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN session_settings_change TEXT");
+  },
 ];
 
 /**

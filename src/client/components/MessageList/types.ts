@@ -7,6 +7,7 @@ import type {
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
   SessionRenamedCard as SessionRenamedCardData,
+  SessionSettingsChangeCard as SessionSettingsChangeCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
@@ -466,6 +467,15 @@ export interface ChatMessage {
    * full payload on the message; the component renders straight from it.
    */
   sessionRenamed?: SessionRenamedCardData;
+  /**
+   * docs/279 — when set, this message renders an inline "session settings
+   * changed" card: a sandbox capability grant edited after creation, or a
+   * regular session's network containment mode changed (requirements 7 + 8).
+   * The card has no lifecycle and no store, so both the live
+   * `session_settings_change_card` WS handler and a history rehydration carry
+   * the full payload on the message; the component renders straight from it.
+   */
+  sessionSettingsChange?: SessionSettingsChangeCardData;
 }
 
 export interface TextSegment {

@@ -592,6 +592,27 @@ async function attemptContainerCreate(
     const createStart = Date.now();
     const sc = await mgr.create(config);
     console.log(`[timing] container.create for ${sessionId} took ${Date.now() - createStart}ms`);
+    // docs/279 — record the grants this container was actually plumbed with, so
+    // a later edit to the durable set can be diffed against them ("pending ·
+    // applies on next container start"). Recorded HERE, beside the
+    // `sandboxDockerAccess` derivation above that reads the same set, because
+    // this is the point the grant becomes container plumbing. Sandbox-only:
+    // every other session has no capability set, and an absent record correctly
+    // reads as "nothing to pend".
+    //
+    // Known race, accepted (review finding): `opts.session` was captured before
+    // the await above, while `resolveEgressConfig` re-reads the session from
+    // SQLite *during* creation. So a capability edit that lands mid-create can
+    // plumb egress from the new value and record the old one. It needs the user
+    // to toggle a grant in the seconds a container is booting, and the failure
+    // is a pending indicator that is offered (or withheld) once too often — not
+    // a wrong grant, since the durable set is what every broker reads. Recording
+    // the same object Docker was derived from is the lesser evil: re-reading
+    // here would make the snapshot disagree with the Docker plumbing instead,
+    // which is the half that cannot be corrected without a restart anyway.
+    if (opts.session?.kind === "sandbox" && opts.session.capabilities) {
+      mgr.recordCapabilitiesAtStart(sessionId, opts.session.capabilities);
+    }
     console.log(`[container] Container ready for ${sessionId} at ${sc.workerUrl}`);
     runner.setWorkerUrl(sc.workerUrl);
     mgr.clearCreateError(sessionId);
