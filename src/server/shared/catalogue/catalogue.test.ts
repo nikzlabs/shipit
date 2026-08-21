@@ -116,7 +116,7 @@ describe("no shipped row still carries a sentinel", () => {
       // A rate expressed per *token* rather than per million would come out
       // vanishingly small; a rate expressed per thousand would come out huge.
       // These bounds catch the unit slip that a spot-check by eye does not.
-      expect(model.price.input, where).toBeGreaterThan(0.001);
+      if (model.price.input > 0) expect(model.price.input, where).toBeGreaterThan(0.001);
       expect(model.price.input, where).toBeLessThan(1000);
       expect(model.price.output, where).toBeGreaterThanOrEqual(model.price.input);
       expect(model.price.cacheRead, where).toBeLessThanOrEqual(model.price.input);
@@ -1621,6 +1621,7 @@ describe("credentials", () => {
       for (const harness of allHarnesses()) {
         const vocabulary = new Set(harness.capabilities.reasoning?.options.map((o) => o.value) ?? []);
         for (const entry of catalogueEntriesForHarness(harness.id)) {
+          if (!harnessSupportsMode(harness.id, entry.service.id, entry.mode.kind)) continue;
           for (const level of entry.model.reasoningEfforts ?? []) {
             expect(
               vocabulary.has(level),

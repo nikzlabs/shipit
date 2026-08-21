@@ -193,6 +193,7 @@ const OPENROUTER_PRICES = {
   v4flash: { input: 0.06146, output: 0.12292, cacheRead: 0.012292, cacheWrite: 0.06146 },
   v4pro: { input: 1.168, output: 2.336, cacheRead: 0.09855, cacheWrite: 1.168 },
   glm52: { input: 0.308, output: 0.968, cacheRead: 0.0572, cacheWrite: 0.308 },
+  oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
 /**
@@ -246,6 +247,7 @@ const OPENCODE_ZEN_PRICES = {
   // Zen publishes no cache-write rate for Grok; 0 is "not charged", not
   // "unknown" — the vendor's table omits the column for this model.
   grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+  oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
 /**
@@ -797,6 +799,7 @@ export const SERVICES = [
           // open-weight all-rounder.
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
           { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
+          { id: "stealth/ox-alpha", label: "Ox Alpha", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.oxAlpha, reasoningEfforts: ["high", "low"] },
         ],
       },
     ],
@@ -1012,6 +1015,7 @@ export const SERVICES = [
         //     rows of this mode (2026-08-17 receipt) and left unauthored — each
         //     duplicates a paid row in a rate-limited form, and none is a
         //     frontier coding model, which is the subset rule this list follows.
+        //     Ox Alpha is the exception, added on request.
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           // Zen undercuts Anthropic's own rate here (2/10 against 3/15) — the
@@ -1026,6 +1030,7 @@ export const SERVICES = [
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4pro },
           { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.glm52 },
+          { id: "x-preview-f-free", label: "Ox Alpha Free", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.oxAlpha, reasoningEfforts: ["max", "high", "low"] },
           // The `openai-responses` rows. Authored after the first pass on the
           // user's instruction, because without one Codex could not be paired
           // with this service at all: it speaks only that style, so the join

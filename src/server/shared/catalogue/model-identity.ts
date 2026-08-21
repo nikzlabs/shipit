@@ -63,6 +63,7 @@ export const MODEL_FAMILY_IDS = [
   "grok",
   "kimi",
   "qwen",
+  "ox",
 ] as const;
 
 export type ModelFamily = (typeof MODEL_FAMILY_IDS)[number];
@@ -159,6 +160,7 @@ export const MODEL_IDENTITIES = {
   grok420NonReasoning: identity("grok-4.20-0309-non-reasoning", "grok"),
   kimiK3: identity("kimi-k3", "kimi"),
   qwen38max: identity("qwen3.8-max", "qwen"),
+  oxAlpha: identity("ox-alpha", "ox"),
 } as const;
 
 /**
@@ -189,6 +191,7 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   // second model: Zen is a gateway serving Anthropic's own Haiku 4.5, at
   // Anthropic's own rate.
   "claude-haiku-4-5": "claude-haiku-4.5",
+  "x-preview-f-free": "ox-alpha",
 };
 
 /**
