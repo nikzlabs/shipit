@@ -3,6 +3,7 @@ import { DatabaseManager } from "../shared/database.js";
 import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
 import type { SubAgentConsultCard } from "../shared/types.js";
 import { CARD_MESSAGE_FIELDS } from "../../client/components/visual-elements.js";
+import { buildRetiredSubagentResult } from "./subagent-completion.js";
 
 /**
  * Serialization contract: a `PersistedMessage` carrying every optional field.
@@ -1589,5 +1590,297 @@ describe("ChatHistoryManager", () => {
       expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
       expect(mgr.consumeUnreportedBugOutcomes("s2")).toHaveLength(1);
     });
+  });
+});
+
+/**
+ * planning#324 — the per-session transcript revision counter.
+ *
+ * The `/history` route uses this counter as the messages-half of its ETag, so
+ * its one failure mode is a write path that forgets to bump: the route would
+ * then answer 304 forever against a transcript that changed. That is why the
+ * main test below is an ENUMERATION — one case per mutating method, each
+ * failing by name if its method stops moving the counter. Adding a mutating
+ * method without a bump fails `updateLastMessage`-style cases only by accident,
+ * so the list is the contract: add the method, add the case.
+ *
+ * The flip side is pinned too: provable no-ops must NOT move the counter, or
+ * every no-op patch invalidates a transcript that did not change.
+ */
+describe("transcript revision counter", () => {
+  let dbManager: DatabaseManager;
+  let mgr: ChatHistoryManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+    mgr = new ChatHistoryManager(dbManager);
+  });
+
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  /** Verbatim CLI launch acknowledgement (see subagent-completion.test.ts). */
+  const LAUNCH_ACK = JSON.stringify([
+    {
+      type: "text",
+      text: [
+        "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)",
+        "agentId: af0615944a51b4583 (internal ID - do not mention to user. Use SendMessage with to: 'af0615944a51b4583', summary: '<5-10 word recap>' to continue this agent.)",
+        "The agent is working in the background. You will be notified automatically when it completes.",
+        "output_file: /tmp/claude-1000/-tmp-probe/3bc49c90/tasks/af0615944a51b4583.output",
+      ].join("\n"),
+    },
+  ]);
+  const RETIRE_TOOL_ID = "toolu_013fUMwLfWGNwaaqVsj8ojXF";
+  const RETIRE_REPORT = "## Probe report\n\nThe number seven holds profound significance.";
+
+  function seed(sid: string): void {
+    mgr.append(sid, { role: "user", text: "Hello" });
+    mgr.append(sid, { role: "assistant", text: "Hi" });
+  }
+
+  /** Row ids of a session's last `n` messages — `load()` deliberately carries no ids. */
+  function lastRowIds(sid: string, n: number): number[] {
+    const rows = dbManager.db.prepare(
+      "SELECT id FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+    ).all(sid, n) as { id: number }[];
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * One row carrying EVERY card the in-place patch methods key on, plus the
+   * launch-ack row `retireBackgroundSubagentResult` rewrites. The all-fields
+   * fixture doubles as the seed because the patch methods match on cardId.
+   */
+  function seedCards(sid: string): void {
+    mgr.append(sid, { ...EVERY_OPTIONAL_FIELD_MESSAGE });
+    mgr.append(sid, {
+      role: "assistant",
+      text: "",
+      toolUse: [{ type: "tool_use", id: RETIRE_TOOL_ID, name: "Agent", input: {} }],
+      toolResults: [{ toolUseId: RETIRE_TOOL_ID, content: LAUNCH_ACK }],
+    });
+  }
+
+  interface RevisionCase {
+    name: string;
+    seed: (sid: string) => void;
+    mutate: (sid: string) => unknown;
+  }
+
+  const cases: RevisionCase[] = [
+    {
+      name: "append",
+      seed: () => {},
+      mutate: (sid) => mgr.append(sid, { role: "user", text: "one more" }),
+    },
+    {
+      name: "updateLastMessage",
+      seed,
+      mutate: (sid) => mgr.updateLastMessage(sid, { commitHash: "abc123" }),
+    },
+    {
+      name: "updateBugReportCard (in-place row patch)",
+      seed: seedCards,
+      mutate: (sid) => mgr.updateBugReportCard(sid, "b1", { phase: "dismissed" }),
+    },
+    {
+      name: "consumeUnreportedBugOutcomes (marks filed cards)",
+      seed: seedCards,
+      mutate: (sid) => mgr.consumeUnreportedBugOutcomes(sid),
+    },
+    {
+      name: "upsertReleaseCard patch branch (in-place row patch)",
+      seed: seedCards,
+      mutate: (sid) =>
+        mgr.upsertReleaseCard(sid, { ...EVERY_OPTIONAL_FIELD_MESSAGE.releaseCard!, phase: "failed" }),
+    },
+    {
+      name: "upsertReleaseCard append branch (no matching card yet)",
+      seed,
+      mutate: (sid) =>
+        mgr.upsertReleaseCard(sid, {
+          ...EVERY_OPTIONAL_FIELD_MESSAGE.releaseCard!,
+          sessionId: sid,
+          cardId: `release:${sid}:v0.3.0`,
+        }),
+    },
+    {
+      name: "updateEgressPromptCard (in-place row patch)",
+      seed: seedCards,
+      mutate: (sid) => mgr.updateEgressPromptCard(sid, "eg1", { phase: "allowed-once" }),
+    },
+    {
+      name: "updatePermissionCard (in-place row patch)",
+      seed: seedCards,
+      mutate: (sid) => mgr.updatePermissionCard(sid, "p1", { phase: "denied" }),
+    },
+    {
+      name: "retireBackgroundSubagentResult (rewrites a tool result in place)",
+      seed: seedCards,
+      mutate: (sid) => {
+        const completion = {
+          toolUseId: RETIRE_TOOL_ID,
+          status: "completed" as const,
+          summary: RETIRE_REPORT,
+        };
+        return mgr.retireBackgroundSubagentResult(sid, completion, buildRetiredSubagentResult(completion));
+      },
+    },
+    {
+      name: "updateSubAgentConsultCard (in-place row patch)",
+      seed: seedCards,
+      mutate: (sid) => mgr.updateSubAgentConsultCard(sid, "sac1", { durationMs: 5 }),
+    },
+    {
+      name: "updateNonTurnFailureCard (in-place row patch)",
+      seed: seedCards,
+      mutate: (sid) =>
+        mgr.updateNonTurnFailureCard(sid, "ntf1", { dismissedAt: "2026-08-21T00:00:00.000Z" }),
+    },
+    {
+      name: "updateIssueWriteCard (in-place row patch)",
+      seed: seedCards,
+      mutate: (sid) => mgr.updateIssueWriteCard(sid, "iw1", { summary: "set SHI-28 → Todo" }),
+    },
+    {
+      name: "truncate (deletes the tail)",
+      seed: (sid) => {
+        mgr.append(sid, { role: "user", text: "1" });
+        mgr.append(sid, { role: "assistant", text: "2" });
+        mgr.append(sid, { role: "user", text: "3" });
+      },
+      mutate: (sid) => mgr.truncate(sid, 1),
+    },
+    {
+      name: "saveMessages (full rewrite)",
+      seed,
+      mutate: (sid) => mgr.saveMessages(sid, [{ role: "user", text: "rewritten" }]),
+    },
+    {
+      name: "markRolledBackFromIndex",
+      seed,
+      mutate: (sid) => mgr.markRolledBackFromIndex(sid, 1, "c0ffee"),
+    },
+    {
+      name: "clearRolledBack",
+      seed: (sid) => {
+        seed(sid);
+        mgr.markRolledBackFromIndex(sid, 1, "c0ffee");
+      },
+      mutate: (sid) => {
+        const rolledBack = lastRowIds(sid, 1);
+        mgr.clearRolledBack(sid, rolledBack);
+      },
+    },
+    {
+      name: "deleteMessageById",
+      seed,
+      mutate: (sid) => mgr.deleteMessageById(sid, lastRowIds(sid, 1)[0]),
+    },
+    {
+      name: "replaceInProgress (boundary rewrite)",
+      seed,
+      mutate: (sid) => mgr.replaceInProgress(sid, [
+        { role: "assistant", text: "streaming…", inProgress: true },
+      ]),
+    },
+    {
+      name: "finalizeInProgress (flips in-progress rows)",
+      seed: (sid) => {
+        seed(sid);
+        mgr.replaceInProgress(sid, [{ role: "assistant", text: "working", inProgress: true }]);
+      },
+      mutate: (sid) => mgr.finalizeInProgress(sid),
+    },
+    {
+      name: "clearInProgress (error/abort teardown)",
+      seed: (sid) => {
+        seed(sid);
+        mgr.replaceInProgress(sid, [{ role: "assistant", text: "working", inProgress: true }]);
+      },
+      mutate: (sid) => mgr.clearInProgress(sid),
+    },
+    {
+      name: "delete (whole session)",
+      seed,
+      mutate: (sid) => mgr.delete(sid),
+    },
+  ];
+
+  it.each(cases.map((c) => [c.name, c] as const))("moves on %s", (_name, c) => {
+    const sid = `rev-${c.name.replace(/[^a-z0-9]+/gi, "-")}`;
+    c.seed(sid);
+    const before = mgr.transcriptRevision(sid);
+    c.mutate(sid);
+    expect(mgr.transcriptRevision(sid)).toBeGreaterThan(before);
+  });
+
+  it("reads 0 for a session with no mutations", () => {
+    expect(mgr.transcriptRevision("never-touched")).toBe(0);
+  });
+
+  it("survives a manager re-instantiation over the same database", () => {
+    seed("durable");
+    const before = mgr.transcriptRevision("durable");
+    const reopened = new ChatHistoryManager(dbManager);
+    expect(reopened.transcriptRevision("durable")).toBe(before);
+  });
+
+  it("counts per session — another session's writes move nothing here", () => {
+    seed("mine");
+    const before = mgr.transcriptRevision("mine");
+    mgr.append("theirs", { role: "user", text: "unrelated" });
+    expect(mgr.transcriptRevision("mine")).toBe(before);
+  });
+
+  it("does not move on reads", () => {
+    seed("read-only");
+    const before = mgr.transcriptRevision("read-only");
+    mgr.load("read-only");
+    mgr.getBugReportCard("read-only", "missing");
+    mgr.listSubAgentConsultCards("read-only");
+    mgr.indexOfMessageId("read-only", 1);
+    expect(mgr.transcriptRevision("read-only")).toBe(before);
+  });
+
+  // The no-op half of the contract: these paths write nothing, so bumping here
+  // would invalidate transcripts that did not change. Each is a provable no-op
+  // in the manager, and each test fails if someone makes one write anyway
+  // without noticing the bump now lies.
+  it("does not move when a card patch matches no row", () => {
+    seedCards("no-match");
+    const before = mgr.transcriptRevision("no-match");
+    expect(mgr.updateBugReportCard("no-match", "wrong-id", { phase: "dismissed" })).toBe(false);
+    expect(mgr.transcriptRevision("no-match")).toBe(before);
+  });
+
+  it("does not move when truncate keeps everything", () => {
+    seed("keep-all");
+    const before = mgr.transcriptRevision("keep-all");
+    expect(mgr.truncate("keep-all", 99)).toHaveLength(2);
+    expect(mgr.transcriptRevision("keep-all")).toBe(before);
+  });
+
+  it("does not move when finalizeInProgress has nothing to finalize", () => {
+    seed("nothing-open");
+    const before = mgr.transcriptRevision("nothing-open");
+    mgr.finalizeInProgress("nothing-open");
+    expect(mgr.transcriptRevision("nothing-open")).toBe(before);
+  });
+
+  it("does not move when deleteMessageById hits no row", () => {
+    seed("no-row");
+    const before = mgr.transcriptRevision("no-row");
+    expect(mgr.deleteMessageById("no-row", 999999)).toBe(false);
+    expect(mgr.transcriptRevision("no-row")).toBe(before);
+  });
+
+  it("does not move when consumeUnreportedBugOutcomes finds nothing to report", () => {
+    seed("quiet");
+    const before = mgr.transcriptRevision("quiet");
+    expect(mgr.consumeUnreportedBugOutcomes("quiet")).toHaveLength(0);
+    expect(mgr.transcriptRevision("quiet")).toBe(before);
   });
 });

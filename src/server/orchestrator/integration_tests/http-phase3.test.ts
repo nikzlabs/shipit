@@ -177,6 +177,112 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(second.json().messages).toHaveLength(2);
     });
 
+    /**
+     * planning#324 — the whole point of the revision validator. The
+     * body-hash ETag answered 304 correctly but had to BUILD the payload to
+     * do it: every message row loaded, projected, stringified, discarded.
+     * The revision-based tag must be decidable without touching the messages
+     * at all, so this test makes any message read explode.
+     */
+    it("answers 304 without loading the transcript", async () => {
+      await createSession("etag-noload", "No-load session");
+      chatHistoryManager.append("etag-noload", { role: "user", text: "Hello" });
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-noload/history" });
+      expect(first.statusCode).toBe(200);
+      const etag = first.headers.etag!;
+
+      chatHistoryManager.load = () => {
+        throw new Error("a 304 must be decidable without reading the messages");
+      };
+      try {
+        const revalidated = await app.inject({
+          method: "GET",
+          url: "/api/sessions/etag-noload/history",
+          headers: { "if-none-match": etag },
+        });
+        expect(revalidated.statusCode).toBe(304);
+      } finally {
+        delete (chatHistoryManager as { load?: unknown }).load;
+      }
+    });
+
+    /**
+     * planning#324's subtlety, pinned: a card lifecycle transition patches its
+     * row IN PLACE — neither MAX(id) nor COUNT(*) moves — and the validator
+     * must move anyway. A counter derived from ids and counts would answer 304
+     * here and serve the stale card forever.
+     */
+    it("issues a fresh tag when a card is patched in place", async () => {
+      await createSession("etag-card", "Card patch session");
+      chatHistoryManager.append("etag-card", {
+        role: "assistant",
+        text: "",
+        bugReport: {
+          cardId: "b1",
+          phase: "filed",
+          title: "T",
+          body: "B",
+          stage2Ran: true,
+          producer: "ops",
+          issueNumber: 5,
+          issueUrl: "u",
+        },
+      });
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-card/history" });
+      const etag = first.headers.etag!;
+      const rowsBefore = chatHistoryManager.load("etag-card").length;
+
+      expect(chatHistoryManager.updateBugReportCard("etag-card", "b1", { phase: "dismissed" })).toBe(true);
+      // The trap this test exists for: the patch changed no id and no count.
+      expect(chatHistoryManager.load("etag-card")).toHaveLength(rowsBefore);
+
+      const revalidated = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-card/history",
+        headers: { "if-none-match": etag },
+      });
+      expect(revalidated.statusCode).toBe(200);
+      const card = revalidated.json().messages[0].bugReport;
+      expect(card.phase).toBe("dismissed");
+    });
+
+    /** A full rewrite (`saveMessages`) must invalidate even at equal length. */
+    it("issues a fresh tag when the transcript is rewritten in place", async () => {
+      await createSession("etag-rewrite", "Rewrite session");
+      chatHistoryManager.append("etag-rewrite", { role: "user", text: "before" });
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-rewrite/history" });
+      const etag = first.headers.etag!;
+
+      chatHistoryManager.saveMessages("etag-rewrite", [{ role: "user", text: "after" }]);
+      const revalidated = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-rewrite/history",
+        headers: { "if-none-match": etag },
+      });
+      expect(revalidated.statusCode).toBe(200);
+      expect(revalidated.json().messages[0].text).toBe("after");
+    });
+
+    /** The counter is per session — one session's writes must not invalidate another's. */
+    it("keeps one session's 304 valid while a different session changes", async () => {
+      await createSession("etag-a", "Session A");
+      await createSession("etag-b", "Session B");
+      chatHistoryManager.append("etag-a", { role: "user", text: "A" });
+      chatHistoryManager.append("etag-b", { role: "user", text: "B" });
+
+      const a = await app.inject({ method: "GET", url: "/api/sessions/etag-a/history" });
+      const etagA = a.headers.etag!;
+
+      chatHistoryManager.append("etag-b", { role: "assistant", text: "B2" });
+
+      const aAgain = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-a/history",
+        headers: { "if-none-match": etagA },
+      });
+      expect(aAgain.statusCode).toBe(304);
+    });
+
     /** planning#375 — the tree left `/history`, so it needs its own validator. */
     it("answers 304 for an unchanged file tree", async () => {
       await createSession("tree-s", "Tree session");
