@@ -50,6 +50,8 @@ interface PreviewToolbarProps {
   deviceHeight: number;
   deviceScale: number;
   deviceScalePercent: number;
+  /** Panel size at 100% scale for the Freeform row, or null while unmeasured. */
+  freeformPanelSize: { width: number; height: number } | null;
   // Error badge.
   hasErrors: boolean;
   errorCount: number;
@@ -97,6 +99,7 @@ export function PreviewToolbar({
   deviceHeight,
   deviceScale,
   deviceScalePercent,
+  freeformPanelSize,
   hasErrors,
   errorCount,
   errorPanelOpen,
@@ -117,7 +120,7 @@ export function PreviewToolbar({
   const customSize = usePreviewStore((s) => s.customSize);
   const setDevicePreset = usePreviewStore((s) => s.setDevicePreset);
   const toggleLandscape = usePreviewStore((s) => s.toggleLandscape);
-  const setCustomSize = usePreviewStore((s) => s.setCustomSize);
+  const setFreeformSize = usePreviewStore((s) => s.setFreeformSize);
 
   // The page the preview is CURRENTLY on, not the slot's entry URL —
   // `activeSlotUrl` is where the iframe was pointed when the slot was created,
@@ -218,21 +221,10 @@ export function PreviewToolbar({
               activePreset={devicePreset}
               isLandscape={isLandscape}
               customSize={customSize}
-              onSelectPreset={(preset) => {
-                setDevicePreset(preset);
-                if (!preset) setCustomSize(null);
-              }}
+              panelSize={freeformPanelSize}
+              onSelectPreset={setDevicePreset}
               onToggleLandscape={toggleLandscape}
-              onCustomSize={(width, height) => {
-                setCustomSize({ width, height });
-                setDevicePreset({
-                  id: "custom",
-                  label: `${width}×${height}`,
-                  width,
-                  height,
-                  category: "custom",
-                });
-              }}
+              onCustomSize={setFreeformSize}
             />
             {deviceFrameActive && (
               <span className="text-(--color-text-tertiary) tabular-nums group-data-[hide-viewport=true]/ptb:hidden">

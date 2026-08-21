@@ -30,6 +30,7 @@ const baseProps = {
   deviceHeight: 844,
   deviceScale: 1,
   deviceScalePercent: 100,
+  freeformPanelSize: null,
   hasErrors: false,
   errorCount: 0,
   errorPanelOpen: false,

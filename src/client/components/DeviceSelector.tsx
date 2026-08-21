@@ -10,12 +10,12 @@ import {
   DropdownMenuSeparator,
 } from "./ui/dropdown-menu.js";
 import { Button } from "./ui/button.js";
-import { DEVICE_PRESETS, type DevicePreset } from "./device-presets.js";
-
-/** Minimum allowed value for a custom viewport dimension (px). */
-export const CUSTOM_SIZE_MIN = 100;
-/** Maximum allowed value for a custom viewport dimension (px). */
-export const CUSTOM_SIZE_MAX = 2560;
+import {
+  DEVICE_PRESETS,
+  CUSTOM_SIZE_MIN,
+  CUSTOM_SIZE_MAX,
+  type DevicePreset,
+} from "./device-presets.js";
 
 export interface DeviceSelectorProps {
   /** Currently active preset, or null when "Responsive" (fill panel). */
@@ -24,11 +24,17 @@ export interface DeviceSelectorProps {
   isLandscape: boolean;
   /** Custom size, used when activePreset.category === "custom". */
   customSize: { width: number; height: number } | null;
+  /**
+   * What the panel can show at 100% scale, or null while unmeasured — the size
+   * the Freeform row activates on first use, so the drag handles appear around
+   * exactly what the user was looking at (docs/278).
+   */
+  panelSize: { width: number; height: number } | null;
   /** Called with a preset, or null to switch back to "Responsive". */
   onSelectPreset: (preset: DevicePreset | null) => void;
   /** Called when the user clicks the rotate button. */
   onToggleLandscape: () => void;
-  /** Called with the entered width and height when a custom size is applied. */
+  /** Called with the width and height when a custom/freeform size is applied. */
   onCustomSize: (width: number, height: number) => void;
 }
 
@@ -43,6 +49,7 @@ export function DeviceSelector({
   activePreset,
   isLandscape,
   customSize,
+  panelSize,
   onSelectPreset,
   onToggleLandscape,
   onCustomSize,
@@ -57,6 +64,11 @@ export function DeviceSelector({
 
   const phones = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "phone"), []);
   const tablets = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "tablet"), []);
+
+  const isCustomActive = activePreset?.category === "custom";
+  // Last custom size wins; the panel's own size on first use; a phone-ish
+  // fallback only while the panel is unmeasured.
+  const freeformTarget = customSize ?? panelSize ?? { width: 390, height: 844 };
 
   const triggerLabel = activePreset
     ? activePreset.label
@@ -143,6 +155,18 @@ export function DeviceSelector({
           })}
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Custom</DropdownMenuLabel>
+          {/* Freeform: activate a custom size and resize it by dragging the
+              surface's edges. Enters at the last custom size, or at what the
+              panel currently shows on first use, so the handles appear around
+              exactly what the user was looking at (docs/278). */}
+          <DropdownMenuItem
+            onSelect={() => onCustomSize(freeformTarget.width, freeformTarget.height)}
+            className={isCustomActive ? "text-(--color-text-primary) bg-(--color-bg-hover)" : ""}
+          >
+            <span className="flex-1">Freeform</span>
+            <span className="text-(--color-text-tertiary) text-[10px]">drag edges to resize</span>
+            {isCustomActive && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-success)" />}
+          </DropdownMenuItem>
           <div
             className="px-3 py-2 flex flex-col gap-1"
             // Prevent dropdown from closing when interacting with the inputs
@@ -207,9 +231,12 @@ export function DeviceSelector({
           size="sm"
           className="h-7 w-7 p-0"
           onClick={onToggleLandscape}
-          title={isLandscape ? "Switch to portrait" : "Switch to landscape"}
-          aria-label={isLandscape ? "Switch to portrait" : "Switch to landscape"}
-          aria-pressed={isLandscape}
+          // A custom size has no portrait/landscape identity — it is stored as
+          // rendered and rotating just swaps the dims (docs/278) — so the
+          // control is a plain action there, not a pressed/unpressed toggle.
+          title={isCustomActive ? "Swap width and height" : isLandscape ? "Switch to portrait" : "Switch to landscape"}
+          aria-label={isCustomActive ? "Swap width and height" : isLandscape ? "Switch to portrait" : "Switch to landscape"}
+          {...(isCustomActive ? {} : { "aria-pressed": isLandscape })}
         >
           <DeviceRotateIcon size={ICON_SIZE.SM} />
         </Button>

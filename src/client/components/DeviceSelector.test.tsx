@@ -12,6 +12,7 @@ const baseProps = {
   activePreset: null,
   isLandscape: false,
   customSize: null,
+  panelSize: null,
   onSelectPreset: vi.fn(),
   onToggleLandscape: vi.fn(),
   onCustomSize: vi.fn(),
@@ -171,6 +172,49 @@ describe("DeviceSelector", () => {
     await user.type(heightInput, "2560");
     await user.click(screen.getByTitle("Apply custom size"));
     expect(onCustomSize).toHaveBeenCalledWith(100, 2560);
+  });
+
+  it("activates freeform at the panel size on first use", async () => {
+    const user = userEvent.setup();
+    const onCustomSize = vi.fn();
+    render(
+      <DeviceSelector
+        {...baseProps}
+        panelSize={{ width: 720, height: 540 }}
+        onCustomSize={onCustomSize}
+      />,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    await user.click(screen.getByText("Freeform"));
+    expect(onCustomSize).toHaveBeenCalledWith(720, 540);
+  });
+
+  it("activates freeform at the last custom size when one exists", async () => {
+    const user = userEvent.setup();
+    const onCustomSize = vi.fn();
+    render(
+      <DeviceSelector
+        {...baseProps}
+        customSize={{ width: 500, height: 900 }}
+        panelSize={{ width: 720, height: 540 }}
+        onCustomSize={onCustomSize}
+      />,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    await user.click(screen.getByText("Freeform"));
+    expect(onCustomSize).toHaveBeenCalledWith(500, 900);
+  });
+
+  it("labels the rotate button as a swap for custom sizes", () => {
+    render(
+      <DeviceSelector
+        {...baseProps}
+        activePreset={{ id: "custom", label: "Custom", width: 500, height: 900, category: "custom" }}
+        customSize={{ width: 500, height: 900 }}
+      />,
+    );
+    expect(screen.getByLabelText("Swap width and height")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Switch to/)).not.toBeInTheDocument();
   });
 
   it("renders preset dimensions in the menu", async () => {

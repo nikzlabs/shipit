@@ -1,0 +1,36 @@
+# Checklist — freeform resize + viewport memory
+
+## Foundations
+
+- [x] Move `CUSTOM_SIZE_MIN` / `CUSTOM_SIZE_MAX` into `device-presets.ts`; update importers
+- [x] `viewport-memory.ts`: `PersistedViewport` type, load with validation (unknown preset id dropped, out-of-bounds custom dropped), LRU cap at 100, save, entry builder from live state
+- [x] `viewport-memory.test.ts`: round-trip, validation drops, cap/LRU eviction, responsive-as-absence
+
+## Store
+
+- [x] `preview-store.ts`: hydrate `viewportMemory` into state; write-through on `setDevicePreset` / `toggleLandscape` / `setFreeformSize` keyed by current session; debounced flush
+- [x] `setFreeformSize(width, height)` — atomic custom preset (label "Custom") + `customSize` + `isLandscape: false`
+- [x] `toggleLandscape` on custom swaps stored dims instead of flipping the flag
+- [x] Remove `setCustomSize`; drop viewport fields from `SessionPreviewSnapshot`; `restoreSession` resolves viewport from the map in both branches
+- [x] `clearViewportMemory()`; wire into `fullResetAllStores`
+- [x] `preview-store.test.ts`: rewrite viewport round-trip tests against the new mechanism (switch away/back, reload-shaped: fresh hydrate → restore), write-through keying, custom rotate swap, freeform atomicity
+
+## Drag handles
+
+- [x] `ViewportResizeHandles.tsx`: right/bottom/corner handles, drag shield, drag badge, `computeViewportResize` (2Δ/scale, clamp `[MIN, max(available, current)]`)
+- [x] Body cursor/user-select pinned during drag with unmount-safe cleanup
+- [x] `DeviceFrame.tsx`: expose available box from `useDeviceFrame`
+- [x] `PreviewFrame.tsx`: render handles when frame active + pane visible
+- [x] `ViewportResizeHandles.test.tsx`: math unit tests; drag converts preset → Custom; drag updates size; badge appears while dragging; handles absent when responsive
+
+## Menu
+
+- [x] `DeviceSelector.tsx`: Freeform row (activates custom at current custom size / panel-size default), custom-aware rotate tooltip
+- [x] `PreviewToolbar.tsx` / `PreviewFrame.tsx`: thread freeform default size; route custom entry through `setFreeformSize`
+- [x] `DeviceSelector.test.tsx`: Freeform row present + fires with expected size; existing tests updated for "Custom" label
+
+## Verification
+
+- [x] `npm run typecheck`, `npm run lint:dev`, `npm run test:dev` + all touched suites green
+- [x] Dogfood: drag handles resize a real preview; detach from preset; badge readable; choice survives session switch and full page reload; Responsive unaffected
+- [x] docs/066 plan updated with a pointer to this folder

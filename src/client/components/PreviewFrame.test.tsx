@@ -1666,6 +1666,25 @@ describe("PreviewFrame", () => {
     expect(iframe.style.height).toBe("");
   });
 
+  it("renders viewport resize handles only while the device frame is active (docs/278)", () => {
+    usePreviewStore.setState({ devicePreset: null, isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    // Responsive fills the panel — there is no edge to grab.
+    expect(screen.queryByTestId("viewport-resize-handles")).not.toBeInTheDocument();
+    act(() => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    });
+    expect(screen.getByTestId("viewport-resize-handles")).toBeInTheDocument();
+  });
+
+  it("hides viewport resize handles when the pane is off screen", () => {
+    usePreviewStore.setState({ devicePreset: findPresetById("iphone-16"), isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} paneVisible={false} />);
+    expect(screen.queryByTestId("viewport-resize-handles")).not.toBeInTheDocument();
+  });
+
   it("setDevicePreset updates store state", () => {
     const preset = findPresetById("ipad-mini")!;
     usePreviewStore.getState().setDevicePreset(preset);

@@ -1,15 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { usePreviewStore } from "./preview-store.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { usePreviewStore, VIEWPORT_FLUSH_DEBOUNCE_MS } from "./preview-store.js";
+import { useSessionStore } from "./session-store.js";
 import { findPresetById } from "../components/device-presets.js";
+import { VIEWPORT_MEMORY_KEY } from "./viewport-memory.js";
 
 describe("preview-store device viewport", () => {
   beforeEach(() => {
+    // clearViewportMemory before localStorage.clear(): it writes "{}" to
+    // storage, and these tests want a genuinely empty storage baseline.
+    usePreviewStore.getState().clearViewportMemory();
     localStorage.clear();
     usePreviewStore.getState().reset();
+    useSessionStore.setState({ sessionId: "session-a" });
   });
 
   afterEach(() => {
     localStorage.clear();
+    useSessionStore.setState({ sessionId: undefined });
   });
 
   describe("setDevicePreset", () => {
@@ -26,87 +33,142 @@ describe("preview-store device viewport", () => {
     });
 
     it("clears customSize when switching to a non-custom preset", () => {
-      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+      usePreviewStore.getState().setFreeformSize(500, 900);
       usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       expect(usePreviewStore.getState().customSize).toBeNull();
     });
   });
 
   describe("toggleLandscape", () => {
-    it("flips the isLandscape flag", () => {
+    it("flips the isLandscape flag for named presets", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       expect(usePreviewStore.getState().isLandscape).toBe(false);
       usePreviewStore.getState().toggleLandscape();
       expect(usePreviewStore.getState().isLandscape).toBe(true);
       usePreviewStore.getState().toggleLandscape();
       expect(usePreviewStore.getState().isLandscape).toBe(false);
     });
-  });
 
-  describe("setCustomSize", () => {
-    it("stores a width/height pair", () => {
-      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
-      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
-    });
-
-    it("clears when called with null", () => {
-      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
-      usePreviewStore.getState().setCustomSize(null);
-      expect(usePreviewStore.getState().customSize).toBeNull();
+    it("swaps the stored dims for a custom size instead of flipping the flag", () => {
+      usePreviewStore.getState().setFreeformSize(500, 900);
+      usePreviewStore.getState().toggleLandscape();
+      const s = usePreviewStore.getState();
+      expect(s.customSize).toEqual({ width: 900, height: 500 });
+      expect(s.isLandscape).toBe(false);
+      expect(s.devicePreset).toMatchObject({ id: "custom", label: "Custom", width: 900, height: 500 });
     });
   });
 
-  describe("session snapshots", () => {
+  describe("setFreeformSize", () => {
+    it("activates a Custom preset, size, and portrait flag atomically", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().toggleLandscape();
+      usePreviewStore.getState().setFreeformSize(500, 900);
+      const s = usePreviewStore.getState();
+      expect(s.devicePreset).toMatchObject({ id: "custom", label: "Custom", category: "custom" });
+      expect(s.customSize).toEqual({ width: 500, height: 900 });
+      // A freeform size is stored as rendered — a leftover landscape flag from
+      // the preset it detached from would render it swapped.
+      expect(s.isLandscape).toBe(false);
+    });
+  });
+
+  describe("per-session viewport memory", () => {
     it("findPresetById returns null for unknown id", () => {
       expect(findPresetById("nonexistent")).toBeNull();
       expect(findPresetById(null)).toBeNull();
       expect(findPresetById(undefined)).toBeNull();
     });
 
-    it("persists device viewport state per session snapshot", () => {
+    it("restores each session's viewport when switching between sessions", () => {
+      // Mirrors resumeSessionInternal's order: mutate under A, snapshot A,
+      // move the session id, restore B.
       usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       usePreviewStore.getState().toggleLandscape();
       usePreviewStore.getState().snapshotSession("session-a");
 
-      usePreviewStore.getState().setDevicePreset(findPresetById("ipad-mini"));
-      usePreviewStore.getState().toggleLandscape();
+      useSessionStore.setState({ sessionId: "session-b" });
+      usePreviewStore.getState().restoreSession("session-b");
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+      usePreviewStore.getState().setFreeformSize(500, 900);
       usePreviewStore.getState().snapshotSession("session-b");
 
+      useSessionStore.setState({ sessionId: "session-a" });
       usePreviewStore.getState().restoreSession("session-a");
       expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
       expect(usePreviewStore.getState().isLandscape).toBe(true);
       expect(usePreviewStore.getState().customSize).toBeNull();
 
+      useSessionStore.setState({ sessionId: "session-b" });
       usePreviewStore.getState().restoreSession("session-b");
-      expect(usePreviewStore.getState().devicePreset?.id).toBe("ipad-mini");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("custom");
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
       expect(usePreviewStore.getState().isLandscape).toBe(false);
     });
 
-    it("persists custom viewport state per session snapshot", () => {
-      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
-      usePreviewStore.getState().setDevicePreset({
-        id: "custom",
-        label: "500×900",
-        width: 500,
-        height: 900,
-        category: "custom",
-      });
+    it("restores from memory even when an accidental defaults snapshot exists (cold load)", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("pixel-9"));
+      // Cold load: the URL→store sync effect calls resumeSessionInternal while
+      // the store still holds defaults, so a defaults snapshot for the incoming
+      // session exists by the time restoreSession runs. The memory must win.
+      usePreviewStore.setState({ devicePreset: null, isLandscape: false, customSize: null });
       usePreviewStore.getState().snapshotSession("session-a");
-
-      usePreviewStore.getState().restoreSession("session-b");
-      expect(usePreviewStore.getState().devicePreset).toBeNull();
-      expect(usePreviewStore.getState().customSize).toBeNull();
-
       usePreviewStore.getState().restoreSession("session-a");
-      expect(usePreviewStore.getState().devicePreset?.id).toBe("custom");
-      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("pixel-9");
+    });
+
+    it("remembers nothing without an active session", () => {
+      useSessionStore.setState({ sessionId: undefined });
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      expect(usePreviewStore.getState().viewportMemory).toEqual({});
+    });
+
+    it("survives the session-scoped reset", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().reset();
+      expect(usePreviewStore.getState().viewportMemory["session-a"]).toEqual({ preset: "iphone-16" });
+    });
+
+    it("flushes to localStorage debounced, and stores landscape with the preset", () => {
+      vi.useFakeTimers();
+      try {
+        usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+        usePreviewStore.getState().toggleLandscape();
+        expect(localStorage.getItem(VIEWPORT_MEMORY_KEY)).toBeNull();
+        vi.advanceTimersByTime(VIEWPORT_FLUSH_DEBOUNCE_MS);
+        expect(JSON.parse(localStorage.getItem(VIEWPORT_MEMORY_KEY)!)).toEqual({
+          "session-a": { preset: "iphone-16", landscape: true },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("returning to Responsive deletes the session's entry", () => {
+      vi.useFakeTimers();
+      try {
+        usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+        usePreviewStore.getState().setDevicePreset(null);
+        vi.advanceTimersByTime(VIEWPORT_FLUSH_DEBOUNCE_MS);
+        expect(JSON.parse(localStorage.getItem(VIEWPORT_MEMORY_KEY)!)).toEqual({});
+        expect(usePreviewStore.getState().viewportMemory).toEqual({});
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("is cleared by clearViewportMemory, in state and in storage", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().clearViewportMemory();
+      expect(usePreviewStore.getState().viewportMemory).toEqual({});
+      expect(localStorage.getItem(VIEWPORT_MEMORY_KEY)).toBe("{}");
     });
   });
 
   describe("reset()", () => {
-    it("clears device state and session snapshots", () => {
+    it("clears live device state and session snapshots", () => {
       usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       usePreviewStore.getState().toggleLandscape();
-      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
       usePreviewStore.getState().snapshotSession("session-a");
 
       usePreviewStore.getState().reset();
