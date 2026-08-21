@@ -40,8 +40,9 @@ start at the [README](README.md).
   messages back to the agent that owns the session, so an agent-built interface is something you
   interact with rather than only look at
 - **Agent-authored links** — the agent writes an ordinary markdown link that opens a place in your
-  own app's preview or in a presented artifact — as a link, a badge, or a button. The destination
-  page can read the click and react to it, so "look at requirement 7" is one tap instead of a hunt
+  own app's preview or in a presented artifact — as a link, a badge, or a button — so "look at
+  requirement 7" is one tap instead of a hunt. A previewed page can read the click in its own
+  JavaScript and react to it; a presented artifact is scrolled to the place named
 - **Sub-agent transparency** — when the agent fans work out to sub-agents, their prompt, work
   timeline, and final report render inline instead of an opaque tool call, and any in-flight tool
   call opens a live-updating output dialog
@@ -53,20 +54,22 @@ start at the [README](README.md).
   backends: the same transcript, tool rendering, skills, sub-agent view, reviews, and compaction
   whichever one is driving, with each harness's own capabilities — permission modes, image input,
   mid-turn steering — declared per harness rather than assumed
-- **Any model, on any harness** — the harness and the model it runs are separate choices. Configure a
-  service once, by subscription or by API key, and its models become selectable in the composer, so a
-  DeepSeek or GLM key can drive the Claude Code harness with no Anthropic account in the picture
+- **Your model, on your harness** — the harness and the model it runs are separate choices. Configure
+  a service once, by subscription or by API key, and every model that service and harness can both
+  speak becomes selectable in the composer, so a DeepSeek or GLM key can drive the Claude Code
+  harness with no Anthropic account in the picture
 - **Agent roles** — name a unit of agent work once — its harness, its service and billing mode, its
   model, its reasoning level, and its standing instructions — then start it by name. You pick a role
   in the composer before a session's first turn; the agent picks one for a sub-task or for a session
   it spawns
-- **A reviewer that is never the implementer** — configure two reviewers in Settings and ShipIt sends
-  each review to whichever one is furthest from the model that did the work, so a second opinion
-  doesn't share the first one's blind spots — and reviewing still works on an install where nobody
-  has configured anything
+- **A reviewer chosen to be unlike the implementer** — configure two reviewers in Settings and ShipIt
+  sends each review to whichever one is furthest from the model that did the work: a different model
+  family first, then a different model, then a different harness. Working out who shares your blind
+  spots stops being the agent's job, and reviewing still works on an install where nobody has
+  configured anything
 - **Multiple accounts per provider** — connect several, and every turn picks its account as it
-  starts, from your ordering and the quota left; a usage limit moves the next turn rather than
-  stopping the session, and no session is ever pinned to an account that goes away
+  starts, from your ordering and the quota left, so a usage limit moves the next turn instead of
+  stopping the session; no session is ever pinned to an account that goes away
 - **Subscription usage** — header badges show your rate-limit usage (window, weekly cap, reset clock)
   inline, named per account when you've connected several, with weekly and per-month spend trends in
   the usage detail view
@@ -143,11 +146,12 @@ start at the [README](README.md).
   refusal to be discovered later; a commit that would introduce a recognized secret is blocked and
   surfaced with what to do about it
 - **Fully isolated sessions** — every session on the same repo gets its own clone and its own
-  containerized environment, running under its own user identity on the host, so neither its agent,
-  nor its services, nor ShipIt's own git on its workspace can reach another session's files
+  containerized environment. A new session also gets its own user identity on the host, so neither
+  its agent, nor its services, nor ShipIt's own git on its workspace can reach the files of another
+  session that holds one
 - **Network egress containment** — a contained session reaches only the hosts on its allowlist, and
-  its Compose services are held to that same policy from their first instruction, so a service cannot
-  reach somewhere its own agent is not allowed to
+  its Compose services are held to that same policy, so a service cannot reach somewhere its own
+  agent is not allowed to
 - **Sandbox sessions** — start a repo-less session from an empty workspace; the agent clones what it
   needs, with Git and session-scoped Docker granted as explicit capability toggles at creation
 - **Permission modes** — choose how much autonomy the agent has per session
@@ -180,10 +184,10 @@ start at the [README](README.md).
   follow-up work to keep running with your laptop closed. Both paths are Docker, and both are yours:
   there is no ShipIt account and no ShipIt server in the middle, and the instance connects straight
   to your GitHub and your agent provider
-- **Installed by an agent, or by you** — the installer describes its own questions, so telling an
-  agent you already have to "install ShipIt" is a working path: it asks you the choices in chat and
-  answers the installer for you. Run it yourself and the same questions arrive as an arrow-key
-  checklist, including which agent CLIs to install
+- **Installed by an agent, or by you** — the installer describes its own questions in JSON, and every
+  question can be answered in advance, so an agent you already have can ask you the choices in chat
+  and run the install with your answers. Run it yourself and the same questions arrive as an
+  arrow-key checklist, including which agent CLIs to install
 - **Reachable from your phone** — a local install stays on loopback by default and can add a
   Tailscale binding alongside it, so you keep working from a phone without opening a port
 
