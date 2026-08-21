@@ -51,6 +51,7 @@ import { getAgentDisplayName } from "../shared/agent-registry.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
+import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
   evaluateInstallGate,
@@ -447,7 +448,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get isStreamingActive(): boolean { return this._isStreamingActive; }
   set isStreamingActive(v: boolean) {
+    const wasActive = this._isStreamingActive;
     this._isStreamingActive = v;
+    // docs/153 — the counterpart of the `setAgent(null)` release below. Every
+    // caller that clears this flag has just killed or released the resident
+    // process, so this is the streaming CLI's genuine exit: nothing can rotate
+    // the token any more and the write-back watch has nothing left to observe.
+    if (wasActive && !v) stopTokenWriteBackWatch(this.sessionId);
     // Capture / release the live streaming proxy. When streaming turns on, the
     // current slot occupant IS the streaming process; hold a stable reference so
     // the SSE relay can re-adopt it if a stale spawn nulls `_agent` mid-turn
@@ -675,6 +682,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // genuinely exits.
       this._appliedSpawnIdentity = undefined;
       this._residentRoute = undefined;
+      // docs/153 — and the token write-back watch, whose lifetime is the CLI
+      // process's. Turn end deliberately leaves it running (a streaming process
+      // rotates between turns), so this is where a NON-streaming turn's watch is
+      // released: `finalizeSessionAgentEnvironment` runs at `agent_result`, with
+      // the process still installed, and the slot is not cleared until `done`.
+      // Under the same `isStreamingActive` guard as everything above, so a
+      // resident process surviving proxy recreation keeps its observer.
+      stopTokenWriteBackWatch(this.sessionId);
     }
   }
 

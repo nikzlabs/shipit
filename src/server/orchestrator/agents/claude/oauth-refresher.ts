@@ -157,21 +157,38 @@ const FAILURE_SIGNAL_PATTERN =
   /(error|invalid|denied|forbidden|unauthor|rate[ _-]?limit|429|401|403|timeout|refus|fail|expired)/i;
 
 /**
- * Strip anything token-shaped before a CLI excerpt reaches a log line.
+ * Headers whose VALUE is a credential whatever it looks like. Suppressed whole
+ * rather than pattern-matched, because the value's shape is the provider's
+ * choice: `Basic dXNlcjpwYXNz` is short, base64-padded and matches no token
+ * pattern worth writing.
+ */
+const CREDENTIAL_HEADER_PATTERN =
+  /^([ \t>|-]*)(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|anthropic-api-key)(\s*[:=]\s*).*$/gim;
+
+/**
+ * Strip anything credential-shaped before a CLI excerpt reaches a log line.
  *
  * The excerpt's source includes the `--debug api` capture, which carries
  * request headers and response bodies — so this is not defence-in-depth, it is
  * the only thing standing between a bearer token and the orchestrator log.
- * Deliberately over-broad: the last rule redacts ANY opaque run of 40+ token
- * characters, which costs an occasional mangled request id and cannot miss a
- * credential shape nobody thought to enumerate.
+ *
+ * Two layers, because neither is sufficient alone. Whole credential-bearing
+ * HEADERS are dropped by name, which needs no guess about the value's encoding.
+ * Then token shapes are redacted wherever else they appear (a JSON body, a
+ * query string): known prefixes, and any opaque run of 24+ credential
+ * characters.
+ *
+ * It is still a filter, not a parser: a short, unprefixed secret in a field
+ * nobody enumerated survives it. Treat the excerpt as *likely* clean, not
+ * proven clean — which is also why it is capped and never logged in full.
  */
 function redactSecrets(text: string): string {
   return text
-    .replace(/("[A-Za-z_]*(?:token|secret|key|password)[A-Za-z_]*"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
-    .replace(/\b(bearer\s+)\S+/gi, "$1[redacted]")
+    .replace(CREDENTIAL_HEADER_PATTERN, "$1$2$3[redacted]")
+    .replace(/("[A-Za-z_]*(?:token|secret|key|password|passwd|auth)[A-Za-z_]*"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
+    .replace(/\b(bearer|basic)(\s+)\S+/gi, "$1$2[redacted]")
     .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]")
-    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]");
+    .replace(/\b[A-Za-z0-9_\-+/]{24,}={0,2}/g, "[redacted]");
 }
 
 /**
@@ -202,7 +219,7 @@ export function summarizeRefreshFailure(combinedOutput: string): string {
  * a log:
  *
  *   - **`missing`** — no file. The user signed out, or the account was reset.
- *   - **`blanked`** — the CLI rewrote the file with every token emptied
+ *   - **`blanked`** — the CLI rewrote the file with its OAuth tokens emptied
  *     (`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,…}}`).
  *     That is what it does when asked to refresh with a grant the OAuth server
  *     has already spent, and it is the terminal step of the daily-reconnect
@@ -210,6 +227,14 @@ export function summarizeRefreshFailure(combinedOutput: string): string {
  *     signed out" and "we just destroyed a live account's credentials".
  *   - **`unreadable`** — a file that is neither: truncated, foreign, or a
  *     shape this reader does not know. Never assumed to be empty.
+ *
+ * Diagnosis only. Nothing acts on the classification — in particular a blanked
+ * source is not repaired or deleted here. A file this reader believes is empty
+ * may be a partial write or a credential shape it has not been taught, and
+ * `expiresAt: 0` is a claim in the file rather than proof about the account; a
+ * delete that is wrong destroys a live credential, while the account is already
+ * unusable either way. So the log line is the whole feature, and the user
+ * reconnects once.
  */
 interface UnusableSource {
   kind: "missing" | "blanked" | "unreadable";
@@ -450,7 +475,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    * beside them.
    *
    * So the forced path skips the healthy short-circuit and runs a tick that
-   * always reaches Tier 2 — a real authenticated API call, which both *probes
+   * reaches Tier 2 — a real authenticated API call, which both *probes
    * validity* (a dead grant surfaces `invalid_grant`, classified as `revoked`)
    * and triggers refresh-on-use. Its verdict is the tick's classification, not
    * the expiry timestamp: anything but a dead grant is a heal, because the
@@ -459,6 +484,11 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    * holding a dead-but-later-dated copy. A `revoked` account is reported as
    * unhealed so the caller surfaces the sign-in card instead of spending the
    * single recovery budget on a turn that cannot succeed.
+   *
+   * One tick outcome now reaches this without a Tier-2 probe having run: a
+   * HARVEST, which adopts a token another session's CLI minted minutes ago. See
+   * the note at the harvest call in `executeTick` for why that is the better
+   * evidence rather than a hole, and what it gives up.
    */
   private async ensureFreshOne(accountId: string, force = false): Promise<boolean> {
     const before = this.readSourceExpiresAt(accountId);
@@ -588,9 +618,18 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     // account's single-use refresh token since the last tick, which makes our
     // copy dead on arrival — see the module docstring. Adopting is both the
     // repair and the rotation: nothing upstream needs to be asked for a token
-    // that already exists on this disk. Runs even on the `force` (401
-    // recovery) path, where it is the *most* likely resolution — a session
-    // 401s precisely because a sibling rotated out from under it.
+    // that already exists on this disk.
+    //
+    // It short-circuits the FORCED path too (docs/179's 401 recovery), which
+    // otherwise always reaches tier 2 as a validity probe. That is a deliberate
+    // trade, and the reasoning runs the other way from how it first looks: the
+    // probe exists to tell a dead ACCESS token from a dead GRANT, and a token
+    // another session minted minutes ago is direct evidence the grant was live
+    // — stronger than the Haiku call, which infers it. It is also the exact
+    // repair the 401 called for, since a session 401s precisely because a
+    // sibling rotated out from under it. What is given up: a grant revoked
+    // between that session's refresh and now reads as healed, so the recovery
+    // spends its single retry before the sign-in card appears one turn later.
     const harvest = this.harvestSessionRotations(accountId);
     if (harvest) {
       return this.handleSuccess(accountId, harvest.before, harvest.after, "harvested_session");
@@ -967,17 +1006,37 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    * the sessions BEFORE anything is spent.
    *
    * Which sessions count: exactly those whose subtree marker (docs/260) names
-   * this account. The marker is the subtree's own recorded identity — token
-   * bytes cannot answer whose they are — so a session on another account, or
-   * one whose subtree is lent to a sub-agent's account, is never read here.
+   * this account, and whose token file physically LIVES in their own subtree
+   * ({@link tokenFileIsOwnedBySubtree}). Both conditions, because each answers a
+   * different question and neither answers the other's:
    *
-   * The write is the ordinary write-back, guards included: `sessionOwnRoute`
-   * says the account is the SESSION'S own (the marker we just matched, the
-   * same authority `finalizeSessionAgentEnvironment` falls back to), which
-   * makes the call refuse for the whole of any sub-agent borrow rather than
-   * publish a borrowed account's bearer. The freshness guard inside decides
-   * every copy, so iterating all candidates converges on the newest one and a
-   * stale copy can never win.
+   *   - The marker is the recorded identity of the copy — token bytes cannot
+   *     say whose they are — so a session on another account, or one whose
+   *     subtree is lent to a sub-agent's account, is not read.
+   *   - The containment check is what stops a *leaked subtree-root symlink*
+   *     (`containerVisibleCredentialPath`, pre-docs/150-req-19) from turning
+   *     `sessions/<id>/.claude` into a second name for some OTHER account's
+   *     root: orchestrator-side that path resolves back through the symlink, so
+   *     without this a session marked A whose `.claude` points at B would have
+   *     B's token compared against A's and copied into A. No race needed. The
+   *     turn-end write-back is exposed to the same shape and is bounded by the
+   *     leak repair its own turn runs; a tick scans every subtree on the disk,
+   *     including sessions that will never take another turn, so it must check.
+   *
+   * What this does NOT establish is that the BYTES under a matching marker are
+   * that account's. Nothing on disk can: the marker records what provisioning
+   * intended, docs/260 §4b says so explicitly, and it lives in a subtree the
+   * session worker can write. The same limit already governs the turn-end
+   * write-back, which publishes on the marker's word too — the harvest widens
+   * *when* that write can fire (a timer, not a turn), not what it trusts.
+   *
+   * The write itself is the ordinary write-back, guards included:
+   * `sessionOwnRoute` says the account is the SESSION'S own (the marker just
+   * matched, the same authority `finalizeSessionAgentEnvironment` falls back
+   * to), so a *recorded* sub-agent borrow refuses for its whole window rather
+   * than publishing a borrowed bearer. The freshness guard inside decides every
+   * copy, so iterating all candidates converges on the newest one of those it
+   * is offered.
    */
   private harvestSessionRotations(accountId: string): HarvestResult | null {
     const credentialsDir = this.deps.credentialsDir;
@@ -990,13 +1049,12 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     const candidates = entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
-      .filter((sessionId) => readSessionAccountMarker(credentialsDir, sessionId).claude === accountId);
+      .filter((sessionId) => readSessionAccountMarker(credentialsDir, sessionId).claude === accountId)
+      .filter((sessionId) => this.tokenFileIsOwnedBySubtree(sessionId));
     if (candidates.length === 0) return null;
 
     const before = this.readSourceExpiresAt(accountId);
-    this.clearBlankedSource(accountId, candidates);
-
-    let best = this.readSourceExpiresAt(accountId);
+    let best = before;
     let adoptedFrom: string | null = null;
     for (const sessionId of candidates) {
       if (!sessionTokenIsAheadOfSource(credentialsDir, sessionId, "claude", accountId)) continue;
@@ -1022,40 +1080,32 @@ export class ClaudeOAuthRefresher extends EventEmitter {
   }
 
   /**
-   * Remove a source file the CLI has BLANKED, so a harvest can replace it.
+   * Does this session's token file physically live inside this session's own
+   * subtree — or is the path a link to somewhere else on the credentials volume?
    *
-   * A blanked file holds `""` for every token, so deleting it destroys no
-   * credential — but it still parses as a structured credential, and the
-   * write-back's `unorderable` guard (planning#449) therefore refuses to
-   * overwrite it. That guard is right in general: it exists so a freshness
-   * reader that has stopped matching its CLI cannot bury a live token. It is
-   * wrong for exactly this file, which says in its own bytes that it holds
-   * nothing.
+   * `<sessionDir>/.claude` can be an absolute symlink into
+   * `/credentials/provider-accounts/…`, left by provisioning that predates
+   * docs/150-multiple-provider-subscriptions req 19. Orchestrator-side that
+   * resolves back OUT of the session, which is the whole reason
+   * `containerVisibleCredentialPath` exists on the sync-in side. A harvest
+   * reading through one would be reading an account root and calling it a
+   * session's rotation.
    *
-   * Narrow on purpose. It fires only when the file explicitly carries empty
-   * tokens (a truncated or unfamiliar file reads as `unreadable` and is left
-   * alone), and only when a session pinned to this account holds a token that
-   * is still LIVE — so the account is never left worse off than the blanked
-   * state it was already in.
+   * Realpath rather than an `lstat` on the file: the escape can be at any
+   * component (`.claude` itself is the observed one), and comparing resolved
+   * prefixes catches every variant with one syscall. A path that cannot be
+   * resolved at all — the file simply does not exist yet — is not a candidate
+   * either, and answering `false` for it costs nothing: `sessionTokenIsAheadOfSource`
+   * would have found nothing to publish.
    */
-  private clearBlankedSource(accountId: string, candidates: readonly string[]): void {
-    if (this.readSourceExpiresAt(accountId) !== NO_EXPIRY) return;
-    const file = this.sourceFileFor(accountId);
-    if (this.describeUnusableSource(file).kind !== "blanked") return;
-    const now = this.deps.now();
-    const replacement = candidates.find((sessionId) => {
-      const expiresAt = this.readClaudeExpiresAt(this.sessionTokenFileFor(sessionId));
-      return expiresAt !== NO_EXPIRY && expiresAt > now;
-    });
-    if (replacement === undefined) return;
+  private tokenFileIsOwnedBySubtree(sessionId: string): boolean {
+    const sessionDir = perSessionCredentialsDir(this.deps.credentialsDir, sessionId);
     try {
-      fs.rmSync(file, { force: true });
-      console.log(
-        `[claude-oauth-refresh] account=${accountId} removed the blanked source credential`
-          + ` so session ${replacement}'s live token can replace it`,
-      );
-    } catch (err) {
-      console.warn(`[claude-oauth-refresh] account=${accountId} could not remove the blanked source:`, err);
+      const resolvedFile = fs.realpathSync(this.sessionTokenFileFor(sessionId));
+      const resolvedDir = fs.realpathSync(sessionDir);
+      return resolvedFile.startsWith(resolvedDir + path.sep);
+    } catch {
+      return false;
     }
   }
 

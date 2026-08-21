@@ -306,9 +306,17 @@ The close is identity before ordering, on the record that already exists:
   selects the subtrees to read by this marker, for the same reason the write
   side checks it — token bytes cannot say whose they are. Same refusals, same
   direction: it publishes through `syncProviderAccountTokenBack` with
-  `sessionOwnRoute` on the marker's authority, so a borrow in flight refuses the
-  whole window and an unmarked subtree is never guessed at. It is a fifth
-  reader, not a new rule.
+  `sessionOwnRoute` on the marker's authority, so a *recorded* borrow refuses
+  the whole window and an unmarked subtree is never guessed at. It is a fifth
+  reader, not a new rule — and it inherits both of the rule's limits, which
+  matter more here because a tick fires on a timer and scans every subtree on
+  the disk rather than the one session taking a turn: the marker records
+  intended provisioning rather than the bytes present (below), and the borrow
+  ledger is not re-entrant, so overlapping borrows clear the guard early
+  (planning#463). The harvest adds one condition of its own that the turn-end
+  write-back does not need — the token file must physically resolve inside its
+  own subtree, or a leaked subtree-root symlink would offer another account's
+  root as if it were a session's rotation.
 
 **The concurrent-borrow gap was not bounded, and it cost an account
 (2026-08-19, planning#445).** This section used to close by arguing that

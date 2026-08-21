@@ -36,10 +36,20 @@
  *
  * Lifecycle: the watch lives as long as the CLI PROCESS that can rotate the
  * token, not as long as the turn. Started by `prepareSessionAgentEnvironment`
- * on the turn's own pre-spawn step; stopped by `finalizeSessionAgentEnvironment`
- * only when no agent process survives the turn, by the runner's `disposed`
- * event, and by a route change (a re-arm against a different account restarts
- * it).
+ * on the turn's own pre-spawn step. Stopped at each point the process can end:
+ *
+ *   - `finalizeSessionAgentEnvironment`, when no agent process survives the turn;
+ *   - `ContainerSessionRunner.setAgent(null)` — a NON-streaming turn's process
+ *     exits after finalize has already run, so finalize sees it installed and
+ *     keeps the watch; this is where that one is released;
+ *   - `ContainerSessionRunner.isStreamingActive = false` — the resident
+ *     streaming CLI's genuine exit (every caller has just killed or released it);
+ *   - the runner's `disposed` event — the container went with the process;
+ *   - a route change, which re-arms against the new account's source.
+ *
+ * Four stops for one process because the process has four ways to end, and the
+ * cost of missing one is asymmetric: an extra stat poll on an idle file is
+ * nothing, while stopping early re-opens the bug below.
  *
  * Ending it AT turn end was the docs/153 gap that made Claude accounts need a
  * reconnect roughly daily. A streaming `claude --print --input-format
@@ -250,12 +260,10 @@ export function startTokenWriteBackWatch(opts: StartTokenWriteBackWatchOptions):
  * case — local runtime, non-container runners, agents without a token file).
  * Cancels any pending debounced publish.
  *
- * Callers: the runner's `disposed` event (the CLI is gone with its container),
- * a turn end that leaves NO resident agent process behind
- * (`finalizeSessionAgentEnvironment`, which runs the authoritative sync-back
- * itself), a route change, and shutdown. A turn end that DOES leave a process
- * resident must not call this — that process is exactly the one that rotates
- * between turns.
+ * Callers are listed in the module docstring — every point at which the CLI
+ * process can end, plus route change and shutdown. A turn end that DOES leave a
+ * process resident must not call this: that process is exactly the one that
+ * rotates between turns.
  */
 export function stopTokenWriteBackWatch(sessionId: string): void {
   const watch = watches.get(sessionId);

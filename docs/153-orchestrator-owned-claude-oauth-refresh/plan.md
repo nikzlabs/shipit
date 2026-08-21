@@ -354,35 +354,74 @@ Three changes, no new subsystem:
    docs/142 A3 repush. That repush is unconditional, which is safe here only
    because the harvest ran *first* — the source now holds the harvested token,
    so pushing it back onto the session it came from is byte-identical.
-   Marker-scoped is load-bearing: token bytes cannot say whose they are, so an
-   unmarked subtree, or one lent to a sub-agent's account, is never read.
+
+   Two conditions select a candidate, answering different questions. The
+   **marker**, because token bytes cannot say whose they are, so an unmarked
+   subtree or one lent to a sub-agent's account is never read. And
+   **containment** — the token file must physically resolve inside its own
+   subtree — because a leaked subtree-root symlink (`<sessionDir>/.claude` →
+   `/credentials/provider-accounts/…`, the artifact `containerVisibleCredentialPath`
+   exists for) makes the session path a second name for some OTHER account's
+   root, so reading through one would compare account B's own source against A's
+   and copy it in, with no race required. The turn-end write-back has the same
+   exposure and is bounded by the leak repair its own turn runs; a tick scans
+   every subtree on the disk, including sessions that will never take another
+   turn.
 2. **The watch's lifetime is the CLI process's, not the turn's.**
    `finalizeSessionAgentEnvironment` stops the write-back watch only when
-   `runner.getAgent()` reports no resident process; otherwise it keeps polling
-   and the runner's `disposed` event ends it. A watch can now outlive the
+   `runner.getAgent()` reports no resident process. The process can then end in
+   three more ways, and each releases it: `ContainerSessionRunner.setAgent(null)`
+   under the existing `!isStreamingActive` guard (a NON-streaming turn's process
+   exits at `done`, *after* finalize ran at `agent_result` and saw it installed
+   — without this every such turn leaked a poller), `isStreamingActive = false`
+   (the resident streaming CLI's genuine exit; every caller has just killed or
+   released it), and the runner's `disposed` event. A watch can also outlive the
    container it was armed against, so `startTokenWriteBackWatch` re-arms on a
-   **runner** change as well as a route change, keeping the teardown signal
-   attached to the live emitter. Cost: one `stat` per token file per 3 s for as
-   long as a CLI is resident — an idle session's file does not change, so the
-   poller never schedules a publish.
+   **runner** change as well as a route change. Cost while a CLI is resident:
+   one `stat` per token file per 3 s — an idle session's file does not change,
+   so the poller never schedules a publish.
 3. **Say what failed.** `unknown_failure` / `rate_limited` now append
    `reason="…"` to the sentence they have always printed (unchanged, because
    incidents are diagnosed by grepping it). The excerpt prefers lines carrying a
-   failure signal and is **redacted** — its source includes the `--debug api`
-   capture, so `redactSecrets` is the only thing between a bearer token and the
-   log. `missing_credentials` additionally names `source=missing|blanked|
-   unreadable`, because "the user signed out" and "we just destroyed a live
-   account's credentials" were previously the same line.
+   failure signal and is **redacted** in two layers — credential-bearing headers
+   dropped by name (`Basic dXNlcjpwdw==` is short, padded and matches no token
+   pattern), then token shapes elsewhere. Its source is the `--debug api`
+   capture, so this is the only thing between a bearer token and the log; it is
+   a filter and not a parser, which is why the excerpt is also capped and never
+   logged in full. `missing_credentials` additionally names
+   `source=missing|blanked|unreadable`, because "the user signed out" and "we
+   just destroyed a live account's credentials" were previously the same line.
 
-A blanked source is also **recoverable** now: it parses as a credential, so the
-write-back's `unorderable` guard (planning#449) refuses to overwrite it — right
-in general, wrong for a file that says in its own bytes that it holds nothing.
-`clearBlankedSource` removes it, and only then, when the file explicitly carries
-empty tokens *and* a session pinned to the account holds a token that is still
-live. A truncated or unfamiliar file reads as `unreadable` and is left alone.
+**A blanked source is diagnosed, not repaired.** It parses as a credential, so
+the write-back's `unorderable` guard (planning#449) refuses to overwrite it, and
+the account needs one reconnect. Deleting it to let a harvest through was built
+and then removed: a file this reader believes is empty may be a partial write or
+a shape it has not been taught, `expiresAt: 0` is a claim in the file rather
+than proof about the account, and there is no compare-and-delete — a delete that
+loses a race with a completing sign-in destroys a live credential, to avoid a
+reconnect the user is already doing. With harvest-before-spend in place the
+blanking has no known trigger left, so the trade is a destructive path against a
+state that should not recur.
 
-Not addressed: the **Codex** refresher (`agents/codex/oauth-refresher.ts`) has
-the same shape and was not audited for the same gap.
+### Known limits (not addressed here)
+
+- **The marker records what provisioning intended, not whose bytes are on
+  disk** (docs/260 §4b says so, and it lives in a subtree the session worker can
+  write). So a subtree already poisoned with a foreign bearer under a matching
+  marker is published on the marker's word. This is the pre-existing trust of
+  the turn-end write-back, unchanged; the harvest widens *when* that write can
+  fire (a timer, not a turn), not what it trusts.
+- **The borrow guard is not re-entrant.** `beginSubtreeBorrow` returns early if
+  a borrow is already recorded and `endSubtreeBorrow` deletes the single entry,
+  so overlapping same-session borrows leave `subtreeBorrowInFlight` false while
+  one is still live. Pre-existing (planning#445) and equally under the turn-end
+  write-back; tracked as planning#463.
+- **`syncAgentTokenBackToRoot` reads source freshness and copies over that
+  pathname with no re-check**, so an external writer landing between the two is
+  overwritten. Pre-existing, in a function this change does not touch, and it
+  affects every caller.
+- The **Codex** refresher (`agents/codex/oauth-refresher.ts`) has the same shape
+  and was not audited for the same gap.
 
 ## Wiring
 
@@ -645,13 +684,17 @@ history that was moved into the orphan.
 ### Key files (harvest before spend, planning#462)
 
 - `src/server/orchestrator/agents/claude/oauth-refresher.ts` —
-  `harvestSessionRotations` / `clearBlankedSource` (adopt a session's rotation
-  before spending), `summarizeRefreshFailure` + `redactSecrets` (the logged
-  reason), `describeUnusableSource` (missing vs blanked vs unreadable)
+  `harvestSessionRotations` + `tokenFileIsOwnedBySubtree` (adopt a session's
+  rotation before spending), `summarizeRefreshFailure` + `redactSecrets` (the
+  logged reason), `describeUnusableSource` (missing vs blanked vs unreadable)
 - `src/server/orchestrator/agents/claude/oauth-refresher.test.ts` — harvest
-  adoption / newest-wins / behind-source / foreign-marker / unmarked-subtree,
-  blanked-source recovery, and the log-shape + redaction tests
+  adoption / newest-wins / behind-source / foreign-marker / unmarked-subtree /
+  escaped-subtree, and the log-shape + redaction tests
 - `src/server/orchestrator/session-token-publisher.ts` — watch lifetime tied to
   the resident process; re-arm on a runner change
+- `src/server/orchestrator/container-session-runner.ts` — releases the watch at
+  the two process exits finalize cannot see (`setAgent(null)`,
+  `isStreamingActive = false`)
 - `src/server/orchestrator/session-agent-env.test.ts` — "keeps the watch alive
-  past turn end while a CLI process is still resident"
+  past turn end while a CLI process is still resident";
+  `container-session-runner.test.ts` — the two releases

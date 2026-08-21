@@ -1013,39 +1013,61 @@ describe("ClaudeOAuthRefresher", () => {
       expect(fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8")).not.toContain("sess_tok_");
     });
 
-    it("replaces a source the CLI blanked with a pinned session's live token", async () => {
+    // A `<sessionDir>/.claude` symlink into an account root (pre-docs/150 req 19
+    // provisioning) makes the session path a second name for THAT account's
+    // credential. Reading through one would compare account B's own source
+    // against A's and copy it in — no race required, so the harvest checks that
+    // a candidate's token file physically lives in its own subtree.
+    it("skips a session whose subtree escapes into another account's root", async () => {
       const now = 1_700_000_000_000;
-      const rig = buildRig({ accounts: [makeAccount("acct-1")], initialNow: now });
+      const rig = buildRig({
+        accounts: [makeAccount("acct-1"), makeAccount("acct-2")],
+        initialExpiries: {
+          "acct-1": now + 10 * 60 * 1000,
+          "acct-2": now + 8 * 60 * 60 * 1000, // acct-2's own token is much newer
+        },
+        initialNow: now,
+      });
       rigs.push(rig);
-      writeBlankedCredentials(path.join(rig.rootDir, "provider-accounts", "claude", "acct-1"));
-      const live = now + 8 * 60 * 60 * 1000;
-      writeSessionToken(rig.rootDir, "sess-a", { expiresAt: live, accountId: "acct-1" });
 
-      const unauthenticated: string[] = [];
-      rig.refresher.on("account_unauthenticated", (id: string) => unauthenticated.push(id));
+      // The subtree is marked to acct-1, but its `.claude` is acct-2's root.
+      const sessionDir = path.join(rig.rootDir, "sessions", "sess-a");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      writeSessionAccountMarker(rig.rootDir, "sess-a", "claude", "acct-1");
+      fs.symlinkSync(
+        path.join(rig.rootDir, "provider-accounts", "claude", "acct-2", ".claude"),
+        path.join(sessionDir, ".claude"),
+      );
+      rig.spawnHandle.effects = [{ rotateTo: now + 6 * 60 * 60 * 1000 }];
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
-      expect(result!.outcome).toBe("harvested_session");
-      expect(result!.afterExpiresAt).toBe(live);
-      // No sign-in prompt: the account was never actually without a credential.
-      expect(unauthenticated).toEqual([]);
-      expect(rig.spawnHandle.invocations.length).toBe(0);
+      expect(result!.outcome).toBe("rotated_tier1");
+      // acct-2's bearer never reached acct-1's root.
+      const acct1 = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-1"), "utf8");
+      const acct2 = fs.readFileSync(accountTokenFile(rig.rootDir, "acct-2"), "utf8");
+      const acct2Token = (JSON.parse(acct2) as { claudeAiOauth: { accessToken: string } })
+        .claudeAiOauth.accessToken;
+      expect(acct1).not.toContain(acct2Token);
     });
 
-    it("leaves a blanked source alone when no session holds a live token", async () => {
+    // Diagnosis only, deliberately: a file this reader believes is empty may be
+    // a partial write or a shape it has not been taught, and the account is
+    // unusable either way. Nothing deletes or repairs it.
+    it("leaves a blanked source on disk and still reports missing_credentials", async () => {
       const now = 1_700_000_000_000;
       const rig = buildRig({ accounts: [makeAccount("acct-1")], initialNow: now });
       rigs.push(rig);
       const accountRoot = path.join(rig.rootDir, "provider-accounts", "claude", "acct-1");
       writeBlankedCredentials(accountRoot);
-      // Marked to this account, but its own token is long expired.
-      writeSessionToken(rig.rootDir, "sess-a", { expiresAt: now - 60 * 60 * 1000, accountId: "acct-1" });
+      // Even with a live session copy sitting right there, the harvest cannot
+      // publish over a credential-shaped source (the planning#449 guard).
+      writeSessionToken(rig.rootDir, "sess-a", { expiresAt: now + 8 * 60 * 60 * 1000, accountId: "acct-1" });
 
       const [result] = await rig.refresher.refreshNow("acct-1");
 
       expect(result!.outcome).toBe("missing_credentials");
-      // The blanked file is only removed when something better replaces it.
+      expect(result!.reason).toContain("blanked");
       expect(fs.existsSync(path.join(accountRoot, ".claude", ".credentials.json"))).toBe(true);
     });
   });
@@ -1128,6 +1150,28 @@ describe("summarizeRefreshFailure", () => {
     expect(summary).not.toContain("abc123");
     expect(summary).not.toContain(FAKE_OAUTH_TOKEN);
     expect(summary).not.toContain(opaque);
+  });
+
+  it("drops credential-bearing headers whole, whatever the value looks like", () => {
+    // `Basic dXNlcjpwdw==` is short, base64-padded and carries no recognizable
+    // prefix: no token pattern catches it, so the header must go by NAME.
+    const summary = summarizeRefreshFailure(
+      "x-api-key: abc123\nAuthorization: Basic dXNlcjpwdw==",
+    );
+    expect(summary).not.toContain("abc123");
+    expect(summary).not.toContain("dXNlcjpwdw==");
+    // The header name stays — which credential was sent is the diagnostic
+    // value; only the value itself has to go.
+    expect(summary).toContain("x-api-key: [redacted]");
+  });
+
+  it("keeps the failure line and drops noise around it", () => {
+    // A real capture is mostly headers. The signal filter is what keeps the
+    // excerpt about the failure rather than about the request.
+    const summary = summarizeRefreshFailure(
+      "POST /v1/oauth/token\nAuthorization: Bearer abcdef\nError: 401 invalid_grant",
+    );
+    expect(summary).toBe("Error: 401 invalid_grant");
   });
 
   it("caps the excerpt so one runaway line cannot flood the log", () => {
