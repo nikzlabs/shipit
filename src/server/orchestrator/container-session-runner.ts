@@ -1977,9 +1977,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // `joined` — the worker coalesced us onto an install that was ALREADY
       // running, possibly for a different command list — is NOT classified here,
       // and that is a known gap rather than a decision: a joined completion is
-      // evidence about the list that ran, not ours. It predates this file's
-      // current shape and is unchanged by the docs/271 removal. Owner:
-      // planning#400.
+      // evidence about the list that ran, not ours. Worse, the overlay publish
+      // then stamps the SHARED base pointer with our list, so every later
+      // session at this commit skips an install that never ran for them. It
+      // predates this file's current shape and is unchanged by the docs/271
+      // removal. Owner: planning#464.
       if (outcome.ok && !outcome.unverified) {
         this.clearDependencyGap();
       }
