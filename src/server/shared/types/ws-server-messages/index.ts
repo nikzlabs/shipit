@@ -120,6 +120,7 @@ import type {
   WsBranchAutoResetCard,
   WsBranchSyncedCard,
   WsSessionRenamedCard,
+  WsSessionSettingsChangeCard,
   WsNonTurnFailureCard,
   WsNonTurnFailureDismissed,
 } from "./cards.js";
@@ -157,6 +158,7 @@ export type WsServerMessage =
   | WsBranchAutoResetCard
   | WsBranchSyncedCard
   | WsSessionRenamedCard
+  | WsSessionSettingsChangeCard
   | WsNonTurnFailureCard
   | WsNonTurnFailureDismissed
   | WsBugReportCard

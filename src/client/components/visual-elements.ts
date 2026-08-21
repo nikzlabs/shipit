@@ -70,6 +70,7 @@ export const CARD_MESSAGE_FIELDS = [
   "branchAutoReset",
   "branchSynced",
   "sessionRenamed",
+  "sessionSettingsChange",
   "releaseCard",
   "spawnedSession",
   "spawnFailed",

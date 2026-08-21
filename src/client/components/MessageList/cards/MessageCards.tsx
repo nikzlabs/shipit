@@ -16,6 +16,7 @@ import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
 import { SessionRenamedCard } from "../../SessionRenamedCard.js";
+import { SessionSettingsChangeCard } from "../../SessionSettingsChangeCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
@@ -344,6 +345,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <SessionRenamedCard card={msg.sessionRenamed} />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/279 — session-settings-changed card. Carries no chat text of its own;
+  // renders the static `SessionSettingsChangeCard` straight from the message
+  // payload (no store, no lifecycle). The durable record that a sandbox
+  // capability grant or a session's network mode moved, and when.
+  if (msg.sessionSettingsChange) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SessionSettingsChangeCard card={msg.sessionSettingsChange} />
         </div>
       </div>
     );

@@ -87,6 +87,14 @@ interface UiState {
   /** docs/211 — the Sandbox capability dialog. Hoisted here (rather than local
    *  to SessionSidebar) so it can be opened from anywhere that needs it. */
   sandboxDialogOpen: boolean;
+  /**
+   * docs/279 — the per-session Session settings dialog. Hoisted here for the same
+   * reason as `sandboxDialogOpen`, plus one specific to it: the dialog now has
+   * TWO entry points (the sidebar's overflow menu and the sandbox banner), and on
+   * mobile the sidebar is an unmounted drawer, so open-state local to
+   * `SessionItem` would make the banner's control dead on a phone.
+   */
+  sessionSettingsDialogOpen: boolean;
   quickCaptureOpen: boolean;
   /**
    * docs/144 Mode B — when the quick-capture overlay is opened via the
@@ -170,6 +178,7 @@ interface UiState {
   setCumulativeTokens: (input: number, output: number) => void;
   setSettingsOpen: (open: boolean) => void;
   setSandboxDialogOpen: (open: boolean) => void;
+  setSessionSettingsDialogOpen: (open: boolean) => void;
   setQuickCaptureOpen: (open: boolean, autoMic?: boolean) => void;
   setQuickCaptureAutoMic: (active: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
@@ -215,6 +224,7 @@ const initialState = {
   cumulativeOutputTokens: 0,
   settingsOpen: false,
   sandboxDialogOpen: false,
+  sessionSettingsDialogOpen: false,
   quickCaptureOpen: false,
   quickCaptureAutoMic: false,
   settingsTab: undefined as SettingsTab,
@@ -274,6 +284,7 @@ export const useUiStore = create<UiState>((set) => ({
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setSandboxDialogOpen: (sandboxDialogOpen) => set({ sandboxDialogOpen }),
+  setSessionSettingsDialogOpen: (sessionSettingsDialogOpen) => set({ sessionSettingsDialogOpen }),
 
   setQuickCaptureOpen: (quickCaptureOpen, autoMic = false) =>
     set({ quickCaptureOpen, quickCaptureAutoMic: quickCaptureOpen ? autoMic : false }),

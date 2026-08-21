@@ -26,23 +26,33 @@ losing its workspace and chat history.
    browser, and the agent inside the container still cannot grant itself a
    capability. (Inherited from docs/211, not new — but it constrains where the
    route may live: the edit endpoint must not be container-accessible.)
+5. The capabilities are editable from the per-session **Session settings**
+   dialog, and the **sandbox banner**'s granted list is a second entry point
+   into that same dialog.
+6. Revoking a capability removes the agent's **access** and destroys nothing it
+   already made: the containers, networks and volumes an agent created under a
+   since-revoked Docker grant keep running until the session is archived, as
+   they do today.
+7. A capability change writes a **persisted chat card** into the session's
+   transcript, so the trust boundary moving is visible in the scrollback and
+   survives reload.
+8. The same persisted card is written when a **regular** (non-sandbox) session's
+   network access is changed from the Session settings dialog. That change is
+   silent today.
 
 ## Open questions
 
-- **Where does the editor live?** The per-session overflow menu already has a
-  "Session settings" item that opens the egress dialog; a sandbox also shows the
-  `SandboxBanner` in the chat panel, which already lists the granted set.
-- **Revoking Docker while the agent has containers running.** Restarting the
-  agent container un-plumbs `DOCKER_HOST`, but the containers/networks/volumes
-  the agent already created stay running until the session is archived. Does a
-  revoke leave them alone, or tear them down?
-- **Does a capability change leave a record in the chat transcript?** The egress
-  mode change leaves none, and the sandbox banner is deliberately derived chrome
-  rather than a persisted card (docs/211) — but a grant change is a trust-boundary
-  change, which is the usual argument for a durable record.
+None.
 
 ## Resolved questions
 
 - 2026-08-21 — *If applying a change needs a container restart, what should
   happen?* Nik: the same behaviour as the egress settings on a regular session —
   save it, mark it pending, offer "Restart to apply now". Recorded as req 3.
+- 2026-08-21 — *Where does the editor live?* Nik: the Session settings dialog,
+  with the sandbox banner linking into it. Recorded as req 5.
+- 2026-08-21 — *Revoking Docker while the agent has containers running — leave
+  them or tear them down?* Nik: leave them alone. Recorded as req 6.
+- 2026-08-21 — *Does a capability change leave a record in the chat transcript?*
+  Nik: yes, a persisted card — "and the same for granting internet access for
+  regular sessions". Recorded as reqs 7 and 8.

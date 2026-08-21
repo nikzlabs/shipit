@@ -73,7 +73,7 @@ import { reloadEgressSidecars } from "./egress-reload.js";
 import { listEgressAllowedHosts } from "./egress-policy.js";
 import type { PluginEgressPolicy } from "./plugin-egress.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
-import type { SessionInfo } from "../shared/types.js";
+import type { SessionCapabilities, SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Re-export sub-module public symbols for backwards compatibility
@@ -307,6 +307,20 @@ export interface SessionContainer {
    * rediscovered/re-adopted containers, where the booted policy isn't known.
    */
   egressContainedAtStart?: boolean;
+  /**
+   * docs/279 — the sandbox {@link SessionCapabilities} this container was
+   * actually created with, for the same "pending — restart to apply" diff
+   * {@link egressContainedAtStart} serves and under the same convention: absent
+   * means UNKNOWN (a non-sandbox session, or a rediscovered/re-adopted container
+   * whose boot-time grants aren't knowable), and unknown reports no pending diff.
+   *
+   * It cannot be folded into `egressContainedAtStart`, which is the obvious-looking
+   * shortcut: a network-OFF sandbox and a network-ON one both resolve to
+   * `contained: true`, so that flag reads identically across the one change it
+   * would be asked about, while the base allowlist the container is running
+   * differs completely.
+   */
+  capabilitiesAtStart?: SessionCapabilities;
   /**
    * docs/172 ordering fix — set on a freshly *created* container to a promise
    * that resolves once the Tier-A egress firewall install
@@ -578,6 +592,39 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     if (!sc?.overlayVolumesRecreated) return false;
     sc.overlayVolumesRecreated = false;
     return true;
+  }
+
+  /**
+   * docs/279 — record the sandbox capability set a freshly-created container was
+   * plumbed with. Called by `createContainerForRunner` (`app-lifecycle.ts`) at
+   * the point it derives the container's Docker access from that same set, which
+   * is where the grant becomes container plumbing.
+   *
+   * A setter rather than a `ContainerConfig` field: `dockerAccess` is the only
+   * part of the set the config layer acts on, and threading the whole set through
+   * `buildConfigForWorkspace` → `buildConfig` → `ContainerConfig` would put a
+   * sandbox-only concept into the shared type every container-creation path
+   * builds, for a value nothing downstream of it reads.
+   *
+   * No-op when the container record is gone (creation raced a teardown): the
+   * unrecorded set reads as "unknown", which reports no pending diff — the same
+   * safe direction a rediscovered container lands in.
+   */
+  recordCapabilitiesAtStart(sessionId: string, capabilities: SessionCapabilities): void {
+    const sc = this.containers.get(sessionId);
+    if (sc) sc.capabilitiesAtStart = capabilities;
+  }
+
+  /**
+   * docs/279 — the capability set this session's RUNNING container was created
+   * with, or `null` when that isn't knowable (no running container, or one
+   * rediscovered after an orchestrator restart). The other side of
+   * `capabilitiesPendingRestart`'s diff; mirrors the egress API's `liveContained`.
+   */
+  capabilitiesAtStart(sessionId: string): SessionCapabilities | null {
+    const sc = this.containers.get(sessionId);
+    if (sc?.status !== "running") return null;
+    return sc.capabilitiesAtStart ?? null;
   }
 
   /** Boot-effective containment used when generating the Compose override. */

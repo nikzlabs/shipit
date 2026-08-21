@@ -89,6 +89,16 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     to: "Agent session rename",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  sessionSettingsChange: {
+    cardId: "ssc1",
+    scope: "sandbox-capabilities",
+    changes: [
+      { label: "Docker access", from: "off", to: "on", granted: true },
+      { label: "Network access", from: "on", to: "off", granted: false },
+    ],
+    pendingRestart: true,
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   issueWrite: {
     cardId: "iw1",
     tracker: "linear",

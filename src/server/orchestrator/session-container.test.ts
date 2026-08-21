@@ -1337,6 +1337,35 @@ describe("SessionContainerManager", () => {
     });
   });
 
+  describe("capabilitiesAtStart (docs/279)", () => {
+    const CAPS = { git: true, docker: false, network: true, dangerousGitHubOps: false };
+
+    it("reports null for a container whose boot-time grants were never recorded", async () => {
+      await manager.create(buildConfig({ sessionId: "s1", sessionDir: "/ws/s1" }));
+      // The "absent means unknown" convention: a non-sandbox session, or a
+      // container rediscovered after an orchestrator restart. Unknown must not
+      // be reported as a set, or the pending diff would be against a guess.
+      expect(manager.capabilitiesAtStart("s1")).toBeNull();
+    });
+
+    it("reports the recorded grants once the creation path records them", async () => {
+      await manager.create(buildConfig({ sessionId: "s1", sessionDir: "/ws/s1" }));
+      manager.recordCapabilitiesAtStart("s1", CAPS);
+      expect(manager.capabilitiesAtStart("s1")).toEqual(CAPS);
+    });
+
+    it("reports null for a session with no container at all", () => {
+      expect(manager.capabilitiesAtStart("never-created")).toBeNull();
+    });
+
+    it("ignores a record for a container that is already gone", async () => {
+      // Creation racing a teardown. The unrecorded set reads as unknown, which
+      // is the safe direction — no pending diff rather than a false one.
+      expect(() => manager.recordCapabilitiesAtStart("never-created", CAPS)).not.toThrow();
+      expect(manager.capabilitiesAtStart("never-created")).toBeNull();
+    });
+  });
+
   // --- get / getAll / size ---
 
   describe("get / getAll / size", () => {

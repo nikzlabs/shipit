@@ -64,7 +64,7 @@ describe("egress settings routes", () => {
         resolveEgress: (id: string) => resolvedEgress.get(id),
       } as unknown,
       runnerRegistry: { get: () => undefined },
-      chatHistoryManager: {},
+      chatHistoryManager: { append: () => {} },
     } as unknown as ApiDeps;
     await registerEgressRoutes(app, deps);
     await app.ready();
@@ -300,7 +300,7 @@ describe("egress settings routes", () => {
             resolveEgress: (id: string) => resolvedEgress.get(id),
           } as unknown,
           runnerRegistry: { get: () => undefined },
-          chatHistoryManager: {},
+          chatHistoryManager: { append: () => {} },
         } as unknown as ApiDeps);
         await floorApp.ready();
       });
@@ -477,7 +477,7 @@ describe("egress settings routes", () => {
       sseBroadcast: () => {},
       containerManager: { reloadEgress, get: () => undefined } as unknown,
       runnerRegistry: { get: () => undefined },
-      chatHistoryManager: {},
+      chatHistoryManager: { append: () => {} },
     } as unknown as ApiDeps);
     await app2.ready();
     try {
