@@ -54,9 +54,9 @@ import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
-  acceptedInstallCommands,
   evaluateInstallGate,
   installWithheldNotice,
+  readAcceptedInstall,
   recordAcceptedInstall,
   recordWithheldCommands,
   sessionHasPlugin,
@@ -2047,10 +2047,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // That is the gate's ordinary behaviour arriving one event earlier, and the
     // remedy is unchanged (req 8 — ask the agent).
     if (!recordAcceptedInstall(this.sessionDir, commands)) {
-      // A failed write is survivable only while something ELSE still anchors the
-      // gate — an earlier record, or a marker the migration can read. Re-read
-      // rather than assume, because which of those is true decides whether
+      // A failed write is survivable only while a DURABLE anchor still exists.
+      // Re-read rather than assume, because whether one does decides whether
       // proceeding is safe.
+      //
+      // `readAcceptedInstall`, NOT `acceptedInstallCommands`, and the difference
+      // is the whole guard. The convenient helper resolves record-then-MARKER,
+      // and the marker is exactly what this install is about to destroy: the
+      // worker whiteouts it before every reinstall (`install-controller.ts:183`)
+      // so a partial run cannot leave a stamp claiming success. Accepting it as
+      // an anchor asks "does some acceptance source exist right now", when the
+      // question is "will one survive this install". A marker-only session whose
+      // migration backfill had also failed passed the first test, lost its
+      // marker to the reinstall, and — if that reinstall failed — ended with
+      // neither source, which is the original fail-open reached through the
+      // migration path. Found by the second review of this fix.
+      //
+      // An UNREADABLE record is non-null and so counts as durable, which is
+      // right: it fails closed at every later gate.
       //
       // Found by review, and it is the hole this whole change claims to close,
       // surviving one layer down: `recordAcceptedInstall` is best-effort, so a
@@ -2065,7 +2079,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // a failed install, so `dependsOnInstall` services latch with a cause
       // rather than being released into a tree nothing vouches for. Same shape
       // as `copyAcceptedInstall`'s throw, and for the same reason.
-      if (acceptedInstallCommands(this.sessionDir) === null && sessionHasPlugin(this.sessionDir)) {
+      if (readAcceptedInstall(this.sessionDir) === null && sessionHasPlugin(this.sessionDir)) {
         console.error(
           `[install:${this.sessionId}] refusing to install: this session has a plugin and its ` +
           `accepted-install list could not be persisted, so nothing would anchor the gate afterwards`,
@@ -2075,7 +2089,16 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         // promise is not armed until the concurrency guard below, so signalling
         // here would either do nothing or resolve a CONCURRENT caller's promise
         // with a failure that is not theirs.
-        return { ok: false };
+        //
+        // `withheld` alongside `ok: false`, the same shape the unrepairable
+        // branch above returns. Without it `reinstallForDepChange` falls past
+        // its `res.withheld` return and records an `install-failed` gap — which
+        // tells the user, in the transcript and in the agent's turn prefix, that
+        // ShipIt ran these commands and they failed. Nothing was posted. The
+        // flag is read internally as "did not run" (it also skips the overlay
+        // publish, correctly), and no notice rides on it, so this reports the
+        // truth rather than inventing a failure.
+        return { ok: false, withheld: true };
       }
       // The survivable half. A plugin-free session's gate allows on its first
       // line regardless, and a session that already had an anchor keeps it — in

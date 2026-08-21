@@ -509,10 +509,30 @@ skipped.
    itself. The invariant is therefore **no unattended install runs in a session
    that needs a gate unless its authorization is durably recorded**: on a failed
    write `runInstall` re-reads the anchor, and if there is none AND the session
-   is plugin-bearing it returns `{ ok: false }` so `dependsOnInstall` services
-   latch with a cause. Both halves of that condition are load-bearing and both
-   are guarded — a plugin-free session's failed write must NOT cost it its
-   install, since the gate's first line allows it regardless.
+   is plugin-bearing it returns `{ ok: false, withheld: true }` so
+   `dependsOnInstall` services latch with a cause. Both halves of that condition
+   are load-bearing and both are guarded — a plugin-free session's failed write
+   must NOT cost it its install, since the gate's first line allows it
+   regardless.
+
+   **The re-read is `readAcceptedInstall`, NOT `acceptedInstallCommands`, and a
+   second review of this fix is what found the difference.** The convenient
+   helper resolves record-then-**marker**, and the marker is exactly what the
+   permitted install is about to destroy: the worker whiteouts it before every
+   reinstall (`install-controller.ts:183`) so a partial run cannot leave a stamp
+   claiming success. Accepting it asks *"does an acceptance source exist right
+   now"* when the question is *"will a durable one survive this install"* — so a
+   pre-record session whose migration backfill had also failed passed the guard,
+   lost its marker to the reinstall, and on a failed reinstall ended with neither
+   source. That is the original fail-open, reached through the migration path.
+   An `UNREADABLE` record is non-null and therefore counts as durable, which is
+   right: it fails closed at every later gate.
+
+   `withheld: true` rides on the refusal for the same reason it rides on the
+   unrepairable branch — without it `reinstallForDepChange` falls past its
+   `res.withheld` return and records an `install-failed` gap, telling the user in
+   the transcript and the agent's turn prefix that ShipIt ran these commands and
+   they failed. Nothing was posted.
 
    The refusal returns directly, without `signalInstallComplete`, for the same
    reason the withheld branches above it do: the completion promise is not armed

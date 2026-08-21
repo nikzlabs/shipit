@@ -461,6 +461,8 @@ describe("acceptance survives every way the marker can be destroyed", () => {
     { name: "the string \"false\"", value: "false" },
     { name: "0", value: 0 },
     { name: "an object", value: {} },
+    // An array is the shape a `typeof x === "object"` special-case lets through.
+    { name: "an array", value: [] },
   ];
 
   for (const { name, value } of NOT_FALSE) {
@@ -521,6 +523,11 @@ describe("acceptance survives every way the marker can be destroyed", () => {
       withheld: true,
       accepted: ACCEPTED,
     });
+    // ...and gating is still per-LIST, not a blanket refusal once evidence
+    // appears. Without this, "withhold everything after live evidence" passes
+    // the assertion above, and a session that had accepted a list could never
+    // run it again.
+    expect(evaluateInstallGate({ workspaceDir: otherWorkspace, requested: ACCEPTED }).withheld).toBeFalsy();
   });
 
   it("does not gate a fork whose parent never had a plugin", () => {

@@ -1265,7 +1265,9 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
         path.join(dir, "workspace", "shipit.yaml"),
         "agent:\n  install:\n    - \"npm ci\"\nplugins:\n  use:\n    - plugin: probe\n      from: tools\n",
       );
+      let posts = 0;
       const server = http.createServer((req, res) => {
+        if (req.url === "/install") posts++;
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(req.url === "/install" ? { skipped: true } : { running: false }));
       });
@@ -1281,15 +1283,73 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
           throw new Error("ENOSPC: no space left on device");
         });
         try {
-          expect(await runner.runInstall(["npm ci"])).toEqual({ ok: false });
+          expect(await runner.runInstall(["npm ci"])).toEqual({ ok: false, withheld: true });
         } finally {
           rename.mockRestore();
         }
       } finally {
         server.close();
       }
+      // The POST count, not just the return value: an implementation that runs
+      // the install and THEN reports `{ ok: false }` satisfies the assertion
+      // above while doing the exact thing this guard exists to prevent.
+      expect(posts).toBe(0);
       // Nothing anchors the gate — which is precisely why proceeding was
       // refused, rather than something to repair afterwards.
+      expect(fs.existsSync(path.join(dir, ".install-accepted"))).toBe(false);
+    });
+
+    /**
+     * The surviving half of that blocker, found by the SECOND review of the fix.
+     *
+     * The guard first re-read the anchor with `acceptedInstallCommands`, which
+     * resolves record-then-MARKER — and the marker is precisely what the install
+     * it permits is about to delete (`install-controller.ts:183` whiteouts it
+     * before every reinstall, so a partial run cannot leave a stamp claiming
+     * success). A pre-record session whose migration backfill ALSO failed
+     * therefore looked anchored, posted, lost the marker, and — if the install
+     * failed — ended with neither source, which is the original fail-open
+     * reached through the migration path.
+     *
+     * The question the guard has to ask is not "does an acceptance source exist
+     * right now" but "will a DURABLE one survive this install".
+     */
+    it("refuses when the only anchor is the marker this install would delete", async () => {
+      fs.rmSync(path.join(dir, ".install-accepted"), { force: true });
+      // The marker stays: this is the pre-record migration session, whose
+      // acceptance survives only there.
+      fs.writeFileSync(
+        path.join(dir, "workspace", "shipit.yaml"),
+        "agent:\n  install:\n    - \"npm ci\"\nplugins:\n  use:\n    - plugin: probe\n      from: tools\n",
+      );
+      let posts = 0;
+      const server = http.createServer((req, res) => {
+        if (req.url === "/install") posts++;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(req.url === "/install" ? { skipped: true } : { running: false }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const addr = server.address();
+      if (typeof addr === "string" || !addr) throw new Error("no server address");
+      try {
+        const runner = runnerIn(dir);
+        runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+        vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+        vi.spyOn(console, "error").mockImplementation(() => undefined);
+        // Spied before the call, so the gate's own migration backfill fails too
+        // — which is the state that makes the marker the only anchor.
+        const rename = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+          throw new Error("ENOSPC: no space left on device");
+        });
+        try {
+          expect(await runner.runInstall(["npm ci"])).toEqual({ ok: false, withheld: true });
+        } finally {
+          rename.mockRestore();
+        }
+      } finally {
+        server.close();
+      }
+      expect(posts).toBe(0);
       expect(fs.existsSync(path.join(dir, ".install-accepted"))).toBe(false);
     });
 
@@ -1305,7 +1365,9 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
       fs.rmSync(path.join(dir, "state", "shared", ".install-done"), { force: true });
       fs.rmSync(path.join(dir, "plugin-data"), { recursive: true, force: true });
       fs.writeFileSync(path.join(dir, "workspace", "shipit.yaml"), "agent:\n  install:\n    - \"npm ci\"\n");
+      let posts = 0;
       const server = http.createServer((req, res) => {
+        if (req.url === "/install") posts++;
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(req.url === "/install" ? { skipped: true } : { running: false }));
       });
@@ -1328,6 +1390,37 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
       } finally {
         server.close();
       }
+      // Proves it actually RAN. `{ ok: true }` alone is satisfiable by refusing
+      // and lying about it, which is the mirror of the mutant the refusal test
+      // guards against.
+      expect(posts).toBe(1);
+    });
+
+    /**
+     * Found by the second review: every test above pins where acceptance IS
+     * written, and none pinned where it must NOT be. An implementation that
+     * writes the requested list BEFORE `evaluateInstallGate` passes all of them
+     * — and authorizes a plugin's changed list in the act of gating it.
+     */
+    it("does not record a list the gate withheld", async () => {
+      const workspace = path.join(dir, "workspace");
+      fs.writeFileSync(
+        path.join(workspace, "shipit.yaml"),
+        "agent:\n  install:\n    - \"npm ci\"\nplugins:\n  use:\n    - plugin: probe\n      from: tools\n",
+      );
+      fs.writeFileSync(
+        path.join(dir, ".install-accepted"),
+        JSON.stringify({ commands: ["npm ci"], at: "2026-08-20T00:00:00.000Z", pluginBearing: true }),
+      );
+      const runner = runnerIn(dir);
+      vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      const changed = ["npm ci && node ./node_modules/tools/x.js"];
+      expect(await runner.runInstall(changed)).toMatchObject({ withheld: true });
+
+      const record = JSON.parse(fs.readFileSync(path.join(dir, ".install-accepted"), "utf8"));
+      expect(record.commands).toEqual(["npm ci"]);
     });
 
     /**
