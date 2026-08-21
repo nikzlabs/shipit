@@ -45,16 +45,26 @@ import { getErrorMessage } from "./validation.js";
  * planning#324 — the wire-shape half of the `/history` validator.
  *
  * The transcript revision covers the session's ROWS. This constant covers the
- * one input the rows cannot see: how those rows are RENDERED. A change to
- * `projectMessagesForWire` — a new field, a different clamp, a reshaped tool
- * result — changes the response body without any write to `messages`, so every
- * validator a client already holds stays valid against a payload that is no
- * longer shaped the way it was cached. The client would keep serving the old
- * shape from its cache until the entry ages out of the 6-entry LRU or the page
- * reloads.
+ * one input the rows cannot see: how those rows are TURNED INTO a response. That
+ * is the whole derivation, not just the last step of it —
  *
- * **Bump it when the projection's output shape changes without a data change.**
- * One move invalidates every held validator at once.
+ *   - `ChatHistoryManager.fromRow` (which columns are decoded, and into what:
+ *     the legacy `agent_review` → `aiReview` degradation is exactly this kind of
+ *     change),
+ *   - the ordering and filtering of the rows `load` selects,
+ *   - `projectMessagesForWire` (a new field, a different clamp, a reshaped tool
+ *     result, a changed image URL scheme),
+ *   - the assembly of the payload object itself.
+ *
+ * Change any of them and the response body changes with no write to `messages`
+ * at all, so every validator a client already holds stays valid against a
+ * payload that is no longer shaped the way it was cached — and the client keeps
+ * serving the old shape until its LRU entry ages out or the page reloads.
+ *
+ * **Bump it when the wire derivation changes without a data change.** One move
+ * invalidates every held validator at once. Nothing enforces this mechanically:
+ * it is the price of a validator derived from the data rather than hashed from
+ * the bytes, and the reason to keep the list above current.
  */
 const HISTORY_VALIDATOR_VERSION = 1;
 

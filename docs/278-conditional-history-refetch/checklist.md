@@ -15,9 +15,13 @@
 - [x] Unit tests: one case per mutating method; the in-place patch that leaves `MAX(id)` and
       `COUNT(*)` untouched (req 8); a raw SQL write that goes around the manager; scoping;
       durability; no rewind after a delete
-- [x] Schema tests: raw SQL moves the counter; `clearAll` empties the table
+- [x] Schema tests: raw SQL moves the counter; a reassigned row moves BOTH counters; the value
+      survives closing and reopening a file-backed database; `clearAll` empties the table
 - [x] Integration tests: `304` unchanged, fresh body on card patch / same-length rewrite /
       non-transcript change, and no transcript read on the `304` path
-- [x] Mutation-checked both suites — a naive `MAX(id)` + `COUNT(*)` validator and a missing
-      `UPDATE` trigger each fail them
+- [x] Mutation-checked all three suites — a naive `MAX(id)` + `COUNT(*)` validator, a missing
+      `UPDATE` trigger, and a missing reassignment trigger each fail them
 - [x] `npm run typecheck`, `npm run lint:dev`, `npm run test:dev`
+- [x] Reviewed by ShipIt's configured reviewer; three findings fixed (invalidation contract
+      widened past `projectMessagesForWire`, reassignment trigger added, restart-durability
+      test moved to a file-backed database)

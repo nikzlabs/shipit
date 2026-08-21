@@ -44,9 +44,18 @@ every attached viewer. That is also exactly the cost that grows with the convers
 ### A per-session transcript revision
 
 `transcript_revisions (session_id TEXT PRIMARY KEY, revision INTEGER NOT NULL)`, incremented
-by three `AFTER INSERT / UPDATE / DELETE` triggers on `messages` (migration at the end of
+by `AFTER INSERT / UPDATE / DELETE` triggers on `messages` (migration at the end of
 `database.ts`). `ChatHistoryManager.transcriptRevision(sessionId)` reads it; a session with
 no messages reads 0.
+
+A fourth trigger covers row **reassignment**: `AFTER UPDATE OF session_id … WHEN OLD.session_id
+<> NEW.session_id` bumps the OLD owner too. A row that changes hands leaves one session as
+much as it joins another, and the plain `UPDATE` trigger speaks only for the session it
+arrives in — so without this the old owner's clients hold a validator that is still "valid"
+for a transcript that has lost a row. Nothing in the repository reassigns `session_id` today;
+the guarantee is for what gets written later (a repair migration that merges two sessions, a
+fork that moves rows instead of copying them), which is precisely the class of write this
+design promises to cover. `WHEN` makes it free on every ordinary update.
 
 **Triggers rather than a bump in `ChatHistoryManager` (req 7).** The writes are spread over
 ~20 methods of that class, several ad-hoc `db.prepare(...)` statements inside it, and a
@@ -81,35 +90,46 @@ rewind snapshot, usage, presentations). If `If-None-Match` matches, the route an
 **before** `getChatHistory` is called — the transcript is never materialized (req 2). Only a
 request that will actually send a body pays for one.
 
-### `HISTORY_VALIDATOR_VERSION` — the input the data cannot see
-
-A hand-bumped integer at the top of `api-routes-session-spawn.ts`, folded into the tag.
-
-The revision covers the session's **rows**; the version covers how those rows are
-**rendered**. Change `projectMessagesForWire` — add a field, move a clamp, reshape a tool
-result — and the response body changes with no write to `messages` at all, so every validator
-a client holds stays valid against a payload that is no longer shaped the way it cached it.
-The client keeps serving the old shape until its LRU entry ages out or the page reloads.
-Bumping the constant invalidates every held validator in one move.
-
-This is the price of a derived validator, and it is worth naming rather than hiding: a hash
-of the body could never have this problem, because the projection's output *was* the input.
-The constant is the deliberate, one-line replacement for that property — and the docstring on
-it says when to bump.
-
 This is sound because `messages` is a pure function of the session id and the revision:
 `projectMessagesForWire` on the history path derives everything from the rows it is handed
 (verified at `transcript-projection.ts` — the image `src` is content-addressed from the row's
 own bytes). The six other sources are still hashed directly, so the tag never speaks for a
 source it did not read (req 3).
 
+**The read ORDER is load-bearing.** The revision is read *before* the messages are loaded, so
+the tag can only ever describe a state at or behind the body. Reversed — read the messages,
+then the revision — the tag could OVERSTATE the body, and a later request at that same
+revision would answer `304` over content the client never received. Confirmed under review:
+`better-sqlite3` is synchronous and there is no `await` after the revision read, so nothing
+interleaves in-process; and even a second connection could at worst tag a body with an older
+revision, which costs an extra `200` later and never a stale `304`.
+
 The `304` also carries the tag, per RFC 9110 §15.4.5. The client keeps the tag it sent
 either way; this is for the intermediaries.
+
+### `HISTORY_VALIDATOR_VERSION` — the input the data cannot see
+
+A hand-bumped integer at the top of `api-routes-session-spawn.ts`, folded into the tag.
+
+The revision covers the session's **rows**; the version covers how those rows become a
+**response** — the whole derivation, not just its last step: `fromRow`'s column decoding (the
+legacy `agent_review` → `aiReview` degradation is exactly this kind of change), the ordering
+and filtering of the rows `load` selects, `projectMessagesForWire`, and the assembly of the
+payload object. Change any of them and the body changes with no write to `messages` at all, so
+every validator a client holds stays valid against a payload that is no longer shaped the way
+it cached it. The client keeps serving the old shape until its LRU entry ages out or the page
+reloads. Bumping the constant invalidates every held validator in one move.
+
+This is the price of a derived validator, and it is worth naming rather than hiding: a hash
+of the body could never have this problem, because the projection's output *was* the input.
+The constant is the deliberate, one-line replacement for that property — and the docstring on
+it says when to bump.
 
 ### Deliberately not done
 
 - **No client change.** The conditional request, the per-session cache and the `304` handling
-  already exist and are tested. A second mechanism beside them would be the stale one.
+  already exist and are tested. A second mechanism beside them would be the stale one. (One
+  comment in `session-data.ts` did change: it still described the tag as a hash of the body.)
 - **The git log still runs on the unchanged path.** It is a subprocess, and the next thing
   worth measuring, but it is bounded (50 commits) and does not grow with the conversation,
   which is the axis req 4 names. Left alone.
@@ -138,10 +158,34 @@ cursor cannot get from `MAX(id)`.
   that goes around the manager entirely (the property the trigger design has and a
   hand-placed bump cannot), session scoping, durability, and no-rewind-after-delete. Dropping
   the `UPDATE` trigger fails 14 of them.
-- `database.test.ts` → *"transcript revision triggers"* — raw SQL moves the counter, and
-  `clearAll` empties the table instead of resurrecting it.
+- `database.test.ts` → *"transcript revision triggers"* — raw SQL moves the counter, a row
+  reassigned between sessions moves BOTH counters, the value survives closing and reopening a
+  file-backed database, and `clearAll` empties the table instead of resurrecting it.
 - `integration_tests/history-conditional-refetch.test.ts` — the route over the real
   orchestrator: `304` on an unchanged repeat, a fresh body after an in-place card patch and
   after a same-length rewrite (both of which a `MAX(id)` + `COUNT(*)` validator answers `304`
   to — verified by swapping it in), a fresh body when a non-transcript source changes, and
   `ChatHistoryManager.load` never called on the `304` path.
+
+## Review
+
+Reviewed by ShipIt's configured reviewer (run `d5f6428e-1fe1-4182-afb9-10508ce1810e`) against
+the three claims the design rests on. It confirmed the route's read ORDER — the revision is
+read before the messages are loaded, and `better-sqlite3` makes everything from there to the
+response synchronous, so nothing interleaves; and even a hypothetical second connection could
+at worst tag a body with an older revision, which costs an extra 200 later and can never
+produce a stale 304. It confirmed that every current write to `messages` moves the counter,
+that trigger bumps roll back with their enclosing transaction, and that the tests are not
+vacuous. It measured the trigger cost at ~14 ms on a synthetic 5,000-row `saveMessages`
+rewrite (43 ms → 57 ms) — a rewind/restore path, not the ordinary turn path.
+
+Three findings, all fixed on this branch:
+
+1. **The invalidation contract named only `projectMessagesForWire`**, while `fromRow`, the
+   row query and the payload assembly are equally part of the wire derivation — and the
+   client-side comment still described the ETag as a hash of the body. Both corrected.
+2. **The `UPDATE` trigger bumped only `NEW.session_id`**, so a row changing owner left the old
+   session's validator untouched. Closed with the `WHEN`-guarded reassignment trigger above.
+3. **The durability test proved manager independence, not restart durability** — it opened a
+   second manager over the same in-memory connection, so a `TEMP` table would have passed it.
+   Replaced with a close-and-reopen case over a file-backed database.

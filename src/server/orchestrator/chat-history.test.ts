@@ -1820,7 +1820,14 @@ describe("ChatHistoryManager", () => {
       expect(mgr.transcriptRevision("s2")).toBeGreaterThan(0);
     });
 
-    it("survives the process — it is on disk, not in the manager", () => {
+    /**
+     * The counter is in the database, not in the manager instance that happened
+     * to write it — so a second manager (a second viewer's request path) reads
+     * the same value. Durability ACROSS A RESTART is a different claim and is
+     * pinned where it can actually be tested, over a file-backed database:
+     * `database.test.ts` → "survives closing and reopening the database".
+     */
+    it("is shared by every manager over the same database", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("s1", { role: "user", text: "hello" });
       expect(new ChatHistoryManager(dbManager).transcriptRevision("s1"))

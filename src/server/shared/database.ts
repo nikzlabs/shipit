@@ -1457,6 +1457,21 @@ const MIGRATIONS: Migration[] = [
         INSERT INTO transcript_revisions (session_id, revision) VALUES (OLD.session_id, 1)
           ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
       END;
+
+      -- A row that changes owner LEAVES one session as much as it joins another,
+      -- and the UPDATE trigger above speaks only for the session it arrives in.
+      -- No path in the repository reassigns \`session_id\` today; the guarantee
+      -- this counter advertises is for the ones written later — a repair
+      -- migration that merges two sessions, a fork that moves rows instead of
+      -- copying them — and the old owner's clients would otherwise hold a
+      -- validator that is still "valid" for a transcript missing a row.
+      -- \`WHEN\` keeps it free on every ordinary update.
+      CREATE TRIGGER IF NOT EXISTS messages_revision_reassign AFTER UPDATE OF session_id ON messages
+        WHEN OLD.session_id <> NEW.session_id
+      BEGIN
+        INSERT INTO transcript_revisions (session_id, revision) VALUES (OLD.session_id, 1)
+          ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
+      END;
     `);
   },
 ];
