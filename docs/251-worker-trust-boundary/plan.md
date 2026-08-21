@@ -206,10 +206,9 @@ nothing rather than as a container that failed to start.
 
 **The policy layer fails closed too**, as the second layer rather than the first:
 `decideWorkerRequest` step 6 denies every non-loopback caller when no token is
-configured. That is the rule
-[`docs/271-agent-install-trust-boundary`](../271-agent-install-trust-boundary/plan.md)
-depends on and does not own — its `agent.install` gate sits at `runInstall`, not
-on the worker's `/install` route, and `compose-service-egress.ts` lets a
+configured. `/install` is the sharpest case — it runs `agent.install` with
+`shell: true` in the credential-bearing agent container, and
+`compose-service-egress.ts` lets a
 contained plugin service reach the agent container. `worker-auth.test.ts` and
 `worker-auth-guard.test.ts` (the latter against the real `SessionWorker` route
 table) now fail if that rule is relaxed, which a paragraph in a plan could not.
