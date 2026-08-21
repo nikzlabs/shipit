@@ -55,6 +55,139 @@ describe("preview-store device viewport", () => {
     });
   });
 
+  describe("setViewportSize", () => {
+    it("sets the size and switches to Custom in one step", () => {
+      usePreviewStore.getState().setViewportSize(500, 900);
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
+      expect(usePreviewStore.getState().devicePreset?.category).toBe("custom");
+    });
+
+    it("keeps the size when moving from a named preset to a freeform one", () => {
+      // Doing this as setCustomSize + setDevicePreset has an order that works
+      // and an order that throws the size away, which is why it is one action.
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().setViewportSize(500, 900);
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
+    });
+
+    it("labels the custom preset 'Custom' rather than its dimensions", () => {
+      // The toolbar prints W×H right beside this label, and a rotate leaves
+      // dimensions baked into a label stale.
+      usePreviewStore.getState().setViewportSize(500, 900);
+      expect(usePreviewStore.getState().devicePreset?.label).toBe("Custom");
+    });
+
+    it("holds a size from outside the allowed range at the bound", () => {
+      usePreviewStore.getState().setViewportSize(10, 99999);
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 100, height: 2560 });
+    });
+  });
+
+  describe("remembering the viewport across a reload", () => {
+    it("brings a preset back for the same session", () => {
+      usePreviewStore.getState().restoreViewport("session-a");
+      usePreviewStore.getState().setDevicePreset(findPresetById("ipad-mini"));
+      usePreviewStore.getState().toggleLandscape();
+
+      // A reload: the store is new, only localStorage survived.
+      usePreviewStore.getState().reset();
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+
+      usePreviewStore.getState().restoreViewport("session-a");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("ipad-mini");
+      expect(usePreviewStore.getState().isLandscape).toBe(true);
+    });
+
+    it("brings a freeform size back for the same session", () => {
+      usePreviewStore.getState().restoreViewport("session-a");
+      usePreviewStore.getState().setViewportSize(512, 768);
+
+      usePreviewStore.getState().reset();
+      usePreviewStore.getState().restoreViewport("session-a");
+
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 512, height: 768 });
+      expect(usePreviewStore.getState().devicePreset?.category).toBe("custom");
+    });
+
+    it("keeps two sessions' choices apart", () => {
+      usePreviewStore.getState().restoreViewport("session-a");
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-se"));
+      usePreviewStore.getState().restoreViewport("session-b");
+      usePreviewStore.getState().setDevicePreset(findPresetById("ipad-air"));
+
+      usePreviewStore.getState().reset();
+
+      usePreviewStore.getState().restoreViewport("session-a");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-se");
+      usePreviewStore.getState().restoreViewport("session-b");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("ipad-air");
+    });
+
+    it("starts a session that has never chosen on Responsive", () => {
+      usePreviewStore.getState().restoreViewport("session-a");
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-se"));
+      usePreviewStore.getState().restoreViewport("never-seen");
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+      expect(usePreviewStore.getState().isLandscape).toBe(false);
+    });
+
+    it("forgets a session that goes back to Responsive", () => {
+      usePreviewStore.getState().restoreViewport("session-a");
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-se"));
+      usePreviewStore.getState().setDevicePreset(null);
+
+      usePreviewStore.getState().reset();
+      usePreviewStore.getState().restoreViewport("session-a");
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+      // Storing the default would grow the map for no information.
+      expect(localStorage.getItem("shipit:preview-viewports")).toBe("{}");
+    });
+
+    it("degrades to Responsive when the remembered preset no longer exists", () => {
+      // A preset we rename or drop must not restore dimensions nothing offers.
+      localStorage.setItem(
+        "shipit:preview-viewports",
+        JSON.stringify({ "session-a": { presetId: "nokia-3310", landscape: true } }),
+      );
+      usePreviewStore.getState().restoreViewport("session-a");
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+      expect(usePreviewStore.getState().isLandscape).toBe(false);
+    });
+
+    it("survives a corrupt stored value", () => {
+      localStorage.setItem("shipit:preview-viewports", "{ not json");
+      expect(() => usePreviewStore.getState().restoreViewport("session-a")).not.toThrow();
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+    });
+
+    it("clamps a stored size that is out of range", () => {
+      localStorage.setItem(
+        "shipit:preview-viewports",
+        JSON.stringify({ "session-a": { presetId: "custom", landscape: false, width: 5, height: 99999 } }),
+      );
+      usePreviewStore.getState().restoreViewport("session-a");
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 100, height: 2560 });
+    });
+
+    it("writes nothing before a session is known", () => {
+      // Component tests poke the store directly; that must not create an entry
+      // under some other session's name.
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-se"));
+      expect(localStorage.getItem("shipit:preview-viewports")).toBeNull();
+    });
+
+    it("restores the remembered choice when switching to a session this tab has not shown", () => {
+      usePreviewStore.getState().restoreViewport("session-a");
+      usePreviewStore.getState().setDevicePreset(findPresetById("pixel-9"));
+      usePreviewStore.getState().reset();
+
+      // `restoreSession` is the session-switch path; with no in-memory snapshot
+      // it has to fall back to what was remembered.
+      usePreviewStore.getState().restoreSession("session-a");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("pixel-9");
+    });
+  });
+
   describe("session snapshots", () => {
     it("findPresetById returns null for unknown id", () => {
       expect(findPresetById("nonexistent")).toBeNull();

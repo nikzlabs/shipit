@@ -1,7 +1,13 @@
 import { create } from "zustand";
 import { getLocalStorageObject } from "../utils/local-storage.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
-import type { DevicePreset } from "../components/device-presets.js";
+import {
+  clampViewportSize,
+  customPreset,
+  findPresetById,
+  CUSTOM_PRESET_ID,
+  type DevicePreset,
+} from "../components/device-presets.js";
 import type {
   ComposeServiceStatus,
   ComposeServicePreviewMode,
@@ -186,6 +192,18 @@ interface PreviewState {
   /** Custom user-entered viewport size (separate from named presets). */
   customSize: { width: number; height: number } | null;
 
+  /**
+   * Which session the three fields above currently describe, or null before any
+   * session has been restored.
+   *
+   * The viewport choice is per-session and survives a reload
+   * (docs/278-preview-viewport-resize req 9), so a mutation has to know which
+   * session to write under. Holding the id here rather than reading
+   * `useSessionStore` keeps this store free of a cross-store import — and makes
+   * the persistence testable without standing up a session.
+   */
+  viewportSessionId: string | null;
+
   /** Saved preview state per session, keyed by sessionId. */
   sessionSnapshots: Record<string, SessionPreviewSnapshot>;
 
@@ -260,6 +278,19 @@ interface PreviewState {
   toggleLandscape: () => void;
   /** Set a custom viewport size; selecting null clears it. */
   setCustomSize: (size: { width: number; height: number } | null) => void;
+  /**
+   * Set a freeform viewport size and switch the active preset to Custom, in one
+   * step. Both halves of a freeform size have to move together — a preset whose
+   * category is not `custom` makes `setDevicePreset` clear `customSize`, so
+   * doing this in two calls has an order that works and an order that silently
+   * discards the size. Values are clamped into the allowed range.
+   */
+  setViewportSize: (width: number, height: number) => void;
+  /**
+   * Point the viewport fields at `sessionId` and load that session's remembered
+   * choice, if any. Called on session switch and once on first load.
+   */
+  restoreViewport: (sessionId: string) => void;
   /** Save current top-level state into sessionSnapshots[sessionId]. */
   snapshotSession: (sessionId: string) => void;
   /** Restore from snapshot if exists, otherwise reset to defaults. */
@@ -421,10 +452,141 @@ function savePreviewPaths(paths: Record<string, string>): void {
   try { localStorage.setItem(PREVIEW_PATHS_KEY, JSON.stringify(paths)); } catch { /* ignore */ }
 }
 
+// ---- Remembered viewport choice (docs/278-preview-viewport-resize req 9) ----
+
+const VIEWPORTS_KEY = "shipit:preview-viewports";
+
+/**
+ * Cap on how many sessions' viewport choices we remember. Eviction is by
+ * insertion order (oldest first), same as the preview-path map above: writes
+ * re-insert at the end, so the entries that survive are the ones most recently
+ * chosen.
+ */
+const MAX_REMEMBERED_VIEWPORTS = 50;
+
+/** A session's viewport choice, as it survives a reload. */
+interface StoredViewport {
+  /** Preset id, `"custom"`, or null for Responsive. */
+  presetId: string | null;
+  landscape: boolean;
+  /** Only meaningful when `presetId` is `"custom"`. */
+  width?: number;
+  height?: number;
+}
+
+/**
+ * Narrow one untrusted entry from localStorage.
+ *
+ * Everything here is re-derived rather than trusted: a preset id is looked up
+ * in `DEVICE_PRESETS` (so a preset we have since renamed or dropped degrades to
+ * Responsive instead of restoring dimensions nothing offers), and a custom size
+ * is clamped exactly as a freshly typed one is. The value is only ever this
+ * browser's own writing, so this is not a security boundary — it is version
+ * skew, which is the thing that actually happens.
+ */
+function parseStoredViewport(raw: unknown): StoredViewport | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const landscape = value.landscape === true;
+  if (value.presetId === CUSTOM_PRESET_ID) {
+    if (typeof value.width !== "number" || typeof value.height !== "number") return null;
+    return {
+      presetId: CUSTOM_PRESET_ID,
+      landscape,
+      width: clampViewportSize(value.width),
+      height: clampViewportSize(value.height),
+    };
+  }
+  if (typeof value.presetId !== "string") return null;
+  const preset = findPresetById(value.presetId);
+  if (!preset) return null;
+  return { presetId: preset.id, landscape };
+}
+
+function loadViewports(): Record<string, StoredViewport> {
+  return getLocalStorageObject<Record<string, StoredViewport>>(VIEWPORTS_KEY, {}, (parsed) => {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, StoredViewport> = {};
+    const entries = Object.entries(parsed as Record<string, unknown>).slice(-MAX_REMEMBERED_VIEWPORTS);
+    for (const [sessionId, value] of entries) {
+      const viewport = parseStoredViewport(value);
+      if (viewport) out[sessionId] = viewport;
+    }
+    return out;
+  });
+}
+
+/**
+ * Write one session's viewport choice through to localStorage, or remove it
+ * when the session is back on Responsive — an absent entry and "Responsive"
+ * mean the same thing, so storing the default would grow the map for nothing.
+ *
+ * Reads and rewrites the whole map on each call. That is deliberate: it keeps
+ * OTHER tabs' writes rather than overwriting them from a snapshot this tab took
+ * at boot, and the map is at most 50 small entries.
+ */
+export function saveViewport(
+  sessionId: string,
+  viewport: { devicePreset: DevicePreset | null; isLandscape: boolean; customSize: { width: number; height: number } | null },
+): void {
+  // Drop any existing entry and re-append, so the session counts as the most
+  // recently chosen and the cap below evicts from the other end.
+  const entries = Object.entries(loadViewports()).filter(([id]) => id !== sessionId);
+  const preset = viewport.devicePreset;
+  if (preset) {
+    entries.push([sessionId, preset.category === "custom"
+      ? {
+        presetId: CUSTOM_PRESET_ID,
+        landscape: viewport.isLandscape,
+        width: clampViewportSize(viewport.customSize?.width ?? preset.width),
+        height: clampViewportSize(viewport.customSize?.height ?? preset.height),
+      }
+      : { presetId: preset.id, landscape: viewport.isLandscape }]);
+  }
+  try {
+    const kept = Object.fromEntries(entries.slice(-MAX_REMEMBERED_VIEWPORTS));
+    localStorage.setItem(VIEWPORTS_KEY, JSON.stringify(kept));
+  } catch { /* ignore */ }
+}
+
+/** The live store fields a {@link StoredViewport} restores to. */
+export function viewportFromStored(stored: StoredViewport | null | undefined): {
+  devicePreset: DevicePreset | null;
+  isLandscape: boolean;
+  customSize: { width: number; height: number } | null;
+} {
+  if (!stored) return { devicePreset: null, isLandscape: false, customSize: null };
+  if (stored.presetId === CUSTOM_PRESET_ID && stored.width && stored.height) {
+    return {
+      devicePreset: customPreset(stored.width, stored.height),
+      isLandscape: stored.landscape,
+      customSize: { width: stored.width, height: stored.height },
+    };
+  }
+  const preset = findPresetById(stored.presetId);
+  return preset
+    ? { devicePreset: preset, isLandscape: stored.landscape, customSize: null }
+    : { devicePreset: null, isLandscape: false, customSize: null };
+}
+
+/**
+ * Write the current viewport choice through for whichever session it belongs
+ * to. A no-op before any session is active, which is the case in a component
+ * test that pokes the store directly.
+ */
+function rememberViewport(state: Pick<
+  PreviewState,
+  "viewportSessionId" | "devicePreset" | "isLandscape" | "customSize"
+>): void {
+  if (!state.viewportSessionId) return;
+  saveViewport(state.viewportSessionId, state);
+}
+
 const initialState = {
   ...initialSessionState,
   autoFixEnabled: false,
   servicesDrawerExpanded: loadServicesDrawerExpanded(),
+  viewportSessionId: null as string | null,
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
   previewPaths: loadPreviewPaths(),
   // Ephemeral state — never persisted into a session snapshot.
@@ -510,12 +672,30 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setPreviewProxyError: (previewProxyError) => set({ previewProxyError }),
 
-  setDevicePreset: (devicePreset) =>
-    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null }),
+  setDevicePreset: (devicePreset) => {
+    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null });
+    rememberViewport(get());
+  },
 
-  toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
+  toggleLandscape: () => {
+    set((state) => ({ isLandscape: !state.isLandscape }));
+    rememberViewport(get());
+  },
 
-  setCustomSize: (customSize) => set({ customSize }),
+  setCustomSize: (customSize) => {
+    set({ customSize });
+    rememberViewport(get());
+  },
+
+  setViewportSize: (width, height) => {
+    const size = { width: clampViewportSize(width), height: clampViewportSize(height) };
+    set({ customSize: size, devicePreset: customPreset(size.width, size.height) });
+    rememberViewport(get());
+  },
+
+  restoreViewport: (sessionId) => {
+    set({ viewportSessionId: sessionId, ...viewportFromStored(loadViewports()[sessionId]) });
+  },
 
   setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 
@@ -560,10 +740,17 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     // A pointer's destination describes one session and is cancelled by leaving
     // it (docs/258) — it is never part of the restored snapshot.
     if (snap) {
-      set({ ...snap, previewLinkIntent: null });
+      set({ ...snap, previewLinkIntent: null, viewportSessionId: sessionId });
     } else {
       resetDedupState();
-      set({ ...initialSessionState, previewLinkIntent: null });
+      set({
+        ...initialSessionState,
+        previewLinkIntent: null,
+        viewportSessionId: sessionId,
+        // No in-memory snapshot means this tab has not shown this session yet,
+        // so a choice made before the last reload is the one to come back to.
+        ...viewportFromStored(loadViewports()[sessionId]),
+      });
     }
   },
 

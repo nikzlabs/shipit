@@ -5,6 +5,7 @@ import type { SessionInfo } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
+import { usePreviewStore } from "../stores/preview-store.js";
 import { resumeSessionInternal, resetSessionState } from "../stores/actions/session-actions.js";
 import { repoLabelToNewPath, shouldAdoptClaimedSession } from "../utils/repo-label.js";
 
@@ -54,6 +55,13 @@ export function useSessionActivation(params: {
   useEffect(() => {
     if (urlSessionId) {
       useSessionStore.getState().setSessionId(urlSessionId);
+      // Bring back this session's remembered preview viewport
+      // (docs/278-preview-viewport-resize req 9). A later switch goes through
+      // `resumeSessionInternal` → `restoreSession`, but arriving straight at a
+      // session URL — a reload, or a link — never passes through that path, so
+      // without this the choice survives switching away and back yet is lost by
+      // the one action a user would call "coming back to it".
+      usePreviewStore.getState().restoreViewport(urlSessionId);
     }
     if (!urlSessionId && !isNewSessionRoute) {
       useUiStore.getState().setShowTemplates(true);

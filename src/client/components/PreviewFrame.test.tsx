@@ -1666,6 +1666,65 @@ describe("PreviewFrame", () => {
     expect(iframe.style.height).toBe("");
   });
 
+  it("offers resize handles on the framed viewport when a preset is active", async () => {
+    usePreviewStore.setState({ devicePreset: findPresetById("iphone-16"), isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+    expect(screen.getByLabelText("Drag to resize the preview width")).toBeInTheDocument();
+    expect(screen.getByLabelText("Drag to resize the preview height")).toBeInTheDocument();
+  });
+
+  it("offers no resize handles while the preview fills the panel", async () => {
+    usePreviewStore.setState({ devicePreset: null, isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+    // Nothing is framed, so there is no edge to drag.
+    expect(screen.queryByLabelText("Drag to resize the preview width")).not.toBeInTheDocument();
+  });
+
+  it("offers no resize handles while the pane is off screen", async () => {
+    usePreviewStore.setState({ devicePreset: findPresetById("iphone-16"), isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} paneVisible={false} {...defaultProps} />);
+    expect(screen.queryByLabelText("Drag to resize the preview width")).not.toBeInTheDocument();
+  });
+
+  it("resizes the preview when a handle is dragged", async () => {
+    usePreviewStore.setState({ devicePreset: findPresetById("iphone-16"), isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = await screen.findByTitle("Live Preview");
+    expect(iframe.style.width).toBe("393px");
+
+    const handle = screen.getByLabelText("Drag to resize the preview width");
+    fireEvent.pointerDown(handle, { clientX: 0, clientY: 0, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(handle, { clientX: 50, clientY: 0, pointerId: 1 });
+    fireEvent.pointerUp(handle, { clientX: 50, clientY: 0, pointerId: 1 });
+
+    // The frame follows the drag, and so does the toolbar readout.
+    expect((await screen.findByTitle("Live Preview")).style.width).toBe("493px");
+    expect(screen.getByText(/493×852/)).toBeInTheDocument();
+  });
+
+  it("reads out a dragged size once, as Custom, rather than printing it twice", async () => {
+    // The trigger label used to carry the dimensions too, so a freeform size
+    // showed as "500×900 500×900" — and after a rotate the two disagreed.
+    usePreviewStore.setState({ devicePreset: findPresetById("iphone-16"), isLandscape: false, customSize: null });
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    const handle = screen.getByLabelText("Drag to resize the preview width");
+    fireEvent.pointerDown(handle, { clientX: 0, clientY: 0, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(handle, { clientX: 50, clientY: 0, pointerId: 1 });
+    fireEvent.pointerUp(handle, { clientX: 50, clientY: 0, pointerId: 1 });
+
+    expect(screen.getByLabelText("Select device viewport")).toHaveTextContent("Custom");
+    expect(screen.getAllByText(/493×852/)).toHaveLength(1);
+  });
+
   it("setDevicePreset updates store state", () => {
     const preset = findPresetById("ipad-mini")!;
     usePreviewStore.getState().setDevicePreset(preset);

@@ -118,6 +118,7 @@ export function PreviewToolbar({
   const setDevicePreset = usePreviewStore((s) => s.setDevicePreset);
   const toggleLandscape = usePreviewStore((s) => s.toggleLandscape);
   const setCustomSize = usePreviewStore((s) => s.setCustomSize);
+  const setViewportSize = usePreviewStore((s) => s.setViewportSize);
 
   // The page the preview is CURRENTLY on, not the slot's entry URL —
   // `activeSlotUrl` is where the iframe was pointed when the slot was created,
@@ -223,16 +224,7 @@ export function PreviewToolbar({
                 if (!preset) setCustomSize(null);
               }}
               onToggleLandscape={toggleLandscape}
-              onCustomSize={(width, height) => {
-                setCustomSize({ width, height });
-                setDevicePreset({
-                  id: "custom",
-                  label: `${width}×${height}`,
-                  width,
-                  height,
-                  category: "custom",
-                });
-              }}
+              onCustomSize={setViewportSize}
             />
             {deviceFrameActive && (
               <span className="text-(--color-text-tertiary) tabular-nums group-data-[hide-viewport=true]/ptb:hidden">

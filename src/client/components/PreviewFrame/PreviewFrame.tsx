@@ -13,6 +13,7 @@ import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
 import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePreviewHealthPoller.js";
 import { useDeviceFrame } from "./DeviceFrame.js";
+import { ViewportResizeHandles } from "./ViewportResizeHandles.js";
 import { PreviewToolbar, type PortInfo } from "./PreviewToolbar.js";
 import { PreviewErrors } from "./PreviewErrors.js";
 import { ComposeErrorBanner } from "./ComposeErrorBanner.js";
@@ -122,6 +123,8 @@ export function PreviewFrame({
   // When a preset is active, we resize the iframe to the preset width/height
   // and scale it down with `transform: scale()` if it doesn't fit the panel.
   const { deviceContainerRef, deviceFrameActive, deviceWidth, deviceHeight, deviceScale, deviceScalePercent } = useDeviceFrame();
+  const isLandscape = usePreviewStore((s) => s.isLandscape);
+  const setViewportSize = usePreviewStore((s) => s.setViewportSize);
 
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
@@ -881,6 +884,20 @@ export function PreviewFrame({
             />
           );
         })}
+        {/* Drag handles on the framed viewport's right edge, bottom edge and
+            corner (docs/278-preview-viewport-resize req 8). Suppressed while an
+            overlay owns the area — the handles sit above it, and a grip for
+            resizing a preview that isn't on screen is a control with nothing
+            behind it. */}
+        {deviceFrameActive && !hideIframe && !overlayContent && (
+          <ViewportResizeHandles
+            deviceWidth={deviceWidth}
+            deviceHeight={deviceHeight}
+            deviceScale={deviceScale}
+            isLandscape={isLandscape}
+            onResize={({ width, height }) => setViewportSize(width, height)}
+          />
+        )}
         {/* Transition overlay while polling for new session/port (background iframe may be visible underneath) */}
         {isTransitioning && !overlayContent && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">

@@ -28,3 +28,31 @@ export function findPresetById(id: string | null | undefined): DevicePreset | nu
   if (!id) return null;
   return DEVICE_PRESETS.find((p) => p.id === id) ?? null;
 }
+
+/** Minimum allowed value for a viewport dimension (px). */
+export const VIEWPORT_SIZE_MIN = 100;
+/** Maximum allowed value for a viewport dimension (px). */
+export const VIEWPORT_SIZE_MAX = 2560;
+
+/** Id of the synthetic preset that stands for a freeform size. */
+export const CUSTOM_PRESET_ID = "custom";
+
+/** Round to whole pixels and hold inside the allowed range. */
+export function clampViewportSize(value: number): number {
+  if (!Number.isFinite(value)) return VIEWPORT_SIZE_MIN;
+  return Math.min(VIEWPORT_SIZE_MAX, Math.max(VIEWPORT_SIZE_MIN, Math.round(value)));
+}
+
+/**
+ * The synthetic preset that represents a freeform size — typed into the
+ * selector, or reached by dragging a resize handle.
+ *
+ * The label is the constant "Custom" and NOT the dimensions. The toolbar prints
+ * `W×H` immediately to the right of this label, so dimensions here were shown
+ * twice; worse, they were the dimensions as *entered*, which a rotate left
+ * stale — a rotated 500×900 read "500×900 900×500". A drag would have churned
+ * that label on every pointer move as well.
+ */
+export function customPreset(width: number, height: number): DevicePreset {
+  return { id: CUSTOM_PRESET_ID, label: "Custom", width, height, category: "custom" };
+}

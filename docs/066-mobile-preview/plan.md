@@ -2,6 +2,14 @@
 
 Let users preview their app at common mobile and tablet screen sizes directly in the preview pane, without needing browser DevTools.
 
+> **Extended by [`docs/278-preview-viewport-resize`](../278-preview-viewport-resize/plan.md).**
+> That branch added drag-to-resize handles on the framed viewport, made the
+> per-session choice survive a page reload, and moved the freeform preset's
+> label to `Custom` (it used to carry the dimensions, which the toolbar printed
+> again beside it and a rotate left stale). The "State management" section below
+> still describes the store fields, but its closing note — that the selection
+> lives only in the in-memory session snapshot — is superseded there.
+
 ## Problem
 
 When building responsive web apps, users need to check how their UI looks at different viewport sizes. Today they must resize the browser window or open DevTools device emulation externally. ShipIt should provide this capability in-app so the vibe-coding loop stays tight: ask Claude to make it responsive, see the result at phone size immediately.
