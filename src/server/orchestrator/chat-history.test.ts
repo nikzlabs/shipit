@@ -1590,4 +1590,239 @@ describe("ChatHistoryManager", () => {
       expect(mgr.consumeUnreportedBugOutcomes("s2")).toHaveLength(1);
     });
   });
+
+  /**
+   * planning#324 — the validator behind the conditional `GET /history`.
+   *
+   * The whole feature rests on one claim: a revision that has not moved means
+   * the session's transcript has not changed. A write path that fails to move it
+   * does not fail loudly — the client is told "unchanged", keeps the transcript
+   * it already has, and the change is invisible until something else happens to
+   * bump the counter. So every mutating method gets a case here, and a new one
+   * must get a case too.
+   *
+   * The table is deliberately exhaustive rather than representative. It is also
+   * the only executable statement of the issue's central subtlety: an in-place
+   * card patch changes the transcript while leaving both `MAX(id)` and
+   * `COUNT(*)` exactly where they were.
+   */
+  describe("transcript revision (planning#324)", () => {
+    /** The CLI's background-launch acknowledgement, the shape `retire…` replaces. */
+    const LAUNCH_ACK = JSON.stringify([{
+      type: "text",
+      text: "Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: af0615944a51b458\nThe agent is working in the background. You will be notified automatically when it completes.",
+    }]);
+
+    /** A carrier message holding one of the round-trip fixture's inline cards. */
+    const cardOf = (field: keyof PersistedMessage): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      [field]: EVERY_OPTIONAL_FIELD_MESSAGE[field],
+    });
+
+    interface Mutation {
+      what: string;
+      seed?: (mgr: ChatHistoryManager) => void;
+      run: (mgr: ChatHistoryManager) => void;
+    }
+
+    const MUTATIONS: Mutation[] = [
+      {
+        what: "append",
+        run: (mgr) => mgr.append("s1", { role: "user", text: "hello" }),
+      },
+      {
+        what: "saveMessages rewrites the whole transcript",
+        seed: (mgr) => mgr.append("s1", { role: "user", text: "before" }),
+        run: (mgr) => mgr.saveMessages("s1", [{ role: "user", text: "after" }]),
+      },
+      {
+        what: "replaceInProgress rebuilds a turn's rows",
+        seed: (mgr) => mgr.append("s1", { role: "assistant", text: "partial", inProgress: true }),
+        run: (mgr) => mgr.replaceInProgress("s1", [{ role: "assistant", text: "more", inProgress: true }]),
+      },
+      {
+        what: "finalizeInProgress closes a turn",
+        seed: (mgr) => mgr.append("s1", { role: "assistant", text: "partial", inProgress: true }),
+        run: (mgr) => mgr.finalizeInProgress("s1"),
+      },
+      {
+        what: "clearInProgress drops an aborted turn",
+        seed: (mgr) => mgr.append("s1", { role: "assistant", text: "partial", inProgress: true }),
+        run: (mgr) => mgr.clearInProgress("s1"),
+      },
+      {
+        what: "updateLastMessage stamps the commit hash",
+        seed: (mgr) => mgr.append("s1", { role: "assistant", text: "done" }),
+        run: (mgr) => expect(mgr.updateLastMessage("s1", { commitHash: "abc123" })).not.toBeNull(),
+      },
+      {
+        what: "updateBugReportCard patches a card in place",
+        seed: (mgr) => mgr.append("s1", cardOf("bugReport")),
+        run: (mgr) => expect(mgr.updateBugReportCard("s1", "b1", { phase: "dismissed" })).toBe(true),
+      },
+      {
+        what: "updatePermissionCard patches a card in place",
+        seed: (mgr) => mgr.append("s1", cardOf("permissionPrompt")),
+        run: (mgr) => expect(mgr.updatePermissionCard("s1", "p1", { phase: "denied" })).toBe(true),
+      },
+      {
+        what: "updateEgressPromptCard patches a card in place",
+        seed: (mgr) => mgr.append("s1", cardOf("egressPrompt")),
+        run: (mgr) => expect(mgr.updateEgressPromptCard("s1", "eg1", { phase: "added" })).toBe(true),
+      },
+      {
+        what: "updateIssueWriteCard patches a card in place",
+        seed: (mgr) => mgr.append("s1", cardOf("issueWrite")),
+        run: (mgr) => expect(mgr.updateIssueWriteCard("s1", "iw1", { undoState: "undone" })).toBe(true),
+      },
+      {
+        what: "updateSubAgentConsultCard patches a card in place",
+        seed: (mgr) => mgr.append("s1", cardOf("subAgentConsult")),
+        run: (mgr) => expect(mgr.updateSubAgentConsultCard("s1", "sac1", { outputMarkdown: "later" })).toBe(true),
+      },
+      {
+        what: "updateNonTurnFailureCard records a dismissal",
+        seed: (mgr) => mgr.append("s1", cardOf("nonTurnFailure")),
+        run: (mgr) => expect(mgr.updateNonTurnFailureCard("s1", "ntf1", { dismissedAt: "2026-08-21T00:00:00.000Z" })).toBe(true),
+      },
+      {
+        what: "upsertReleaseCard appends the proposal",
+        run: (mgr) => mgr.upsertReleaseCard("s1", EVERY_OPTIONAL_FIELD_MESSAGE.releaseCard!),
+      },
+      {
+        what: "upsertReleaseCard advances an existing card in place",
+        seed: (mgr) => mgr.upsertReleaseCard("s1", EVERY_OPTIONAL_FIELD_MESSAGE.releaseCard!),
+        run: (mgr) => mgr.upsertReleaseCard("s1", {
+          ...EVERY_OPTIONAL_FIELD_MESSAGE.releaseCard!,
+          phase: "failed",
+        }),
+      },
+      {
+        what: "consumeUnreportedBugOutcomes marks a card as told",
+        seed: (mgr) => mgr.append("s1", cardOf("bugReport")),
+        run: (mgr) => expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(1),
+      },
+      {
+        what: "retireBackgroundSubagentResult rewrites a tool result",
+        seed: (mgr) => mgr.append("s1", {
+          role: "assistant",
+          text: "launched",
+          toolUse: [{ type: "tool_use", id: "toolu_bg1", name: "Agent", input: {} }],
+          toolResults: [{ toolUseId: "toolu_bg1", content: LAUNCH_ACK }],
+        }),
+        run: (mgr) => expect(mgr.retireBackgroundSubagentResult(
+          "s1",
+          { toolUseId: "toolu_bg1", status: "completed", summary: "## Report" },
+          { content: "## Report" },
+        )).not.toBeNull(),
+      },
+      {
+        what: "truncate drops the tail",
+        seed: (mgr) => {
+          mgr.append("s1", { role: "user", text: "one" });
+          mgr.append("s1", { role: "assistant", text: "two" });
+        },
+        run: (mgr) => expect(mgr.truncate("s1", 1)).toHaveLength(1),
+      },
+      {
+        what: "markRolledBackFromIndex greys out a turn",
+        seed: (mgr) => mgr.append("s1", { role: "assistant", text: "rolled back" }),
+        run: (mgr) => expect(mgr.markRolledBackFromIndex("s1", 0, "c0ffee")).toHaveLength(1),
+      },
+      {
+        what: "clearRolledBack restores one",
+        seed: (mgr) => {
+          mgr.append("s1", { role: "assistant", text: "rolled back" });
+          mgr.markRolledBackFromIndex("s1", 0, "c0ffee");
+        },
+        // Row id 1 — the database is fresh for every test in this file.
+        run: (mgr) => mgr.clearRolledBack("s1", [1]),
+      },
+      {
+        what: "deleteMessageById removes a row",
+        seed: (mgr) => mgr.append("s1", { role: "user", text: "gone soon" }),
+        run: (mgr) => expect(mgr.deleteMessageById("s1", 1)).toBe(true),
+      },
+      {
+        what: "delete wipes the session's history",
+        seed: (mgr) => mgr.append("s1", { role: "user", text: "gone soon" }),
+        run: (mgr) => expect(mgr.delete("s1")).toBe(true),
+      },
+    ];
+
+    for (const { what, seed, run } of MUTATIONS) {
+      it(`moves when ${what}`, () => {
+        const mgr = new ChatHistoryManager(dbManager);
+        seed?.(mgr);
+        const before = mgr.transcriptRevision("s1");
+        run(mgr);
+        expect(mgr.transcriptRevision("s1")).toBeGreaterThan(before);
+      });
+    }
+
+    it("is 0 for a session that has never held a message", () => {
+      expect(new ChatHistoryManager(dbManager).transcriptRevision("never-used")).toBe(0);
+    });
+
+    /**
+     * The issue's central subtlety, made executable: a card lifecycle
+     * transition patches its row, so a validator built from the row count and
+     * the largest id would report "unchanged" over a transcript that changed.
+     */
+    it("moves for an in-place patch that leaves MAX(id) and COUNT(*) untouched", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", cardOf("bugReport"));
+      const shape = () => dbManager.db
+        .prepare("SELECT COUNT(*) AS n, MAX(id) AS maxId FROM messages WHERE session_id = ?")
+        .get("s1") as { n: number; maxId: number };
+
+      const before = { revision: mgr.transcriptRevision("s1"), ...shape() };
+      expect(mgr.updateBugReportCard("s1", "b1", { phase: "dismissed" })).toBe(true);
+      const after = { revision: mgr.transcriptRevision("s1"), ...shape() };
+
+      expect(after.n).toBe(before.n);
+      expect(after.maxId).toBe(before.maxId);
+      expect(after.revision).toBeGreaterThan(before.revision);
+      // …and the content really did change, so the assertions above are not
+      // agreeing about a no-op.
+      expect(mgr.load("s1")[0].bugReport?.phase).toBe("dismissed");
+    });
+
+    it("is scoped to the session — another session's writes do not move it", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "mine" });
+      const mine = mgr.transcriptRevision("s1");
+
+      mgr.append("s2", { role: "user", text: "theirs" });
+      mgr.saveMessages("s2", [{ role: "user", text: "theirs, rewritten" }]);
+
+      expect(mgr.transcriptRevision("s1")).toBe(mine);
+      expect(mgr.transcriptRevision("s2")).toBeGreaterThan(0);
+    });
+
+    it("survives the process — it is on disk, not in the manager", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "hello" });
+      expect(new ChatHistoryManager(dbManager).transcriptRevision("s1"))
+        .toBe(mgr.transcriptRevision("s1"));
+    });
+
+    /**
+     * A revision a client already holds must never come back attached to
+     * different content. Deleting a session's rows keeps its counter, so the
+     * rewrite that follows lands on a value nobody has seen.
+     */
+    it("never rewinds when a transcript is deleted and written again", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "first life" });
+      const before = mgr.transcriptRevision("s1");
+
+      mgr.delete("s1");
+      expect(mgr.load("s1")).toEqual([]);
+      mgr.append("s1", { role: "user", text: "second life" });
+
+      expect(mgr.transcriptRevision("s1")).toBeGreaterThan(before);
+    });
+  });
 });

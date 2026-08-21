@@ -1409,6 +1409,56 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "muted_at");
   },
+  // docs/278-conditional-history-refetch (planning#324) — a per-session counter that
+  // moves whenever the session's persisted transcript is written, so
+  // `GET /history` can answer "unchanged" without materializing the transcript
+  // to hash it.
+  //
+  // ## Why triggers rather than a bump in `ChatHistoryManager`
+  //
+  // The validator is only worth anything if it moves on EVERY write, and the
+  // writes are spread over ~20 methods plus several ad-hoc `db.prepare(...)`
+  // statements in that class and a `DELETE FROM messages` in `clearAll` below.
+  // A TypeScript-side bump is one forgotten call site away from serving a stale
+  // transcript, and the failure is silent — the client is told nothing changed
+  // and simply never sees the change. Attached to the table, the counter cannot
+  // be missed: a path that writes a row moves it, including paths written after
+  // this migration and raw SQL that never goes near the manager.
+  //
+  // ## Why a counter rather than MAX(id) + COUNT(*)
+  //
+  // Card lifecycle transitions (`updateBugReportCard`, `updatePermissionCard`,
+  // `updateEgressPromptCard`, `updateIssueWriteCard`, `upsertReleaseCard`,
+  // `updateSubAgentConsultCard`) patch a row IN PLACE, so the row count and the
+  // largest id are both unchanged while the content is not. The UPDATE trigger
+  // is what covers them.
+  //
+  // Rows are keyed by session and outlive the session's messages on purpose: a
+  // session whose transcript is deleted and rewritten must not reuse a revision
+  // a client already holds.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS transcript_revisions (
+        session_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL
+      );
+
+      CREATE TRIGGER IF NOT EXISTS messages_revision_insert AFTER INSERT ON messages BEGIN
+        INSERT INTO transcript_revisions (session_id, revision) VALUES (NEW.session_id, 1)
+          ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS messages_revision_update AFTER UPDATE ON messages BEGIN
+        INSERT INTO transcript_revisions (session_id, revision) VALUES (NEW.session_id, 1)
+          ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS messages_revision_delete AFTER DELETE ON messages BEGIN
+        INSERT INTO transcript_revisions (session_id, revision) VALUES (OLD.session_id, 1)
+          ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
+      END;
+    `);
+  },
 ];
 
 /**
@@ -1493,6 +1543,10 @@ export class DatabaseManager {
   clearAll(): void {
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM messages").run();
+      // planning#324 — AFTER the messages delete, never before: deleting the rows
+      // fires the revision triggers, which would re-create every row this
+      // statement had just removed.
+      this.db.prepare("DELETE FROM transcript_revisions").run();
       this.db.prepare("DELETE FROM usage_turns").run();
       this.db.prepare("DELETE FROM sessions").run();
       this.db.prepare("DELETE FROM repos").run();
