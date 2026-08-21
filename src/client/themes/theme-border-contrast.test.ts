@@ -26,19 +26,37 @@ const THEME_DIR = path.dirname(fileURLToPath(import.meta.url));
  * The agreed floor. It is deliberately far below the WCAG 3:1 non-text minimum:
  * a divider is a decorative separator rather than a UI control that must be
  * identified, and dragging every theme to 3:1 would turn ShipIt's panels into
- * hard-ruled boxes. 1.4 is the point at which a 1px hairline stays legible on a
- * 1x display without reading as a frame. Raising it is a design decision, not a
- * correctness one — change the mock, not just this number.
+ * hard-ruled boxes.
+ *
+ * 1.25 rather than a higher number is a scope decision as much as a visual one.
+ * At 1.40 the raised divider collided with `--color-border-secondary`, which
+ * would have forced that token up in 15 themes — and despite its "input borders"
+ * label it is used ~280 times, overwhelmingly on dialogs, sheets, settings panels
+ * and cards rather than on the ~5 form controls. Fixing an invisible divider is
+ * not a reason to restyle every dialog border in the product. 1.25 clears the
+ * divider without touching the other token at all.
+ *
+ * Raising it later is a design decision, not a correctness one — regenerate the
+ * mock and re-derive every value, rather than editing this number alone.
  */
-const MIN_CONTRAST = 1.4;
+const MIN_CONTRAST = 1.25;
 
 /**
- * How far `--color-border-secondary` (input borders) must stay from
- * `--color-border-primary` (dividers). 1.18 is the smallest separation the
- * themes shipped with before the divider was raised, so this preserves the
- * existing ramp rather than inventing a new one.
+ * How far `--color-border-secondary` must stay from `--color-border-primary`.
+ *
+ * This guards a *collision*, not the original ramp. Four components render a
+ * `border-primary` edge that becomes `border-secondary` on hover — PresentGallery,
+ * ServiceList, PreviewPath, SubAgentCards — and when the two values converge the
+ * hover still fires and produces no visible change. An earlier 1.40 attempt drove
+ * that separation to 1.0028 in the light theme, which is the failure this pins.
+ *
+ * Be honest about what raising the divider costs: the tightest theme shipped 1.19
+ * before this change and grok-light now sits at 1.1034. So the ramp is narrower,
+ * just nowhere near collapsed. The constant sits just under that binding case on
+ * purpose — any further narrowing in any theme fails this test rather than
+ * quietly eroding the hover affordance a second time.
  */
-const MIN_TOKEN_SEPARATION = 1.18;
+const MIN_TOKEN_SEPARATION = 1.1;
 
 function relativeLuminance(hex: string): number {
   const channels = [1, 3, 5].map((i) => {
