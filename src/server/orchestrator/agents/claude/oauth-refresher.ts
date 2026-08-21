@@ -22,6 +22,21 @@
  * shape, error handling). We just spawn it and observe its file-write to know
  * whether the rotation succeeded.
  *
+ * **The orchestrator is not the only refresher, and never was.** docs/153's
+ * original design says sessions "never trigger their own refresh" because the
+ * orchestrator always wins the race on a 45-minute lead. That reasoning covers
+ * a session under a TURN. It stopped covering anything once agent processes
+ * became resident: a streaming CLI outlives its turn by hours and refreshes on
+ * its own schedule, and Anthropic's refresh tokens are single-use, so such a
+ * rotation silently invalidates the copy on the account root. The tick that
+ * then spends that copy cannot succeed — and worse, the CLI responds to it by
+ * BLANKING the account's credentials file, which the next tick reads as
+ * `missing_credentials` and turns into a sign-in prompt. Roughly daily, per
+ * account. So every tick begins by HARVESTING (see
+ * {@link ClaudeOAuthRefresher.harvestSessionRotations}): if any session pinned
+ * to this account holds a token newer than the source, adopt it and treat that
+ * as the rotation. Spend nothing until the source is known to be current.
+ *
  * See docs/153-orchestrator-owned-claude-oauth-refresh/plan.md.
  */
 
@@ -35,12 +50,27 @@ import { killChild } from "../../../shared/kill-child.js";
 import type { AgentId } from "../../../shared/types.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import type { RuntimeMode } from "../../app-di.js";
+import {
+  perSessionCredentialsDir,
+  readSessionAccountMarker,
+  sessionCredentialsRoot,
+} from "../../session-credentials-scaffold.js";
+import {
+  sessionTokenIsAheadOfSource,
+  syncProviderAccountTokenBack,
+} from "../../token-sync-manager.js";
 
 /**
  * How far before the encoded `expiresAt` to fire a refresh tick during normal
  * operation. Picked generously — well above any plausible session-side
- * "near expiry" heuristic the CLI might use — so the orchestrator always wins
- * the race and sessions never trigger their own refresh.
+ * "near expiry" heuristic the CLI might use — so the orchestrator wins the
+ * race for a session that is under a turn.
+ *
+ * It does NOT make sessions stop refreshing, and the original wording here
+ * ("sessions never trigger their own refresh") was read as a guarantee for
+ * years after it stopped being one. A resident CLI runs on its own clock with
+ * no turn in view, so no lead time the orchestrator picks can preempt it; the
+ * harvest, not this margin, is what keeps the source current.
  *
  * Bumped from 30→45 min after the first prod deploy: tier 1 (`claude auth
  * status --json`) is read-only by design, so every healthy rotation goes
@@ -119,6 +149,80 @@ const TERMINAL_AUTH_FAILURE_PATTERNS = [
 /** Sentinel for "no credentials on disk" (file missing or unparseable). */
 const NO_EXPIRY = null;
 
+/** Upper bound on a logged CLI-output excerpt. Long enough to name a cause. */
+const REASON_MAX_CHARS = 300;
+
+/** Lines worth keeping when excerpting CLI output for a failed tick. */
+const FAILURE_SIGNAL_PATTERN =
+  /(error|invalid|denied|forbidden|unauthor|rate[ _-]?limit|429|401|403|timeout|refus|fail|expired)/i;
+
+/**
+ * Strip anything token-shaped before a CLI excerpt reaches a log line.
+ *
+ * The excerpt's source includes the `--debug api` capture, which carries
+ * request headers and response bodies — so this is not defence-in-depth, it is
+ * the only thing standing between a bearer token and the orchestrator log.
+ * Deliberately over-broad: the last rule redacts ANY opaque run of 40+ token
+ * characters, which costs an occasional mangled request id and cannot miss a
+ * credential shape nobody thought to enumerate.
+ */
+function redactSecrets(text: string): string {
+  return text
+    .replace(/("[A-Za-z_]*(?:token|secret|key|password)[A-Za-z_]*"\s*:\s*")[^"]*"/gi, '$1[redacted]"')
+    .replace(/\b(bearer\s+)\S+/gi, "$1[redacted]")
+    .replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]");
+}
+
+/**
+ * A safe, single-line excerpt of what the CLI said on a tick that did not
+ * rotate — the field whose absence made the daily-reconnect bug take a day of
+ * production forensics to diagnose. `unknown_failure` was logged with a count
+ * and nothing else, so four consecutive ticks that each spawned a billable
+ * Haiku call and each failed for a knowable reason were indistinguishable in
+ * the log from any other failure.
+ *
+ * Prefers lines carrying a {@link FAILURE_SIGNAL_PATTERN} and takes the LAST
+ * few of them: the CLI's own final complaint says more than its banner.
+ */
+export function summarizeRefreshFailure(combinedOutput: string): string {
+  const lines = redactSecrets(combinedOutput)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const signal = lines.filter((line) => FAILURE_SIGNAL_PATTERN.test(line));
+  const joined = (signal.length > 0 ? signal : lines).slice(-3).join(" | ").replace(/\s+/g, " ");
+  if (!joined) return "no CLI output";
+  return joined.length > REASON_MAX_CHARS ? `${joined.slice(0, REASON_MAX_CHARS - 1)}…` : joined;
+}
+
+/**
+ * Why a source credential carries no usable expiry. `missing_credentials`
+ * conflated two states that call for different responses and look identical in
+ * a log:
+ *
+ *   - **`missing`** — no file. The user signed out, or the account was reset.
+ *   - **`blanked`** — the CLI rewrote the file with every token emptied
+ *     (`{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,…}}`).
+ *     That is what it does when asked to refresh with a grant the OAuth server
+ *     has already spent, and it is the terminal step of the daily-reconnect
+ *     bug — so seeing it named in a log is the difference between "the user
+ *     signed out" and "we just destroyed a live account's credentials".
+ *   - **`unreadable`** — a file that is neither: truncated, foreign, or a
+ *     shape this reader does not know. Never assumed to be empty.
+ */
+interface UnusableSource {
+  kind: "missing" | "blanked" | "unreadable";
+  detail: string;
+}
+
+/** A rotation adopted from a session's own CLI. See `harvestSessionRotations`. */
+interface HarvestResult {
+  sessionId: string;
+  before: number | null;
+  after: number;
+}
+
 /**
  * Public outcome classifications for a single refresh tick. Returned from
  * `refreshNow()` and surfaced in logs.
@@ -126,6 +230,7 @@ const NO_EXPIRY = null;
 export type RefreshOutcome =
   | "rotated_tier1"           // claude auth status rotated the token
   | "rotated_tier2"            // billable Haiku fallback rotated the token
+  | "harvested_session"        // a session's resident CLI had already rotated; we adopted its token
   | "noop"                     // token wasn't near expiry; nothing to do
   | "rate_limited"             // a 429 was observed (or inferred from no-rotation in the dead-token state)
   | "revoked"                  // invalid_grant — refresh token is dead
@@ -477,18 +582,34 @@ export class ClaudeOAuthRefresher extends EventEmitter {
   private async executeTick(accountId: string, force = false): Promise<RefreshResult> {
     const state = this.ensureAccountState(accountId);
     const accountRoot = this.deps.providerAccountManager.resolveCredentialRoot("claude", accountId);
-    const sourceFile = path.join(accountRoot, CLAUDE_CREDENTIALS_RELATIVE);
+    const sourceFile = this.sourceFileFor(accountId);
+
+    // HARVEST BEFORE SPEND. A session's resident CLI may have rotated this
+    // account's single-use refresh token since the last tick, which makes our
+    // copy dead on arrival — see the module docstring. Adopting is both the
+    // repair and the rotation: nothing upstream needs to be asked for a token
+    // that already exists on this disk. Runs even on the `force` (401
+    // recovery) path, where it is the *most* likely resolution — a session
+    // 401s precisely because a sibling rotated out from under it.
+    const harvest = this.harvestSessionRotations(accountId);
+    if (harvest) {
+      return this.handleSuccess(accountId, harvest.before, harvest.after, "harvested_session");
+    }
 
     const before = this.readSourceExpiresAt(accountId);
     if (before === NO_EXPIRY) {
+      const unusable = this.describeUnusableSource(sourceFile);
       const result: RefreshResult = {
         outcome: "missing_credentials",
         accountId,
         beforeExpiresAt: null,
         afterExpiresAt: null,
-        reason: `source file missing or unparseable at ${sourceFile}`,
+        reason: unusable.detail,
       };
-      console.log(`[claude-oauth-refresh] account=${accountId} missing_credentials — waiting for auth_complete`);
+      console.log(
+        `[claude-oauth-refresh] account=${accountId} missing_credentials — waiting for auth_complete`
+          + ` source=${unusable.kind} detail=${unusable.detail}`,
+      );
       // An existing account with no usable source cannot run turns. Treat this
       // like terminal revocation so persistence, routing, and Settings all
       // stop advertising the exact account as ready. emitUnauthenticated is
@@ -588,9 +709,9 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    */
   private handleSuccess(
     accountId: string,
-    before: number,
+    before: number | null,
     after: number,
-    outcome: "rotated_tier1" | "rotated_tier2",
+    outcome: "rotated_tier1" | "rotated_tier2" | "harvested_session",
   ): RefreshResult {
     const state = this.ensureAccountState(accountId);
     state.failureCount = 0;
@@ -600,6 +721,11 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       `[claude-oauth-refresh] account=${accountId} ${outcome} new_expires_at=${new Date(after).toISOString()}`,
     );
     try {
+      // Unconditional by design (docs/142 A3) — including onto the session a
+      // harvest just adopted FROM. That is safe only because the harvest ran
+      // first: the source now holds that session's own token, so the push is
+      // byte-identical there and genuinely repairs every OTHER pinned session,
+      // each of which is holding the copy the rotation invalidated upstream.
       this.deps.repushAccountToken("claude", accountId);
     } catch (err) {
       console.error(`[claude-oauth-refresh] account=${accountId} repush failed:`, err);
@@ -645,6 +771,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     const state = this.ensureAccountState(accountId);
     state.failureCount += 1;
     const lc = combinedOutput.toLowerCase();
+    const reason = summarizeRefreshFailure(combinedOutput);
     const isRateLimited =
       lc.includes("429") || lc.includes("rate_limit") || lc.includes("rate limited");
     const isRevoked = this.outputIndicatesRevoked(combinedOutput);
@@ -663,9 +790,14 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       };
     }
 
+    // Both remaining classifications append `reason=` to the sentence they have
+    // always printed rather than rewording it: an incident was diagnosed by
+    // grepping these lines, and a runbook that stops matching is worse than a
+    // missing field. The excerpt is redacted — see {@link summarizeRefreshFailure}.
     if (isRateLimited) {
       console.log(
-        `[claude-oauth-refresh] account=${accountId} rate_limited failure_count=${state.failureCount} — backoff scheduled`,
+        `[claude-oauth-refresh] account=${accountId} rate_limited failure_count=${state.failureCount} — backoff scheduled`
+          + ` reason="${reason}"`,
       );
       this.scheduleBackoff(accountId, RATE_LIMIT_BACKOFF_MS);
       return {
@@ -673,12 +805,13 @@ export class ClaudeOAuthRefresher extends EventEmitter {
         accountId,
         beforeExpiresAt: before,
         afterExpiresAt: after,
-        reason: "rate_limit",
+        reason,
       };
     }
 
     console.log(
-      `[claude-oauth-refresh] account=${accountId} unknown_failure failure_count=${state.failureCount} — short backoff`,
+      `[claude-oauth-refresh] account=${accountId} unknown_failure failure_count=${state.failureCount} — short backoff`
+        + ` reason="${reason}"`,
     );
     this.scheduleBackoff(accountId, GENERIC_BACKOFF_MS);
     return {
@@ -686,7 +819,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       accountId,
       beforeExpiresAt: before,
       afterExpiresAt: after,
-      reason: combinedOutput.slice(0, 200) || "no CLI output",
+      reason,
     };
   }
 
@@ -818,14 +951,141 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     } catch { /* best-effort */ }
   }
 
+  // ---- harvest (adopt a session's own rotation) ----
+
+  /**
+   * Bring the source up to date from the sessions that share it, and report the
+   * rotation if that moved anything.
+   *
+   * The premise the rest of this file rests on — that the orchestrator is the
+   * only thing refreshing this account — is false for a RESIDENT CLI, which
+   * keeps running between turns and refreshes on its own clock. Because
+   * Anthropic's refresh tokens are single-use, such a rotation leaves the
+   * account root holding a grant the OAuth server has already spent: every
+   * later tick is doomed, and the tier-2 spend is what makes the CLI blank the
+   * source file and take the account down. So the source is reconciled with
+   * the sessions BEFORE anything is spent.
+   *
+   * Which sessions count: exactly those whose subtree marker (docs/260) names
+   * this account. The marker is the subtree's own recorded identity — token
+   * bytes cannot answer whose they are — so a session on another account, or
+   * one whose subtree is lent to a sub-agent's account, is never read here.
+   *
+   * The write is the ordinary write-back, guards included: `sessionOwnRoute`
+   * says the account is the SESSION'S own (the marker we just matched, the
+   * same authority `finalizeSessionAgentEnvironment` falls back to), which
+   * makes the call refuse for the whole of any sub-agent borrow rather than
+   * publish a borrowed account's bearer. The freshness guard inside decides
+   * every copy, so iterating all candidates converges on the newest one and a
+   * stale copy can never win.
+   */
+  private harvestSessionRotations(accountId: string): HarvestResult | null {
+    const credentialsDir = this.deps.credentialsDir;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(sessionCredentialsRoot(credentialsDir), { withFileTypes: true });
+    } catch {
+      return null; // no per-session subtrees at all — nothing to harvest from
+    }
+    const candidates = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((sessionId) => readSessionAccountMarker(credentialsDir, sessionId).claude === accountId);
+    if (candidates.length === 0) return null;
+
+    const before = this.readSourceExpiresAt(accountId);
+    this.clearBlankedSource(accountId, candidates);
+
+    let best = this.readSourceExpiresAt(accountId);
+    let adoptedFrom: string | null = null;
+    for (const sessionId of candidates) {
+      if (!sessionTokenIsAheadOfSource(credentialsDir, sessionId, "claude", accountId)) continue;
+      try {
+        syncProviderAccountTokenBack(credentialsDir, sessionId, "claude", accountId, { sessionOwnRoute: true });
+      } catch (err) {
+        console.warn(`[claude-oauth-refresh] account=${accountId} harvest from session ${sessionId} failed:`, err);
+        continue;
+      }
+      const after = this.readSourceExpiresAt(accountId);
+      if (after === NO_EXPIRY) continue;
+      if (best !== NO_EXPIRY && after <= best) continue; // the write-back declined; keep looking
+      best = after;
+      adoptedFrom = sessionId;
+    }
+    if (adoptedFrom === null || best === NO_EXPIRY) return null;
+    console.log(
+      `[claude-oauth-refresh] account=${accountId} harvested a session-side rotation from ${adoptedFrom}`
+        + ` was=${before === NO_EXPIRY ? "none" : new Date(before).toISOString()}`
+        + ` now=${new Date(best).toISOString()}`,
+    );
+    return { sessionId: adoptedFrom, before, after: best };
+  }
+
+  /**
+   * Remove a source file the CLI has BLANKED, so a harvest can replace it.
+   *
+   * A blanked file holds `""` for every token, so deleting it destroys no
+   * credential — but it still parses as a structured credential, and the
+   * write-back's `unorderable` guard (planning#449) therefore refuses to
+   * overwrite it. That guard is right in general: it exists so a freshness
+   * reader that has stopped matching its CLI cannot bury a live token. It is
+   * wrong for exactly this file, which says in its own bytes that it holds
+   * nothing.
+   *
+   * Narrow on purpose. It fires only when the file explicitly carries empty
+   * tokens (a truncated or unfamiliar file reads as `unreadable` and is left
+   * alone), and only when a session pinned to this account holds a token that
+   * is still LIVE — so the account is never left worse off than the blanked
+   * state it was already in.
+   */
+  private clearBlankedSource(accountId: string, candidates: readonly string[]): void {
+    if (this.readSourceExpiresAt(accountId) !== NO_EXPIRY) return;
+    const file = this.sourceFileFor(accountId);
+    if (this.describeUnusableSource(file).kind !== "blanked") return;
+    const now = this.deps.now();
+    const replacement = candidates.find((sessionId) => {
+      const expiresAt = this.readClaudeExpiresAt(this.sessionTokenFileFor(sessionId));
+      return expiresAt !== NO_EXPIRY && expiresAt > now;
+    });
+    if (replacement === undefined) return;
+    try {
+      fs.rmSync(file, { force: true });
+      console.log(
+        `[claude-oauth-refresh] account=${accountId} removed the blanked source credential`
+          + ` so session ${replacement}'s live token can replace it`,
+      );
+    } catch (err) {
+      console.warn(`[claude-oauth-refresh] account=${accountId} could not remove the blanked source:`, err);
+    }
+  }
+
+  // ---- source-file reads ----
+
+  /** The account's own credential file — the token every session is served from. */
+  private sourceFileFor(accountId: string): string {
+    const accountRoot = this.deps.providerAccountManager.resolveCredentialRoot("claude", accountId);
+    return path.join(accountRoot, CLAUDE_CREDENTIALS_RELATIVE);
+  }
+
+  /** One session's copy of that credential. */
+  private sessionTokenFileFor(sessionId: string): string {
+    return path.join(
+      perSessionCredentialsDir(this.deps.credentialsDir, sessionId),
+      CLAUDE_CREDENTIALS_RELATIVE,
+    );
+  }
+
   /**
    * Read the encoded `expiresAt` (epoch ms) from the account's source token
    * file. Returns null if the file is missing, unparseable, or carries no
    * expiry value — which the caller treats as "no usable token, don't act."
    */
   private readSourceExpiresAt(accountId: string): number | null {
-    const accountRoot = this.deps.providerAccountManager.resolveCredentialRoot("claude", accountId);
-    const file = path.join(accountRoot, CLAUDE_CREDENTIALS_RELATIVE);
+    return this.readClaudeExpiresAt(this.sourceFileFor(accountId));
+  }
+
+  /** {@link readSourceExpiresAt} for any Claude credential file. */
+  private readClaudeExpiresAt(file: string): number | null {
     try {
       const raw = fs.readFileSync(file, "utf8");
       const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -837,6 +1097,31 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       }
     } catch { /* missing/invalid */ }
     return null;
+  }
+
+  /** Why a source file carries no usable expiry. See {@link UnusableSource}. */
+  private describeUnusableSource(file: string): UnusableSource {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch {
+      return { kind: "missing", detail: `source file missing at ${file}` };
+    }
+    let oauth: Record<string, unknown> | undefined;
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      oauth = parsed.claudeAiOauth as Record<string, unknown> | undefined;
+    } catch {
+      return { kind: "unreadable", detail: `source file at ${file} is not parseable JSON` };
+    }
+    const isEmpty = (value: unknown): boolean => value === undefined || value === null || value === "";
+    if (oauth && isEmpty(oauth.accessToken) && isEmpty(oauth.refreshToken)) {
+      return {
+        kind: "blanked",
+        detail: `the CLI blanked the source at ${file} (empty accessToken/refreshToken, expiresAt=0)`,
+      };
+    }
+    return { kind: "unreadable", detail: `source file at ${file} carries no usable expiry` };
   }
 
   private ensureAccountState(accountId: string): AccountState {

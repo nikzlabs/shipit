@@ -299,6 +299,16 @@ The close is identity before ordering, on the record that already exists:
   here and there is nothing of that account's to publish. `syncAgentTokenBack`
   carries the mirror rule — a subtree that names any account may not publish to
   the flat root.
+- **The marker also decides which subtrees an account may HARVEST from**
+  (planning#462, and see docs/153's *Rotations between turns*). The Claude OAuth
+  refresher reconciles an account's source with its sessions' copies before
+  spending its refresh token, because a resident CLI rotates between turns; it
+  selects the subtrees to read by this marker, for the same reason the write
+  side checks it — token bytes cannot say whose they are. Same refusals, same
+  direction: it publishes through `syncProviderAccountTokenBack` with
+  `sessionOwnRoute` on the marker's authority, so a borrow in flight refuses the
+  whole window and an unmarked subtree is never guessed at. It is a fifth
+  reader, not a new rule.
 
 **The concurrent-borrow gap was not bounded, and it cost an account
 (2026-08-19, planning#445).** This section used to close by arguing that
@@ -532,7 +542,7 @@ plus, at most, the running-turn wait message.
 | Router + refusal memory | `provider-account-manager.ts`, `credential-store.ts`, `service-routing.ts` |
 | Attempt loop | `turn-executor.ts`, `ws-handlers/agent-listeners.ts`, `ws-handlers/agent-rate-limits.ts` |
 | Env-prep / provisioning | `session-agent-env.ts`, `token-sync-manager.ts`, `session-credentials.ts` |
-| Subtree account marker (§4b) | `session-credentials-scaffold.ts` (definition — the token sync reads it without a cycle), `session-agent-credentials.ts` (re-export + writers), `session-token-publisher.ts`, `services/sub-agent.ts`, `services/non-turn-work.ts` |
+| Subtree account marker (§4b) | `session-credentials-scaffold.ts` (definition — the token sync reads it without a cycle), `session-agent-credentials.ts` (re-export + writers), `session-token-publisher.ts`, `services/sub-agent.ts`, `services/non-turn-work.ts`, `agents/claude/oauth-refresher.ts` (harvest scope, planning#462) |
 | Borrow ledger + marker repair (§4b, planning#445) | `session-credentials-scaffold.ts` (`beginSubtreeBorrow`/`endSubtreeBorrow`/`subtreeBorrowInFlight`), `session-agent-credentials.ts` (`releaseSubAgentCredentials`), `token-sync-manager.ts` (`sessionOwnRoute`) |
 | Process identity / capture | `ws-handlers/agent-execution.ts`, `runner-registry-factory.ts`, `bootstrap-managers.ts`, `session/agent-controller.ts` + `shared/types/agent-types.ts` (worker status route echo), `usage.ts` + `shared/database.ts` (attribution column) |
 | Dispatched / warm-up entry points | `dispatched-turn.ts`, `resident-spawn-guard.ts`, `services/github-ci-fix.ts`, `wake-session.ts`, `services/headless-sessions.ts`, `services/child-sessions.ts`, `services/sub-agent.ts` |

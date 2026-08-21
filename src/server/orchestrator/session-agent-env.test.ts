@@ -53,6 +53,13 @@ class FakeContainerRunner extends EventEmitter {
   residentRoute?: { kind: "account" | "reserved"; id: string };
   /** planning#353 — the viewer-facing messages env-prep sends. */
   emitted: { type: string; [k: string]: unknown }[] = [];
+  /**
+   * docs/153 — a CLI process still resident after the turn. It decides whether
+   * turn end may tear the token write-back watch down: a streaming process
+   * outlives its turn and rotates the OAuth token on its own clock.
+   */
+  residentAgent: object | null = null;
+  getAgent(): object | null { return this.residentAgent; }
   async tryPushAgentSecrets(values: Record<string, string>): Promise<void> {
     this.pushed.push(values);
   }
@@ -1615,7 +1622,7 @@ describe("mid-turn token write-back watch wiring", () => {
     return { runner, sm };
   }
 
-  it("arms on the turn's own pre-spawn step and disarms at turn end", async () => {
+  it("arms on the turn's own pre-spawn step and disarms at turn end when no CLI survives it", async () => {
     const { runner, sm } = await prep({ enforceAccountRouting: true });
     expect(hasTokenWriteBackWatch("s1")).toBe(true);
 
@@ -1624,6 +1631,45 @@ describe("mid-turn token write-back watch wiring", () => {
       agentId: "claude",
       deps: { credentialsDir: tmpDir, credentialStore: makeFakeCredentialStore(), sessionManager: sm },
     });
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
+  // docs/153 — the daily-reconnect bug. A resident `claude --print
+  // --input-format stream-json` process outlives its turn and refreshes the
+  // shared single-use refresh token hours later, with no turn in view. Turn end
+  // used to stop watching regardless, so that rotation reached nothing and the
+  // next refresher tick spent a token Anthropic had already invalidated.
+  it("keeps the watch alive past turn end while a CLI process is still resident", async () => {
+    const { runner, sm } = await prep({ enforceAccountRouting: true });
+    runner.residentAgent = { pid: 80 };
+
+    finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore: makeFakeCredentialStore(), sessionManager: sm },
+    });
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+
+    // ...and the runner's own teardown is what finally stops it.
+    runner.emit("disposed");
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
+  it("drops the surviving watch at the next turn end once the process is gone", async () => {
+    const { runner, sm } = await prep({ enforceAccountRouting: true });
+    runner.residentAgent = { pid: 80 };
+    const finalize = (): void => {
+      finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        deps: { credentialsDir: tmpDir, credentialStore: makeFakeCredentialStore(), sessionManager: sm },
+      });
+    };
+    finalize();
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+
+    runner.residentAgent = null; // the CLI exited
+    finalize();
     expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });
 
