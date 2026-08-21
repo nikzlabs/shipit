@@ -237,7 +237,10 @@ export function PreviewToolbar({
             {deviceFrameActive && (
               <span className="text-(--color-text-tertiary) tabular-nums group-data-[hide-viewport=true]/ptb:hidden">
                 {deviceWidth}×{deviceHeight}
-                {deviceScale < 1 && (
+                {/* Test the DISPLAYED integer, not the raw scale: a scale of
+                    0.996 rounds to 100, and "(100%)" reads as noise rather
+                    than information — the honest label for it is no label. */}
+                {deviceScalePercent < 100 && (
                   <span className="ml-1 text-(--color-text-tertiary)">({deviceScalePercent}%)</span>
                 )}
               </span>

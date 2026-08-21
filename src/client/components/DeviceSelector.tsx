@@ -54,6 +54,21 @@ export function DeviceSelector({
   const [customHeightInput, setCustomHeightInput] = useState<string>(
     String(customSize?.height ?? 844),
   );
+  // The inputs seed from the store once, at mount — but this component stays
+  // mounted while a session switch restores another session's snapshot into
+  // the same store fields (both sessions running = `isRunning` never drops).
+  // Adjusting state during render — not an effect, which this file's lint
+  // rules restrict and which would paint one stale frame anyway — keeps the
+  // dropdown offering the CURRENT session's size as its starting point.
+  // Nothing writes `customSize` while the user is mid-typing: the only other
+  // writer is Apply itself, which closes the menu.
+  const [syncedSize, setSyncedSize] = useState(customSize);
+  if ((syncedSize?.width ?? null) !== (customSize?.width ?? null)
+    || (syncedSize?.height ?? null) !== (customSize?.height ?? null)) {
+    setSyncedSize(customSize);
+    setCustomWidthInput(String(customSize?.width ?? 390));
+    setCustomHeightInput(String(customSize?.height ?? 844));
+  }
 
   const phones = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "phone"), []);
   const tablets = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "tablet"), []);

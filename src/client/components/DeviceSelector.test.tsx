@@ -173,6 +173,20 @@ describe("DeviceSelector", () => {
     expect(onCustomSize).toHaveBeenCalledWith(100, 2560);
   });
 
+  it("follows a custom size that changed externally while mounted (session switch)", async () => {
+    const user = userEvent.setup();
+    // Both sessions running: restoring the other session's snapshot swaps
+    // `customSize` in the store without this component ever unmounting, so
+    // the inputs must track the prop instead of their mount-time seed.
+    const first = { id: "custom", label: "500×900", width: 500, height: 900, category: "custom" as const };
+    const { rerender } = render(<DeviceSelector {...baseProps} activePreset={first} customSize={{ width: 500, height: 900 }} />);
+    const second = { id: "custom", label: "320×700", width: 320, height: 700, category: "custom" as const };
+    rerender(<DeviceSelector {...baseProps} activePreset={second} customSize={{ width: 320, height: 700 }} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(320);
+    expect(screen.getByLabelText("Custom height")).toHaveValue(700);
+  });
+
   it("renders preset dimensions in the menu", async () => {
     const user = userEvent.setup();
     render(<DeviceSelector {...baseProps} />);

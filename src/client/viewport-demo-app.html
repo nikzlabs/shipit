@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Viewport demo target</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; place-items: center;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    transition: background-color .25s ease;
+    color: #111;
+  }
+  @media (max-width: 479px) { body { background: #fde68a; } } /* amber-200 */
+  @media (min-width: 480px) and (max-width: 767px) { body { background: #bbf7d0; } } /* green-200 */
+  @media (min-width: 768px) and (max-width: 1023px) { body { background: #bfdbfe; } } /* blue-200 */
+  @media (min-width: 1024px) { body { background: #ddd6fe; } } /* violet-200 */
+  main { text-align: center; }
+  h1 { font-size: 2rem; margin: 0 0 .25rem; font-variant-numeric: tabular-nums; }
+  p  { margin: 0; opacity: .75; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="size">–</h1>
+  <p id="bp">breakpoint: –</p>
+</main>
+<script>
+  const sizeEl = document.getElementById("size");
+  const bpEl = document.getElementById("bp");
+  function render() {
+    sizeEl.textContent = window.innerWidth + " × " + window.innerHeight;
+    const w = window.innerWidth;
+    bpEl.textContent = "breakpoint: " + (w < 480 ? "sm" : w < 768 ? "md" : w < 1024 ? "lg" : "xl");
+  }
+  addEventListener("resize", render);
+  render();
+</script>
+</body>
+</html>

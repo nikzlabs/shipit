@@ -1729,6 +1729,32 @@ describe("PreviewFrame", () => {
     }
   });
 
+  it("shows no percentage when the scale rounds up to 100", async () => {
+    // iPhone SE landscape renders 667×375. An 852×406 panel gives
+    // scale = min(1, (852-32)/667, (406-32)/375) ≈ 0.9967 — genuinely scaled,
+    // but the DISPLAYED integer rounds to 100, and a "(100%)" label would be
+    // noise. The honest label for it is no label.
+    const widthSpy = vi.spyOn(HTMLDivElement.prototype, "clientWidth", "get").mockReturnValue(852);
+    const heightSpy = vi.spyOn(HTMLDivElement.prototype, "clientHeight", "get").mockReturnValue(406);
+    try {
+      const preset = findPresetById("iphone-se")!;
+      usePreviewStore.setState({ devicePreset: preset, isLandscape: true, customSize: null });
+      const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+      render(<PreviewFrame preview={preview} {...defaultProps} />);
+      const iframe = await screen.findByTitle("Live Preview");
+      const match = /scale\(([^)]+)\)/.exec(iframe.style.transform);
+      expect(match).not.toBeNull();
+      const scale = Number(match![1]);
+      // The case itself: really below 1, yet rounding up to a displayed 100.
+      expect(scale).toBeGreaterThanOrEqual(0.995);
+      expect(scale).toBeLessThan(1);
+      expect(screen.queryByText(/\(\d+%\)/)).not.toBeInTheDocument();
+    } finally {
+      widthSpy.mockRestore();
+      heightSpy.mockRestore();
+    }
+  });
+
   // ---- Phase 5: missing-secrets banner ----
 
   it("shows missing-secrets banner when missingRequired is non-empty", () => {
