@@ -121,6 +121,12 @@ None.
 Where each requirement came from, and what the retired ones said. Numbers are
 stable and never reused.
 
+The retired entries below **summarise** each requirement rather than reproducing
+it in full — enough to see what was asked and why it went. The verbatim text of
+every one is in git history (`git log -p -- docs/271-agent-install-trust-boundary/requirements.md`);
+an earlier revision of this section claimed the full text was preserved here,
+which was not true.
+
 | # | Source |
 |---|---|
 | 1 | Requester, 2026-08-21, in these words. **Replaced** the original req 1 (below). |

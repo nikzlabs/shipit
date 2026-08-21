@@ -499,9 +499,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // down while the worker is part-way through `npm ci`, and `dispose()`
       // resolves the completion `unverified` — correct, nothing was observed,
       // but it means nothing downstream can tell a half-installed tree from a
-      // finished one. Same shape as the post-turn hold above: the answer to "is
-      // this runner busy?" and the answer to "may it be disposed?" must not be
-      // able to disagree.
+      // finished one.
+      //
+      // **This filters, it does not guarantee.** Unlike `_postTurnHold` above,
+      // `_installInFlight` is NOT also checked by `dispose()`, so the two
+      // answers CAN disagree: a reclaim pass that reads `agentBusy` as false,
+      // then starts an install during its own pacing window, then calls a
+      // non-forced `dispose()`, is accepted. An earlier revision of this comment
+      // claimed the invariant rather than the filter, which was simply false of
+      // the code. Closing it properly needs a BOUNDED hold — an unbounded
+      // `dispose()` guard would let one wedged install pin a container forever,
+      // which is the exact failure `post-turn-hold.ts` exists to avoid. Owner:
+      // planning#465.
       || this._installInFlight;
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }

@@ -42,7 +42,11 @@ ShipIt to withhold anything — along with 7, 8 and 11. Full history is in
 
 ## What the removal took with it
 
-- `agent-install-gate.ts` and its two test files.
+- `agent-install-gate.ts` and `agent-install-gate.test.ts`. (A second test
+  file, `install-acceptance-gate.test.ts`, was written and deleted on this same
+  branch, so it does not appear in the diff against `main` — the shipped
+  inventory is one module and one test file, plus the gate-specific tests removed
+  from `container-session-runner.test.ts`, which survives.)
 - The gate call, acceptance record (`.install-accepted`), auto-replay, withheld
   reporting and failed-write refusal in `container-session-runner.ts`.
 - The gate + record in `warm-pool-manager.ts`'s `runPreInstall`.
@@ -75,9 +79,16 @@ stand on their own once the gate is gone:
    while the code did the opposite.
 
 2. **`_installInFlight` in `agentBusy`.** Disposing mid-install tears the
-   container down while the worker is part-way through `npm ci`. The answer to
-   "is this runner busy?" and the answer to "may it be disposed?" must not be
-   able to disagree.
+   container down while the worker is part-way through `npm ci`.
+
+   **It filters; it does not guarantee** — `dispose()` does not check the same
+   flag, so a reclaim pass can read `agentBusy` as false, have an install start
+   during its own pacing window, and then dispose anyway. Before this branch
+   *neither* question declined, so keeping this is still a strict improvement;
+   the residual is planning#465, which needs a bounded hold rather than a bare
+   guard (an unbounded one would let a wedged install pin a container forever).
+   An earlier revision of this plan and of the code comment asserted the
+   invariant as though it held.
 
 ## The ops incident this branch opened with
 

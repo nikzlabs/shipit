@@ -17,10 +17,13 @@ happened, and so did the removal.
 
 - [x] Req 1 replaced by the requester — plugin code sits at the `package.json`
       dependency trust level
-- [x] Reqs 2, 4, 5, 12 retired as superseded/subsumed; full text preserved
+- [x] Reqs 2, 4, 5, 12 retired as superseded/subsumed, each summarised in
+      Requirement history with the verbatim text in git history
 - [x] Req 3 retired, with 7, 8 and 11 following it
 - [x] `requirements.md` and `plan.md` rewritten to describe what remains
-- [x] Gate module and both test files deleted
+- [x] Gate module and its test file deleted; the branch-local second test file
+      deleted with it, and the gate-specific tests removed from
+      `container-session-runner.test.ts`
 - [x] Call sites removed: runner, warm pool, fork, claim, overlay publish
 - [x] Orphaned `dependency-reset` gap phrase removed
 - [x] Pre-existing fixes deliberately kept (`unverified`, `_installInFlight`)
