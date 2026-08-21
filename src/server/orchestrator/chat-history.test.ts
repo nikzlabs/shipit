@@ -1590,4 +1590,273 @@ describe("ChatHistoryManager", () => {
       expect(mgr.consumeUnreportedBugOutcomes("s2")).toHaveLength(1);
     });
   });
+
+  /**
+   * docs/278 / planning#324 — the per-session transcript revision counter.
+   *
+   * Every write to a session's persisted transcript must move its revision, or
+   * the conditional `GET /history` could answer 304 "nothing changed" for a
+   * transcript that did change. The guard cases below enumerate every
+   * mutating method of `ChatHistoryManager` — a writer added in future that
+   * forgets its `bumpHistoryRevision` fails "the revision did not move" here.
+   */
+  describe("per-session transcript revision (docs/278, planning#324)", () => {
+    const rev = (mgr: ChatHistoryManager, sessionId: string) => mgr.getHistoryRevision(sessionId);
+    const idsOf = (sessionId: string) =>
+      (dbManager.db.prepare("SELECT id FROM messages WHERE session_id = ? ORDER BY id").all(sessionId) as { id: number }[])
+        .map((r) => r.id);
+    // Every in-place card lifecycle patch: one append that plants the card,
+    // one patch that rewrites the SAME row (same id, same count) in place.
+    const inPlacePatches: [string, (m: ChatHistoryManager) => void][] = [
+      [
+        "updatePermissionCard",
+        (m) => {
+          m.append("s1", {
+            role: "assistant",
+            text: "",
+            permissionPrompt: { requestId: "p1", phase: "pending", toolName: "Write", createdAt: "2026-06-05T00:00:00.000Z" },
+          });
+          expect(m.updatePermissionCard("s1", "p1", { phase: "approved" })).toBe(true);
+        },
+      ],
+      [
+        "updateEgressPromptCard",
+        (m) => {
+          m.append("s1", {
+            role: "assistant",
+            text: "",
+            egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "pending", createdAt: "2026-06-05T00:00:00.000Z" },
+          });
+          expect(m.updateEgressPromptCard("s1", "eg1", { phase: "added" })).toBe(true);
+        },
+      ],
+      [
+        "updateIssueWriteCard",
+        (m) => {
+          m.append("s1", {
+            role: "assistant",
+            text: "",
+            issueWrite: {
+              cardId: "iw1",
+              tracker: "linear",
+              issueId: "SHI-28",
+              identifier: "SHI-28",
+              title: "Some issue",
+              verb: "status",
+              summary: "set SHI-28 → In Review",
+              attribution: "workspace",
+              undo: { kind: "status", previousStatus: "Todo" },
+              undoState: "available",
+              createdAt: "2026-06-05T00:00:00.000Z",
+            },
+          });
+          expect(m.updateIssueWriteCard("s1", "iw1", { undoState: "undone" })).toBe(true);
+        },
+      ],
+      [
+        "updateSubAgentConsultCard",
+        (m) => {
+          m.append("s1", {
+            role: "assistant",
+            text: "",
+            subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", status: "pending", createdAt: "2026-06-05T00:00:00.000Z" },
+          });
+          expect(m.updateSubAgentConsultCard("s1", "sac1", { status: "success", outputMarkdown: "done" })).toBe(true);
+        },
+      ],
+      [
+        "updateNonTurnFailureCard",
+        (m) => {
+          m.append("s1", {
+            role: "assistant",
+            text: "",
+            nonTurnFailure: {
+              cardId: "ntf1",
+              purpose: "session-naming",
+              fallback: "placeholder",
+              createdAt: "2026-06-05T00:00:00.000Z",
+            },
+          });
+          expect(m.updateNonTurnFailureCard("s1", "ntf1", { dismissedAt: "2026-06-05T00:01:00.000Z" })).toBe(true);
+        },
+      ],
+      [
+        "updateLastMessage (post-turn commit stamp)",
+        (m) => {
+          m.append("s1", { role: "assistant", text: "done" });
+          expect(m.updateLastMessage("s1", { commitHash: "abc123" })).not.toBeNull();
+        },
+      ],
+      [
+        "retireBackgroundSubagentResult",
+        (m) => {
+          m.append("s1", {
+            role: "assistant",
+            text: "",
+            toolUse: [{ type: "tool_use", id: "toolu_bg", name: "Task", input: {} }],
+            toolResults: [{
+              toolUseId: "toolu_bg",
+              content: "Async agent launched successfully\nagentId: a1\noutput_file: /tmp/o",
+              isError: false,
+            }],
+          });
+          const hit = m.retireBackgroundSubagentResult(
+            "s1",
+            { toolUseId: "toolu_bg", status: "completed", summary: "report" },
+            { content: "## Report" },
+          );
+          expect(hit).not.toBeNull();
+        },
+      ],
+      [
+        "upsertReleaseCard (patch branch)",
+        (m) => {
+          m.upsertReleaseCard("s1", { sessionId: "s1", cardId: "rel1", phase: "proposed", version: "0.3.0", tag: "v0.3.0", prerelease: false, bumpType: "minor" });
+          m.upsertReleaseCard("s1", { sessionId: "s1", cardId: "rel1", phase: "released", version: "0.3.0", tag: "v0.3.0", prerelease: false, bumpType: "minor" });
+        },
+      ],
+      [
+        "consumeUnreportedBugOutcomes",
+        (m) => {
+          m.append("s1", {
+            role: "assistant",
+            text: "",
+            bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "session", issueNumber: 7, issueUrl: "u" },
+          });
+          expect(m.consumeUnreportedBugOutcomes("s1")).toHaveLength(1);
+        },
+      ],
+    ];
+
+    it("reads 0 for a session that was never written", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      expect(rev(mgr, "s1")).toBe(0);
+      expect(mgr.load("s1")).toEqual([]);
+    });
+
+    it("moves once per append, and is per-session", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "a" });
+      expect(rev(mgr, "s1")).toBe(1);
+      mgr.append("s1", { role: "assistant", text: "b" });
+      expect(rev(mgr, "s1")).toBe(2);
+      mgr.append("s2", { role: "user", text: "other" });
+      expect(rev(mgr, "s1")).toBe(2);
+      expect(rev(mgr, "s2")).toBe(1);
+    });
+
+    it("is not fooled by an in-place card patch — the MAX(id)+COUNT(*) trap", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "hello" });
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: { cardId: "b1", phase: "draft", title: "T", body: "B", stage2Ran: true, producer: "session" },
+      });
+      const before = rev(mgr, "s1");
+      const idsBefore = idsOf("s1");
+
+      expect(mgr.updateBugReportCard("s1", "b1", { phase: "filed", issueNumber: 7, issueUrl: "u" })).toBe(true);
+
+      // Exactly the case planning#324 calls out: the row is patched in place —
+      // same id, same count — so neither the max id nor the row count moves,
+      // and a MAX(id)+COUNT(*) validator would answer "unchanged" for a card
+      // that just went filed. The counter moves anyway.
+      expect(idsOf("s1")).toEqual(idsBefore);
+      expect(mgr.load("s1")).toHaveLength(2);
+      expect(rev(mgr, "s1")).toBe(before + 1);
+    });
+
+    for (const [name, run] of inPlacePatches) {
+      it(`moves the revision on ${name}`, () => {
+        const mgr = new ChatHistoryManager(dbManager);
+        run(mgr);
+        expect(rev(mgr, "s1")).toBe(2);
+      });
+    }
+
+    it("moves on upsertReleaseCard's append branch (first propose)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.upsertReleaseCard("s1", { sessionId: "s1", cardId: "rel1", phase: "proposed", version: "0.3.0", tag: "v0.3.0", prerelease: false, bumpType: "minor" });
+      expect(rev(mgr, "s1")).toBe(1);
+    });
+
+    it("moves on a full rewrite via saveMessages", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "a" });
+      mgr.append("s1", { role: "assistant", text: "b" });
+      mgr.saveMessages("s1", [{ role: "assistant", text: "replacement" }]);
+      expect(rev(mgr, "s1")).toBe(3);
+      expect(mgr.load("s1")).toHaveLength(1);
+    });
+
+    it("moves on the in-progress rebuild cycle (replaceInProgress → finalizeInProgress)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "go" });
+      mgr.replaceInProgress("s1", [{ role: "assistant", text: "streaming", inProgress: true }]);
+      expect(rev(mgr, "s1")).toBe(2);
+      // A client that loaded the streaming row must learn that it finalized.
+      mgr.finalizeInProgress("s1");
+      expect(rev(mgr, "s1")).toBe(3);
+      expect(mgr.load("s1")[1].inProgress).toBeUndefined();
+    });
+
+    it("moves on clearInProgress", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("s1", [{ role: "assistant", text: "streaming", inProgress: true }]);
+      mgr.clearInProgress("s1");
+      expect(rev(mgr, "s1")).toBe(2);
+      expect(mgr.load("s1")).toHaveLength(0);
+    });
+
+    it("moves on truncate", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "a" });
+      mgr.append("s1", { role: "assistant", text: "b" });
+      mgr.append("s1", { role: "user", text: "c" });
+      mgr.truncate("s1", 1);
+      expect(rev(mgr, "s1")).toBe(4);
+      expect(mgr.load("s1")).toHaveLength(1);
+    });
+
+    it("moves on deleteMessageById and delete", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const id = mgr.append("s1", { role: "user", text: "a" });
+      expect(mgr.deleteMessageById("s1", id)).toBe(true);
+      expect(rev(mgr, "s1")).toBe(2);
+      mgr.append("s1", { role: "user", text: "b" });
+      expect(mgr.delete("s1")).toBe(true);
+      expect(rev(mgr, "s1")).toBe(4);
+      expect(mgr.load("s1")).toHaveLength(0);
+    });
+
+    it("moves on the rolled-back marks", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "a" });
+      mgr.append("s1", { role: "assistant", text: "b" });
+      const ids = mgr.markRolledBackFromIndex("s1", 1, "c0ffee");
+      expect(ids).toHaveLength(1);
+      expect(rev(mgr, "s1")).toBe(3);
+      mgr.clearRolledBack("s1", ids);
+      expect(rev(mgr, "s1")).toBe(4);
+    });
+
+    it("does not move on a no-op (a patch that matches nothing)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "hi" });
+      const before = rev(mgr, "s1");
+      expect(mgr.updateBugReportCard("s1", "missing-card", { phase: "filed" })).toBe(false);
+      expect(mgr.deleteMessageById("s1", 9999)).toBe(false);
+      expect(rev(mgr, "s1")).toBe(before);
+    });
+
+    it("survives a fresh manager instance (DB-backed)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "user", text: "a" });
+      const fresh = new ChatHistoryManager(dbManager);
+      expect(fresh.getHistoryRevision("s1")).toBe(1);
+      fresh.append("s1", { role: "assistant", text: "b" });
+      expect(fresh.getHistoryRevision("s1")).toBe(2);
+    });
+  });
 });

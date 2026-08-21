@@ -190,8 +190,8 @@ let historyLoadSeq = 0;
 let inFlightHistoryLoad: { seq: number; controller: AbortController } | null = null;
 
 /**
- * Parsed `/history` responses, keyed by session, with the ETag they arrived
- * under (planning#375).
+ * Parsed `/history` responses, keyed by session, with the validators they
+ * arrived under (planning#375 + docs/278 / planning#324).
  *
  * The user moves between sessions constantly and each move re-downloaded the
  * whole conversation — 2.67 MB in the traced session. With this, a switch back
@@ -202,17 +202,34 @@ let inFlightHistoryLoad: { seq: number; controller: AbortController } | null = n
  * body, so a `304` is a positive statement that nothing changed. We never
  * decide for ourselves that a cached transcript is still good.
  *
+ * `revision` is the session's transcript revision the payload was served
+ * under (`x-history-revision`, docs/278 / planning#324) — the per-session
+ * counter the server bumps on EVERY persisted-transcript write, so it is the
+ * same validator from the client's side, sent back on every refetch.
+ *
  * Bounded because a transcript is megabytes and a long day touches many
  * sessions. `Map` iterates in insertion order, so the oldest entry is the first
  * key — re-inserting on every hit keeps the bound honest (LRU, not FIFO).
  */
 const HISTORY_CACHE_LIMIT = 6;
-const historyCache = new Map<string, { etag: string; data: HistoryResponse }>();
+interface HistoryCacheEntry {
+  etag: string;
+  /** docs/278 — the transcript revision this payload was served under. */
+  revision?: number;
+  data: HistoryResponse;
+}
+const historyCache = new Map<string, HistoryCacheEntry>();
 const treeCache = new Map<string, { etag: string; data: FileTreeNode[] }>();
 
-function remember<T>(cache: Map<string, { etag: string; data: T }>, key: string, etag: string, data: T): void {
+function remember(
+  cache: Map<string, { etag: string; revision?: number; data: unknown }>,
+  key: string,
+  etag: string,
+  revision: number | undefined,
+  data: unknown,
+): void {
   cache.delete(key);
-  cache.set(key, { etag, data });
+  cache.set(key, { etag, revision, data });
   while (cache.size > HISTORY_CACHE_LIMIT) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
@@ -237,6 +254,19 @@ function touch(cache: Map<string, { etag: string; data: unknown }>, key: string)
 export function __resetHistoryCache(): void {
   historyCache.clear();
   treeCache.clear();
+}
+
+/**
+ * docs/278 — parse the `x-history-revision` response header into the number
+ * it names, or `undefined` when absent/malformed. The header is server-issued,
+ * but a proxy or test double may re-shape or omit it; `undefined` then means
+ * "no validator available", which degrades the refetch to the planning#375
+ * contract instead of inventing a revision.
+ */
+function parseHistoryRevision(raw: string | null): number | undefined {
+  if (raw === null) return undefined;
+  const trimmed = raw.trim();
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : undefined;
 }
 
 /**
@@ -265,7 +295,7 @@ async function fetchFileTree(sessionId: string, signal: AbortSignal): Promise<Fi
   if (!res.ok) return null;
   const { tree } = await res.json() as { tree: FileTreeNode[] };
   const etag = res.headers?.get("etag");
-  if (etag) remember(treeCache, sessionId, etag, tree);
+  if (etag) remember(treeCache, sessionId, etag, undefined, tree);
   return tree;
 }
 
@@ -285,6 +315,11 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   // GETs on one round trip's worth of latency. Failure is tolerated (`null`):
   // an unreachable file tree must never cost the user their transcript.
   const treePromise = fetchFileTree(sessionId, controller.signal).catch(() => null);
+  // docs/278 — whether the server validated the refetch as "nothing changed".
+  // Set only on a genuine 304 (the server proved the payload is current); when
+  // the transcript ALREADY holds live rows it is a licence to leave them alone,
+  // never a reason to rebuild them from the cache.
+  let transcriptUnchanged = false;
   try {
     const cached = historyCache.get(sessionId);
     const res = await fetch(`/api/sessions/${sessionId}/history`, {
@@ -294,11 +329,38 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       // would hand back a 200 with the cached body and we would re-parse the
       // megabytes we are trying to avoid.
       cache: "no-store",
-      ...(cached ? { headers: { "If-None-Match": cached.etag } } : {}),
+      ...(cached
+        ? {
+            headers: {
+              "If-None-Match": cached.etag,
+              // docs/278 — the transcript's own validator, alongside the
+              // whole-payload tag. Unknown when the payload was cached from a
+              // server that did not serve one; omitting it then degrades to the
+              // planning#375 contract (the server re-serves the body).
+              ...(cached.revision !== undefined ? { "X-History-Revision": String(cached.revision) } : {}),
+            },
+          }
+        : {}),
     });
     if (res.status === 304 && cached) {
-      data = cached.data;
       touch(historyCache, sessionId);
+      // The 304 re-states the revision so the stored validator stays current
+      // without a payload round trip.
+      const servedRevision = parseHistoryRevision(res.headers?.get("x-history-revision"));
+      if (servedRevision !== undefined && servedRevision !== cached.revision) {
+        remember(historyCache, sessionId, cached.etag, servedRevision, cached.data);
+      }
+      data = cached.data;
+      // A "nothing changed" answer does not mean "reinstall the transcript from
+      // the cache". The live array is a SUPERSET of the cached payload — it
+      // carries the rows a running turn produced since its last persist — so
+      // replacing it with the cache would truncate exactly the content the
+      // refetch was supposed to preserve. Only an empty transcript still needs
+      // materializing from the cache: the session-switch case, where nothing of
+      // this session's is on screen yet and the server has just certified the
+      // cache as current. (`messages` is empty in no other refetch path — a
+      // disconnect keeps the transcript, and a switch clears it.)
+      transcriptUnchanged = useSessionStore.getState().messages.length > 0;
     } else {
       data = await res.json() as HistoryResponse;
       // Optional: a response with no ETag simply is not cached, which is the
@@ -306,7 +368,9 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       // double). Never cache without a tag — the tag is the only thing that
       // makes a later reuse safe.
       const etag = res.headers?.get("etag");
-      if (etag) remember(historyCache, sessionId, etag, data);
+      if (etag) {
+        remember(historyCache, sessionId, etag, parseHistoryRevision(res.headers?.get("x-history-revision")), data);
+      }
     }
   } catch (err) {
     // A load we cancelled ourselves is not a failure. Return rather than throw,
@@ -330,67 +394,74 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   // belong to a still-running turn, which is exactly the set an attach-time
   // `turn_snapshot` replaces (see `turn-snapshot.ts`). `streaming` stays the
   // narrower "this bubble is being written to" flag the renderer uses.
-  session.setMessages(
-    data.messages.map((m) => ({
-      ...m,
-      streaming: m.inProgress ?? false,
-    } as unknown as ChatMessage)),
-  );
+  // docs/278 — on a server-validated "nothing changed" with live rows already
+  // on screen, NOTHING is installed: the cached payload is byte-identical to
+  // what the server holds, the live transcript is the superset that should win,
+  // and the card-store seeds below are (by the same certificate) no-ops. The
+  // refetch's whole point is to not touch the transcript when it did not move.
+  if (!transcriptUnchanged) {
+    session.setMessages(
+      data.messages.map((m) => ({
+        ...m,
+        streaming: m.inProgress ?? false,
+      } as unknown as ChatMessage)),
+    );
 
-  // docs/164 — rehydrate the bug-report store from persisted cards so each
-  // `BugReportCard` renders with its correct phase (a filed card comes back
-  // "filed" with its issue link; a failed one as an editable draft). Seeding is
-  // authoritative — it overwrites any draft a turn-event-buffer replay may have
-  // created first on reconnect.
-  const persistedCards = data.messages
-    .map((m) => (m as { bugReport?: BugReportCardState }).bugReport)
-    .filter((b): b is BugReportCardState => !!b && typeof b.cardId === "string" && !!b.phase);
-  if (persistedCards.length > 0) {
-    useBugReportStore.getState().seedCards(persistedCards);
+    // docs/164 — rehydrate the bug-report store from persisted cards so each
+    // `BugReportCard` renders with its correct phase (a filed card comes back
+    // "filed" with its issue link; a failed one as an editable draft). Seeding is
+    // authoritative — it overwrites any draft a turn-event-buffer replay may have
+    // created first on reconnect.
+    const persistedCards = data.messages
+      .map((m) => (m as { bugReport?: BugReportCardState }).bugReport)
+      .filter((b): b is BugReportCardState => !!b && typeof b.cardId === "string" && !!b.phase);
+    if (persistedCards.length > 0) {
+      useBugReportStore.getState().seedCards(persistedCards);
+    }
+
+    // docs/193 / planning#114 — rehydrate the permission store from persisted cards so
+    // each `PermissionRequestCard` renders with its correct phase (an approved/
+    // denied/expired card comes back resolved, not re-offering Approve/Deny). A
+    // still-pending card comes back actionable — the worker holds the request, so
+    // the user can answer it after a reload. Authoritative seed wins over a buffer
+    // replay.
+    const persistedPermissions = data.messages
+      .map((m) => (m as { permissionPrompt?: PermissionCardState }).permissionPrompt)
+      .filter((p): p is PermissionCardState => !!p && typeof p.requestId === "string" && !!p.phase);
+    if (persistedPermissions.length > 0) {
+      usePermissionStore.getState().seedCards(persistedPermissions);
+    }
+
+    // docs/172 / planning#92 — rehydrate the egress-prompt store from persisted cards so
+    // each `EgressPromptCard` renders with its correct phase (a resolved card comes
+    // back resolved, not re-offering the buttons). Authoritative seed wins over a
+    // buffer replay.
+    const persistedEgress = data.messages
+      .map((m) => (m as { egressPrompt?: EgressPromptCardState }).egressPrompt)
+      .filter((e): e is EgressPromptCardState => !!e && typeof e.cardId === "string" && !!e.phase);
+    if (persistedEgress.length > 0) {
+      useEgressPromptStore.getState().seedCards(persistedEgress);
+    }
+
+    // docs/177 — rehydrate the issue-write store from persisted provenance cards
+    // so each `IssueWriteCard` renders with its correct undo state (an undone
+    // card comes back "undone", not re-offering Undo). Authoritative seed wins
+    // over a buffer replay.
+    const persistedWrites = data.messages
+      .map((m) => (m as { issueWrite?: IssueWriteCard }).issueWrite)
+      .filter((w): w is IssueWriteCard => !!w && typeof w.cardId === "string" && !!w.undoState);
+    if (persistedWrites.length > 0) {
+      useIssueWriteStore.getState().seedCards(persistedWrites);
+    }
+
+    // docs/093 — rehydrate the Present tab from durable metadata so it survives a
+    // reload / session switch / container restart. `hydrate` replaces the list
+    // without bumping the unseen badge or auto-switching the panel (silent sync),
+    // is idempotent by presentId, and preserves any already-fetched bytes — so it
+    // and the WS `present_state` replay can't double-render. Always called (even
+    // empty) so a now-cleared session drops a stale tab.
+    usePresentStore.getState().hydrate(data.presentations ?? []);
   }
-
-  // docs/193 / planning#114 — rehydrate the permission store from persisted cards so
-  // each `PermissionRequestCard` renders with its correct phase (an approved/
-  // denied/expired card comes back resolved, not re-offering Approve/Deny). A
-  // still-pending card comes back actionable — the worker holds the request, so
-  // the user can answer it after a reload. Authoritative seed wins over a buffer
-  // replay.
-  const persistedPermissions = data.messages
-    .map((m) => (m as { permissionPrompt?: PermissionCardState }).permissionPrompt)
-    .filter((p): p is PermissionCardState => !!p && typeof p.requestId === "string" && !!p.phase);
-  if (persistedPermissions.length > 0) {
-    usePermissionStore.getState().seedCards(persistedPermissions);
-  }
-
-  // docs/172 / planning#92 — rehydrate the egress-prompt store from persisted cards so
-  // each `EgressPromptCard` renders with its correct phase (a resolved card comes
-  // back resolved, not re-offering the buttons). Authoritative seed wins over a
-  // buffer replay.
-  const persistedEgress = data.messages
-    .map((m) => (m as { egressPrompt?: EgressPromptCardState }).egressPrompt)
-    .filter((e): e is EgressPromptCardState => !!e && typeof e.cardId === "string" && !!e.phase);
-  if (persistedEgress.length > 0) {
-    useEgressPromptStore.getState().seedCards(persistedEgress);
-  }
-
-  // docs/177 — rehydrate the issue-write store from persisted provenance cards
-  // so each `IssueWriteCard` renders with its correct undo state (an undone
-  // card comes back "undone", not re-offering Undo). Authoritative seed wins
-  // over a buffer replay.
-  const persistedWrites = data.messages
-    .map((m) => (m as { issueWrite?: IssueWriteCard }).issueWrite)
-    .filter((w): w is IssueWriteCard => !!w && typeof w.cardId === "string" && !!w.undoState);
-  if (persistedWrites.length > 0) {
-    useIssueWriteStore.getState().seedCards(persistedWrites);
-  }
-
-  // docs/093 — rehydrate the Present tab from durable metadata so it survives a
-  // reload / session switch / container restart. `hydrate` replaces the list
-  // without bumping the unseen badge or auto-switching the panel (silent sync),
-  // is idempotent by presentId, and preserves any already-fetched bytes — so it
-  // and the WS `present_state` replay can't double-render. Always called (even
-  // empty) so a now-cleared session drops a stale tab.
-  usePresentStore.getState().hydrate(data.presentations ?? []);
 
   // docs/235 — reconcile the standing background-task marker from the payload
   // before deciding the chat status line. This load is authoritative for THIS

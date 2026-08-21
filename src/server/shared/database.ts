@@ -1409,6 +1409,26 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "muted_at");
   },
+  // docs/278 / planning#324 — the per-session transcript revision counter that
+  // backs the conditional `GET /history`. One monotonically increasing integer
+  // per session, bumped by `ChatHistoryManager` on EVERY transcript write
+  // (append, in-place card patch, and full rewrite alike), so the client can
+  // present the revision it loaded under as a validator and the server can
+  // answer 304 when the transcript has not changed. A row starts at 1 on its
+  // first write; a session with no row has revision 0. The counter, not
+  // `MAX(id) + COUNT(*)`: card lifecycle transitions patch a row in place, so
+  // neither the max id nor the row count moves while the content does.
+  //
+  // `CREATE TABLE IF NOT EXISTS` is load-bearing here: the migration tests
+  // rewind `user_version` and replay the tail, so the step must be re-runnable.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_history_revision (
+        session_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL
+      );
+    `);
+  },
 ];
 
 /**
@@ -1505,6 +1525,7 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM egress_allowlist").run();
       this.db.prepare("DELETE FROM egress_settings").run();
       this.db.prepare("DELETE FROM presentations").run();
+      this.db.prepare("DELETE FROM session_history_revision").run();
     })();
   }
 

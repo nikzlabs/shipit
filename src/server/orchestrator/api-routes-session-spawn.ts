@@ -99,6 +99,12 @@ export async function registerSessionSpawnRoutes(
       reply.code(404).send({ error: "Session not found" });
       return;
     }
+    // docs/278 / planning#324 — the per-session transcript revision, bumped by
+    // ChatHistoryManager on EVERY write to the persisted transcript. The client
+    // loads under this value and presents it back on refetch, so the server can
+    // prove "the transcript did not move" without comparing message bytes.
+    const revision = deps.chatHistoryManager.getHistoryRevision(request.params.id);
+
     const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
 
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
@@ -176,15 +182,35 @@ export async function registerSessionSpawnRoutes(
     // and the client's parse, not the server-side build.
     const body = JSON.stringify(payload);
     const etag = etagFor(body);
+    // docs/278 / planning#324 — the transcript's own validator, alongside the
+    // whole-payload tag. `x-history-revision` is the client's last-loaded
+    // revision of this session's persisted transcript; it matches only when the
+    // transcript has not moved (it moves on EVERY write, in-place card patches
+    // included — exactly where `MAX(id) + COUNT(*)` would lie). The 304 needs
+    // BOTH: the etag alone would say "whole payload unchanged" (sufficient but
+    // not transcript-shaped), the revision alone would elide when a
+    // non-transcript source (commits, usage, presentations) changed under an
+    // identical transcript and serve stale sidebar data. For a well-behaved
+    // client the two always match together — the revision is served with the
+    // payload it validates — so the conjunction costs nothing and each half
+    // covers the other's blind side.
+    const rawRevision = request.headers["x-history-revision"];
+    const clientRevision =
+      typeof rawRevision === "string" && /^\d+$/.test(rawRevision) ? Number(rawRevision) : undefined;
+    const transcriptUnchanged = clientRevision !== undefined && clientRevision === revision;
     // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
     // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
-    if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
-      reply.code(304).send();
+    if (transcriptUnchanged && matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
+      reply.code(304).header("x-history-revision", String(revision)).send();
       return;
     }
     // `no-cache` = revalidate every time, never serve blind from the browser's
     // own cache. A stale transcript is worse than a round trip.
-    reply.header("etag", etag).header("cache-control", "no-cache").type("application/json");
+    reply
+      .header("etag", etag)
+      .header("x-history-revision", String(revision))
+      .header("cache-control", "no-cache")
+      .type("application/json");
     return reply.send(body);
   });
 

@@ -127,6 +127,11 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
      * planning#375 — a session switch used to re-download the whole
      * conversation (2.67 MB on the traced session). The response now carries an
      * ETag so the client can revalidate.
+     *
+     * docs/278 / planning#324 — the conditional also carries the session's
+     * transcript revision: the 304 requires BOTH validators to match, so it is
+     * answered only when the whole payload (etag) AND the transcript's own
+     * write counter (revision) agree nothing changed.
      */
     it("answers 304 when the client already holds the current transcript", async () => {
       await createSession("etag-s", "ETag session");
@@ -136,6 +141,9 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(first.statusCode).toBe(200);
       const etag = first.headers.etag!;
       expect(etag).toBeTruthy();
+      // The transcript revision rides with the payload that validates it.
+      const revision = first.headers["x-history-revision"];
+      expect(revision).toBe("1");
       // Never served blind from the browser cache — a stale transcript is worse
       // than a round trip.
       expect(first.headers["cache-control"]).toBe("no-cache");
@@ -143,10 +151,13 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       const revalidated = await app.inject({
         method: "GET",
         url: "/api/sessions/etag-s/history",
-        headers: { "if-none-match": etag },
+        headers: { "if-none-match": etag, "x-history-revision": revision },
       });
       expect(revalidated.statusCode).toBe(304);
       expect(revalidated.body).toBe("");
+      // The 304 re-states the revision so the client's validator stays current
+      // without a payload round trip.
+      expect(revalidated.headers["x-history-revision"]).toBe(revision);
 
       // The form that actually arrives in production. Cloudflare re-compresses
       // (zstd) and hands the browser `W/"…"`, which is what the browser echoes
@@ -155,9 +166,61 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       const viaCdn = await app.inject({
         method: "GET",
         url: "/api/sessions/etag-s/history",
-        headers: { "if-none-match": `W/${etag}` },
+        headers: { "if-none-match": `W/${etag}`, "x-history-revision": revision },
       });
       expect(viaCdn.statusCode).toBe(304);
+    });
+
+    it("refuses the 304 when the transcript revision is missing or stale", async () => {
+      await createSession("etag-s-rev", "ETag session");
+      chatHistoryManager.append("etag-s-rev", { role: "user", text: "Hello" });
+
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-s-rev/history" });
+      const etag = first.headers.etag!;
+      const revision = first.headers["x-history-revision"];
+
+      // An honest 304 needs the transcript's own validator — an etag alone says
+      // nothing about a row patched in place.
+      const missing = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s-rev/history",
+        headers: { "if-none-match": etag },
+      });
+      expect(missing.statusCode).toBe(200);
+
+      chatHistoryManager.append("etag-s-rev", { role: "assistant", text: "More" });
+      const stale = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s-rev/history",
+        headers: { "if-none-match": etag, "x-history-revision": revision },
+      });
+      expect(stale.statusCode).toBe(200);
+      expect(stale.json().messages).toHaveLength(2);
+      expect(stale.headers["x-history-revision"]).toBe("2");
+    });
+
+    it("refuses the 304 when a same-content rewrite moved the revision", async () => {
+      // The planning#324 subtlety, end to end: a rewrite via `saveMessages`
+      // re-inserts byte-identical rows, so the body — and therefore the ETag —
+      // does not move while the transcript's write counter does. The revision
+      // is the validator that catches the rewrite; a 304 must not fire under
+      // the pre-rewrite revision even though the etag still matches.
+      await createSession("etag-s-rewrite", "ETag session");
+      chatHistoryManager.append("etag-s-rewrite", { role: "user", text: "Hello" });
+
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-s-rewrite/history" });
+      const etag = first.headers.etag!;
+      const revision = first.headers["x-history-revision"];
+
+      chatHistoryManager.saveMessages("etag-s-rewrite", [{ role: "user", text: "Hello" }]);
+
+      const rewrite = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s-rewrite/history",
+        headers: { "if-none-match": etag, "x-history-revision": revision },
+      });
+      expect(rewrite.statusCode).toBe(200);
+      expect(rewrite.headers["x-history-revision"]).toBe("2");
     });
 
     it("issues a fresh tag once the transcript changes", async () => {
@@ -165,15 +228,17 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       chatHistoryManager.append("etag-s2", { role: "user", text: "One" });
       const first = await app.inject({ method: "GET", url: "/api/sessions/etag-s2/history" });
       const etag = first.headers.etag!;
+      const revision = first.headers["x-history-revision"];
 
       chatHistoryManager.append("etag-s2", { role: "assistant", text: "Two" });
       const second = await app.inject({
         method: "GET",
         url: "/api/sessions/etag-s2/history",
-        headers: { "if-none-match": etag },
+        headers: { "if-none-match": etag, "x-history-revision": revision },
       });
       expect(second.statusCode).toBe(200);
       expect(second.headers.etag).not.toBe(etag);
+      expect(second.headers["x-history-revision"]).toBe("2");
       expect(second.json().messages).toHaveLength(2);
     });
 

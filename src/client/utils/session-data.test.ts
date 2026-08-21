@@ -5,6 +5,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { usePermissionStore } from "../stores/permission-store.js";
+import type { ChatMessage } from "../components/MessageList.js";
 
 /**
  * Repro for the bug where the cost/context dial disappeared from below the
@@ -525,14 +526,29 @@ describe("loadSessionHistory — a superseded load is cancelled, not just discar
 describe("loadSessionHistory — revalidates instead of re-downloading", () => {
   let requests: { headers: Record<string, string>; cache?: string }[];
   let etag: string;
+  let revision: string;
   let body: { messages: { role: string; text: string }[]; commits: never[]; agentRunning: boolean };
 
   const respond = () => {
-    const ifNoneMatch = requests[requests.length - 1].headers["If-None-Match"];
-    if (ifNoneMatch === etag) {
-      return Promise.resolve({ ok: true, status: 304, headers: new Headers({ etag }), json: () => { throw new Error("must not parse a 304"); } });
+    const last = requests[requests.length - 1];
+    const ifNoneMatch = last.headers["If-None-Match"];
+    const clientRevision = last.headers["X-History-Revision"];
+    // The server's conditional requires BOTH validators (docs/278): the
+    // whole-payload ETag and the transcript's write counter.
+    if (ifNoneMatch === etag && clientRevision === revision) {
+      return Promise.resolve({
+        ok: true,
+        status: 304,
+        headers: new Headers({ etag, "x-history-revision": revision }),
+        json: () => { throw new Error("must not parse a 304"); },
+      });
     }
-    return Promise.resolve({ ok: true, status: 200, headers: new Headers({ etag }), json: () => Promise.resolve(body) });
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: new Headers({ etag, "x-history-revision": revision }),
+      json: () => Promise.resolve(body),
+    });
   };
 
   beforeEach(() => {
@@ -543,6 +559,7 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
     __resetHistoryCache();
     requests = [];
     etag = '"v1"';
+    revision = "1";
     body = { messages: [{ role: "assistant", text: "ONE" }], commits: [], agentRunning: false };
     globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
       if (!url.includes("/history")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ tree: [] }) });
@@ -557,16 +574,19 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
     useSessionStore.getState().setSessionId("s1");
     await loadSessionHistory("s1");
     expect(requests[0].headers["If-None-Match"]).toBeUndefined();
+    expect(requests[0].headers["X-History-Revision"]).toBeUndefined();
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE"]);
   });
 
-  it("revalidates on the next load and applies the cached transcript on a 304", async () => {
+  it("revalidates with both validators on the next load and applies the cached transcript on a 304", async () => {
     useSessionStore.getState().setSessionId("s1");
     await loadSessionHistory("s1");
     useSessionStore.getState().setMessages([]);
 
     await loadSessionHistory("s1");
     expect(requests[1].headers["If-None-Match"]).toBe('"v1"');
+    // docs/278 — the transcript's own write counter rides alongside the ETag.
+    expect(requests[1].headers["X-History-Revision"]).toBe("1");
     // The 304 threw if `json()` was touched, so this transcript came from the
     // cache — no transfer, no parse.
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE"]);
@@ -577,13 +597,15 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
     await loadSessionHistory("s1");
 
     etag = '"v2"';
+    revision = "2";
     body = { messages: [{ role: "assistant", text: "ONE" }, { role: "assistant", text: "TWO" }], commits: [], agentRunning: false };
     await loadSessionHistory("s1");
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
 
-    // …and the fresher body replaced the cached one.
+    // …and the fresher body (with its revision) replaced the cached one.
     await loadSessionHistory("s1");
     expect(requests[2].headers["If-None-Match"]).toBe('"v2"');
+    expect(requests[2].headers["X-History-Revision"]).toBe("2");
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
   });
 
@@ -626,6 +648,110 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
     }
 
     expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
+  });
+});
+
+/**
+ * docs/278 / planning#324 — a tab-focus refetch re-downloaded the whole
+ * transcript even when nothing changed. The refetch is now conditional (the
+ * client sends the transcript's revision alongside the ETag), and a
+ * server-validated 304 must NOT replace a live transcript: the in-memory array
+ * is a superset of the cached payload (it carries what a running turn produced
+ * since its last persist), so wholesale reinstatement would truncate it.
+ */
+describe("loadSessionHistory — a validated-unchanged 304 leaves the live transcript alone", () => {
+  let requests: { headers: Record<string, string> }[];
+  let revision: string;
+
+  const respond = () => {
+    const last = requests[requests.length - 1];
+    if (last.headers["If-None-Match"] === '"v1"' && last.headers["X-History-Revision"] === revision) {
+      return Promise.resolve({
+        ok: true,
+        status: 304,
+        headers: new Headers({ etag: '"v1"', "x-history-revision": revision }),
+        json: () => { throw new Error("must not parse a 304"); },
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: new Headers({ etag: '"v1"', "x-history-revision": "1" }),
+      json: () => Promise.resolve({ messages: [{ role: "assistant", text: "ONE" }], commits: [], agentRunning: false }),
+    });
+  };
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    __resetHistoryCache();
+    requests = [];
+    revision = "1";
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (!url.includes("/history")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ tree: [] }) });
+      requests.push({ headers: (init?.headers ?? {}) as Record<string, string> });
+      return respond();
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); __resetHistoryCache(); });
+
+  it("keeps rows the server has not persisted yet (mid-turn content)", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    expect(requests[0].headers["X-History-Revision"]).toBeUndefined();
+
+    // The shape a foreground reconnect finds: the persisted baseline plus a
+    // live row the running turn produced after the last tool-result boundary.
+    useSessionStore.getState().setMessages([
+      { role: "assistant", text: "ONE" } as unknown as ChatMessage,
+      { role: "assistant", text: "LIVE", streaming: true } as unknown as ChatMessage,
+    ]);
+
+    await loadSessionHistory("s1");
+    // The refetch validated as unchanged (304) — and must not have replaced
+    // the transcript with the cache, or the live row would be gone.
+    expect(requests[1].headers["X-History-Revision"]).toBe("1");
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "LIVE"]);
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+  });
+
+  it("materializes the cached transcript when the store is empty (session switch)", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+
+    // A session switch cleared the store; the refetch is the ONLY way the
+    // transcript comes back, so a 304 must still materialize from the cache.
+    useSessionStore.getState().setMessages([]);
+    await loadSessionHistory("s1");
+    expect(requests[1].headers["X-History-Revision"]).toBe("1");
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE"]);
+  });
+
+  it("keeps the transcript when only a 200 follows, and applies the fresh body", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    useSessionStore.getState().setMessages([
+      { role: "assistant", text: "NEW" } as unknown as ChatMessage,
+    ]);
+
+    // The server reports a change: the fresh (200) payload replaces the
+    // transcript — the refetch is only elided when it is validated unchanged.
+    revision = "2";
+    const freshFetch = globalThis.fetch as ReturnType<typeof vi.fn>;
+    freshFetch.mockImplementation((url: string) => {
+      if (!url.includes("/history")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ tree: [] }) });
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers({ etag: '"v2"', "x-history-revision": "2" }),
+        json: () => Promise.resolve({ messages: [{ role: "assistant", text: "FRESH" }], commits: [], agentRunning: false }),
+      });
+    });
+    await loadSessionHistory("s1");
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["FRESH"]);
   });
 });
 
