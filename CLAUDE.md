@@ -209,7 +209,9 @@ Two rules, both enforced by `npm run check-deps` (`scripts/check-dependency-age.
 1. **Pin to exact versions** — `"react": "19.2.4"`, never `^`/`~`/`latest`/a range/a tag/a git URL. Floating ranges let a fresh checkout silently pick up a version nobody has run; bumps are deliberate edits, not a side effect of re-running install.
 2. **Minimum age of 7 days** since npm publication — the window lets scanners and the registry's abuse pipeline catch a compromised release before it reaches our build. If you genuinely need a same-day release (a security fix in a transitive), call it out in the PR and get explicit sign-off; don't bypass silently.
 
-To bump: edit `package.json` to the exact version, `npm install` to refresh the lockfile, then `npm run check-deps` before opening the PR.
+**Both rules cover both manifests** — the root `package.json` *and* `docker/agent-cli/package.json`, the agent CLIs baked into the session-worker image. The list is `POLICY_MANIFESTS` in the script; a manifest absent from it is unchecked, so add one there the day it appears. Renovate's `minimumReleaseAge` is a scheduling convenience on top of this, not the gate: it is configured per rule, so a package no rule matches gets no cooldown at all, which is how an `opencode-ai` bump published that same morning once passed CI green.
+
+To bump: edit the manifest to the exact version, `npm install` to refresh the lockfile, then `npm run check-deps` before opening the PR.
 
 A third rule is enforced separately by `npm run check-audit` (`scripts/check-audit.ts`):
 
