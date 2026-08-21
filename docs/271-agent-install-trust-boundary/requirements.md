@@ -127,6 +127,44 @@ Both italics are load-bearing, and each was checked rather than assumed:
     plain reading, "a session that declares a plugin", is exactly the reading
     that leaves this open.)*
 
+## Open questions
+
+- **Requirement 1 cannot be satisfied by gating `agent.install`, and requirement
+  4's justification does not cover the case that matters. What is the accepted
+  risk?** Raised by the requester on 2026-08-21, after three review rounds had
+  each hardened this path further: *"The plugin could change `package.json`, for
+  example, which would be allowed by ShipIt but potentially install malicious
+  packages."*
+
+  That is correct, and it is not a gap in the design — it is a gap in
+  requirement 4's reasoning. Req 4 excuses "an ordinary `npm postinstall`" on the
+  grounds that "the writer and the executor are the same uid in the same
+  container". True of the *project's* postinstall. **Not true of one a plugin
+  wrote.** A plugin may write any project file (req 6), `package.json` is a
+  project file, and the accepted command `npm ci` executes what `package.json`
+  says. So a plugin reaches unattended execution in the credential-bearing
+  container **without changing `agent.install` at all** — the gate never fires,
+  because the command list is unchanged.
+
+  The consequence for this feature: the gate closes only the case where the
+  *command list itself* changes. Every accepted command that interprets workspace
+  content — `npm ci`, `make`, `pip install -r`, a shell script in the repo — is
+  an open route, and closing them means treating the project's own files as a
+  containment boundary, which req 6 forbids in the requester's own words.
+  Requirements 1 and 6 are therefore in tension, and req 1 as written is not
+  achievable.
+
+  **Context the requester supplied for weighing it:** plugins today are used by
+  one person, on their own repositories.
+
+  What needs deciding is which of these the feature is: (a) req 1 is narrowed to
+  "a *changed* command list", the residual is stated as accepted risk, and the
+  hardening added for the storage-fault and first-install-ambiguity cases is
+  removed as cost without benefit; (b) req 1 stands and the route is declared
+  **left open** under req 9 with a named owner; or (c) something else. Until this
+  is answered, further hardening of this path is not obviously worth its
+  availability cost — see plan.md remainder 8, which is the immediate instance.
+
 ## Resolved questions
 
 - **2026-08-17 — May a plugin ever change what `agent.install` runs?** The issue
