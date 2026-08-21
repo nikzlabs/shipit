@@ -268,6 +268,7 @@ const OPENCODE_GO_PRICES = {
   // Go's own rate for Luna is HALF Zen's (0.1/0.6 against 0.2/1.2), which is
   // the clearest single case of why the two products keep separate constants.
   gpt56luna: { input: 0.1, output: 0.6, cacheRead: 0.01, cacheWrite: 0.125 },
+  oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
 /**
@@ -1100,6 +1101,7 @@ export const SERVICES = [
           { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.kimiK3 },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4pro },
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4flash },
+          { id: "ox-alpha-free", label: "Ox Alpha Free", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.oxAlpha, reasoningEfforts: ["max", "high", "low"] },
           // Go's one `openai-responses` model, and the only way Codex can run
           // on the subscription rather than on Zen credits. ✅ live registry
           // probe on `/zen/go/v1/responses`, with `gpt-5.6-sol` answering
