@@ -365,12 +365,11 @@ describe("the container entry point refuses to serve without a token (planning#4
 
 describe("SessionWorker installs the guard", () => {
   it("planning#421: a tokenless real worker refuses a peer container's POST /install", async () => {
-    // Pins the dependency docs/271-agent-install-trust-boundary states but does
-    // not own, on the REAL route table rather than a hand-built app: its
-    // `agent.install` gate sits at `runInstall`, so a plugin service that can
-    // reach the agent container bypasses it entirely by posting here. Before
-    // planning#421 this reached the handler (400 — the body is empty on purpose, so
-    // the assertion never runs an install either way).
+    // The same rule on the REAL route table rather than a hand-built app.
+    // `/install` runs `agent.install` in the credential-bearing container, and a
+    // plugin service can reach that container. Before planning#421 this reached
+    // the handler (400 — the body is empty on purpose, so the assertion never
+    // runs an install either way).
     const worker = new SessionWorker({
       agentFactory: () => { throw new Error("not used"); },
     });
