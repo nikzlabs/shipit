@@ -73,13 +73,29 @@ straight back.
 `GET /history` now builds everything except the transcript, and hashes:
 
 ```ts
-etagFor(JSON.stringify([sessionId, transcriptRevision, rest]))
+etagFor(JSON.stringify([HISTORY_VALIDATOR_VERSION, sessionId, transcriptRevision, rest]))
 ```
 
 where `rest` is the six non-transcript sources (git log, `agentRunning`, background tasks,
 rewind snapshot, usage, presentations). If `If-None-Match` matches, the route answers `304`
 **before** `getChatHistory` is called — the transcript is never materialized (req 2). Only a
 request that will actually send a body pays for one.
+
+### `HISTORY_VALIDATOR_VERSION` — the input the data cannot see
+
+A hand-bumped integer at the top of `api-routes-session-spawn.ts`, folded into the tag.
+
+The revision covers the session's **rows**; the version covers how those rows are
+**rendered**. Change `projectMessagesForWire` — add a field, move a clamp, reshape a tool
+result — and the response body changes with no write to `messages` at all, so every validator
+a client holds stays valid against a payload that is no longer shaped the way it cached it.
+The client keeps serving the old shape until its LRU entry ages out or the page reloads.
+Bumping the constant invalidates every held validator in one move.
+
+This is the price of a derived validator, and it is worth naming rather than hiding: a hash
+of the body could never have this problem, because the projection's output *was* the input.
+The constant is the deliberate, one-line replacement for that property — and the docstring on
+it says when to bump.
 
 This is sound because `messages` is a pure function of the session id and the revision:
 `projectMessagesForWire` on the history path derives everything from the rows it is handed
@@ -111,16 +127,17 @@ cursor cannot get from `MAX(id)`.
 |---|---|
 | `src/server/shared/database.ts` | `transcript_revisions` + the three triggers; `clearAll` ordering |
 | `src/server/orchestrator/chat-history.ts` | `transcriptRevision(sessionId)` |
-| `src/server/orchestrator/api-routes-session-spawn.ts` | the composed validator; `304` before the transcript is read |
+| `src/server/orchestrator/api-routes-session-spawn.ts` | `HISTORY_VALIDATOR_VERSION`; the composed validator; `304` before the transcript is read |
 | `src/server/orchestrator/http-etag.ts` | unchanged — weak comparison, for the CDN |
 | `src/client/utils/session-data.ts` | unchanged — sends `If-None-Match`, reuses the cached payload on `304` |
 
 ## Tests
 
 - `chat-history.test.ts` → *"transcript revision (planning#324)"* — a case per mutating
-  method (21 of them), plus the explicit `MAX(id)`/`COUNT(*)`-unchanged case, session
-  scoping, durability, and no-rewind-after-delete. Dropping the `UPDATE` trigger fails 14 of
-  them.
+  method (21 of them), plus the explicit `MAX(id)`/`COUNT(*)`-unchanged case, a raw SQL write
+  that goes around the manager entirely (the property the trigger design has and a
+  hand-placed bump cannot), session scoping, durability, and no-rewind-after-delete. Dropping
+  the `UPDATE` trigger fails 14 of them.
 - `database.test.ts` → *"transcript revision triggers"* — raw SQL moves the counter, and
   `clearAll` empties the table instead of resurrecting it.
 - `integration_tests/history-conditional-refetch.test.ts` — the route over the real

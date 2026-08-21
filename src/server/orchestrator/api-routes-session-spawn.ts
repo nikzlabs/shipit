@@ -41,6 +41,23 @@ import {
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 
+/**
+ * planning#324 — the wire-shape half of the `/history` validator.
+ *
+ * The transcript revision covers the session's ROWS. This constant covers the
+ * one input the rows cannot see: how those rows are RENDERED. A change to
+ * `projectMessagesForWire` — a new field, a different clamp, a reshaped tool
+ * result — changes the response body without any write to `messages`, so every
+ * validator a client already holds stays valid against a payload that is no
+ * longer shaped the way it was cached. The client would keep serving the old
+ * shape from its cache until the entry ages out of the 6-entry LRU or the page
+ * reloads.
+ *
+ * **Bump it when the projection's output shape changes without a data change.**
+ * One move invalidates every held validator at once.
+ */
+const HISTORY_VALIDATOR_VERSION = 1;
+
 export async function registerSessionSpawnRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -184,9 +201,16 @@ export async function registerSessionSpawnRoutes(
     // strong a statement as the body hash was. What it must NOT become is a
     // stamp that speaks for a source it does not read: the payload is assembled
     // from seven independent sources, and one forgotten source is a permanently
-    // stale surface for the client.
+    // stale surface for the client. `HISTORY_VALIDATOR_VERSION` carries the
+    // eighth input, which is not a source at all — the wire projection's own
+    // shape, which no counter derived from the data can see.
     const transcriptRevision = deps.chatHistoryManager.transcriptRevision(request.params.id);
-    const etag = etagFor(JSON.stringify([request.params.id, transcriptRevision, rest]));
+    const etag = etagFor(JSON.stringify([
+      HISTORY_VALIDATOR_VERSION,
+      request.params.id,
+      transcriptRevision,
+      rest,
+    ]));
     // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
     // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
     if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {

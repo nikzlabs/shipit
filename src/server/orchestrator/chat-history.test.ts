@@ -1766,6 +1766,25 @@ describe("ChatHistoryManager", () => {
     });
 
     /**
+     * The mechanism is the trigger, not the methods above it: a write that goes
+     * around `ChatHistoryManager` entirely — hand-written SQL, `clearAll`, a
+     * method somebody adds next year — still moves the validator. This is what
+     * makes "every write path moves it" true by construction rather than by
+     * convention, and it is the one property a hand-placed bump cannot have.
+     */
+    it("moves for a raw SQL write that goes around the manager", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "assistant", text: "original" });
+      const before = mgr.transcriptRevision("s1");
+
+      dbManager.db
+        .prepare("UPDATE messages SET content = ? WHERE session_id = ?")
+        .run("patched behind the manager's back", "s1");
+
+      expect(mgr.transcriptRevision("s1")).toBeGreaterThan(before);
+    });
+
+    /**
      * The issue's central subtlety, made executable: a card lifecycle
      * transition patches its row, so a validator built from the row count and
      * the largest id would report "unchanged" over a transcript that changed.
