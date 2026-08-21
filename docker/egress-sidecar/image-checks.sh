@@ -69,6 +69,24 @@ for b in iptables ip6tables ipset dig curl bash dnsmasq; do
   fi
 done
 
+# --- 1b. dnsmasq must have ipset support COMPILED IN -----------------------
+# Tier B is resolve-and-pin: egress-dns.ts emits `ipset=/<domain>/<set4>,<set6>`
+# directives so a resolved IP lands in the firewall's allow-set as it is answered.
+# That is a dnsmasq COMPILE-TIME option, not a runtime flag — an Alpine rebuild
+# that dropped it would still install a perfectly working dnsmasq, and Tier B
+# would fail when the config loads, long after CI went green.
+#
+# Match the exact token, not a substring: the option list also contains
+# `no-nftset`, and an absent feature is spelled `no-ipset`, so a substring test
+# would give the wrong answer in both directions.
+echo
+echo "=== dnsmasq compile options ==="
+if dnsmasq --version 2>&1 | tr ' ' '\n' | grep -qx 'ipset'; then
+  ok "dnsmasq has ipset support"
+else
+  fail "dnsmasq was built WITHOUT ipset support — Tier B's ipset= directives will not load"
+fi
+
 # --- 2. The dedicated uids -------------------------------------------------
 # The whole containment story rests on these two numbers matching the orchestrator.
 # The firewall allows port-53 egress ONLY for the resolver uid, and excludes the
@@ -104,7 +122,11 @@ check_uid egressproxy "$PROXY_UID"
 # sni-proxy parses NO command-line flags: it is configured entirely from the
 # environment, then listens and blocks on Accept(). So there is no --help or
 # --version to probe -- passing one does not print usage, it just starts the
-# proxy and hangs. Start it, require the listen line, then interrupt it.
+# proxy and hangs.
+#
+# Run it as the uid production runs it as: egress-proxy-install.ts sets
+# `User: EGRESS_PROXY_UID` on the container. Binding :8443 needs no privilege, so
+# starting it as root here would be a weaker test than the thing we actually ship.
 #
 # This doubles as the CGO/musl check. The Dockerfile builds with CGO_ENABLED=0 for
 # a static binary; if that regressed, the dynamic loader would fail here before any
@@ -112,15 +134,33 @@ check_uid egressproxy "$PROXY_UID"
 # wording for a static binary is a musl implementation detail, whereas "the binary
 # runs" is the property that matters.
 echo
-echo "=== sni-proxy ==="
+echo "=== sni-proxy (as uid $PROXY_UID) ==="
 echo "linkage: $(ldd /usr/local/bin/sni-proxy 2>&1 | head -1)"
 proxy_log=/tmp/sni-proxy.log
-timeout -s INT 5 /usr/local/bin/sni-proxy >"$proxy_log" 2>&1 || true
+: >"$proxy_log"
+su egressproxy -s /bin/sh -c '/usr/local/bin/sni-proxy' >"$proxy_log" 2>&1 &
+# Poll for the listen line instead of sleeping a fixed interval, so a slow runner
+# does not produce a flaky failure and a fast one does not pay for the wait.
+i=0
+while [ "$i" -lt 50 ]; do
+  if grep -q 'listening on' "$proxy_log"; then break; fi
+  sleep 0.1
+  i=$((i + 1))
+done
 if grep -q 'listening on' "$proxy_log"; then
   ok "sni-proxy started: $(head -1 "$proxy_log")"
+  # The log line on its own is not proof of a working proxy: a binary that printed
+  # it and then died immediately would still leave it in the file. Requiring the
+  # socket to still be held turns this into a liveness check.
+  if netstat -lnt 2>/dev/null | grep -q '127\.0\.0\.1:8443'; then
+    ok "sni-proxy still holds 127.0.0.1:8443"
+  else
+    fail "sni-proxy logged its listen line but no longer holds 127.0.0.1:8443"
+  fi
 else
   fail "sni-proxy never reached its listen line; output: $(head -5 "$proxy_log")"
 fi
+killall sni-proxy 2>/dev/null || true
 
 # --- 4. The shell scripts --------------------------------------------------
 # A base-image bump moves bash too (5.2 -> 5.3 in the alpine 3.20 -> 3.24 bump).

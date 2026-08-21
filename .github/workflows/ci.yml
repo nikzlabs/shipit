@@ -93,7 +93,14 @@ jobs:
           # narrow gate: the Dockerfile plus everything that goes into it (the tier
           # scripts, the Go proxy source, these checks). Kept separate from `code`
           # because a normal TypeScript PR should not pay for a Docker build.
-          if printf '%s\n' "$changed" | grep -qE '^docker/(Dockerfile\.egress-sidecar$|egress-sidecar/)'; then
+          #
+          # The two egress-*.ts files are in here because the job reads the expected
+          # uids OUT of them. Without them, a PR that deliberately changes a uid — the
+          # one PR that can actually cause the image/orchestrator drift this job exists
+          # to catch — would be exactly the PR that skips the job, and would merge with
+          # the image still on the old uid. ci.yml is in here so a change to the job
+          # exercises the job.
+          if printf '%s\n' "$changed" | grep -qE '^(docker/Dockerfile\.egress-sidecar|src/server/orchestrator/egress-dns\.ts|src/server/orchestrator/egress-proxy-install\.ts|\.github/workflows/ci\.yml)$|^docker/egress-sidecar/'; then
             echo "egress=true" >> "$GITHUB_OUTPUT"
           else
             echo "egress=false" >> "$GITHUB_OUTPUT"
@@ -180,6 +187,34 @@ jobs:
       # Build context is `docker/`, matching the Dockerfile's own header and deploy.sh.
       - name: Build the sidecar image
         run: docker build -f docker/Dockerfile.egress-sidecar -t shipit-egress-sidecar:ci docker/
+      # Asserted here rather than in image-checks.sh because that script runs with the
+      # entrypoint overridden to `sh`, so from inside the container it cannot observe
+      # what the default actually is.
+      - name: Verify the image's default entrypoint and user
+        run: |
+          set -euo pipefail
+          # Tier A runs on the image DEFAULT entrypoint: installEgressFirewall() in
+          # src/server/orchestrator/egress-firewall-install.ts creates its container
+          # with no Entrypoint override, so whatever the image defaults to is what
+          # installs containment. A default that silently became a *successful* no-op
+          # — say allow-subnet.sh, which is right there in the same image — would exit
+          # zero, install nothing, and be indistinguishable from success to the caller.
+          entrypoint=$(docker image inspect shipit-egress-sidecar:ci --format '{{json .Config.Entrypoint}}')
+          echo "default entrypoint: $entrypoint"
+          if [ "$entrypoint" != '["/usr/local/bin/init-firewall.sh"]' ]; then
+            echo "Unexpected default entrypoint — Tier A installs containment through it." >&2
+            echo "See installEgressFirewall() in src/server/orchestrator/egress-firewall-install.ts." >&2
+            exit 1
+          fi
+          # Tier A needs root to exercise NET_ADMIN. The non-root uids in this image are
+          # applied per-container by the orchestrator (the resolver and proxy sidecars),
+          # never as an image-wide default, so a default USER here would break Tier A.
+          user=$(docker image inspect shipit-egress-sidecar:ci --format '{{.Config.User}}')
+          if [ -n "$user" ]; then
+            echo "Image sets a default USER ('$user'); Tier A's installer expects root." >&2
+            exit 1
+          fi
+          echo "default user: root (unset), as Tier A requires"
       - name: Verify the image's contract with the orchestrator
         run: |
           set -euo pipefail
