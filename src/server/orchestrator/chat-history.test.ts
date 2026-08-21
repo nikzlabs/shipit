@@ -1590,4 +1590,164 @@ describe("ChatHistoryManager", () => {
       expect(mgr.consumeUnreportedBugOutcomes("s2")).toHaveLength(1);
     });
   });
+
+  /**
+   * planning#324 / docs/278-conditional-history-refetch — the `GET /history`
+   * validator. Every path that mutates a session's persisted transcript must
+   * move it; a path that doesn't is a stale 304 for whatever that path wrote.
+   * The counter is maintained by row-level triggers on `messages` (see the
+   * migration in `database.ts`), so these tests guard the *contract* — if the
+   * triggers were ever replaced by per-method bumps, each `it` below names a
+   * method such a rewrite could forget.
+   */
+  describe("transcript revision (planning#324)", () => {
+    let mgr: ChatHistoryManager;
+
+    beforeEach(() => {
+      mgr = new ChatHistoryManager(dbManager);
+    });
+
+    /** The validator the issue rules out, asserted unchanged where it matters. */
+    const maxIdAndCount = (sessionId: string) =>
+      dbManager.db
+        .prepare("SELECT MAX(id) AS maxId, COUNT(*) AS count FROM messages WHERE session_id = ?")
+        .get(sessionId) as { maxId: number | null; count: number };
+
+    it("is 0 for a session nothing has written, and moves on append", () => {
+      expect(mgr.revision("s1")).toBe(0);
+      mgr.append("s1", { role: "user", text: "Hello" });
+      expect(mgr.revision("s1")).toBe(1);
+      mgr.append("s1", { role: "assistant", text: "Hi" });
+      expect(mgr.revision("s1")).toBe(2);
+    });
+
+    it("does not move on reads", () => {
+      mgr.append("s1", { role: "assistant", text: "Hi" });
+      const before = mgr.revision("s1");
+      mgr.load("s1");
+      mgr.loadLatestAssistantText("s1");
+      mgr.listSubAgentConsultCards("s1");
+      mgr.hasInProgress("s1");
+      mgr.revision("s1");
+      expect(mgr.revision("s1")).toBe(before);
+    });
+
+    /**
+     * The subtlety the issue is explicit about: card lifecycle transitions
+     * patch a row under its existing id, so neither `MAX(id)` nor `COUNT(*)`
+     * moves while the content does. Each case seeds the all-cards fixture row
+     * and drives one patcher; the revision must move while the shape the
+     * rejected validator would read stands still.
+     */
+    const IN_PLACE_PATCHES: [string, (m: ChatHistoryManager, s: string) => unknown][] = [
+      ["updateBugReportCard", (m, s) => m.updateBugReportCard(s, "b1", { phase: "dismissed" })],
+      ["updatePermissionCard", (m, s) => m.updatePermissionCard(s, "p1", { phase: "denied" })],
+      ["updateEgressPromptCard", (m, s) => m.updateEgressPromptCard(s, "eg1", { phase: "added" })],
+      ["updateIssueWriteCard", (m, s) => m.updateIssueWriteCard(s, "iw1", { undoState: "undone" })],
+      ["updateSubAgentConsultCard", (m, s) => m.updateSubAgentConsultCard(s, "sac1", { status: "cancelled" })],
+      ["updateNonTurnFailureCard", (m, s) => m.updateNonTurnFailureCard(s, "ntf1", { dismissedAt: "2026-08-21T00:00:00.000Z" })],
+      ["upsertReleaseCard (patch path)", (m, s) => m.upsertReleaseCard(s, { ...EVERY_OPTIONAL_FIELD_MESSAGE.releaseCard!, phase: "proposed" })],
+      ["updateLastMessage", (m, s) => m.updateLastMessage(s, { commitHash: "deadbeef" })],
+      ["consumeUnreportedBugOutcomes", (m, s) => m.consumeUnreportedBugOutcomes(s)],
+    ];
+
+    it.each(IN_PLACE_PATCHES)(
+      "%s moves the revision while MAX(id) and COUNT(*) stand still",
+      (_name, patch) => {
+        mgr.append("s1", EVERY_OPTIONAL_FIELD_MESSAGE);
+        const before = mgr.revision("s1");
+        const shape = maxIdAndCount("s1");
+        patch(mgr, "s1");
+        expect(mgr.revision("s1")).toBeGreaterThan(before);
+        expect(maxIdAndCount("s1")).toEqual(shape);
+      },
+    );
+
+    it("moves on a full rewrite via saveMessages", () => {
+      mgr.append("s1", { role: "user", text: "One" });
+      const before = mgr.revision("s1");
+      mgr.saveMessages("s1", [{ role: "user", text: "Rewritten" }]);
+      expect(mgr.revision("s1")).toBeGreaterThan(before);
+    });
+
+    it("moves on the in-progress lifecycle: replace, finalize, clear", () => {
+      mgr.append("s1", { role: "user", text: "q", inProgress: true });
+      const afterSeed = mgr.revision("s1");
+
+      mgr.replaceInProgress("s1", [
+        { role: "user", text: "q", inProgress: true },
+        { role: "assistant", text: "a", inProgress: true },
+      ]);
+      const afterReplace = mgr.revision("s1");
+      expect(afterReplace).toBeGreaterThan(afterSeed);
+
+      mgr.finalizeInProgress("s1");
+      const afterFinalize = mgr.revision("s1");
+      expect(afterFinalize).toBeGreaterThan(afterReplace);
+
+      mgr.append("s1", { role: "assistant", text: "scratch", inProgress: true });
+      const beforeClear = mgr.revision("s1");
+      mgr.clearInProgress("s1");
+      expect(mgr.revision("s1")).toBeGreaterThan(beforeClear);
+    });
+
+    it("moves on truncate, row delete, session delete, and rollback marking", () => {
+      mgr.append("s1", { role: "user", text: "one" });
+      const secondId = mgr.append("s1", { role: "assistant", text: "two" });
+      mgr.append("s1", { role: "assistant", text: "three" });
+
+      let before = mgr.revision("s1");
+      const rolledBack = mgr.markRolledBackFromIndex("s1", 1, "c0ffee");
+      expect(mgr.revision("s1")).toBeGreaterThan(before);
+
+      before = mgr.revision("s1");
+      mgr.clearRolledBack("s1", rolledBack);
+      expect(mgr.revision("s1")).toBeGreaterThan(before);
+
+      before = mgr.revision("s1");
+      mgr.truncate("s1", 2);
+      expect(mgr.revision("s1")).toBeGreaterThan(before);
+
+      before = mgr.revision("s1");
+      mgr.deleteMessageById("s1", secondId);
+      expect(mgr.revision("s1")).toBeGreaterThan(before);
+
+      before = mgr.revision("s1");
+      mgr.delete("s1");
+      expect(mgr.revision("s1")).toBeGreaterThan(before);
+    });
+
+    it("never returns to an old value across delete + rewrite (no ABA)", () => {
+      mgr.append("s1", { role: "user", text: "one" });
+      const seen = mgr.revision("s1");
+      mgr.delete("s1");
+      mgr.append("s1", { role: "user", text: "reborn" });
+      // A counter that reset with the session would read `1` here — the exact
+      // value the pre-delete transcript was cached under, so a client holding
+      // that tag would get a stale 304 for a transcript that no longer exists.
+      expect(mgr.revision("s1")).toBeGreaterThan(seen);
+    });
+
+    it("is per-session: writes to one session leave another's untouched", () => {
+      mgr.append("s1", { role: "user", text: "mine" });
+      mgr.append("s2", { role: "user", text: "other" });
+      const s2 = mgr.revision("s2");
+      mgr.append("s1", { role: "assistant", text: "more" });
+      mgr.updateLastMessage("s1", { commitHash: "abc" });
+      expect(mgr.revision("s2")).toBe(s2);
+    });
+
+    /**
+     * The mechanism is the trigger, not the methods: a write that bypasses
+     * `ChatHistoryManager` entirely — hand-written SQL, `clearAll`, a method
+     * added next year — still moves the validator. This is what makes "every
+     * write path" true by construction rather than by convention.
+     */
+    it("moves for a raw SQL write that goes around the manager", () => {
+      mgr.append("s1", { role: "assistant", text: "original" });
+      const before = mgr.revision("s1");
+      dbManager.db.prepare("UPDATE messages SET content = 'patched behind the manager''s back' WHERE session_id = ?").run("s1");
+      expect(mgr.revision("s1")).toBeGreaterThan(before);
+    });
+  });
 });

@@ -538,6 +538,7 @@ export class ChatHistoryManager {
   private stmtFinalizeRowById;
   private stmtDeleteRowById;
   private stmtDeleteExpiredSnapshots;
+  private stmtRevision;
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
@@ -616,6 +617,35 @@ export class ChatHistoryManager {
     this.stmtFinalizeRowById = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE id = ?");
     this.stmtDeleteRowById = this.db.prepare("DELETE FROM messages WHERE id = ?");
     this.stmtDeleteExpiredSnapshots = this.db.prepare("DELETE FROM rewind_snapshots WHERE expires_at_ms <= ?");
+    // planning#324 — see `revision()`.
+    this.stmtRevision = this.db.prepare("SELECT revision FROM history_revisions WHERE session_id = ?");
+  }
+
+  /**
+   * planning#324 / docs/278-conditional-history-refetch — the session's transcript
+   * revision: a monotonic counter that moves on EVERY write to this session's
+   * `messages` rows — appends, in-place card patches, rewrites via
+   * `saveMessages`, finalize/clear sweeps, deletes. `0` for a session nothing
+   * has ever written.
+   *
+   * This is the `GET /history` validator: equal revisions mean the persisted
+   * transcript is byte-identical, so the route can answer `304` without
+   * loading or serializing a single message row. It is deliberately NOT
+   * `MAX(id)` + `COUNT(*)` — the card lifecycle patches (`updateBugReportCard`
+   * and siblings) rewrite a row under its existing id, which changes neither.
+   *
+   * Maintained by row-level triggers on `messages` (see the migration in
+   * `database.ts`), not by bumps in the methods here, so a write path added
+   * later cannot miss it. Never reset while the database lives — monotonicity
+   * is what makes "same value ⇒ same transcript" true (no ABA), so the counter
+   * row survives `delete(sessionId)` on purpose.
+   *
+   * planning#268 (windowed history) wants this same primitive to invalidate a
+   * paging cursor after a rewrite; keep it session-scoped and monotonic.
+   */
+  revision(sessionId: string): number {
+    const row = this.stmtRevision.get(sessionId) as { revision: number } | undefined;
+    return row?.revision ?? 0;
   }
 
   private toRow(sessionId: string, msg: PersistedMessage) {

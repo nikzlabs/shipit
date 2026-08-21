@@ -36,6 +36,26 @@ export function etagFor(body: string): string {
 }
 
 /**
+ * planning#324 — a validator for a response with one part too big to rebuild
+ * per request: a monotonic revision counter speaks for that part, and the
+ * hash speaks for exactly the rest.
+ *
+ * `etagFor` requires the whole body in hand, which is what made every
+ * `/history` revalidation rebuild and serialize the entire transcript just to
+ * answer "unchanged". The transcript's own validator is
+ * `ChatHistoryManager.revision()` — equal revisions mean zero writes happened,
+ * which is a stronger statement than equal hashes — so only the small
+ * remainder still needs hashing. Both halves keep the property the docstring
+ * above is about: neither can silently forget a source, because the revision
+ * is trigger-maintained and the remainder hash covers the exact object sent.
+ *
+ * Opaque to the client, compared (never parsed) via `matchesIfNoneMatch`.
+ */
+export function composedEtag(revision: number, remainder: string): string {
+  return `"${revision}-${createHash("sha1").update(remainder).digest("base64url")}"`;
+}
+
+/**
  * Does the client already hold this exact representation?
  *
  * Handles the three things a real `If-None-Match` can be that a `===` cannot:

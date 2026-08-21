@@ -1409,6 +1409,49 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "muted_at");
   },
+  // planning#324 / docs/278-conditional-history-refetch — the per-session transcript
+  // revision: a monotonic counter that moves on EVERY write to a session's
+  // `messages` rows. It is the `GET /history` validator (and the primitive
+  // planning#268's paging-cursor invalidation wants), so the one property that
+  // matters is that no write path can miss it. Hence TRIGGERS rather than
+  // manual bumps in `ChatHistoryManager`: the manager has ~20 mutating methods
+  // (appends, in-place card patches through `stmtUpdate`, rewrites via
+  // `saveMessages`, finalize/clear sweeps, raw deletes), several of which
+  // change neither `MAX(id)` nor `COUNT(*)` — and a bump someone forgets in a
+  // future method is a stale 304, silently. A row-level trigger cannot be
+  // forgotten: it fires for `clearAll()` and hand-written SQL too.
+  //
+  // `INSERT OR IGNORE` + `UPDATE` instead of an UPSERT because the pair is the
+  // same two indexed row touches while staying valid inside a trigger body on
+  // every SQLite this project has ever shipped with.
+  //
+  // The counter never resets while the database lives (the row deliberately
+  // outlives `ChatHistoryManager.delete(sessionId)`): a delete-then-rewrite
+  // that re-counted from zero could revisit an old value, and a validator that
+  // can repeat a value can serve a stale 304 for it (the ABA problem).
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS history_revisions (
+        session_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TRIGGER IF NOT EXISTS trg_messages_history_revision_insert
+      AFTER INSERT ON messages BEGIN
+        INSERT OR IGNORE INTO history_revisions (session_id, revision) VALUES (NEW.session_id, 0);
+        UPDATE history_revisions SET revision = revision + 1 WHERE session_id = NEW.session_id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_messages_history_revision_update
+      AFTER UPDATE ON messages BEGIN
+        INSERT OR IGNORE INTO history_revisions (session_id, revision) VALUES (NEW.session_id, 0);
+        UPDATE history_revisions SET revision = revision + 1 WHERE session_id = NEW.session_id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_messages_history_revision_delete
+      AFTER DELETE ON messages BEGIN
+        INSERT OR IGNORE INTO history_revisions (session_id, revision) VALUES (OLD.session_id, 0);
+        UPDATE history_revisions SET revision = revision + 1 WHERE session_id = OLD.session_id;
+      END;
+    `);
+  },
 ];
 
 /**
@@ -1493,6 +1536,11 @@ export class DatabaseManager {
   clearAll(): void {
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM messages").run();
+      // After the messages delete, not before: the per-row revision triggers
+      // re-create rows here while that delete runs. A full reset erases every
+      // session id forever, so the anti-ABA "never reset a live session's
+      // counter" rule does not apply to this path.
+      this.db.prepare("DELETE FROM history_revisions").run();
       this.db.prepare("DELETE FROM usage_turns").run();
       this.db.prepare("DELETE FROM sessions").run();
       this.db.prepare("DELETE FROM repos").run();

@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
+import { composedEtag, matchesIfNoneMatch } from "./http-etag.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
@@ -99,7 +99,12 @@ export async function registerSessionSpawnRoutes(
       reply.code(404).send({ error: "Session not found" });
       return;
     }
-    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
+    // planning#324 — the transcript's validator, read BEFORE any message rows.
+    // A write landing between this read and the (conditional) message load
+    // below makes the served body NEWER than the tag claims, which costs one
+    // redundant 200 on the next revalidation; reading the rows first would
+    // invert that into a tag newer than the body — a stale 304.
+    const revision = deps.chatHistoryManager.revision(request.params.id);
 
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
     if (session.workspaceDir) {
@@ -152,8 +157,10 @@ export async function registerSessionSpawnRoutes(
     // idempotent by presentId, so this and the WS replay can't double-render.
     const presentations = deps.presentStore?.listForClient(request.params.id) ?? [];
 
-    const payload = {
-      messages,
+    // Everything in the payload EXCEPT the messages. Kept as one object so the
+    // hash below covers, by construction, exactly what a 200 sends — a new
+    // field added here is inside the validator before it is on the wire.
+    const rest = {
       commits,
       agentRunning,
       backgroundTasks,
@@ -165,23 +172,32 @@ export async function registerSessionSpawnRoutes(
       presentations,
     };
 
-    // planning#375 — revalidate instead of re-download. Switching between
-    // sessions is constant, and this response is megabytes on a long one.
+    // planning#375 — revalidate instead of re-download: switching between
+    // sessions and re-foregrounding a tab are constant, and this response is
+    // megabytes on a long session.
     //
-    // The tag is the hash of the BODY, not a composed version stamp, and that
-    // is the point: the payload is assembled from seven independent sources
-    // (chat rows, git log, runner state, background tasks, usage, presentations,
-    // rewind snapshot), so a stamp that forgets one serves a stale transcript.
-    // Hashing what is about to be sent cannot be wrong. It saves the transfer
-    // and the client's parse, not the server-side build.
-    const body = JSON.stringify(payload);
-    const etag = etagFor(body);
+    // planning#324 — the validator is in two parts, so answering "unchanged" no
+    // longer costs the full server-side rebuild either:
+    //
+    //   - The MESSAGES — the megabytes — are spoken for by the per-session
+    //     revision counter, which row-level triggers move on every write to the
+    //     `messages` table (appends, the in-place card patches that change
+    //     neither `MAX(id)` nor `COUNT(*)`, and rewrites alike — see
+    //     `ChatHistoryManager.revision`). Equal revision ⇒ identical persisted
+    //     transcript, with the rows never read, projected, or serialized.
+    //   - The REST is hashed exactly as planning#375 hashed the whole body: the
+    //     hashed object IS the object sent, so a stamp cannot forget one of the
+    //     six independent non-transcript sources and serve it stale.
+    const restBody = JSON.stringify(rest);
+    const etag = composedEtag(revision, restBody);
     // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
     // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
     if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
       reply.code(304).send();
       return;
     }
+    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
+    const body = JSON.stringify({ messages, ...rest });
     // `no-cache` = revalidate every time, never serve blind from the browser's
     // own cache. A stale transcript is worse than a round trip.
     reply.header("etag", etag).header("cache-control", "no-cache").type("application/json");

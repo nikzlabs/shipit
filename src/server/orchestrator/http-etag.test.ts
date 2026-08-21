@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
+import { composedEtag, etagFor, matchesIfNoneMatch } from "./http-etag.js";
 
 describe("etagFor", () => {
   it("is stable for the same bytes and different for different ones", () => {
@@ -10,6 +10,26 @@ describe("etagFor", () => {
   it("is a quoted strong tag", () => {
     expect(etagFor("x")).toMatch(/^"[A-Za-z0-9_-]+"$/);
   });
+});
+
+describe("composedEtag (planning#324)", () => {
+  it("is stable for the same inputs", () => {
+    expect(composedEtag(3, "rest")).toBe(composedEtag(3, "rest"));
+  });
+
+  it("changes when either half moves", () => {
+    expect(composedEtag(3, "rest")).not.toBe(composedEtag(4, "rest"));
+    expect(composedEtag(3, "rest")).not.toBe(composedEtag(3, "rest "));
+  });
+
+  it("is a quoted tag the weak comparison accepts back", () => {
+    const tag = composedEtag(7, "rest");
+    expect(tag).toMatch(/^"[A-Za-z0-9_-]+"$/);
+    // The round trip that matters in production: Cloudflare weakens the tag
+    // and the browser echoes `W/"…"`.
+    expect(matchesIfNoneMatch(`W/${tag}`, tag)).toBe(true);
+  });
+
 });
 
 describe("matchesIfNoneMatch", () => {

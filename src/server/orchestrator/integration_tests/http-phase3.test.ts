@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -175,6 +175,90 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(second.statusCode).toBe(200);
       expect(second.headers.etag).not.toBe(etag);
       expect(second.json().messages).toHaveLength(2);
+    });
+
+    /**
+     * planning#324 — the in-place mutation the issue is explicit about. A card
+     * lifecycle transition patches a row under its existing id, so a validator
+     * built from `MAX(id)` + `COUNT(*)` would answer 304 and strand the card in
+     * its old phase on every reload. The trigger-maintained revision must not
+     * be fooled.
+     */
+    it("does not answer 304 across an in-place card patch", async () => {
+      await createSession("etag-s3", "ETag session 3");
+      chatHistoryManager.append("etag-s3", {
+        role: "assistant",
+        text: "",
+        bugReport: { cardId: "bug-1", phase: "draft", title: "T", body: "B", stage2Ran: true, producer: "session" },
+      });
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-s3/history" });
+      const etag = first.headers.etag!;
+
+      chatHistoryManager.updateBugReportCard("etag-s3", "bug-1", {
+        phase: "filed",
+        issueNumber: 7,
+        issueUrl: "https://github.com/o/r/issues/7",
+      });
+
+      const second = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s3/history",
+        headers: { "if-none-match": etag },
+      });
+      expect(second.statusCode).toBe(200);
+      expect(second.headers.etag).not.toBe(etag);
+      expect(second.json().messages[0].bugReport.phase).toBe("filed");
+    });
+
+    /**
+     * planning#324 — the transcript revision speaks only for the messages; every
+     * other payload source is still validated by the hash of exactly what a 200
+     * sends. A change outside the transcript must refresh the tag, or the 304
+     * would serve it stale from the client's cache.
+     */
+    it("does not answer 304 across a non-transcript change", async () => {
+      await createSession("etag-s4", "ETag session 4");
+      chatHistoryManager.append("etag-s4", { role: "user", text: "Hello" });
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-s4/history" });
+      const etag = first.headers.etag!;
+
+      // A rewind snapshot lives in its own table — no `messages` row moves, so
+      // only the remainder hash can catch it.
+      chatHistoryManager.createRewindSnapshot("etag-s4", {
+        action: "chat",
+        messages: [{ role: "user", text: "Hello" }],
+      });
+
+      const second = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s4/history",
+        headers: { "if-none-match": etag },
+      });
+      expect(second.statusCode).toBe(200);
+      expect(second.json().rewindSnapshot).not.toBeNull();
+    });
+
+    /**
+     * planning#324 — the point of the revision half of the validator: answering
+     * "unchanged" must not rebuild what it elides. Before this, every alt-tab
+     * revalidation loaded, projected, and serialized the entire transcript just
+     * to hash it and throw it away.
+     */
+    it("answers 304 without reading a single message row", async () => {
+      await createSession("etag-s5", "ETag session 5");
+      chatHistoryManager.append("etag-s5", { role: "user", text: "Hello" });
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-s5/history" });
+      const etag = first.headers.etag!;
+
+      const load = vi.spyOn(chatHistoryManager, "load");
+      const revalidated = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s5/history",
+        headers: { "if-none-match": etag },
+      });
+      expect(revalidated.statusCode).toBe(304);
+      expect(load).not.toHaveBeenCalled();
+      load.mockRestore();
     });
 
     /** planning#375 — the tree left `/history`, so it needs its own validator. */
