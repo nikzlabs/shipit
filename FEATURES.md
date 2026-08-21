@@ -152,9 +152,6 @@ start at the [README](README.md).
   needs, with Git and session-scoped Docker granted as explicit capability toggles at creation
 - **Permission modes** — choose how much autonomy the agent has per session
 - **Live steering** — interrupt and redirect the agent mid-turn without losing context
-- **Mute a session** — silence a session that is asking for you, until its next turn starts, without
-  archiving it or changing anything else about it; the mute is stored with the session, so it holds
-  on every device you open it from
 - **Session sidebar** — pinned sessions, AI-generated session names the agent keeps current as the
   work changes (until you rename one yourself), status indicators, and a hide toggle for repositories
   you're not working in right now. A **Needs you** view switches the list to just the sessions
@@ -187,9 +184,6 @@ start at the [README](README.md).
   agent you already have to "install ShipIt" is a working path: it asks you the choices in chat and
   answers the installer for you. Run it yourself and the same questions arrive as an arrow-key
   checklist, including which agent CLIs to install
-- **Nothing to finish before you look around** — connecting an agent subscription is a panel in the
-  conversation view, not a gate over the product: sessions, files, previews, the terminal, and
-  settings all work before you have connected one, and the composer says what it needs
 - **Reachable from your phone** — a local install stays on loopback by default and can add a
   Tailscale binding alongside it, so you keep working from a phone without opening a port
 
