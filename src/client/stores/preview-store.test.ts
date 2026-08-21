@@ -25,10 +25,17 @@ describe("preview-store device viewport", () => {
       expect(usePreviewStore.getState().devicePreset).toBeNull();
     });
 
-    it("clears customSize when switching to a non-custom preset", () => {
+    it("keeps the custom size when switching to a named preset, so Custom mode restores it", () => {
       usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
       usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
-      expect(usePreviewStore.getState().customSize).toBeNull();
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
+    });
+
+    it("keeps the custom size when returning to Responsive", () => {
+      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+      usePreviewStore.getState().setDevicePreset(null);
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
     });
   });
 

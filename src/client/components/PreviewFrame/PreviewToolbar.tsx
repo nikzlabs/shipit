@@ -219,8 +219,10 @@ export function PreviewToolbar({
               isLandscape={isLandscape}
               customSize={customSize}
               onSelectPreset={(preset) => {
+                // No customSize clearing here: the custom size is remembered
+                // independently of the active preset (see preview-store), so
+                // going Responsive and back to Custom restores the last size.
                 setDevicePreset(preset);
-                if (!preset) setCustomSize(null);
               }}
               onToggleLandscape={toggleLandscape}
               onCustomSize={(width, height) => {

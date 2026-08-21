@@ -210,4 +210,19 @@ describe("DeviceSelector", () => {
       expect(screen.queryByText("Phones")).not.toBeInTheDocument();
     });
   });
+
+  it("closes dropdown when Escape is pressed from the custom-size inputs", async () => {
+    // The custom-size row stops keydown propagation so typing cannot activate
+    // menu rows — which also used to swallow Escape and leave the menu open
+    // with a dead key. Escape must reach Radix's document listener.
+    const user = userEvent.setup();
+    render(<DeviceSelector {...baseProps} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    const widthInput = screen.getByLabelText("Custom width");
+    await user.click(widthInput);
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByText("Phones")).not.toBeInTheDocument();
+    });
+  });
 });

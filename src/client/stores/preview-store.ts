@@ -183,7 +183,14 @@ interface PreviewState {
   devicePreset: DevicePreset | null;
   /** True when the active preset is rotated to landscape (swap width/height). */
   isLandscape: boolean;
-  /** Custom user-entered viewport size (separate from named presets). */
+  /**
+   * The last freeform viewport size the user applied, independent of the
+   * active preset. Like `isLandscape`, it is remembered for the session and
+   * round-trips through snapshots, but is never derived from — or destroyed by
+   * — the current preset: loading a named preset must not forget a custom size
+   * the user spent time entering, and "Custom" mode restores it when
+   * re-entered. Cleared only by `setCustomSize(null)` (the session reset).
+   */
   customSize: { width: number; height: number } | null;
 
   /** Saved preview state per session, keyed by sessionId. */
@@ -258,7 +265,7 @@ interface PreviewState {
   setDevicePreset: (preset: DevicePreset | null) => void;
   /** Swap width and height on the active preset. */
   toggleLandscape: () => void;
-  /** Set a custom viewport size; selecting null clears it. */
+  /** Set the custom viewport size; selecting null clears it (session reset only). */
   setCustomSize: (size: { width: number; height: number } | null) => void;
   /** Save current top-level state into sessionSnapshots[sessionId]. */
   snapshotSession: (sessionId: string) => void;
@@ -511,7 +518,10 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   setPreviewProxyError: (previewProxyError) => set({ previewProxyError }),
 
   setDevicePreset: (devicePreset) =>
-    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null }),
+    // Deliberately does NOT touch `customSize`: the custom size is a remembered
+    // freeform viewport (its own mode) and must survive switching to a named
+    // preset and back. Only `setCustomSize(null)` clears it.
+    set({ devicePreset }),
 
   toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
 

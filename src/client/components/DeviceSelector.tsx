@@ -145,8 +145,14 @@ export function DeviceSelector({
           <DropdownMenuLabel>Custom</DropdownMenuLabel>
           <div
             className="px-3 py-2 flex flex-col gap-1"
-            // Prevent dropdown from closing when interacting with the inputs
-            onKeyDown={(e) => e.stopPropagation()}
+            // Prevent dropdown from closing when interacting with the inputs —
+            // except Escape, which must close the menu like everywhere else
+            // (Radix listens on the document, so stopping the keydown there
+            // turns Escape into a dead key while an input has focus).
+            onKeyDown={(e) => {
+              if (e.key === "Escape") return;
+              e.stopPropagation();
+            }}
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="flex items-center gap-1.5">
