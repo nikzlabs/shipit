@@ -691,6 +691,28 @@ describe("serviceRoutingForSelection", () => {
     ).toBeUndefined();
   });
 
+  it("delivers an env-supplied subscription token as a bearer token, not an x-api-key (planning#354)", () => {
+    // An install authenticating Anthropic's subscription with a supplied
+    // `ANTHROPIC_AUTH_TOKEN` resolves the `claude-env-oauth` reserved route,
+    // which DOES shape `anthropic:sub` — and the catalogue's `targetOverride`
+    // (same shape as GLM's) must keep the token under `ANTHROPIC_AUTH_TOKEN`.
+    // Before the override, the target was the harness default
+    // `ANTHROPIC_API_KEY`, which the CLI sends as an `x-api-key` header.
+    expect(
+      serviceRoutingForSelection(
+        "claude",
+        { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
+        { kind: "reserved", id: "claude-env-oauth" },
+        storeHolding(),
+      ),
+    ).toMatchObject({
+      serviceId: "anthropic",
+      billingMode: "sub",
+      credentialSourceEnv: "ANTHROPIC_AUTH_TOKEN",
+      credentialTarget: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" },
+    });
+  });
+
   it("has nothing to shape for a session with no selection", () => {
     expect(serviceRoutingForSelection("claude", undefined, null, storeHolding())).toBeUndefined();
   });

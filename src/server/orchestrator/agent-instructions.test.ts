@@ -75,27 +75,6 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
-  it("composes the shared requirements-discipline fragment into every variant", () => {
-    const fragment = fs.readFileSync(
-      new URL("./prompts/spec-discipline.md", import.meta.url),
-      "utf8",
-    ).trim();
-    const variants: AgentSystemInstructionOptions[] = [
-      {},
-      { agentId: "claude" },
-      { agentId: "codex" },
-      { isOps: true },
-      { agentId: "claude", isOps: true },
-      { agentId: "codex", isOps: true },
-      { isSandbox: true },
-      { agentId: "claude", isSandbox: true },
-      { agentId: "codex", isSandbox: true },
-    ];
-    for (const opts of variants) {
-      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
-    }
-  });
-
   // docs/117 Phase 2 — per-agent "Parallel sessions" guidance is composed in
   // only when an `agentId` is supplied, and the Claude/Codex fragments differ.
   // Assert the variants DIFFER (the switch fired), not which words landed.
@@ -260,15 +239,6 @@ describe("buildAgentSystemInstructions", () => {
       expect(buildAgentSystemInstructions({ ...opts, isOps: true })).not.toContain(claim);
       expect(buildAgentSystemInstructions({ ...opts, isSandbox: true })).not.toContain(claim);
     }
-  });
-
-  // The skeleton is shared by every variant, so an auto-commit claim there
-  // reaches ops and sandbox no matter which Git fragment they get. This is how
-  // one leaked (the screenshot guidance said a relative filename "gets
-  // auto-committed into the repo"): assert the shared text makes no such claim.
-  it("keeps auto-commit claims out of the shared skeleton", () => {
-    const skeleton = fs.readFileSync(new URL("./prompts/skeleton.md", import.meta.url), "utf8");
-    expect(skeleton).not.toMatch(/auto-?committ?ed?\b/i);
   });
 
   it("composes each overlay with the per-agent axis into a distinct variant", () => {

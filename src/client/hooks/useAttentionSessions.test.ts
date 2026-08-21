@@ -43,4 +43,21 @@ describe("useAttentionSessions", () => {
 
     expect([...result.current]).toEqual(["live"]);
   });
+
+  it("excludes a muted session, and takes it back when the mute is gone (docs/277)", () => {
+    // The "Needs you" view and its count are the same membership as the row
+    // marker, so a mute has to drop the session out of both together (req 2).
+    const sessions = [session({ id: "live" }), session({ id: "muted", mutedAt: "2024-01-02T00:00:00.000Z" })];
+
+    const { result, rerender } = renderHook(
+      ({ list }: { list: SessionInfo[] }) => useAttentionSessions(list),
+      { initialProps: { list: sessions } },
+    );
+    expect([...result.current]).toEqual(["live"]);
+
+    // The server clears `mutedAt` at the start of the next turn and rebroadcasts
+    // the list; the row comes back with no further help from this hook.
+    rerender({ list: [session({ id: "live" }), session({ id: "muted" })] });
+    expect([...result.current]).toEqual(["live", "muted"]);
+  });
 });

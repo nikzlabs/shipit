@@ -425,3 +425,41 @@ describe("ClaudeLimitsProvider account routing", () => {
     expect(snap?.plan).toBe("Max 20x");
   });
 });
+
+/**
+ * planning#454 — **this reader must NOT say which windows the plan has**, and
+ * the omission is load-bearing rather than an oversight.
+ *
+ * Every other reader states it, so the pill can drop a slot the plan does not
+ * have (SuperGrok's absent 5-hour window was the reported bug). Claude cannot:
+ * `rate_limit_event` carries ONE window per event, so a five_hour reading with
+ * nothing weekly yet is what a normal first turn produces on a plan that has
+ * both. A reader that claimed completeness here would have hidden a real 7d
+ * meter for the whole of that turn — longer if the `/api/oauth/usage` seed that
+ * fills the gap had been 429'd, which it is designed to expect.
+ *
+ * Caught by the independent review, which traced the path this pins.
+ */
+describe("ClaudeLimitsProvider and the windows it declines to declare", () => {
+  const auth = () => makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Max 20x" });
+
+  it("omits availableWindows when both windows have been seen", async () => {
+    const provider = new ClaudeLimitsProvider({ authManager: auth() });
+    provider.setRateLimits(
+      { usedPct: 30, resetAt: "2026-06-01T00:00:00Z" },
+      { usedPct: 12, resetAt: "2026-06-07T00:00:00Z" },
+      ROUTE,
+    );
+    expect((await provider.fetch(ROUTE))?.availableWindows).toBeUndefined();
+  });
+
+  it("omits it for a one-window event, which is a first turn and not a one-window plan", async () => {
+    const provider = new ClaudeLimitsProvider({ authManager: auth() });
+    // Exactly what the adapter emits after a `five_hour` event with no
+    // `seven_day` event yet: the weekly side is null and the plan still has one.
+    provider.setRateLimits({ usedPct: 30, resetAt: "2026-06-01T00:00:00Z" }, null, ROUTE);
+    const snap = await provider.fetch(ROUTE);
+    expect(snap?.weekly).toBeNull();
+    expect(snap?.availableWindows).toBeUndefined();
+  });
+});

@@ -39,6 +39,7 @@ import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
+import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -258,7 +259,16 @@ export async function runDispatchedTurn(
   // on. Chronological order matches the interactive path — the out-of-band sync
   // happened before this turn, the bug-report card was resolved somewhere in
   // between, and the reset happened moments ago.
-  const agentPrefix = [pendingNotice, bugOutcomeNotice, reset?.agentPrefix]
+  // nikzlabs/shipit#2429 — same fourth element as the interactive path, and for the
+  // same reason: a dispatched turn edits the same tree. Included for system
+  // turns too — a CI-fix or conflict-remediation turn is precisely one that will
+  // build against the stale dependencies and misread the result.
+  const agentPrefix = [
+    pendingNotice,
+    bugOutcomeNotice,
+    reset?.agentPrefix,
+    dependencyGapAgentPrefix(runner.dependencyGap),
+  ]
     .filter(Boolean)
     .join("\n\n");
   // docs/272 req 2 — the role's standing instructions, first turn only. Called

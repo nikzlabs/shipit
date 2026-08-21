@@ -178,7 +178,16 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 - **Update docs when done** — update the relevant `plan.md` with new subsystems, patterns, or key files you added. Mark completed checklist items with `[x]`.
 - **Update shipit-docs when changing agent-facing behavior** — when changing platform behavior visible to the agent inside session containers (preview config, shipit.yaml schema, container environment, GitHub integration), update the corresponding file in `src/server/shipit-docs/`. These docs are baked into the session worker image at `/shipit-docs/` and are the agent's primary reference for the platform.
 
-## Code conventions
+## Responding in chat
+
+**End every substantive chat reply with a `Next steps` markdown list, and put in it only what a human has to do.** Each item opens with `[needs you]` and names *precisely* what is needed, not just that something is: supply a credential, connect a service, change a setting, answer a question, decide between two designs.
+
+**Two things never go in that list.**
+
+- **What ShipIt's own UI already surfaces.** Merging a pull request is the standing example: the PR lifecycle card is in the transcript with the button on it, so "merge the PR" tells the user what they can already see while making a list that is supposed to be short one item longer. Same for reviewing the diff, opening the preview, or starting a service — where the product puts the affordance in front of the user, the list does not repeat it.
+- **Anything the agent could do itself.** Follow-up work, a spin-off session, a doc to update, a second opinion to fetch: those go in a **`propose_actions` card**, so the user ticks and clicks instead of typing "yes, do the first one" back. A suggestion the user has to retype is one the agent left half-made. The card's own rules still hold — genuinely optional and specific to this moment, never routine commands (tests, lint), and never the same suggestion in both the card and the prose. **Post it last**, after the `Next steps` line: a card is anchored where the tool fired rather than floated to the bottom, so one emitted before the reply sits above it and is found by scrolling back.
+
+When nothing is blocked on the user, write `Next steps: none`. A card of follow-ups is not a reason to skip the line: the two answer different questions — *is anything waiting on me?* and *what else could be done?* Pure Q&A replies (a question answered, no work in flight) need neither.
 
 - **ESM throughout** — `"type": "module"` in package.json. Use `.js` extensions in relative imports (e.g., `import { foo } from "./bar.js"`).
 - **Type imports** — use `import type { X } from "./path.js"` for type-only imports.
@@ -233,7 +242,26 @@ The scan surfaces **every** `.md` file in the workspace, not just `docs/` — so
 
 ### Every new feature is under requirements discipline
 
-Requirements discipline (docs/241, `/shipit-docs/spec-discipline.md`) is opt-in per feature *for projects built inside ShipIt*. **In this repo it is mandatory for every new feature**: if the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Existing features without one are not retroactively required to have it — but the moment you materially rework one, write its requirements first.
+If the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Materially reworking an older feature that has none starts by writing them. The shape:
+
+```markdown
+# Feature name
+
+1. A numbered, plain-language statement of what the feature must do.
+2. Another observable requirement — what, never how.
+
+## Open questions
+
+- A decision the human has not made yet.
+
+## Resolved questions
+
+- YYYY-MM-DD — the question, the human's answer, and any constraint it carries.
+```
+
+The numbers are the IDs: keep them stable, append rather than renumber, and cite them as `docs/241-spec-discipline req 3`.
+
+**At the start of each turn that touches feature work**, identify the one active feature — from the session's issue or feature context, or the one the user named — and check its folder for `requirements.md`. Bullets under `## Open questions` block implementation code whether or not *you* raised them; resolve them at step 3 below. Only the active feature is gated: don't scan unrelated features for blockers.
 
 That means, in order:
 
@@ -241,7 +269,7 @@ That means, in order:
 2. **Ask, don't assume.** Batch the open questions into one structured question with concrete options and a recommendation. Do not write implementation code while any bullet remains under `## Open questions`; requirements and design work may continue.
 3. **Record the answer where it happened.** A human answer adds/edits the numbered requirement *and* leaves a dated receipt under `## Resolved questions`, with the open-question bullet removed in the same change — receipt, removal, and requirement change all in one diff. An agent inference never clears an open question.
 4. **Then design.** `plan.md` implements `requirements.md` and cites requirements as `(req 3)`; it opens with a link to the requirements doc. Later human input lands in `requirements.md` first — editing `plan.md` from human input while the requirements stay unchanged makes the design a second, hidden source of requirements.
-5. **Independent check before you call it done.** ShipIt's configured reviewer (`shipit agent run --role reviewer`, per [Get an independent review](#workflow)) compares the branch diff against every numbered requirement. Your own final pass doesn't count, and neither does a subagent under your own model.
+5. **Independent check before you call it done.** ShipIt's configured reviewer (`shipit agent run --role reviewer --prompt-file -`, per [Get an independent review](#workflow)) compares the branch diff against every numbered requirement, told to review only and not edit. That is a brokered out-of-process agent, **not** a `Task`/AgentTool subagent, so a harness rule about spawning subagents does not govern it. Your own final pass doesn't count, and neither does a subagent under your own model.
 
 Nothing enforces this mechanically — the pull-request diff is the enforcement, so a skipped question or a self-promoted requirement is visible to review (mechanical enforcement is planning#275). `docs/241-spec-discipline/` is the worked example: read its `requirements.md` alongside its `plan.md` for the shape.
 

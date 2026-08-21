@@ -1,36 +1,64 @@
 ---
 issue: planning#410
-title: Arming SHIPIT_GIT_STRICT_OWNERSHIP — call-site audit and operator runbook
-description: Every orchestrator-side git call site with a verdict, and the ordered procedure for arming git's ownership check in production and rolling it back.
+title: Arming SHIPIT_GIT_STRICT_OWNERSHIP — call-site audit and arming record (historical)
+description: Every orchestrator-side git call site with a verdict, and the record of how git's ownership check was armed in production before the switch was deleted. The procedure no longer applies; the audit still does.
 ---
 
-# Arming `SHIPIT_GIT_STRICT_OWNERSHIP`
+# Arming `SHIPIT_GIT_STRICT_OWNERSHIP` — historical record
 
 Tracked by planning#410. Design context is [plan.md](./plan.md) §E2; the
 requirement this serves is [requirements.md](./requirements.md) req 7 — *a missed
 or newly-added orchestrator-side git call site MUST fail closed*.
 
-## The two steps, and which one this document is for
+> ## ⚠️ The switch this document describes no longer exists
+>
+> **`SHIPIT_GIT_STRICT_OWNERSHIP` was deleted on 2026-08-18 (planning#410 step
+> 2), along with the `safe.directory=*` write it gated.** Fail-closed is simply
+> how ShipIt works now: the orchestrator grants no `safe.directory`, in any
+> scope, and there is nothing to arm, disarm, or roll back. The env var, the
+> `deployment/vps/docker-compose.yml` passthrough, and `gitStrictOwnership()`
+> are all gone — setting the variable on a host today does nothing at all.
+>
+> This document is kept as **the audit and the evidence**, not as a live
+> procedure. Read Part 1 as what it always was: every orchestrator-side git call
+> site with a verdict, which is still current and still the thing to update when
+> a new git call site is added. Read Part 2 as history — what was done, in what
+> order, and what it showed. The arming and rollback commands in it are recorded
+> for the record and will not work.
+>
+> One piece of Part 2 outlives the switch and is stated here because it is the
+> easiest thing to lose: **a green local run still proves nothing about the
+> fail-closed path.** The uid drop is gated on `process.getuid() === 0`, so the
+> whole test suite, the dogfood inner instance and a developer laptop behave
+> identically whether a call site's ownership handling is right or wrong. That
+> is why this class of bug shipped twice, and it is unchanged by the deletion.
 
-planning#410's end state is deleting **both halves** — the
+## The two steps, and which one this document was for
+
+planning#410's end state was deleting **both halves** — the
 `SHIPIT_GIT_STRICT_OWNERSHIP` switch and the `safe.directory=*` write — so
-fail-closed is simply how ShipIt works. That takes two steps, in order:
+fail-closed is simply how ShipIt works. That took two steps, in order:
 
 1. **Arm the switch in production** and let it soak. A human operator action
-   against a running deployment. This document is the procedure.
-2. **Then delete both halves**, in one change.
+   against a running deployment. This document was the procedure. **Done —
+   2026-08-18**, on the second attempt; see [The soak, and its
+   result](#the-soak-and-its-result) below.
+2. **Then delete both halves**, in one change. **Done — planning#410, the same
+   day.**
 
-Step 1 is a go/no-go a person takes; nothing in this document takes it. Part 1
-below is the precondition for taking it at all — arming converts *every*
+Step 1 was a go/no-go a person took; nothing in this document took it. Part 1
+below was the precondition for taking it at all — arming converts *every*
 orchestrator git call site that fails to drop uid into a hard failure at once,
 and the failure lands on the post-turn commit path, where uncommitted agent work
 has no reflog entry and no recovery (`CLAUDE.md` invariant 2). So the question
-"does such a call site still exist" has to be answered before the switch is
-touched, not after.
+"does such a call site still exist" had to be answered before the switch was
+touched, not after — and it is still the question to answer before adding a git
+call site today.
 
-**A breakage is never evidence that the `*` should stay.** The `*` is what makes
-a missed call site silent, which is the entire defect (req 7). If arming breaks
-something, the finding is a missed call site to fix.
+**A breakage was never evidence that the `*` should stay.** The `*` is what made
+a missed call site silent, which is the entire defect (req 7). When arming broke
+something, the finding was a missed call site to fix — which is exactly what
+happened on the first attempt.
 
 ---
 
@@ -310,7 +338,12 @@ limit of the *scanner*, and each has a verdict.
 
 ---
 
-# Part 2 — the runbook
+# Part 2 — the runbook, as it was executed
+
+**Historical.** Everything from here down describes a switch that no longer
+exists. The commands are recorded rather than prescribed. The one paragraph that
+is still true of the code today is the next one, and it is the reason the whole
+procedure existed.
 
 ## Before anything else: a green local run proves nothing here
 
@@ -433,14 +466,95 @@ planning#410 by leaving the variable unset: a permanent flag is a supported way
 to turn the boundary back off, which is what the issue exists to prevent. A
 breakage found here belongs on planning#403 or this doc as a missed call site.
 
-## After a clean soak
+## The soak, and its result
 
-Step 2 (planning#410) deletes, in one change: `gitStrictOwnership()`, the
-`applySafeDirectoryPolicy` branch, the `docker-compose.yml` passthrough, their
-tests, and the docstrings describing a switch. `git-config.ts` ends with no
-`safe.directory` write at all.
+**Two attempts. The first failed, and the failure is the more useful record.**
 
-The scanner rule that stops a future call site re-granting the key
-(`git-hooks-guard-coverage.test.ts`) **stays** — it outlives both halves. After
-step 2 the only remaining mention of `safe.directory` in the orchestrator should
-be that test.
+### Attempt 1 — 2026-08-17, rolled back
+
+Soaked clean, then broke session creation on first organic use. The cause was a
+gap in the *soak*, not in the audit's method: bare caches come in two ownership
+classes, and the soak exercised only one. 6 of 10 production caches were owned
+by uid 1000; root reading one is `fatal: detected dubious ownership`, so most
+repositories could not start a session. Table B's "Source tree" column had
+cleared `cloneFromCache` from the **code** rather than from the **disk** — the
+planning#428 correction now written into that table. Fixed underneath by PR
+\#2405 (docs/272-shared-cache-ownership), which makes "this tree is ShipIt's own"
+a repaired condition rather than an assumption.
+
+### Attempt 2 — 2026-08-18, clean; production left armed
+
+Build 98247585, deployed **unarmed first and armed in a second deploy** — two
+deploys, never one, so a refusal would have been attributable (precondition 4).
+The two-ownership-class condition the first attempt missed was met explicitly.
+
+**Preconditions verified against the deployed source, inside the container:**
+
+- All 13 bare/marketplace caches uniformly ShipIt-owned at full depth, 0 foreign
+  nodes. The boot ownership pass had repaired the pre-existing drift.
+- Both coverage tests green: `git-hooks-guard-coverage.test.ts` (24) and
+  `shared-tree-ownership-coverage.test.ts` (2).
+
+**Surfaces exercised armed:** session create / turn / commit / push / fork /
+archive on **both** ownership classes, named — `nicolasalt/delve` (cache was uid
+1000 before the repair) and `nicolasalt/reward-tag` (ShipIt-owned throughout) —
+plus the exact cache that broke attempt 1 (`nikzlabs/shipit`, 8e982c4c),
+exercised armed twice. Also: Git LFS at claim time and over the network on
+forks; plugin activation (`checkoutCommit`) three times plus a plugin install;
+marketplace catalog refresh on two catalogs; bare-cache prefetch; and organic
+user traffic throughout.
+
+**Result: zero.** Zero `dubious ownership` lines, zero `[shared-tree-ownership]`
+lines, zero commit or push failure notices, zero prefetch failures. The chronic
+pre-repair prefetch failures (`cannot lock ref … Permission denied`) are gone.
+
+### The residual — two surfaces never reached armed
+
+Stated because an overstated soak is worse than a named gap, and because these
+are what a future failure would most likely come from:
+
+1. **A claim on a repository with no existing cache** — the fresh `clone --bare`
+   that creates a cache dir (`repo-git.ts:148,160`). Every claim during the soak
+   found a cache already there.
+2. **Merged-session reset / rebase / CI-fix / conflict remediation, and the
+   release flow.**
+
+Both are audited in Part 1 above. Both have been exposed on production since
+2026-08-18, because production was left armed and was not rolled back — so
+deleting the switch did not increase that exposure. What deleting it removed is
+the cheap rollback: an env line plus a redeploy became a revert plus a rebuild.
+That is the tradeoff, and it is why the merge timing was the maintainer's call.
+
+## After a clean soak — what step 2 deleted, and what it kept
+
+Step 2 (planning#410) deleted, in one change: `gitStrictOwnership()`, the
+`applySafeDirectoryPolicy` branch and the `safe.directory=*` write, the
+`docker-compose.yml` passthrough, their tests, and the docstrings describing a
+switch. `git-config.ts` now writes no `safe.directory` at all.
+
+**Two things were kept, and both are load-bearing.**
+
+**The `--unset-all`, now unconditional.** This section originally read "the only
+remaining mention of `safe.directory` in the orchestrator should be that test",
+which would have meant deleting the removal along with the write. That is wrong,
+for the reason the *Arming* section above already states about the other
+direction: `initGlobalGitConfig` never truncates the gitconfig, and
+`/credentials` is a named docker volume, so the file is persistent state. Every
+build before planning#410 wrote `safe.directory=*` there whenever
+`SHIPIT_SESSION_WORKER_UID` was set. Merely *stopping* writing it would leave
+that grant in place forever on any deployment upgrading from such a build —
+fail-closed on a fresh install, silently fail-open on an upgrade, with nothing
+anywhere saying which one you have. Production itself is not that case (it was
+armed, so the entry is already gone), which is exactly what makes the omission
+easy to ship and invisible afterwards. So the removal survives as an
+unconditional, idempotent repair run at every boot, pinned by
+`git-config.test.ts` against an on-disk fixture.
+
+**The scanner rule** (`git-hooks-guard-coverage.test.ts`) — it outlives both
+halves, and it is what stops a future call site re-granting the key. It was
+**tightened** in step 2 rather than merely kept: it previously allowed the policy
+owner any `config --global` form, which would still have admitted a reintroduced
+grant in the one file permitted to name the key. It now requires the
+`--unset-all` form there too. So the two remaining mentions of `safe.directory`
+in the orchestrator are that test and the removal it polices, and "nothing grants
+`safe.directory`" is a rule with no trusted exception.

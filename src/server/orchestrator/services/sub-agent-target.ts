@@ -12,9 +12,10 @@
  *
  *  - a **role** (`--role deep-dive`), available to both commands, completed from
  *    the role's own params — resolved, for the shipped reviewer (docs/264-agent-roles req 2);
- *  - **nothing**, available to both, so the call must name all five itself. Kept
- *    implemented for a repository that holds a complete target of its own
- *    (req 15);
+ *  - **nothing**, available to both, so the call must name every parameter the
+ *    named harness has — the four identity flags always, `--effort` exactly
+ *    where the harness declares levels (docs/275 req 2). Kept implemented for a
+ *    repository that holds a complete target of its own (req 15);
  *  - the **parent session**, available to `session create` only, because a
  *    one-shot run has no parent. That is the *only* difference between the two
  *    commands.
@@ -59,7 +60,14 @@ import type {
 } from "../../shared/types.js";
 import { RESERVED_ROLE_NAME } from "../../shared/types.js";
 import type { BillingMode, ModelSelection } from "../../shared/catalogue/types.js";
-import { getHarness, getModel, resolveStyle, selectionExists } from "../../shared/catalogue/index.js";
+import {
+  getHarness,
+  getModel,
+  harnessSendsReasoningEffort,
+  reasoningOptionsFor,
+  resolveStyle,
+  selectionExists,
+} from "../../shared/catalogue/index.js";
 import type { ProviderRoute } from "../provider-account-manager.js";
 import { parseSpawnIdentity } from "../service-routing.js";
 import { selectionOf } from "../turn-attribution.js";
@@ -75,6 +83,8 @@ import { ServiceError } from "./types.js";
 /** The wire shape of a spawn request's target half, before anything is checked. */
 export interface SubAgentSpawnTargetBody {
   role?: unknown;
+  /** docs/264-agent-roles req 20 — `--no-role`: decline the parent's role. */
+  noRole?: unknown;
   agentId?: unknown;
   serviceId?: unknown;
   billingMode?: unknown;
@@ -82,7 +92,13 @@ export interface SubAgentSpawnTargetBody {
   reasoningEffort?: unknown;
 }
 
-/** The five fields that together name a complete target, with the flag that sets each. */
+/**
+ * The fields that together name a complete target, with the flag that sets
+ * each. The first four always exist; `reasoningEffort` exists exactly where the
+ * named harness declares reasoning levels (docs/275 req 2), which is why
+ * {@link parseSpawnTarget} computes the required set per harness rather than
+ * reading this list as the requirement.
+ */
 const EXPLICIT_FIELDS = [
   { field: "agentId", flag: "--agent" },
   { field: "serviceId", flag: "--service" },
@@ -90,6 +106,46 @@ const EXPLICIT_FIELDS = [
   { field: "modelId", flag: "--model" },
   { field: "reasoningEffort", flag: "--effort" },
 ] as const;
+
+/**
+ * docs/275 req 2 — whether `--effort` is part of a complete call.
+ *
+ * Per harness AND per selection (docs/274 req 14). It was per harness alone
+ * while no harness could offer levels on one row and not another; grok can —
+ * four levels under the subscription, none under a key — so asking the
+ * vocabulary would demand `--effort` on a key-billed grok call and then have
+ * nothing to do with the answer.
+ *
+ * `undefined` when the body names no harness at all: with nothing to consult,
+ * requiredness is unknowable and the caller's first problem is the missing
+ * `--agent`, so the conservative five-flag missing list stands. An id the
+ * catalogue does not know reads as "no levels" — the parse then completes and
+ * {@link resolveSpawnTarget} refuses it as an unknown agent, which is the
+ * message that names the actual mistake (listing `--effort` as missing for a
+ * typo'd harness would send the caller to add a flag that fixes nothing).
+ *
+ * A body that names a harness but not a whole selection falls back to the
+ * harness's vocabulary, for the same reason: the caller is already missing an
+ * identity flag, and that is the refusal worth reading.
+ */
+function effortIsRequired(body: SubAgentSpawnTargetBody): boolean | undefined {
+  const agentId = str(body.agentId);
+  if (agentId === undefined) return undefined;
+  const serviceId = str(body.serviceId);
+  const rawMode = str(body.billingMode);
+  const modelId = str(body.modelId);
+  const billingMode = rawMode === "sub" || rawMode === "key" ? rawMode : undefined;
+  if (serviceId && modelId && billingMode) {
+    return reasoningOptionsFor(agentId as AgentId, { serviceId, billingMode, modelId }).length > 0;
+  }
+  // A body naming the MODE but not the whole selection can still be answered
+  // exactly, because the mode is where the gate is: grok sends nothing under a
+  // key whatever the model. Only a body with no mode at all falls back to the
+  // vocabulary, and such a caller is missing `--billing-mode` anyway.
+  if (billingMode) return harnessSendsReasoningEffort(agentId as AgentId, billingMode);
+  const options = getHarness(agentId as AgentId)?.capabilities.reasoning?.options ?? [];
+  return options.length > 0;
+}
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -207,29 +263,68 @@ export function parseSpawnTarget(
   opts: { parentBase: boolean },
 ): SpawnTarget {
   const role = readRoleName(body.role);
+  // docs/264-agent-roles req 20 — the two say opposite things about the same
+  // thing, and neither is a sensible reading of the pair. Refused here as well
+  // as at the shim, on this module's own rule that the shim buys a message and
+  // never a guarantee.
+  const noRole = body.noRole === true;
+  if (noRole && role !== undefined) {
+    throw new ServiceError(
+      400,
+      "--no-role and --role name opposite things. Pass --role NAME to run that role, "
+        + "or --no-role to decline the role the parent session is running.",
+    );
+  }
+  // A base is what a role could be inherited FROM, so without one there is
+  // nothing to decline. Said rather than dropped, on the same rule the blank
+  // override follows: a caller that named a flag tried to state something, and a
+  // flag that quietly does nothing teaches that it works.
+  if (noRole && !opts.parentBase) {
+    throw new ServiceError(
+      400,
+      "--no-role applies to a spawn that inherits from a parent session. A one-shot run has no "
+        + "parent and therefore no role to decline — name a role, or name every parameter.",
+    );
+  }
   if (role !== undefined) {
     return { kind: "role", role, overrides: readOverrides(body) };
   }
 
-  const missing = EXPLICIT_FIELDS.filter((f) => str(body[f.field]) === undefined);
+  // docs/275 req 2 — the required set is per-harness: `--effort` drops out of
+  // it only where the named harness declares no levels (`false`), never where
+  // the harness is unnamed (`undefined` keeps the conservative five).
+  const effortRequired = effortIsRequired(body);
+  const missing = EXPLICIT_FIELDS.filter(
+    (f) =>
+      (f.field !== "reasoningEffort" || effortRequired !== false)
+      && str(body[f.field]) === undefined,
+  );
   if (missing.length === 0) {
-    // Non-null: `missing` being empty proved each is a non-blank string, which is
-    // the only thing `str` can return besides `undefined`.
+    // docs/275 req 3 — read through `readNamed`, not `str`: on a no-levels
+    // harness the flag is optional, so a blank `--effort=` would otherwise
+    // evaporate into absence — the silently-dropped named parameter the rule
+    // above forbids. (On a level-having harness a blank was already caught as
+    // missing.) A non-blank value on a no-levels harness rides through here and
+    // is refused by `resolveSpawnTarget`, the validator of record.
+    const reasoningEffort = readNamed(body.reasoningEffort, "--effort");
+    // Non-null: `missing` being empty proved each required field is a non-blank
+    // string, which is the only thing `str` can return besides `undefined`.
     return {
       kind: "explicit",
       harnessId: str(body.agentId) as AgentId,
       serviceId: str(body.serviceId)!,
       billingMode: readBillingMode(body.billingMode),
       modelId: str(body.modelId)!,
-      reasoningEffort: str(body.reasoningEffort)!,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     };
   }
   if (opts.parentBase) {
     // The parent is the base. Partial is ordinary here — including the empty
     // call, which inherits everything, and the bare `--model X` docs/261 req 10
     // ships. How much of the parent each override carries is `child-sessions.ts`'s
-    // question, deliberately NOT unified with a role's completion.
-    return { kind: "inherit", overrides: readOverrides(body) };
+    // question, deliberately NOT unified with a role's completion — and req 20's
+    // "everything" now includes the parent's ROLE, which `--no-role` declines.
+    return { kind: "inherit", overrides: readOverrides(body), ...(noRole ? { noRole } : {}) };
   }
   throw new ServiceError(
     400,
@@ -255,8 +350,17 @@ export function parseSubAgentSpawnTarget(body: SubAgentSpawnTargetBody): SubAgen
 export interface ResolvedSpawnTarget {
   harnessId: AgentId;
   selection: ModelSelection;
-  /** Never absent: a role carries its own level, an explicit call the one it named. */
-  reasoningEffort: string;
+  /**
+   * Absent ⇒ `Default`: pass no reasoning flag and let the harness use its own
+   * level, which is what the CLI would do with a flag it silently drops anyway.
+   *
+   * An **explicit** call carries one exactly where the harness declares levels
+   * (docs/275 req 2) — an omission there is refused, so absence on this path
+   * means the harness has no level parameter at all. The **role** path can also
+   * leave it absent on a level-having harness: the role itself is at Default
+   * (docs/264 req 1).
+   */
+  reasoningEffort?: string;
   /**
    * The credential this run authenticates with, present only where a **ranked**
    * reviewer settled it and the caller did not move the tuple off it.
@@ -319,9 +423,11 @@ export type ResolveSpawnTargetDeps = RoleDeps & ReviewerModelDeps;
  * responsibility to capture ({@link implementerFor} is the shared answer).
  *
  * For an **explicit** call, the triple must name a real catalogue row and the
- * effort must be a level the named harness declares. Both are refusals rather
- * than corrections, for docs/261 req 7's reason: a value quietly replaced by a
- * working one is the same failure as a value quietly supplied.
+ * effort must be a level the named harness declares — named where the harness
+ * declares levels, absent where it declares none (docs/275 req 2). All are
+ * refusals rather than corrections, for docs/261 req 7's reason: a value
+ * quietly replaced by a working one is the same failure as a value quietly
+ * supplied.
  *
  * `inherit` never reaches here — a parent base is completed by
  * `child-sessions.ts`, whose rules are deliberately not a role's.
@@ -332,6 +438,14 @@ export function resolveSpawnTarget(
   deps: ResolveSpawnTargetDeps,
 ): ResolvedSpawnTarget {
   if (target.kind === "explicit") {
+    // docs/275 — resolved first so every message below can speak the harness's
+    // name, and so a typo'd id is named as what it is. It used to fall through
+    // into the API-style refusal, which blamed a coherence problem the caller
+    // does not have.
+    const harness = getHarness(target.harnessId);
+    if (!harness) {
+      throw new ServiceError(400, `Unknown agent: ${target.harnessId}`);
+    }
     const selection: ModelSelection = {
       serviceId: target.serviceId,
       billingMode: target.billingMode,
@@ -355,13 +469,36 @@ export function resolveSpawnTarget(
     // registry gate downstream still owns it.
     const model = getModel(selection);
     if (model && resolveStyle(target.harnessId, model) === undefined) {
-      const harnessName = getHarness(target.harnessId)?.name ?? target.harnessId;
       throw new ServiceError(
         400,
-        `${harnessName} cannot run ${model.label} — they share no API style.`,
+        `${harness.name} cannot run ${model.label} — they share no API style.`,
       );
     }
-    const options = getHarness(target.harnessId)?.capabilities.reasoning?.options ?? [];
+    // docs/275 reqs 2 + 3 — the level exists exactly where the harness declares
+    // levels, so each side of that line has its own refusal: a level named on a
+    // harness that declares none is a claim that is false about the harness
+    // (the role path's shipped rule, `roles.ts`), and an omission on a harness
+    // that does declare them is the incomplete call docs/261 req 7 refuses —
+    // normally caught at the parse edge, restated here because parse and
+    // resolve are separate authorities.
+    // Asked of the SELECTION, matching the parse edge above — a harness can
+    // offer levels on one row and none on another (docs/274 req 14), so the
+    // vocabulary answers a different question from the one being asked.
+    const options = reasoningOptionsFor(target.harnessId, selection);
+    if (options.length === 0 && target.reasoningEffort !== undefined) {
+      throw new ServiceError(
+        400,
+        `${harness.name} offers no reasoning levels on ${model?.label ?? target.modelId} — omit --effort. `
+          + "A complete call on it is the other four flags.",
+      );
+    }
+    if (options.length > 0 && target.reasoningEffort === undefined) {
+      throw new ServiceError(
+        400,
+        `A run on ${harness.name} must name --effort. `
+          + `Valid levels: ${options.map((o) => o.value).join(", ")}.`,
+      );
+    }
     if (options.length > 0 && !options.some((o) => o.value === target.reasoningEffort)) {
       throw new ServiceError(
         400,
@@ -372,7 +509,9 @@ export function resolveSpawnTarget(
     return {
       harnessId: target.harnessId,
       selection,
-      reasoningEffort: target.reasoningEffort,
+      ...(target.reasoningEffort !== undefined
+        ? { reasoningEffort: target.reasoningEffort }
+        : {}),
     };
   }
 
@@ -380,7 +519,7 @@ export function resolveSpawnTarget(
   return {
     harnessId: resolved.harnessId,
     selection: { ...resolved.selection },
-    reasoningEffort: resolved.reasoningEffort,
+    ...(resolved.reasoningEffort !== undefined ? { reasoningEffort: resolved.reasoningEffort } : {}),
     roleName: resolved.roleName,
     ...(resolved.prompt ? { rolePrompt: resolved.prompt } : {}),
     ...(resolved.route ? { route: { ...resolved.route } } : {}),

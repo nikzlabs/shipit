@@ -312,7 +312,8 @@ export async function registerFileRoutes(
       if (!dir) return;
       const session = sessionManager.get(request.params.id);
       const queryAgent =
-        request.query.agent === "codex" || request.query.agent === "claude" || request.query.agent === "opencode"
+        request.query.agent === "codex" || request.query.agent === "claude"
+        || request.query.agent === "opencode" || request.query.agent === "grok"
           ? request.query.agent
           : undefined;
       const agentId = session?.agentId ?? queryAgent ?? defaultAgentId;

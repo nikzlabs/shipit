@@ -245,7 +245,16 @@ where it accrues:
    live scope are reaped on the same mount check (keep `g0`, the pointer's current generation, and any
    generation a running container still pins); only crash-orphaned `.tmp-*` copies keep a short fixed
    grace window (an in-flight publish may be mid-write). The live-set (`liveOverlayScopeHashes`) still
-   enumerates **per `(session, dep-dir)`** for the current runtime (see the "Changed → GC" item).
+   enumerates **per `(session, dep-dir)`** for the current runtime (see the "Changed → GC" item), and
+   **must be built from `listAllIncludingWarm()`**: a warm-pool session's container mounts a base like
+   any other, but `listAll()` filters `warm = 0`, which left warm scopes with the mount check as their
+   only protection (planning#439). The mount check itself **fails closed** — a reading it cannot
+   complete skips the whole sweep for that pass rather than resolving to an empty set. Failing open
+   there deleted a generation under six running containers on prod: the empty set is indistinguishable
+   from "nothing is mounted", and the session that publishes generation N+1 is by construction the one
+   still mounted on N, so the superseded-but-pinned case is the norm rather than a rare race. The
+   union has a **third arm** for the generations a container being CREATED will mount, which `ps`
+   cannot list — see "The mirror case" below (planning#440).
 2. **Per-session overlay volumes — `shipit-<id>_overlayN`** (N per session). Removed on container
    teardown (`destroyContainer` → `removeOverlayVolume` for each); crash-orphans swept by the
    `^shipit-([a-f0-9-]{12})_` prefix regex (`sweepOrphanSessionVolumes`), which already matches every
@@ -306,6 +315,154 @@ re-stamps when the NEW generation's pointer genuinely matches this checkout, so 
 session still pays ~0 and only a session the new base does **not** satisfy pays a delta install.
 The pre-`g<N>` layout (a bare `upper/` + `work/` under the scope dir) counts as superseded too, so
 the upgrade itself takes the marker drop rather than silently emptying every live session's upper.
+
+**A rotation must evict the volume's holders before it recreates it, and verify that it did (ops
+finding, 2026-08-19).** The rotation above only works if the Docker volume actually follows the
+generation, and it did not. `createOverlayVolume` removes the same-named volume before creating it,
+but a volume **cannot be removed while a container mounts it** — the daemon answers HTTP 409 — and
+the session's **Compose siblings mount the very same per-session overlay volumes** (a project compose
+file maps them onto `/app/dist`, `/plugin/dist`, `/project/node_modules`). On the restart-agent path
+(docs/127) those siblings are deliberately left running, so the removal 409'd, and then
+`docker volume create` against a name that already exists **returns the existing volume and silently
+ignores the new `DriverOpts`** — no error anywhere. The volume kept opts naming the `g<M>` whose
+`upper`/`work` `prepareOverlayDirs` had deleted seconds earlier. The container even started, because
+the siblings already held that overlay mounted — the daemon joined the live mount instead of
+attempting a fresh `mount -t overlay` that would have failed ENOENT.
+
+Four production sessions ran that way. **The blast radius is wider than dep-dir writes**: reads serve
+a frozen base generation and writes into the unlinked upper fail **ENOENT** (they are not silently
+discarded — the original "`tsc` reports success and writes nothing" was tsc swallowing the write
+error). One affected session logged `install_ok=false` and "install failed — 1 gated service(s) not
+started"; several had Compose stacks failing with exits 1, 127 and 137. So the defect takes down
+`agent.install` and the preview stack, not just the dep dir.
+
+*Diagnosing one by hand:* the signature is **ENOENT**, and a write probe must run as the session's own
+uid (`docker exec -u <uid>:1000`). Probing as uid 0 reports "Permission denied" on a **healthy** mount
+too — these containers lack `CAP_DAC_OVERRIDE` and the merged root is mode 2775.
+
+The fix is two halves that only work together, and neither is shippable alone:
+
+1. **Ordering.** For a volume whose live `o=` disagrees with the spec (`overlayVolumeState`), the
+   create force-removes every container holding it (`releaseOverlayVolumeHolders`, a
+   `docker ps --filter volume=`) before removing and recreating it. Scoped to the disagreeing volumes
+   on purpose: a session whose base did not rotate keeps its Compose stack, which is what docs/127
+   exists to preserve. When it *did* rotate the siblings were mounting reaped directories anyway, and
+   a container freezes its mount set at create time — so nothing short of a recreate could ever hand
+   them the new generation.
+2. **Verify, then retry, and only then fail loudly.** `createOverlayVolume` re-inspects after creating
+   and, on a mismatch, re-derives the holders and goes round again — three attempts, then it throws.
+   A failed container create is visible and recoverable; a container that starts on a dead upper layer
+   is neither.
+
+**The retry is not belt-and-braces — reordering alone cannot close this race** (operator finding,
+2026-08-19). The holder set is **dynamic**: while an operator was repairing a damaged session, an
+unrelated `refreshSecrets` reconcile re-created that session's `dev-1` and `assetgen-1` containers
+mid-window, so a holder list read minutes earlier was already stale. Any "tear down, then create"
+ordering leaves a window in which a compose reconcile puts the 409 back. That also decides the shape
+of the guard: a plain throw on 409 would turn a transient reconcile into a failed container create, so
+the loud failure belongs *after* the converge loop, not instead of it.
+
+Because the dep-dir *set* is unchanged by a rotation (the volume name is keyed on session + dep dir,
+never on the generation), the compose path's own change test would skip the reconcile that brings the
+removed siblings back. So a release records `SessionContainer.overlayVolumesRecreated`, which
+`applyOverlayDepDirs` consumes and reports as "reconcile needed". `reconcile()` restarts **auto** and
+install-gated services; a **manual** service the user had started stays stopped, and the session's
+Logs panel says so — the alternative was leaving it running against an upper layer that no longer
+exists.
+
+**A stale volume also loses its lowerdir, which is why it must not survive a create.** Two of the four
+damaged sessions had the pinned base generation itself gone from disk. `liveMountedOverlayBaseGenerations`
+pins what **running** containers name, and the caller's union contributes each resumable session's
+**current** generation — so a volume left naming a superseded generation while its session is idle
+pins nothing, and `sweepStaleBaseGenerations` reclaims the lowerdir out from under it. That needs no
+separate fix: it has no producer once the create verifies its own result, because the volume is
+re-pointed at the current generation before anything mounts it.
+
+**The mirror case: a volume naming the CORRECT generation, reaped because its container does not
+exist yet (planning#440).** The paragraph above is about a volume left on a superseded generation. The
+same sweep also reaps the right one. A container's generation is decided at spec-build time
+(`prepareOverlaySpecs` → `DepDirOverlaySpec.generation`), the volume is written with
+`lowerdir=…/overlay-base/<hash>/g<N>` after that, and only `container.start()` makes the mount visible
+to `docker ps -q`. A same-scope publish anywhere in that window advances the pointer, so `g<N>` is
+neither current nor mounted — and `sweepStaleBaseGenerations` deletes it, with no age delay, while a
+container is on its way to mounting it. `ps` is simply the wrong instrument for a container that does
+not exist yet; this is not a hole in the probe planning#439 hardened, and a perfect probe still has it.
+
+The fix is an **in-flight claim** (`overlay-base-claims.ts`), the shape plugin bases already use
+(`plugin-dep-store.ts` `inFlightScopes` / `liveInFlightScopes`) at generation rather than scope
+granularity, so it unions straight into the sweep's `<hash>/g<N>` live-key set. Creation paths claim
+each spec's `(scopeHash, generation)`; `requireProvisioned` callers (the compose override, sibling
+containers) do not, because they are reading back what a RUNNING container already has.
+
+Two properties carry it. It is **strictly additive** — the sweep unions it in and nothing else
+consults it, so an empty registry is byte-for-byte the prior behaviour and "nothing is claimed" can
+never widen a pass (the failure mode planning#439 established this sweep must not acquire). And it
+**expires rather than being released**: releasing at "the container is running" reads like the precise
+answer and is not, because the sweep's `docker ps` snapshot is taken at an arbitrary moment, so a pass
+that read `ps` *before* the start and deletes *after* the release would re-open a narrower copy of the
+same race. Expiry also answers the failure paths for free — a create that throws, an OOM, or an
+orchestrator restart drops the claim, which is correct because a container that never started never
+mounted the generation; on the far side of a restart the container is either running (`docker ps`
+pins it) or being retried (which re-claims).
+
+**The third case: the volume itself is gone, and Docker quietly makes a plain one
+(nikzlabs/shipit#2495).** The two cases above are about a volume that exists and names the wrong
+generation. This one is about a volume that stopped existing between `createOverlayVolume` and
+`docker createContainer` — roughly twenty lines later, in `container-lifecycle.ts`. Referencing a
+missing named volume does **not** fail a container create: the daemon **implicitly creates** one, as a
+plain `local` volume with **no driver options**, empty and `root:root 0755`. Production held exactly
+that: `shipit-3f6d1497-c46_overlay-dba27c31` carrying the overlay-intended NAME with `Options: null`,
+beside a sibling dep dir (`…-bcae0416`) that mounted correctly.
+
+That is the worst shape a session can boot in, and the reason it deserves its own guard rather than
+another retry. The dep dir mounts as a directory the session uid cannot write, so `npm ci` EACCESes on
+its first `mkdir`, `agent.install` never writes `/session-state/.install-done`, and every
+`x-shipit-depends-on-install` service stays down — for the session's whole life. There is no
+in-container recovery: the path is a mount point, there is no `sudo`, and the Compose siblings see the
+same directory through their own mounts.
+
+The gap was that **ShipIt verified driver options exactly once, at creation, and never again**
+(`createOverlayVolume` → `overlayVolumeState`), so nothing looked at the volume after the container
+was built with it. The fix re-verifies: `assertOverlayVolumesMatch` runs **after** `createContainer`
+and **before** `start()`, and throws a greppable `overlay volume verification failed` naming the
+volume, the dep dir, and what the daemon actually holds. That placement is the whole design — it is
+the first instant at which Docker's implicit creation has happened and is therefore observable, and
+the last instant at which refusing costs nothing. The create-failure path already removes the
+container and then **every** overlay volume, which is the load-bearing half: leaving the plain
+impostor behind would make the next attempt reuse it. `createContainerForRunner` retries three times,
+so a genuinely transient loss self-heals and a standing one surfaces in the health strip.
+
+**The plugin runtime overlay had the same exposure; planning#451 closed it (2026-08-20).**
+`ensurePluginRuntimeOverlay` (`plugin-overlay.ts`) used to skip on `volumeExists` — existence only —
+and a plain impostor satisfied that, so unlike the dep-dir path it never repaired itself. The skip is
+now `overlayVolumeState === "match"`. The 409 window that made that look unsafe is not reachable for
+a healthy shared volume: the per-name queue serializes inspect-then-create, the two runtime callers
+(`plugin-services.ts:ensurePluginVolumes`, `plugin-cli-run.ts`) compute the same spec for a
+generation, and attach happens after ensure returns, so the second caller sees match and never enters
+`createOverlayVolume`. A held mismatch is therefore a volume that is already not the overlay we
+created (this section's shape), and throwing after the converge loop — still without `releaseHolders`
+— is the loud failure that path wants. An unattached impostor is repaired on the next ensure. The
+CLI path also re-verifies after `createContainer` and before `start()`, the same placement as the
+dep-dir check; it does not remove the volume on failure, because a plugin service may share it.
+
+What it is NOT is the install-time volume leaking into a runtime mount. That looks live — `plugin-install.ts`
+builds a spec with the **same** `pluginOverlayVolumeName(session, repo, generationId)` but a different
+lowerdir stack (`job.stagingDir`, no dep bases) — and it is closed: install removes that volume before
+publishing and treats a failed removal as an install failure rather than a warning
+(`plugin-install.ts:429-443`, `removePluginOverlay`), so a published generation never has one alive.
+
+The dep-dir check is deliberately **trigger-independent**: it does not care what removed the volume, only that what
+the container was built with is not what we created. The trigger itself is **not** identified. Two
+candidates were checked and one was refuted: the disk janitor cannot be it. `steady-state-reclaim.ts`
+only ever runs `docker ps` / `container inspect` / `volume inspect` — it removes base *directories*,
+never a volume — so its `batched docker … inspect failed (overlay live-mount check)` line is a failed
+**read**, not a reap; and the only sweep that removes `shipit-*_overlay-*` volumes
+(`sweepOrphanSessionVolumes`, `startup-janitor.ts`) is boot-only, filters `dangling=true`, and
+preserves every non-evicted session's 12-char prefix. What remains open is that `destroyContainer`
+removes `sc.overlayVolumeNames` and is **not** mutually excluded from a concurrent `createContainer`
+for the same session (the create refuses a duplicate *create*, nothing more) — a destroy landing
+between the two volumes' creates would leave the first plain and the second correct, which is the
+observed pattern. Unconfirmed, and deliberately not fixed on a hypothesis.
 
 **On-host upperdir reclaim — `sessions/<id>/overlay/` (planning#194).** The upper/work **bytes** live on
 the host state volume at `sessions/<id>/overlay/<scopeHash>/g<N>/{upper,work}` — a **sibling** of the

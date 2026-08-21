@@ -38,9 +38,10 @@ import {
   perSessionCredentialsDir,
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
-import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
+import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import {
   preStampInstallMarker,
+  sortOverlayDepDirs,
   supersededSessionOverlayLayers,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
@@ -603,6 +604,30 @@ export function buildEnv(
     const gid = identity?.gid ?? procEnv.SHIPIT_SESSION_WORKER_UID;
     env.push(`SHIPIT_SESSION_WORKER_UID=${uid}`);
     env.push(`SHIPIT_SESSION_WORKER_GID=${gid}`);
+    // planning#415 — forward the resolved `agent.dep-dirs` (colon-separated,
+    // the PATH convention) so the entrypoint's workspace chown can PRUNE them
+    // exactly like this side's worktree walk does
+    // (`chownWorktreeToSessionWorker`'s `excludeRelDirs`). The entrypoint has
+    // no other way to learn the list: shipit.yaml lives in the workspace, but
+    // the entrypoint is POSIX sh and the config is resolved — validated,
+    // defaulted — here. Without the prune, the entrypoint's walk chowns a dep
+    // dir mounted as a docs/183 overlay entry-by-entry, and `chown` sets
+    // ATTR_UID even when the value does not change, so overlayfs answers with
+    // a copy-up of each shared-base file into the session's private upper
+    // layer. Forwarded only alongside the uid because the entrypoint reads it
+    // solely on the non-root path; an explicitly empty resolved list
+    // (`agent.dep-dirs: []`) forwards nothing, which the entrypoint reads as
+    // "no dep dirs" — the same prune set as an orchestrator that predates
+    // this change.
+    let depDirs: string[];
+    try {
+      depDirs = resolveShipitConfig(config.workspaceDir).agent.depDirs;
+    } catch {
+      depDirs = [...DEFAULT_DEP_DIRS];
+    }
+    if (depDirs.length > 0) {
+      env.push(`SHIPIT_DEP_DIRS=${depDirs.join(":")}`);
+    }
   }
 
   // docs/183 — forward the session-worker image id so the worker's
@@ -1127,6 +1152,15 @@ export async function createContainer(
     // docs/183 dep-dir design — recorded so destroyContainer can `docker volume
     // rm` each per-session overlay volume on teardown (and the failure path below).
     overlayVolumeNames: config.overlaySpecs?.map((s) => s.volumeName),
+    // #2426 — what the compose path mounts, so it never has to re-derive
+    // eligibility from a workspace that has moved on since. See the field doc.
+    // Sorted for the reason `sortOverlayDepDirs` documents: this list's ORDER is
+    // part of the compose override's bytes, and the adoption path records the
+    // same set from a source whose order is not ours. The two must agree, or a
+    // session alternating between created and rediscovered rewrites the override
+    // — and recreates every compose service — on each transition.
+    overlayDepDirs: config.overlaySpecs
+      && sortOverlayDepDirs(config.overlaySpecs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }))),
   };
   deps.containers.set(config.sessionId, sc);
 
@@ -1165,8 +1199,32 @@ export async function createContainer(
         workspaceDir: config.workspaceDir,
         sessionId: config.sessionId,
       });
+      // The ops finding of 2026-08-19. `prepareOverlayDirs` has just DELETED the
+      // superseded generation's upper/work, so every volume whose opts still name
+      // it must be recreated — and a volume cannot be removed while a container
+      // mounts it (409). The session's Compose siblings mount exactly these
+      // volumes, and on the restart-agent path (docs/127) they are deliberately
+      // left running, so the removal failed, `createVolume` returned the existing
+      // volume with its stale opts, and the session ran on an overlay whose upper
+      // layer no longer existed on the host: writes ENOENT'd, `agent.install`
+      // failed, and gated compose services never started. `releaseHolders` lets
+      // the create tear those siblings down — re-derived on every attempt,
+      // because an unrelated compose reconcile can mint a new holder at any
+      // moment (operator finding) — and verify the result instead of trusting it.
       for (const spec of config.overlaySpecs) {
-        await createOverlayVolume(deps.docker, spec, deps.baseLabels());
+        const { releasedHolders } = await createOverlayVolume(
+          deps.docker,
+          spec,
+          deps.baseLabels(),
+          { releaseHolders: true, sessionId: config.sessionId },
+        );
+        // Those siblings are gone now, and nothing else brings them back: the
+        // dep-dir SET is unchanged, so the compose path's own "did the overlay
+        // change?" test says no and skips the reconcile. Record it so
+        // `applyOverlayDepDirs` asks for one anyway — a service container freezes
+        // its mounts at create time, so the recreate is the only way it can ever
+        // see the new generation.
+        if (releasedHolders.length > 0) sc.overlayVolumesRecreated = true;
       }
     }
 
@@ -1248,6 +1306,22 @@ export async function createContainer(
     // the `sc.id = …` below, a `die` event arriving with this ID is
     // correctly attributed instead of being mistaken for a stale event.
     sc.id = container.id;
+
+    // nikzlabs/shipit#2495 — the SECOND verification, and the one that closes the
+    // window. `createOverlayVolume` above verified each volume at creation and
+    // nothing re-checked it after; the container is only built with these mounts
+    // here, ~twenty lines later. A volume removed inside that window does not fail
+    // `createContainer` — Docker silently auto-creates a plain, empty, root-owned
+    // one under the same name — and the session then boots with a dep dir its own
+    // uid cannot write, permanently. Checked before `start()` so the catch below
+    // still owns the cleanup (container removed, then every overlay volume,
+    // INCLUDING the plain impostor — leaving it would make the retry reuse it).
+    // See assertOverlayVolumesMatch for the full failure account.
+    if (config.overlaySpecs && config.overlaySpecs.length > 0) {
+      await assertOverlayVolumesMatch(deps.docker, config.overlaySpecs, {
+        sessionId: config.sessionId,
+      });
+    }
 
     await container.start();
 
@@ -1466,6 +1540,18 @@ export async function createContainer(
     // docs/183 dep-dir design — drop every per-session overlay volume we created
     // above so a failed create doesn't leak them. The disk-janitor orphan-volume
     // sweep is the backstop, but reclaim eagerly here.
+    //
+    // Two properties here are LOAD-BEARING for the #2495 verification above, not
+    // incidental. **It must run after the container removal** a few lines up: a
+    // `volume rm` while a container still references the volume is a 409, which
+    // `removeOverlayVolume` swallows by design — reorder these and the impostor
+    // silently survives. And **it must reclaim by `sc.overlayVolumeNames`**, every
+    // name the specs ASKED for rather than every volume we successfully created,
+    // because the volume the verification rejects is precisely the one this path
+    // did not create: the plain one Docker conjured under an overlay-intended
+    // name. (`createOverlayVolume`'s converge loop would also repair it on the
+    // next attempt — this is what keeps it from sitting on disk in between, and
+    // on the paths where there is no next attempt.) Do not narrow the list.
     if (sc.overlayVolumeNames) {
       for (const name of sc.overlayVolumeNames) {
         await removeOverlayVolume(deps.docker, name);

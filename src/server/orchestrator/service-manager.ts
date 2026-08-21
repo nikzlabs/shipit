@@ -58,6 +58,7 @@ import {
 import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
 import {
   ComposeCli,
@@ -150,6 +151,15 @@ export interface ManagedService {
    */
   url?: string;
 }
+
+/**
+ * Everything a port-conflict message needs about one of the two parties: what
+ * to call it, and — through `origin` — which file its number is written in
+ * (nikzlabs/shipit#2379). A registered service satisfies it; so does a bare
+ * `{ name }`, which is how the project's own side is passed before the row for
+ * it exists.
+ */
+type PortHolder = Pick<ManagedService, "name" | "origin">;
 
 /**
  * docs/262 — project a service's origin into the shape the client sees. The
@@ -528,6 +538,12 @@ export class ServiceManager extends EventEmitter {
   private services = new Map<string, ManagedService>();
   private logProcesses = new Map<string, ChildProcess>();
   private logBuffers = new Map<string, string>();
+  /**
+   * nikzlabs/shipit#2426 — per-service `--since` anchor for the NEXT log follower
+   * spawn: the instant an `up` for that service began. See
+   * {@link armLogFollowerSince} and `streamLogs`.
+   */
+  private followerSince = new Map<string, string>();
   private readonly logStore?: LogStore;
   private _started = false;
   /** docs/201 P8 — owns `docker compose` command construction + execution. */
@@ -538,6 +554,24 @@ export class ServiceManager extends EventEmitter {
   private overlayDepDirs: OverlayDepDirVolume[];
   /** docs/262 — plugin services this session surfaces (set lazily; see setPluginServices). */
   private pluginServices: PluginComposeService[] = [];
+  /**
+   * #2426 — the project's parsed compose services the override on disk was
+   * generated from, serialized for comparison. `null` before the first
+   * {@link writeOverrideFor}. Read by {@link overrideIsStaleFor} to tell a
+   * compose edit that must reach the override from the far commoner case of an
+   * unchanged file, which must rewrite nothing.
+   */
+  private _overrideProjectServices: string | null = null;
+  /**
+   * #2426 — the plugin services admitted into the override on disk.
+   *
+   * Carried forward verbatim by a mid-session override refresh rather than
+   * re-derived, because admission is a decision {@link start} makes: a plugin
+   * service is refused when it collides with a project port, and re-running that
+   * against a half-changed picture would re-emit refusals nobody asked for. The
+   * plugin set changes only via `setPluginServices`, whose caller reconciles.
+   */
+  private _overrideAdmittedPlugins: PluginComposeService[] = [];
   /** Port refusals from this start, held until the log followers are up. */
   private pendingPortRefusals: { service: string; message: string }[] = [];
   /**
@@ -887,9 +921,18 @@ export class ServiceManager extends EventEmitter {
    * (the populator is async — it inspects the workspace state volume) and set
    * before the first `start()`, so both override-generation paths pick it up.
    * `[]` (the default / flag-off case) leaves the override byte-for-byte unchanged.
+   *
+   * Returns whether the set actually CHANGED, for the same reason
+   * {@link setPluginServices} does: the override is written by `start()` /
+   * `reconcile()`, so a caller that re-points an already-running manager at a
+   * different set (the `restartAgent` adoption path) has to reconcile for it to
+   * reach the stack — and must NOT reconcile when the answer is identical, which
+   * is the common case.
    */
-  setOverlayDepDirs(overlayDepDirs: OverlayDepDirVolume[]): void {
+  setOverlayDepDirs(overlayDepDirs: OverlayDepDirVolume[]): boolean {
+    const changed = JSON.stringify(this.overlayDepDirs) !== JSON.stringify(overlayDepDirs);
     this.overlayDepDirs = overlayDepDirs;
+    return changed;
   }
 
   /**
@@ -1325,19 +1368,50 @@ export class ServiceManager extends EventEmitter {
    * that service, and is logged for the operator too.
    */
   private warnOnAmbiguousPreviewPorts(): void {
-    const claimedBy = new Map<number, string>();
+    const claimedBy = new Map<number, PortHolder>();
     for (const svc of this.services.values()) {
       if (svc.port === undefined) continue;
       const first = claimedBy.get(svc.port);
       if (first === undefined) {
-        claimedBy.set(svc.port, svc.name);
+        claimedBy.set(svc.port, svc);
         continue;
       }
-      const message = `${first} and ${svc.name} both preview on port ${svc.port}`
-        + ` — the preview pane can only reach ${first} there.`
-        + ` Give one of them a different port in the compose file.`;
+      const message = `${this.describePortHolder(first)} and ${this.describePortHolder(svc)}`
+        + ` both preview on port ${svc.port} — the preview pane can only reach ${first.name} there.`
+        + ` Give one of them a different port: ${this.portChangeAdvice(svc)},`
+        + ` or ${this.portChangeAdvice(first)}.`;
       this.reportPortConflict(svc.name, message);
     }
+  }
+
+  /**
+   * Name a service and say where the number it previews on is written
+   * (nikzlabs/shipit#2379).
+   *
+   * A port conflict is only actionable if the reader can find both numbers, and
+   * the two kinds of service keep theirs in different files: the project's own
+   * in its compose file, a plugin's in the consuming project's `plugins.use`
+   * entry (docs/266-plugin-service-ports req 2). A message that assumes the
+   * compose file for both sends the reader to a file that does not contain the
+   * line — the dead end #2379 reports — so every port message routes its advice
+   * through here instead of naming a file itself.
+   */
+  private describePortHolder(svc: PortHolder): string {
+    if (!svc.origin) return `this project's own service \`${svc.name}\` (\`${this.composeConfig.file}\`)`;
+    return `the plugin service \`${svc.name}\` (the \`plugins.use\` entry in \`shipit.yaml\``
+      + ` whose alias is \`${svc.origin.alias}\`)`;
+  }
+
+  /**
+   * How to move {@link describePortHolder}'s service off its port, in the file
+   * that holds it. Both files are named outright — a reader who has never
+   * written a `plugins.use` entry cannot be expected to know which file it is
+   * in, and the compose file is named on the other side of the same sentence.
+   */
+  private portChangeAdvice(svc: PortHolder): string {
+    if (!svc.origin) return `give \`${svc.name}\` a different port in \`${this.composeConfig.file}\``;
+    return `change \`port:\` for \`${svc.origin.sourceName}\` under the \`plugins.use\` entry`
+      + ` in \`shipit.yaml\` whose alias is \`${svc.origin.alias}\``;
   }
 
   /**
@@ -1353,13 +1427,30 @@ export class ServiceManager extends EventEmitter {
    * would leave the Services list one row short with no explanation anywhere.
    * It is registered `manual` so the auto-start sweep below does not flip it out
    * of `error`, and it is kept out of the generated override, so nothing starts.
+   *
+   * **The occupant is named from the current parse, and its declaration site is
+   * named with it** (nikzlabs/shipit#2379). The message used to assert "this
+   * project's own service" about whatever held the port in a map that outlives
+   * an activation, so it could name the refused service's own outgoing instance
+   * — a service the project never declared, on a port nothing was using. The
+   * caller now reads the occupant out of `parsedServices` (see `start()`), so
+   * the attribution is structurally true, and both halves of the advice point
+   * at a line that exists.
    */
   private refusePluginPortCollision(svc: PluginComposeService, projectService: string): void {
-    const message = `${svc.name} is given port ${svc.port}, which this project's own service `
-      + `${projectService} already serves on. Two services cannot preview on one port, so `
-      + `${svc.name} was not started. Change \`port:\` for \`${svc.sourceName}\` under the `
-      + `\`plugins.use\` entry whose alias is \`${svc.alias}\`, or move ${projectService} `
-      + `to another port.`;
+    const origin: ComposeServiceOrigin = {
+      kind: "plugin",
+      repo: svc.repo,
+      alias: svc.alias,
+      plugin: svc.plugin,
+      sourceName: svc.sourceName,
+      self: svc.self,
+    };
+    const occupant: PortHolder = { name: projectService };
+    const message = `${svc.name} is given port ${svc.port}. That port is already served by `
+      + `${this.describePortHolder(occupant)}. Two services cannot preview on one port, so `
+      + `${svc.name} was not started. Either ${this.portChangeAdvice({ name: svc.name, origin })}, `
+      + `or ${this.portChangeAdvice(occupant)}.`;
     // Queued, not reported here. This runs while the service map is being
     // built, and `start()` clears the log ring buffers after that — a line
     // written now would reach the live viewers and then vanish from the buffer
@@ -1373,14 +1464,7 @@ export class ServiceManager extends EventEmitter {
       status: "error",
       error: message,
       dependsOnInstall: false,
-      origin: {
-        kind: "plugin",
-        repo: svc.repo,
-        alias: svc.alias,
-        plugin: svc.plugin,
-        sourceName: svc.sourceName,
-        self: svc.self,
-      },
+      origin,
     });
   }
 
@@ -1502,16 +1586,25 @@ export class ServiceManager extends EventEmitter {
    * 1. Parse and validate the compose file
    * 2. Generate the override file
    * 3. Start auto services via `docker compose up -d`
+   *
+   * @param opts.sweepStaleContainers Run the broad pre-start label sweep
+   *   ({@link ComposeCli.killStaleContainers}). Defaults to `true` — the right
+   *   answer for a COLD start, where every container carrying this session's
+   *   label is by definition left over from a previous orchestrator run or a
+   *   previous agent-container incarnation. {@link reconcile} passes `false`;
+   *   see the note there for why.
    */
-  async start(): Promise<void> {
+  async start(opts: { sweepStaleContainers?: boolean } = {}): Promise<void> {
     this._disposed = false;
     await this.ensureSessionNetworkModeFn?.(Boolean(this.containServicesFn));
     // Kill any stale compose containers left over from a previous orchestrator
     // run (e.g. ShipIt restart). Uses label filter — no compose files needed.
-    try {
-      await this.compose.killStaleContainers();
-    } catch {
-      // Best-effort cleanup
+    if (opts.sweepStaleContainers ?? true) {
+      try {
+        await this.compose.killStaleContainers();
+      } catch {
+        // Best-effort cleanup
+      }
     }
 
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
@@ -1536,20 +1629,8 @@ export class ServiceManager extends EventEmitter {
       ? []
       : this.parseProjectCompose(composePath);
 
-    // Build service map
-    this.portRefusals.clear();
-    for (const svc of parsedServices) {
-      const preview = svc.shipitPreview ?? (svc.ports?.length ? "auto" : "manual");
-      const port = svc.ports?.[0] ? extractContainerPort(svc.ports[0]) : undefined;
-      this.services.set(svc.name, {
-        name: svc.name,
-        port,
-        preview,
-        status: "stopped",
-        dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
-      });
-    }
-
+    // Build service map.
+    //
     // docs/266-plugin-service-ports req 7 — a plugin service given a port one of the project's OWN
     // services already serves is refused, and refused HERE: against
     // `parsedServices`, the parse that actually runs. The plugin resolver's
@@ -1558,15 +1639,33 @@ export class ServiceManager extends EventEmitter {
     // consumer's own now — one in the compose file, one in `plugins.use` — so a
     // refusal naming both is something the reader can act on, which re-routing
     // silently was not.
+    //
+    // `parsedServices`, and NOT `this.services` (nikzlabs/shipit#2379). Only
+    // `reconcile()` clears that map, while `start()` clears nothing, so a
+    // second `start()` without one in between reads the PREVIOUS activation's
+    // rows as occupants. Which caller does that in production was not pinned
+    // down — the report is one activation, not a trace — and it does not need
+    // to be: the map is the wrong SOURCE for this question whatever reaches it,
+    // because it answers "what did this manager last register" and the question
+    // is "what does the project's file declare now". Counting those made a
+    // plugin service clash with its own outgoing instance, and the refusal then
+    // named an occupant that is not in the project's file at all. The current
+    // parse is the only set that can honestly answer "which of the project's
+    // own services serves this port", which is exactly what the message claims,
+    // so the claim is now true by construction rather than by filtering.
+    this.portRefusals.clear();
     const projectPorts = new Map<number, string>();
-    for (const svc of this.services.values()) {
-      // Skip stale plugin services from the previous activation — they will
-      // be re-admitted (or refused) below. Without this filter, a plugin
-      // service whose port is set in `plugins.use` clashes with its own
-      // outgoing instance during a transition activation and is refused with
-      // a message blaming "this project's own service" (nikzlabs/shipit#2379).
-      if (svc.origin) continue;
-      if (svc.port !== undefined && !projectPorts.has(svc.port)) projectPorts.set(svc.port, svc.name);
+    for (const svc of parsedServices) {
+      const preview = svc.shipitPreview ?? (svc.ports?.length ? "auto" : "manual");
+      const port = svc.ports?.[0] ? extractContainerPort(svc.ports[0]) : undefined;
+      if (port !== undefined && !projectPorts.has(port)) projectPorts.set(port, svc.name);
+      this.services.set(svc.name, {
+        name: svc.name,
+        port,
+        preview,
+        status: "stopped",
+        dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
+      });
     }
     const admittedPlugins = this.pluginServices.filter((svc) => {
       const clash = svc.port !== undefined ? projectPorts.get(svc.port) : undefined;
@@ -1599,20 +1698,7 @@ export class ServiceManager extends EventEmitter {
         },
       });
     }
-    const overrideServices = [...parsedServices, ...admittedPlugins.map(toComposeService)];
-
-    // Resolve secrets BEFORE generating the override — the override references
-    // per-service env files via `env_file:` and compose detects the file at
-    // `up` time. We always sync the env files (even when no secrets are
-    // declared) so stale files from a previous compose definition are cleared.
-    // docs/262 req 23 — the plugin services go in too: their declared
-    // credentials are delivered by the same pass, and the pass sweeps the files
-    // of plugin services it is not told about.
-    await this.secrets.sync(parsedServices, admittedPlugins);
-
-    // Generate override
-    const overrideContent = generateComposeOverride(overrideServices, this.buildOverrideOptions());
-    writeComposeOverride(this.overrideDir, overrideContent);
+    await this.writeOverrideFor(parsedServices, admittedPlugins);
 
     // Mark auto services as starting (silently — _startupComplete is false)
     const autoServices = [...this.services.values()].filter(s => s.preview === "auto");
@@ -1666,6 +1752,7 @@ export class ServiceManager extends EventEmitter {
       if (autoNames.length > 0) {
         await this.withUpInFlight(autoNames, async () => {
           await this.prepareContainedStartFn?.(autoNames);
+          this.armLogFollowerSince(autoNames);
           await this.compose.up(autoNames, this.composeLogSink(autoNames));
           await this.containServicesFn?.([...this.services.keys()]);
         });
@@ -1698,6 +1785,9 @@ export class ServiceManager extends EventEmitter {
       for (const svc of this.services.values()) {
         this.ensureLogFollower(svc.name);
       }
+      // Every service now has a follower, so any anchor still armed belongs to
+      // one that was already alive and has nothing to replay.
+      this.disarmLogFollowerSince([...this.services.keys()]);
 
       // AFTER the followers, which is the one ordering constraint on it: this
       // writes to a service's durable log channel, and a channel that already
@@ -1759,6 +1849,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight([name], async () => {
         await this.prepareContainedStartFn?.([name]);
+        this.armLogFollowerSince([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -1767,6 +1858,14 @@ export class ServiceManager extends EventEmitter {
       // that `up` to stop whatever it produced — so finishing the start here
       // would only race it back to `running`. See `stopService`.
       if (this.stoppedByUser.has(name)) return;
+      // BEFORE the network join and the poll, not after them (#2426). Both are
+      // Docker round trips the fresh container spends printing, and this spawn
+      // is what claims the `--since` anchor armed above — leaving it until last
+      // let the poll's own `onRunning` → `ensureLogFollower` claim it first,
+      // only for the unconditional respawn here to kill that follower and
+      // re-attach with no anchor at all, losing the very window the anchor
+      // exists to replay.
+      this.streamLogs(name);
       // The first manual-service start is the moment the compose network
       // actually gets created (compose materializes the network on `up`,
       // not just when the file is parsed). If this stack is all-manual,
@@ -1776,7 +1875,6 @@ export class ServiceManager extends EventEmitter {
       // freshly-started container by IP. Idempotent on subsequent starts.
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
-      this.streamLogs(name);
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
       throw err;
@@ -1806,19 +1904,24 @@ export class ServiceManager extends EventEmitter {
       if (this.stoppedByUser.has(name)) return;
       await this.withUpInFlight([name], async () => {
         await this.prepareContainedStartFn?.([name]);
+        this.armLogFollowerSince([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
       // Stopped mid-restart — see `startService` for why this returns rather
       // than finishing the bring-up.
       if (this.stoppedByUser.has(name)) return;
+      // Restart log streaming to pick up new container output — before the join
+      // and the poll, for the reason spelled out in `startService`. This is the
+      // path #2426 was filed against: a restarted service that prints its
+      // diagnostics and exits produced nothing the reporter could see, which
+      // read as "the `command:` edit was never applied".
+      this.streamLogs(name);
       // Defensive: if a previous all-manual `start()` skipped the network
       // join (see startService comment), the first restartService after
       // adoption could be the first time the orchestrator gets attached.
       await this.joinSessionNetwork();
       await this.poller.pollOnce();
-      // Restart log streaming to pick up new container output
-      this.streamLogs(name);
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
       throw err;
@@ -1918,16 +2021,35 @@ export class ServiceManager extends EventEmitter {
     // docs/192 — durable persistence. The follower replays its `--tail` window
     // on every (re)start, which would duplicate lines in the durable store
     // across restarts. So we only replay history (`--tail 1000`, which also
-    // *seeds* the store via handleData) when the store has nothing yet;
-    // otherwise we follow only NEW lines (`--tail 0`). This keeps an earlier
-    // container's persisted history intact after the container is destroyed
-    // and a fresh one starts. (Lines emitted while the orchestrator itself was
-    // down are not backfilled — a `--since` follower is the planned follow-up.)
+    // *seeds* the store via handleData) when the store has nothing yet.
+    //
+    // Once the store IS seeded, the window is anchored by {@link armLogFollowerSince}
+    // instead (nikzlabs/shipit#2426). `--tail 0` alone loses everything the
+    // container printed between `up` returning and this spawn — a network join
+    // and a poll later — and there is nowhere left to recover it from: the ring
+    // buffer was just cleared above, the store never received those lines, and
+    // `snapshotLogs` prefers the store over a fresh `docker compose logs`. A
+    // service that prints and then exits produced NO visible output at all,
+    // which is how a reporter concluded a `command:` edit had not been applied
+    // when in fact it had. `--since <up-start>` replays exactly that gap.
+    //
+    // It cannot duplicate persisted history: the anchor is stamped immediately
+    // before each `up`, so it excludes everything an earlier follower recorded,
+    // and a follower only ever dies with its container — whose logs go with it.
+    // `--tail 1000` rides along purely to bound a container that floods the gap.
+    // With no anchor (a follower re-attached without an intervening `up`) the
+    // behavior is unchanged: follow new lines only.
     const channel = `service:${name}`;
     const seeded = this.logStore?.hasChannel(this.sessionId, channel) ?? false;
-    const tail = this.logStore && seeded ? "0" : "1000";
+    // Consumed, not just read: an anchor left behind would widen a later
+    // unrelated re-attach's window for no gain.
+    const since = this.followerSince.get(name);
+    this.followerSince.delete(name);
+    const window = this.logStore && seeded
+      ? (since ? ["--since", since, "--tail", "1000"] : ["--tail", "0"])
+      : ["--tail", "1000"];
 
-    const args = this.compose.args("logs", "-f", "--tail", tail, "--no-log-prefix", name);
+    const args = this.compose.args("logs", "-f", ...window, "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
       // planning#371 — same project file, same interpolation. See `composeSpawnEnv`.
@@ -2005,6 +2127,50 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * Stamp the moment an `up` begins, so the log follower that attaches after it
+   * replays the window between the two instead of starting from "now"
+   * (nikzlabs/shipit#2426). Called by EVERY path that runs `docker compose up`,
+   * immediately before the command — the initial stack start, a manual
+   * start/restart, the gated batch, a crash/OOM retry, and the secrets refresh.
+   *
+   * Uniform on purpose: a container recreated by any of them gets a follower
+   * from a different place (`onRunning` covers the automatic routes,
+   * `startService`/`restartService` spawn their own), and each one needs the
+   * same window. Stamping at the `up` rather than at the spawn is what makes the
+   * anchor exclude everything an earlier follower already persisted.
+   *
+   * Full ISO-8601 with milliseconds: `--since` is compared against daemon-side
+   * log timestamps, and second precision would let a restart replay the outgoing
+   * container's final lines.
+   */
+  private armLogFollowerSince(names: readonly string[]): void {
+    const at = new Date().toISOString();
+    for (const name of names) this.followerSince.set(name, at);
+  }
+
+  /**
+   * Drop any anchor the `up` did not end up needing, once the follower question
+   * is settled for these services.
+   *
+   * An anchor is claimed by the next follower SPAWN, and an `up` does not always
+   * produce one: `docker compose logs -f` follows its service across a container
+   * the `up` merely creates, so a follower that was already alive stays alive and
+   * the anchor is left armed. It would then be claimed much later, by a re-attach
+   * after some unrelated death — replaying a window the durable store already
+   * holds, i.e. duplicating history.
+   *
+   * Called AFTER the poll, never right after the `up`. The poll is where
+   * `onRunning` re-attaches a follower to a container the `up` REPLACED, and that
+   * spawn is the one the anchor exists for — a crash retry losing its restart
+   * output is the same bug as a manual restart losing it. By the time the poll has
+   * run, an anchor still sitting here means a follower survived, which is exactly
+   * the case with nothing to replay.
+   */
+  private disarmLogFollowerSince(names: readonly string[]): void {
+    for (const name of names) this.followerSince.delete(name);
+  }
+
+  /**
    * Adopt a freshly-resolved `compose:` block from `shipit.yaml`.
    *
    * `composeConfig` is read from `shipit.yaml` once, when the manager is
@@ -2043,6 +2209,25 @@ export class ServiceManager extends EventEmitter {
   /**
    * Reconcile the compose stack after a config change.
    * Re-parses the compose file, regenerates the override, and runs `up -d`.
+   *
+   * **Without the pre-start stale-container sweep**, deliberately. The sweep is
+   * `docker rm -f` over every container labelled with this session id — and on a
+   * reconcile of a RUNNING stack, that set is the session's own healthy preview
+   * containers. They were force-removed with no SIGTERM at all, so every edit to
+   * `docker-compose.yml` or `shipit.yaml` killed the preview with exit 137 and
+   * the user got a crash they had to wait out. `upWithConflictRecovery`'s
+   * docstring already records this exact over-aggressiveness being found once
+   * before (efa1ec150 / docs/127-restart-agent); the surgical conflict recovery
+   * was added in response, but the sweep was never taken off this path, so the
+   * original behaviour stayed live until it was re-diagnosed against a841e147.
+   *
+   * A reconcile does not need it. Compose owns the transition from the old
+   * definition to the new one: it recreates the services whose config changed,
+   * leaves the untouched ones running, and `--remove-orphans` drops containers
+   * the project no longer declares. The one case the sweep was covering here —
+   * a container whose name blocks the create because compose won't adopt it —
+   * is exactly what `upWithConflictRecovery` handles, by id, without touching
+   * the working stack.
    */
   async reconcile(): Promise<void> {
     // Kill orphaned log processes before clearing state — if a service was
@@ -2085,7 +2270,7 @@ export class ServiceManager extends EventEmitter {
     // to reading as an empty project. `start()` clears it on the one path where
     // no parse will happen at all (`noProjectCompose`), which is the case this
     // was reaching for. Review finding.
-    await this.start();
+    await this.start({ sweepStaleContainers: false });
   }
 
   /**
@@ -2231,6 +2416,13 @@ export class ServiceManager extends EventEmitter {
         this.buildOverrideOptions(),
       );
       writeComposeOverride(this.overrideDir, overrideContent);
+      // #2426 — the override on disk now reflects THIS parse, so say so, or
+      // `overrideIsStaleFor` would call for a rewrite on the next `up` and
+      // recreate every service whose config that changed. Only the
+      // project half is recorded: this path deliberately uses `pluginServices`
+      // rather than the admitted set (see `writeOverrideFor`), so it is not
+      // evidence about what was admitted.
+      this._overrideProjectServices = JSON.stringify(parsedServices);
     }
 
     if (!this._started) return;
@@ -2247,6 +2439,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight(autoNames, async () => {
         await this.prepareContainedStartFn?.(autoNames);
+        this.armLogFollowerSince(autoNames);
         await this.compose.up(autoNames, this.composeLogSink(autoNames));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -2257,6 +2450,7 @@ export class ServiceManager extends EventEmitter {
       // no transition ever fires. Without this the log panel goes quiet for the
       // rest of the session on nothing worse than the user saving a secret.
       for (const name of autoNames) this.ensureLogFollower(name);
+      this.disarmLogFollowerSince(autoNames);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
     }
@@ -2359,14 +2553,101 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * Generate and write the compose override, and record what it was built from.
+   *
+   * The single writer, so the mid-session refresh in {@link withUpInFlight}
+   * cannot drift from `start()` in either the inputs it feeds the generator or
+   * the order it feeds them in. Secrets are resolved BEFORE the generator runs — the override
+   * references per-service env files via `env_file:` and compose detects the
+   * file at `up` time. The sync always runs (even with no secrets declared) so
+   * stale files from a previous compose definition are cleared; docs/262 req 23
+   * puts the plugin services through it too, since their declared credentials
+   * are delivered by the same pass and the pass sweeps the files of plugin
+   * services it is not told about.
+   */
+  private async writeOverrideFor(
+    projectServices: ComposeService[],
+    admittedPlugins: PluginComposeService[],
+  ): Promise<void> {
+    await this.secrets.sync(projectServices, admittedPlugins);
+    const overrideServices = [...projectServices, ...admittedPlugins.map(toComposeService)];
+    writeComposeOverride(
+      this.overrideDir,
+      generateComposeOverride(overrideServices, this.buildOverrideOptions()),
+    );
+    this._overrideProjectServices = JSON.stringify(projectServices);
+    this._overrideAdmittedPlugins = admittedPlugins;
+  }
+
+  /**
    * Refuse to run `docker compose up` against a project compose file that no
    * longer passes validation — see {@link parseProjectCompose} for why it can
    * change under us. Throws the `ComposeValidationError` verbatim, so the
    * caller reports the real reason on the service it was starting.
+   *
+   * Returns the parse so {@link overrideIsStaleFor} and the refresh it gates can
+   * use it rather than read the file a second time; `null` when this project has
+   * no compose file of its own and there is nothing to validate.
    */
-  private assertProjectComposeStillValid(): void {
-    if (this.noProjectCompose) return;
-    this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+  private assertProjectComposeStillValid(): ComposeService[] | null {
+    if (this.noProjectCompose) return null;
+    return this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+  }
+
+  /**
+   * nikzlabs/shipit#2426 — has the compose file changed since the GENERATED
+   * override was written? True means {@link withUpInFlight} regenerates it
+   * before the `up`.
+   *
+   * The pre-`up` re-parse above was already happening and its result was thrown
+   * away, which is the exact point where "the edit was never applied" became
+   * true. `docker compose up` re-reads the user's file every time, so a
+   * `command:` edit does land — but the override is written by
+   * `start()`/`reconcile()` and by nothing else, and compose merges it OVER the
+   * user's file. So every field the override derives — a service's `volumes:`
+   * (which is where the workspace mount and its nested dep-dir overlays live),
+   * `env_file:` from `x-shipit-secrets`, the user's named volumes — kept
+   * whatever it held at the last full start, through any number of `shipit
+   * service restart` cycles. Editing `.:/app` to `./game:/app` and restarting
+   * left the service on the old mount; removing a service from the file left the
+   * override declaring one with no image, which fails the whole project load.
+   *
+   * The config-file watcher's `reconcile()` was the only thing that refreshed
+   * it, and that is a best-effort inotify over a bind mount — so whether an edit
+   * took effect depended on whether an event arrived before the user hit
+   * restart. Regenerating from the parse that just succeeded makes the answer
+   * unconditional, without a second read of the file.
+   *
+   * **This gate exists because the refresh runs before EVERY `up`** — a manual
+   * start, a restart, a crash/OOM retry, the install-gate release. An unchanged
+   * file must not rewrite the override: compose recreates a container whenever
+   * its config differs from what the running one was built with, so an
+   * idempotent rewrite that merely reordered a key would recreate every service
+   * in the stack on every retry. Being a synchronous predicate is part of that —
+   * it keeps the unchanged case not just write-free but tick-for-tick identical
+   * to before (see {@link withUpInFlight}).
+   *
+   * **What this deliberately does NOT do is rebuild the service map.** Adding or
+   * removing a service, or changing its preview mode or ports, has to move
+   * statuses, the install gate, the poller and the log followers together — that
+   * is `reconcile()`, which the watcher still fires. This is scoped to what
+   * compose EXECUTES.
+   *
+   * That leaves one asymmetry worth naming, because it looks like an oversight
+   * and is not (review finding): a service the user deleted from the compose
+   * file stops being DECLARED here, while `this.services` keeps polling its
+   * entry until a reconcile clears it. Stale, not incoherent — and the direction
+   * matters. Dropping it from the override is what lets the survivors start at
+   * all, since compose fails the whole project load on a service left with
+   * neither an image nor a build context.
+   */
+  private overrideIsStaleFor(parsed: ComposeService[] | null): boolean {
+    if (parsed === null) return false;
+    // Never before the first `start()` has written an override: there is nothing
+    // to be stale against, and `start()` is about to generate one from this very
+    // parse anyway.
+    if (this._overrideProjectServices === null) return false;
+    return JSON.stringify(parsed) !== this._overrideProjectServices;
   }
 
   /**
@@ -2379,7 +2660,17 @@ export class ServiceManager extends EventEmitter {
     // BEFORE the bookkeeping below, so a refused `up` leaves no in-flight
     // exemption behind. Every `compose up` in this class goes through here,
     // which is what makes this the one place the check has to live.
-    this.assertProjectComposeStillValid();
+    //
+    // Synchronous, and it has to stay that way: the bookkeeping below is what
+    // makes an `up` visible to a concurrent `stopService`, and every caller
+    // reaches it without yielding, so an `await` here would open a window in
+    // which an `up` is running and nothing knows it is (`service-manager.test.ts`
+    // → "waits out every overlapping up"). #2426's override refresh is therefore
+    // split in two around it: the decision is taken here, synchronously, and only
+    // the WRITE — which happens on a compose edit and on no other `up` in the
+    // session's life — runs after the bookkeeping and costs a tick.
+    const parsed = this.assertProjectComposeStillValid();
+    const staleParse = this.overrideIsStaleFor(parsed) ? parsed : null;
     for (const name of names) {
       this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
       // A new container is on its way, so the address we hold describes the
@@ -2396,6 +2687,14 @@ export class ServiceManager extends EventEmitter {
     // service from reconciliation for the rest of the session.
     let settled: Promise<void> | undefined;
     try {
+      // #2426 — inside the try, so a failure to rewrite the override releases
+      // the exemption taken above rather than stranding it for the session.
+      if (staleParse) {
+        console.log(
+          `[compose:${this.sessionId}] compose file changed since the override was generated — regenerating`,
+        );
+        await this.writeOverrideFor(staleParse, this._overrideAdmittedPlugins);
+      }
       const call = fn();
       // Never rejects — `stopService` awaits this only to sequence itself after
       // the call, and the caller of `withUpInFlight` still gets the real rejection.
@@ -2536,6 +2835,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight([name], async () => {
         await this.prepareContainedStartFn?.([name]);
+        this.armLogFollowerSince([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -2545,8 +2845,11 @@ export class ServiceManager extends EventEmitter {
       await this.joinSessionNetwork();
       // Status is updated by the next pollStatus pass (periodic poller).
       // Trigger a poll now so we don't wait up to pollIntervalMs to learn
-      // whether the retry succeeded.
+      // whether the retry succeeded. Its `onRunning` is also what re-attaches
+      // the follower to the container this retry replaced — the spawn that
+      // claims the anchor armed above.
       await this.poller.pollOnce();
+      this.disarmLogFollowerSince([name]);
     } catch (err) {
       // Compose itself failed — treat as a normal exit and schedule another
       // retry if install is still running.
@@ -2625,17 +2928,46 @@ export class ServiceManager extends EventEmitter {
       // after this `up` (e.g. the gate released before deps finished landing),
       // handleNonZeroExit restarts it with backoff instead of latching to
       // `error`. Cleared once it reaches `running`. See docs/137.
+      //
+      // Set here rather than in the batch below, and so BEFORE the queue: both
+      // this and the status are what the user sees while the op waits its turn.
+      // A reconcile queued ahead of us clears the set (`start()` does), which
+      // costs the window and is the right answer anyway — that reconcile
+      // restarted the service against a freshly-read definition, so there is no
+      // half-landed install left to recover from (review finding).
       this.postGateServices.add(name);
     }
-    void this.startGatedBatch(names);
+    // Through the session's stack queue, like the first `start()` and both
+    // reconciles. The gate opening is driven by `agent.install` finishing, which
+    // a session activation deliberately runs CONCURRENTLY with the plugin-service
+    // reconcile — so "the gate opens in the middle of a reconcile's `docker
+    // compose up`" is the common case, not a corner. Unserialized, the two
+    // compose invocations collided on the same containers: compose failed
+    // mid-recreate with "removal of container … is already in progress", the
+    // just-started container was force-removed (exit 137), and the service
+    // walked to `stopped` 30s later when the poller gave up on it — a dead
+    // preview on every activation. Diagnosed live against a841e147.
+    void serializeStackOp(this.sessionId, () => this.startGatedBatch(names));
   }
 
-  /** Bring up a batch of gated services and wire up their post-start plumbing. */
-  private async startGatedBatch(names: string[]): Promise<void> {
+  /**
+   * Bring up a batch of gated services and wire up their post-start plumbing.
+   *
+   * Runs on the stack queue, so `names` is decided BEFORE this runs and can go
+   * stale: a reconcile queued ahead of us rebuilds the service map from a fresh
+   * read of the compose file, and a service that release named may be gone from
+   * it (renamed, removed, or a plugin service the round withdrew). Re-read the
+   * map here rather than handing compose a service it no longer knows — an
+   * `up <gone>` fails the whole batch and would latch the survivors to `error`.
+   */
+  private async startGatedBatch(requested: string[]): Promise<void> {
     if (this._disposed) return;
+    const names = requested.filter(n => this.services.has(n));
+    if (names.length === 0) return;
     try {
       await this.withUpInFlight(names, async () => {
         await this.prepareContainedStartFn?.(names);
+        this.armLogFollowerSince(names);
         await this.compose.up(names, this.composeLogSink(names));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -2646,7 +2978,10 @@ export class ServiceManager extends EventEmitter {
       // Log streaming for these services is already running: `start()` streams
       // every service in the map (gated ones included) before the gate opens,
       // and `docker compose logs -f <service>` follows the service across the
-      // container's first `up`. No need to re-spawn here.
+      // container's first `up`. No need to re-spawn here — and because no spawn
+      // follows, the anchor armed above would otherwise sit armed until some
+      // unrelated later re-attach replayed a window the store already holds.
+      this.disarmLogFollowerSince(names);
     } catch (err) {
       const msg = (err as Error).message;
       for (const name of names) {

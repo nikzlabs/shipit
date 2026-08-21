@@ -88,6 +88,7 @@ export function useAttentionNotifications(
         autoFixEnabled,
         autoResolveEnabled,
         resolved: isTerminalPrResolved(session),
+        muted: !!session.mutedAt,
       });
       next.set(session.id, reason);
 

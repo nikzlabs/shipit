@@ -43,6 +43,7 @@ import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.j
 import { opencodeModelArg, opencodeProviderConfig } from "../../../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type OpencodeToolPart } from "../../../shared/opencode-stream.js";
 import { normalizeOpencodeToolCall, normalizeOpencodeToolResult } from "./opencode-tool-normalizer.js";
+import { compactOpencodeSession } from "./compaction.js";
 
 const OPENCODE_REASONING = HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning;
 
@@ -69,8 +70,10 @@ export class OpencodeAdapter
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    // Mirrors the catalogue row (docs/268): unobserved, so declared false.
-    supportsImages: false,
+    // Mirrors the catalogue row (docs/268), where the live probe is recorded:
+    // observed at last, and true once ShipIt's provider block declares the image
+    // input modality (planning#458).
+    supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
@@ -80,9 +83,12 @@ export class OpencodeAdapter
     // live adapter (ProxyAgentProcess hardcodes its own stub).
     models: [],
     ...(OPENCODE_REASONING ? { reasoning: OPENCODE_REASONING } : {}),
-    supportsReview: false,
+    // Mirrors the catalogue row, where the probe is recorded (planning#459).
+    supportsReview: true,
     supportsSteering: false,
-    supportsCompaction: false,
+    // docs/276 — via the server's `POST /session/{id}/summarize`, spawned per
+    // compaction. NOT via `opencode run`; see `compaction.ts`.
+    supportsCompaction: true,
     skillsDirName: ".opencode",
     skillInvocationPrefix: "/",
   };
@@ -91,6 +97,15 @@ export class OpencodeAdapter
   /** Injectable for tests — replays captured streams without a real CLI. */
   private readonly spawnFn: (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
   private proc: ChildProcess | null = null;
+  /**
+   * docs/276 — the transient `opencode serve` of an in-flight compaction.
+   *
+   * Deliberately NOT `this.proc`: that field is the turn's CLI, and the whole
+   * stdout/watchdog/exit machinery keys off it. This is a second handle with
+   * one job — giving `kill()` and `interrupt()` something to stop, since a
+   * compaction otherwise ignores both for the whole summarize window.
+   */
+  private compactionProc: ChildProcess | null = null;
   private buffer = "";
   private stderrBuffer = "";
   private accumulator = new OpencodeTurnAccumulator();
@@ -245,6 +260,17 @@ export class OpencodeAdapter
       );
     }
 
+    // docs/276 — a compaction spawn diverges here, once the per-turn config and
+    // env exist (the transient server needs BOTH: `OPENCODE_CONFIG` carries the
+    // `shipit` provider block, and the credential is delivered in `spawnEnv`).
+    // It never runs the turn machinery below — no argv prompt, no accumulator,
+    // no watchdog — because the trigger is an HTTP call, not a turn. See
+    // `compaction.ts` for why `opencode run` cannot do this.
+    if (params.compact) {
+      this.runCompaction(params, spawnEnv);
+      return;
+    }
+
     console.log(
       "[opencode] spawning:", "opencode", args.join(" ").slice(0, 200),
       `| promptBytes=${Buffer.byteLength(params.prompt)} | cwd:`, params.cwd,
@@ -386,6 +412,85 @@ export class OpencodeAdapter
     });
   }
 
+  /**
+   * docs/276 — run a compaction instead of a turn, then settle the turn.
+   *
+   * Every exit path MUST emit exactly one `agent_result`. The orchestrator's
+   * whole post-turn sequence — the local commit above all (CLAUDE.md post-turn
+   * invariant 2) — hangs off it, and this path spawns no long-lived `this.proc`
+   * whose `exit` would settle the turn for us. A compaction that fails silently
+   * would therefore strand the session `running` forever.
+   *
+   * A failure is reported as a failed RESULT rather than an `error` event: this
+   * spawn is the whole turn, so the turn genuinely failed, and the user asked
+   * for the compaction and is owed the reason.
+   */
+  private runCompaction(params: AgentRunParams, spawnEnv: Record<string, string>): void {
+    const sessionId = params.sessionId;
+    // Exactly one `agent_result`, no matter how many things go wrong at once —
+    // a kill racing the summarize response can otherwise settle twice, and a
+    // duplicate terminal event is as damaging to the post-turn sequence as a
+    // missing one.
+    let settled = false;
+    const settle = (error?: string): void => {
+      if (settled) return;
+      settled = true;
+      this.compactionProc = null;
+      this.cleanupTurnFiles();
+      this.emit("event", {
+        type: "agent_result",
+        status: error ? "error" : "success",
+        sessionId: sessionId ?? "",
+        ...(error ? { error } : {}),
+      });
+    };
+
+    // Nothing to compact: OpenCode's session is created BY the first turn, so a
+    // session id is the only handle on a transcript that exists. Refuse rather
+    // than start a server that could only 404.
+    if (!sessionId) {
+      settle("Cannot compact: this session has not run a turn yet.");
+      return;
+    }
+    if (!params.model) {
+      // The route rejects a body with no `providerID`/`modelID` (HTTP 400), and
+      // the summarization is a real model call that has to be billed somewhere.
+      settle("Cannot compact: no model is selected for this session.");
+      return;
+    }
+
+    this.emit("event", { type: "agent_compaction_started", trigger: "manual" });
+
+    // Fire-and-forget from a sync `run()`: the turn settles through the
+    // `agent_result` this emits, exactly as the spawned-process path settles
+    // through its `exit` handler. `void` rather than `await` because `run()` is
+    // the AgentProcess contract's synchronous entry point.
+    void (async () => {
+      try {
+        await compactOpencodeSession({
+          sessionId,
+          modelId: params.model!,
+          cwd: params.cwd,
+          env: spawnEnv,
+          spawnFn: this.spawnFn,
+          onLog: (message) => this.emit("log", "opencode", message),
+          onServerSpawned: (proc) => {
+            this.compactionProc = proc;
+          },
+        });
+        // OpenCode's summarize answers a bare `true` — no token figures, no
+        // duration. The card degrades to a bare "Context compacted" row, the
+        // same as Codex's.
+        this.emit("event", { type: "agent_compacted", trigger: "manual" });
+        settle();
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(`[opencode] compaction failed: ${reason}`);
+        settle(`Compaction failed: ${reason}`);
+      }
+    })();
+  }
+
   private drainLines(flush = false): void {
     const lines = this.buffer.split("\n");
     this.buffer = flush ? "" : (lines.pop() ?? "");
@@ -505,6 +610,24 @@ export class OpencodeAdapter
     }
   }
 
+  /**
+   * docs/276 — mid-turn compaction, which this adapter cannot do. `run()` is
+   * one `opencode run` per turn and the compaction trigger is an HTTP call to a
+   * SEPARATE server; firing one against the session a turn is actively writing
+   * would race that turn's own message writes.
+   *
+   * Not a gap: the orchestrator only calls `compact()` while a turn is in
+   * flight, and routes the ordinary `/compact` through `run({ compact: true })`
+   * — the path that works here. Warn rather than throw, mirroring the Claude
+   * adapter's non-streaming branch; a best-effort mid-turn compaction must not
+   * tear down the turn it was asked about.
+   */
+  compact(_instructions?: string): void {
+    console.warn(
+      "[opencode-adapter] compact() called mid-turn — OpenCode has no resident process to compact (the orchestrator should have spawned a compaction run instead)",
+    );
+  }
+
   sendUserMessage(text: string): void {
     // supportsSteering is false; the orchestrator's steering gate should never
     // route here. Mirror the Claude adapter's loud-failure contract rather
@@ -530,6 +653,12 @@ export class OpencodeAdapter
     // Capture at entry (CLAUDE.md: never read `this.proc` inside an async
     // callback) — this adapter instance is reused across turns, so a stale
     // escalation would otherwise SIGTERM the NEXT turn's process.
+    // docs/276 — same capture-at-entry rule for the compaction server. No
+    // escalation timer: it is a plain HTTP server with no retry loop to get
+    // stuck in, so SIGTERM is enough and there is no CLI to be gentle with.
+    const compacting = this.compactionProc;
+    if (compacting) killChild(compacting, "SIGTERM");
+
     const proc = this.proc;
     if (!proc) return;
     killChild(proc, "SIGINT");
@@ -545,6 +674,10 @@ export class OpencodeAdapter
   kill(): void {
     this.clearErrorKillTimer();
     if (this.proc) killChild(this.proc, "SIGTERM");
+    // docs/276 — a compaction has no `this.proc`; killing its server aborts the
+    // in-flight summarize, which rejects and settles the turn through the
+    // ordinary failure path.
+    if (this.compactionProc) killChild(this.compactionProc, "SIGTERM");
     this.cleanupTurnFiles();
   }
 

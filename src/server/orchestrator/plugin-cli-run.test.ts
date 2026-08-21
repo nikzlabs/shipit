@@ -21,6 +21,7 @@ import {
   PLUGIN_CLI_NETWORK,
   type PluginCliDeps,
 } from "./plugin-cli-run.js";
+import { OVERLAY_VERIFY_FAILURE } from "./overlay-volume.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
 import {
   claimGenerationDeletion,
@@ -176,11 +177,23 @@ function mountFor(host: { Mounts: Mount[] }, target: string): Mount | undefined 
   return host.Mounts.find((m) => m.Target === target);
 }
 
-function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = {}) {
+function fakeDocker(opts: {
+  exit?: number;
+  stdout?: string;
+  stderr?: string;
+  /**
+   * At `createContainer`, replace every overlay-named volume with a plain
+   * `Options: null` one — Docker's implicit create when the name is gone
+   * (nikzlabs/shipit#2495). The workspace volume is left alone.
+   */
+  vanishNamedVolumesOnCreate?: boolean;
+} = {}) {
   const containers: Created[] = [];
+  const started: string[] = [];
   // The workspace volume already exists in production; the overlay's daemon-path
   // translation inspects it for its mountpoint.
   const volumes = new Set<string>(["shipit-ws"]);
+  const volumeOpts = new Map<string, Record<string, string> | null>();
   const networks: string[] = [];
   const connected: unknown[] = [];
   const notFound = (): never => {
@@ -207,24 +220,38 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
       connect: async (spec: unknown) => { connected.push(spec); },
     }),
     createNetwork: async (spec: { Name: string }) => { networks.push(spec.Name); },
-    createVolume: async (spec: { Name: string }) => { volumes.add(spec.Name); },
+    // `createOverlayVolume` re-inspects after creating and throws unless the driver
+    // opts come back as the ones it asked for (the 2026-08-19 ops finding — Docker
+    // silently returns the pre-existing volume when the name is taken), so the
+    // double has to remember them.
+    createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
+      volumes.add(spec.Name);
+      volumeOpts.set(spec.Name, spec.DriverOpts ?? {});
+    },
     getVolume: (name: string) => ({
       inspect: async () => {
         if (!volumes.has(name)) notFound();
-        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data`, Options: volumeOpts.get(name) };
       },
-      remove: async () => { volumes.delete(name); },
+      remove: async () => { volumes.delete(name); volumeOpts.delete(name); },
     }),
     listContainers: async () => [],
     getContainer: (_id: string) => ({ remove: async () => undefined }),
     createContainer: async (createOpts: Record<string, unknown>) => {
+      if (opts.vanishNamedVolumesOnCreate) {
+        for (const name of volumes) {
+          if (name === "shipit-ws") continue;
+          volumeOpts.set(name, null);
+        }
+      }
+      const id = `c-${containers.length + 1}`;
       containers.push({
-        id: `c-${containers.length + 1}`,
+        id,
         opts: createOpts,
         deniedAtCreate: isUntrustedContainerIp(CLI_SUBNET_ADDRESS),
       });
       return {
-        id: `c-${containers.length}`,
+        id,
         attach: async () => {
           // Flowing, so `end()` actually reaches `end`/`close` — the real
           // hijacked stream is consumed by dockerode's demuxer.
@@ -232,14 +259,14 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
           s.resume();
           return s;
         },
-        start: async () => undefined,
+        start: async () => { started.push(id); },
         wait: async () => ({ StatusCode: opts.exit ?? 0 }),
         kill: async () => undefined,
         remove: async () => undefined,
       };
     },
   };
-  return { docker: docker as unknown as Docker, containers, networks, volumes, connected };
+  return { docker: docker as unknown as Docker, containers, networks, volumes, connected, started };
 }
 
 /**
@@ -365,6 +392,26 @@ describe("runPluginCommand — the container it builds", () => {
     expect(host.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
     expect(host.CapDrop).toEqual(["ALL"]);
     expect((created.Labels as Record<string, string>)[PLUGIN_CLI_LABEL]).toBe("s1");
+  });
+
+  // planning#451 / nikzlabs/shipit#2495 — the volume is the overlay at ensure
+  // time; `createContainer` is ~the next thing that references it, and a
+  // missing name does not fail the create: Docker silently makes a plain empty
+  // local volume. Starting on that would run the command against an empty
+  // `/plugin`. Refusing before start is the same placement as the session
+  // dep-dir path. The container is removed; the shared volume is not (a plugin
+  // service may hold it).
+  it("refuses to start when Docker implicitly created a plain overlay volume mid-window", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ vanishNamedVolumesOnCreate: true });
+
+    const result = await runPluginCommand(deps(fake.docker), call);
+
+    expect(result.error).toContain(OVERLAY_VERIFY_FAILURE);
+    expect(result.exitCode).toBe(126);
+    expect(fake.started).toEqual([]);
+    expect(fake.containers).toHaveLength(1);
   });
 
   // The defect a review found: the orchestrator sees a session under its own

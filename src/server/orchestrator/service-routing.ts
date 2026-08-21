@@ -334,10 +334,12 @@ export function selectRouteForSelection(
     //
     // Note what does NOT make them equal: `acceptsAccount` asks whether this
     // harness can carry an account-delivered credential at all, and Codex can.
-    // The equality is the catalogue's — only `anthropic:sub` and `openai:sub`
-    // declare an account credential, and each one's models are carried only by
-    // its own harness — so it is a property of today's rows rather than of this
-    // code. `service-routing.test.ts` pins the axis on the divergent pair.
+    // The equality is the catalogue's — each account-bearing mode's models are
+    // carried only by its own harness (`openai:sub` → Codex via `carriers`,
+    // `xai:sub` → Grok via `carriers`, `anthropic:sub` → Claude because the
+    // only other `anthropic-messages` harness — OpenCode — has no account
+    // target). So it is a property of today's rows rather than of this code.
+    // `service-routing.test.ts` pins the axis on the divergent pair.
     const selected = deps.providerAccountManager.selectAccountForTurn(selection.serviceId, opts);
     // Its answer is taken only when it names an ACCOUNT. Its own trailing
     // env/key fallback is mode-blind — it is what would hand an `anthropic:sub`

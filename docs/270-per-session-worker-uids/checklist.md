@@ -105,6 +105,10 @@ Build sequence from [plan.md](./plan.md) §2. Requirements are cited as `(req N)
       `safe.directory=*` is still in force by default and a missed call site
       still fails silently. **E4** (a project's own hooks on ShipIt's
       auto-commit) is outstanding.
+      **Correction, 2026-08-18 (planning#410):** the E2 sentence is stale. The
+      switch soaked armed on production and both halves were then deleted, so
+      `safe.directory=*` is no longer written at all and a missed call site now
+      fails loudly. E4 and planning#384 are still outstanding.
 
 ## Could not be verified here
 

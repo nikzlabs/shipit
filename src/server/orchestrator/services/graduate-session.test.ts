@@ -5,6 +5,7 @@ import type { RepoStore } from "../repo-store.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo, SessionTitleSource, WsServerMessage } from "../../shared/types.js";
+import { TEST_CREDENTIALS_DIR } from "../credentials-test-helpers.js";
 
 // Drain microtasks until `predicate()` is true, or fail after `maxTicks`.
 async function flush(predicate: () => boolean, maxTicks = 50): Promise<void> {
@@ -255,7 +256,7 @@ describe("graduateSession", () => {
       {
         ...deps,
         ensureAgentTokenFresh,
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
         providerAccountManager: {
           selectRouteForTurn: () => ({ kind: "account", id: "acct_work" }),
         } as never,
@@ -271,7 +272,7 @@ describe("graduateSession", () => {
     // shape exactly: the session's harness, its account root, no model.
     expect(generateSessionName).toHaveBeenCalledWith("hi", {
       harnessId: "claude",
-      credentialRoot: "/credentials/provider-accounts/claude/acct_work",
+      credentialRoot: `${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct_work`,
     });
   });
 
@@ -286,7 +287,7 @@ describe("graduateSession", () => {
     graduateSession(
       {
         ...deps,
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
         providerAccountManager: {
           selectRouteForTurn: () => ({ kind: "reserved", id: "claude-api-key" }),
         } as never,

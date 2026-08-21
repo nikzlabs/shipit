@@ -52,6 +52,12 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "openrouter.ai",
   "ai-gateway.vercel.sh",
   "opencode.ai",
+  // docs/274 — xAI inference, the `grok` harness's key-billed mode.
+  "api.x.ai",
+  // planning#435 — Grok's subscription mode: the OIDC device-code/refresh host
+  // and the chat proxy subscription turns actually POST to.
+  "auth.x.ai",
+  "cli-chat-proxy.grok.com",
   // Package registries
   "registry.npmjs.org",
   "registry.yarnpkg.com",

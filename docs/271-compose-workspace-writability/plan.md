@@ -101,9 +101,15 @@ EACCESes as the agent.
 This is pre-existing — true of any declared `user:` since docs/150 — and it does
 not arise for a service that declares nothing, which after this change is every
 service whose image tolerates it. It does still arise for the declared-user shape
-this change sets out to keep working, including the three services this repo
-itself ships that way (see §4). Requirement 1 as written does not carve it out;
-it is named here rather than rounded off.
+this change sets out to keep working. Requirement 1 as written does not carve it
+out; it is named here rather than rounded off.
+
+*This paragraph ended "including the three services this repo itself ships that
+way (see §4)" until 2026-08-19. Since docs/272 that is one, not three —
+`emulator`, whose baked-in `1300:1301` writes no workspace, so the residual is
+real but unreachable here. The residual itself is unchanged for any project that
+does declare a workspace-writing `user:`; only this repo's exposure to it went
+away.*
 
 The durable fix is a group-writable umask inside the service, which means
 wrapping a command ShipIt does not own, or default POSIX ACLs on the workspace,
@@ -112,12 +118,75 @@ are larger than this fix and neither is attempted here.
 
 ## 4. Deploy ordering
 
-This repo's own `docker-compose.yml` **keeps** its `user: "1000:1000"` lines for
-now. They work again because of half B, and deleting them would break dogfooding
-on every session running an orchestrator that predates half A — which still
-refuses an undeclared contained service, and refuses the whole file with it. The
-comment on the `dev` service names the follow-up: drop them once the fix is
-deployed, so those services get the session identity and own their own output.
+This repo's own `docker-compose.yml` **kept** its `user: "1000:1000"` lines
+through this change. They worked again because of half B, and deleting them
+before half A was deployed would have broken dogfooding on every session running
+an older orchestrator — which still refused an undeclared contained service, and
+refused the whole file with it. So the ordering constraint was real, and it was a
+constraint on *when*, not on *whether*.
+
+**That follow-up is done** —
+[docs/272-services-run-as-session-uid](../272-services-run-as-session-uid/plan.md)
+(`fec4444e`, 2026-08-17) dropped the lines from `dev`, `onboarding`, `sdk-test`
+and `android`, after first confirming the deployed orchestrator accepts a
+contained service with no `user:`. Those services now get the session identity
+and own their own output, which also retires §3's residual *for this repo*:
+nothing here declares a foreign uid any more. `emulator` keeps `1300:1301` on
+purpose — a baked-in image account that writes no workspace, reaching the tree
+through half B's `group_add`.
+
+*This section read "**keeps** its `user: "1000:1000"` lines for now" until
+2026-08-19. Corrected rather than deleted, because the deploy-ordering
+constraint it records is the reasoning someone will need if this sequence ever
+has to be re-run — and because a plan asserting a superseded state as current is
+the same drift §4b is about.*
+
+## 4b. The rule outlived its deletion in six places (2026-08-18)
+
+Re-verifying github#2374 found the code fix intact and working — a live session's
+workspace is `2775`/`664` at `sessionUid:1000` — but half A's *deleted* rule still
+stated as current fact in six places, four of them load-bearing:
+
+- **`shipit-docs/plugins.md`** — the sharpest one. It told the agent that a
+  contained session refuses a service with no `user:` and to "add one". Adding one
+  is what §1 describes as the second way to have broken services, so this page
+  actively reproduced the bug for plugin fragments.
+- **`shipit-docs/compose.md`**'s empty-list troubleshooting quoted the deleted
+  refusal as the one a reader would "most often" hit — contradicting, three
+  hundred lines later, the same file's "delete that line" advice.
+- **`session-worker-uid.ts`**'s `RESERVED_EGRESS_UIDS` docstring concluded "the
+  worker-uid fallback reaches only Open services, where there is no tier to
+  escape" *from* the deleted rule. The conclusion is still true, but it now rests
+  on `sessionWorkerUid()` throwing for 911/912 rather than on a validation rule
+  that no longer exists — so the safety argument needed restating, not deleting.
+- **`plugin-compose.ts`**'s `toComposeService` justified reading the declared user
+  back with "which a contained session requires it to declare".
+- `docs/262-plugins/plan.md` and `docs/150-non-root-session-worker/plan.md`
+  repeated the premise.
+- `docs/266-orchestrator-git-trust-boundary/requirements.md` carried it as a
+  "verified at `compose-generator.ts`" claim under requirement 12 — found by the
+  independent reviewer, not by the sweep that found the other five. Requirement 12
+  itself is untouched (it is the requester's, and docs/271 only strengthened it);
+  what was corrected is the agent-written justification below it.
+
+This is the drift `CLAUDE.md` names: a comment asserting an inherited guarantee
+is a claim, not a contract. Each was corrected in place, with the superseded text
+quoted, because the reasoning that rested on it is worth keeping.
+
+The seam that let it persist was a **missing test**: `plugin-compose.test.ts`
+covered a declared-root refusal under containment and an undeclared fragment in an
+*open* session, but never an undeclared fragment in a *contained* one — the exact
+case half A changed. Both halves now exist: acceptance when a worker uid is
+available (asserted as acceptance, since the failure mode is a refusal that takes
+the whole compose file and every one of the project's own services with it), and
+the surviving refusal when there is none.
+
+Both set `SHIPIT_SESSION_WORKER_UID` explicitly, and that is the point rather than
+housekeeping. The first version of the acceptance test only *read* the ambient
+variable — which a session container sets and CI does not — so it passed locally,
+failed in CI, and demonstrated nothing in either place. A test for behaviour that
+is gated on an environment variable has to own that variable, or the environment
+decides what the test means.
 
 ## 5. Key files
 

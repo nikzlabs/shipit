@@ -285,12 +285,15 @@ The fix is publication timing only, in `session-token-publisher.ts`:
 Lifecycle — armed in `prepareSessionAgentEnvironment` gated on
 `enforceAccountRouting`, which is precisely the flag marking the turn's own
 pre-spawn step (the service-level warm-ups run before any turn exists and are
-followed moments later by the executor's own call). Torn down unconditionally at
-the top of `finalizeSessionAgentEnvironment`, so the turn-end sync-back remains
-the authoritative final publication, with the runner's `disposed` event as a
-backstop for a turn cut short by idle container cleanup. Route branching mirrors
-the sync-in exactly: account routes publish to that account's credential root,
-and the reserved `claude-env-oauth` route is skipped.
+followed moments later by the executor's own call). Torn down by
+`finalizeSessionAgentEnvironment` **when no agent process survives the turn**,
+so the turn-end sync-back is then the authoritative final publication, and by
+the runner's `disposed` event otherwise. (Originally torn down unconditionally
+at turn end; see [Rotations between
+turns](#rotations-between-turns-harvest-before-spend-2026-08-21-fix) for why
+that was wrong.) Route branching mirrors the sync-in exactly: account routes
+publish to that account's credential root, and the reserved `claude-env-oauth`
+route is skipped.
 
 Nothing here is awaited by turn execution and every failure is logged and
 swallowed — credential syncing must never block or fail a turn.
@@ -298,6 +301,127 @@ swallowed — credential syncing must never block or fail a turn.
 Scope note: this addresses publication **latency**. The separate gap that the
 `TOKEN_FRESHNESS` guards key off `expiresAt`, which tracks ordering but cannot
 detect *revocation*, is not addressed here.
+
+### Rotations between turns: harvest before spend (2026-08-21 fix)
+
+Tracked as planning#462.
+
+The design above rests on an assumption stated most plainly in the
+`SAFETY_MARGIN_MS` docstring: the orchestrator's 45-minute lead means "sessions
+never trigger their own refresh". That was true of a session **under a turn**.
+It stopped being true of anything once agent processes became **resident** — a
+streaming `claude --print --input-format stream-json` process outlives its turn
+by hours (that is what live steering is) and refreshes on its own clock, with no
+turn in view. No lead time the orchestrator picks can preempt a process that is
+not racing it.
+
+Because Anthropic's refresh tokens are **single-use**, one such rotation leaves
+the account root holding a grant the OAuth server has already spent. Every later
+tick is then doomed, and the tier-2 spend is not merely wasted: the CLI responds
+to it by **blanking** the account's credentials file — same path, every token
+replaced with `""` and `expiresAt: 0` — which the next tick reads as
+`missing_credentials`, flipping the account to "needs sign-in". Roughly daily,
+per account.
+
+Production, 2026-08-21, account `acct_1a27edec…` (all times UTC):
+
+| | |
+|---|---|
+| 16:54 | `rotated_tier2`, propagated to 33 pinned sessions |
+| 00:09–00:30 | four scheduled tier-2 ticks, each `unknown_failure` (each a billable Haiku call, each logged with a count and nothing else) |
+| 00:45 | `rate_limited` → 30 min backoff; token expires 00:54 with the source still holding refresh token R1 |
+| **01:09:04** | session `83fb0c58…` rewrites its own `.credentials.json` with a NEW refresh token R2 — **no turn running**, no log line for that session since 14:14 the previous day, its CLI process alive 17h46m. R1 is now dead upstream. |
+| 01:15:35 | the tick spends R1; the CLI blanks the account root file. Logged only as `unknown_failure failure_count=6`. |
+| 01:30 | `expiresAt: 0` → `missing_credentials` → reconnect |
+
+Corroborating that it was this path and not the refused-write-back one PR
+"planning#445" fixed: zero `write-back=` and zero `[token-publish]` lines for
+claude in 48h; every other pinned session still held the 16:54 token; only
+`83fb0c58` held a newer one, and its `.shipit-provider-accounts.json` marker
+named this account.
+
+Three changes, no new subsystem:
+
+1. **Harvest before spend** (`ClaudeOAuthRefresher.harvestSessionRotations`).
+   Every tick begins by reconciling the source with the sessions that share it:
+   for each per-session subtree whose docs/260 account **marker** names this
+   account, if its copy is ahead of the source, publish it through the ordinary
+   `syncProviderAccountTokenBack` — guards, marker check and borrow refusal
+   intact, `sessionOwnRoute: true` on the same authority
+   `finalizeSessionAgentEnvironment` uses when it falls back to the marker. A
+   harvest **is** the rotation: it short-circuits both tiers and runs the normal
+   success path, so the adopted token reaches every other pinned session via the
+   docs/142 A3 repush. That repush is unconditional, which is safe here only
+   because the harvest ran *first* — the source now holds the harvested token,
+   so pushing it back onto the session it came from is byte-identical.
+
+   Two conditions select a candidate, answering different questions. The
+   **marker**, because token bytes cannot say whose they are, so an unmarked
+   subtree or one lent to a sub-agent's account is never read. And
+   **containment** — the token file must physically resolve inside its own
+   subtree — because a leaked subtree-root symlink (`<sessionDir>/.claude` →
+   `/credentials/provider-accounts/…`, the artifact `containerVisibleCredentialPath`
+   exists for) makes the session path a second name for some OTHER account's
+   root, so reading through one would compare account B's own source against A's
+   and copy it in, with no race required. The turn-end write-back has the same
+   exposure and is bounded by the leak repair its own turn runs; a tick scans
+   every subtree on the disk, including sessions that will never take another
+   turn.
+2. **The watch's lifetime is the CLI process's, not the turn's.**
+   `finalizeSessionAgentEnvironment` stops the write-back watch only when
+   `runner.getAgent()` reports no resident process. The process can then end in
+   three more ways, and each releases it: `ContainerSessionRunner.setAgent(null)`
+   under the existing `!isStreamingActive` guard (a NON-streaming turn's process
+   exits at `done`, *after* finalize ran at `agent_result` and saw it installed
+   — without this every such turn leaked a poller), `isStreamingActive = false`
+   (the resident streaming CLI's genuine exit; every caller has just killed or
+   released it), and the runner's `disposed` event. A watch can also outlive the
+   container it was armed against, so `startTokenWriteBackWatch` re-arms on a
+   **runner** change as well as a route change. Cost while a CLI is resident:
+   one `stat` per token file per 3 s — an idle session's file does not change,
+   so the poller never schedules a publish.
+3. **Say what failed.** `unknown_failure` / `rate_limited` now append
+   `reason="…"` to the sentence they have always printed (unchanged, because
+   incidents are diagnosed by grepping it). The excerpt prefers lines carrying a
+   failure signal and is **redacted** in two layers — credential-bearing headers
+   dropped by name (`Basic dXNlcjpwdw==` is short, padded and matches no token
+   pattern), then token shapes elsewhere. Its source is the `--debug api`
+   capture, so this is the only thing between a bearer token and the log; it is
+   a filter and not a parser, which is why the excerpt is also capped and never
+   logged in full. `missing_credentials` additionally names
+   `source=missing|blanked|unreadable`, because "the user signed out" and "we
+   just destroyed a live account's credentials" were previously the same line.
+
+**A blanked source is diagnosed, not repaired.** It parses as a credential, so
+the write-back's `unorderable` guard (planning#449) refuses to overwrite it, and
+the account needs one reconnect. Deleting it to let a harvest through was built
+and then removed: a file this reader believes is empty may be a partial write or
+a shape it has not been taught, `expiresAt: 0` is a claim in the file rather
+than proof about the account, and there is no compare-and-delete — a delete that
+loses a race with a completing sign-in destroys a live credential, to avoid a
+reconnect the user is already doing. With harvest-before-spend in place the
+blanking has no known trigger left, so the trade is a destructive path against a
+state that should not recur.
+
+### Known limits (not addressed here)
+
+- **The marker records what provisioning intended, not whose bytes are on
+  disk** (docs/260 §4b says so, and it lives in a subtree the session worker can
+  write). So a subtree already poisoned with a foreign bearer under a matching
+  marker is published on the marker's word. This is the pre-existing trust of
+  the turn-end write-back, unchanged; the harvest widens *when* that write can
+  fire (a timer, not a turn), not what it trusts.
+- **The borrow guard is not re-entrant.** `beginSubtreeBorrow` returns early if
+  a borrow is already recorded and `endSubtreeBorrow` deletes the single entry,
+  so overlapping same-session borrows leave `subtreeBorrowInFlight` false while
+  one is still live. Pre-existing (planning#445) and equally under the turn-end
+  write-back; tracked as planning#463.
+- **`syncAgentTokenBackToRoot` reads source freshness and copies over that
+  pathname with no re-check**, so an external writer landing between the two is
+  overwritten. Pre-existing, in a function this change does not touch, and it
+  affects every caller.
+- The **Codex** refresher (`agents/codex/oauth-refresher.ts`) has the same shape
+  and was not audited for the same gap.
 
 ## Wiring
 
@@ -553,6 +677,24 @@ history that was moved into the orphan.
   themselves are unchanged
 - `src/server/orchestrator/session-agent-env.ts` — arms the watch in
   `prepareSessionAgentEnvironment` (Step 2b), disarms it in
-  `finalizeSessionAgentEnvironment`
+  `finalizeSessionAgentEnvironment` only when no agent process survives the turn
 - `src/server/orchestrator/shutdown-manager.ts` — drops every remaining watch
   on `onClose`
+
+### Key files (harvest before spend, planning#462)
+
+- `src/server/orchestrator/agents/claude/oauth-refresher.ts` —
+  `harvestSessionRotations` + `tokenFileIsOwnedBySubtree` (adopt a session's
+  rotation before spending), `summarizeRefreshFailure` + `redactSecrets` (the
+  logged reason), `describeUnusableSource` (missing vs blanked vs unreadable)
+- `src/server/orchestrator/agents/claude/oauth-refresher.test.ts` — harvest
+  adoption / newest-wins / behind-source / foreign-marker / unmarked-subtree /
+  escaped-subtree, and the log-shape + redaction tests
+- `src/server/orchestrator/session-token-publisher.ts` — watch lifetime tied to
+  the resident process; re-arm on a runner change
+- `src/server/orchestrator/container-session-runner.ts` — releases the watch at
+  the two process exits finalize cannot see (`setAgent(null)`,
+  `isStreamingActive = false`)
+- `src/server/orchestrator/session-agent-env.test.ts` — "keeps the watch alive
+  past turn end while a CLI process is still resident";
+  `container-session-runner.test.ts` — the two releases

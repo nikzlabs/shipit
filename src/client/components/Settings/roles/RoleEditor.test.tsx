@@ -95,7 +95,8 @@ function roleOn(
     serviceId: string;
     billingMode: "sub" | "key";
     modelId: string;
-    reasoningEffort: string;
+    /** Omitted for a role at **Default** (docs/264 req 1's resolved question). */
+    reasoningEffort?: string;
   },
   over: Partial<RoleView> = {},
 ): RoleView {
@@ -149,19 +150,20 @@ describe("RoleEditor — the harness is a real control where the model has a cho
     expect(screen.getByTestId("role-editor-harness-option-codex")).toBeTruthy();
   });
 
-  it("saves the harness the user picked, with a level that harness declares", async () => {
+  it("drops to Default when the new harness does not declare the level", async () => {
     const { onSave } = open(roleOn(DUAL_HARNESS));
     await userEvent.click(screen.getByTestId("role-editor-harness-trigger"));
     await userEvent.click(screen.getByTestId("role-editor-harness-option-codex"));
     await userEvent.click(screen.getByTestId("role-editor-save"));
 
-    // `max` is Claude Code's level and not Codex's, so the draft moves onto a
-    // level Codex offers rather than showing a tuple the server would refuse.
-    expect(savedParams(onSave)).toMatchObject({
-      harnessId: "codex",
-      reasoningEffort: "minimal",
-      modelId: "deepseek-v4-flash",
-    });
+    // `max` is Claude Code's level and not Codex's, so the draft cannot keep it
+    // — it would show a tuple the server refuses. It drops to **Default**, not
+    // to Codex's first level: the user picked `max` on a harness that is going
+    // away, and Codex not declaring `max` says nothing about which of ITS levels
+    // they would have wanted. Default is the one answer that needs no guess.
+    const saved = savedParams(onSave);
+    expect(saved).toMatchObject({ harnessId: "codex", modelId: "deepseek-v4-flash" });
+    expect(saved).not.toHaveProperty("reasoningEffort");
   });
 
   it("keeps a level the new harness DOES declare", async () => {
@@ -285,6 +287,17 @@ describe("RoleEditor — the whole role in one place", () => {
     expect(write.previousName).toBe("deep-dive");
   });
 
+  /**
+   * Req 19's last paragraph — the description field names its READER. Presented
+   * as the user's own label it attracts "The thorough one", which neither the
+   * role choice nor the prompt pitch can be made from, so the requirement would
+   * hold server-side and produce nothing.
+   */
+  it("says the agent reads the description", () => {
+    open(roleOn(DUAL_HARNESS));
+    expect(screen.getByText(/agent reads it/i)).toBeTruthy();
+  });
+
   it("cannot be saved with no name", async () => {
     const { onSave } = open(undefined);
     await userEvent.click(screen.getByTestId("role-editor-save"));
@@ -295,14 +308,41 @@ describe("RoleEditor — the whole role in one place", () => {
     const { onSave } = open(undefined);
     await userEvent.type(screen.getByTestId("role-editor-name"), "new one");
     await userEvent.click(screen.getByTestId("role-editor-save"));
-    expect(savedParams(onSave)).toMatchObject({
+    // A new role opens at **Default** (req 1's resolved question) — complete,
+    // and not an arbitrary pick from the harness's declared levels.
+    const saved = savedParams(onSave);
+    expect(saved).toMatchObject({
       kind: "pinned",
       harnessId: "claude",
       serviceId: "anthropic",
       billingMode: "sub",
       modelId: "claude-opus-5",
-      reasoningEffort: "high",
     });
+    expect(saved).not.toHaveProperty("reasoningEffort");
+  });
+
+  it("offers Default alongside the harness's levels, as the composer does (req 1)", async () => {
+    open(roleOn(DUAL_HARNESS));
+    await userEvent.click(screen.getByTestId("role-editor-reasoning-trigger"));
+    // The same option set the composer shows for this harness, Default first.
+    expect(screen.getByTestId("role-editor-reasoning-option-default")).toBeTruthy();
+    expect(screen.getByTestId("role-editor-reasoning-option-max")).toBeTruthy();
+  });
+
+  it("saves a role at Default by omitting the level, not by sending a blank", async () => {
+    const { onSave } = open(roleOn(DUAL_HARNESS));
+    await userEvent.click(screen.getByTestId("role-editor-reasoning-trigger"));
+    await userEvent.click(screen.getByTestId("role-editor-reasoning-option-default"));
+    await userEvent.click(screen.getByTestId("role-editor-save"));
+    // The ABSENCE is the value. `""` would be a level no harness declares, and
+    // the server refuses it precisely so a client cannot mean Default that way.
+    expect(savedParams(onSave)).not.toHaveProperty("reasoningEffort");
+  });
+
+  it("opens an existing role at Default showing Default, not a substituted level", async () => {
+    const { reasoningEffort: _dropped, ...atDefault } = DUAL_HARNESS;
+    open(roleOn(atDefault));
+    expect(screen.getByTestId("role-editor-reasoning-trigger").textContent).toContain("Default");
   });
 
   it("edits the reviewer's metadata only — no name, no params (req 2)", async () => {

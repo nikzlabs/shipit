@@ -118,9 +118,9 @@ describe("staged checkout ownership (docs/266-orchestrator-git-trust-boundary E2
    * every git call after it resolves the staging dir — which lives under
    * `<sessionDir>/state/` — to the SESSION's uid and drops to it. So the tree
    * has to change hands in between, or the dropped git meets a `root:root`
-   * repository: `.git/config.lock` EACCESes today, and once
-   * `SHIPIT_GIT_STRICT_OWNERSHIP` is armed git refuses the repository outright
-   * with `detected dubious ownership`.
+   * repository: git refuses it outright with `detected dubious ownership`, since
+   * ShipIt grants no `safe.directory`, and `.git/config.lock` would EACCES even
+   * if it did.
    *
    * Asserting the position and not just the call is the point. The handback is
    * useless after `checkout --detach`, and a later reader moving it there would

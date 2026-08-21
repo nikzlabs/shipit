@@ -46,8 +46,24 @@ import {
  * than at the composer's three call sites, so a picker cannot pick up the
  * clipped ring by being mounted somewhere new.
  */
+const PICKER_TRIGGER_BASE =
+  `flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) ${INSET_FOCUS_RING}`;
+
 export const PICKER_TRIGGER_CLASS =
-  `flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed ${INSET_FOCUS_RING}`;
+  `${PICKER_TRIGGER_BASE} disabled:opacity-50 disabled:cursor-not-allowed`;
+
+/**
+ * The trigger when it is locked rather than disabled — same control, full
+ * contrast.
+ *
+ * The two states look alike from inside the component (both end at
+ * `disabled={true}`) and are opposites for the reader: `disabled` is transient
+ * and says "not now", while `locked` is permanent and says "this is what this
+ * session runs on". Halving the contrast of the permanent one made the fact it
+ * exists to report the hardest thing on the row to read. The lock glyph already
+ * carries the state, so the dimming was saying nothing the user could not see.
+ */
+const PICKER_TRIGGER_LOCKED_CLASS = `${PICKER_TRIGGER_BASE} disabled:cursor-default`;
 
 interface PickerTriggerProps extends ComponentPropsWithoutRef<"button"> {
   /** What the control currently holds. Never empty — a blank trigger is unclickable-looking. */
@@ -73,11 +89,14 @@ interface PickerTriggerProps extends ComponentPropsWithoutRef<"button"> {
 export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
   ({ label, icon, locked, disabled, className, ...rest }, ref) => {
     const inert = disabled || locked;
+    // Locked AND disabled is still disabled: the composer dims its whole row
+    // mid-turn, and one control opting out of that would read as the odd one.
+    const lockedOnly = locked && !disabled;
     return (
       <button
         ref={ref}
         disabled={inert}
-        className={`${PICKER_TRIGGER_CLASS} ${
+        className={`${lockedOnly ? PICKER_TRIGGER_LOCKED_CLASS : PICKER_TRIGGER_CLASS} ${
           inert ? "cursor-default" : "hover:bg-(--color-bg-hover) cursor-pointer"
         }${className ? ` ${className}` : ""}`}
         {...rest}
@@ -200,15 +219,40 @@ export function Picker({
     );
   }
 
+  /**
+   * **A locked control never opens, so it is rendered without a menu** — the
+   * same shape, and for the same reason, as the empty case above.
+   *
+   * `locked` used to reach the trigger and stop there, leaving the trigger
+   * wrapped in `DropdownMenuTrigger`; the pinned harness therefore still opened
+   * its list of harnesses on click, onto rows that could not be selected. That
+   * is the one behaviour a lock exists to rule out, and — as the empty case
+   * found first — `disabled` does not rule it out, because Radix binds the
+   * trigger on `pointerdown`.
+   */
+  if (locked) {
+    return (
+      <PickerTrigger
+        label={label}
+        icon={icon}
+        locked
+        disabled={disabled}
+        title={lockedTitle}
+        aria-label={ariaLabel}
+        data-testid={triggerTestId}
+      />
+    );
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
+        {/* Not locked — that branch returned above, menu and all. */}
         <PickerTrigger
           label={label}
           icon={icon}
-          locked={locked}
           disabled={disabled}
-          title={locked ? lockedTitle : title}
+          title={title}
           aria-label={ariaLabel}
           data-testid={triggerTestId}
         />

@@ -111,11 +111,15 @@ redirected endpoint. Nothing is recalled from docs.
   `shipit/<modelId>`, see below). `spawn.endpoint`: config-file — the adapter
   writes a provider block; there is no env override.
 - Capabilities (each empirically grounded above): `supportsResume: true`,
-  `supportsImages: false` (the `-f` flag exists but an image turn was never
-  observed — honest false until probed; review finding), `supportsSystemPrompt:
+  `supportsImages: true` (**since planning#458** — the deferred probe was run;
+  see [Image attachments](#image-attachments-planning458) below. It was
+  `false` at launch because an image turn had never been observed), `supportsSystemPrompt:
   true` (config `instructions`; verified live), `supportsPermissionModes:
   false` + `[]` (headless runs `--auto`), `reasoning` as found above,
-  `supportsReview: false`, `supportsSteering: false` (one-shot argv prompt),
+  `supportsReview: false` — **now `true`** (planning#459 probed it live at
+  depth 0: the harness ran `shipit agent run --role reviewer` itself and
+  returned material findings; the flow needs `bash` + `task`, not MCP —
+  docs/266 item 15), `supportsSteering: false` (one-shot argv prompt),
   `startsOwnTurns: false` (process exits at turn end), `supportsCompaction:
   false` (autocompact exists but there is no on-demand trigger in run mode),
   `skillsDirName: ".opencode"`, `skillInvocationPrefix: "/"`.
@@ -275,7 +279,63 @@ synthesized-result paths, and BOTH styles' reasoning payloads at the recorder
 (`reasoning_effort` on chat-completions; `output_config: {effort}` on
 Messages). Deferred to the dogfood pass, stated rather than skipped silently:
 a `shipit agent run` cross-agent spawn in a real install and an
-image-attachment turn (`supportsImages` stays false until observed).
+image-attachment turn (`supportsImages` stayed false until observed — that
+probe has since been run, below).
+
+## Image attachments (planning#458)
+
+The deferred probe, run 2026-08-20 against CLI **1.18.18** on the dogfood inner
+instance. It ends `supportsImages: false` and changes one line of spawn
+shaping.
+
+**What ShipIt delivers.** Not `-f`. Attachments take the harness-agnostic path
+every backend gets: the orchestrator writes the file into the session's uploads
+dir and names that path in an `<attached_images>` block
+(`orchestrator/prompt-assembly.ts`), leaving the harness to open it with its own
+tool.
+
+**What was actually wrong.** OpenCode did open it. Its `read` tool resolved the
+path, answered *"Image read successfully"*, and returned the image as a
+`{type:"file"}` part — and the model still reported it could not see an image.
+The drop is on ShipIt's side: OpenCode resolves a model's input modalities from
+the config entry first and its models.dev entry second, and a synthetic
+`shipit/<modelId>` has no models.dev entry, so a block that declares nothing
+resolves to `image: false`. `opencodeProviderConfig` declared nothing. Adding
+`attachment: true` alone did **not** fix it (tried; still blind); declaring
+`modalities: { input: ["text", "image"], output: ["text"] }` did, first try. That
+declaration is now `MODEL_MODALITIES` in `shared/opencode-spawn-shaping.ts`,
+with a guard test.
+
+**The probe, and its negative control.** The image was a 2×2 grid of four
+randomly-chosen colours plus a bitmap digit strip — content existing ONLY in the
+pixels, generated outside the session so nothing on disk named the answer. Before
+the fix: two vision-capable models over two services (`claude-sonnet-5` via
+Vercel, `gemini-3.7-flash` via OpenRouter), both blind. After: all four colours
+in order AND the digits, verbatim. The negative control — the same file sitting
+in the session's uploads dir with NO attachment on the message — answered
+`unknown`, and it was re-run *after* the fix on purpose, because the fix is
+exactly what lets `read` see an image at all (the trap docs/274 records, where
+two apparent successes turned out to be filesystem reads). That control run is
+not a model that sat still, either: it went hunting — `read /uploads`, `glob
+**/*`, `glob /tmp/**/*` — and still could not answer.
+
+**One seam, named.** The probe ran on the dogfood host, which is
+`RUNTIME_MODE=local` and therefore has no `/uploads` bind mount
+(`container-lifecycle.ts`), so the turn carried the attachment's host path
+instead of its container path. Everything else — `validateImages`,
+`saveImagesToUploadsDir`, the prompt block, the adapter, the spawn — is ShipIt's
+own code unchanged.
+
+**What the modality claim costs — planning#460.** It is declared for every
+routed model, because `ModelDef` carries no per-model modality. Attach an image
+while routed to a text-only model and the request is malformed, so the service
+rejects it; the trade is deliberate, since declaring nothing lost the image
+silently for every model, vision-capable or not. It is a *harder* failure than
+Claude Code's harness-level `supportsImages: true`, and the two should not be
+read as the same bet — Claude's delivery is a text block naming a file, so image
+bytes reach the API only if the agent reads it, while this declaration has the
+CLI hand the file part to the model directly. planning#460 tracks gating it per
+model once the catalogue can say which models see.
 
 ## Independent review outcomes (docs/268, same-day)
 

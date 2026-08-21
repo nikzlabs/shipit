@@ -109,7 +109,7 @@ const SAFE_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?$/;
  * git configuration (review finding, P1).
  *
  * The two NOT dropped are deliberate: `GIT_CONFIG_GLOBAL` carries the identity
- * and `safe.directory` this orchestrator sets on purpose, and `GIT_EDITOR` is
+ * and the URL rewrites this orchestrator sets on purpose, and `GIT_EDITOR` is
  * set on purpose so git never opens an interactive editor. Their flags stay on.
  */
 const UNSAFE_GIT_ENV = [

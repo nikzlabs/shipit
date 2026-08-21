@@ -415,12 +415,12 @@ describe("RolesTab — the harness the user picked is what gets written", () => 
     await userEvent.click(screen.getByTestId("role-editor-save"));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    // `max` is Claude Code's level and not Codex's, so the draft moved onto one
-    // Codex declares rather than sending a tuple the server would refuse.
-    expect(writtenRole(fetchMock).write?.params).toMatchObject({
-      harnessId: "codex",
-      reasoningEffort: "minimal",
-    });
+    // `max` is Claude Code's level and not Codex's, so the draft cannot keep it.
+    // It drops to **Default** (omitted) rather than to an arbitrary Codex level
+    // — see the RoleEditor test of the same move for why.
+    const params = writtenRole(fetchMock).write?.params;
+    expect(params).toMatchObject({ harnessId: "codex" });
+    expect(params).not.toHaveProperty("reasoningEffort");
   });
 });
 

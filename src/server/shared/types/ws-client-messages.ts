@@ -118,23 +118,31 @@ export interface WsSetReasoningMessage {
 }
 
 /**
- * docs/272-user-selectable-roles reqs 1, 4 — Client → Server: start this session on a
- * configured role.
+ * docs/272-user-selectable-roles reqs 1, 4, 18 — Client → Server: start this session on a
+ * configured role, or take the role off it.
  *
- * **There is no `null`, deliberately** (req 15). Selecting a role is the only
- * thing this message does; *leaving* one is not an action of its own but a
- * consequence of moving the harness, the model or the reasoning level, which the
- * three messages above already express. A "clear the role" message would name a
- * state the user cannot want — the session goes on running exactly as the role
- * set it up, minus the name.
+ * **`null` is "No role"** (req 18), and it took a reversal to get here. This
+ * message carried no `null` on the reasoning that leaving a role is never an act
+ * of its own — only a consequence of moving one of the three controls the role
+ * set. That reasoning survived the rule it was built on: while the role name was
+ * *derived* from the parameters, clearing it could not do anything, because the
+ * parameters still matched and the name came straight back. Since req 13 made the
+ * name report the user's **choice**, un-choosing has a real effect — the role's
+ * standing instructions stop applying — and it is an effect no parameter can
+ * express, because no parameter carries the instructions.
  *
- * Refused once the session has taken its first turn (req 4): standing
- * instructions describe what a session is *for*, and a session already under way
- * is already for something.
+ * Clearing changes the name and the instructions and **nothing else**: the
+ * session goes on running the harness, model and level the role set, which are
+ * the last values the user chose.
+ *
+ * Both directions are refused once the session has taken its first turn (req 4):
+ * standing instructions describe what a session is *for*, a session already under
+ * way is already for something, and by then the instructions have been delivered,
+ * so un-naming them afterwards states nothing the transcript does not show.
  */
 export interface WsSetRoleMessage {
   type: "set_role";
-  roleName: string;
+  roleName: string | null;
 }
 
 // ---- Interrupt messages ----

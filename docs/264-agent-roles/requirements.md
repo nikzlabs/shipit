@@ -25,6 +25,13 @@ instead (req 2).
    harness, the service, the billing mode, the model and the reasoning level. A role is complete
    on its own: starting one needs nothing added to it.
 
+   **`Default` is one of the reasoning levels a role can name**, and it means what it already
+   means in the composer's own picker: run at whatever level the role's harness runs at when
+   ShipIt passes no reasoning flag. A role at `Default` is complete — starting it still needs
+   nothing added — so this is not an exception to this requirement. The role editor offers the
+   same set of levels the composer offers for the same harness, and it offers them in the same
+   order.
+
 2. **The reviewer is a role, and it is the one role whose params ShipIt resolves.** Asking for a
    review and asking for any other role are the same action: name the role. What sets the
    reviewer apart is not its kind but its params — they are **automatic** rather than pinned, so
@@ -186,6 +193,55 @@ instead (req 2).
     token shape, no case rule, no length limit beyond what storage needs. A name that needs
     quoting where it is used is quoted, in the way a session title already is.
 
+19. **The agent writes the prompt to fit the role it is starting, and the role's description
+    (req 9) is what it writes from.** The description is read for two jobs, not one: it is what
+    decides which role an unnamed request means (req 3), and it is what decides how much the
+    prompt has to spell out. A role the user described as fast, cheap or narrow is given an
+    explicit, ordered brief; a role described as deep or exploratory is given an open one and is
+    not handed a checklist that pre-decides the work. One prompt style for every role wastes
+    whichever role it does not fit.
+
+    Where a role carries no description, what it runs on — which the agent can already see
+    (req 12) — is the only hint there is, and is used the same way and no further.
+
+    **Neither signal moves the target.** Reading a description changes how the run is *asked*,
+    never *what it runs on*: it is not licence to override a parameter (req 10 stays the user's
+    relay) or to send the work to a different role because the agent judged it deserved
+    something else.
+
+    The user has to be told this too, where they write it: a description field labelled only
+    "what this role is for" reads as a note to self, and a note to self cannot be written *for*
+    by either job above.
+
+20. **A child session inherits its parent's role, whole, when the spawn names no role of its own.**
+    Req 16 already makes the parent the base a partial spawn completes from, and req 11 already lets
+    a spawn name a role. What was missing is the case between them: a parent that is itself running
+    a role spawned children that took its harness, model and level and left the role's standing
+    instructions behind. The child ran the same parameters under no brief, and nothing said so.
+
+    A role is a complete unit (req 1), so inheriting it means inheriting all of it: the parameters,
+    the standing instructions, and the record of which role the child was started as. This is the
+    default because it is what the parent is already doing — a session working under a brief spawns
+    help for that same work.
+
+    - **Naming a role overrides the inheritance**, exactly as it does today. The named role is the
+      one that runs.
+    - **Overriding a parameter does not cancel the role** (req 10): the override changes that one
+      parameter and the role, its name and its standing instructions stay. This is the same rule
+      `--role NAME --model X` already follows, and the alternative would make the two spawn shapes
+      disagree about what an override means.
+    - **A spawn can decline the inherited role** in one word, and then the child runs the parent's
+      parameters under no brief — which is what every child did before this requirement. The
+      decline exists because a brief that cannot be declined is not a default; a session working
+      under a role must still be able to spawn a child for something else.
+    - **This is about the case where the parent is the base.** A spawn that names every parameter
+      it runs on states what it runs on completely, and that statement has always been role-less
+      (docs/275); it stays so.
+    - **A parent with no role is unaffected**: the child inherits parameters as it always has.
+
+    A role still decides only what the child *starts* as (req 11). Nothing re-reads it afterwards,
+    and editing or deleting the role does not reach back into a child that already exists.
+
 
 ## Scope
 
@@ -201,6 +257,74 @@ other agent settings already do.
 _None._
 
 ## Resolved questions
+
+- 2026-08-20 — **Does a child session inherit its parent's role?** **Chosen: yes, by default and
+  whole.** The user's words: "when spawning child sessions, by default it should inherit not only
+  the parameters but the whole role if the parent has a role." Req 20 added in the same change.
+
+  Two follow-ups were put to the user in the same exchange, and both were answered:
+
+  - **Does overriding one parameter cancel the inherited role?** **No — the role stays.** The
+    override changes that parameter and nothing else, matching `--role NAME --model X`, which keeps
+    the role today. Rejected: dropping the role on any override, which would have made an inherited
+    role and a named role behave differently under the same flag.
+  - **How does a spawn decline the inherited role?** **A `--no-role` flag.** Rejected: requiring the
+    caller to name a complete explicit target instead — that is already role-less, but it makes the
+    caller spell out five parameters to say one thing, and it leaves inheritance effectively
+    mandatory for a caller that only wants the parent's parameters.
+
+- 2026-08-19 — **When the agent pitches a prompt for a role, which signal may it read — the
+  description only, or also what the role runs on?** **Chosen: the description first, and what
+  the role runs on only where there is no description.** Req 19 added in the same change.
+
+  The human asked for the description to reach the agent because it "may contain information
+  that would affect what prompt would be sent to the role", giving the example of a less powerful
+  model needing a more straightforward, more detailed prompt and a powerful one taking a
+  research-style brief. The description already reaches the agent (req 12, `shipit agent roles`);
+  what was missing was any statement that it should be *used* this way, so every role got the
+  same prompt.
+
+  The fork was whether the agent may also judge from the harness and model line the same listing
+  prints. Reading a model's name and inferring its capability is knowledge the agent has, but it
+  is unreliable for models it does not know, and making it a co-equal signal invites the agent
+  back into judging backends — the thing req 2 and the reviewer's distance guarantee deliberately
+  take away from it. Ranking them keeps the user's own words authoritative and still leaves an
+  undescribed role better served than a neutral prompt would leave it.
+
+- 2026-08-19 — **Should the role editor tell the user that the agent reads the description?**
+  **Chosen: yes.** The final paragraph of req 19.
+
+  The description had been presented purely as the user's own label ("Optional — what this role
+  is for"), with a placeholder to match ("The thorough one"). A user who does not know the agent
+  reads it has no reason to write anything the agent could act on, so the requirement would have
+  held server-side and produced nothing.
+
+- 2026-08-18 — **May a role's reasoning level be `Default`, as it can be in the composer?**
+  **Chosen: yes.** Req 1 amended in the same change.
+
+  The human, on finding the role editor's level picker offering a different option set from the
+  composer's: *"when I pick the effort directly in the input field, I see the default. So for me
+  as the user, it is the role. It is the default role that the current harness provides."*
+
+  **The agent argued the wrong side first, and the shape of the error is worth keeping.** It read
+  `Default` as "the absence of a level" and therefore as incompatible with req 1's *complete unit*
+  — but that is the **storage encoding** (no flag ⇒ no value), not the thing the user picks. In
+  the composer, `Default` is a listed, selectable, labelled option and has been since docs/217. A
+  requirement about what a role *is* was being decided by how the level happened to be stored.
+
+  Neither req 1 nor req 7 actually forbade it. A role at `Default` needs nothing added at the
+  moment of use, which is all req 1 asks (and req 4 restates). ShipIt substitutes nothing for it,
+  which is all req 7 asks — it passes no flag, which is precisely what the role says to do.
+
+  **The reviewer keeps the strict rule, and that is not an inconsistency.** docs/261 req 5 leaves
+  `ReviewerPin.reasoningEffort` required because ShipIt derives the reviewer's harness *per
+  review*: `Default` there would name no harness and could mean a different level on each run. A
+  pinned role names its harness (req 6), so its `Default` is unambiguous.
+
+  Two consequences fell out and are part of the change: a **new** role now opens at `Default`
+  rather than at whichever level the harness declared first (a new Claude role opened on "Low", a
+  new Codex one on "None" — an arbitrary answer to a question nobody had been asked), and a
+  harness declaring **no** levels can now carry a role at all.
 
 - 2026-08-15 — **When only the model is overridden, may ShipIt move the service and billing mode to
   wherever that model lives?** **Chosen: no — refuse, naming the parameter.** Put to the human as a

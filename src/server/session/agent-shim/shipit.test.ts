@@ -450,6 +450,33 @@ describe("shipit session create", () => {
     });
   });
 
+  // docs/264-agent-roles req 20 — the one word that declines the parent's role.
+  it("forwards --no-role on a child spawn", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("x");
+    const out = await run(
+      ["session", "create", "--prompt-file", pf, "--title", "Chore", "--no-role"],
+      {
+        "POST /agent-ops/session/create": { status: 200, body: { sessionId: "s", branch: "b", status: "running" } },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ noRole: true });
+  });
+
+  it("refuses --no-role together with --role, without a round trip", async () => {
+    // Two opposite statements about the same thing. Resolving it by precedence
+    // would run a child on a brief the caller may have meant to decline.
+    const { run } = makeRunner();
+    const pf = await promptFile("x");
+    const out = await run([
+      "session", "create", "--prompt-file", pf, "--title", "T", "--role", "deep dive", "--no-role",
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("opposite things");
+    expect(out.calls).toHaveLength(0);
+  });
+
   it("refuses a --billing-mode that is neither sub nor key, without a round trip", async () => {
     const { run } = makeRunner();
     const pf = await promptFile("x");
@@ -3265,6 +3292,11 @@ describe("runShim — agent run", () => {
   // docs/261 req 7 — the refusal the whole design exists for. A half-specified
   // call used to be completed from a stored per-harness default the caller could
   // not see; now it names what is missing and runs nothing.
+  //
+  // docs/275 — the local missing list covers the four flags the shim can judge
+  // without the catalogue. Whether `--effort` is required is a per-harness fact
+  // (a harness may declare no levels), so the shim states the condition and the
+  // server owns the answer.
   it("refuses an incomplete explicit call, naming every missing flag", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
@@ -3272,12 +3304,37 @@ describe("runShim — agent run", () => {
       "agent", "run", "--agent", "codex", "--model", "gpt-5.6-sol", "--prompt-file", file,
     ]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--service");
-    expect(out.stderr).toContain("--billing-mode");
-    expect(out.stderr).toContain("--effort");
+    expect(out.stderr).toContain("missing --service, --billing-mode");
+    expect(out.stderr).toContain("--effort is also required where the harness declares reasoning levels");
     // and it points at the path that needs no parameters at all
     expect(out.stderr).toContain("--role reviewer");
     expect(out.calls).toHaveLength(0);
+  });
+
+  // docs/275 req 2 — a four-flag call is complete on a harness that declares no
+  // reasoning levels, so the shim must not demand `--effort` locally: the
+  // payload posts with the key absent and the server validates per harness.
+  it("posts a role-less call without --effort, leaving the key absent (docs/275)", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run([
+      "agent", "run",
+      "--agent", "grok", "--service", "xai", "--billing-mode", "key",
+      "--model", "grok-4.6", "--prompt-file", file,
+    ], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "ok", truncated: false, durationMs: 10, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({
+      agentId: "grok",
+      serviceId: "xai",
+      billingMode: "key",
+      modelId: "grok-4.6",
+    });
+    expect(out.calls[0].body).not.toHaveProperty("reasoningEffort");
   });
 
   it("refuses a billing mode that is neither sub nor key", async () => {
@@ -3419,6 +3476,29 @@ describe("runShim — agent roles / params", () => {
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("deep-dive");
     expect(out.stdout).toContain("quota_exhausted");
+  });
+
+  /**
+   * Req 19 — the description is carried for two jobs, and the listing has to say
+   * the second one. The field shipped in this output from the start and every
+   * caller still wrote one prompt for every role, which is the evidence that
+   * *carrying* it is not the same as it being used.
+   *
+   * Asserted on the epilogue rather than on wording: what must be there is the
+   * instruction to write from the description, and the clause that stops "this
+   * role runs a small model" from being read as an argument for `--model`.
+   */
+  it("tells the caller to write the prompt from the description, without moving the target", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "roles"], {
+      "GET /agent-ops/agent/roles": {
+        status: 200,
+        body: { roles: [{ name: "deep-dive", description: "Slow and thorough" }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("Read the description");
+    expect(out.stdout).toMatch(/never override a parameter/i);
   });
 
   it("prints the roles verbatim with --json", async () => {

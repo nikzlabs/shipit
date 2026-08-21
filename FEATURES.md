@@ -9,10 +9,15 @@ start at the [README](README.md).
   change, edits files, runs the commands, and reads the output, so you steer in chat instead of
   driving a shell
 - **Compose-native live preview** — embedded iframes show your app updating as it changes, with HMR
-  proxied through ShipIt, multi-port support, and Docker Compose services managed per session
+  proxied through ShipIt, multi-port support, and Docker Compose services managed per session; the
+  toolbar names the page you are on and keeps up with client-side navigation
 - **Agent-controlled services** — the agent starts, stops, restarts, and tails any Compose service
   the project declares, including the manual ones it needs on demand (a database to migrate, a cache
   to flush, an emulator to drive), so a debug dependency never waits on a click from you
+- **Plugin repositories** — declare a shared tool repository once in `shipit.yaml`, and every session
+  on the project gets its files, its live services, its CLI commands, and its skills without
+  vendoring anything or deploying anything; the consuming project chooses the ports and settings, and
+  a refresh picks up a change made in the tool's own repository
 - **Android build, test & preview** — the session image bakes a JDK, the Android SDK, and Gradle, so
   the agent builds Gradle projects (including web/Android monorepos), runs JVM and Paparazzi snapshot
   tests, and reads the PNG diffs; declare an emulator as a Compose service and the running app shows
@@ -26,16 +31,48 @@ start at the [README](README.md).
 - **Persistent logs** — agent-container and preview-service logs are kept in a durable, disk-backed
   store, so full history survives container restarts, idle eviction, and orchestrator restarts
 - **File viewer with diffs** — browse files with syntax highlighting and review changes as inline
-  diffs, including image and SVG diffs rendered visually instead of as text
+  diffs, including image and SVG diffs rendered visually instead of as text; leave line comments and
+  send them to the agent as one review, with a free-text note for the feedback that belongs to no
+  single line
 - **Presented artifacts** — the agent renders diagrams, charts, mockups, prototypes, and formatted
   markdown into a dedicated Present tab, no dev server required, browsable as a gallery
 - **Agent Interface SDK** — JavaScript in a preview or a presented artifact can compose and send
   messages back to the agent that owns the session, so an agent-built interface is something you
   interact with rather than only look at
+- **Agent-authored links** — the agent writes an ordinary markdown link that opens a place in your
+  own app's preview or in a presented artifact — as a link, a badge, or a button — so "look at
+  requirement 7" is one tap instead of a hunt. A previewed page can read the click in its own
+  JavaScript and react to it; a presented artifact is scrolled to the place named
 - **Sub-agent transparency** — when the agent fans work out to sub-agents, their prompt, work
   timeline, and final report render inline instead of an opaque tool call, and any in-flight tool
   call opens a live-updating output dialog
 - **MCP integration** — connect Model Context Protocol servers to extend the agent's tools
+
+## Choose your agent
+
+- **Four agent harnesses** — Claude Code, Codex, OpenCode, and Grok Build all run as first-class
+  backends: the same transcript, tool rendering, skills, sub-agent view, reviews, and compaction
+  whichever one is driving, with each harness's own capabilities — permission modes, image input,
+  mid-turn steering — declared per harness rather than assumed
+- **Your model, on your harness** — the harness and the model it runs are separate choices. Configure
+  a service once, by subscription or by API key, and every model that service and harness can both
+  speak becomes selectable in the composer, so a DeepSeek or GLM key can drive the Claude Code
+  harness with no Anthropic account in the picture
+- **Agent roles** — name a unit of agent work once — its harness, its service and billing mode, its
+  model, its reasoning level, and its standing instructions — then start it by name. You pick a role
+  in the composer before a session's first turn; the agent picks one for a sub-task or for a session
+  it spawns
+- **A reviewer chosen to be unlike the implementer** — configure two reviewers in Settings and ShipIt
+  sends each review to whichever one is furthest from the model that did the work: a different model
+  family first, then a different model, then a different harness. Working out who shares your blind
+  spots stops being the agent's job, and reviewing still works on an install where nobody has
+  configured anything
+- **Multiple accounts per provider** — connect several, and every turn picks its account as it
+  starts, from your ordering and the quota left, so a usage limit moves the next turn instead of
+  stopping the session; no session is ever pinned to an account that goes away
+- **Subscription usage** — header badges show your rate-limit usage (window, weekly cap, reset clock)
+  inline, named per account when you've connected several, with weekly and per-month spend trends in
+  the usage detail view
 
 ## Plan & track
 
@@ -53,9 +90,6 @@ start at the [README](README.md).
 - **Agent issue access** — the agent reads and writes issues (view, list, comment, edit, set status
   and assignee, create issues and labels, nest Linear sub-issues) through a tracker-neutral,
   ShipIt-brokered interface, so tracker tokens never enter the session container
-- **Requirements before code** — opt a feature into requirements discipline and the agent writes down
-  what the feature must do in your words first, asks its open questions as one batched prompt, and
-  holds off on implementation until you've answered
 
 ## Review & ship
 
@@ -65,10 +99,10 @@ start at the [README](README.md).
 - **Chat-native AI review** — ask the session agent to review files or diffs and surface findings
   inline in the same conversation
 - **Cross-agent second opinions** — opt in to let the session's agent consult a *different* model for
-  a one-shot review or sub-task ("have Codex review this diff"); it runs inline in the same turn with
-  full context and returns its findings to the conversation, no separate session required. A long
-  consult can run in the background as a card you can watch, cancel, or come back to — and it
-  survives an orchestrator restart rather than hanging as a permanent spinner
+  a one-shot review or sub-task. You name the job ("review this diff") and ShipIt names who runs it;
+  the consult gets full context and returns its findings to the conversation, no separate session
+  required. A long one runs in the background as a card you can watch, cancel, or come back to — and
+  it survives an orchestrator restart rather than hanging as a permanent spinner
 - **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
 - **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments
   API
@@ -85,7 +119,8 @@ start at the [README](README.md).
 - **PR approval merge gate** — merge eligibility reflects GitHub's review-approval status, surfaced
   inline on the PR card so you don't merge ahead of required reviews
 - **Arm merge-on-green at creation** — opt a trivial task into auto-merging once checks pass, set
-  right when you start the session
+  right when you start the session; the merge waits for the agent to stop working, so a turn still in
+  flight is never merged out from under itself
 - **Continue when your own PR merges** — a session can opt into being woken the moment its PR lands:
   it resets to the freshly merged base and keeps going on its own, so you can ship a chain of PRs
   without shepherding each merge by hand
@@ -107,21 +142,31 @@ start at the [README](README.md).
   instead of stranding the turn with a connection error
 - **Destructive-git guardrails** — while a session sits on a branch whose work already merged,
   hand-rolled destructive git is blocked in favor of a brokered reset that keeps its safety checks and
-  leaves a record; a commit that would introduce a recognized secret is blocked and surfaced with
-  what to do about it
+  leaves a record, and the transcript says so at the moment the PR merges rather than leaving the
+  refusal to be discovered later; a commit that would introduce a recognized secret is blocked and
+  surfaced with what to do about it
 - **Fully isolated sessions** — every session on the same repo gets its own clone and its own
-  containerized environment, so its agent and services never share state with another session
+  containerized environment. A new session also gets its own user identity on the host, so neither
+  its agent, nor its services, nor ShipIt's own git on its workspace can reach the files of another
+  session that holds one
+- **Network egress containment** — a contained session reaches only the hosts on its allowlist, and
+  its Compose services are held to that same policy, so a service cannot reach somewhere its own
+  agent is not allowed to
 - **Sandbox sessions** — start a repo-less session from an empty workspace; the agent clones what it
   needs, with Git and session-scoped Docker granted as explicit capability toggles at creation
 - **Permission modes** — choose how much autonomy the agent has per session
 - **Live steering** — interrupt and redirect the agent mid-turn without losing context
 - **Session sidebar** — pinned sessions, AI-generated session names the agent keeps current as the
   work changes (until you rename one yourself), status indicators, and a hide toggle for repositories
-  you're not working in right now
+  you're not working in right now. A **Needs you** view switches the list to just the sessions
+  waiting on you — one flat list, no repository headers — with a count that stays visible from either
+  view
 
 ## Everywhere
 
-- **Mobile-first layout** — a focused tab view on phones, resizable split panels on desktop
+- **Mobile-first layout** — a focused tab view on phones, resizable split panels on desktop, and a
+  repo bar on the phone's new-session screen that names the repository the session will start in and
+  lets you change it, each repository keeping its own draft
 - **Installable app** — install ShipIt to your phone's home screen and it runs standalone, full-screen
   with no address bar, and always boots the latest code rather than a cached build
 - **Voice in and out** — dictate prompts, hear a spoken note when an agent needs you, and tap play to
@@ -139,6 +184,10 @@ start at the [README](README.md).
   follow-up work to keep running with your laptop closed. Both paths are Docker, and both are yours:
   there is no ShipIt account and no ShipIt server in the middle, and the instance connects straight
   to your GitHub and your agent provider
+- **Installed by an agent, or by you** — the installer describes its own questions in JSON, and every
+  question can be answered in advance, so an agent you already have can ask you the choices in chat
+  and run the install with your answers. Run it yourself and the same questions arrive as an
+  arrow-key checklist, including which agent CLIs to install
 - **Reachable from your phone** — a local install stays on loopback by default and can add a
   Tailscale binding alongside it, so you keep working from a phone without opening a port
 
@@ -150,11 +199,6 @@ The everyday essentials you'd expect from a serious agent IDE:
   conversation into a summarized fork to genuinely shrink the agent's context window
 - **Skill & command invocation** — type `/` in the composer to invoke a project skill, with
   autocomplete
-- **Multiple accounts per provider** — connect several and ShipIt moves to the next one before a
-  usage limit stops you, without interrupting sessions already in flight
-- **Subscription usage** — header badges show your Claude/Codex rate-limit usage (5-hour window,
-  weekly cap, reset clock) inline, named per account when you've connected several, with weekly and
-  per-month spend trends in the usage detail view
 
 ## Known limitations
 

@@ -1,0 +1,80 @@
+/* Grok theme — inspired by x.ai: pure black canvas, stark white ink, cold slate accent */
+.grok {
+  /* Surfaces */
+  --color-bg-primary: #000000;
+  --color-bg-secondary: #0d0d0f;
+  --color-bg-tertiary: #16161a;
+  --color-bg-elevated: #16161a;
+  --color-bg-overlay: rgba(0, 0, 0, 0.78);
+  --color-bg-hover: rgba(220, 224, 232, 0.05);
+  --color-bg-active: rgba(220, 224, 232, 0.1);
+
+  /* Text */
+  --color-text-primary: #f2f3f5;
+  --color-text-secondary: #9ea3ad;
+  --color-text-tertiary: #62666f;
+  --color-text-inverse: #000000;
+  --color-text-link: #b8c0cc;
+
+  /* Borders */
+  --color-border-primary: #24242a;
+  --color-border-secondary: #2c2d34;
+  --color-border-focus: #d6dae2;
+
+  /* Accent */
+  --color-accent: #d6dae2;
+  --color-accent-hover: #eef0f4;
+  --color-accent-text: #000000;
+  --color-accent-subtle: rgba(214, 218, 226, 0.12);
+
+  /* Status */
+  --color-success: #4ad07e;
+  --color-success-subtle: rgba(74, 208, 126, 0.15);
+  --color-success-border: rgba(74, 208, 126, 0.3);
+  --color-error: #f0524a;
+  --color-error-subtle: rgba(240, 82, 74, 0.15);
+  --color-warning: #e0b030;
+  --color-warning-subtle: rgba(224, 176, 48, 0.15);
+  --color-info: #6ea8e8;
+  --color-info-subtle: rgba(110, 168, 232, 0.15);
+
+  /* Domain-specific */
+  --color-pr: #9b7ae0;
+  --color-pr-subtle: rgba(155, 122, 224, 0.15);
+  --color-pr-border: rgba(155, 122, 224, 0.3);
+  --color-folder: #c0c4cc;
+  --color-autofix: #5f9fd8;
+  --color-attention: #f59e0b;
+  --color-attention-text: #f59e0b;
+
+  /* Context meter */
+  --color-context-ok: #4ad07e;
+  --color-context-mid: #e0b030;
+  --color-context-high: #e88030;
+  --color-context-full: #f0524a;
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: rgba(140, 145, 155, 0.35);
+  --color-scrollbar-thumb-hover: rgba(180, 186, 198, 0.5);
+
+  /* Syntax highlighting (cool monochrome, near-white keywords) */
+  --color-syntax-base: #d8dae0;
+  --color-syntax-bg: #08080a;
+  --color-syntax-keyword: #e6e9ef;
+  --color-syntax-title: #8fb4dc;
+  --color-syntax-attr: #b8c0cc;
+  --color-syntax-string: #8cc8a4;
+  --color-syntax-string-regexp: #b8c0cc;
+  --color-syntax-builtin: #e0b030;
+  --color-syntax-comment: #5c6069;
+  --color-syntax-tag: #e6e9ef;
+  --color-syntax-section: #8fb4dc;
+  --color-syntax-bullet: #b8c0cc;
+  --color-syntax-addition: #6cc47c;
+  --color-syntax-addition-bg: #0d1c10;
+  --color-syntax-deletion: #f0524a;
+  --color-syntax-deletion-bg: #200d0c;
+
+  /* Typography */
+  --font-size-code: 13px;
+}

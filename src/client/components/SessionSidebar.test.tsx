@@ -38,7 +38,13 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   // Reset cross-test state so SessionStatusDot tests don't leak into others.
-  useSessionStore.setState({ activeRunnerSessions: new Set<string>(), messages: [], rewindRecoveries: {} });
+  useSessionStore.setState({
+    activeRunnerSessions: new Set<string>(),
+    messages: [],
+    rewindRecoveries: {},
+    allSessionsDialogOpen: false,
+    allSessionsDialogRepoUrl: undefined,
+  });
   usePrStore.setState({ cardBySession: {}, statusBySession: {}, autoMergeBySession: {} });
   useUiStore.getState().setProjectSettingsRepoUrl(null);
   useRepoStore.setState({
@@ -304,6 +310,23 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("View All Sessions")).toBeTruthy();
     expect(screen.getByText("Project Settings")).toBeTruthy();
     expect(screen.getByText("Remove Repository")).toBeTruthy();
+  });
+
+  it("scopes View All Sessions to the clicked repo, not the current session's repo", async () => {
+    const user = userEvent.setup();
+    // Current session lives in repo A; the menu is opened on repo B.
+    useRepoStore.setState({ activeRepoUrl: repoA.url });
+    const sessions = [baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url })];
+    render(
+      <SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={sessions} currentSessionId="s1" />,
+    );
+    await user.click(screen.getByLabelText("thing repository menu"));
+    await user.click(screen.getByText("View All Sessions"));
+    expect(useSessionStore.getState().allSessionsDialogOpen).toBe(true);
+    expect(useSessionStore.getState().allSessionsDialogRepoUrl).toBe(repoB.url);
+    // Looking at a repo's sessions must not move the active repo, which is
+    // persisted and decides where a NEW session lands.
+    expect(useRepoStore.getState().activeRepoUrl).toBe(repoA.url);
   });
 
   it("opens the per-repo Project Settings dialog from the menu", async () => {

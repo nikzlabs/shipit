@@ -1246,7 +1246,7 @@ function requireSubscriptionModeKey(key: string): { serviceId: string; billingMo
  * and a harness id passed there compiles and silently matches nothing.
  */
 function requireAccountService(provider: AgentId): string {
-  if (provider !== "claude" && provider !== "codex" && provider !== "opencode") {
+  if (provider !== "claude" && provider !== "codex" && provider !== "opencode" && provider !== "grok") {
     throw new ServiceError(400, "Unknown provider");
   }
   // OpenCode HAS a native service since docs/272 (`opencode` — Zen and Go),

@@ -216,3 +216,56 @@ see it: the rule is stated in one phase and violated by another phase's layer in
       ShipIt's own working state for a ranking it performs, a pinned role is five choices the user
       made and can see. A regression test pins **both** sides, so the reviewer's relocation is not
       "fixed" away by the next reader
+
+- [x] **`Default` is a reasoning level a role can name** (req 1's 2026-08-18 resolved question).
+      The composer's picker has offered `Default` since docs/217; the role editor offered only the
+      harness's declared levels, so the same knob showed two different option sets. The level is
+      now optional end to end — absent means "pass no flag", which is what
+      `AgentSpawnOptions.reasoningEffort` has always meant — and the editor renders the composer's
+      list, `Default` first
+
+      Encoded as the **absence** of the key, never `undefined` or `""`, so it survives the
+      credential store's JSON round-trip; `role-settings.ts` refuses a blank rather than reading it
+      as Default. `applyRoleToSession` passes `null` to `setReasoning` for a Default role, because
+      `null` clears the session row and `undefined` is a no-op that would leave the session running
+      at a level the role does not name
+
+      Two arbitrary behaviours fell out with it: a **new** role opened on the harness's first
+      declared level (Claude → "Low", Codex → "None") and now opens on `Default`; a level the
+      newly-chosen harness does not declare dropped to that harness's first level and now drops to
+      `Default`. `ReviewerPin` stays required — docs/261 req 5 derives its harness per review, so
+      `Default` there would name no harness
+
+- [x] **A role's description is read for how to write, not only for which role to pick** (req 19).
+      The description has reached the agent since phase 3 (`shipit agent roles`), and nothing
+      anywhere said what to do with it — so every role got the same prompt, and a role the user
+      created *because* it runs a small fast model was handed the same open-ended brief as the
+      deep one
+
+      The rule is stated in the four places a prompt-writer actually reads: the listing's own
+      epilogue, all four harness system prompts, `shipit-docs/agent.md`, and — the other end of it
+      — the role editor's Description hint, which now names the reader instead of reading as a
+      note to self. Signals are **ranked**, not paired: the user's words first, the `runsOn` line
+      only where a role has no description
+
+      Every statement of the rule carries the clause that keeps it away from the target: write the
+      prompt to fit the role, never override a parameter or switch roles because the work seemed
+      to deserve something else. Without it, "this role runs a small model" reads as an argument
+      for `--model` — the invented override req 10 forbids, reached from the one field ShipIt just
+      told the agent to take seriously
+
+- [x] **A child inherits its parent's role, whole** (req 20, 2026-08-20). Inheritance carried the
+      parameters and dropped the standing instructions, so a child of a role-running parent ran the
+      right model under no brief. `spawnChildSession` now reads `parent.roleName` for its prompt on
+      the `inherit` path only — the parameters still arrive by ordinary inheritance, so the inherit
+      path's per-parameter rules are unchanged
+
+      An override does not cancel the role (matching `--role NAME --model X`), `--no-role` declines
+      it, and the pair `--role` + `--no-role` is refused at both the shim and the parser. A role
+      deleted since the parent started on it inherits nothing rather than recording a name with no
+      instructions behind it
+
+      `noRole` is named at every hop it crosses — shim payload, worker relay body, orchestrator
+      route, parser — rather than riding the relay's pass-through. Cross-agent review caught the
+      worker hop, which is the hop this file already records `--model` going missing on for three
+      releases; a relay test now pins the boolean across it

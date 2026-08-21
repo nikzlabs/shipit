@@ -87,6 +87,9 @@ const SERVICE_MARKS: Record<ServiceId, string> = {
   // OpenCode's mark (docs/272), from `simple-icons@16.28.0` — the same CC0-1.0
   // source and the same 24×24 grid as the rows above.
   opencode: "M22 24H2V0h20zM17 4.8H7v14.4h10z",
+  // xAI's mark (docs/274), from `simple-icons@16.28.0` — the same CC0-1.0
+  // source and the same 24×24 grid as the rows above.
+  xai: "M6.469 8.776L16.512 23h-4.464L2.005 8.776zM4.100 15.550L6.343 18.727 4.101 21.900H2.000zM19.500 8.776L14.500 15.850 12.259 12.673 17.259 5.600H19.500zM17.000 2.100L14.757 5.277H12.516L14.759 2.100z",
 };
 
 /**

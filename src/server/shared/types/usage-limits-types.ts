@@ -10,6 +10,9 @@
 import type { BillingMode } from "../catalogue/types.js";
 import { credentialModeKey } from "./domain-types/credential-route.js";
 
+/** One of the two windows a subscription reading can describe. */
+export type SubscriptionWindowName = "session" | "weekly";
+
 export interface SubscriptionLimitsWindow {
   /**
    * Percentage of the window currently consumed (0–100, clamped). `null`
@@ -66,10 +69,43 @@ export interface SubscriptionLimits {
    * determine it.
    */
   plan: string | null;
-  /** Rolling short-window quota (Claude: 5h, Codex: 5h). */
+  /**
+   * Rolling short-window quota (Claude: 5h, Codex: 5h).
+   *
+   * **`null` is ambiguous and must not be read as "this plan has no 5h
+   * window"** — see {@link SubscriptionLimits.availableWindows}, which is how a
+   * provider says that. It can equally mean "not delivered yet": Claude's
+   * `rate_limit_event` carries ONE window per event, so the first reading of a
+   * session legitimately has the other side null on a plan that has both.
+   */
   session: SubscriptionLimitsWindow | null;
-  /** Weekly quota across all models. */
+  /** Weekly quota across all models. `null` as for {@link SubscriptionLimits.session}. */
   weekly: SubscriptionLimitsWindow | null;
+  /**
+   * Which windows this plan HAS — **set only by a provider whose source states
+   * them all at once**, and omitted by one whose readings arrive piecemeal.
+   *
+   * This exists because `session: null` cannot carry the fact. Two very
+   * different situations produce it and the pill has to tell them apart
+   * (planning#454): SuperGrok genuinely has one weekly pool and no short
+   * window, so a `5h · —` beside its real figure is a read-out nothing can ever
+   * fill; but Claude's event stream delivers `five_hour` and `seven_day` in
+   * separate events, so a null there means "not yet". Deriving the answer from
+   * the null was tried and is wrong for exactly that reason — it would have
+   * dropped a real 7d meter for the whole of a first turn, and longer if the
+   * `/api/oauth/usage` seed was 429'd.
+   *
+   * So the provider that KNOWS answers, and the one that cannot stays quiet:
+   *
+   *   - `XaiLimitsProvider`, `ZaiLimitsProvider`, `CodexLimitsProvider` — one
+   *     payload describes the whole plan, so an unmentioned window is absent.
+   *   - `ClaudeLimitsProvider` — omits this, and both meters render as they
+   *     always have.
+   *
+   * Omitted or empty ⇒ the reader says nothing and every window is drawn. A
+   * reading that carries only a lockout countdown is exactly that case.
+   */
+  availableWindows?: SubscriptionWindowName[];
   /** Epoch ms when this snapshot was last updated. */
   fetchedAt: number;
   /**

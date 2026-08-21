@@ -63,6 +63,7 @@ export const MODEL_FAMILY_IDS = [
   "grok",
   "kimi",
   "qwen",
+  "ox",
 ] as const;
 
 export type ModelFamily = (typeof MODEL_FAMILY_IDS)[number];
@@ -142,8 +143,24 @@ export const MODEL_IDENTITIES = {
   // ShipIt knows a review by one is not a second opinion on the other.
   gemini37flash: identity("gemini-3.7-flash", "gemini"),
   grok46: identity("grok-4.6", "grok"),
+  // docs/274 — xAI as a first-party service (the `grok` harness's native one)
+  // adds three more of its own models. The 4.20 pair is ONE model under two
+  // ids only in the sense that the vendor ships them as a line; they are
+  // separately-billed catalog entries whose reasoning behaviour differs, so
+  // they are two canonical models, not one with a suffix. That matters for
+  // docs/261: a review by `-reasoning` of work done by `-non-reasoning` is a
+  // second opinion from the same *family* but not the same model.
+  grok43: identity("grok-4.3", "grok"),
+  // planning#435 — subscription-only. Its own canonical key rather than a
+  // spelling of 4.6: they are different models on the same training lineage, so
+  // a 4.5 review of 4.6's work IS a second opinion (docs/261 req 4) and the
+  // reviewer ranking must be able to say so.
+  grok45: identity("grok-4.5", "grok"),
+  grok420Reasoning: identity("grok-4.20-0309-reasoning", "grok"),
+  grok420NonReasoning: identity("grok-4.20-0309-non-reasoning", "grok"),
   kimiK3: identity("kimi-k3", "kimi"),
   qwen38max: identity("qwen3.8-max", "qwen"),
+  oxAlpha: identity("ox-alpha", "ox"),
 } as const;
 
 /**
@@ -174,6 +191,8 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   // second model: Zen is a gateway serving Anthropic's own Haiku 4.5, at
   // Anthropic's own rate.
   "claude-haiku-4-5": "claude-haiku-4.5",
+  "x-preview-f-free": "ox-alpha",
+  "ox-alpha-free": "ox-alpha",
 };
 
 /**

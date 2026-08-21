@@ -28,12 +28,17 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
-      # Harnesses are not named here: the images default to the approved set
-      # (install-agent-clis' DEFAULT_HARNESSES, docs/271), which today is every
-      # shipped harness — what the inner instance wants so it can exercise all of
-      # them. Naming a set here would also have to match the `onboarding` build
-      # block below — both name the same image tag, so whichever built last would
-      # silently win a disagreement.
+      args:
+        # NAMED here, and it has to be (docs/274, recipe step 3). The images
+        # default to the approved set (install-agent-clis' DEFAULT_HARNESSES,
+        # docs/271), and that set is deliberately NOT every shipped harness:
+        # Grok Build ships installable-but-unchecked, so an unnamed build would
+        # show it as "Not installed" in the inner UI and it could not be
+        # dogfooded at all. This was found the hard way with OpenCode.
+        #
+        # Must stay identical to the `onboarding` block below — both name the
+        # same image tag, so whichever builds last silently wins a disagreement.
+        SHIPIT_HARNESSES: claude,codex,opencode,grok
     image: shipit-dogfood:local
     # NO `user:` — ShipIt fills in this session's own identity, and that is the
     # only arrangement in which this service actually works.
@@ -87,22 +92,16 @@ services:
     # `preview-proxy.ts`) — client edits hot-reload instead of
     # requiring a `vite build` round-trip.
     #
-    # The seed step (docs/131) is two scripts sharing one backgrounded,
-    # detached subshell (`( … &)`) so Vite starts immediately and the inner UI
-    # is usable while they run. Both wait for the orch themselves, exit 0 on
-    # any failure, skip what is already present, and no-op on DOGFOOD_SEED=0.
+    # The seed step (docs/131) is `scripts/seed-inner.ts`, launched in a
+    # backgrounded, detached subshell (`( … &)`) so Vite starts immediately and
+    # the inner UI is usable while it runs. It seeds credentials, then agent
+    # roles, then repos — that file owns the order and says why, so a step is
+    # added there rather than by editing this shell string. Every step waits for
+    # the orch itself, exits 0 on any failure, skips what is already present, and
+    # no-ops on DOGFOOD_SEED=0 (plus a per-step switch of its own).
     #
-    #   1. `seed-inner-credentials.ts` (req 11) turns each supplied
-    #      `x-shipit-secrets` service key into a real credential ROUTE in the
-    #      inner instance. First because it is fast — a few HTTP calls — and
-    #      the developer wants credentials before they want repos.
-    #   2. `seed-inner-sessions.js` adds and trusts the repos in
-    #      `scripts/dogfood-seed.json`, so the inner ShipIt comes up with
-    #      something to work in instead of an empty slate. Second because a
-    #      cold clone can take minutes.
-    #
-    # `npx tsx` for the first, plain `node` for the second: the credential
-    # seeder imports the model catalogue, which is TypeScript.
+    # `npx tsx`, not `node`: the seeders import the model catalogue, which is
+    # TypeScript.
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit} $${AGENT_HOME:-/root} &&
@@ -110,7 +109,7 @@ services:
         echo '[dev] waiting for agent.install to populate node_modules…'; sleep 1;
       done &&
       PORT=4000 npm run dev &
-      ( { npx tsx scripts/seed-inner-credentials.ts; node scripts/seed-inner-sessions.js; } 2>&1 | sed 's/^/[seed] /' &) &&
+      ( npx tsx scripts/seed-inner.ts 2>&1 | sed 's/^/[seed] /' &) &&
       API_PORT=4000 exec npx vite --host 0.0.0.0 --port 3000
       "
     working_dir: /workspace
@@ -129,10 +128,13 @@ services:
       # This used to be `/root`, on the premise that local mode "keeps the
       # orchestrator on root". That stopped being true: with
       # SHIPIT_SESSION_WORKER_UID set on the deployment, `compose-generator`
-      # forces `user: <uid>:<uid>` onto every service without an explicit
-      # `user:` — including this one. So the inner orch runs as uid 1000 against
+      # fills `user: <uid>:<gid>` in for every service without an explicit
+      # `user:` — including this one. So the inner orch runs NON-ROOT against
       # HOME=/root and every credential write failed with
       # `EACCES: permission denied, lstat '/root/.codex'` (planning#284).
+      # (That uid was 1000 when this note was written; since docs/272 it is this
+      # session's own identity. The number never mattered here — only that it is
+      # not root.)
       #
       # The state dir is the natural home: bind-mounted, owned by the same uid,
       # already gitignored, and it survives a service restart. Kept out of
@@ -142,7 +144,8 @@ services:
       # planning#390 — and `HOME` alongside it, at the same path, because
       # planning#284 moved only half of the problem. Dockerfile.dogfood still
       # sets `ENV HOME=/root` (correct for a root container, wrong for this one:
-      # `user: "1000:1000"` above, and /root is `drwx------ root root`), so
+      # it runs as the non-root identity ShipIt fills in — see the note above —
+      # and /root is `drwx------ root root`), so
       # everything in here that keys off `$HOME` rather than `$AGENT_HOME` kept
       # landing on an unwritable directory. Codex is the one that dies loudest —
       # it reads `$HOME/.codex/config.toml` before doing any work — and the
@@ -323,6 +326,10 @@ services:
   # repo it is supposed to be asking the user for. Flip it to
   # `DOGFOOD_SEED_CREDENTIALS: "0"` if you would rather the repo were already
   # there — that keeps the credential half off no matter what is declared above.
+  # The ROLE seeder needs no switch of its own for that: a role names a harness
+  # and a model, so an instance with no credential has nothing a role could name
+  # and it seeds nothing and says so. (`DOGFOOD_SEED_ROLES: "0"` exists for the
+  # `dev` service, where there IS something to seed.)
   #
   # Manual, like `dev`, and for the same reason — a whole second orchestrator.
   # Start it with `shipit service start onboarding`; it claims port 3001 so both
@@ -333,8 +340,11 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
-      # Must match the `dev` build block above — same image tag. Neither names
-      # harnesses; see the note there.
+      args:
+        # Must match the `dev` build block above — same image tag, so a
+        # disagreement is decided by build order rather than by intent. See the
+        # note there for why the set is named at all.
+        SHIPIT_HARNESSES: claude,codex,opencode,grok
     image: shipit-dogfood:local
     # No `user:`, same reason as `dev` above — see the note there.
     command: >
@@ -358,8 +368,9 @@ services:
       SHIPIT_STATE_DIR: /workspace/.inner-shipit/onboarding
       AGENT_HOME: /workspace/.inner-shipit/onboarding/agent-home
       # Same pairing as `dev`, same reason (planning#390) — read the long note
-      # there. The image's `ENV HOME=/root` is unwritable for `user: "1000:1000"`,
-      # and anything keying off `$HOME` instead of `$AGENT_HOME` needs this.
+      # there. The image's `ENV HOME=/root` is unwritable for the non-root
+      # identity this service runs as, and anything keying off `$HOME` instead of
+      # `$AGENT_HOME` needs this.
       HOME: /workspace/.inner-shipit/onboarding/agent-home
       # NOT shared with `dev`: two Vite dev servers committing an optimizer run
       # into one cache dir race on the same directory renames.

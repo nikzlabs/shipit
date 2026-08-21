@@ -1,6 +1,6 @@
 
 ---
-issue: roadmap#SHI-331
+issue: planning#447
 title: Persistent Preview Iframes
 description: One iframe per (session, port) kept alive across switches, re-entering at the route it was last on.
 ---
@@ -12,6 +12,16 @@ description: One iframe per (session, port) kept alive across switches, re-enter
 When switching sessions or ports, the preview iframe navigates to a new URL, destroying internal state (scroll position, form inputs, app state). In normal browser development you keep tabs open — each tab persists independently, even if the underlying dev server restarts. ShipIt should match that behavior.
 
 Every (session, port) combination the user visits gets its own iframe that stays alive in the DOM. Hidden via CSS when not active, shown instantly when the user switches back. Cap at 20 retained iframes.
+
+### Hidden means `display: none`, not `visibility: hidden`
+
+A retained slot stays **mounted** — that is what preserves its state — but it must not keep **rendering**. `visibility: hidden` hides only the pixels and lets the document draw at full frame rate for the rest of the session; measured cross-origin over a 4-second hide, a background page drew **240 frames** that way and **1** under `display: none`. On an Android phone that surplus was a second WebGL renderer competing for the GPU with the preview the user was looking at, costing the visible one 9.5–13.5% of its frames across a matched A/B at both 60 Hz and 120 Hz (nikzlabs/shipit#2418).
+
+**This costs focus inside the frame, knowingly.** Measured, a genuine browser tab switch restores the focused element, so `display: none` deviates from the "it feels like keeping tabs open" promise above. Everything else a person would notice survives it — no reload, typed text, inner and document scroll, the caret offset — and re-showing draws again in 21 ms against 18 ms, so switching back is still instant. A preview you were typing in comes back whole except that you must tap the field to resume typing. The design owner was shown the measurement and took that trade.
+
+The alternative that also keeps focus is `invisible` plus a parking transform (`translateY(-200vh)`), which throttles equally well. It was dropped once focus was off the table: it needs two properties doing two different jobs, and it silently depends on that constant always clearing the viewport — a future layout placing this pane under a transformed or scrolled ancestor would stop it throttling with nothing to notice. `display: none` cannot fail that way, and it removes the frame from the tab order and the accessibility tree without a second property.
+
+This does **not** replace the docs/146 visibility contract. Nothing here stops **audio**, which is precisely why that cooperative protocol exists. Rendering and audio are separate axes: the hiding mechanism settles rendering, the contract settles audio, and neither substitutes for the other.
 
 ## Prior work
 
@@ -52,6 +62,15 @@ evict on its own judgement. A merged PR used to prune its session's background
 slot (docs/064 item 6); it saved nothing — a mounted iframe does not keep a
 container alive, since idle reclamation keys off attached viewers and agent turns
 — and reliably destroyed exactly the preview the user came back to. Removed.
+
+One narrow exception (planning#394): the health poller drops a slot whose port
+has been taken over by a *different service*. The key is `${sessionId}:${port}`,
+so a port that moves to a new owner reuses the key, and the retained iframe
+would keep serving the previous owner's already-loaded document under the new
+owner's row — the reload is the point. Both owners must be known (a transient
+`undefined` list state never drops), and the drop goes through the pool's single
+`dropSlot` routine — the same one LRU eviction uses — so there is one removal
+path, not a second eviction policy.
 
 ### Remembering where each preview was
 

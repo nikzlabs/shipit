@@ -27,6 +27,7 @@ import type { SubAgentConsultCard, SubAgentSpawnTarget } from "../../shared/type
 import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
+import { credentialRouteEnvName } from "../../shared/types/domain-types/credential-route.js";
 import type { AccountSelection } from "../provider-account-manager.js";
 import {
   perSessionCredentialsDir,
@@ -108,9 +109,11 @@ function makeDeps(opts: {
   spawnResults?: SubAgentRunResult[];
   runnerPresent?: boolean;
   /** docs/261 — credential routes the reviewer resolution can choose between. */
-  credentialRoutes?: { id: string; serviceId: string; billingMode: "sub" | "key"; via: string; status: string; priority: number; isPrimary: boolean; label: string; createdAt: number; updatedAt: number }[];
+  credentialRoutes?: { id: string; serviceId: string; billingMode: "sub" | "key"; via: string; status: string; priority: number; isPrimary: boolean; label: string; createdAt: number; updatedAt: number; exhaustedUntil?: number; exhaustedAt?: number }[];
   /** docs/264-agent-roles req 8 — standing instructions stored on the role being started. */
   rolePrompt?: string;
+  /** docs/275 — override the registry's eligible set where a test spawns a harness the default rows don't cover. */
+  eligibleModels?: { serviceId: string; serviceName: string; billingMode: string; modelId: string; label: string }[];
 }) {
   const session: FakeSession | null =
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
@@ -171,6 +174,19 @@ function makeDeps(opts: {
     route: { kind: "account" as const, id: selectOpts?.exclude?.length ? "acct-secondary" : "acct-primary" },
   }));
   const markAccountExhausted = vi.fn();
+  // planning#344 — the reactive failover benches a string-delivered credential
+  // through the STORE, so the fake holds a mutable working copy the bench can
+  // stamp and the re-select walk can then see. Mirrors the real store's rules:
+  // an unknown id and a metered `key` row are refused (null); a benched row is
+  // returned stamped.
+  const credentialRouteRows = (opts.credentialRoutes ?? []).map((r) => ({ ...r }));
+  const markCredentialRouteExhausted = vi.fn((routeId: string, until: number) => {
+    const row = credentialRouteRows.find((r) => r.id === routeId);
+    if (row?.billingMode !== "sub") return null;
+    row.exhaustedUntil = until;
+    row.exhaustedAt = Date.now();
+    return { ...row };
+  });
   const deps = {
     sessionManager: {
       get: vi.fn((id: string) => (session?.id === id ? session : undefined)),
@@ -180,9 +196,14 @@ function makeDeps(opts: {
       getEnableSubAgents: () => opts.enableSubAgents ?? true,
       // planning#342 — benching reads the failing row's own service rather than
       // deriving one from the harness, so the fake has to answer for the
-      // account ids these tests fail over between.
+      // account ids these tests fail over between. planning#344 — stored
+      // `cred_` rows answer too, so the string walk's bench and the per-route
+      // spawn shaping resolve against the same rows the test wired.
       getCredentialRoute: (routeId: string) =>
-        (routeId.startsWith("acct-") ? { id: routeId, serviceId: "openai" } : undefined),
+        credentialRouteRows.find((r) => r.id === routeId)
+        ?? (routeId.startsWith("acct-") ? { id: routeId, serviceId: "openai" } : undefined),
+      markCredentialRouteExhausted,
+      getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
       // docs/261 — the reviewer resolution reads the two slots and the credential
       // routes. Unpinned + whatever routes the test wired: an unpinned slot is
       // *auto-configured*, which is the state a fresh install is in.
@@ -193,7 +214,7 @@ function makeDeps(opts: {
       getRoles: () => [reviewerRole],
       getRole: (name: string) => (name === "reviewer" ? reviewerRole : undefined),
       listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
-        (opts.credentialRoutes ?? []).filter(
+        credentialRouteRows.filter(
           (r) =>
             (serviceId === undefined || r.serviceId === serviceId)
             && (billingMode === undefined || r.billingMode === billingMode),
@@ -213,7 +234,7 @@ function makeDeps(opts: {
             // docs/261 req 7 — and it is what an EXPLICIT call is checked
             // against: a harness told to run a model no credential of its own
             // offers is refused rather than rerouted.
-            eligibleModels: [
+            eligibleModels: opts.eligibleModels ?? [
               {
                 serviceId: "openai",
                 serviceName: "OpenAI",
@@ -253,14 +274,17 @@ function makeDeps(opts: {
           })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
-    providerAccountManager: { selectAccountForTurn, markAccountExhausted } as never,
+    // planning#344 — `subscriptionLimitsFor` is what the string walk reaches
+    // for the same quota snapshots the account walk uses; an empty map is the
+    // "no reader, no opinion" neutral.
+    providerAccountManager: { selectAccountForTurn, markAccountExhausted, subscriptionLimitsFor: vi.fn(() => ({})) } as never,
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
     chatHistoryManager: { replaceInProgress, append, updateSubAgentConsultCard } as never,
   };
   return {
     deps, runner, emitMessage, record, replaceInProgress, append, updateSubAgentConsultCard,
-    recordAgentRateLimits, selectAccountForTurn, markAccountExhausted,
+    recordAgentRateLimits, selectAccountForTurn, markAccountExhausted, markCredentialRouteExhausted,
   };
 }
 
@@ -635,6 +659,25 @@ describe("runSubAgent — --role reviewer", () => {
 });
 
 describe("runSubAgent — happy path", () => {
+  /**
+   * planning#344 — docs/252's string-delivered subscription shape: GLM's
+   * coding plan, several stored keys in one `(zai, sub)` group. This is the
+   * credential set a consult must fail over across exactly as a turn does —
+   * the shape the account-only bench-and-retry loop used to leave stranded.
+   */
+  const glmPlanCredential = (id: string, priority: number) => ({
+    id,
+    serviceId: "zai",
+    billingMode: "sub" as const,
+    via: "string",
+    status: "ready",
+    priority,
+    isPrimary: priority === 0,
+    label: id,
+    createdAt: 0,
+    updatedAt: 0,
+  });
+
   it("spawns, returns text, increments the per-turn counter, records usage, emits spinner + persisted consult card", async () => {
     const { deps, runner, emitMessage, record, replaceInProgress } = makeDeps({});
     const res = await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review this", depth: 0 });
@@ -802,10 +845,11 @@ describe("runSubAgent — happy path", () => {
     );
   });
 
-  // Neither field has an "omit it" branch any more. A reviewer's level is part
-  // of what a reviewer IS (req 5) and an explicit call must name one (req 7), so
-  // a spawn that passed no `--effort` flag — the old unset-default behaviour —
-  // is no longer reachable.
+  // The model has no "omit it" branch any more, and the effort's absence is a
+  // FACT rather than an unset default: a reviewer's level is part of what a
+  // reviewer IS (req 5), an explicit call on a level-having harness must name
+  // one (req 7), and only a harness that declares no levels runs with the key
+  // absent — because there is no flag to pass there (docs/275 req 2, below).
   it("always passes a model and an effort — there is no unset default left", async () => {
     const { deps, runner } = makeDeps({});
     await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
@@ -813,6 +857,44 @@ describe("runSubAgent — happy path", () => {
     const arg = calls[0][0];
     expect(arg.reasoningEffort).toBe("high");
     expect(arg.model).toBe("gpt-5.6-sol");
+  });
+
+  /**
+   * docs/275 req 2 — the motivating acceptance case, through the whole service:
+   * a fully-specified target on a harness that declares no reasoning levels
+   * (grok, docs/274 req 8) validates and spawns, with `reasoningEffort` absent
+   * from the spawn options — the absence of the KEY is what makes the adapter
+   * pass no reasoning flag. This is the plumbing the docs/274 Phase 10
+   * "`shipit agent run` both directions" item was structurally blocked on.
+   */
+  it("spawns a complete target on a no-levels harness with the effort key absent (docs/275)", async () => {
+    const { deps, runner } = makeDeps({
+      eligibleModels: [{
+        serviceId: "xai", serviceName: "xAI", billingMode: "key",
+        modelId: "grok-4.6", label: "Grok 4.6",
+      }],
+      credentialRoutes: [{
+        id: "xai-key", serviceId: "xai", billingMode: "key", via: "string",
+        status: "ready", priority: 0, isPrimary: true, label: "test", createdAt: 0, updatedAt: 0,
+      }],
+    });
+    const res = await runSubAgent(deps, "s1", {
+      target: {
+        kind: "explicit",
+        harnessId: "grok",
+        serviceId: "xai",
+        billingMode: "key",
+        modelId: "grok-4.6",
+      },
+      prompt: "review",
+      depth: 0,
+    });
+    expect(res.status).toBe("success");
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    expect(arg.agentId).toBe("grok");
+    expect(arg.model).toBe("grok-4.6");
+    expect("reasoningEffort" in arg).toBe(false);
   });
 
   /**
@@ -1013,6 +1095,104 @@ describe("runSubAgent — happy path", () => {
     expect(result.status).toBe("error");
     expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
     expect(markAccountExhausted).not.toHaveBeenCalled();
+  });
+
+  // planning#344 — docs/252 req 12, the one-shot half: a consult on a
+  // string-delivered subscription must bench a spent credential through the
+  // store and retry on the next one in the user's order, exactly as a turn on
+  // the same group already does. Before the fix the bench-and-retry loop was
+  // gated on the ACCOUNT id, so a string route neither benched nor retried —
+  // the run simply failed.
+  it("benches a hard-exhausted string credential and retries on the next in the group", async () => {
+    const resetAt = "2099-08-02T12:00:00.000Z";
+    const { deps, runner, markCredentialRouteExhausted, markAccountExhausted } = makeDeps({
+      spawnResults: [
+        { status: "error", text: "", error: `Weekly usage limit reached. It resets at ${resetAt}.`, truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "success", text: "review complete", truncated: false, durationMs: 20, costUsd: 0 },
+      ],
+      credentialRoutes: [glmPlanCredential("cred-glm-a", 0), glmPlanCredential("cred-glm-b", 1)],
+      eligibleModels: [
+        { serviceId: "zai", serviceName: "GLM (Z.ai)", billingMode: "sub", modelId: "glm-5.3[1m]", label: "GLM-5.3" },
+      ],
+    });
+    const target: SubAgentSpawnTarget = explicit("claude", {
+      serviceId: "zai",
+      billingMode: "sub",
+      modelId: "glm-5.3[1m]",
+    });
+    const result = await runSubAgent(deps, "s1", { target, prompt: "review", depth: 0 });
+
+    expect(markCredentialRouteExhausted).toHaveBeenCalledWith("cred-glm-a", Date.parse(resetAt));
+    // The string shape benches through the STORE, never the account manager.
+    expect(markAccountExhausted).not.toHaveBeenCalled();
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("review complete");
+    // Each attempt reads ITS OWN credential's delivery variable — a retry that
+    // kept the first attempt's shaping would authenticate with the credential
+    // the loop just benched while attributing the run to the one it moved to.
+    const calls = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls;
+    expect(calls[0][0].serviceRouting).toMatchObject({
+      credentialSourceEnv: credentialRouteEnvName("cred-glm-a"),
+    });
+    expect(calls[1][0].serviceRouting).toMatchObject({
+      credentialSourceEnv: credentialRouteEnvName("cred-glm-b"),
+    });
+  });
+
+  it("gives up cleanly after every string credential in the group is exhausted", async () => {
+    const { deps, runner, markCredentialRouteExhausted } = makeDeps({
+      spawnResults: [
+        { status: "error", text: "", error: "Weekly usage limit reached. It resets at 2099-08-02T12:00:00.000Z.", truncated: false, durationMs: 10, costUsd: 0 },
+        { status: "error", text: "", error: "Quota exhausted", truncated: false, durationMs: 10, costUsd: 0 },
+      ],
+      credentialRoutes: [glmPlanCredential("cred-glm-a", 0), glmPlanCredential("cred-glm-b", 1)],
+      eligibleModels: [
+        { serviceId: "zai", serviceName: "GLM (Z.ai)", billingMode: "sub", modelId: "glm-5.3[1m]", label: "GLM-5.3" },
+      ],
+    });
+    const target: SubAgentSpawnTarget = explicit("claude", {
+      serviceId: "zai",
+      billingMode: "sub",
+      modelId: "glm-5.3[1m]",
+    });
+    const result = await runSubAgent(deps, "s1", { target, prompt: "review", depth: 0 });
+
+    // Both credentials attempted exactly once, both benched, and the walk's
+    // `all_exhausted` ends the run instead of a third spawn.
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(2);
+    expect(markCredentialRouteExhausted).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("out of quota");
+  });
+
+  // req 12's other half, stated for the consult path: a metered key has no
+  // subscription window to exhaust, so the store refuses to bench it and the
+  // loop stops on the run's original error rather than retrying the only
+  // credential the walk can ever name.
+  it("does not fail over a metered key that reports exhaustion", async () => {
+    const { deps, runner, markCredentialRouteExhausted } = makeDeps({
+      spawnResult: { status: "error", text: "", error: "Quota exceeded", truncated: false, durationMs: 10, costUsd: 0 },
+      credentialRoutes: [{
+        id: "cred-glm-key", serviceId: "zai", billingMode: "key", via: "string",
+        status: "ready", priority: 0, isPrimary: true, label: "test", createdAt: 0, updatedAt: 0,
+      }],
+      eligibleModels: [
+        { serviceId: "zai", serviceName: "GLM (Z.ai)", billingMode: "key", modelId: "glm-5.2", label: "GLM-5.2" },
+      ],
+    });
+    const target: SubAgentSpawnTarget = explicit("claude", {
+      serviceId: "zai",
+      billingMode: "key",
+      modelId: "glm-5.2",
+    });
+    const result = await runSubAgent(deps, "s1", { target, prompt: "review", depth: 0 });
+
+    expect(runner.spawnSubAgent).toHaveBeenCalledTimes(1);
+    // The bench was attempted and refused by the store's `key` rule.
+    expect(markCredentialRouteExhausted).toHaveBeenCalledWith("cred-glm-key", expect.any(Number));
+    expect(result.status).toBe("error");
+    expect(result.error).toBe("Quota exceeded");
   });
 
   it("omits outputMarkdown when the sub-agent returned empty text (docs/220)", async () => {

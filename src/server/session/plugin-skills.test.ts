@@ -19,6 +19,8 @@ import {
   PLUGIN_SKILL_MARKER,
 } from "./plugin-skills.js";
 import { HARNESSES } from "../shared/catalogue/harnesses.js";
+import { pluginSkillLabel } from "../shared/plugin-skill-marker.js";
+import { scanSkillsDir } from "../shared/skill-scan.js";
 
 let tmp: string;
 let workspaceDir: string;
@@ -415,12 +417,32 @@ describe("materializePluginSkills", () => {
     const marker = path.join(roots()[0]!, NAMES.probe, PLUGIN_SKILL_MARKER);
     expect(JSON.parse(fs.readFileSync(marker, "utf-8")).name).toBe(NAMES.probe);
   });
+
+  it("stays out of the user's `/` menu (req 22)", async () => {
+    // End-to-end against the REAL writer: the scan's exclusion reads the marker
+    // this module writes, and the two live in different modules, so a test that
+    // hand-rolled the marker could not fail on a change to either.
+    writeSkill(path.join(checkoutDir, "skills", "probe"), "probe");
+    materialize([{ alias: "tools", skillsDir: path.join(checkoutDir, "skills") }]);
+    writeSkill(path.join(roots()[0]!, "mine"), "mine");
+
+    const listed = await scanSkillsDir(roots()[0]!, "project");
+    expect(listed.map((s) => s.name)).toEqual(["mine"]);
+  });
 });
 
 describe("namespacedName", () => {
   it("renders an awkward alias or skill name into a usable directory", () => {
     expect(namespacedName("My Tools", "Do Things!")).toMatch(/^plugins--my-tools--do-things-[0-9a-f]{12}$/);
     expect(namespacedName("", "")).toMatch(/^plugins--unnamed--unnamed-[0-9a-f]{12}$/);
+  });
+
+  // The writer and the display parser are in different modules; this is what
+  // binds them, so a change to either shape fails here rather than in a
+  // transcript row nobody is looking at.
+  it("round-trips through the label the transcript shows", () => {
+    expect(pluginSkillLabel(namespacedName("assetgen", "assetgen"))).toBe("assetgen/assetgen");
+    expect(pluginSkillLabel(namespacedName("My Tools", "Do Things!"))).toBe("my-tools/do-things");
   });
 });
 
@@ -434,6 +456,7 @@ describe("pluginSkillExcludeEntries", () => {
     expect(entries).toContain("/.claude/skills/plugins--tools--probe-abc123/");
     expect(entries).toContain("/.codex/skills/plugins--tools--probe-abc123/");
     expect(entries).toContain("/.opencode/skills/plugins--tools--probe-abc123/");
+    expect(entries).toContain("/.grok/skills/plugins--tools--probe-abc123/");
     // No wildcard among the PUBLISHED names.
     for (const entry of entries.filter((e) => e.includes("probe"))) {
       expect(entry).not.toContain("*");
@@ -447,6 +470,7 @@ describe("pluginSkillExcludeEntries", () => {
       "/.claude/skills/.plugins--*.staging-*/",
       "/.codex/skills/.plugins--*.staging-*/",
       "/.opencode/skills/.plugins--*.staging-*/",
+      "/.grok/skills/.plugins--*.staging-*/",
     ]);
   });
 });

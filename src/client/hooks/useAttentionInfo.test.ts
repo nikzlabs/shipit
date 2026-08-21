@@ -14,6 +14,7 @@ function inputs(overrides: Partial<AttentionInputs> = {}): AttentionInputs {
     autoFixEnabled: false,
     autoResolveEnabled: false,
     resolved: false,
+    muted: false,
     ...overrides,
   };
 }
@@ -269,6 +270,53 @@ describe("computeAttentionReason", () => {
       expect(computeAttentionReason(inputs({ resolved: true, awaitingPermission: true }))).toBe(
         "Needs your approval to continue",
       );
+    });
+  });
+
+  describe("muted session (docs/277)", () => {
+    it("silences the plain idle reason", () => {
+      expect(computeAttentionReason(inputs({ muted: true }))).toBeNull();
+    });
+
+    it("silences a CI failure with auto-fix off", () => {
+      // Every surface reads this one function, so a mute that did not cover the
+      // CI branch would leave the row marker amber (req 2) on a row the user
+      // deliberately quieted.
+      expect(
+        computeAttentionReason(inputs({ muted: true, card: card({ checks: FAILURE }) })),
+      ).toBeNull();
+    });
+
+    it("silences a merge conflict", () => {
+      expect(
+        computeAttentionReason(inputs({ muted: true, status: status({ mergeable: "conflicting" }) })),
+      ).toBeNull();
+    });
+
+    it("silences an auto-merge configuration blocker", () => {
+      expect(
+        computeAttentionReason(inputs({
+          muted: true,
+          card: card({
+            autoMerge: {
+              enabled: true,
+              mergeMethod: "squash",
+              error: { code: "no-permission", message: "Auto-merge is not enabled", settingsUrl: "https://example.test" },
+            },
+          }),
+        })),
+      ).toBeNull();
+    });
+
+    it("silences a blocked permission prompt too", () => {
+      // Unreachable in practice — a permission prompt means a turn is running,
+      // and a turn start clears the mute (req 4) — but the rule is "a mute wins"
+      // rather than "a mute wins except here", so no surface can disagree.
+      expect(computeAttentionReason(inputs({ muted: true, awaitingPermission: true }))).toBeNull();
+    });
+
+    it("restores the reason once the mute is gone", () => {
+      expect(computeAttentionReason(inputs({ muted: false }))).toBe("Waiting for your input");
     });
   });
 });

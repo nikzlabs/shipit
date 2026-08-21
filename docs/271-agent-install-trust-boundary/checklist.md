@@ -1,34 +1,36 @@
 # Checklist — `agent.install` trust boundary
 
+The feature was built, reviewed, and then **removed** when its founding
+requirement was withdrawn (2026-08-21). Both halves are checked off: the build
+happened, and so did the removal.
+
+## Build (2026-08-17 → 2026-08-20)
+
 - [x] `requirements.md` written from the issue before any design
-- [x] Open questions put to the requester; answers recorded as dated receipts,
-      questions removed, and reqs 6/7/8 changed in the same diff
+- [x] Open questions put to the requester; answers recorded as dated receipts
 - [x] Route verified at the source (both mounts, both execution paths, the uid
       equality that rules out writer attribution)
-- [x] `plan.md` citing requirements
-- [x] Gate module (`agent-install-gate.ts`) — plugin-bearing predicate, marker
-      anchor, withheld record, notice text
-- [x] Gate call at `ContainerSessionRunner.runInstall`, covering the live delta
-      and the restart path (req 5)
-- [x] Transcript notice wired via `emitNoticeInTurn` in `runner-registry-factory`
-- [x] Unit tests for the decision logic (19)
-- [x] Runner-level tests that fail on today's code (verified by disabling the
-      gate: both go red)
-- [x] `npm run lint:dev`, `npm run typecheck`, `npm run test:dev` green
-- [x] Independent review via `shipit agent run --role reviewer`
-- [x] Review findings fixed, each verified at the source first:
-  - [x] **Critical** — `runner.sessionDir` is the clone, not the session root, so
-        every path landed one level deep and the gate was a permanent silent
-        no-op. Paths derived canonically; tests rebuilt to the production shape.
-  - [x] **High** — the warm-pool pre-install POSTs `/install` directly, bypassing
-        `runInstall`. Gated at its own call site; the plan's caller table
-        corrected (it claimed those lines were comments).
-  - [x] **Medium** — a withheld install still published an overlay base stamped
-        with commands that never ran, laundering them into the gate's own
-        anchor. `runInstall` now returns `withheld`; the publish is skipped.
-  - [x] **Medium** — a throw in the notice hook turned a withhold into a failed
-        install and latched dependent services to `error`. Wrapped, with a test.
-  - [x] **Low** — `appliedInstallCommands` means "what the config declares", not
-        "what ran"; documented at the call site.
-- [x] Re-verified the tests fail on today's code after the path fix (3 red)
-- [x] Tracker synced (comment on planning#400)
+- [x] Gate module, gate call, transcript notice, unit and runner-level tests
+- [x] Independent reviews; findings fixed and each verified at the source
+
+## Removal (2026-08-21)
+
+- [x] Req 1 replaced by the requester — plugin code sits at the `package.json`
+      dependency trust level
+- [x] Reqs 2, 4, 5, 12 retired as superseded/subsumed, each summarised in
+      Requirement history with the verbatim text in git history
+- [x] Req 3 retired, with 7, 8 and 11 following it
+- [x] `requirements.md` and `plan.md` rewritten to describe what remains
+- [x] Gate module and its test file deleted; the branch-local second test file
+      deleted with it, and the gate-specific tests removed from
+      `container-session-runner.test.ts`
+- [x] Call sites removed: runner, warm pool, fork, claim, overlay publish
+- [x] Orphaned `dependency-reset` gap phrase removed
+- [x] Pre-existing fixes deliberately kept (`unverified`, `_installInFlight`)
+      and documented as such in `plan.md`
+- [x] Suite shrank rather than grew — net −18 `it()` declarations vs `main`
+      (−19 deleted gate test file, −1 runner, +2 covering the retained
+      `unverified` fix)
+- [x] `npm run typecheck`, `npm run lint:dev`, `npm test` green
+- [x] Independent review of the removal
+- [x] planning#400 updated

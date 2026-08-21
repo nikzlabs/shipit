@@ -14,6 +14,7 @@
  */
 
 import { sessionRelativePath } from "../path-utils.js";
+import { pluginSkillLabel } from "../../server/shared/plugin-skill-marker.js";
 
 export interface StreamingActivity {
   /** Human-readable label for current activity (e.g., "Editing src/app.ts") */
@@ -143,7 +144,10 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
       };
     }
     case "Skill": {
-      const skill = typeof input.skill === "string" ? input.skill : "unknown";
+      const raw = typeof input.skill === "string" ? input.skill : "unknown";
+      // A plugin's skill runs under its namespaced directory name; show the
+      // `<alias>/<skill>` label instead (docs/262 req 22).
+      const skill = pluginSkillLabel(raw) ?? raw;
       return {
         label: `Running skill: ${skill}...`,
         tool: toolName,

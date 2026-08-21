@@ -165,6 +165,34 @@ describe("applyRoleToSession writes the ORDINARY fields (req 3)", () => {
     // moving a control makes, and those clear the role at their own call sites.
     expect(calls[calls.length - 1]).toBe("role");
   });
+
+  /**
+   * docs/264 req 1's resolved question — a role at `Default` must CLEAR the
+   * session's level, not leave it alone.
+   *
+   * `setReasoning(id, null)` clears; `undefined` would be a no-op, so a session
+   * that had been on `max` would keep running at `max` under a role that says
+   * Default. That is a substitution req 7 forbids, and it is invisible — the
+   * role card would read "Default" while the turns ran at `max`.
+   */
+  it("CLEARS the level for a role at Default, rather than leaving the session's own", async () => {
+    const { applyRoleToSession, resolveUserRole } = await import("./session-role.js");
+    const { reasoningEffort: _dropped, ...atDefault } = DEEP_DIVE.params as Extract<
+      AgentRole["params"],
+      { kind: "pinned" }
+    >;
+    const role: AgentRole = { ...DEEP_DIVE, params: atDefault };
+    const sessionManager = {
+      setAgentId: vi.fn(),
+      setModelSelection: vi.fn(),
+      setReasoning: vi.fn(),
+      setRoleName: vi.fn(),
+    };
+    applyRoleToSession("s1", resolveUserRole("deep dive", deps([role])), {
+      sessionManager: sessionManager as never,
+    });
+    expect(sessionManager.setReasoning).toHaveBeenCalledWith("s1", null);
+  });
 });
 
 // ---- The standing instructions, once (req 2) --------------------------------

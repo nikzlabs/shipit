@@ -143,6 +143,52 @@ describe("foldTaskList", () => {
     ]);
   });
 
+  it("patches by item id on a TodoWrite with merge: true, Grok's declarative-with-patch form", () => {
+    // The docs/272 grok tour's exact shape (planning#437): one full-list call
+    // with item ids, then merge calls carrying only {id, status}.
+    const state = foldTaskList([
+      msg([tool("t1", "TodoWrite", {
+        todos: [
+          { id: "1", content: "Read package.json", status: "in_progress" },
+          { id: "2", content: "Run the probe", status: "pending" },
+        ],
+        merge: false,
+      })]),
+      msg([tool("t2", "TodoWrite", {
+        todos: [{ id: "1", status: "completed" }, { id: "2", status: "in_progress" }],
+        merge: true,
+      })]),
+    ]);
+    // Subjects survive the content-less patch; only the statuses move.
+    expect(state?.tasks).toEqual([
+      { id: "1", subject: "Read package.json", status: "completed" },
+      { id: "2", subject: "Run the probe", status: "in_progress" },
+    ]);
+    expect(state?.anchorIndex).toBe(1);
+  });
+
+  it("lets a merge call introduce a NEW row when it carries content", () => {
+    const state = foldTaskList([
+      msg([tool("t1", "TodoWrite", { todos: [{ id: "1", content: "First", status: "pending" }], merge: false })]),
+      msg([tool("t2", "TodoWrite", { todos: [{ id: "2", content: "Second", status: "pending" }], merge: true })]),
+    ]);
+    expect(state?.tasks).toEqual([
+      { id: "1", subject: "First", status: "pending" },
+      { id: "2", subject: "Second", status: "pending" },
+    ]);
+  });
+
+  it("skips a content-less patch for a row it never saw, and does not move the anchor for it", () => {
+    // The compaction stance TaskUpdate takes: an id alone renders as a blank
+    // line, so an orphan patch must neither add a row nor drag the panel down.
+    const state = foldTaskList([
+      msg([tool("t1", "TodoWrite", { todos: [{ id: "1", content: "Real", status: "pending" }], merge: false })]),
+      msg([tool("t2", "TodoWrite", { todos: [{ id: "ghost", status: "completed" }], merge: true })]),
+    ]);
+    expect(state?.tasks).toEqual([{ id: "1", subject: "Real", status: "pending" }]);
+    expect(state?.anchorIndex).toBe(0);
+  });
+
   it("anchors on the last call that CHANGED the list", () => {
     const state = foldTaskList([
       msg([tool("t1", "TaskCreate", { subject: "One" })], [result("t1", created("1", "One"))]),

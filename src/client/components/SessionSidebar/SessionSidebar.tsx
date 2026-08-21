@@ -131,10 +131,13 @@ export function SessionSidebar({
   const attentionView = sidebarView === "attention";
 
   const handleViewAll = useCallback((repoUrl: string) => {
-    // Open AllSessionsDialog (it will default to filtering by the current repo)
-    // We set activeRepoUrl so the dialog pre-selects this repo
-    useRepoStore.getState().setActiveRepoUrl(repoUrl);
-    useSessionStore.getState().setAllSessionsDialogOpen(true);
+    // Open AllSessionsDialog filtered to the repo whose menu was clicked — NOT
+    // the current session's repo, which is a different repo whenever the user
+    // opens the menu on some other group. The scope travels with the open call;
+    // `activeRepoUrl` is deliberately left alone (it drives where a NEW session
+    // lands and is persisted, so merely looking at a repo's sessions must not
+    // move it).
+    useSessionStore.getState().setAllSessionsDialogOpen(true, repoUrl);
     // Mobile drawer: close it so the dialog isn't stacked on top
     if (mobile) onClose?.();
   }, [mobile, onClose]);

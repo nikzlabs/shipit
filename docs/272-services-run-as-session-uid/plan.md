@@ -127,3 +127,129 @@ uid, and `compose.md` now says so instead of implying group-write made it fine.
   `reconcileDepDirCacheOwnership` root + leak mode passes, `groupWriteRecursive`.
 - `src/server/shipit-docs/compose.md` — tells an agent to delete a `user:` kept
   only for the old rule, and names both failure modes.
+
+## 6. Follow-on: the ownership handoff is claimed ONCE, and the claim could not
+   express what the walk does (2026-08-18)
+
+Reported from production against `a841e147`: a session's `npm ci` failed
+repeatedly with `EACCES` on `/dep-cache/npm/_cacache/tmp/…`, on a cache three
+live sessions of the same repository shared, each at a different per-session uid
+with the shared gid. npm's own advice ("your cache folder contains root-owned
+files") pointed at an owner the cache did not have. With the cache unwritable no
+install could run, the declared dependency directories stayed empty, and the
+project's own `npm ci … || [ -x node_modules/.bin/vite ]` workaround then handed
+ShipIt an exit status of 0 — so the install marker was stamped and the service
+gate opened over a dependency tree that had never been built.
+
+Two mechanisms, both in this seam, both fixed here.
+
+**The sentinel names the identity, not the handoff.**
+`docker/session-worker/entrypoint.sh` claims each tree with a marker directory
+(`.shipit-gid-<gid>` for the shared `/dep-cache`, `.shipit-uid-<uid>-<gid>` for a
+per-session mount) and every later boot skips on it. That is right while what the
+walk DOES is fixed, and silently wrong the moment it learns to do more: a tree an
+earlier image already claimed keeps the old treatment for good, on the
+longest-running deployments — the ones with the most to repair. Two passes had
+already landed that way (docs/271's workspace group-write and this doc's
+shared-cache mode pass) and neither could reach an already-claimed tree.
+
+The sentinel now carries a `HANDOFF_SCHEME` version alongside the identity, and
+bumping it is the supported way to make a handoff change reach existing trees.
+The superseded sentinel is pruned once the walk that supersedes it succeeds, so a
+tree does not accumulate one marker per deployment.
+
+**The writability probe locked root out of the repair, self-latchingly.** This is
+the root cause, and it was found by inspecting a live production session rather
+than by reading the code — the code reads as correct.
+
+`[ -w "$d" ] || continue` guards the loop. Its comment says `test -w` is the right
+probe "even though we are still root here", because access(2) reports EROFS
+regardless of privilege. That is true and it is not the whole rule: **root passes
+W_OK on a directory it does not own only via CAP_DAC_OVERRIDE, and the session
+container drops it.** Measured on the production host, `/proc/1/status` gives a
+bounding set of CHOWN, FOWNER, KILL, SETGID, SETUID and nothing else. So root's
+access is decided by the `other` class like anyone else's.
+
+`/dep-cache` is `0755` owned by the uid that first claimed it — 1000, from before
+docs/270 made the uid per-session — so `other` is `r-x`, root fails the probe, and
+the branch that would repair the cache is never reached. **The state that locks
+root out was created by the handoff's own first run**, so the fault is
+self-latching: docs/270's group + setgid pass and docs/271's group write have
+never executed on any deployment that ever claimed a cache under the old scheme.
+
+Observed exactly so, on 2026-08-18, from inside a live session: `/dep-cache`
+`0755 1000:1000` throughout, carrying the pre-docs/270 `.shipit-uid-1000` marker
+dated Jun 26 and **no `.shipit-gid-*` marker at all** — the docs/270 branch had
+never so much as staked its claim. A `touch` into it from the session's own uid
+(2000088, gid 1000) is denied, which is the reported `EACCES`.
+
+The absent marker is also what refutes the first explanation written here, that a
+`chmod -R` failing under `set -e` had latched a half-finished walk: that story
+requires a marker on disk, and there is none. It is recorded rather than deleted
+because it is the explanation the code alone supports, and the next reader will
+reach for it too.
+
+So the shared-cache branch now runs **before** the probe. It needs no write
+permission to decide anything: `stat` reads (root has `r-x`), and the walk needs
+CAP_CHOWN and CAP_FOWNER rather than write permission — both retained. The
+sentinel is written **as the worker** through `gosu`, after the walk, for the same
+reason the `/credentials` prep already is: root cannot create it, and the uid the
+walk has just made group-writable can. Writing it after rather than claiming
+before gives up the concurrent-boot claim (two sessions may both walk, idempotent,
+once) and buys a sentinel that can only exist if the thing it records actually
+happened — which removes the release-the-claim path entirely.
+
+The mode passes are additionally best-effort now, matching `chown_workspace`'s
+own, so a path another session unlinks mid-walk cannot kill a boot.
+
+**And an install's outcome is no longer its exit status.** `emptyDepDirsContradictingMarker`
+was applied only when deciding whether to TRUST a marker. It is now applied when
+deciding whether to WRITE one: a declared dep dir that is present-and-EMPTY when
+the install commands finish fails the install, so the gate stays shut and the
+`install_error` names the directory instead of leaving `install finished` as the
+only account of what happened. Absent stays fine on both sides — a project that
+manages no dependency directory is not a failed install.
+
+### Key files (follow-on)
+
+- `docker/session-worker/entrypoint.sh` — the shared-cache branch moved ahead of
+  the `[ -w ]` probe, `HANDOFF_SCHEME`, `share_cache_with_all_sessions`,
+  `prune_stale_sentinels`.
+- `src/server/session/install-controller.ts` — the post-install dep-dir check and
+  `finishInstallFailed`.
+- `src/server/session/install-failure.ts` — `formatEmptyDepDirsFailureMessage`.
+- `src/server/orchestrator/session-worker-uid.ts` — `shareTreeOnce` carries the
+  same one-shot hazard and is not wrong today; the docstring says when it becomes
+  wrong and what it would cost to rotate.
+
+### What the follow-on does NOT close
+
+**Copy-up preserves the lower file's OWNER, and group-write does not buy
+`chmod`.** `shareTreeWithAllSessions` hands a published overlay base generation
+over by GROUP — it must, since a base is shared by every session in its scope
+and chowning it to one session's uid would EACCES every other. Under per-session
+uids that means no session owns any base file. Group-write covers `write`,
+`unlink` and `rename` (the last two are governed by the directory), so the
+ordinary install path is fine: `npm ci` removes and re-extracts each package, and
+a file created in the upper is owned by the session that created it.
+
+What it does not cover is any operation that requires OWNERSHIP rather than
+permission — `chmod` and `utimes` with explicit times — on a file that copied up
+from the base. A postinstall step or a patcher that edits an inherited dependency
+and then marks it executable will EPERM for every session that is not the
+publishing one.
+
+This was reported alongside the incident above as the cause, and it is not: the
+failing route was `npm ci`, which never chmods a lower file. It is left open
+deliberately rather than fixed on speculation, and it has no cheap fix — the
+options are per-uid bases (which defeats sharing) or idmapped mounts.
+
+**The orchestrator-side twin of the sentinel is NOT scheme-versioned.**
+`shareTreeOnce` (`session-worker-uid.ts`), which shares the pnpm store and each
+overlay base generation, claims its tree with a gid-stamped marker and has the
+same one-shot shape. It is not wrong today — it and the group+mode walk it
+performs shipped together, so no tree is claimed under a version of the walk that
+did less — so it is deliberately left alone rather than bumped, because rotating
+it costs a synchronous multi-gigabyte re-walk at container create. Read §6 as
+fixing the entrypoint's sentinels only; the asymmetry is intended, and the
+condition under which it stops being safe is recorded on that function.

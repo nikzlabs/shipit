@@ -22,8 +22,11 @@ you supply is the name:
 If the role you need does not exist, say so — the user creates it in Settings.
 And if repository policy hands you a **complete target** (a command naming every
 parameter it runs on), pass it through **unchanged**: that is a different
-invocation and it stays available. What you may never do is assemble one
-yourself.
+invocation and it stays available. A complete target names the harness, the
+service, the billing mode, the model, and `--effort` exactly where the harness
+declares reasoning levels — a harness that declares none has no `--effort` to
+name, and naming one there is refused. What you may never do is assemble a
+complete target yourself.
 
 ## When to use it
 
@@ -50,7 +53,7 @@ a reviewer you picked. Relaying it sets the distance guarantee aside (see
 the user's call. The line is between a value they said and a value you supplied —
 the second is you choosing a reviewer, whatever it is dressed up as.
 
-**Never reach for the raw `codex` / `claude` / `opencode` CLI to do this.** Per-agent
+**Never reach for the raw `codex` / `claude` / `opencode` / `grok` CLI to do this.** Per-agent
 credential isolation mounts only *your* pinned agent's credentials in this
 container, so invoking the other backend's bare CLI fails with **401
 Unauthorized**. `shipit agent run` is the only authenticated path — it brokers
@@ -149,6 +152,40 @@ and the models each can run with the service and billing mode that serve them �
 so you never name a model from memory that this install does not have. A role
 that cannot run right now is still listed, with the reason.
 
+### The description is for choosing AND for writing
+
+A role's description is what the user wrote about what that role is for, and you
+read it twice:
+
+- **To choose.** When the user did not name a role, the description is what says
+  which one they mean. A request that matches a role's stated job goes to that
+  role; where nothing matches, say so rather than sending the work to the nearest
+  role you can find.
+- **To write.** The description also tells you *how much the prompt has to spell
+  out*. A role described as fast, cheap, or narrow wants an explicit, ordered
+  brief — the exact files, the exact steps, the shape of the answer. A role
+  described as deep, thorough, or exploratory can take an open research brief and
+  will do worse with a checklist that pre-decides the work. One prompt style for
+  every role wastes whichever role it does not fit.
+
+Where a role carries no description, the harness and model line is the only hint
+there is. Use it for the same one thing the description is used for — how much
+the prompt has to spell out — and for nothing beyond that. **Neither signal moves
+the target.** You write the prompt to fit the role — you never override a parameter,
+or reach for a different role, because you judged the work deserves something
+else. That is the same relay-never-decide rule as above, and reading a
+description does not create an exception to it.
+
+A role's reasoning level may read as **`Default`**. That is a level the user
+chose, not a gap: the role runs at whatever level its harness runs at when no
+`--effort` flag is passed. Do not "complete" it with an `--effort` of your own —
+the same rule as every other parameter, and only a level the user asked for is
+yours to relay.
+
+A harness listed with **no reasoning levels** takes no `--effort` at all: it has
+no such parameter, a complete target on it is the other four flags, and naming a
+level there is refused rather than dropped.
+
 Both take `--json`. Neither is an invitation to assemble a target from scratch: a
 role plus an override does the same job in less.
 
@@ -166,7 +203,8 @@ one-shot run does not: **a parent to complete a partial call from.**
 | Path | What it runs on |
 |---|---|
 | `shipit agent run --role NAME` | the role, with anything you overrode |
-| `shipit agent run` (no role) | **refused** — a one-shot run has nothing to complete itself from |
+| `shipit agent run` (no role, complete target) | exactly what the call names — reserved for a target the user or repository policy handed you |
+| `shipit agent run` (no role, partial) | **refused**, naming the missing flags — a one-shot run has nothing to complete itself from |
 | `shipit session create --role NAME` | the role, resolved once at creation; the child then routes like any other session |
 | `shipit session create` (no role) | **inherited from you**, with any parameter you named overriding it |
 

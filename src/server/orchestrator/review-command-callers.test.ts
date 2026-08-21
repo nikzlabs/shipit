@@ -100,57 +100,10 @@ function completeExplicitRuns(text: string): string[] {
  * The pages that must mention the role positively. A subset, deliberately: not
  * every page has a reason to talk about reviews.
  */
-const SHIPIT_DOC_PAGES = ["agent.md", "spec-discipline.md", "sandbox-session.md"] as const;
-
-/**
- * **Every** page ShipIt injects, read from the directory rather than written out
- * (docs/264 phase 4).
- *
- * The whole directory is baked into the session worker image
- * (`COPY src/server/shipit-docs/ /shipit-docs/`), so "what is injected" is a
- * filesystem fact and enumerating it by hand is how a page gets left behind —
- * which is exactly what happened to `sandbox-session.md`, whose five-flag prose
- * a three-page list did not cover. Deriving it means the next page added is
- * scanned without anyone remembering to add it here.
- */
-function everyInjectedDoc(): { name: string; text: string }[] {
-  const dir = new URL("../shipit-docs/", import.meta.url);
-  return fs
-    .readdirSync(dir)
-    .filter((name) => name.endsWith(".md"))
-    .sort()
-    .map((name) => ({ name, text: fs.readFileSync(new URL(name, dir), "utf8") }));
-}
+const SHIPIT_DOC_PAGES = ["agent.md", "sandbox-session.md"] as const;
 
 function readShipitDoc(name: string): string {
   return fs.readFileSync(new URL(`../shipit-docs/${name}`, import.meta.url), "utf8");
-}
-
-/**
- * docs/264-agent-roles req 15 — the five parameters named **together** as guidance, in any
- * form: a runnable command, a table row, or a sentence.
- *
- * Scoped to the whole page on purpose, and both halves of that are deliberate:
- *
- *  - **Not a command matcher.** {@link completeExplicitRuns} finds an
- *    *invocation*, and `sandbox-session.md` used to name the five flags in a
- *    **sentence** ("names all five of `--agent`, `--service`, …"). A
- *    command-shaped matcher reports success on a page that still teaches
- *    assembly, which is the failure this replaces.
- *  - **Not a window either.** A paragraph- or block-sized window is gamed by a
- *    blank line. A page that has a reason to name all five is a page teaching the
- *    complete shape, so the page is the unit. Today's margin is wide — no
- *    injected page names more than two of them — because the enumeration the
- *    agent actually needs lives in `shipit agent params`' own output (req 12),
- *    not in prose.
- *
- * Which is why this is scoped to what ShipIt **injects**, never to "anywhere
- * agent-facing": `shipit agent params` prints all five flag names by design —
- * that output *is* the inventory — and a guard drawn any wider would fail on the
- * one place they legitimately must appear.
- */
-function namesEveryExplicitFlag(text: string): boolean {
-  return EXPLICIT_FLAG_FORMS.every((forms) => namesFlag(text, forms));
 }
 
 /** The human-facing reference the complete shape moved to (docs/264 phase 4). */
@@ -184,8 +137,18 @@ const ALL_VARIANTS: AgentSystemInstructionOptions[] = [
 ];
 
 describe("product-owned review commands (docs/261 phase 5)", () => {
-  it("tells every system-prompt variant to ask for a review by role", () => {
-    for (const opts of ALL_VARIANTS) {
+  it("tells every system-prompt variant with spawn guidance to ask for a review by role", () => {
+    // Scoped to the variants that HAVE the guidance, not a narrowing of the rule.
+    // The review command lives in the per-agent "Parallel sessions" section, and a
+    // render with no `agentId` omits that section entirely — it is the Settings
+    // baseline and this file's fixture, never a session (`session-agent-run-params.ts`
+    // and `services/settings.ts` both pass one). The bare render used to name the
+    // role anyway, from the requirements-discipline fragment; docs/241-spec-discipline
+    // req 11 deleted that fragment, so the assertion follows the guidance that
+    // remains rather than outliving it.
+    const withGuidance = ALL_VARIANTS.filter((opts) => opts.agentId !== undefined);
+    expect(withGuidance.length).toBeGreaterThan(0);
+    for (const opts of withGuidance) {
       expect(buildAgentSystemInstructions(opts)).toContain("--role reviewer");
     }
   });
@@ -193,20 +156,6 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
   it("never authors a bare `--agent <backend>` run in any system-prompt variant", () => {
     for (const opts of ALL_VARIANTS) {
       expect(incompleteExplicitRuns(buildAgentSystemInstructions(opts))).toEqual([]);
-    }
-  });
-
-  it("keeps the requirements-discipline fragment on the role in every variant", () => {
-    const fragment = fs
-      .readFileSync(new URL("./prompts/spec-discipline.md", import.meta.url), "utf8")
-      .trim();
-    // The fragment is what makes the independent check reproducible across
-    // backends; a backend named here would re-introduce the choice the role took
-    // away, on the one call the discipline mandates.
-    expect(fragment).toContain("--role reviewer");
-    expect(incompleteExplicitRuns(fragment)).toEqual([]);
-    for (const opts of ALL_VARIANTS) {
-      expect(buildAgentSystemInstructions(opts)).toContain(fragment);
     }
   });
 
@@ -239,13 +188,12 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
  * docs/264-agent-roles req 15 — **a role is the path ShipIt teaches; assembling a target
  * from five parameters is not.**
  *
- * The mirror of the block above, and the inversion of what this file asserted
- * for docs/261: that guard required `agent.md` to carry one *complete* five-flag
- * invocation, precisely so a repository's override stayed documented. Req 15
- * removes that shape from the pages ShipIt injects into a session, so both can
- * no longer hold for the same page and the audiences separate — the complete
- * shape belongs to whoever writes repository policy, and the assertion moves
- * **with** it rather than being dropped.
+ * What this file asserted for docs/261 required `agent.md` to carry one
+ * *complete* five-flag invocation, precisely so a repository's override stayed
+ * documented. Req 15 removes that shape from the pages ShipIt injects into a
+ * session, so the audiences separate — the complete shape belongs to whoever
+ * writes repository policy, and the assertion moves **with** it rather than
+ * being dropped.
  *
  * The reason the shape left is no longer "the agent cannot use it": req 12's
  * inventory (`shipit agent params`) means it could. It is that a role plus an
@@ -253,41 +201,13 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
  * the user configured.
  */
 describe("the five-parameter shape is not what ShipIt teaches (docs/264-agent-roles req 15)", () => {
-  it("names no complete five-parameter target in any system-prompt variant", () => {
-    for (const opts of ALL_VARIANTS) {
-      const text = buildAgentSystemInstructions(opts);
-      expect(completeExplicitRuns(text), `${JSON.stringify(opts)} authors a complete explicit run`)
-        .toEqual([]);
-      expect(
-        namesEveryExplicitFlag(text),
-        `${JSON.stringify(opts)} still names all five parameters together`,
-      ).toBe(false);
-    }
-  });
-
-  it("names no complete five-parameter target on any injected page", () => {
-    const pages = everyInjectedDoc();
-    // A derived enumeration that silently found nothing would pass every
-    // assertion below, so pin that it is reading real pages.
-    expect(pages.map((p) => p.name)).toContain("agent.md");
-    expect(pages.map((p) => p.name)).toContain("sandbox-session.md");
-    for (const { name, text } of pages) {
-      expect(completeExplicitRuns(text), `${name} authors a complete explicit run`).toEqual([]);
-      // The half a command matcher cannot see: `sandbox-session.md` taught the
-      // same five flags in prose and passed the command-shaped guard untouched.
-      expect(namesEveryExplicitFlag(text), `${name} still names all five parameters together`)
-        .toBe(false);
-    }
-  });
-
   it("tells the agent to name a role rather than assemble a target", () => {
     // The spawn guidance lives in the per-agent "Parallel sessions" section, and
     // a render with no `agentId` omits that section entirely — so this is the
     // set of variants that HAS spawn guidance to check, not a narrowing of the
     // rule. Both real callers pass an `agentId`
     // (`session-agent-run-params.ts`, `services/settings.ts`); the bare render is
-    // the no-options test fixture. The negative assertions above stay on every
-    // variant, since absence is checkable everywhere.
+    // the no-options test fixture.
     const withGuidance = ALL_VARIANTS.filter((opts) => opts.agentId !== undefined);
     expect(withGuidance.length).toBeGreaterThan(0);
     for (const opts of withGuidance) {

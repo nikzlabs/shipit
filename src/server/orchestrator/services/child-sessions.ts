@@ -341,6 +341,55 @@ export async function spawnChildSession(
   })();
   const overrides = target.kind === "inherit" ? target.overrides : {};
 
+  /**
+   * docs/264-agent-roles req 20 — **a child inherits its parent's role, whole.**
+   *
+   * Inheritance already carried the parent's harness, model and level; what it
+   * dropped on the floor was the half of a role that no parameter can express —
+   * the standing instructions. A session working under a brief spawned help for
+   * that same work and the help arrived under no brief at all, with nothing on
+   * either side saying so.
+   *
+   * Three things about the shape:
+   *
+   *  - **Only the `inherit` base.** A `--role` names its own (handled above), and
+   *    a complete explicit target states what it runs on completely, which has
+   *    been a role-less statement since docs/275. `--no-role` is the one-word
+   *    decline, because a brief that cannot be declined is not a default.
+   *  - **The parent's `roleName`, not its `originRoleName`** — what it is running
+   *    now, not what it was started as. The two differ exactly when someone moved
+   *    a parameter, which is the user saying the role is no longer what this
+   *    session is doing (docs/272 req 15), and a child should not re-adopt a
+   *    brief its parent has left behind.
+   *  - **The role is read for its PROMPT only, so it cannot fail here.** The
+   *    child's parameters come from the parent either way, so an unavailable role
+   *    — quota spent, service disconnected — has nothing to refuse: those are
+   *    facts about starting a role's *tuple*, and no tuple is being started. A
+   *    role DELETED since the parent started on it yields nothing to inherit, and
+   *    the child runs briefless rather than under a name with no instructions
+   *    behind it.
+   */
+  const inheritedRole = ((): { roleName: string; rolePrompt?: string } | undefined => {
+    if (target.kind !== "inherit" || target.noRole) return undefined;
+    if (!parent.roleName) return undefined;
+    const role = credentialStore?.getRole(parent.roleName);
+    if (!role) return undefined;
+    const prompt = role.prompt?.trim();
+    return { roleName: parent.roleName, ...(prompt ? { rolePrompt: prompt } : {}) };
+  })();
+
+  /**
+   * The role this child starts under, from whichever base supplied one — a named
+   * role, or the parent's (req 20). One value from here on, so the join and the
+   * two writes below cannot disagree about which role the child is running.
+   *
+   * `seeded` is present exactly when the target was NOT `inherit`, and carries no
+   * `roleName` for an explicit target — so this is `undefined` there, which is
+   * what makes an explicit target role-less by construction rather than by a
+   * clause.
+   */
+  const roleForChild = seeded ?? inheritedRole;
+
   // The TASK is checked for emptiness before anything is joined onto it. A role's
   // standing instructions are never a substitute for one: joining first would
   // make an empty prompt non-empty and spawn a child holding a standing brief and
@@ -353,8 +402,8 @@ export async function spawnChildSession(
   // become the child's first message, labelled. The length check runs on the
   // JOINED string (that is what is sent) and its refusal names the ROLE, because
   // the caller cannot shorten instructions it did not write.
-  const trimmedPrompt = seeded
-    ? joinRolePrompt(task, seeded, ROLE_PROMPT_LIMITS.child)
+  const trimmedPrompt = roleForChild
+    ? joinRolePrompt(task, roleForChild, ROLE_PROMPT_LIMITS.child)
     : task;
   if (trimmedPrompt.length > ROLE_PROMPT_LIMITS.child) {
     throw new ServiceError(400, "prompt exceeds 50,000 characters");
@@ -844,7 +893,7 @@ export async function spawnChildSession(
     // it is a SNAPSHOT of the name and not a live link: editing that role later
     // does not change this child, deleting it does not orphan it, and the child
     // may over time run on something other than what the role named (req 11).
-    ...(seeded?.roleName ? { originRoleName: seeded.roleName } : {}),
+    ...(roleForChild?.roleName ? { originRoleName: roleForChild.roleName } : {}),
     ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
@@ -858,7 +907,7 @@ export async function spawnChildSession(
   // The standing instructions are NOT re-delivered on that account: docs/264
   // already joined them into the creating task, and `takeRoleStandingInstructions`
   // latches on the `originRoleName` written just above.
-  if (seeded?.roleName) sessionManager.setRoleName(newSessionId, seeded.roleName);
+  if (roleForChild?.roleName) sessionManager.setRoleName(newSessionId, roleForChild.roleName);
 
   const child = sessionManager.get(newSessionId);
   if (!child) throw new ServiceError(500, "Failed to read back spawned child session");

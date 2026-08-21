@@ -17,6 +17,7 @@ import {
   type SecretsStatusInternalSnapshot,
 } from "./service-manager.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 
 /**
  * Create a real session layout in a temp dir: the clone at
@@ -108,6 +109,21 @@ describe("ServiceManager", () => {
     const mgr = createManager(dir);
     expect(mgr.getServices()).toEqual([]);
     expect(mgr.started).toBe(false);
+  });
+
+  it("reports whether setOverlayDepDirs changed the set (#2426)", () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(dir);
+    const pairs = [{ depDir: "node_modules", volumeName: "shipit-abc_overlay-aaaa" }];
+
+    // The adoption path reconciles on this answer, so an identical re-point must
+    // read as unchanged (no stack restart on every agent restart) and a real
+    // change must not be swallowed (the override on disk is otherwise stale).
+    expect(mgr.setOverlayDepDirs(pairs)).toBe(true);
+    expect(mgr.setOverlayDepDirs([...pairs])).toBe(false);
+    expect(mgr.setOverlayDepDirs([])).toBe(true);
+    expect(mgr.setOverlayDepDirs([])).toBe(false);
   });
 
   it("detaches stale egress before up and contains the service after up", async () => {
@@ -2377,6 +2393,61 @@ services:
     expect(rmCalls.flat()).not.toContain("resolver-id");
   });
 
+  it("reconcile of a running stack does not sweep its own healthy containers", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
+
+    const rmCalls: string[][] = [];
+    const composeRunner: ComposeRunner = () => Promise.resolve();
+    const composeQuery: ComposeQuery = (args) => {
+      if (args[0] === "rm") {
+        rmCalls.push(args.slice());
+        return Promise.resolve("");
+      }
+      if (args[0] === "ps") {
+        // Keep-label queries for the egress sidecars — neither is present.
+        if (args.some((a) => a.includes("shipit-egress-"))) return Promise.resolve("");
+        if (args.includes("--format")) return Promise.resolve(""); // poll
+        // The broad `shipit-parent-session` sweep query. Answering it with a
+        // container id is the whole point: on a reconcile this is the session's
+        // OWN live preview container, and `rm -f` on it is a SIGKILL with no
+        // preceding SIGTERM — the exit 137 the user sees on every edit to
+        // `docker-compose.yml`.
+        return Promise.resolve("live-preview-id\n");
+      }
+      if (args.includes("inspect")) {
+        return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    // Cold start still sweeps: anything carrying this session's label there is
+    // left over from a previous orchestrator run or agent-container incarnation.
+    await mgr.start();
+    expect(rmCalls.find((c) => c.includes("live-preview-id"))).toEqual([
+      "rm", "-f", "live-preview-id",
+    ]);
+
+    // A reconcile is a config change against a LIVE stack. Compose's own
+    // recreate (plus `--remove-orphans`, plus the surgical conflict recovery)
+    // owns the transition; no broad `rm -f` may run.
+    rmCalls.length = 0;
+    await mgr.reconcile();
+    expect(rmCalls).toEqual([]);
+
+    await mgr.stop();
+  });
+
   it("startService surfaces the original error if the squatter can't be removed", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
@@ -2471,8 +2542,14 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
   /**
    * Build a manager that records the service names passed to each `up` and
    * each `stop`, and serves a configurable `docker compose ps` response.
+   *
+   * `sessionId` is overridable because the stack queue (`serializeStackOp`) is a
+   * module-level map keyed on it, shared by every test in this file. A test that
+   * holds the queue — or fails before releasing it — would otherwise stall every
+   * later test that opens the install gate. Any test that touches the queue
+   * takes an id of its own.
    */
-  function makeManager(dir: string) {
+  function makeManager(dir: string, sessionId = "test-session") {
     const upCalls: string[][] = [];
     const stopCalls: string[] = [];
     let psResponse = "";
@@ -2492,7 +2569,7 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
     };
 
     const mgr = new ServiceManager({
-      sessionId: "test-session",
+      sessionId,
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
@@ -2555,6 +2632,48 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
     // poll sees it running.
     setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
     mgr.setInstallRunning(false);
+    await flushMicrotasks();
+
+    expect(upNames(upCalls)).toContain("web");
+    expect(mgr.getService("web")?.status).toBe("running");
+  });
+
+  it("holds the gated start behind an in-flight stack op instead of racing it", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    // Its own session id: this test parks the module-level stack queue, and a
+    // failure before `release()` would otherwise stall every later test that
+    // opens the install gate.
+    const sessionId = "test-session-gate-queue";
+    const { mgr, upCalls, setPsResponse } = makeManager(dir, sessionId);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    expect(upNames(upCalls)).not.toContain("web");
+
+    // Stand in for the plugin-service reconcile a session activation runs
+    // concurrently with `agent.install`: it holds the session's stack op, which
+    // in production is a `docker compose up` mid-recreate.
+    let release!: () => void;
+    const reconcile = new Promise<void>((r) => { release = r; });
+    const queued = serializeStackOp(sessionId, () => reconcile);
+
+    try {
+      setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      mgr.setInstallRunning(false);
+      await flushMicrotasks();
+
+      // The gate is open — the service reads as `starting` — but no compose
+      // command has gone out, because the queue is busy. Unserialized, this `up`
+      // landed inside the reconcile's recreate: compose failed with "removal of
+      // container … is already in progress", the container was force-removed
+      // (exit 137), and the service walked to `stopped` 30s later.
+      expect(mgr.getService("web")?.status).toBe("starting");
+      expect(upNames(upCalls)).not.toContain("web");
+    } finally {
+      release();
+    }
+    await queued;
     await flushMicrotasks();
 
     expect(upNames(upCalls)).toContain("web");

@@ -772,18 +772,17 @@ export function createRunnerRegistry(
           };
         }
 
-        // docs/271 — surface a withheld `agent.install` in the transcript. The
-        // runner decides; this only reports, and it is wired here because the
-        // `ChatHistoryManager` lives at this level. `emitNoticeInTurn` persists
-        // as well as emits, and picks the in-turn vs post-turn placement itself
-        // — which matters because a withheld install fires from session setup,
-        // where no turn is running.
-        if ("onInstallWithheld" in runner) {
-          (runner as { onInstallWithheld?: (message: string) => void }).onInstallWithheld = (
-            message: string,
-          ) => {
-            emitNoticeInTurn(runner, runner.sessionId, message, chatHistoryManager, "warn");
-          };
+        // nikzlabs/shipit#2429 — the runner decides that a
+        // tree rewrite left its dependencies unverified, and this only reports
+        // it. Persisted rather than emitted, because the whole failure is one
+        // the user meets LATER — a service that runs while every request fails
+        // on an unresolvable import — and a notice that vanished on reload
+        // would be missing at exactly the moment it is needed.
+        if ("onDependenciesUnverified" in runner) {
+          (runner as { onDependenciesUnverified?: (message: string) => void })
+            .onDependenciesUnverified = (message: string) => {
+              emitNoticeInTurn(runner, runner.sessionId, message, chatHistoryManager, "warn");
+            };
         }
       } else if (activatePluginRepos) {
         // docs/262 — local mode has no ServiceManager, but plugin repositories

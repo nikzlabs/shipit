@@ -32,6 +32,23 @@ import { executeAgentTurn } from "./turn-executor.js";
 import type { AgentId } from "../shared/types.js";
 import { GitManager } from "../shared/git.js";
 
+// These tests run several `waitFor` polls plus real git subprocesses per case;
+// under a loaded full-suite CI runner the vitest default (5000ms) is headroom-
+// free, and it equals `waitFor`'s internal deadline, which swallowed the
+// helper's diagnostic label (see the comment on `waitFor`).
+//
+// The two deadlines COMPOSE, which is why this is not simply "20s is generous".
+// The heaviest cases chain THREE sequential `waitFor` calls, so the budget a
+// single test can consume is `3 × waitFor deadline` — and that product, not the
+// helper deadline alone, is what has to stay under this timeout for a hang to
+// fail with its label.
+//
+// `waitFor` now also honours a poll FLOOR (see `MIN_POLLS`), so its worst case is
+// `max(15s, 200 polls × whatever a poll costs)`. 90s keeps `3 ×` that under this
+// timeout until a single `git status` costs ~150ms — far past anything measured,
+// and the point at which a bare vitest timeout would be the honest answer anyway.
+vi.setConfig({ testTimeout: 90_000 });
+
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
@@ -66,13 +83,63 @@ async function selfWake(agent: FakeAgent, taskId = "bg-1"): Promise<void> {
   await flush();
 }
 
-async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 5000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+// The deadline must stay strictly below the file's testTimeout — MULTIPLIED by
+// the most `waitFor` calls any one test chains (three). When the two were equal
+// (both 5000, vitest's default), vitest killed the test at the same instant this
+// deadline expired, so CI reported a bare "Test timed out in 5000ms" and the
+// descriptive label never surfaced. The gap is what makes a hang diagnosable.
+//
+// **Why there is a poll FLOOR and not just a bigger number.** Every poll runs a
+// synchronous `git status` subprocess, so what a wall-clock deadline actually
+// buys is a poll count — and how many polls a given number of seconds buys is
+// decided by how loaded the machine is, which is the one thing a test cannot
+// control. That was diagnosed correctly the first time this failed ("the two
+// heaviest cases sit at 17 and 19 polls; in the failing run the 17-poll sibling
+// passed and the 19-poll case did not") and answered by raising the deadline
+// 5s → 15s. It then failed AGAIN, same test, same label, on a 918-file run.
+//
+// Raising the number a third time would buy another slowdown multiple and
+// nothing else. A floor removes load from the equation: the loop refuses to give
+// up before it has actually looked `MIN_POLLS` times, however long those took.
+// The wall clock stays as the hang detector for the case where the condition is
+// never going to arrive.
+//
+// **200, from measurement, and the earlier figure in this file was wrong.** The
+// comment above used to say the heaviest cases sit at "17 and 19 polls". Running
+// every `waitFor` in this file to completion with the clock disabled says
+// otherwise: the busiest conditions ("wake turn post-turn flow ran",
+// "cli-started turn post-turn flow ran") need **59** polls on an idle box, and
+// half a dozen sit in the 53–58 band. A floor of 30 would have been BELOW what
+// the file needs — failing precisely when the clock ran out first, which is the
+// one situation it exists to cover.
+//
+// The floor is free on the success path: the loop returns the moment `fn()` is
+// true, so a high floor costs nothing when things work. It is spent only when a
+// condition never arrives, and 200 `git status` spawns report that in a second
+// or two. So it is set well clear of the measured maximum rather than close to
+// it — there is no prize for tightness here, and there is a demonstrated cost to
+// guessing low.
+const MIN_POLLS = 200;
+
+async function waitFor(fn: () => boolean, label = "condition", timeoutMs = 15_000): Promise<void> {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let polls = 0;
+  for (;;) {
     if (fn()) return;
+    polls += 1;
+    // Both bounds must be spent: the clock AND the floor. Either alone is a
+    // budget the machine's load gets a vote in.
+    if (polls >= MIN_POLLS && Date.now() >= deadline) break;
     await flush();
   }
-  throw new Error(`Timed out waiting for ${label}`);
+  // The counts go in the message because they are what distinguishes a genuine
+  // hang (the floor spent in milliseconds, the clock run out) from a starved
+  // poll loop (the clock spent on a handful of polls) — telling those apart from
+  // a CI log is what cost two rounds of this.
+  throw new Error(
+    `Timed out waiting for ${label} after ${polls} polls / ${Date.now() - startedAt}ms`,
+  );
 }
 
 function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"] {
@@ -82,6 +149,7 @@ function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"
       setLastTurnErrored: vi.fn(),
       get: vi.fn(),
       track: vi.fn(),
+      setMuted: vi.fn(),
       list: vi.fn().mockReturnValue([]),
     } as never,
     chatHistoryManager: {

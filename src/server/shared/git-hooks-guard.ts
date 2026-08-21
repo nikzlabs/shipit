@@ -153,9 +153,10 @@ export function safeSimpleGit(baseDir?: string, options?: Partial<SimpleGitOptio
   //   - A bare `safeSimpleGit()` — no `baseDir` at all — runs as ROOT and leaves
   //     its destination `root:root`. The next `safeSimpleGit(<destination>)`
   //     then drops to that path's session uid and meets a tree it does not own:
-  //     EACCES today, `fatal: detected dubious ownership` once
-  //     `SHIPIT_GIT_STRICT_OWNERSHIP` is armed. `repo-git.ts`'s `cloneFromCache`
-  //     and `plugin-generations.ts`'s `checkoutCommit` were both exactly this.
+  //     `fatal: detected dubious ownership` from git, since ShipIt grants no
+  //     `safe.directory` (planning#410), or an EACCES on the first write if it
+  //     gets that far. `repo-git.ts`'s `cloneFromCache` and
+  //     `plugin-generations.ts`'s `checkoutCommit` were both exactly this.
   //   - A `safeSimpleGit(<source>)` clone drops to the SOURCE's uid, so the
   //     destination is created owned by whoever owns the source —
   //     `session-fork-merge.ts` handles that deliberately.

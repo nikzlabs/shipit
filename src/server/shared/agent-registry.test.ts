@@ -151,7 +151,7 @@ describe("AgentRegistry / installed set (docs/252 phase 9, req 14)", () => {
     });
     await registry.detect();
 
-    expect(registry.list().map((a) => a.id).sort()).toEqual(["claude", "codex", "opencode"]);
+    expect(registry.list().map((a) => a.id).sort()).toEqual(["claude", "codex", "grok", "opencode"]);
   });
 });
 

@@ -1400,6 +1400,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "role_name");
   },
+  // docs/277-session-mute — the instant the user muted the session; NULL = not
+  // muted. Presence is the flag (the value only answers "since when"), and the
+  // column is cleared at the start of the session's next turn (req 4). Stored
+  // on the session rather than in the browser so one device's mute is every
+  // device's mute (req 7), and so the turn that clears it — which may have been
+  // started with no browser attached — can reach it.
+  (db) => {
+    addSessionColumnIfMissing(db, "muted_at");
+  },
 ];
 
 /**

@@ -9,6 +9,7 @@ import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-r
 import type { ServiceManager, ManagedService } from "../service-manager.js";
 import type { LogRingEntry, WsServerMessage } from "../../shared/types.js";
 import { getSessionDiagnostics, describeProviderRoute } from "./diagnostics.js";
+import { evaluateContentKeyReport } from "../install-content-key.js";
 
 // Pin host detection to a large host so the host-relative default resource
 // ceilings (used when no MAX_SESSION_* env var is set) don't clamp the
@@ -270,6 +271,60 @@ describe("getSessionDiagnostics", () => {
       const dir = workspace("agent: not_a_mapping\n");
       const result = await diagnose(dir);
       expect(result.parsedConfig?.parseError).toMatch(/agent/);
+    });
+  });
+
+  // Follow-up to nikzlabs/shipit#2429 — the panel is where a user learns that
+  // content-keying is off, BEFORE the failure it eventually causes.
+  describe("installContentKeyOff surfacing", () => {
+    let sessionRoot: string | undefined;
+
+    afterEach(() => {
+      if (sessionRoot) {
+        fs.rmSync(sessionRoot, { recursive: true, force: true });
+        sessionRoot = undefined;
+      }
+    });
+
+    /** A production-shaped clone: `<sessionRoot>/workspace`. */
+    function clone(): string {
+      sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "diagnostics-ck-"));
+      const dir = path.join(sessionRoot, "workspace");
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
+    async function diagnoseClone(workspaceDir: string | null) {
+      return getSessionDiagnostics(
+        {
+          containerManager: fakeContainerManager({ container: null }),
+          runnerRegistry: fakeRegistry(fakeRunner()),
+          serviceManagers: new Map(),
+          getLogBuffer: () => [],
+          getWorkspaceDir: () => workspaceDir,
+        },
+        "sess-1",
+      );
+    }
+
+    it("is null when setup recorded nothing", async () => {
+      expect((await diagnoseClone(clone())).installContentKeyOff).toBeNull();
+      expect((await diagnoseClone(null)).installContentKeyOff).toBeNull();
+    });
+
+    it("reports the commands and notice setup recorded", async () => {
+      const dir = clone();
+      evaluateContentKeyReport(dir, { install: ["npm ci", "npm run build"], installInputs: null });
+      const result = await diagnoseClone(dir);
+      expect(result.installContentKeyOff?.commands).toEqual(["npm ci", "npm run build"]);
+      expect(result.installContentKeyOff?.notice).toContain("install-inputs");
+    });
+
+    it("stops reporting once the config resolves an input set again", async () => {
+      const dir = clone();
+      evaluateContentKeyReport(dir, { install: ["npm ci", "npm run build"], installInputs: null });
+      evaluateContentKeyReport(dir, { install: ["npm ci"], installInputs: null });
+      expect((await diagnoseClone(dir)).installContentKeyOff).toBeNull();
     });
   });
 

@@ -173,6 +173,32 @@ async function materializeLfsAndChown(workspaceDir: string, repoUrl: string | un
   if (result.status === "materialized") handWorkspaceBackToWorker(workspaceDir);
 }
 
+/**
+ * The half of the unarchive decision that drops the previous pull request.
+ * Structural, not incidental: unarchive cuts a NEW branch off the default
+ * branch, so nothing about the old PR survives — not its live snapshot, not the
+ * merge record, not the breadcrumb. All three are cleared HERE, in one place,
+ * because they are one decision and were previously two: the route nulled
+ * `pr_status` and nobody nulled `merged_at`, leaving a merge record attached to
+ * a branch that had never had a PR (see `SessionManager.clearPriorPrRecord`).
+ */
+function clearPriorPrState(
+  sessionManager: SessionManager,
+  prStatusPoller: UnarchivePrStatusPoller | undefined,
+  sessionId: string,
+): void {
+  // Merge record + breadcrumb + merged-tip anchor (DB).
+  sessionManager.clearPriorPrRecord(sessionId);
+  // Live snapshot (DB + poller memory), and the SSE removal that drops the
+  // stale PR card from connected clients.
+  prStatusPoller?.clearPersisted(sessionId);
+}
+
+/** The one poller capability `unarchiveSession` needs. */
+export interface UnarchivePrStatusPoller {
+  clearPersisted(sessionId: string): void;
+}
+
 /** Unarchive (restore) a session, recreating clone if needed. */
 export async function unarchiveSession(
   sessionManager: SessionManager,
@@ -181,6 +207,7 @@ export async function unarchiveSession(
   githubAuthManager: GitHubAuthManager,
   repoStore: RepoStore,
   sessionId: string,
+  prStatusPoller?: UnarchivePrStatusPoller,
 ): Promise<{ session: SessionInfo; sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
   if (!session || (session.diskTier !== "evicted" && !session.userArchived)) {
@@ -281,6 +308,12 @@ export async function unarchiveSession(
 
     sessionManager.setBranch(sessionId, newBranch);
   }
+
+  // Unconditional, mirroring the `clearPersisted` call this replaces: a session
+  // with no remote can never have had a PR, so there is nothing to distinguish.
+  // Runs BEFORE the reads below so the returned session + list (which the route
+  // broadcasts over SSE) already show the session un-merged.
+  clearPriorPrState(sessionManager, prStatusPoller, sessionId);
 
   sessionManager.unarchive(sessionId);
   const updated = sessionManager.get(sessionId);
@@ -601,6 +634,45 @@ export function setKeepPreviewRunning(
   const updated = sessionManager.setKeepPreviewRunning(sessionId, enabled);
   if (!updated) throw new ServiceError(404, "Session not found");
   if (enabled) activate(updated);
+  return { session: updated, sessions: sessionManager.list() };
+}
+
+/**
+ * docs/277 — mute or unmute a session (reqs 1, 5).
+ *
+ * `agentWorking` is resolved by the caller from the session's runner and carries
+ * req 6's server-side half: a session whose agent is working cannot be muted. It
+ * covers three states that all mean "the agent will speak again on its own" —
+ * a running turn, a turn held at a permission prompt (the agent IS running,
+ * blocked inside the gated tool call), and outstanding background work.
+ *
+ * Req 6's other half — "is asking for the user's attention" — is deliberately
+ * NOT re-derived here. Attention is computed in the browser from PR/CI state the
+ * orchestrator does not hold in that shape, and docs/260 req 9 requires exactly
+ * one definition of it; a second one here could disagree with the marker the
+ * user is looking at. The client enforces that half by only offering the
+ * control on a row that needs attention.
+ *
+ * Unmuting is never gated: a mute that could not be lifted because the session
+ * started working would outlive the state that justified it — and a turn start
+ * clears it anyway.
+ */
+export function setSessionMuted(
+  sessionManager: SessionManager,
+  sessionId: string,
+  muted: boolean,
+  agentWorking: boolean,
+  now = new Date(),
+): { session: SessionInfo; sessions: SessionInfo[] } {
+  const current = sessionManager.get(sessionId);
+  if (!current) throw new ServiceError(404, "Session not found");
+  if (muted && agentWorking) {
+    throw new ServiceError(409, "A session whose agent is working cannot be muted");
+  }
+
+  // `setMuted` returns null when the row is already in the requested state, so
+  // fall back to the row we just read rather than treating a no-op as a 404.
+  const updated = sessionManager.setMuted(sessionId, muted ? now.toISOString() : null) ?? current;
   return { session: updated, sessions: sessionManager.list() };
 }
 

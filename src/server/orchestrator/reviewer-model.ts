@@ -79,11 +79,12 @@ import type { ProviderAccountManager, ProviderRoute } from "./provider-account-m
 import type { CredentialStore } from "./credential-store.js";
 import {
   allServices,
-  getHarness,
   getService,
   modelIdentityFor,
   nativeServiceForHarness,
+  reasoningOptionsFor,
   sameCanonicalModel,
+  selectionHonoursEffort,
   sameModelFamily,
   type ConfiguredCredential,
   type ModelFamily,
@@ -105,19 +106,44 @@ import {
  * Req 5 makes the level part of the reviewer and req 8 makes an unpinned one
  * complete, so a derived reviewer carries an effort rather than omitting the
  * flag and inheriting whatever the CLI does by default — the one thing req 5
- * rules out. `high` on both: a review is the case where thinking harder is worth
- * paying for, and it is a level both shipped harnesses declare.
+ * rules out. `high` throughout: a review is the case where thinking harder is
+ * worth paying for, and every harness declares that level.
  *
  * ShipIt's answer, not the harness's — which is why it lives here rather than in
  * the catalogue's harness rows. `reviewer-model.test.ts` asserts each value is
- * one that harness actually offers.
+ * one that harness actually offers on a real catalogue row.
+ *
+ * **`null` is the fourth honest answer: "this harness has no levels to choose
+ * from."** No shipped harness needs it today — Grok Build did until
+ * planning#435, when its subscription mode gave it selections that honour a
+ * level — but the shape stays, because a harness whose CLI takes no effort flag
+ * at all is a real thing to be able to declare. It is `null` rather than an
+ * omitted key deliberately: the `Record<AgentId, …>` stays exhaustive, so the
+ * next harness added gets a compile error here instead of silently inheriting a
+ * default nobody chose.
+ *
+ * **This table is per HARNESS; whether a given review can use its value is per
+ * SELECTION** (docs/274 req 14). `defaultEffortFor` composes the two, so a
+ * harness with an authored level still contributes none to a row that discards
+ * the flag.
  */
-export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string> = {
+export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string | null> = {
   claude: "high",
   codex: "high",
   // `high` exists on essentially every reasoning-capable model OpenCode
   // routes (docs/268 Phase 0) and is in the harness's declared option list.
   opencode: "high",
+  // `high` since planning#435, and the `null` it replaces was never "we did not
+  // decide" — there had been nothing to decide, because every grok selection
+  // ShipIt could run was key-billed and key mode drops the flag. The
+  // subscription mode has real levels (docs/274 req 14), so there is a choice
+  // again and this is it: `high` for the same reason as the other three, and it
+  // is a level BOTH subscription rows offer (grok-4.5 has no `xhigh`).
+  //
+  // A grok reviewer landing on a key-billed row still gets no level at all —
+  // `defaultEffortFor` asks the selection, not this table, so the entry being
+  // non-null does not put a dead flag on a row that ignores it.
+  grok: "high",
 };
 
 /** Where a slot's answer came from — req 8's visible state. */
@@ -144,8 +170,14 @@ export interface ReviewerTarget {
   /** Derived (req 3), never stored — and preferring a harness that is not the implementer's. */
   readonly harnessId: AgentId;
   readonly selection: Readonly<ModelSelection>;
-  /** Complete (req 5): the pin's level, or this harness's ShipIt-authored default. */
-  readonly reasoningEffort: string;
+  /**
+   * Complete (req 5): the pin's level **where this selection offers it**, and
+   * otherwise the level re-derived for what this target actually resolved onto
+   * (planning#352). Absent only when the selection offers no level at all
+   * (docs/274) — "complete" then means the tuple names everything there is to
+   * name.
+   */
+  readonly reasoningEffort?: string;
   /** The service's display name, for the Settings row and the consult card. */
   readonly serviceName: string;
   /** The credential this review authenticates with. Never absent — an unroutable target is not a target. */
@@ -537,11 +569,7 @@ function firstRoutable(
   deps: ReviewerModelDeps,
   avoidHarnessId: AgentId | undefined,
 ): ReviewerCandidate | undefined {
-  const routeDeps = {
-    credentialStore: deps.credentialStore,
-    ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
-    ...(deps.env ? { env: deps.env } : {}),
-  };
+  const routeDeps = routeDepsOf(deps);
   for (const resolved of harnessesForSelection(selection, credentials, {
     ...(avoidHarnessId ? { avoidHarnessId } : {}),
   })) {
@@ -555,6 +583,14 @@ function firstRoutable(
     };
   }
   return undefined;
+}
+
+function routeDepsOf(deps: ReviewerModelDeps) {
+  return {
+    credentialStore: deps.credentialStore,
+    ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
+    ...(deps.env ? { env: deps.env } : {}),
+  };
 }
 
 /** Turn a slot's plan into a routed, complete target — or say why there is none. */
@@ -600,6 +636,10 @@ function buildTarget(
         candidate.route,
       )
     : undefined;
+  // A pinned level wins WHERE THIS SELECTION OFFERS IT; otherwise it is
+  // re-derived here (planning#352). Both branches can be absent, and only for a
+  // selection offering no level at all — see `defaultEffortFor`.
+  const effort = effortFor(plan.pin?.reasoningEffort, candidate);
   return Object.freeze({
     slot: plan.slot,
     source: plan.source,
@@ -610,10 +650,10 @@ function buildTarget(
     // and freezing neither would leave the "immutable through retries"
     // guarantee true of the wrapper only.
     selection: Object.freeze({ ...candidate.selection }),
-    // Req 5 — a derived reviewer is COMPLETE. The level follows the harness that
-    // was actually derived, so a slot that bent away from the implementer runs
-    // at that harness's default rather than at the other one's.
-    reasoningEffort: plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId),
+    // Req 5 — a derived reviewer is COMPLETE, and the level follows what was
+    // ACTUALLY resolved: a slot that bent away from the implementer runs at a
+    // level that harness's row offers rather than at the other one's.
+    ...(effort !== undefined ? { reasoningEffort: effort } : {}),
     serviceName: getService(candidate.selection.serviceId)?.name ?? candidate.selection.serviceId,
     route: Object.freeze({ ...candidate.route }),
     // `serviceRouting` is built fresh by `serviceRoutingForSelection` and is
@@ -624,13 +664,117 @@ function buildTarget(
 }
 
 /**
- * This harness's ShipIt-authored review level, falling back to its own first
- * declared option if {@link REVIEWER_DEFAULT_EFFORT} ever names one it dropped.
- * A reviewer with no level would violate req 5, so there is no "omit it" branch.
+ * **A pin applies as far as it can, and no further** (planning#352) — the level
+ * a resolved reviewer runs at, given the level its slot was pinned to.
+ *
+ * A pin is validated at save time against the harness derived THEN
+ * (`services/reviewer-settings.ts`), which is the only honest choice for a
+ * *setting*: a setting cannot know which implementer it will later be ranked
+ * against. But {@link selectReviewer} resolves each review on its own, so the
+ * target a pinned slot lands on may be one the pinned level was never checked
+ * against — and copying the level across verbatim is how a Claude-only `max`
+ * reached Codex, which declares none.
+ *
+ * So the pin is applied **partially**: the pinned model is kept, and only the
+ * level is re-derived. The two alternatives are both worse. Refusing the review
+ * loses it over a level nobody chose deliberately — the user pinned a model and
+ * the level came along with it. Substituting *invisibly* is the replacement req
+ * 5 and phase 2's `--effort` decision both rule out, which is why the Settings
+ * tab says what a pinned level becomes and where
+ * ({@link reviewerEffortSubstitutions}).
+ *
+ * **Asked of the resolved SELECTION, not of the resolved harness's vocabulary**
+ * (docs/274 req 14). Grok declares four levels that are real on a subscription
+ * row and dropped before the wire on a key-billed one, so a pinned level can
+ * stop applying with no harness change at all; a harness-level check would leave
+ * that case broken and satisfy req 5 with a field that changes nothing.
  */
-function defaultEffortFor(harnessId: AgentId): string {
-  const options = getHarness(harnessId)?.capabilities.reasoning?.options ?? [];
+function effortFor(pinned: string | undefined, candidate: ReviewerCandidate): string | undefined {
+  if (pinned !== undefined && selectionHonoursEffort(candidate.harnessId, candidate.selection, pinned)) {
+    return pinned;
+  }
+  return defaultEffortFor(candidate.harnessId, candidate.selection);
+}
+
+/** Where a pinned level does not apply, and what a review there runs at instead. */
+export interface ReviewerEffortSubstitution {
+  harnessId: AgentId;
+  /** Absent when that harness sends no level at all on this reviewer's row. */
+  reasoningEffort?: string;
+  /** That level's display label, from the same option list it was chosen from. */
+  reasoningLabel?: string;
+}
+
+/**
+ * Every harness this install could resolve `pin` onto whose row does **not**
+ * offer the pinned level, with what a review there would run at instead —
+ * planning#352's "say so" half.
+ *
+ * One list rather than one flag, because the Settings tab names ONE harness and
+ * a review derives its own: the tab's own resolution is implementer-independent
+ * (`avoidHarnessId: undefined`), while a review prefers a harness the reviewed
+ * session is not on. A note about only the harness the tab happens to name would
+ * stay silent about exactly the case that made this a defect — a pin accepted on
+ * Claude Code and run on Codex. The tab's own harness is included when it is one
+ * of them, so the same list answers both questions.
+ *
+ * Routable harnesses only, by the same rule the ranking uses: a harness that
+ * cannot authenticate this selection is one no review can land on, so warning
+ * about it would name a substitution that cannot happen.
+ */
+export function reviewerEffortSubstitutions(
+  pin: ReviewerPin,
+  deps: ReviewerModelDeps,
+): ReviewerEffortSubstitution[] {
+  const pinned = pin.reasoningEffort;
+  if (pinned === undefined) return [];
+  const credentials = listConfiguredCredentials(deps.credentialStore, deps.env ?? process.env);
+  const routeDeps = routeDepsOf(deps);
+  const out: ReviewerEffortSubstitution[] = [];
+  for (const resolved of harnessesForSelection(
+    { serviceId: pin.serviceId, billingMode: pin.billingMode, modelId: pin.modelId },
+    credentials,
+  )) {
+    if (selectionHonoursEffort(resolved.harnessId, resolved.selection, pinned)) continue;
+    if (!selectRouteForSelection(resolved.harnessId, resolved.selection, routeDeps).ok) continue;
+    // The SAME derivation `buildTarget` runs, so what the tab promises and what
+    // the review does cannot drift apart.
+    const effort = defaultEffortFor(resolved.harnessId, resolved.selection);
+    const label = reasoningOptionsFor(resolved.harnessId, resolved.selection).find(
+      (option) => option.value === effort,
+    )?.label;
+    out.push({
+      harnessId: resolved.harnessId,
+      ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+      ...(label ? { reasoningLabel: label } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * The review level for a resolved reviewer: ShipIt's authored answer for that
+ * harness, falling back to the first level THIS SELECTION actually offers if
+ * {@link REVIEWER_DEFAULT_EFFORT} names one the selection does not.
+ *
+ * `undefined` when the selection offers **no** levels, and that is not the
+ * "omit it" branch req 5 rules out. Req 5 forbids leaving the level to the
+ * CLI's own default when there is a level to choose; a selection with an empty
+ * option set offers no choice at all, so there is nothing ShipIt could have
+ * decided and nothing the CLI could have decided differently.
+ *
+ * **Asked of the selection rather than of the harness** (docs/274 req 14). A
+ * harness's vocabulary says which words its CLI understands; whether a given
+ * row's turn puts one on the wire is the `reasoningOptionsFor` composition. Grok
+ * is where those differ — four levels declared, honoured only under the
+ * subscription — so reading the vocabulary here would hand a key-billed review a
+ * flag the CLI discards, and req 5's "COMPLETE" would be satisfied by a field
+ * that changes nothing.
+ */
+function defaultEffortFor(harnessId: AgentId, selection: ModelSelection): string | undefined {
+  const options = reasoningOptionsFor(harnessId, selection);
+  if (options.length === 0) return undefined;
   const authored = REVIEWER_DEFAULT_EFFORT[harnessId];
-  if (options.some((option) => option.value === authored)) return authored;
-  return options[0]?.value ?? authored;
+  if (authored !== null && options.some((option) => option.value === authored)) return authored;
+  return options[0]?.value;
 }

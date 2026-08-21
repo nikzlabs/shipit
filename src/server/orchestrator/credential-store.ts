@@ -1484,14 +1484,19 @@ export class CredentialStore {
           `No catalogue entry for ${pin.serviceId}/${pin.billingMode}/${pin.modelId}`,
         );
       }
-      if (!pin.reasoningEffort.trim()) {
-        throw new Error("A pinned reviewer must name a reasoning level (docs/261 req 5)");
+      // An ABSENT level is legal — a harness declaring none has nothing to pin
+      // (docs/274 req 8). Whether absence is correct for *this* pin depends on
+      // the harness the model derives to, which this store cannot resolve; that
+      // check is `resolveReviewerPinPatch`'s, at the service layer. What is
+      // checkable here is that a level, if given, says something.
+      if (pin.reasoningEffort !== undefined && !pin.reasoningEffort.trim()) {
+        throw new Error("A pinned reviewer's reasoning level must not be blank (docs/261 req 5)");
       }
       current[slot] = {
         serviceId: pin.serviceId,
         billingMode: pin.billingMode,
         modelId: pin.modelId,
-        reasoningEffort: pin.reasoningEffort,
+        ...(pin.reasoningEffort !== undefined ? { reasoningEffort: pin.reasoningEffort } : {}),
       };
     }
     this.data.reviewers = current;
@@ -1625,7 +1630,8 @@ export class CredentialStore {
     } else if (role.params.kind === "auto") {
       throw new Error(
         `Only the "${RESERVED_ROLE_NAME}" role may have automatic params (docs/264-agent-roles req 2); `
-          + `"${name}" must name a harness, a service, a billing mode, a model and a level.`,
+          + `"${name}" must name a harness, a service, a billing mode, a model and a level `
+          + "(or omit the level for Default).",
       );
     }
     const description = role.description?.trim();

@@ -9,17 +9,18 @@
  * — its npm package and its binary — or the image can never install it.
  * `agent-cli-install.test.ts` fails the build if the two disagree.
  *
- * What is NOT here: Cursor CLI and Grok Build. The survey in
- * `docs/252-custom-models/catalogue.md` records what they appear to need — and
+ * What is NOT here: Cursor CLI. The survey in
+ * `docs/252-custom-models/catalogue.md` records what it appears to need — and
  * already paid for itself by making `styles` a set and giving `SpawnShape` a
- * config-file variant — but neither is a harness ShipIt runs, neither has an
- * honest `capabilities` block to declare, and req 14 governs what an install
- * actually has. OpenCode graduated from that survey to a row via
- * `docs/268-opencode-harness` (empirical findings in its plan.md).
+ * config-file variant — but it is not a harness ShipIt runs, it has no honest
+ * `capabilities` block to declare, and req 14 governs what an install actually
+ * has. OpenCode and Grok Build both graduated from that survey to rows, via
+ * `docs/268-opencode-harness` and `docs/274-grok-build-harness` (empirical
+ * findings in each plan.md).
  */
 
-import { CLAUDE_PERMISSION_MODES } from "../types/agent-types.js";
-import { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "../agent-tool-names.js";
+import { CLAUDE_PERMISSION_MODES, GROK_PERMISSION_MODES } from "../types/agent-types.js";
+import { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "../agent-tool-names.js";
 import type { HarnessDef } from "./types.js";
 
 export const HARNESSES = [
@@ -112,7 +113,27 @@ export const HARNESSES = [
     },
     capabilities: {
       supportsResume: true,
-      supportsImages: false,
+      // VERIFIED true by live probe (planning#458; 2026-08-20, codex-cli
+      // 0.147.0, dogfood inner instance, `gpt-5.6-sol` over two services). The
+      // CLI's own `-i, --image <FILE>...` is a red herring — ShipIt spawns
+      // `app-server`, which takes no such argv, and never passes it. Delivery is
+      // the harness-agnostic path every backend gets: the orchestrator writes
+      // the attachment into the session's uploads dir and names that path in an
+      // `<attached_images>` block (`orchestrator/prompt-assembly.ts`), and Codex
+      // opens it with its own image tool. The first probe run proved that link
+      // by failing AT it and nowhere else — `codex_core::tools::router: unable
+      // to locate image at /uploads/…`, the dogfood host being RUNTIME_MODE=local
+      // with no `/uploads` bind mount (`container-lifecycle.ts`, Target
+      // "/uploads").
+      //
+      // Given a resolvable path the model named all four randomly-chosen
+      // quadrant colours of an image whose content exists ONLY in its pixels, in
+      // order, on two independent runs. NEGATIVE CONTROL, mandatory after the
+      // trap docs/274 records: the same file sitting in the session's uploads
+      // dir with NO attachment on the message answered "unknown", so the answer
+      // came from the delivered image and not off the filesystem. No shell or
+      // decode tool ran in either positive turn.
+      supportsImages: true,
       supportsSystemPrompt: true,
       supportsPermissionModes: false,
       supportedPermissionModes: [],
@@ -131,9 +152,10 @@ export const HARNESSES = [
           { value: "xhigh", label: "Extra high" },
         ],
       },
-      // docs/125 — Codex ships subagents (model-invoked via the `spawn_agent`
-      // collab tool) AND MCP servers, so the chat-native review flow works on
-      // both backends.
+      // docs/266 item 15 — the chat-native review flow needs a shell tool and a
+      // subagent primitive (`spawn_agent`), and no MCP surface: docs/220
+      // deleted the last `submit_review` write path, so the flow is a plain
+      // chat message the harness answers with its ordinary tools.
       supportsReview: true,
       supportsSteering: true,
       // docs/140 Phase 6.11 — the app-server is killed at `turn/completed`, and
@@ -202,11 +224,24 @@ export const HARNESSES = [
       // `-s <sessionID>` verified live (docs/268 Phase 0): recall across
       // processes.
       supportsResume: true,
-      // Honest per docs/268 req 6: `-f` exists but an image turn was never
-      // OBSERVED (no vision model reachable in the verification container),
-      // and a wrong true surfaces as broken attachments at runtime. Flip after
-      // a live probe.
-      supportsImages: false,
+      // VERIFIED true by live probe (planning#458; 2026-08-20, opencode-ai
+      // 1.18.18, dogfood inner instance) — the probe docs/268 req 6 deferred,
+      // run at last. It first reproduced the `false`: on two vision models over
+      // two services the CLI's `read` tool opened the attached path, answered
+      // "Image read successfully", and the model still said it could not see an
+      // image. The cause was ShipIt's own provider block, not the CLI — see
+      // MODEL_MODALITIES in `shared/opencode-spawn-shaping.ts`, which now
+      // declares the image input modality that made the same probe return all
+      // four pixel-only colours AND the digit strip verbatim.
+      //
+      // NEGATIVE CONTROL, run again AFTER that fix because the fix is exactly
+      // what lets `read` see an image at all: the same file in the session's
+      // uploads dir with NO attachment on the message answered "unknown".
+      //
+      // As with every harness here this is a CLI-level flag, not a promise about
+      // the routed model: `-f` is not the delivery path either (ShipIt uses the
+      // `<attached_images>` block, same as the other backends).
+      supportsImages: true,
       // Config `instructions` array — the adapter points it at the rendered
       // system-prompt file.
       supportsSystemPrompt: true,
@@ -234,18 +269,216 @@ export const HARNESSES = [
           { value: "max", label: "Max" },
         ],
       },
-      // No chat-native review flow wired for this backend yet.
-      supportsReview: false,
+      // PROBED true (planning#459, CLI 1.18.15, 2026-08-20). The old comment
+      // here — "no chat-native review flow wired for this backend yet" — was
+      // inherited from docs/125's rule that review needs subagents AND custom
+      // MCP tool registration. That rule is dead: docs/220 removed the last
+      // `submit_review` write path, so the flow is a plain chat message
+      // (`compose-review-body.ts`) and no MCP tool is involved at all. What it
+      // actually needs is a shell tool and a subagent primitive — docs/266
+      // item 15 — and OpenCode has `bash` and `task`.
+      //
+      // Probed at depth 0, with the real composed message, because a
+      // `shipit agent run` nested inside one is refused by the caller-depth
+      // guard whatever the harness: an `opencode` session given
+      // `composeReviewMessage(path, { mode: "role" })` ran
+      // `shipit agent run --role reviewer --prompt-file -` itself (brief on
+      // stdin via heredoc), exit 0, and came back with four material findings.
+      // A second run exercised the other branch — on a non-zero exit it fell
+      // back to a `task` subagent and returned markdown only, as the prompt
+      // instructs.
+      supportsReview: true,
       // One-shot spawn per turn, prompt as argv — no mid-turn steering
       // channel.
       supportsSteering: false,
       // The process exits at turn end; it cannot start a turn ShipIt never
       // asked for.
       startsOwnTurns: false,
-      // Autocompact exists upstream, but `opencode run` has no on-demand
-      // compaction trigger, so the `/compact` composer path cannot work.
-      supportsCompaction: false,
+      // VERIFIED true (CLI 1.18.18, live-probed — docs/276). The trigger is
+      // NOT on `opencode run`; it is the server's documented
+      // `POST /session/{id}/summarize` (opencode.ai/docs/server), which the
+      // adapter reaches by spawning a transient `opencode serve`.
+      //
+      // Two `run`-shaped triggers were tested and BOTH fail — do not retry
+      // them without re-probing:
+      //  - `/compact` as the prompt is an ORDINARY prompt (it reaches the
+      //    model verbatim and burns a turn), the exact opposite of Claude.
+      //  - `--command compact` fails identically to `--command
+      //    __definitely_bogus__` (same `UnknownError` at `SessionPrompt
+      //    .command`); `--command` resolves REGISTERED commands only, and
+      //    `compact` is not one — `init` is, and succeeds, which is the
+      //    control proving the flag itself works.
+      // The v2 route `POST /api/session/{id}/compact` is in the OpenAPI doc
+      // but returns 503 `"Session compact is not available yet"` — declared,
+      // not implemented. That unimplemented route is the likeliest source of
+      // the `/compact` string in the binary.
+      //
+      // Outcome measured, not just exit status: a probe turn's reported
+      // context went 16,684 → 6,250 tokens across the call, and against a
+      // recording proxy the pre-compaction turns disappear from the next
+      // request, replaced by a summary produced by OpenCode's own
+      // "context summarization agent".
+      supportsCompaction: true,
       skillsDirName: ".opencode",
+      skillInvocationPrefix: "/",
+    },
+  },
+  {
+    // docs/274 — the fourth harness. Grok Build imitates Claude Code's flag
+    // surface closely enough that the adapter is the Claude shape (spawn per
+    // turn, NDJSON on stdout), which is what made this integration small.
+    id: "grok",
+    name: "Grok Build",
+    binary: "grok",
+    // xAI is a real native service for this CLI, and since planning#435 it
+    // carries account machinery too: the subscription (SuperGrok / X Premium+)
+    // is reached by the CLI's own `grok login --device-auth`, whose cached
+    // `auth.json` ShipIt injects. So `nativeService` now means both "whose
+    // models and whose bill" and "whose account system".
+    nativeService: "xai",
+    // VERIFIED (docs/274 Phase 0, CLI 1.0.1, against a local HTTP recorder).
+    // ONE CLI, TWO styles: an explicit `-m` turn goes to
+    // `POST <base>/chat/completions` with `stream_options: {include_usage}`,
+    // while the session-title side-call rides `POST <base>/responses`. The
+    // adapter always passes `-m`, so chat-completions is the path a turn
+    // actually takes and is listed first; `openai-responses` is here because
+    // dropping it would make the catalogue claim an endpoint the CLI reaches
+    // is unreachable. Neither base URL takes a suffix from the CLI, so xAI's
+    // endpoints carry their own `/v1`.
+    styles: ["openai-chat-completions", "openai-responses"],
+    spawn: {
+      credential: {
+        string: { kind: "env", name: "XAI_API_KEY" },
+        // ON since planning#435, in the same change as the `xai-oauth` manager
+        // that runs the flow — never before it. `catalogue.test.ts` refuses a
+        // `LoginIntegrationId` no manager implements, and that guard is right:
+        // an account target without one would let the eligibility join offer a
+        // subscription no ShipIt surface can sign into.
+        //
+        // `scoped-home` because the credential IS xAI's own login — a
+        // `~/.grok/auth.json` the CLI reads from whatever `GROK_HOME` names, so
+        // pointing the spawn at the account root is the whole delivery. Note
+        // that pointing it there is NOT sufficient on its own: grok prefers
+        // `XAI_API_KEY` over the file, so the adapter must also scrub (see
+        // `spawn-routing.ts`'s `HARNESS_CREDENTIAL_VARS`).
+        account: { kind: "scoped-home" },
+      },
+      // `grok -p … -m <modelId>`. Verified forwarded verbatim: the id also
+      // appears in an `x-grok-model-override` request header.
+      model: { kind: "flag", flag: "-m" },
+      endpoint: { kind: "env", name: "GROK_XAI_API_BASE_URL" },
+    },
+    capabilities: {
+      // Verified live: `-r <id>` re-inits with the SAME session_id and recalls
+      // the previous turn's facts. ShipIt additionally PRE-ASSIGNS the id with
+      // `-s <uuid>` on the first turn rather than parsing one out.
+      supportsResume: true,
+      // VERIFIED false, not assumed (docs/274 req 7). `--prompt-json` accepts
+      // an ACP image content block without complaint, so the syntactic surface
+      // exists — but with the image data present ONLY inside the prompt (never
+      // written to disk) and a randomized colour pair, grok-4.6 answered
+      // "unknown unknown" in a single turn. The block is accepted and its
+      // content does not reach the model as vision.
+      //
+      // The probe is recorded because the FIRST two attempts appeared to
+      // succeed and were wrong: the model had reached the answer off the
+      // filesystem, which a no-image negative control exposed by answering
+      // identically. `image_gen`/`image_edit` in the tool list are OUTPUT
+      // tools and say nothing about input.
+      supportsImages: false,
+      // `--system-prompt-override` replaces the prompt, `--rules` appends.
+      supportsSystemPrompt: true,
+      supportsPermissionModes: true,
+      supportedPermissionModes: GROK_PERMISSION_MODES,
+      toolNames: [...GROK_TOOL_NAMES],
+      // The vocabulary, and the ONE mode that sends it (docs/274 req 14).
+      //
+      // `--reasoning-effort` is not universally dropped and it is not
+      // universally honoured: under a SUBSCRIPTION the CLI puts it on the wire,
+      // recorder-verified with a negative control
+      // (`reasoning:{effort:"xhigh"}` with the flag against
+      // `reasoning:{effort:"high"}` without), and under an API key no effort
+      // field reaches the request body for any model probed.
+      //
+      // So the four levels are named here — they are what the CLI understands —
+      // and `billingModes: ["sub"]` is what keeps them off every key-billed
+      // selection, including the gateway rows Grok shares with Claude, Codex
+      // and OpenCode (`x-ai/grok-4.6` at OpenRouter and Vercel, DeepSeek, GLM).
+      // Those three DO honour levels there, which is exactly why the gate
+      // cannot live on the rows: no per-row value is right for all four
+      // harnesses at once. `reasoningOptionsFor` is the composition; nothing
+      // should read `options` directly.
+      //
+      // Order is the picker's order, strongest first, and matches the CLI's own
+      // `reasoning_efforts` list for grok-4.6.
+      reasoning: {
+        label: "Reasoning",
+        options: [
+          { value: "xhigh", label: "Extra high" },
+          { value: "high", label: "High" },
+          { value: "medium", label: "Medium" },
+          { value: "low", label: "Low" },
+        ],
+        billingModes: ["sub"],
+      },
+      // PROBED true (planning#459, CLI 1.0.1, 2026-08-20). "Unexercised as a
+      // reviewer at launch" described the wrong thing twice over: this flag is
+      // not about being a reviewer — a reviewer is a MODEL whose harness is
+      // derived, and `reviewer-model.ts` never reads it — and the flow it does
+      // gate needs no MCP surface since docs/220 deleted the last
+      // `submit_review` write path. The requirement is a shell tool and a
+      // subagent primitive (docs/266 item 15); Grok has `run_terminal_command`
+      // and `spawn_subagent`.
+      //
+      // Probed at depth 0, with the real composed message, because a nested
+      // `shipit agent run` is refused by the caller-depth guard whatever the
+      // harness: a `grok` session given
+      // `composeReviewMessage(path, { mode: "role" })` ran
+      // `shipit agent run --role reviewer --prompt-file -` itself, exit 0, and
+      // came back with three material findings. A second run exercised the
+      // other branch — on a non-zero exit it fell back to `spawn_subagent` and
+      // returned markdown only, as the prompt instructs.
+      //
+      // Worth knowing when a review here looks stuck: that run took 240s and
+      // `run_terminal_command` gives up the foreground after 120s. It does not
+      // kill the process — it backgrounds it, and the model reads it to
+      // completion with `get_command_or_subagent_output`. That is why the flag
+      // is true; a shell tool that killed instead would fail the branch.
+      supportsReview: true,
+      // One-shot spawn per turn, prompt as argv — no mid-turn steering channel.
+      supportsSteering: false,
+      // The process exits at turn end; it cannot start a turn ShipIt never
+      // asked for.
+      startsOwnTurns: false,
+      // VERIFIED true (CLI 1.0.1, live-probed — docs/276). Grok's trigger is
+      // IN-BAND, the Claude shape: `/compact` in the prompt is intercepted by
+      // the CLI in headless mode, so the adapter needs no special argv — the
+      // orchestrator's existing `run({ compact: true })` spawn (whose prompt
+      // already IS `/compact`) is the whole mechanism. Confirmed through
+      // `--prompt-file`, which is how this adapter passes every prompt, and
+      // with `prefixPromptWithNotice`'s trailing notice appended.
+      //
+      // Two negative controls prove interception rather than a lucky reply:
+      // `/__definitely_bogus__` and `/compact-mode` both run as ORDINARY
+      // prompts (full `usage` block, model answers), while `/compact` alone
+      // returns empty text with NO usage block and no model call.
+      //
+      // Outcome measured, not just exit status: a probe turn's reported
+      // context went 24,117 → 10,394 tokens across the call, and the session
+      // store gains `compaction_requests/<id>.json` with `"trigger":
+      // "manual"` plus a `compaction_checkpoints/` entry whose
+      // `compacted_history` has replaced the transcript with a continuation
+      // summary. The CLI also ADVERTISES the command: `system/init` carries
+      // `slash_commands: ["compact", …]`.
+      //
+      // One subtlety worth knowing before reading the adapter: the wire's
+      // `compact_metadata.trigger` is ALWAYS `"auto"`, even here. The adapter
+      // labels manual-vs-auto by correlation instead and never reads it.
+      supportsCompaction: true,
+      // Verified live (docs/209 probe): Grok auto-discloses skills from BOTH
+      // `.grok/skills/` and `.claude/skills/` via its claude-compat layer, so
+      // no symlink is needed — but its OWN directory is the one to declare.
+      skillsDirName: ".grok",
       skillInvocationPrefix: "/",
     },
   },

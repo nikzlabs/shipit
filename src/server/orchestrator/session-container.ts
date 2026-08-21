@@ -29,6 +29,7 @@ import {
   adoptRunningContainer,
   isTrackedContainerRunning,
   cleanupOrphanContainers,
+  reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
@@ -50,6 +51,7 @@ import {
   resolveWorkerBaseDigest as resolveWorkerBaseDigestFn,
   resolveWorkerNodeVersion as resolveWorkerNodeVersionFn,
   prepareOverlaySpecs as prepareOverlaySpecsFn,
+  resolveSiblingOverlayDepDirs as resolveSiblingOverlayDepDirsFn,
   preparePnpmStore as preparePnpmStoreFn,
   type OverlayProvisionerDeps,
 } from "./container-overlay-provisioner.js";
@@ -94,6 +96,7 @@ export {
   adoptRunningContainer,
   isTrackedContainerRunning,
   cleanupOrphanContainers,
+  reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
@@ -261,6 +264,40 @@ export interface SessionContainer {
    * re-deriving eligibility. Absent for non-overlay sessions.
    */
   overlayVolumeNames?: string[];
+  /**
+   * nikzlabs/shipit#2426 — the (dep dir → overlay volume) pairs this container was
+   * actually created with, the authoritative answer to "what does the agent have
+   * mounted". The compose path needs BOTH halves: the volume to reference and the
+   * dep dir that decides where to nest it under a service's workspace mount.
+   *
+   * Recorded rather than re-derived. Re-deriving reads the LIVE workspace
+   * (`shipit.yaml`'s `dep-dirs`, the pnpm signals, `git check-ignore`), all of
+   * which the agent can change mid-session — and a disagreement there silently
+   * produced zero compose mounts while the agent kept its overlay, giving the two
+   * containers independent dependency trees.
+   *
+   * A container the orchestrator did NOT create (rediscovered after a restart,
+   * or re-adopted by the inverse-leak reconciler) has no `overlaySpecs` to record,
+   * so `container-discovery.ts` reads the same pairs back off the container's own
+   * `docker inspect` mount table (`overlayDepDirsFromMounts`) — still the
+   * container, still not a re-derivation. Absent only where no record is built at
+   * all, which {@link SessionContainerManager.provisionedOverlayDepDirs} reports
+   * as the `null` "cannot say".
+   */
+  overlayDepDirs?: { depDir: string; volumeName: string }[];
+  /**
+   * The ops finding of 2026-08-19 — set when creating this container had to remove
+   * Compose siblings that were holding an overlay volume whose base generation had
+   * rotated, so the volume could be recreated over the new generation.
+   *
+   * The compose path decides whether to reconcile by asking whether the dep-dir SET
+   * changed, and a rotation does not change it (the volume name is keyed on session
+   * + dep dir, never on the generation). But the containers are now gone, and a
+   * service container freezes its mounts at create time, so a reconcile is the only
+   * thing that can bring them back over the new generation. Consumed once by
+   * {@link SessionContainerManager.consumeOverlayVolumesRecreated}.
+   */
+  overlayVolumesRecreated?: boolean;
   /**
    * docs/172 — the resolved egress containment (`ResolvedEgressConfig.contained`)
    * this container was actually created with. The egress topology is installed
@@ -511,6 +548,36 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   get dockerClient(): Docker {
     return this.docker;
+  }
+
+  /**
+   * nikzlabs/shipit#2426 — the (dep dir → overlay volume) pairs this session's
+   * agent container was created with, or `null` when nothing is known about it
+   * (no live container record at all — a session whose container has gone away,
+   * or a runtime that creates none).
+   *
+   * `[]` and `null` are deliberately different answers: `[]` means the container
+   * genuinely has no overlay, so a compose service that mounts the dep dir path
+   * plainly agrees with it, while `null` means we cannot say. The compose path
+   * treats only `null` as a reason to look further.
+   */
+  provisionedOverlayDepDirs(sessionId: string): { depDir: string; volumeName: string }[] | null {
+    const sc = this.containers.get(sessionId);
+    if (!sc) return null;
+    return sc.overlayDepDirs ?? [];
+  }
+
+  /**
+   * Whether creating this session's current agent container had to remove Compose
+   * siblings so a rotated overlay volume could be recreated — see
+   * {@link SessionContainer.overlayVolumesRecreated}. Read-and-clear: the answer
+   * is "does the stack owe itself a reconcile", and one reconcile settles it.
+   */
+  consumeOverlayVolumesRecreated(sessionId: string): boolean {
+    const sc = this.containers.get(sessionId);
+    if (!sc?.overlayVolumesRecreated) return false;
+    sc.overlayVolumesRecreated = false;
+    return true;
   }
 
   /** Boot-effective containment used when generating the Compose override. */
@@ -1424,6 +1491,18 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
+   * Stop and remove every UNCLAIMED `shipit-standby=true` container at boot — a
+   * standby holds no work and was built from the previous process's worker
+   * image, so it never survives a restart. `activeSessionIds` is load-bearing:
+   * the label is immutable after create, so a claimed session's container still
+   * carries it and only the session row tells the two apart. See
+   * `reapStandbyContainers`.
+   */
+  async reapStandbyContainers(activeSessionIds: Set<string>): Promise<number> {
+    return reapStandbyContainers(this.discoveryDeps(), activeSessionIds);
+  }
+
+  /**
    * Rediscover running containers from a previous orchestrator run.
    * After restart, the in-memory containers map is empty even though Docker
    * containers keep running. This method queries Docker for containers with
@@ -1666,6 +1745,26 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     requireProvisioned?: boolean;
   }): Promise<DepDirOverlaySpec[]> {
     return prepareOverlaySpecsFn(this.overlayDeps(), opts);
+  }
+
+  /**
+   * #2426 — the overlay pairs a SIBLING container (a plugin companion CLI's
+   * invocation container) should nest under its copy of the working tree.
+   *
+   * Reads this session's agent-container record and only falls back to
+   * re-derivation when there is none; see `resolveSiblingOverlayDepDirs` for the
+   * reasoning. The `provisioned` argument is supplied here rather than by the
+   * caller so the record lookup and the fallback cannot be wired up out of step.
+   */
+  async resolveSiblingOverlayDepDirs(opts: {
+    sessionId: string;
+    workspaceDir: string;
+    session: Pick<SessionInfo, "remoteUrl" | "kind">;
+  }): Promise<{ depDir: string; volumeName: string }[]> {
+    return resolveSiblingOverlayDepDirsFn(this.overlayDeps(), {
+      ...opts,
+      provisioned: this.provisionedOverlayDepDirs(opts.sessionId),
+    });
   }
 
   /**

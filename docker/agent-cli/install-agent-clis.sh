@@ -13,7 +13,10 @@
 #
 # The pinned install itself is unchanged (docs/141): one committed manifest,
 # `npm ci` against the committed lockfile, `--ignore-scripts` for the whole tree
-# and a targeted `npm rebuild` for the one package that ships a native binary.
+# and a targeted `npm rebuild` for each package whose postinstall materializes
+# its binary inside the tree. Grok's postinstall does NOT (planning#442) — it
+# installs to $GROK_HOME outside node_modules — so its binary is decompressed
+# in place by this script instead of rebuilt; see the grok block below.
 # Deselected harnesses are PRUNED after that install rather than excluded from it,
 # because npm has no supported way to omit an arbitrary dependency from `npm ci`
 # and splitting the manifest per CLI would fork the Renovate/contract-test flow
@@ -34,7 +37,7 @@ INSTALL_REPORT="${SHIPIT_AGENTS_INSTALL_REPORT:-/opt/shipit/agents/installed.jso
 # src/server/shared/catalogue/harnesses.ts — guarded by
 # src/server/orchestrator/agent-cli-install.test.ts, which fails the build when a
 # harness is added to the catalogue without an install mapping here.
-KNOWN_HARNESSES="claude codex opencode"
+KNOWN_HARNESSES="claude codex opencode grok"
 
 # The harnesses an install gets when SHIPIT_HARNESSES says nothing. A SEPARATE,
 # hand-maintained list — deliberately NOT derived from KNOWN_HARNESSES (docs/271).
@@ -58,6 +61,11 @@ harness_pkg_prefix() {
     # (opencode-linux-x64, …), so the prefix "opencode" covers the shim AND
     # every platform payload for the prune (docs/268).
     opencode) echo "opencode" ;;
+    # @xai-official/grok is the same shape as opencode-ai: platform binaries as
+    # sibling packages under the same scope (@xai-official/grok-linux-x64, …),
+    # so the scope+name prefix covers the shim AND every platform payload for
+    # the prune (docs/274).
+    grok) echo "@xai-official/grok" ;;
     *) return 1 ;;
   esac
 }
@@ -68,7 +76,29 @@ harness_bin() {
     claude) echo "claude" ;;
     codex) echo "codex" ;;
     opencode) echo "opencode" ;;
+    grok) echo "grok" ;;
     *) return 1 ;;
+  esac
+}
+
+# What BIN_DIR/<bin> points at. Default: the npm-generated `.bin` shim. Grok is
+# the exception (planning#442): its shim is a JS launcher whose job is to
+# install or decompress the real binary at runtime, which either fails (read-
+# only install tree) or costs a 157MB copy per spawn (throwaway $GROK_HOME).
+# The grok block above already decompressed the binary in place, so this points
+# straight at it.
+#
+# planning#444 — this used to claim "PATH points straight at it and the launcher
+# is never involved", and that second half was FALSE as shipped. Every image
+# prepends `/opt/agent-cli/node_modules/.bin` to PATH, which BEATS $BIN_DIR, so a
+# bare-name lookup found the launcher and not this link — measured in a live
+# container: `command -v grok` answered `/opt/agent-cli/node_modules/.bin/grok`.
+# Linking $BIN_DIR is therefore necessary and not sufficient; the grok block
+# below also UNLINKS the shim, which is what makes the claim true.
+harness_link_target() {
+  case "$1" in
+    grok) echo "$AGENT_CLI_DIR/node_modules/@xai-official/grok-$(node -p 'process.platform + "-" + process.arch')/bin/grok" ;;
+    *) echo "$AGENT_CLI_DIR/node_modules/.bin/$(harness_bin "$1")" ;;
   esac
 }
 
@@ -129,6 +159,58 @@ if contains opencode $selected; then
   npm rebuild opencode-ai
 fi
 
+# @xai-official/grok is NOT the same shape, though it looks it (planning#442).
+# Its postinstall decompresses the platform package's brotli payload to
+# $GROK_HOME/bin (default ~/.grok/bin) — OUTSIDE node_modules — which at image
+# build time is root's home: 157MB of dead weight the runtime uid cannot see.
+# And the `.bin/grok` JS launcher's own recovery paths both need a writable
+# directory the runtime doesn't have or shouldn't pay for: its last-resort
+# in-place decompress fails in the root-owned read-only install tree, and its
+# preferred bootstrap would copy the 157MB binary into the adapter's throwaway
+# per-spawn $GROK_HOME on every turn. So no `npm rebuild` here: decompress the
+# payload in place ourselves and link PATH straight at the real binary (see
+# harness_link_target), so the launcher never runs. The .br is deleted —
+# nothing reads it after this step and it would ship 46MB of dead weight.
+if contains grok $selected; then
+  node -e '
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const zlib = require("node:zlib");
+    const dir = path.join(process.cwd(), "node_modules",
+      `@xai-official/grok-${process.platform}-${process.arch}`, "bin");
+    const br = path.join(dir, "grok.br");
+    const raw = path.join(dir, "grok");
+    if (!fs.existsSync(raw)) {
+      fs.writeFileSync(raw, zlib.brotliDecompressSync(fs.readFileSync(br)));
+    }
+    fs.chmodSync(raw, 0o755);
+    fs.rmSync(br, { force: true });
+    console.log(`[install-agent-clis] decompressed ${raw}`);
+  '
+  # planning#444 — and REMOVE the npm-generated launcher shim, because linking
+  # $BIN_DIR at the real binary does not keep the launcher out of the way.
+  #
+  # Every image prepends `$AGENT_CLI_DIR/node_modules/.bin` to PATH, ahead of
+  # $BIN_DIR, so `grok` by name resolved to the launcher: verified in a live
+  # container, where `command -v grok` answered
+  # `/opt/agent-cli/node_modules/.bin/grok` while `/usr/local/bin/grok` was the
+  # direct link. The launcher then bootstraps ~157MB into $GROK_HOME on a root
+  # that has none — and ShipIt hands every spawn a fresh throwaway $GROK_HOME
+  # (session/agents/grok/adapter.ts), so that is a per-TURN cost, landing in the
+  # per-session credentials volume whenever that root is real.
+  #
+  # Deleting the shim rather than reordering PATH, for two reasons. The prepend
+  # serves the OTHER harnesses — their $BIN_DIR links point INTO `.bin`, so the
+  # order is what makes their unlinked npm siblings reachable — and reordering
+  # would change resolution for all of them to fix one. And grok is the only
+  # harness whose `.bin` entry is a DIFFERENT PROGRAM from its $BIN_DIR link, so
+  # removing that one divergence fixes every resolution path at once, including
+  # a user typing `grok` in the terminal panel, which no spawn-site fix reaches.
+  # This is the same `rm` the prune loop below performs for a deselected harness.
+  rm -f "$AGENT_CLI_DIR/node_modules/.bin/grok"
+  echo "[install-agent-clis] removed the grok launcher shim; PATH now resolves grok to the real binary"
+fi
+
 # Prune the deselected harnesses, bins first so a failed rm can't leave a dangling
 # link that `which` would still answer.
 for harness in $KNOWN_HARNESSES; do
@@ -144,12 +226,31 @@ done
 # of the request.
 for harness in $selected; do
   bin="$(harness_bin "$harness")"
-  if [ ! -x "$AGENT_CLI_DIR/node_modules/.bin/$bin" ]; then
-    echo "ERROR: $harness selected but $AGENT_CLI_DIR/node_modules/.bin/$bin is missing after install." >&2
+  target="$(harness_link_target "$harness")"
+  if [ ! -x "$target" ]; then
+    echo "ERROR: $harness selected but $target is missing after install." >&2
     exit 1
   fi
-  ln -sf "$AGENT_CLI_DIR/node_modules/.bin/$bin" "$BIN_DIR/$bin"
+  ln -sf "$target" "$BIN_DIR/$bin"
 done
+
+# Prove each selected binary EXECUTES, not merely that its link resolves.
+# planning#442 shipped because the old existence check passed while grok's real
+# binary was still an undecompressed brotli blob. Scratch HOME (and GROK_HOME,
+# which grok prefers over HOME) so a CLI's first-run state cannot land in the
+# image layer — the build runs as root, and root's dotfiles are invisible to
+# the runtime uid anyway.
+verify_home="$(mktemp -d)"
+for harness in $selected; do
+  bin="$(harness_bin "$harness")"
+  if ! out="$(HOME="$verify_home" GROK_HOME="$verify_home/.grok" timeout 120 "$BIN_DIR/$bin" --version 2>&1)"; then
+    echo "ERROR: $harness installed but '$bin --version' does not execute:" >&2
+    echo "$out" >&2
+    exit 1
+  fi
+  echo "[install-agent-clis] verified $bin --version: $(printf '%s' "$out" | head -n 1)"
+done
+rm -rf "$verify_home"
 
 # playwright-mcp is not a harness — it is the browser MCP server every session
 # gets — so it is installed and linked regardless of the selection.

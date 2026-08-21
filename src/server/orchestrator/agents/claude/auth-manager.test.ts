@@ -755,3 +755,108 @@ describe("AuthManager / fresh-credential completion gate", () => {
     expect(seen.failed).toHaveLength(0);
   });
 });
+
+describe("AuthManager / one terminal outcome per flow", () => {
+  // Regression: the credentials poll detected success, killed the CLI, emitted
+  // `complete` and then cleared the account scope — so the PTY's own exit
+  // handler ran next, still saw fresh credentials, and emitted a SECOND
+  // `complete` with `getActiveAccountId() === null`. The unscoped duplicate
+  // reached the SSE wiring as an account-less sign-in, which pushed the flat
+  // root's token into every pinned session.
+  let tmp: string;
+  const CRED_REL = path.join(".claude", ".credentials.json");
+  const FRESH_MTIME = 2_000_000_000_000;
+
+  function writeCred(mtimeMs: number): void {
+    const credPath = path.join(tmp, CRED_REL);
+    fs.mkdirSync(path.dirname(credPath), { recursive: true });
+    fs.writeFileSync(credPath, "{}");
+    const when = new Date(mtimeMs);
+    fs.utimesSync(credPath, when, when);
+  }
+
+  /** Record each terminal event together with the scope live at emit time. */
+  function trackScoped(mgr: AuthManager): { complete: (string | null)[]; failed: (string | null)[] } {
+    const seen = { complete: [] as (string | null)[], failed: [] as (string | null)[] };
+    mgr.on("complete", () => { seen.complete.push(mgr.getActiveAccountId()); });
+    mgr.on("failed", () => { seen.failed.push(mgr.getActiveAccountId()); });
+    return seen;
+  }
+
+  beforeEach(() => {
+    ptyHoisted.calls.length = 0;
+    ptyHoisted.exitHandlers.length = 0;
+    ptyHoisted.killed = 0;
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-once-"));
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("emits exactly one scoped `complete` when the PTY exits after the poll succeeded", () => {
+    const mgr = new AuthManager();
+    const seen = trackScoped(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-once", credentialDir: tmp });
+    mgr.sendCode("auth-code-xyz");
+
+    writeCred(FRESH_MTIME);
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toEqual(["acct-once"]);
+
+    // The poll's kill() makes the CLI exit; the credentials are still fresh on
+    // disk, so the exit handler's own success check passes. It must stay quiet.
+    for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
+    expect(seen.complete).toEqual(["acct-once"]);
+    expect(seen.failed).toEqual([]);
+  });
+
+  it("does not turn a completed sign-in into a `failed` when the PTY exits with no credentials on disk", () => {
+    const mgr = new AuthManager();
+    const seen = trackScoped(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-once-gone", credentialDir: tmp });
+    mgr.sendCode("auth-code-xyz");
+
+    writeCred(FRESH_MTIME);
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toEqual(["acct-once-gone"]);
+
+    fs.rmSync(path.join(tmp, CRED_REL));
+    for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
+    expect(seen.failed).toEqual([]);
+  });
+
+  it("a cancelled flow's PTY exit reports nothing", () => {
+    const mgr = new AuthManager();
+    const seen = trackScoped(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-cancelled", credentialDir: tmp });
+
+    mgr.cancel(); // the user gave up; the scope is released here
+    for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
+
+    expect(seen.failed).toEqual([]);
+    expect(seen.complete).toEqual([]);
+  });
+
+  it("a superseded flow's PTY exit does not consume the new flow's terminal event", () => {
+    const mgr = new AuthManager();
+    const seen = trackScoped(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-first", credentialDir: tmp });
+    const staleExit = [...ptyHoisted.exitHandlers];
+
+    // A second attempt tears the stale PTY down; its exit lands afterwards.
+    mgr.startOAuthFlow({ accountId: "acct-second", credentialDir: tmp });
+    for (const cb of staleExit) cb({ exitCode: 129 });
+    expect(seen.failed).toEqual([]);
+    expect(seen.complete).toEqual([]);
+
+    // The live flow still owns its outcome.
+    mgr.sendCode("auth-code-xyz");
+    writeCred(FRESH_MTIME);
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toEqual(["acct-second"]);
+  });
+});

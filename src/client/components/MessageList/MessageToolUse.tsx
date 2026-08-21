@@ -1,6 +1,7 @@
 import { ToolCallGroup, ToolUseItem } from "../message-tools.js";
 import { SubagentCall } from "../SubagentCall.js";
 import { SUBAGENT_REPORT_TOOL_NAMES } from "../../../server/shared/transcript-slice-tools.js";
+import { pluginSkillLabel } from "../../../server/shared/plugin-skill-marker.js";
 import type { VisualElement } from "../visual-elements.js";
 import type { AnswerQuestionFn } from "../AskUserQuestion.js";
 import type { ChatMessage } from "./types.js";
@@ -65,7 +66,15 @@ export function MessageToolElement({
     // Skill — stays compact. An in-context skill invocation emits no nested
     // events and a trivial tool_result (the skill's content arrives as its own
     // top-level message), so there is no work timeline or report to disclose.
-    const skillName = (tool.input.skill as string) ?? "unknown";
+    // The OpenCode adapter normalizes new calls to Claude's `skill` key; the
+    // `name` fallback reads rows persisted before that fix (same rationale as
+    // the `Task`-row gate above).
+    // A plugin's skill is invoked under its namespaced directory name
+    // (`plugins--<alias>--<skill>-<hash>`); the row shows the label the plugin
+    // card uses (docs/262 req 22).
+    const rawSkillName =
+      (tool.input.skill as string) ?? (tool.input.name as string) ?? "unknown";
+    const skillName = pluginSkillLabel(rawSkillName) ?? rawSkillName;
     const args = tool.input.args ? (tool.input.args as string) : "";
     return (
       <div data-testid="subagent-skill" className="border-l-2 border-(--color-success)/40 pl-3">

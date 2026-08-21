@@ -68,11 +68,138 @@ They are recorded here as requirements, not relitigated.
    alongside it. Real prices and context windows come from the live
    `/v1/models` API, never sentinels.
 
+10. **Subscription mode is a second billing mode, not a second credential.**
+    Grok Build is usable on a SuperGrok / X Premium+ subscription alongside
+    the existing key mode, wherever a model is selected. The two are
+    genuinely different offerings — different host, different API style and a
+    disjoint model set (see plan.md) — so the catalogue must express them as
+    two modes rather than one mode with two credentials.
+11. **Signing in happens inside ShipIt.** The user connects a Grok account
+    without leaving the product (§1): ShipIt runs the device-code flow and
+    shows the verification URL and code, the user approves in their browser
+    (an §3 external tab — xAI owns its login screen), and the account appears
+    as a connected row. No terminal step, and no instruction to run a CLI.
+12. **A connected account reaches a fresh container.** Once connected, the
+    account authenticates turns in containers created later, including after
+    an idle container is destroyed and recreated. Connecting once is enough.
+13. **A session must not lose authentication part-way through work.** The
+    subscription token is short-lived (~6h observed, with a refresh token),
+    so a session that outlives one token keeps working without the user
+    signing in again — a one-time copy of the credential file is not enough
+    to satisfy this.
+14. **Reasoning levels are offered where they exist and never where they are
+    silently dropped.** This supersedes the key-mode-only finding behind req
+    8: subscription mode does honour `--reasoning-effort` (wire-verified with
+    a negative control), while key mode still discards it. So the levels a
+    user can pick must follow the actual selection, and a Grok reviewer's
+    `REVIEWER_DEFAULT_EFFORT` entry may name a real level for a selection
+    that has them.
+15. **The account's own identity is visible on its row**, so two rows holding
+    the same upstream subscription are distinguishable (the docs/150 req 22
+    duplicate-detection contract every other provider row already meets).
+    *(Reworded 2026-08-19 — see Resolved questions: the original said "identity
+    and plan". The reason given then, that xAI reports no plan name at all, was
+    too broad; the rewording stands anyway on the 2026-08-20 receipt, where the
+    plan name was found to be reachable and declined.)*
+16. **Quota is reported honestly or not at all.** If xAI exposes no usage API
+    for the subscription, ShipIt says so rather than rendering an empty or
+    invented indicator — a declared reader that reads nothing is the state
+    `catalogue/types.ts` warns against, not a placeholder to fill in later.
+    *(The condition turned out false: xAI does expose one, at
+    `/v1/billing?format=credits`, so the branch this requirement takes is the
+    reported figure. The requirement is unchanged — it was written to cover
+    either outcome, and it is what refused the empty indicator in the
+    meantime.)*
+
+17. **A connected Grok subscription ranks above the metered xAI key**, the
+    way every other connected account ranks above a metered key. Because the
+    two modes offer disjoint model sets, this changes which models a Grok
+    session gets and not only who pays for them — that consequence is
+    accepted, not overlooked (see Resolved questions).
+18. **Subscription mode ships both `grok-4.6` and `grok-4.5`.** Req 9's
+    launch set was decided for key mode and does not constrain this one; the
+    subscription offers both, so both appear.
+
 ## Open questions
 
-None.
+*None.*
 
 ## Resolved questions
+
+- **2026-08-20 — xAI does report a plan name after all. Should req 15's row show
+  it?** **No.** The 2026-08-19 receipt below reworded req 15 on the finding that
+  "xAI publishes no plan name", and closed with *"a plan reader lands if xAI ever
+  reports one"*. That condition turned out to be met — `GET /v1/settings` on
+  `cli-chat-proxy.grok.com` returns `subscription_tier_display: "SuperGrok"` to
+  an authenticated client (probed with a live subscription token, 2026-08-20) —
+  so the receipt is right about the credential file and the token and wrong as a
+  general claim. Put to the human with that correction, and answered directly:
+  *"I don't care much about the plan name. What I care about is the up-to-date
+  numbers of the limits usage with an ability to refresh them on demand."* So req
+  15 stands as reworded, the plan name is recorded as reachable-but-not-fetched,
+  and the effort went to req 16's numbers instead. `XaiLimitsProvider` reports
+  `plan: null` deliberately — it reads the billing endpoint, and a second call to
+  a second endpoint for a label nobody asked for is exactly the cost this
+  question declined.
+
+- **2026-08-19 — Can the account row show a PLAN (req 15)?** **No, and the
+  requirement was reworded rather than half-met.** Resolved by reading a real
+  credential file from a completed device-code login. Codex can show one because
+  OpenAI stamps `chatgpt_plan_type` onto the token and Claude reads its tier from
+  the credentials file; xAI publishes neither. The live `auth.json` carries
+  `user_id`, `email`, `first_name`, `last_name`, `team_id`,
+  `principal_type: "User"` and `auth_mode: "oidc"`, and the access token's own
+  claims add only `tier: 1` — an opaque integer whose mapping to a product name
+  is nowhere stated. "Tier 1" on a row tells the user nothing and a guessed
+  "SuperGrok" would be an invention on the very row people use to tell two
+  subscriptions apart, so the row shows the identity xAI does report (email,
+  keyed on `user_id`) and says nothing about the plan. Same rule as req 16, for
+  the same reason. **Req 15's purpose is unaffected**: distinguishability comes
+  from the identity, not the plan. This is an agent finding about what the
+  provider publishes, not a decision taken on the user's behalf — a plan reader
+  lands if xAI ever reports one.
+- **2026-08-19 — Is the subscription token really ~6h (req 13)?** Confirmed by
+  measurement rather than inherited: the live `auth.json` records
+  `create_time: 2026-08-19T13:37:53Z` and
+  `expires_at: 2026-08-19T19:37:53Z` — exactly six hours — with a
+  `refresh_token` beside it. The expiry is an ISO-8601 **string**, which matters
+  beyond bookkeeping: a freshness reader that accepts only numbers returns null,
+  and null does not fail safe here (the sync guard then copies the source over a
+  session's freshly-refreshed token). Recorded because the requirement's premise
+  is what justifies the whole per-turn sync path.
+
+- **2026-08-19 — Does a subscription rank above the metered key (req 17)?**
+  Asked with options; Nik chose **"Subscription first"**, the house rule,
+  having been told the caveat explicitly: the two xAI modes do not offer the
+  same models, so preferring the subscription also decides which models a
+  session gets. Req 17 records both the rule and the accepted consequence.
+- **2026-08-19 — Does `grok-4.5` ship (req 18)?** Asked with options; Nik
+  chose **"Ship both 4.6 and 4.5"**. Recorded as req 18.
+
+- **2026-08-19 — Does subscription mode offer real reasoning-effort levels
+  (the open thread req 8 left)?** Resolved empirically: **yes**, and req 14
+  above records the requirement it produces. The subscription catalogue
+  (`GET https://cli-chat-proxy.grok.com/v1/models`) declares
+  `supports_reasoning_effort: true` with per-model vocabularies — `grok-4.6`:
+  xhigh/high/medium/low (default high); `grok-4.5`: high/medium/low. **And
+  the flag reaches the wire**, which the catalogue alone does not prove: two
+  otherwise-identical runs through a local recorder at
+  `GROK_CLI_CHAT_PROXY_BASE_URL` produced
+  `reasoning={"effort":"xhigh","summary":"concise"}` with
+  `--reasoning-effort xhigh` against `reasoning={"effort":"high",…}` for the
+  no-flag control. The control is what makes it evidence rather than an
+  observation of a default that was already there — the docs/272 lesson.
+  Key mode is unchanged: no effort field reaches the wire at all.
+  Requirement wording is the orchestrating session's (2026-08-19), stated at
+  the UX level deliberately: *"levels are offered where they exist and never
+  where they are silently dropped."*
+- **2026-08-19 — Who designs the per-mode reasoning shape?** Asked upward,
+  since making a per-*harness* capability answer a per-*mode* question is
+  design-visible and touches docs/275's role-completeness rule. The
+  orchestrating session answered: **design it in this PR, do not split it** —
+  splitting would ship subscription mode either mis-declaring levels on
+  key-mode selections or offering none at all. Recorded here because it
+  decides scope, not because it changes a requirement.
 
 - **2026-08-18 — Reviewer wiring with a zero-levels harness (the docs/266
   design decision).** Asked with options; Nik chose **"Extend the mechanism

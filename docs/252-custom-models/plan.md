@@ -1224,9 +1224,26 @@ exclusion is a property of the data rather than a filter someone has to remember
   this phase's diff and none of it is optional: every one of those readers was showing a
   figure whose meaning changed.
 - **The dial needed a rule, not a field.** Three kinds of figure and one slot, so
-  `sessionRunningFigure` picks money → estimate → pre-feature accounting, in that order, and
-  the popover lists whichever of the three exist as separate rows. The `earlier` case is what
-  stops a long-lived session silently losing a total the user has already seen.
+  `sessionRunningFigure` picks one and the popover lists whichever of the three exist as
+  separate rows. The `earlier` case is what stops a long-lived session silently losing a total
+  the user has already seen.
+
+  **The rule was money → estimate → pre-feature accounting, and that order alone was wrong for
+  a MIXED session** (2026-08-20 receipt in `requirements.md`). A single metered sub-agent
+  consult inside a 39-turn plan session put `$0.004` on the dial while the same popover said
+  `≈$131.58` — the session read as costing less than a cent. Money-first stays the default and
+  now **yields to a figure larger in both dollars and tokens**.
+
+  The **both** is the whole design, and the first attempt got it wrong by ranking on tokens
+  alone — caught by the cross-backend review before merge. Volume alone inverts the failure:
+  an expensive metered model billing $50 over 10K tokens loses to cheap plan work valued at $2
+  over 10M, and the dial under-reports *money actually billed* by 25× while labelled "not
+  billed". Dominance on both axes cannot produce a case worse than money-first, and a totals
+  record with no token counts can never satisfy it, so older payloads behave unchanged. Only a
+  candidate carrying a dollar figure competes at all, because forward-generated legacy rows
+  have real tokens and no price (planning#343) and must never win a slot they have nothing to
+  show in. `compareSessionsBySpend` inherits the change by construction — it ranks on this
+  same function, so the modal's session list keeps ordering by the figure each row renders.
 - **The pre-rehydration fallback had the same bug as the server would have.** `ContextDial`
   falls back to summing the turn series when session totals have not arrived; summing `costUsd`
   there reports a subscription session as having spent nothing. It now splits by
@@ -3620,17 +3637,47 @@ attempt by pushing every cell half a row down.
 
 Three consequences worth stating, because each is a thing that could be "tidied" back into a bug:
 
-- **The list keeps its old width** — `basis-[26rem]`, which is `max-w-md` less the dialog's
-  padding — so the rows are byte-for-byte the rows that were there before (measured: 414.0px
-  before, 414.0px after). The dialog is wider by exactly the table: `40.25rem` is 26 of list, the
-  `gap-4`, two `5.5rem` columns with a `gap-1`, and `p-4` twice.
+- **The list keeps its old width** — 26rem, which is `max-w-md` less the dialog's padding — so
+  the rows are byte-for-byte the rows that were there before (measured: 414.0px before, 414.0px
+  after). The dialog is wider by exactly the table.
 - **Only step 1 is wide.** Steps 2 and 3 return to `max-w-md`. The dialog visibly changes width
   once, when a service is picked; the alternative strands a mode choice and a sign-in code in a
   box half as wide again as their content.
-- **The alignment is a shared row height, never a measurement.** Each cell carries the row
-  button's own metrics — a transparent border, `py-2`, `text-xs` — so neither side is told the
-  other's height, and both columns walk `allServices()` in one order, so row N here is service N
-  there.
+- **The alignment is the grid's own row tracks.** The list and the table are two `subgrid`
+  containers over one set of rows, and both walk `allServices()` in one order, so row N here is
+  service N there — at whatever height either side's content turns out to need.
+
+**Amended 2026-08-18 — what a third and fourth harness did to all three of those.** The first
+two bullets were arithmetic done once, for the two harnesses that existed: the dialog's
+`40.25rem` and the list's `basis-[26rem]` were literals, and the list was the only part of the
+pair allowed to shrink. Installing OpenCode and Grok Build then took 22rem of columns off a
+dialog that never grew, and on a 484px-wide window the remainder handed to the rows was
+*negative* — the service name was squeezed away entirely ("Anthro…", then nothing), the mode
+label spilled out of the button, and a wrapped "1 · Which service" head pushed every tick out of
+line with its row. The third bullet was the load-bearing one: alignment "by shared metrics" holds
+only while every row is exactly one line tall, which is the same thing as saying no name may ever
+wrap.
+
+So, in the code as it stands:
+
+- **The width is computed from the columns drawn** (`addServiceDialogWidth`), not written down —
+  26rem of list, the `gap-4`, `n × 5.5rem` with a `gap-1` between, `p-4` twice — capped at
+  `100vw - 2rem`. It is applied `md:` and up, so the fullscreen mobile dialog is untouched. It is
+  *stated* rather than left to shrink-to-fit, because a `fixed` dialog sizes to its content and
+  step 1's rows wrap, which collapses what they ask for to about their longest word.
+- **The names never truncate, and the column's floor is the names themselves.** The list column is
+  `minmax(min-content, 26rem)` and the titles are `whitespace-nowrap`, so the smallest the column
+  can ever be is the widest title — a service named something longer than "Vercel AI Gateway"
+  widens it with nothing to update. The floor was briefly a measured `13rem`, which is the same
+  mistake one layer down: a number true of the eight services that exist, and wrong for the first
+  one that outgrows it. What gives instead is the mode label, which drops under the name. Harness
+  heads, credential rows and card titles in the panel behind wrap for the same reason —
+  `Anthropic (ANTHROPIC_AUTH_TOKEN)` and `Anthropic (ANTHROPIC_API_KEY)` differ only at the end,
+  so an ellipsis there leaves two rows reading identically.
+- **A window too narrow for the pair scrolls it sideways as one unit**, with the list column
+  `sticky left-0`. A tick is only an answer beside the question it is about, so the names are the
+  one thing that must not leave; dropping the table on a narrow screen, or crushing a column,
+  loses one or the other.
 
 **The cell is the picker's own eligibility rule, asked about a credential that does not exist
 yet.** `harnessSupportsMode` (`catalogue/index.ts`) calls `eligibleEntriesForHarness` with a

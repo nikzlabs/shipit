@@ -173,7 +173,7 @@ describe("SessionRunner", () => {
       autoCommit: vi.fn(),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: opts.replaceInProgress ?? vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -400,7 +400,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -449,7 +449,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -505,7 +505,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -563,7 +563,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -646,7 +646,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -727,7 +727,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -776,7 +776,7 @@ describe("SessionRunner", () => {
       autoCommit: vi.fn(),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: {
           replaceInProgress: vi.fn(),
           finalizeInProgress: vi.fn(),

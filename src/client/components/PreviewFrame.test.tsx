@@ -771,6 +771,97 @@ describe("PreviewFrame", () => {
     });
   });
 
+  it("stops a background slot rendering with display:none, not visibility:hidden", async () => {
+    // nikzlabs/shipit#2418. `invisible` hides the pixels and lets the document
+    // keep drawing — measured cross-origin, a hidden page drew 240 frames in 4 s
+    // against 1 under `display: none`. On the reporter's phone that second live
+    // renderer cost the visible preview 9.5–13.5% of its frames. The iframe
+    // stays MOUNTED, which is what preserves its state; only the hiding changed.
+    //
+    // Pinned because the difference is invisible in a screenshot diff and the
+    // two classes read as interchangeable: swapping this back to `invisible`
+    // would restore the bug with nothing else looking different.
+    const previewA: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const previewB: PreviewStatus = { running: true, port: 4173, url: "http://localhost:4173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={previewA} sessionId="s1" {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    rerender(<PreviewFrame preview={previewB} sessionId="s1" {...defaultProps} />);
+    const background = await screen.findByTitle("Background Preview");
+
+    expect(background).toHaveClass("hidden");
+    expect(background).not.toHaveClass("invisible");
+    expect(background).toBeInTheDocument();
+  });
+
+  it("does not hide the slot the user is looking at", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const active = await screen.findByTitle("Live Preview");
+
+    expect(active).not.toHaveClass("hidden");
+  });
+
+  it("stops the active preview rendering when its pane is not on screen", async () => {
+    // nikzlabs/shipit#2418, second site. The pane is kept mounted behind the
+    // other right-panel tabs (and behind the mobile Chat tab) so returning to it
+    // is instant — but until this prop existed the preview kept a WebGL canvas
+    // drawing behind the Files tree, because the ancestor that hides it uses
+    // `visibility: hidden`, which does not stop rendering.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = await screen.findByTitle("Live Preview");
+    expect(iframe).not.toHaveClass("hidden");
+
+    rerender(<PreviewFrame preview={preview} sessionId="s1" paneVisible={false} {...defaultProps} />);
+
+    expect(await screen.findByTitle("Live Preview")).toHaveClass("hidden");
+  });
+
+  it("posts visible:false when its pane leaves the screen, and visible:true on return", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { rerender } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    postMessage.mockClear();
+
+    rerender(<PreviewFrame preview={preview} sessionId="s1" paneVisible={false} {...defaultProps} />);
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith(
+        { source: "shipit-preview", type: "visibility", visible: false },
+        "http://localhost:5173",
+      );
+    });
+
+    postMessage.mockClear();
+    rerender(<PreviewFrame preview={preview} sessionId="s1" paneVisible {...defaultProps} />);
+    await vi.waitFor(() => {
+      expect(postMessage).toHaveBeenCalledWith(
+        { source: "shipit-preview", type: "visibility", visible: true },
+        "http://localhost:5173",
+      );
+    });
+  });
+
+  it("answers the SDK handshake with visible:false while its pane is off screen", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" paneVisible={false} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    postMessage.mockClear();
+
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "ready" },
+      source: iframe.contentWindow,
+      origin: "http://localhost:5173",
+    }));
+
+    expect(postMessage).toHaveBeenCalledWith(
+      { source: "shipit-preview", type: "visibility", visible: false },
+      "http://localhost:5173",
+    );
+  });
+
   it("selector label matches selectedPort", () => {
     const preview: PreviewStatus = { running: true, port: 3001, url: "http://localhost:3001", source: "detected", detectedPorts: [3001, 8080] };
     render(<PreviewFrame preview={preview} {...defaultProps} detectedPorts={[3001, 8080]} selectedPort={8080} onSelectPort={vi.fn()} />);
@@ -1344,6 +1435,177 @@ describe("PreviewFrame", () => {
     render(<PreviewFrame preview={null} sessionId="session-a" {...defaultProps} />);
     expect(screen.getByText("Starting dev server...")).toBeInTheDocument();
     expect(screen.queryByTitle("Live Preview")).not.toBeInTheDocument();
+  });
+
+  // ---- Slot ownership (planning#394) ----
+  // A port can change owner inside one session: a plugin service's published
+  // port is corrected off a collision, a plugin is removed and its band number
+  // reused, the project edits its own compose ports. The slot key is
+  // `sessionId:port`, so none of those change the key — only the recorded
+  // owner can tell a retained iframe of the previous owner's app from one
+  // that is still the right preview.
+
+  it("keeps the retained iframe (no re-poll, no remount) when the port keeps its owner", async () => {
+    usePreviewStore.getState().setServices([
+      { name: "web", status: "running", port: 3000, preview: "auto" },
+    ]);
+    // A fresh Response per call: a Response body is single-use, so one
+    // shared instance makes every poll after the first fail its `json()`
+    // and retry — each takeover re-poll would loop instead of resolving.
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ready: true }), { status: 200 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    const first = await screen.findByTitle("Live Preview");
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // A list refresh with the same owner for the port — the ordinary case —
+    // must not re-probe or remount the retained iframe.
+    act(() => {
+      usePreviewStore.getState().setServices([
+        { name: "web", status: "running", port: 3000, preview: "auto" },
+      ]);
+    });
+    await act(async () => {});
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTitle("Live Preview")).toBe(first);
+  });
+
+  it("re-probes and remounts the slot when the port changes owner", async () => {
+    // The #2325 symptom in mirror image, reached with no port collision:
+    // the pane shows a service that is not the one selected. The retained
+    // iframe holds the previous owner's already-loaded document, so the fix
+    // has to drop the slot (a fresh iframe element = a fresh document load)
+    // and re-create it — not merely promote it.
+    usePreviewStore.getState().setServices([
+      { name: "web", status: "running", port: 3000, preview: "auto" },
+    ]);
+    // A fresh Response per call: a Response body is single-use, so one
+    // shared instance makes every poll after the first fail its `json()`
+    // and retry — each takeover re-poll would loop instead of resolving.
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ready: true }), { status: 200 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    const first = await screen.findByTitle("Live Preview");
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      usePreviewStore.getState().setServices([
+        { name: "api", status: "running", port: 3000, preview: "auto" },
+      ]);
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const second = await screen.findByTitle("Live Preview");
+    expect(second).not.toBe(first);
+
+    // The recreated slot records the NEW owner, so a later takeover drops
+    // again rather than trusting the stale record.
+    act(() => {
+      usePreviewStore.getState().setServices([
+        { name: "worker", status: "running", port: 3000, preview: "auto" },
+      ]);
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const third = await screen.findByTitle("Live Preview");
+    expect(third).not.toBe(second);
+  });
+
+  it("does not drop the slot when the current owner is unknown (transient list state)", async () => {
+    // The service list is replaced wholesale on reconcile, so a momentarily
+    // empty list is not an ownership change. Evicting on `undefined` would
+    // drop slots during ordinary list updates.
+    usePreviewStore.getState().setServices([
+      { name: "web", status: "running", port: 3000, preview: "auto" },
+    ]);
+    // A fresh Response per call: a Response body is single-use, so one
+    // shared instance makes every poll after the first fail its `json()`
+    // and retry — each takeover re-poll would loop instead of resolving.
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ ready: true }), { status: 200 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    const first = await screen.findByTitle("Live Preview");
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    act(() => usePreviewStore.getState().setServices([]));
+    await act(async () => {});
+    // ...and when the list comes back with the same owner, still retained.
+    act(() => {
+      usePreviewStore.getState().setServices([
+        { name: "web", status: "running", port: 3000, preview: "auto" },
+      ]);
+    });
+    await act(async () => {});
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTitle("Live Preview")).toBe(first);
+  });
+
+  it("does not drop a slot that was created before its service was known", async () => {
+    // A local dev-server preview has no service rows, so its slot records no
+    // owner. A service list later claiming the port is not a takeover: an
+    // undefined recorded owner never evicts (the conservative side of the
+    // both-known rule).
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const first = await screen.findByTitle("Live Preview");
+
+    act(() => {
+      usePreviewStore.getState().setServices([
+        { name: "web", status: "running", port: 5173, preview: "auto" },
+      ]);
+    });
+    await act(async () => {});
+
+    expect(screen.getByTitle("Live Preview")).toBe(first);
   });
 
   // ---- Device frame / mobile preview tests ----

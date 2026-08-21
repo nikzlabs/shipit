@@ -22,6 +22,11 @@ describe("activityFromTool", () => {
     expect(result).toEqual({ label: "Running skill: commit...", tool: "Skill" });
   });
 
+  it("renders a plugin skill under its <alias>/<skill> label (docs/262 req 22)", () => {
+    const result = activityFromTool("Skill", { skill: "plugins--assetgen--assetgen-aab26884689f" });
+    expect(result).toEqual({ label: "Running skill: assetgen/assetgen...", tool: "Skill" });
+  });
+
   it("returns fallback for Skill without skill name", () => {
     const result = activityFromTool("Skill", {});
     expect(result).toEqual({ label: "Running skill: unknown...", tool: "Skill" });

@@ -13,6 +13,7 @@ import {
 } from "./session-container.js";
 import { cleanupSessionDockerResources } from "./container-lifecycle.js";
 import { getContainerFreshness } from "./container-freshness.js";
+import { overlayDepDirsFromMounts } from "./overlay-session.js";
 import { setWorkerAuthToken, workerTokenFromContainerEnv } from "./worker-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -118,10 +119,22 @@ export async function rediscoverContainers(
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
+          // #2426 — read the dep-dir overlays back off the container's OWN mount
+          // table. Left absent, `provisionedOverlayDepDirs` reports `[]` — an
+          // authoritative "this container has no overlay" — and every compose
+          // service in the session silently gets the plain `node_modules` while
+          // the agent's install goes into the overlay. See the field's doc.
+          overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
         });
-        if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
-          deps.standbySessionIds.add(sessionId);
-        }
+        // NOT re-marked as a standby, even when it carries the label. The label
+        // is set at create time and Docker cannot change one afterwards, so a
+        // claimed session's container keeps it forever — restoring the flag
+        // from it marked live sessions standby, and `isStandby` gates real
+        // behaviour: `restart-turn-reattach.ts` skips standbys, so an adopted
+        // session's in-flight turn was silently never reattached, and the idle
+        // enforcer skips them, so its container was never disposed. Anything
+        // reaching here is in `activeSessionIds`, and `retireWarmSessions` has
+        // already deleted every warm row — so it was claimed, by construction.
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         count++;
       } catch {
@@ -195,10 +208,14 @@ export async function adoptRunningContainer(
           dockerAccess,
           sessionNetworkName: dockerAccess ? `shipit-session-${sessionId.slice(0, 12)}` : undefined,
           resourceLimits: dockerAccess ? resolved.resourceLimits : undefined,
+          // #2426 — see rediscoverContainers: the overlay set is read back off
+          // the adopted container's own mounts, never re-derived from a
+          // workspace that has moved on since it was built.
+          overlayDepDirs: overlayDepDirsFromMounts(sessionId, info.Mounts),
         });
-        if (ci.Labels?.[CONTAINER_STANDBY_LABEL] === "true") {
-          deps.standbySessionIds.add(sessionId);
-        }
+        // Not re-marked as a standby — see `rediscoverContainers` for why the
+        // label cannot answer that question. This path is stronger still: it is
+        // called for a session that HAS a runner, which a standby never has.
         logAdoptedWorkerBuild(sessionId, ci.Id, ci.Labels);
         return true;
       } catch (err) {
@@ -262,6 +279,88 @@ export async function isTrackedContainerRunning(
     );
     return undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Standby reaping (boot)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stop and remove every UNCLAIMED standby container. Called once at boot.
+ *
+ * A standby belongs to the process that created it: it holds no work, it was
+ * built from that process's worker image, and nothing else reaps one — the idle
+ * enforcer skips standbys deliberately (`idle-enforcer.ts`) and
+ * {@link rediscoverContainers} re-adopts them. So a standby used to outlive
+ * every deploy, and the next claim of that warm session was handed a
+ * grandfathered worker. Grandfathering a *real* session's container across a
+ * deploy is the docs/113 rule and stays; it exists to protect work in flight,
+ * which a standby by definition has none of.
+ *
+ * **`activeSessionIds` is not a refinement — it is what stops this destroying
+ * live sessions.** The `shipit-standby` label is set at CREATE time and Docker
+ * has no way to change a label afterwards, so `claimStandby` can only drop the
+ * in-process flag: a claimed, graduated, entirely ordinary session keeps a
+ * container labelled `shipit-standby=true` for that container's whole life.
+ * Label alone therefore means "was born a standby", never "is one now". The
+ * session ROW is what distinguishes them, and it does so cleanly because
+ * `retireWarmSessions` has already deleted every warm row by the time this
+ * runs: a labelled container whose session is still tracked was claimed by
+ * someone, and one whose session is gone is an unclaimed standby.
+ *
+ * Given that, why key on the label at all rather than let the orphan sweep
+ * handle it? Because this must hold for a container manager that is injected
+ * rather than constructed here — that path skips `cleanupOrphanContainers`
+ * entirely — and for a standby the orphan sweep's own filters miss.
+ *
+ * Egress sidecars sharing a reaped container's netns are left to the boot
+ * janitor's `reapOrphanEgressSidecars`, whose test is exactly "is my netns
+ * parent gone?" — which is now true for each of them.
+ *
+ * Never rejects. Returns the number of containers removed.
+ */
+export async function reapStandbyContainers(
+  deps: DiscoveryDeps,
+  activeSessionIds: Set<string>,
+): Promise<number> {
+  let removed = 0;
+  try {
+    const containers = await deps.docker.listContainers({
+      all: true,
+      filters: { label: [`${CONTAINER_STANDBY_LABEL}=true`] },
+    });
+    for (const ci of containers) {
+      // Re-read the label at the point of removal rather than trusting the
+      // filter alone. This sweep stops and removes containers; the predicate
+      // that decides which ones deserves to be visible where the destruction
+      // happens, not only in the query that produced the list.
+      if (ci.Labels?.[CONTAINER_STANDBY_LABEL] !== "true") continue;
+      const sessionId = ci.Labels?.[CONTAINER_SESSION_ID_LABEL];
+      // Claimed: someone's session owns this container now, whatever it was
+      // born as. See the note above — this is the docs/113 guarantee, not an
+      // optimization.
+      if (sessionId && activeSessionIds.has(sessionId)) continue;
+      try {
+        const container = deps.docker.getContainer(ci.Id);
+        if (ci.State === "running") await container.stop({ t: 5 });
+        await container.remove({ force: true });
+        removed++;
+      } catch {
+        // Already gone, or removed by the orphan sweep moments ago — either
+        // way the outcome we wanted. Still drop the tracking below.
+      }
+      if (sessionId) {
+        deps.containers.delete(sessionId);
+        deps.standbySessionIds.delete(sessionId);
+      }
+    }
+  } catch {
+    // Docker may not be available.
+  }
+  if (removed > 0) {
+    console.log(`[container] Reaped ${removed} standby container(s) from the previous orchestrator process`);
+  }
+  return removed;
 }
 
 // ---------------------------------------------------------------------------

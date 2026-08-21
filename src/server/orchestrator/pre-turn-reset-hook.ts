@@ -47,6 +47,7 @@ import {
   type InProgressPersister,
 } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
+import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
 /**
  * Everything the hook needs: the re-arm deps (session manager, PR poller, git,
@@ -57,7 +58,8 @@ export interface PreTurnResetHookDeps extends ReArmDeps {
   getAutoResetMergedBranch: () => boolean;
 }
 
-/** The runner surface the hook touches — emit + the card-recording state. */
+/** The runner surface the hook touches — emit + the card-recording state, plus
+ * the two optional #2429 hooks a tree rewrite has to fire. */
 export type PreTurnResetRunner = Pick<
   SessionRunnerInterface,
   | "emitMessage"
@@ -67,6 +69,8 @@ export type PreTurnResetRunner = Pick<
   | "steeredMessages"
   | "getTurnEventBuffer"
   | "lastPersistedBufferIndex"
+  | "reevaluateWorkspaceConfig"
+  | "notifyWorkspaceRewritten"
 >;
 
 export interface PreTurnResetHookResult {
@@ -133,6 +137,30 @@ export async function applyPreTurnReset(args: {
   let card: BranchAutoResetCard | null = null;
 
   if (reset.moved) {
+    // #2429 — the reset re-materialized the whole worktree from the
+    // orchestrator, so the compose stack and the dependency tree this container
+    // is running may both belong to the pre-reset checkout.
+    //
+    // The reinstall is asynchronous and the turn starts as soon as this returns,
+    // so the agent's first minute can overlap it: gated services are held down
+    // by the `setInstallRunning` bracket, and an agent that runs `npm run dev`
+    // straight away can collide with npm writing `node_modules`. That is not a
+    // new failure class — the file-watcher path (#1622) has the same shape
+    // whenever the agent's own edit triggers a reinstall — but this call site
+    // concentrates it, because there is no human pause between the trigger and
+    // the agent's first command.
+    //
+    // Awaiting it instead would be worse: an install is minutes on a cold tree,
+    // and blocking the user's turn on one is a far larger behaviour change than
+    // this bug warrants. The overlap is recoverable and self-announcing (the
+    // install streams `install_status` / `install_log`, and the services come
+    // back when it lands); a silently stale `node_modules` is neither.
+    //
+    // Before the card, not after: this cannot throw (`onWorkspaceRewritten`
+    // swallows both halves), so it cannot displace the durable record the block
+    // below exists to guarantee.
+    onWorkspaceRewritten(runner, "pre-turn-reset");
+
     card = {
       cardId: `branch-reset-${randomUUID()}`,
       base: reset.base!,

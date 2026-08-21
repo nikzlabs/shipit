@@ -11,8 +11,9 @@
  * reviewer to ShipIt's own settings (req 6): a review is no longer "a
  * review-shaped prompt handed to whichever backend the repository's markdown
  * named". A call that names no role must name every parameter — harness,
- * service, billing mode, model, reasoning level — and an omission is refused
- * rather than completed from a stored default (req 7).
+ * service, billing mode, model, and the reasoning level where the harness
+ * declares levels (docs/275 req 2) — and an omission is refused rather than
+ * completed from a stored default (req 7).
  *
  * docs/264 — a role is now any name the USER configured, not one of a compiled-in
  * list, and it may carry any subset of its parameters as an **override**
@@ -68,16 +69,22 @@ function inheritedAgentDepth(): number {
 }
 
 /**
- * docs/261 req 7 — the five flags that, together, name what a one-shot run runs
- * on. Listed once, in the order the error messages print them, so "every
- * parameter" has a single definition here and cannot drift from the check.
+ * docs/261 req 7 — the flags that, together, name what a one-shot run runs on.
+ * Listed once, in the order the error messages print them, so "every parameter"
+ * has a single definition here and cannot drift from the check.
+ *
+ * docs/275 req 2 — `--effort` exists exactly where the harness declares
+ * reasoning levels, which is a catalogue fact the shim cannot see. So the local
+ * completeness check covers only the four flags marked `required`; whether
+ * `--effort` is required, forbidden, or valid is the server's call, and its
+ * refusal names the levels (or the fact there are none).
  */
 const EXPLICIT_FLAGS = [
-  { flag: "--agent", key: "agent", body: "agentId" },
-  { flag: "--service", key: "service", body: "serviceId" },
-  { flag: "--billing-mode", key: "billingMode", body: "billingMode" },
-  { flag: "--model", key: "model", body: "modelId" },
-  { flag: "--effort", key: "effort", body: "reasoningEffort" },
+  { flag: "--agent", key: "agent", body: "agentId", required: true },
+  { flag: "--service", key: "service", body: "serviceId", required: true },
+  { flag: "--billing-mode", key: "billingMode", body: "billingMode", required: true },
+  { flag: "--model", key: "model", body: "modelId", required: true },
+  { flag: "--effort", key: "effort", body: "reasoningEffort", required: false },
 ] as const;
 
 const ROLE_HINT =
@@ -102,9 +109,10 @@ const ROLE_HINT =
  *    for what it can know and does not pretend to know the rest.
  *
  * What stays refused is a call with **no base and only some parameters** — a
- * one-shot run has no parent to complete it from, so it must name all five
- * itself. (`session create` does have one, which is why the same shape is legal
- * there and is the one place the two commands differ.)
+ * one-shot run has no parent to complete it from, so it must name everything
+ * itself: the four identity flags always, `--effort` where the harness declares
+ * levels (docs/275 req 2). (`session create` does have one, which is why the
+ * same shape is legal there and is the one place the two commands differ.)
  *
  * The server enforces all of this again — this shim is not the only caller, and a
  * client-side check is a message, not a guarantee. What it buys is the message:
@@ -143,18 +151,25 @@ function spawnTargetPayload(
     return payload;
   }
 
-  const missing = EXPLICIT_FLAGS.filter((f) => !values[f.key]?.trim());
+  const missing = EXPLICIT_FLAGS.filter((f) => f.required && !values[f.key]?.trim());
   if (missing.length > 0) {
     fail(
       io,
       "shipit agent run: a run that does not name a role must name EVERY parameter it runs on — "
         + `missing ${missing.map((f) => f.flag).join(", ")}.\n`
+        + "(--effort is also required where the harness declares reasoning levels — "
+        + "`shipit agent params` shows them.)\n"
         + `Nothing is filled in from a stored setting, so an incomplete call is refused rather than\n`
         + `completed from somewhere you cannot see. ${ROLE_HINT}`,
     );
   }
+  // docs/275 — `--effort` rides along exactly as given, blank included: the
+  // server owns whether it is required, forbidden or valid for the named
+  // harness, and a blank is refused there by name rather than dropped here.
   const payload: Record<string, unknown> = {};
-  for (const f of EXPLICIT_FLAGS) payload[f.body] = values[f.key];
+  for (const f of EXPLICIT_FLAGS) {
+    if (values[f.key] !== undefined) payload[f.body] = values[f.key];
+  }
   return payload;
 }
 
@@ -280,6 +295,14 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
  *
  * Prints the name first on each line, because the name is the whole invocation:
  * everything after it is context for choosing between them.
+ *
+ * **The description is carried for two jobs, not one** (req 19). It is what makes
+ * an intent resolvable onto a role (req 3) — and it is also the only thing that
+ * tells the caller how to *write* for that role, because a prompt pitched for a
+ * deep research model wastes a fast narrow one and a prompt pitched for a fast
+ * narrow one wastes a deep one. The epilogue says so, because the field's mere
+ * presence in the output does not: this listing shipped with the description in
+ * it and every caller still wrote one prompt for every role.
  */
 export async function handleAgentRoles(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
@@ -320,6 +343,13 @@ export async function handleAgentRoles(args: string[], deps: RunDeps): Promise<v
       "",
       "Run one with: shipit agent run --role NAME --prompt-file - (or shipit session create --role NAME).",
       "The reviewer's model is resolved per run, which is why it lists none.",
+      "",
+      "Read the description before you choose a role AND before you write its prompt. It is the",
+      "user's account of what the role is for, so it is what tells you which role an unnamed",
+      "request means, and how much the prompt has to spell out: a role described as fast, cheap or",
+      "narrow wants explicit steps; one described as deep or exploratory can take an open brief.",
+      "Where a role has no description, what it runs on is the only hint there is. Neither moves",
+      "the target — write the prompt to fit the role, never override a parameter to fit the task.",
     ].join("\n"),
   );
 }
@@ -363,7 +393,14 @@ export async function handleAgentParams(args: string[], deps: RunDeps): Promise<
     const models = (harness.models as Record<string, unknown>[] | undefined) ?? [];
     const lines = [
       `${asString(harness.name)} (--agent ${asString(harness.id)})`,
-      `  --effort: ${levels.length > 0 ? levels.join(", ") : "(this harness declares no levels)"}`,
+      // docs/275 req 6 — say which shape a complete role-less call takes here:
+      // where there are no levels there is no `--effort` parameter, and naming
+      // one is refused rather than dropped.
+      `  --effort: ${
+        levels.length > 0
+          ? `${levels.join(", ")} (required on a role-less call)`
+          : "(this harness declares no levels — omit --effort; the other four flags are the whole call)"
+      }`,
       models.length > 0
         ? "  models:"
         : "  models:   (none — this install has no credential this harness can use)",

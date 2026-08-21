@@ -1410,11 +1410,20 @@ function resolvePreviewMode(svc: ComposeService): "auto" | "manual" {
 /**
  * Check if a volume source is a relative workspace path (., ./, ./subdir).
  * Returns the relative subdirectory (empty string for root) or null if not.
+ *
+ * **The trailing slash is stripped** (#2426). `./game/:/app` is an ordinary way
+ * to write a directory bind, and compose reads it exactly like `./game:/app` —
+ * but the raw `"game/"` this used to return is not a path segment, so
+ * {@link depDirWithinMount} matched no dep dir under it (`"game/node_modules"`
+ * neither equals `"game/"` nor starts with `"game//"`) and the service silently
+ * got the plain directory instead of the agent's overlay. That is #2426's
+ * failure mode reached through a punctuation difference. The same normalization
+ * keeps {@link joinSubpath} from handing the daemon a `…/game/` volume subpath.
  */
 function isRelativeWorkspacePath(source: string): string | null {
   if (source === "." || source === "./") return "";
-  if (source.startsWith("./")) return source.slice(2);
-  return null;
+  if (!source.startsWith("./")) return null;
+  return source.slice(2).replace(/\/+$/, "");
 }
 
 /**
@@ -1493,8 +1502,24 @@ function rewriteVolumes(
 function volumeSourceTarget(vol: unknown): { source: string | null; target: string | null } {
   if (typeof vol === "string") {
     const parts = vol.split(":");
-    // "src:tgt[:mode]" — a bare "/app/node_modules" anonymous volume has no ":".
-    return parts.length >= 2 ? { source: parts[0], target: parts[1] } : { source: null, target: null };
+    // "src:tgt[:mode]", or a bare "/app/node_modules" anonymous volume with no
+    // ":" — which HAS a target (the path is where it mounts) and no source.
+    //
+    // #2426: that second case used to report `target: null`, and the caller that
+    // needs it is the de-duplication below, whose whole job is that "the daemon
+    // never sees a duplicate target". `[".:/app", "/app/node_modules"]` — the
+    // canonical Node idiom for shielding `node_modules` from the host bind — is
+    // therefore exactly where it failed: the anonymous entry was kept AND the
+    // dep-dir overlay was appended at the same path, so one service declared two
+    // mounts at `/app/node_modules`. Whichever the daemon then honours, an
+    // anonymous volume winning is #2426's divergence restored in full — a second,
+    // private dependency tree the agent cannot reach.
+    //
+    // Reporting the target does not make anything nest under it: the two callers
+    // that resolve a workspace mount require a non-null SOURCE, which an
+    // anonymous volume still has not got.
+    if (parts.length >= 2) return { source: parts[0], target: parts[1] };
+    return { source: null, target: parts[0] ?? null };
   }
   if (vol && typeof vol === "object") {
     const obj = vol as Record<string, unknown>;

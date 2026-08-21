@@ -135,13 +135,114 @@ sign-off before integrating on metered-only auth.
     harness actually offers" asserts a non-empty option list per harness) —
     verified at source; integrating such a CLI requires first extending the
     reviewer-default mechanism, a design decision, not a recipe step.
-13. **The remaining `AgentCapabilities` declarations**, answered honestly
-    up front: image input (`supportsImages`), mid-turn steering
+13. **The remaining `AgentCapabilities` declarations** — and every `false`
+    among them **states its basis in the comment beside it**, in one of
+    exactly three words, because the three are not interchangeable:
+    **probed** (a real turn exercised it and it failed — cite the probe),
+    **structural** (the adapter shape forecloses it, e.g. `startsOwnTurns`
+    needs a resident process), or **not-wired** (the CLI can, ShipIt has not
+    — deferred WORK, so it gets a tracked issue, never a bare `false`).
+    🚩 An undocumented `false` is the bug this rule exists for, and
+    `supportsImages` is the worked example (planning#458, settled
+    2026-08-20): `codex` declared `false` with no comment while its own
+    `--help` advertised `-i, --image <FILE>...`, and `opencode`'s comment
+    said to "flip after a live probe" that was never run. Probed, **both
+    were wrong** — and neither for the reason the `--help` sweep suggests,
+    since ShipIt passes neither `-i` nor `-f`: attachments ride the
+    harness-agnostic `<attached_images>` block, so the question a capability
+    probe must ask is whether the CLI opens that path and the pixels reach
+    the model. Codex did, unchanged. OpenCode opened the file and dropped it,
+    because ShipIt's own provider block declared no input modality — a
+    one-field fix in `opencode-spawn-shaping.ts`, i.e. the `false` was
+    *not-wired* and nothing tracked it. `supportsReview` was
+    `false` on both newest harnesses for reasons that read as *not-wired*
+    ("no chat-native review flow wired yet", "unexercised at launch") — real
+    statements, but they describe unfinished work rather than an incapable
+    CLI, and nothing tracked them; planning#459 tracked them, both were
+    probed, and both are now `true` (item 15 is what that probe established).
+    Grok's `supportsImages` is the model to
+    copy: probed live, with a **negative control**, which caught two
+    apparent successes where the model had answered off the filesystem
+    instead of from the image.
+    The flags: image input (`supportsImages`), mid-turn steering
     (`supportsSteering`), resident-process turn behavior (`startsOwnTurns`),
-    native compaction (`supportsCompaction`), review usability
-    (`supportsReview`), and the skill invocation prefix — each shapes UI and
-    turn plumbing, and a wrong guess here surfaces as runtime behavior, not
-    a type error.
+    and the skill invocation prefix — each shapes UI and turn plumbing, and a
+    wrong guess here surfaces as runtime behavior, not a type error.
+    (`supportsCompaction` was in this list and is now item 14, `supportsReview`
+    item 15 — see why there.)
+14. **On-demand compaction (`supportsCompaction`) — TEST it, don't search
+    for it.** ShipIt's composer `/compact` path calls
+    `AgentProcess.compact()`, and there are two proven implementations:
+    a dedicated RPC (Codex's `thread/compact/start`) and **the slash command
+    as a fresh turn's prompt** — Claude's non-streaming fallback spawns
+    `claude -p "/compact" --resume`. That second shape is spawn-per-turn, so
+    **compaction does NOT require a steering channel**, and "the process
+    exits at turn end" is not a reason to declare `false`.
+    🚩 This item is called out separately because declaring it from a
+    `--help` sweep got it wrong for *both* OpenCode and Grok: each CLI's
+    `--help` lists no compaction subcommand, yet both binaries contain a
+    `/compact` string and manual compaction turned out to work. Run the real
+    probe — issue `/compact` as the prompt on a resumed headless session —
+    and prove the *outcome* (token counts, session history), because a CLI
+    that silently ignores an unknown slash command still exits 0. Record the
+    CLI version you tested: this is upstream-drift territory, so a version
+    bump can change the answer (docs/272's recipe is how you re-check).
+15. **Chat-native review (`supportsReview`) — a shell and a subagent, and
+    *not* MCP.** docs/125's rule ("the feature requires both subagents and
+    MCP tools") is the reason this flag was twice declared `false` for the
+    wrong reason, and it has been superseded twice over. Since docs/220
+    removed the last `submit_review` write path there is **no review MCP tool
+    at all** — `session/mcp-tools/` holds ask, bug, permission, present,
+    propose-actions and voice, and no review. Pressing **Ask agent to
+    review** (or typing `/review`) composes a plain chat message
+    (`client/utils/compose-review-body.ts`) and sends it as an ordinary turn
+    to the session's own agent. The harness calls no ShipIt tool, and the
+    review never touches the MCP transport. Do not audit a candidate's MCP
+    support to answer this flag.
+
+    What the flow does require of the **active** harness is three things:
+
+    a. **A shell/exec tool whose stdout, stderr and exit code reach the
+       model — and that survives a command running for minutes.** That is how
+       `shipit agent run --role reviewer --prompt-file -` is invoked (brief on
+       stdin, heredoc) and how the reviewer's markdown comes back. This is the
+       Multi-agent-sessions-ON branch. The duration half is not hypothetical:
+       a real review is a whole agent turn, and the probed ones took 240s
+       against Grok's **120s** default foreground timeout. Grok passes because
+       its timeout *backgrounds* the process and `get_command_or_subagent_output`
+       reads it to completion — a harness whose shell tool **kills** on timeout,
+       or drops the output, fails this branch no matter what its `--help` says.
+       Check the timeout behaviour, not just the timeout.
+    b. **A model-invoked subagent primitive with fresh context.** This is the
+       Multi-agent-OFF branch, and it is also the fallback the composed
+       prompt mandates when `shipit agent run` exits non-zero *for any
+       reason*. A harness with neither (a) nor (b) cannot serve the flow; one
+       with only (b) serves it degraded, never cross-model.
+    c. **Read-only file tools** (read/grep/glob/shell). The reviewer is
+       handed a path, not a payload — it opens the file itself.
+
+    **The reviewer side imposes nothing, so this flag is not "can review".**
+    A reviewer is a *model* whose harness is derived (docs/261), and
+    `reviewer-model.ts` never reads `supportsReview` — a harness declaring
+    `false` can already be, and is, selected as the reviewer (that module's
+    own planning#408 worked example routes a review onto OpenCode).
+
+    **And it gates one affordance, not the feature.** Its only behavioural
+    reader is `showAskReview` in `client/hooks/use-file-review-controls.ts` —
+    the file-viewer / Present-tab button. The `/review` composer command
+    (`App.tsx`) is ungated and composes the identical prompt, so a `false`
+    hides a button while leaving the whole flow one typed command away. That
+    asymmetry is why "unexercised as a reviewer at launch" was never a
+    sufficient basis: nothing was being held back.
+
+    🚩 **Probe it at depth 0, with the real composed message.** Send
+    `composeReviewMessage(path, { mode: "role", … })` verbatim as a session
+    turn and require the harness to run the command itself. A `shipit agent
+    run` issued from *inside* another `shipit agent run` is refused by the
+    caller-depth guard (`services/sub-agent.ts` — "Sub-agents cannot spawn
+    further sub-agents") no matter which harness is calling, so a probe run
+    as a sub-agent can only ever exercise branch (b) and will look like a
+    harness failure when it is ShipIt's own guard.
 
 ## The recipe
 
@@ -306,6 +407,10 @@ String-literal validators that **drop or reject a new id**:
 - `token-sync-manager.ts:126,921,990,1017` — per-agent token freshness
   readers and stale-resume recovery; a new OAuth backend needs its own
   parser, and gets **no** stale-resume recovery until written.
+  Check that parser against a **real captured credential file**, committed as
+  its fixture in `token-freshness-guard.test.ts` — a reader written to the
+  documented shape returns null on every live file and silently licenses the
+  sync-in to clobber the session's own token (planning#449).
 - `orchestrator/session-agent-env.ts:828` — Codex-style first-run home
   init (`ensureCodexHomeInitialized`); copy the shape if the CLI needs a
   seeded config root.

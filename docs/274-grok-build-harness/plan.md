@@ -26,11 +26,32 @@ several rows below.
   (weekly stable cadence per `grok update --help`; separate `alpha` channel).
 - **An official npm package exists: `@xai-official/grok`** — the candidates.md
   "curl-only, third-party pin claim" row is obsolete. The package is
-  exact-pinnable, and its shape is exactly OpenCode's: platform binaries as
-  `optionalDependencies` (`@xai-official/grok-linux-x64`, …) with a
-  `postinstall` shim (`node bin/postinstall.js`), so under the installer's
-  blanket `--ignore-scripts` it needs a targeted **`npm rebuild
-  @xai-official/grok`** — the already-solved exception shape (recipe step 3).
+  exact-pinnable: platform binaries as `optionalDependencies`
+  (`@xai-official/grok-linux-x64`, …, brotli-compressed) with a
+  `postinstall` shim (`node bin/postinstall.js`).
+  **It is NOT the OpenCode rebuild shape, though it looks it** (planning#442,
+  found live after this doc first shipped): the postinstall decompresses the
+  payload to `$GROK_HOME/bin` (`~/.grok/bin`) — *outside* node_modules, i.e.
+  root's home at image-build time — and the `bin/grok` JS launcher's runtime
+  recovery either needs a writable install tree (in-place decompress; fails
+  in read-only `/opt/agent-cli`) or copies the 157MB binary into `$GROK_HOME`
+  per spawn (ShipIt's throwaway per-turn root). So instead of `npm rebuild`,
+  `install-agent-clis.sh` decompresses `grok.br` in place at build (0755,
+  `.br` deleted) and links `/usr/local/bin/grok` **directly at the platform
+  binary**; the installer then proves every selected harness binary executes
+  (`--version` under a scratch HOME). Runtime `GROK_HOME` stays what the
+  adapter says it is — pure config/state delivery, no longer part of binary
+  resolution.
+  **Linking `/usr/local/bin` did NOT on its own bypass the launcher** — this
+  paragraph claimed it did, and planning#444 found the claim false as shipped.
+  Every image prepends `/opt/agent-cli/node_modules/.bin` to `PATH`, *ahead* of
+  `/usr/local/bin`, and the adapter spawned `grok` by name: measured in a live
+  container, `command -v grok` answered
+  `/opt/agent-cli/node_modules/.bin/grok`. Two edits make it true — the
+  installer now **unlinks** that shim (the one harness whose `.bin` entry is a
+  different program from its `/usr/local/bin` link), and the adapter resolves an
+  absolute path that skips any `node_modules/.bin` candidate, so an image built
+  before the installer change still runs the real binary.
   `bin: { grok: "bin/grok" }` matches the catalogue binary. One transitive
   dep (`@iarna/toml`). **Pin decision: `1.0.1`** (published 2026-08-11T00:30Z;
   `check-deps` compares strict milliseconds, so 1.0.1 crossed the 7-day line
@@ -235,7 +256,10 @@ session-title side-call rides every run (OpenCode-class cost noise); on
   `supportsImages: false` (unprobed), `supportsSystemPrompt: true`
   (`--system-prompt-override`; wire-verify at implementation),
   `reasoning: []` (req 8 — with the reviewer-default no-levels extension),
-  `supportsReview: false` at launch (unexercised as reviewer),
+  `supportsReview: false` at launch (unexercised as reviewer) — **now `true`**
+  (planning#459: the flag never gated *being* a reviewer, and the flow it does
+  gate needs `run_terminal_command` + `spawn_subagent`, not MCP. Probed live at
+  depth 0 — docs/266 item 15),
   `supportsSteering: false` (one-shot argv prompt), `startsOwnTurns:
   false`, `supportsCompaction: false` (config-driven autocompact only; no
   on-demand trigger found), `skillsDirName: ".grok"`,
@@ -267,7 +291,17 @@ session-title side-call rides every run (OpenCode-class cost noise); on
   (`stop_reason`, `modelUsage`) and Grok's tool-name vocabulary
   (`GROK_TOOL_NAMES`, registry work per docs/272 — `todo_write` drives the
   task panel, `search_replace`/`write` the diff surfaces, `spawn_subagent`
-  the subagent card with result-only report).
+  the subagent card with result-only report). That registry work landed as
+  `grok-tool-normalizer.ts` (planning#437, the planning#432 pattern):
+  tool_use names and the two divergent input keys
+  (`target_file`→`file_path`, `target_directory`→`path`) translate to the
+  transcript vocabulary at the Layer A boundary; the `spawn_subagent`
+  result envelope (`SubagentCompleted`/`Text`) unwraps to the report text;
+  Grok's `todo_write merge:true` patch calls are understood by the client
+  fold (`task-list.ts`), which patches by item id instead of clearing. The
+  three interactive tools (`ask_user_question`, `enter_plan_mode`,
+  `exit_plan_mode`) deliberately stay raw until their card shapes are
+  captured (revisit under planning#435).
 - MCP: `writeMcpConfig(ctx)` renders a per-turn TOML (`[mcp_servers.<name>]`
   `command`/`args`/`env`, shape verified via `grok mcp add`) delivered via
   `GROK_CONFIG` → `{runtimeEnv, cleanup}`; **verify the CLI honors
@@ -321,7 +355,1036 @@ are the reference. What transfers:
 - They present Grok as "Early Access", one built-in model row, and
   `requiresNewThreadForModelChange: true`.
 
-## Catalogue row, install design, adapter design
+## What implementation corrected (2026-08-18)
 
-Deferred until the pending items above are captured — written here before
-any implementation code, per the recipe order.
+Three Phase-0 assumptions did not survive contact with the code, and the
+corrections are recorded here rather than silently applied — each was flagged
+above as "verify at implementation", and each was wrong.
+
+- **`GROK_CONFIG` / `GROK_CONFIG_PATH` do not exist.** The adapter design said
+  MCP config would be delivered by pointing one of them at a per-turn file, with
+  a note to verify. Probed directly: both are inert (the init event reported
+  `mcp_servers: []` under each), and neither name appears in the binary — they
+  were artifacts of loose string matching, not env vars. **The only delivery
+  path is `$GROK_HOME/config.toml`** (`grok mcp add --scope user` writes exactly
+  there, and a hand-written file was verified to produce
+  `mcp_servers: [{name: "probe", status: "connected"}]`).
+
+  **That single fixed path is a concurrency hazard, and the first cut had the
+  bug.** The adapter originally wrote `$HOME/.grok/config.toml` and restored its
+  previous contents afterwards. A container can have TWO grok processes alive at
+  once — a turn, plus a `shipit agent run` sub-agent spawned *during* it — and
+  the worker builds the sub-agent's adapter through `createWorkerAgent` with no
+  scoped home (`agent-controller.ts:262`), so both resolve the same root. Under
+  the backup/restore scheme whichever finished last decided what was left on
+  disk, and the interleaving where the turn finishes first leaves ShipIt's
+  per-turn config permanently in place. **The fix removes the shared file
+  rather than locking it**: each spawn gets a throwaway `GROK_HOME` under
+  `/tmp` holding its own `config.toml`, with `sessions/` — and `auth.json`,
+  when one exists — symlinked back to the real root, so everything durable is
+  still shared and nothing mutable is. Verified live: MCP servers connect under
+  the throwaway root, session state writes through the link, and `-r` resumes a
+  conversation started under a *different* throwaway root. Cleanup is
+  `rmSync` on the directory, which does not follow symlinks.
+
+  **The fallback in that builder was itself a trap (planning#444).** It caught
+  any failure and returned `realRoot` as `GROK_HOME`, on the argument that a
+  turn racing over one shared file beats a turn refused for a `mkdir`. That
+  reasoning assumes the shared root works, and the failure it actually met was
+  the case where it does not: the images symlink `~/.grok` at
+  `/credentials/.grok`, key-billed Grok writes no credential material, and
+  `copyCredentialPath` returns early on a missing source — so **nothing ever
+  created the target and the link dangled in every session container**. A
+  recursive `mkdir` through a dangling symlink throws (the raw syscall reports
+  EEXIST, because the link is an existing entry; Node's recursive form reports
+  ENOENT), the `catch` handed back that same unopenable path, and the CLI died
+  at its own session creation with `FS_OTHER / "File exists (os error 17)"` and
+  `duration_ms: 0` — before any stream event, which is why it surfaced as a bare
+  `error` row (planning#438). Grok was non-functional in every real session
+  container; only `Dockerfile.dev` escaped it, by creating no `.grok` symlink at
+  all, which is why the dogfood runs were green while the outer install was dead.
+
+  Fixed in three layers, each with a distinct job:
+  1. **`docker/session-worker/entrypoint.sh`** creates `/credentials/.grok` via
+     `gosu` as the worker on every boot — the same block, and the same gosu
+     requirement, as OpenCode's `docs/270` line above it. This covers a wiped
+     subtree, the terminal panel, and any spawn site ShipIt does not own.
+  2. **`provisionAgentCredentialsFromRoot`** materializes every declared
+     credential *directory* (`agentCredentialDirs`) whether or not there was
+     anything to copy — the generic form of the class, so the next key-billed
+     harness does not rediscover it. Orchestrator-side and per-session, so it
+     never touches a shared tree and the existing chown covers it.
+  3. **`makeSpawnHome`** never returns a root it has just proven unusable: the
+     throwaway root is built first and unconditionally, the durable links are
+     what may fail, and a failure narrates itself to the transcript. The turn
+     runs with resume unavailable rather than not at all.
+- **`GROK_HOME` is the `.grok` directory itself, not the home above it.**
+  Verified: `GROK_HOME=/tmp/gh` produced `/tmp/gh/config.toml`, `/tmp/gh/logs/`,
+  and the CLI reported the path back as `$GROK_HOME/config.toml`. Getting this
+  backwards points the CLI at a config root one level off its credentials, which
+  surfaces as "not authenticated" rather than as an error naming a path — hence
+  the warning in `grokHome()`'s docstring.
+- **`--output-format json` is NOT Claude's envelope**, which the session namer
+  would otherwise have assumed. Grok's is `{text, usage, total_cost_usd, …}`;
+  Claude's is `{result, usage, total_cost_usd, duration_ms}`. Reusing
+  `parseClaudeJson` would find no `result`, fall through to its "unrecognized
+  envelope" branch, and title the session with the raw JSON blob. `parseGrokJson`
+  exists for exactly that, and Grok's naming runs get a throwaway `GROK_HOME`
+  for the same reason OpenCode's get a scratch XDG root.
+
+Two more design choices settled at implementation:
+
+- **The prompt travels by `--prompt-file`, not argv.** `-p <PROMPT>` is argv,
+  which has a 128 KiB per-argument ceiling on Linux that assembled prompts
+  exceed. `--prompt-file` is first-party and was verified to run a full turn.
+- **`--rules <FILE>` carries ShipIt's system prompt, not
+  `--system-prompt-override`.** The override REPLACES Grok's own prompt, tool
+  instructions included; ShipIt's is standing instructions alongside, not a
+  replacement for the harness's operating manual.
+
+And two probes that came back negative, each of which changed what shipped:
+
+- **Workspace trust does not gate a headless run.** A never-seen git repo with a
+  fresh config root ran a full turn with no trust prompt, so Grok needs no
+  `LOCAL_WORKSPACE_TRUST` / `POST_PROVISION_CONFIG` entry (recipe step 5).
+- **`supportsImages: false` is verified, not assumed** — the flag the reviewer
+  flagged as the one worth probing. `--prompt-json` takes ACP content blocks and
+  accepts an `image` block without complaint, so the syntactic surface exists.
+  It does not carry vision: with the image data present ONLY inside the prompt
+  (generated in memory, never written to disk), a randomized colour pair and an
+  empty cwd, grok-4.6 answered `"unknown unknown"` in a single turn.
+
+  **The first two attempts said the opposite, and were wrong.** Both answered
+  the colours correctly — but a no-image **negative control** answered
+  identically, which means the model had been reaching the answer off the
+  filesystem (the probe image and its JSON were sitting in the cwd it was given)
+  rather than seeing it. The lesson is the docs/272 one: a probe without a
+  negative control proves the model got the right answer, not that it got it the
+  way you think.
+
+## Reasoning is a harness×mode fact, and neither existing axis holds it (req 14)
+
+planning#435 verified that Grok's two billing modes disagree about
+`--reasoning-effort`: the subscription honours it, the API key discards it
+(negative control in requirements.md's receipt). Making the picker honest about
+that turned out to need a shape neither the harness nor the model can express,
+and the first two attempts both failed in ways worth recording — the second only
+because a guard test had teeth.
+
+**Attempt 1 — widen `AgentCapabilities.reasoning`.** Rejected immediately:
+`reasoning.options` is per-harness, so one list must either offer levels that do
+nothing under a key or hide levels that work under a subscription.
+
+**Attempt 2 — narrow per catalogue row (`ModelDef.reasoningEfforts`).** This is
+the shape that shipped as the *mechanism*, and it is genuinely the right
+granularity for one thing: within the subscription, `grok-4.6` offers `xhigh`
+and `grok-4.5` does not, so a mode-level list would have to be the intersection
+and drop a level the user pays for.
+
+But it is **not sufficient on its own**, and `reviewer-model.test.ts` is what
+found it. A `ModelDef` is per *(service, mode, model)* — **not per harness**.
+Grok can also run gateway rows (`x-ai/grok-4.6` at OpenRouter and Vercel, plus
+DeepSeek and GLM via chat-completions), and those rows are *shared with Claude,
+Codex and OpenCode*, which do honour levels there.
+
+**Precisely when that bites is worth stating, because the obvious reading
+overstates it** (caught in review). Today a shared row leaves `reasoningEfforts`
+absent, every harness falls back to its own vocabulary, and every answer is
+already correct — Grok's is `[]`, Claude's is Claude's. The per-model field is
+not wrong; it is simply not the thing carrying that case. The insufficiency
+appears the moment Grok's vocabulary becomes **non-empty**: a shared row then
+has no value that is right for all four harnesses at once — `[]` strips levels
+from the three that have them, and absent leaks Grok's four onto rows where the
+flag is dropped.
+
+That is the whole argument for why the vocabulary and the harness×mode axis have
+to land in the *same* change, and why writing the four levels down now — with
+the mechanism looking finished — would be the actual mistake.
+
+**The axis that actually holds the fact is harness × billing mode**, because
+that is where the real gate is — the CLI honours the flag when the *subscription
+catalogue* authenticated it, whatever the model. So the composition is three
+facts, not one:
+
+| fact | lives on | example |
+|---|---|---|
+| the vocabulary and its labels | harness | grok: xhigh/high/medium/low |
+| which billing modes honour it | harness × mode | grok: `sub` only |
+| which of them a row offers | model row | grok-4.5 lacks `xhigh` |
+
+**What shipped, and what deliberately did not.** `ModelDef.reasoningEfforts`
+and `reasoningOptionsFor()` are in place and tested — the per-row narrowing, the
+`[] ≠ absent` distinction, and the build-breaking invariant that a row may only
+narrow its harness's vocabulary. Grok's `reasoning.options` stays **`[]`**,
+which remains the honest answer while every selection it can run is key-billed,
+and the vocabulary lands with the subscription mode and the harness×mode axis
+together. Declaring the four levels first would have put dead controls on every
+gateway row Grok shares.
+
+`reviewer-model.test.ts`'s guard was rewritten in the same change to ask
+`reasoningOptionsFor` across a harness's real catalogue rows rather than reading
+`capabilities.reasoning.options`. It had been passing only because Grok's
+vocabulary happened to be empty *too* — so the moment the vocabulary was written
+down it stopped protecting anything, which is exactly what it did.
+
+## Subscription mode, end to end (planning#435, reqs 10–18)
+
+The launch integration was key-billed only because no ShipIt surface could sign
+in. Three things had to land in ONE change, and the reason is a guard rather
+than taste: `catalogue.test.ts` refuses a `LoginIntegrationId` no auth manager
+implements, so declaring the mode without the manager would have offered a
+subscription nothing could sign into, and giving the harness an `account` target
+without the mode would have offered nothing at all.
+
+### What the credential file actually is
+
+Verified by reading a real one after a completed device-code login (2026-08-19).
+Three details were each guessed wrong first, and every one of them fails
+**silently**:
+
+| guess | reality |
+|---|---|
+| a scope key one could name | `https://auth.x.ai::<client-uuid>` — unguessable, so the reader walks the top-level objects |
+| `access_token` | **`key`**, a JWT, with `refresh_token` beside it |
+| a numeric `expires_at` | an ISO-8601 **string**, `2026-08-19T19:37:53.982150334Z` |
+
+The third is the dangerous one. A freshness reader that cannot parse the expiry
+returns null, and **null does not fail safe here**: `syncAgentTokenIn` skips its
+copy only when it can *prove* the session's token is at least as fresh, so an
+unreadable expiry makes every sync copy unconditionally — and a session that had
+just refreshed loses its live token to a stale source. The reader now takes ISO
+first, then a numeric expiry, then the access token's own JWT `exp` claim (which
+advances on every refresh and so is a real freshness signal, not a consolation
+prize).
+
+`create_time` → `expires_at` is exactly **six hours**, which is where req 13's
+premise is measured rather than inherited.
+
+### No plan, and that is a finding
+
+xAI reports no plan name anywhere: not in the file (`principal_type: "User"`,
+`auth_mode: "oidc"`) and not in the token, whose only tier-shaped claim is
+`tier: 1` — an opaque integer with no published mapping. So the account row
+shows the identity xAI does report (`email`, keyed on `user_id`) and says
+nothing about the plan, and req 15 was reworded to match. Same rule as req 16's
+missing usage API: an honest absence beats a plausible fabrication, and this row
+is exactly where a fabrication would do damage, since its job is telling two
+subscriptions apart.
+
+### The scrub the routed path could not reach
+
+An account-delivered credential carries **no `serviceRouting`** —
+`serviceRoutingForSelection` returns nothing for one, because a login IS the
+vendor's own and its token exchange is bound to the vendor's own endpoint. So
+the adapter's existing scrub, gated on `params.serviceRouting`, never ran for a
+subscription turn.
+
+Meanwhile the worker is handed every stored service credential regardless of
+which route the turn is pinned to (`collectServiceCredentialEnv`), and grok
+prefers `XAI_API_KEY` over its on-disk login. On any install that had ever saved
+an xAI key — which is every dogfood install, by design — every "subscription"
+turn would have been billed to that key while ShipIt attributed it to the
+account. A silent mis-billing, with nothing wrong on screen.
+
+The gate is the auth **file**, not a scoped home. `resolveHome` is undefined
+inside a container (the image symlinks `~/.grok` at the per-session credentials
+mount instead), so Claude's scoped-home test would be false on the one path that
+matters most. This is the Codex adapter's rule — delete the env key when file
+auth wins — reached from the same direction.
+
+### The harness×mode axis, and why the row field could not carry it
+
+`ModelDef.reasoningEfforts` shipped earlier and is right for what it does; the
+section above records why it is not sufficient. The composition is now three
+facts, and `reasoningOptionsFor` is the single entry point:
+
+| fact | lives on | grok |
+|---|---|---|
+| the vocabulary and its labels | harness `capabilities.reasoning.options` | xhigh/high/medium/low |
+| which billing modes send it | harness `capabilities.reasoning.billingModes` | `["sub"]` |
+| which of them a row offers | `ModelDef.reasoningEfforts` | 4.5 lacks `xhigh` |
+
+Every consumer that validated or derived a level now asks the SELECTION:
+`reviewer-model.ts`'s `defaultEffortFor`, `reviewer-settings.ts`'s pin
+validator, `roles.ts`'s role validator, and both edges of docs/275's explicit
+spawn target. The last needed one extra helper —
+`harnessSendsReasoningEffort(harness, mode)` — because the parse edge has to say
+whether `--effort` is part of a complete call before it knows there is a valid
+model, and falling back to the vocabulary there would demand a level on a
+key-billed grok call.
+
+`REVIEWER_DEFAULT_EFFORT.grok` becomes `high` (a level both subscription rows
+offer). It stops being `null`, which the previous guard test predicted would
+happen and said it *should*.
+
+### What was verified live, and what was not
+
+Verified in the dogfood instance on 2026-08-19, with a real SuperGrok login:
+
+- **Sign-in inside ShipIt** (req 11) — *Add a service → xAI* offers
+  **Subscription · API key**; choosing Subscription renders the device-code
+  challenge with URL, code and both models; approving it in the browser
+  completed the flow (`✓ Signed in as …`, exit 0) and produced a connected
+  account row labelled with the reported email.
+- **The `carriers` restriction, both directions** — the support matrix reads
+  "Grok Build runs xAI" while Codex and OpenCode read "API key only", and
+  ChatGPT's subscription is still withheld from Grok ("API key only" on the
+  OpenAI row). Without it the style join would have offered a ChatGPT
+  subscription to the grok CLI.
+- **The billing route** (the last docs/274 auth-mode gap) — one turn on
+  `xai/sub` `grok-4.6`, attributed to `xai:sub` with `includedTurns: 1`,
+  `meteredCostUsd: 0` and an `atApiRatesUsd` "would have cost" figure. The
+  adapter logged `subscription login on disk — env credentials scrubbed`, with
+  `XAI_API_KEY` present in the environment.
+- **The level at the wire** (req 14) — the CLI's own session store for that turn
+  records `reasoning_effort: "xhigh"`, alongside a non-zero `reasoningTokens`.
+
+**Not** verified by that run, and worth stating rather than implying: the
+per-turn token sync. The dogfood instance is `RUNTIME_MODE=local`, which points a
+spawn's HOME straight at the account root and keeps **no per-session credential
+copy** — the CLI wrote its session state into the account directory itself. So
+req 13's machinery is covered by unit tests against the real file shape
+(`session-credentials.test.ts`), not by that turn, and the container path is
+where it first runs for real. The container path *did* then run, and planning#448
+found the spawn-home symlink is replaced on refresh so publish-back never saw
+the rotation — see "No orchestrator-side refresher" below; the adapter now
+copies a replaced file back.
+
+**Verified later on a fresh session-worker container** (2026-08-20, role GrokSub,
+no container-local `grok login`):
+
+- **Req 12** — the account reached the new container. Resident route
+  `{"grok":{"kind":"account",…}}`, `~/.grok` → `/credentials/.grok`,
+  `GROK_HOME/auth.json` a symlink onto the same file, `XAI_API_KEY` unset
+  (the subscription scrub). The live `auth.json` matches the shape above
+  (scope key, `key`, ISO `expires_at`); `create_time` → `expires_at` is
+  again exactly six hours. No refresh was observed in the first hour.
+- **`shipit agent params` lists xAI `--billing-mode sub` for Grok, and
+  only Grok — install-wide.** Grok Build lists grok-4.6 and grok-4.5
+  as `--billing-mode sub`, plus the key rows. Codex lists xAI key
+  rows only — that is the `carriers: ["grok"]` join, not a missing
+  account credential. OpenCode also lists no xAI sub row, but because
+  it has no account target at all (docs/268), not because of that
+  clause. `GET /api/sessions/:id/agent/params` uses the session id
+  only to 404; `listSpawnParameters` reads the process-wide
+  `eligibleModels` cache. A Claude-pinned sibling on the same
+  deployment lists the same two sub rows. A role-less
+  `--agent grok --service xai --billing-mode sub --model grok-4.6
+  --effort high` is therefore assemblable from any session; docs/275's
+  completeness rule holds for subscription selections.
+  `catalogue.test.ts` pins both directions of the carriers refusal
+  (Grok withheld from ChatGPT; Codex withheld from SuperGrok).
+
+  **Two layers, and they must stay separate.** A Claude-pinned
+  sibling has no grok `auth.json` in `/credentials/.grok/` (only a
+  leftover `sessions/` dir; pointer files name only claude). That is
+  docs/138: `provisionAgentCredentials` copies "only `agentId`'s
+  files — the other agent's credentials never land in this session's
+  container". Metered keys still reach every worker as
+  `SHIPIT_CREDENTIAL_*`. The listing is not that mount: an ordinary
+  session can still *name* a grok subscription target, and
+  `shipit agent run` — role or explicit — resolves the route
+  server-side and copies the grok account in for the spawn
+  (`provisionSubAgentCredentials`), then wipes auth on the way out.
+  `--role GrokSub` and the explicit four-plus-effort form are the
+  same credential path. Do not provision every account into every
+  session to make the worker look like the listing.
+
+### What the independent review caught, and why it was the right question to ask
+
+The brief for the out-of-family reviewer led with "did I miss a consumer of the
+new axis?", because a missed one is invisible: it renders a control that does
+nothing, or refuses a pin that is valid. It had found five, and four were real.
+
+Every one was a place validating a level against the harness's **vocabulary**
+rather than against the selection — harmless while grok's vocabulary was empty,
+and live the moment it was written down:
+
+- **`route-registry.ts`, three sites.** WS connect rehydrating a session's
+  stored level; `set_model`'s self-heal when a model change crosses a harness;
+  and the `set_reasoning` handler itself. The first is the worst of them, since
+  it *persists* the reconciled value — a session would carry a level its every
+  turn discarded, written back as a preference.
+- **`model-switch.ts`'s `conformSelectionToAgent`.** A level carried across a
+  harness switch onto a key-billed grok row survived AND reported
+  `reasoningCleared: false`, so the move notice stayed silent about a setting
+  that had stopped meaning anything.
+- **`spawn-inventory.ts`** completed `--effort` from the vocabulary while
+  `parseSubAgentSpawnTarget` refused the result — tab completion offering a flag
+  the run rejects.
+
+Two of the fixes needed a correction the first attempt got wrong, and the shape
+is worth recording because it recurs: **asking `reasoningOptionsFor` INSTEAD of
+the injected capabilities is not the same as asking it as well.** Both
+`conformSelectionToAgent` and `listSpawnParameters` take an injected registry,
+and replacing the vocabulary check with a catalogue lookup silently made the
+caller's own declaration irrelevant — which two fixture-based tests caught. The
+correct rule in both is the conjunction: the harness must declare the level AND
+the landing row must send it.
+
+The review also raised a real hole in the adapter's fallback path: when
+`makeSpawnHome` cannot reach the shared config root, `spawnHomeHasAuth` stays
+false, so the subscription scrub does not fire and an ambient `XAI_API_KEY`
+would authenticate the turn while ShipIt attributed it to the account. It needs
+two unlikely states at once (a broken credential root *and* a stored key), which
+is exactly why it now logs explicitly rather than being left to be inferred from
+the resume warning beside it.
+
+### Quota: the empty pill, and the reader that turned out to exist (req 16)
+
+**Read this section knowing it reverses itself.** It was written on the finding
+that xAI publishes no subscription usage API — every candidate route 404s — and
+that finding was wrong. `GET /v1/billing?format=credits` returns the weekly
+pool; the earlier probe missed it by one query parameter. The investigation is
+kept in the order it happened, because the *shape* of the error is the reusable
+part and a tidied-up account would hide it.
+
+So the section has two halves. The empty pill WAS a real bug and its client-side
+fix stands unchanged — it is the general rule "a subscription ShipIt cannot read
+gets no meters", which still governs OpenCode Go. What changed is that xAI
+stopped being an instance of it: `xai:sub` now declares `xai-plan-usage`,
+`XaiLimitsProvider` reads it, and the card's apologetic notice is gone because
+there is a number to show instead.
+
+#### The bug as diagnosed (all of this still holds)
+
+At the time, `xai:sub` declared `quota: null` and no `LimitsProvider` existed
+for it, so no snapshot for an xAI account could exist.
+
+**What the user saw anyway**: a header pill reading `nik@x  5h · —  7d · —`
+with no refresh button, permanently. Reproduced in a unit render before the
+fix. Two surfaces asked the wrong question:
+
+| surface | asked | consequence |
+|---|---|---|
+| `SubscriptionLimitsBadge.buildPills` | "is there a connected account of a service with a `sub` mode?" | pill with two blank meters |
+| `ProviderAccountRows` row `quota=` | `billingMode === "sub" && status === "ready"` | the same blanks in Settings |
+| `ServicesPanel` credential row | `modeReportsQuota(...)` | **correct already** — and its comment says why: "an empty pill would say 'no usage' where the truth is 'not measured'" |
+
+So this was not a new design question. The third row had answered it in
+planning#339 for GLM's declared-but-unimplemented `zai-plan-usage`; the other
+two predate that reasoning and were never revisited. The fix is the same
+predicate in all three, plus one thing suppression alone cannot do — see below.
+
+**What the independent review changed** (Codex, out-of-family). It walked every
+credential state against both delivery shapes and found no case where a
+quota-reporting service loses a pill, and it confirmed that dropping the
+unconnected sign-in attempt from the container test is an improvement rather
+than a regression. Two things it did change:
+
+- **The rule now holds in every loop, not one.** `buildPills`'s snapshot-derived
+  loop was ungated — unreachable, since a mode with no reader has no
+  `LimitsProvider` and so no snapshot, but it renders a pill on nothing but the
+  map's say-so, so a stale entry or a service that loses a reader would put the
+  blanks straight back. Guarded, and pinned by a test that hands the badge a
+  snapshot which cannot legitimately exist.
+- **The glyph now follows the kind.** `MODE_NOTICES` entries carried
+  `kind: "hazard" | "absence"`; a hazard kept the warning triangle, an absence
+  got a neutral info glyph. The review asked what the warning was warning of,
+  which is the right question: a triangle says "act on this" about a fact there
+  is nothing to do about. *(Reverted with the notice it was written for — see
+  "What shipped in the end". The observation is still right; there is simply one
+  kind again.)*
+
+Its remaining note is accepted, not fixed: `AppLayout`'s status-affordance
+condition has no render test — it had none before this change either, and the
+number it now reads (`useSubscriptionPillCount`) is tested directly.
+
+**Removing a pill moves the emptiness up a level.** Two surfaces decided
+whether to show a subscription *container* by asking "any connected account, or
+any snapshot?" — `MobileStatusPanel`'s "Subscription" section and `AppLayout`'s
+collapsed status trigger. Both agreed with the pill until an account existed
+that renders none, and then the mobile dropdown put a heading above an empty
+box. Both now read `useSubscriptionPillCount`, which is the badge's own answer:
+one number, so the container and its contents cannot disagree. This is the
+general shape of the hazard, worth stating for the next no-reader service — a
+suppressed leaf leaves a frame around nothing unless the frame asks the leaf.
+
+**Hiding is necessary and not sufficient.** A user paying for SuperGrok goes
+looking for the figure the other cards show and finds a card with nothing where
+it should be, which does not distinguish "not measured" from "broken". Req 16
+says ShipIt *says so*; `MODE_NOTICES` is where the OpenCode Go hazard already
+says its equivalent (docs/272 req 6), so the xAI card got the second entry in
+that map and the map's docstring grew a second admissible kind: an absent
+read-out, not only a billing hazard.
+
+*Both are gone now* — the sentence and the second kind — because the reader
+made them unnecessary. The reasoning survives as a rule about when to reach for
+copy at all: **a line explaining why a surface is empty is a reasonable last
+resort and a poor substitute for filling it.** Write it only once the reader is
+genuinely impossible, not merely unwritten, because prose is much cheaper than
+a probe and that is exactly what makes it the tempting wrong answer.
+
+**The pill's other job survives.** `credentialStatusWord` puts "reconnect
+needed" in the same pill, and that is a statement about the SIGN-IN, not about
+quota — the header is the only place it is said (planning#429). So a no-reader
+subscription loses its meters and keeps that word.
+
+#### Every probe, and what it returned
+
+**A probe record must name its host.** The prior session's list — `/v1/usage`,
+`/v1/rate-limits`, `/v1/subscription`, `/v1/me` all 404 — is right about the
+subscription host and wrong as a general statement: `GET /v1/me` on **api.x.ai**
+returns **200** (`user_id`, `team_id`, `zdr_status`, `team_blocked`, redacted
+key), and 404s only on `cli-chat-proxy.grok.com`. The two hosts serve different
+route sets, so an unqualified path is not a fact about xAI.
+
+**Live route-existence sweep, 2026-08-20, `cli-chat-proxy.grok.com`** (the
+subscription host). Unauthenticated, which is the point: this proxy answers
+**401** for a route that exists and an nginx **404** for one that does not, so a
+sweep with no credential still separates the two.
+
+| exists (401, needs auth) | absent (404) |
+|---|---|
+| `/v1/models`, `/v1/settings`, `/v1/user` | `/v1/usage`, `/v1/rate-limits`, `/v1/limits`, `/v1/quota` |
+| **`/v1/billing`**, **`/v1/auto-topup-rule`** | `/v1/subscription`, `/v1/subscriptions`, `/v1/entitlements`, `/v1/plan` |
+| `/v1/responses`, `/v1/chat/completions` (405 on GET — POST-only) | `/v1/me`, `/v1/account`, `/v1/credits`, `/v1/billing/config`, `/v1/tools`, `/rest/*` |
+
+So **there is no usage route, and there are two account-shaped routes nobody had
+tried.** `/v1/billing` is the endpoint behind the CLI's billing extension
+described below; the prior session's four probes did not include it.
+
+**`api.x.ai`, authenticated with a real key** (key mode, for completeness):
+`/v1/me` → 200 and `/v1/api-key` → 200, both carrying identity and ACLs and **no
+quota field of any kind**; `/v1/usage`, `/v1/rate-limits`, `/v1/billing`,
+`/v1/user`, `/v1/subscription`, `/v1/credits`, `/v1/limits` → 404. A real
+`/v1/models` response carries **no `x-ratelimit-*` header** either. Key mode is
+metered, so it is owed no allowance — but it is worth recording that the passive
+reader does not exist there.
+
+*(Egress from this session is allowlisted per host: `api.x.ai` and
+`cli-chat-proxy.grok.com` are reachable, `docs.x.ai` / `x.ai` / `grok.com` are
+not. The vendor documentation was therefore not read; the probes above are the
+primary source, which is the stronger one anyway.)*
+
+Offline evidence, **verified against the installed binary**
+(`@xai-official/grok-linux-x64` 1.0.1 `e9444c5615`, `strings -n 4`, in-container
+2026-08-20) — the CLI is the strongest available witness, because anything
+xAI exposes to a subscriber it would consume here first:
+
+- **No usage/limits subcommand.** The full command list is agent, completions,
+  dashboard, doctor, du, export, help, inspect, leader, login, logout, mcp,
+  memory, models, plugin, sessions, setup, trace, update, version, worktree,
+  wrap. `grok login --help` offers `--oauth` and `--device-auth` and nothing
+  about a plan.
+- **No usage-shaped route in the binary.** Every literal REST path it carries:
+  `/rest/modes`, `/rest/skills`, `/rest/user-skills`, `/rest/workspaces`,
+  `/rest/app-chat/conversations{,/,soft/}`; OpenAI-shaped `/v1/chat/completions`,
+  `/v1/responses`, `/v1/models`, `/v1/messages`, `/v1/settings`, `/v1/tools`
+  (plus OTLP `/v1/{logs,metrics,traces}`). No `/v1/usage`, no `/v1/rate-limits`
+  — the same 404s, from the other side.
+- **No `x-ratelimit-*` header parsing anywhere.** The only retry-shaped header
+  it knows is `Retry-After`. So even the passive reader Anthropic's integration
+  could have used does not exist here.
+- **Its own "usage" surfaces are two other things.** `x.ai/session/usage` is
+  per-session token/cost for the open session ("Session usage is unavailable
+  until the session starts"), and for account usage the TUI **links out**:
+  `https://grok.com/?_s=usage`, beside `https://grok.com/supergrok?referrer=grok-build`.
+  A client that had the number would not send the user to a web app for it.
+- **The one genuine lead.** There IS a billing extension
+  (`crates/codegen/xai-grok-shell/src/extensions/billing.rs`, ACP methods
+  `x.ai/billing` and `x.ai/auto-topup-rule`) parsing an 11-field `BillingConfig`
+  — `creditUsagePercent`, `monthlyLimit`, `onDemandCap`, `onDemandUsed`,
+  `prepaidBalance`, `includedUsed`, `totalUsed`, `currentPeriod`,
+  `billingCycle`, `billingPeriodStart`, `isUnifiedBillingUser`, plus
+  `subscription_tier` and `on_demand_enabled` — behind "Billing data requires
+  auth with grok.com." Credit-shaped rather than allowance-shaped, but close
+  enough to be worth calling rather than guessing at. It was called; see below.
+
+#### Called with a live SuperGrok token
+
+The lead is closed. Run through `shipit agent run --role GrokSub`, whose spawn
+holds the real subscription login, 2026-08-20 — the only way to authenticate
+these routes, since the investigating container holds `XAI_API_KEY` and no
+`~/.grok/auth.json`. All four GETs returned **200**.
+
+- **`GET /v1/billing`** → a calendar-month spend object, and nothing else:
+  `config.monthlyLimit.val`, `config.used.val`, `config.onDemandCap.val`,
+  `billingPeriodStart` / `billingPeriodEnd` (`2026-08-01` → `2026-09-01`), and
+  `history[]` of `{billingCycle: {year, month}, includedUsed, onDemandUsed,
+  totalUsed}` for three prior months. Every figure `0` on a live SuperGrok
+  account that had run turns. Of the binary's field list, `creditUsagePercent`,
+  `prepaidBalance`, `currentPeriod`, `isUnifiedBillingUser`, `subscription_tier`
+  and `on_demand_enabled` are absent from the payload entirely.
+
+  **So it is the wrong number, twice over**: the window is a calendar month, not
+  a rolling one that resets, and the figures track *purchased credit spend* —
+  which a subscription turn does not consume, hence the zeros. A meter built on
+  it would read 0% forever and say nothing about the allowance a SuperGrok user
+  can actually exhaust.
+- **`GET /v1/auto-topup-rule`** → `{}`. No cap, threshold or balance.
+- **`GET /v1/user`** → identity only (`userId`, `email`, `firstName`,
+  `lastName`, `principalType`, `hasGrokCodeAccess: true`). No allowance.
+- **`GET /v1/settings`** → product flags, plus `on_demand_enabled: null`,
+  `subscription_watch_interval_secs: 60`, `usage_billing_redirect_url: null`,
+  and **`subscription_tier_display: "SuperGrok"`**. No used %, no window, no
+  reset — but see the correction below.
+
+**A correction to "No plan, and that is a finding" above.** That section says
+xAI reports no plan name; it is right about the auth *file* and the *token*, and
+wrong as a general claim — `/v1/settings` reports `subscription_tier_display:
+"SuperGrok"` to an authenticated client. Req 15 was *reworded* on the strength
+of the broader claim (receipt in requirements.md, 2026-08-19), so putting the
+plan name back on the account row is a requirements question for Nik and not a
+change to make here. Recorded, not acted on.
+- **The subscription check is a boolean, not a meter.**
+  `agent/subscription_check.rs` emits `paywall_check_result` /
+  `paywall_check_subscription_detected` — entitled or not, with no figure. What
+  the CLI shows a user at the limit is upsell copy ("You hit your free usage
+  limit.", "Buy more credits", "You can continue by increasing your spending
+  limit."), never a remaining balance.
+
+**Verdict, superseded 2026-08-20 — a reader DOES exist, and the first probe
+missed it by one query parameter.**
+
+```
+GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+Authorization: Bearer <the `key` from ~/.grok/auth.json>
+```
+
+returns, on a live SuperGrok account:
+
+```json
+{"config":{
+  "currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY",
+                   "start":"2026-08-18T09:41:48.430622+00:00",
+                   "end":"2026-08-25T09:41:48.430622+00:00"},
+  "creditUsagePercent":10.0,
+  "productUsage":[{"product":"GrokBuild","usagePercent":10.0},{"product":"GrokChat"}],
+  "onDemandCap":{"val":0},"onDemandUsed":{"val":0},"prepaidBalance":{"val":0},
+  "isUnifiedBillingUser":true,
+  "billingPeriodStart":"2026-08-18T09:41:48.430622+00:00",
+  "billingPeriodEnd":"2026-08-25T09:41:48.430622+00:00"}}
+```
+
+`creditUsagePercent` is the **weekly pool** percentage, `currentPeriod` is the
+window that resets, and `productUsage[]` breaks it down per product — Grok Build
+separately from Grok Chat. That is a 7-day window with a used percentage and a
+reset instant: exactly what `SubscriptionLimitsWindow` carries.
+
+**How the earlier verdict got it wrong, because the shape of the error matters
+more than the error.** Bare `/v1/billing` — no query parameter — returns a
+*different representation*: calendar-month credit spend, all zeros. That answer
+is real, so it never looked like a wrong call; it looked like a definitive
+negative. Three checks all passed *and all missed the parameter*: the route
+sweep tested paths and not query strings; the strings grep that found `/billing`
+matched a path-shaped pattern that stopped at the `?`; and the authenticated
+probe was written from that path list. **`/billing?format=credits` is a literal
+in the grok binary at offset 137169287, twenty-four bytes before
+`extensions/billing.rs`** — it was in the dump the whole time. The lesson is
+narrow and reusable: *a 200 that answers a different question is more dangerous
+than a 404*, and an endpoint's surface is its paths **and its parameters**.
+
+Corroboration arrived from the other direction too: xAI's own FAQ documents one
+shared weekly pool across Chat, Build, API, Imagine and Voice (June 2026,
+replacing per-product daily caps), visible at Settings → Usage as a percentage
+plus a reset date — the consumer view of this same figure.
+
+**What is NOT available**, so the next reader does not re-probe it: the
+grok.com web API refuses this credential by policy, not by absence —
+`POST https://grok.com/rest/rate-limits` (the 2-hour chat window, `requestKind`
+/ `modelName` → `remainingQueries` / `totalQueries`) answers **403
+`Action cannot be performed by OAuth2 token users`** for the CLI's token, on
+every body tried. `/v1/usage` and `/v1/rate-limits` remain nginx 404s on the
+subscription host, and `?format=weekly` / `?format=usage` fall back to the
+monthly object. So `format=credits` is the one door, and it is open.
+
+#### What shipped in the end (planning#454)
+
+Three changes, in the order they depend on each other.
+
+**1. `XaiLimitsProvider`** (`orchestrator/limits/xai-limits-provider.ts`) — a
+*pulled* reader on the `ZaiLimitsProvider` template: nothing pushes these
+numbers during a turn, so a reading only happens because something asked for
+one. It differs from GLM's in the credential: an xAI subscription is an
+ACCOUNT, so the provider is handed a credential **directory** and reads
+`.grok/auth.json` per request rather than holding a token. The CLI rewrites that
+file every few hours, and a token captured at registration would go stale
+between refreshes.
+
+It parses fail-closed, and two of the rules are worth stating because they are
+not the obvious choices. A percentage outside 0–100 is **refused, not clamped**
+— against an undocumented endpoint, out-of-range is the evidence that the field
+is not the one we think it is. And a `currentPeriod.type` that is not weekly is
+**refused outright**: the pill labels this window `7d`, so a monthly period
+would be mislabelled rather than merely imprecise. `billingPeriodStart`/`End`
+are deliberately not a fallback for a missing `currentPeriod` — they carry no
+`type`, so accepting them means guessing the length the previous rule exists to
+refuse.
+
+Registration follows GLM's, with one generalization: the sign-in→seed pairing in
+`bootstrap-managers.ts` searched only `buildAgentRuntime`'s per-`AgentId`
+providers, which would have left a **fresh** SuperGrok sign-in with an empty
+pill until the next boot. It now searches every registered reader. The boot seed
+likewise iterates the pulled providers as a set rather than naming one.
+
+**2. The pill draws the windows the plan HAS** (`windowsShown`). This is the
+shape note above, generalized on the user's instruction: *"the scope should
+include all APIs that didn't report 5h — in my case it is Codex and GLM too, but
+we shouldn't hard-code the names, we should just show what is available."* So
+the rule names no service. It could not have been a per-service list anyway —
+whether a ChatGPT plan reports a 5-hour window is a property of the PLAN, not of
+the vendor.
+
+**The first mechanism was derived, and it was wrong. This is the useful part of
+the section.** The reasoning went: a provider that HAS a window reports it as an
+object even when it has no number for it (`usedPct` is nullable for exactly
+that), so a `null` window inside a reading must already mean "this plan has no
+such window" — no new field needed, and the missing distinction is just between
+a null window and no reading at all. That is a claim about **every existing
+provider**, and the independent review checked it against the code instead of
+against the argument.
+
+It fails on Claude, which is the provider with the most users.
+`session/agents/claude/adapter.ts` handles `rate_limit_event` one window at a
+time — `five_hour` and `seven_day` arrive as separate events, and the adapter
+emits its sticky pair each time — so the FIRST reading of a session carries
+`weekly: null` on a plan that plainly has a weekly window. The derived rule
+would have deleted a real 7d meter for the whole of that turn, and for the
+~30-minute lockout if the `/api/oauth/usage` seed that fills the gap had been
+429'd, which that seed is explicitly designed to expect. Worth naming as a
+pattern: *the neighbouring guarantee I leaned on was one I inferred from a type,
+not one I read at its source* — the exact failure `CLAUDE.md` warns about under
+"Verify an inherited guarantee at the source".
+
+**So the provider states it, because only the provider can.**
+`SubscriptionLimits.availableWindows` names the windows the plan has, and the
+answer depends on the SOURCE rather than on the vendor:
+
+| reader | source | says |
+|---|---|---|
+| `XaiLimitsProvider` | one billing payload describes the plan | `["weekly"]` |
+| `ZaiLimitsProvider` | `data.limits[]` lists every window | what it saw |
+| `CodexLimitsProvider` | `rateLimits.primary` + `.secondary`, one notification | what it received |
+| `ClaudeLimitsProvider` | events, one window at a time | **nothing** |
+
+Silence means "draw everything", so Claude's pill is untouched, and a reading
+that carries only a lockout countdown still shows both slots pending — which the
+refresh button beside them can still make false. GLM's reader counts an
+*ambiguous* slot as present, because two entries landing in one slot is proof
+the window exists and only its number is unresolvable; reporting it absent would
+delete a meter on the strength of a parse failure.
+
+The cost is one optional wire field and four call sites. That is more than the
+derived rule, and the derived rule was free and wrong.
+
+**3. The catalogue tells the truth again.** `xai:sub` declares
+`xai-plan-usage`, which joins both `IMPLEMENTED_QUOTA_INTEGRATIONS` and
+`ON_DEMAND_QUOTA_INTEGRATIONS` — the second is the refresh button the user asked
+for by name. The `quota: null` arm of `BillingModeDef` is **removed**: it was
+introduced for xAI on the disproven finding, and with that mode gone it had no
+user. Its own docstring argued the arm should land with the mode that needs it,
+so it leaves the same way. What replaces it in `types.ts` is where the burden of
+proof sits — `null` asserts something about a VENDOR that no code review can
+check, so it is written only from a probe that looked for a reader and found
+none, never from one that stopped at the first plausible answer.
+
+Two things the reader does NOT do, so nobody re-derives them. It reports
+`plan: null` — the name is reachable at `/v1/settings` and was declined by the
+human (requirements.md, 2026-08-20 receipt), because it costs a second call to a
+second endpoint for a label nobody asked for. And it cannot support a
+"N of M left" surface: the figure is a percentage used, with no remaining count
+anywhere in the payload.
+
+**One adjacent gap, not fixed here.** The exhaustion classifier
+(`ws-handlers/agent-rate-limits.ts`) is text-pattern-based and harness-agnostic,
+and `AGENT_LIMIT_LABELS` already names grok — but its `EXHAUSTION_PATTERNS` were
+written against Claude's and Codex's wording. xAI's own limit strings include
+"usage limit reached" and "out of credits" (both matched today) alongside
+"You hit your free usage limit." and "usage balance exhausted" (neither
+matched). It was filed when that classifier was the *only* signal a SuperGrok
+subscription was spent; the reader has since demoted it to the second signal,
+which lowers its urgency without closing it — a percentage read at boot and on
+demand is not a substitute for noticing a refusal mid-turn. Filed as
+**planning#453**, not built: the wording needs a real
+exhausted subscription to verify against, and widening a list that benches a
+working subscription on a false positive is not something to guess at.
+
+### No orchestrator-side refresher (planning#448, settled 2026-08-20)
+
+Claude and Codex each own an orchestrator-side OAuth refresher (docs/153,
+docs/154) that keeps the SOURCE token fresh between turns and stops N sessions
+stampeding one token endpoint. Grok gets **no equivalent**, and that is now a
+finding rather than an open question.
+
+Three observations, in the order they decide the design:
+
+**1. The CLI's refresh does replace `refresh_token` on disk.** Sibling session,
+wake after the 12:46:05Z expiry, grok-pinned. The per-turn spawn copy loaded
+`is_expired: true` and ran OIDC refresh at process start (not `grok models`).
+`refresh_token` sha256, access `jti`, `create_time` and `expires_at` all
+changed (`expires_at` exactly +6h); the scope key did not. That is the
+docs/153 *file-level* rotation signal. Hash-only records:
+`/persist/grok-auth-*.json` in that container, and planning#448's observation
+comment.
+
+**2. Publish-back did not see that rotation — and the reason is the spawn-home
+symlink, not a missing refresher.** Confirmed at source rather than inherited:
+`AGENT_TOKEN_FILES.grok` is `[".grok/auth.json"]` and `TOKEN_FRESHNESS.grok` is
+`readXaiTokenFreshnessFile`, so grok is on the same sync-in / mid-turn watch /
+publish-back path as Claude and Codex. The path watches the *session
+credentials* file. `makeSpawnHome` only *symlinks* `$GROK_HOME/auth.json` at
+that file. The CLI's refresh then **replaces that symlink with a regular file**
+(rename vs unlink+create are not distinguishable from the observation;
+`watchFile` covers both). Observed this session (`c7698a40…`, 13:23:38Z):
+
+| copy | `auth.json` | refresh_token sha256 (prefix) | `expires_at` |
+|---|---|---|---|
+| session credentials (`/credentials/.grok`) | regular file, inode ≠ spawn | `87048020…` (the 06:46Z *baseline*) | 12:46:05Z (expired) |
+| spawn home (`/tmp/grok-home-RGhHR6`) | **regular file, not a symlink** | `1fab029c…` (this turn's rotation) | 19:23:38Z |
+
+`sessions/` was still a symlink, so `makeSpawnHome` had created the auth link
+and the CLI is what broke it. Mid-turn publish-back therefore had nothing to
+copy: the file it watches never moved. Cleanup's `rmSync` would then have
+deleted the only live copy. Hash-only record:
+`/persist/grok-auth-publish-back-probe.json`.
+
+The adapter now copies a replaced `$GROK_HOME/auth.json` back onto the shared
+root (freshness-guarded, and again at cleanup so a missed poll cannot strand
+the token). After that, the existing token-sync path is what req 13 asked for.
+planning#449's fail-safe (an unorderable reader must not overwrite) is a
+separate guard on that path; it is not a substitute for the copy-back, and it
+did not cause this miss.
+
+**3. The old refresh token was still accepted ~4 minutes after rotation.**
+The sibling rotated the 06:46Z token at 13:19:08Z (new `refresh_token`
+sha256 `6a127259…`). This session, four minutes later, still held that
+*pre-rotation* token in its session credentials (because of (2)), used it,
+and `oidc try_refresh_pure succeeded` — a third `refresh_token`
+(`1fab029c…`), `jti` `68c404fd-c050-4df5-9627-041ec9dc75a6`, `expires_at`
+19:23:38Z. That is a natural experiment, not a probe against Nik's live
+login: no second home was pointed at a suspected-dead token on purpose.
+
+This rules out *immediate* server-side revocation (a zero-grace single-use
+IdP would have 401'd this turn). It does **not** prove unbounded reuse — a
+grace window of minutes would produce the same observation.
+
+**Decision.** Grok does not need the *stampede-prevention* half of a
+docs/153/154 orchestrator-side refresher on current evidence. File-level
+rotation is real, but two sessions reused the same refresh token four minutes
+apart without `invalid_grant`, so N sessions refreshing independently is not
+the Claude-shaped mutual-invalidation failure those refreshers exist to
+prevent. The spawn-home copy-back is what makes the existing sync path
+observe the rotation, which is the other half of req 13 (a session outliving
+one access token keeps working, and the source is what the next container
+inherits).
+
+Two things this does **not** settle, and neither is a reason to build a
+refresher today:
+
+- Whether xAI applies a reuse-grace window rather than never-revoking.
+  Signal: the next session that reuses a just-rotated token and gets
+  `invalid_grant`.
+- Whether the refresh token itself expires from disuse (an account connected
+  and then idle for weeks). The access token is 6h and a cold CLI refreshes
+  it at process start; the refresh token's lifetime was not measured.
+
+Revisit if either signal appears.
+
+## Composer is not served on the xAI subscription (probed 2026-08-20)
+
+The grok 1.0.1 binary contains the string `composer-2.5-fast`. SpaceX acquiring
+Cursor makes "Composer arrives on an xAI surface" a plausible reading of that
+string, and the CLI also ships Cursor-compat toggles that ShipIt already
+disables (`GROK_CURSOR_*_ENABLED=0` in `COMPAT_TOGGLES`,
+`session/agents/grok/adapter.ts`). Plausible is not evidence. Live evidence,
+same day, against a still-valid SuperGrok token (no refresh — `auth.json`
+byte-identical before and after; a sibling is measuring whether expiry
+*rotates* the refresh token and was not disturbed):
+
+**What the binary string actually is.** One hit, at
+`/opt/agent-cli/node_modules/@xai-official/grok-linux-x64/bin/grok` offset
+~135194667, in the Cursor-compat prompt/template neighbourhood
+(`crates/codegen/xai-grok-cursor/`, `cursor_harness.rs`). Surrounding bytes
+are a grep-tool instruction, then `composer-2.5-fast`, then a `<response>`
+regex — a Cursor-harness default model id, not a catalogue row. The nearby
+`composerId` / `composerHeaders` strings are SQL against Cursor's local
+`composerHeaders` table (session restore under `GROK_CURSOR_SESSIONS_ENABLED`),
+also not a model. No other `composer-*` model-id token exists in the binary
+(`composer.lock` is the only other `composer-*` match).
+
+**What the subscription catalogue actually serves.** CLI 1.0.1 (`e9444c5615`),
+logged in with grok.com, 2026-08-20 09:22Z.
+
+`grok models` verbatim:
+
+```
+You are logged in with grok.com.
+
+Default model: grok-4.6
+
+Available models:
+  * grok-4.6 (default)
+  - grok-4.5
+```
+
+`GET https://cli-chat-proxy.grok.com/v1/models` (Bearer, HTTP 200, `object:
+list`, `data` length 2) — the structured fields the earlier capture used:
+
+| id | `api_backend` | `context_window` | `supports_reasoning_effort` | `reasoning_efforts` | default effort |
+|---|---|---|---|---|---|
+| `grok-4.6` | `responses` | 500000 | true | xhigh, high, medium, low | high (`reasoning_effort`) |
+| `grok-4.5` | `responses` | 500000 | true | high, medium, low | high |
+
+No row whose id, name, or payload contains `composer` or `cursor`. The CLI's
+`models_cache.json` (`origin` the same URL, `auth_method: session`) is the same
+two rows. ShipIt's `xai`/`sub` catalogue already matches this set
+(`services.ts`: grok-4.6 with `reasoningEfforts` xhigh/high/medium/low, grok-4.5
+with high/medium/low, both `openai-responses`, 500k).
+
+**The string is inert from ShipIt's perspective today.** Do not add a catalogue
+row. Do not re-run this probe unless the subscription catalogue grows a third
+model or the pin moves off 1.0.1.
+
+## The reviewer-default extension (req 8)
+
+Grok is the first harness declaring **no** reasoning levels, and
+`reviewer-model.test.ts` asserted that every harness offers some. Nik chose to
+extend the mechanism rather than invent a level (receipt in requirements.md).
+The extension, end to end:
+
+- `REVIEWER_DEFAULT_EFFORT` becomes `Record<AgentId, string | null>`, where
+  `null` means "this harness has no levels to choose from". **`null`, not an
+  omitted key**, so the record stays exhaustive and the next harness added still
+  gets a compile error instead of inheriting a default nobody chose.
+- `reasoningEffort` becomes optional on `ReviewerPin`, `ReviewerResolved`,
+  `ReviewerTarget`, `RolePinnedParams`, `RoleResolved`, `ResolvedSpawnTarget`
+  and the consult card's `SubAgentRunTarget`. Absent means "this harness has no
+  level", never "nobody chose one" — a type cannot say "required iff a sibling
+  field's harness declares levels", so both halves are enforced in
+  `reviewer-settings.ts` and `roles.ts`: naming a level on a levelless harness
+  is still refused, and omitting one on a harness that has them is still an
+  incomplete pin.
+- The guard test splits accordingly: a harness with levels is checked exactly as
+  before, and one without must say so with `null`.
+
+Req 5's "a derived reviewer is COMPLETE" is intact — a levelless harness's
+reviewer names everything there is to name, which is one field fewer. What req 5
+forbids is leaving a real choice to the CLI's own default, and there is no
+choice here to leave.
+
+**One deliberate limitation — since lifted.** `SpawnTarget`'s `explicit` kind
+required all five parameters including the level, so a fully-explicit
+`shipit agent run` naming Grok could not be assembled; the Phase 10 run
+(2026-08-18) recorded it as the structural blocker on "`shipit agent run` both
+directions". docs/275-roleless-explicit-run (planning#441) made completeness
+per-harness: the four identity flags are a complete Grok target, and `--effort`
+on it is refused by name — the explicit path now mirrors the role rule req 8
+established. If subscription mode turns out to have real levels (planning#435),
+`--effort` becomes part of a complete Grok target with nothing further to
+change.
+
+## Exhaustion is the only spent-plan signal (req 16)
+
+The `sub` mode declares `quota: null` — an explicit arm of `BillingModeDef`,
+not a fourth `QuotaIntegrationId` nothing implements. xAI publishes no
+per-account usage API (every candidate route 404s; probed with planning#435).
+The usage pill is therefore empty on purpose: an honest absence, not an
+invented indicator. For Claude and Codex the exhaustion classifier is a
+*second* signal beside a meter. For a SuperGrok subscription it is the
+**only** signal that the plan is spent.
+
+### Two channels, and they do not share a matcher (planning#453)
+
+Answered from the code; no live capture required.
+
+A spent-plan notice can arrive two ways, and the `agent_result` detection
+sites (`agent-listeners.ts` req-7 stamp, `turn-executor.ts` req-14 retry,
+`services/sub-agent.ts` consult fallback) ask **exactly one** of them:
+
+| Channel | When | Matcher | How Grok can populate it |
+|---|---|---|---|
+| **Turn error** | `agent_result.error` is set | `detectHardExhaustion` → unanchored `EXHAUSTION_PATTERNS` | A `result` event with `is_error: true` (or a non-success `subtype`). The adapter copies `raw.result` onto `error`. Generic API language (`quota exceeded`, `out of credits`) is in this list. |
+| **Conversation text** | there is **no** error | `detectHardExhaustionInTurnText` → anchored `TURN_TEXT_NOTICE_PATTERNS`, ≤ `MAX_LIMIT_NOTICE_CHARS` (240) | The last `agent_assistant` text (`runner.turnSummary`). The error is checked *instead of*, never before-falling-through-to, the text. |
+
+A third site, independent of `agent_result`: `willRetryOnQuotaError`
+(`turn-executor.ts`) runs the unanchored error matcher on the adapter's
+`error` **event** message. That is spawn/process failure, not a CLI result.
+Grok's fatal stream `{"type":"error","message":…}` currently does **not**
+take this path — it is logged, then the close handler synthesizes an
+`agent_result` whose wording is `Grok exited with code N…`. Forwarding
+`message_text` could go via an adapter `error` emit *or* `agent_result.error`.
+
+On an errored turn the adapter copies `raw.result` onto `error` — the same
+field that carries the model's summary on success (identical to Claude). A
+`subtype: "error_max_turns"` turn whose trailing text mentions "out of
+credits" would therefore hit the unanchored error-channel patterns.
+Pre-existing, not Grok-specific, not repaired here.
+
+The text matcher is the PROVIDER_NOTICE-style one: it must be the *start* of
+a short message (`^[^a-z0-9]*`, so a bullet or emoji may precede it but no
+word may). That is what tells "You've hit your session limit · resets 5:10pm
+(UTC)" apart from "The Vercel deploy failed because your account is out of
+credits". Generic credit/quota phrasings are **dropped** from this channel
+on purpose — they are how an API reports a spent balance, never something a
+CLI writes into the chat.
+
+The optional provider prefix on the first text pattern is Claude's and
+Codex's own notice grammar (`claude` / `claude ai` / `claude code` /
+`codex`). **`grok` is not in it.** Bare `usage limit reached` still matches
+both channels (the prefix is optional; the error pattern is a substring).
+`Grok usage limit reached` as conversation text would miss the text
+channel today — adding the word is how an ordinary short summary that
+happens to start with the harness name would bench a working subscription.
+
+### What the grok binary contains, and what that is not
+
+Read out of the installed `@xai-official/grok-linux-x64` 1.0.1 binary
+(`strings`, 2026-08-20). Neighbouring literals classify them; none of this
+is a captured headless emission.
+
+**TUI pager** (`crates/codegen/xai-grok-pager/src/app/dispatch/status.rs`) —
+not proven to appear on the `grok -p` wire:
+
+| string | class | matched today? |
+|---|---|---|
+| `You hit your free usage limit.` | free tier (`free-usage-upsell`, next to "Unlock all features with SuperGrok.") | no |
+| `You hit your weekly limit.` | plausible SuperGrok copy (next to "Upgrade to a higher tier for more usage") | no — `you'?ve` requires the contraction; `weekly usage limit` requires the word `usage` |
+| `You've hit the credit limit for your plan.` | credits | no |
+| `You've hit your spending cap.` | pay-as-you-go | no |
+| `You can continue by increasing your spending limit.` / `…enabling pay-as-you-go usage.` / `…purchasing more credits.` | CTAs, not the wall itself | no |
+
+**Agent shell** (`crates/codegen/xai-grok-shell/src/session/compaction.rs`) —
+looks like API-error matching for suppressing auto-compaction; more likely
+to appear as a turn error if the API returns these phrases:
+
+| string | class | matched today? |
+|---|---|---|
+| `usage limit reached` | already in `EXHAUSTION_PATTERNS` | yes, both channels when it is the whole short message |
+| `out of credits` | already in `EXHAUSTION_PATTERNS` | error channel only — the text channel drops generic credit language |
+| `usage balance exhausted` | credit balance | no |
+| `out of credits or over your spending limit. Add credits and retry.` | credits / spending cap | error channel, via `out of credits` |
+
+Phase 0 captures (`src/server/session/agents/grok/__fixtures__/tool-tour-*.ndjson`)
+are successful tool-tours. No fixture under `docs/274-*`, and no prior
+session transcript, carries an xAI limit notice. This session did not hit
+one.
+
+### What was not changed, and why
+
+`EXHAUSTION_PATTERNS` / `TURN_TEXT_NOTICE_PATTERNS` were **not** widened.
+The list is deliberately narrow: a false positive benches a working
+subscription for 15 minutes (`UNKNOWN_RESET_LOCKOUT_MS`), and the
+error-channel docstring already records one production miss caused by
+widening too late rather than too early. Guessing that the TUI's `You hit
+your weekly limit.` is what headless emits — or that `usage balance
+exhausted` is a subscription rather than a credit balance — is how that
+risk gets realized.
+
+The one-assignment change that turns a future capture into a lock lives in
+`agent-rate-limits.test.ts` as `GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE`.
+Fill `{ channel: "error" | "text", text: "<verbatim>" }` from a real
+headless SuperGrok refusal, pasted byte-exact (the grok binary stores
+U+2019 in its contracted copy; `/you'?ve/i` does not match `you’ve`). The
+skipped test then fails until the matcher covers that exact string; the
+always-on negatives pin the free-tier and credit-balance copy that a
+loosening must still refuse. How to obtain the string is a human decision.
+
+### Related gap, not repaired here
+
+A fatal `{"type":"error","message":…}` event (the unauthenticated shape,
+verified) is logged and then dropped. The close handler synthesizes
+`Grok exited with code N before producing a result`, so neither matcher
+ever sees the provider's wording. Forwarding `message_text` onto
+`agent_result.error` would still need a captured string to match against;
+it is a separate change.

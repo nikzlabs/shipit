@@ -278,6 +278,9 @@ export async function registerSessionSpawnRoutes(
       model?: string;
       // docs/264 — the shared target vocabulary: a role ± overrides, or all five.
       role?: string;
+      // docs/264-agent-roles req 20 — `--no-role`: inherit the parent's
+      // parameters without the role it is running.
+      noRole?: boolean;
       agentId?: string;
       serviceId?: string;
       billingMode?: string;
@@ -335,6 +338,8 @@ export async function registerSessionSpawnRoutes(
         const target = parseSpawnTarget(
           {
             ...(body.role !== undefined ? { role: body.role } : {}),
+            // docs/264-agent-roles req 20 — decline the parent's role.
+            ...(body.noRole !== undefined ? { noRole: body.noRole } : {}),
             ...(aliasedAgentId !== undefined ? { agentId: aliasedAgentId } : {}),
             ...(body.serviceId !== undefined ? { serviceId: body.serviceId } : {}),
             ...(body.billingMode !== undefined ? { billingMode: body.billingMode } : {}),

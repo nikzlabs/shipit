@@ -18,11 +18,14 @@
  * (reqs 6, 7). {@link validateRolePinnedParams} takes `harnessId` rather than
  * deriving one, which is the whole reason it is not `resolveReviewerPinPatch`:
  * that function derives a harness (`harnessesForSelection(patch, …)[0]`) and
- * validates the reasoning level against whichever it picked, so a level can be
- * checked against one harness and carried onto another. That is a live defect on
- * the reviewer-pin path — reachable today, since `deepseek-v4-flash` is offered
- * under both `anthropic-messages` and `openai-responses` and the two harnesses
- * declare different level sets. A role has no such gap by construction.
+ * checks the reasoning level against whichever it picked, so a level checked at
+ * save time can be *used* somewhere else — `deepseek-v4-flash` is offered under
+ * both `anthropic-messages` and `openai-responses`, and the two harnesses
+ * declare different level sets. On the reviewer path that gap is closed by
+ * re-deriving the level at every point of use (planning#352,
+ * `reviewer-model.ts`'s `effortFor`), which a *setting* needs because its
+ * harness is derived per review. A role has no such gap to close: it names its
+ * harness, so one check at save time is a check against what will run.
  *
  * **2. Saving checks COMPATIBILITY, never live availability.** Whether a
  * credential routes *right now* changes without anyone editing a role — a
@@ -64,6 +67,7 @@ import {
   getService,
   isSelectionEligible,
   modesOfferingModel,
+  reasoningOptionsFor,
   resolveStyle,
   sameSelection,
   selectionExists,
@@ -125,7 +129,13 @@ export interface ResolvedRoleTarget {
   readonly roleName: string;
   readonly harnessId: AgentId;
   readonly selection: Readonly<ModelSelection>;
-  readonly reasoningEffort: string;
+  /**
+   * Absent ⇒ the role runs at `Default`: the spawn passes no reasoning flag and
+   * the harness uses its own level, which is what `AgentSpawnOptions` has always
+   * meant by an absent level. Includes the docs/274 req 8 case, where the named
+   * harness declares no levels and Default is the only possibility.
+   */
+  readonly reasoningEffort?: string;
   /** The role's standing instructions (req 8), when it carries any. */
   readonly prompt?: string;
   /**
@@ -329,24 +339,49 @@ export function checkRolePinnedParams(
   // Against the level set of the harness the role NAMES. This is the one step
   // that differs from `resolveReviewerPinPatch`, and it differs in the direction
   // that matters — see this module's header.
-  const options = harness.capabilities.reasoning?.options ?? [];
-  if (options.length === 0) {
-    return {
-      ok: false,
-      kind: "catalogue",
-      field: "reasoningEffort",
-      message: `${harness.name} declares no reasoning levels, so a role on it cannot name one.`,
-    };
-  }
-  if (!options.some((option) => option.value === params.reasoningEffort)) {
-    return {
-      ok: false,
-      kind: "catalogue",
-      field: "reasoningEffort",
-      message:
-        `"${params.reasoningEffort}" is not a reasoning level ${harness.name} offers. `
-        + `Valid levels: ${options.map((o) => o.value).join(", ")}.`,
-    };
+  //
+  // **An absent level is `Default`, and Default is always valid** (docs/264
+  // req 1's 2026-08-18 resolved question) — every harness has a level it runs at
+  // when passed no flag, so there is nothing to check it against and nothing
+  // that can retire out from under it.
+  //
+  // **That subsumes docs/274 req 8 rather than replacing it.** That rule reached
+  // the same optionality from the other end: a harness declaring NO levels takes
+  // a role with no level, because it is complete with one field fewer. Such a
+  // role is at Default — the only thing it can be. The difference is only that
+  // absent is now legal on every harness, not just that one, so the empty set no
+  // longer needs a branch of its own.
+  //
+  // Naming a level on a harness that declares none stays a refusal, exactly as
+  // docs/274 left it: the claim is false about the harness. It now carries the
+  // remedy, which is the thing the user actually has to do.
+  if (params.reasoningEffort !== undefined) {
+    // What this SELECTION offers on this harness, not the harness's raw
+    // vocabulary (docs/274 req 14). Since planning#435 the two diverge: grok
+    // declares four levels and honours none of them on a key-billed row, so
+    // validating against the vocabulary would accept a role whose level the CLI
+    // drops before the wire — a pinned parameter that silently does nothing.
+    const options = reasoningOptionsFor(harnessId, selection);
+    if (options.length === 0) {
+      return {
+        ok: false,
+        kind: "catalogue",
+        field: "reasoningEffort",
+        message:
+          `${harness.name} offers no reasoning levels on ${label}, so a role on it cannot name one. `
+          + "Use the Default level.",
+      };
+    }
+    if (!options.some((option) => option.value === params.reasoningEffort)) {
+      return {
+        ok: false,
+        kind: "catalogue",
+        field: "reasoningEffort",
+        message:
+          `"${params.reasoningEffort}" is not a reasoning level ${harness.name} offers on ${label}. `
+          + `Valid levels: ${options.map((o) => o.value).join(", ")}, or Default.`,
+      };
+    }
   }
   // **The credential check goes LAST, after every catalogue check has passed.**
   // Ordering is load-bearing here rather than incidental: `credential` reports
@@ -375,7 +410,14 @@ export function checkRolePinnedParams(
   return { ok: true, params: normalize(params) };
 }
 
-/** The checked tuple, rebuilt field by field so nothing a caller passed rides along. */
+/**
+ * The checked tuple, rebuilt field by field so nothing a caller passed rides
+ * along.
+ *
+ * The level is spread conditionally rather than copied: `Default` is stored as
+ * the **absence** of the key, so writing `reasoningEffort: undefined` would put
+ * an explicit `undefined` into the JSON the credential store serializes.
+ */
 function normalize(params: RolePinnedParams): RolePinnedParams {
   return {
     kind: "pinned",
@@ -383,7 +425,7 @@ function normalize(params: RolePinnedParams): RolePinnedParams {
     serviceId: params.serviceId,
     billingMode: params.billingMode,
     modelId: params.modelId,
-    reasoningEffort: params.reasoningEffort,
+    ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
   };
 }
 
@@ -498,19 +540,18 @@ export function resolveRoleByName(
     // the reason is worth stating precisely rather than as "it validates
     // itself", which is not true.
     //
-    // `selectReviewer` does guarantee an installed harness, an eligible model
-    // and a usable route. It does NOT guarantee the level: a user-pinned slot's
-    // `reasoningEffort` is validated against the *settings-time derived* harness
-    // and then copied onto whichever harness the ranking lands on
-    // (`reviewer-model.ts`'s `buildTarget`), which can differ. That is a live
-    // defect on the reviewer-pin path — reachable since `deepseek-v4-flash`
-    // became dual-harness — and it is tracked as planning#381.
+    // `selectReviewer` guarantees an installed harness, an eligible model, a
+    // usable route — and, since planning#352, the LEVEL as well: a user-pinned
+    // slot's `reasoningEffort` is applied only where the selection the ranking
+    // landed on offers it, and re-derived there otherwise
+    // (`reviewer-model.ts`'s `effortFor`). It used to be validated against the
+    // *settings-time derived* harness and then copied onto whichever harness the
+    // ranking chose, which is how a Claude-only `max` could reach Codex.
     //
-    // Running the role validator here would *mask* it by refusing the review
-    // instead, which is a behaviour change to the un-overridden reviewer that
-    // phase 1 is expressly not making: docs/261's ranking survives intact behind
-    // this branch. The fix belongs with planning#381, which owns the choice
-    // between refusing and substituting.
+    // Running the role validator here would still be wrong, and for the reason
+    // it always was: it would refuse the review rather than run it, which is a
+    // behaviour change to the un-overridden reviewer that phase 1 is expressly
+    // not making. docs/261's ranking survives intact behind this branch.
     return freezeTarget(role, base, false, chosen);
   }
   const params = validateRolePinnedParams(
@@ -601,7 +642,15 @@ function applyOverrides(
   baseKind: OverrideBaseKind,
 ): RolePinnedParams {
   const harnessId = overrides.harnessId ?? base.harnessId;
+  // Spread rather than assigned, so a Default role stays Default by the same
+  // encoding every other producer of `RolePinnedParams` uses — the ABSENCE of
+  // the key. Writing `reasoningEffort: undefined` here happened to work only
+  // because `normalize` strips it downstream; cross-agent review flagged the
+  // dependence on that as the untidy invariant it is. There is no "override
+  // back to Default" sentinel, and none is needed: naming no `--effort` already
+  // means "leave the level as the role has it".
   const reasoningEffort = overrides.reasoningEffort ?? base.reasoningEffort;
+  const withEffort = reasoningEffort !== undefined ? { reasoningEffort } : {};
   if (baseKind === "ranked" && overrides.modelId !== undefined) {
     const located = locateModel(overrides.modelId, overrides, harnessId, deps);
     if (!located) {
@@ -611,7 +660,7 @@ function applyOverrides(
           + `${overrides.serviceId ? ` on ${overrides.serviceId}` : ""}.`,
       );
     }
-    return { kind: "pinned", harnessId, ...located, reasoningEffort };
+    return { kind: "pinned", harnessId, ...located, ...withEffort };
   }
   const substituted: RolePinnedParams = {
     kind: "pinned",
@@ -619,7 +668,7 @@ function applyOverrides(
     serviceId: overrides.serviceId ?? base.serviceId,
     billingMode: overrides.billingMode ?? base.billingMode,
     modelId: overrides.modelId ?? base.modelId,
-    reasoningEffort,
+    ...withEffort,
   };
   if (baseKind === "role" && overrides.modelId !== undefined) {
     refuseModelAwayFromRolesService(substituted, overrides);
@@ -745,7 +794,7 @@ function freezeTarget(
     roleName: role.name,
     harnessId: params.harnessId,
     selection: Object.freeze(selection),
-    reasoningEffort: params.reasoningEffort,
+    ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
     ...(role.prompt ? { prompt: role.prompt } : {}),
     overridden,
     ...(routeStillApplies && chosen
@@ -904,9 +953,16 @@ function describe(params: RolePinnedParams): RoleResolved {
     modelId: params.modelId,
   };
   const harness = getHarness(params.harnessId);
-  const reasoningLabel = harness?.capabilities.reasoning?.options.find(
-    (option) => option.value === params.reasoningEffort,
-  )?.label;
+  // Both absent for a role at Default — the client renders "Default" from the
+  // absence, exactly as the composer's picker does. Naming the level here would
+  // mean resolving the harness's own default, which ShipIt does not know and
+  // must not guess (req 7).
+  const reasoningLabel =
+    params.reasoningEffort === undefined
+      ? undefined
+      : harness?.capabilities.reasoning?.options.find(
+          (option) => option.value === params.reasoningEffort,
+        )?.label;
   return {
     harnessId: params.harnessId,
     harnessName: harness?.name ?? params.harnessId,
@@ -915,7 +971,9 @@ function describe(params: RolePinnedParams): RoleResolved {
     serviceName: getService(params.serviceId)?.name ?? params.serviceId,
     modelId: params.modelId,
     label: getModel(selection)?.label ?? params.modelId,
-    reasoningEffort: params.reasoningEffort,
+    ...(params.reasoningEffort !== undefined
+      ? { reasoningEffort: params.reasoningEffort }
+      : {}),
     ...(reasoningLabel ? { reasoningLabel } : {}),
   };
 }

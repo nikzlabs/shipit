@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { MobileContentPanels } from "./MobileContentPanels.js";
+import { MobileContentPanels, mobileChatInFront } from "./MobileContentPanels.js";
 
 afterEach(cleanup);
 
@@ -55,5 +55,28 @@ describe("MobileContentPanels", () => {
 
     expect(screen.getByText("Home").parentElement).toHaveClass("flex");
     expect(screen.getByText("Workspace").parentElement).toHaveClass("hidden");
+  });
+});
+
+describe("mobileChatInFront", () => {
+  // One definition, used by the component here AND by App to decide whether the
+  // preview pane is on screen. Pinned because a drift between the two would
+  // leave a hidden preview rendering with nothing to show for it.
+  const base = { showHomeScreen: false, showNewSessionView: false, activePanel: "preview" as const };
+
+  it("puts the workspace in front when the preview panel is selected in a session", () => {
+    expect(mobileChatInFront(base)).toBe(false);
+  });
+
+  it("puts chat in front when the chat panel is selected", () => {
+    expect(mobileChatInFront({ ...base, activePanel: "chat" })).toBe(true);
+  });
+
+  it("puts chat in front on the home screen whatever the panel says", () => {
+    expect(mobileChatInFront({ ...base, showHomeScreen: true })).toBe(true);
+  });
+
+  it("keeps the workspace reachable on the new-session route", () => {
+    expect(mobileChatInFront({ ...base, showHomeScreen: true, showNewSessionView: true })).toBe(false);
   });
 });

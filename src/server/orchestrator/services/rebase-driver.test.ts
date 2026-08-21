@@ -218,6 +218,7 @@ function makeStubSessionManager(notices: string[] = []): SessionManager {
     setLastTurnErrored: () => {},
     setPendingAgentNotice: (_id: string, notice: string) => { notices.push(notice); },
     track: () => {},
+    setMuted: () => null,
     list: () => [],
   } as unknown as SessionManager;
 }
@@ -408,7 +409,39 @@ describe("rebase-driver: runRebaseFlow", () => {
     expect(reevaluate).toHaveBeenCalledTimes(1);
   });
 
-  it("up-to-date branch — does NOT re-evaluate config (the tree never changed)", async () => {
+  // nikzlabs/shipit#2429 — the dependency half of the same fact. A rebase can bring
+  // in a lockfile naming packages the container's `node_modules` has never held;
+  // before this the session kept the pre-rebase dependency tree, the dev server
+  // started fine, and every request failed on an import it could not resolve
+  // while `shipit service list` still said `running`.
+  it("clean rebase — re-checks the session's dependencies", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: workDir,
+      defaultAgentId: "claude",
+    });
+    const rewritten = vi.fn();
+    (runner as unknown as { notifyWorkspaceRewritten: () => void }).notifyWorkspaceRewritten = rewritten;
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("rebased");
+    expect(rewritten).toHaveBeenCalledTimes(1);
+  });
+
+  it("up-to-date branch — does NOT re-evaluate config or dependencies (the tree never changed)", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
 
     const runner = new SessionRunner({
@@ -418,6 +451,8 @@ describe("rebase-driver: runRebaseFlow", () => {
     });
     const reevaluate = vi.fn();
     (runner as unknown as { reevaluateWorkspaceConfig: () => void }).reevaluateWorkspaceConfig = reevaluate;
+    const rewritten = vi.fn();
+    (runner as unknown as { notifyWorkspaceRewritten: () => void }).notifyWorkspaceRewritten = rewritten;
 
     await runFlow({
       git,
@@ -431,6 +466,7 @@ describe("rebase-driver: runRebaseFlow", () => {
     }, "main");
 
     expect(reevaluate).not.toHaveBeenCalled();
+    expect(rewritten).not.toHaveBeenCalled();
   });
 
   it("force push failure — surfaces github_push_result(success=false) + log_entry", async () => {

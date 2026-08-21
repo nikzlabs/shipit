@@ -85,6 +85,17 @@ const AUTH_COPY: Partial<Record<LoginIntegrationId, {
     },
     failureDefault: "Sign-in failed. Try again.",
   },
+  // planning#435 — the same device-code shape as ChatGPT's, so the same copy.
+  // No `pendingDiagnostic`: there is nothing extra to tell the user beyond the
+  // URL and code the card already shows, which is exactly the case the table's
+  // partiality exists for.
+  "xai-oauth": {
+    failure: {
+      timeout: "Sign-in timed out. Try again.",
+      denied: "Sign-in was denied.",
+    },
+    failureDefault: "Sign-in failed. Try again.",
+  },
 };
 
 /** The failure string for a reason, honouring the flow's own wording. */

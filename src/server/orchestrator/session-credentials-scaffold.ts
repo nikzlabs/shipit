@@ -26,10 +26,11 @@
  * `token-sync-manager.ts`, and repo-memory sharing in `repo-memory-manager.ts`.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
-import { writeContainerGitConfig } from "./git-config.js";
+import { GLOBAL_CREDENTIAL_FILENAME, writeContainerGitConfig } from "./git-config.js";
 import { chownTreeToSessionWorker, sealDirMode } from "./session-worker-uid.js";
 
 /** Subdirectory under the credentials root that holds per-session subtrees. */
@@ -51,7 +52,51 @@ export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   // under ~/.local/share/opencode (docs/270). The nested path means any
   // symlinking step must create `~/.local/share` first.
   opencode: [".local/share/opencode"],
+  // Grok's config root doubles as its credential store: `~/.grok/auth.json`
+  // (0600, scope-keyed) sits beside config.toml, sessions and logs, and the
+  // whole tree relocates together via `GROK_HOME` (verified live, docs/274).
+  // One directory, so one entry — the same shape as `.codex`.
+  grok: [".grok"],
 };
+
+/**
+ * The entries of {@link AGENT_CREDENTIAL_PATHS} that are FILES rather than
+ * directories, and so must never be created empty.
+ *
+ * A deny-list rather than an allow-list, because directory is the norm — a new
+ * harness's credential root is one, and the default that matters is the one a
+ * forgotten edit lands on. `.claude.json` is the single exception: the CLI's own
+ * user config, a JSON document the scaffold writes through
+ * `ensureClaudeUserConfigDefaults`.
+ */
+const AGENT_CREDENTIAL_FILES: ReadonlySet<string> = new Set([".claude.json"]);
+
+/**
+ * The credential paths for `agentId` that must EXIST as directories after
+ * provisioning, whether or not there was anything to copy into them
+ * (planning#444).
+ *
+ * The session-worker image symlinks each of these into the runtime home
+ * unconditionally (`~/.grok` -> `/credentials/.grok`, and so on), while
+ * {@link copyCredentialPath} returns early when the source does not exist. For a
+ * subscription-billed harness those two always agree, because a login left a real
+ * subtree to copy. For a **key-billed** harness they do not: the credential
+ * travels as an env var, nothing is ever written to disk, and the symlink is left
+ * DANGLING — which is not the harmless absence it looks like. A dangling symlink
+ * is an existing directory entry, so `mkdir(2)` on it returns EEXIST and Node's
+ * recursive form turns that into ENOENT; either way the CLI cannot create its own
+ * config root and dies at startup. OpenCode hit it first (docs/270), Grok hit it
+ * again (planning#444), and both were diagnosed from scratch because the shape
+ * was fixed for one harness rather than for the class.
+ *
+ * So: materialize the directory for every declared path, for every agent. An
+ * empty directory is not credential material, so this does not weaken the
+ * docs/138 isolation guarantee — a Claude session's container still has no Codex
+ * *credentials* on disk.
+ */
+export function agentCredentialDirs(agentId: AgentId): readonly string[] {
+  return AGENT_CREDENTIAL_PATHS[agentId].filter((rel) => !AGENT_CREDENTIAL_FILES.has(rel));
+}
 
 /**
  * Shared, non-agent-sensitive config copied verbatim into every session's
@@ -139,6 +184,22 @@ export function chownSessionCredentialsTree(credentialsRoot: string, sessionId: 
  */
 const SESSION_ACCOUNT_MARKER = ".shipit-provider-accounts.json";
 
+/**
+ * planning#443 — membership test for a marker key, which is free text once the
+ * file is parsed. Derived from {@link AGENT_CREDENTIAL_PATHS} because its
+ * `Record<AgentId, …>` type is the one enumeration of the union the compiler
+ * keeps complete: the hand-listed `"claude" || "codex" || "opencode"` check
+ * this replaces was never widened for `"grok"`, so a marker written for grok
+ * read back as `{}` for every consumer — and because the write side
+ * round-trips through this reader, the next write of any other agent
+ * re-serialized the filtered view and erased the on-disk entry too.
+ */
+function isAgentId(key: string): key is AgentId {
+  // hasOwn, not `in`: the record is a plain literal, and `in` would accept
+  // inherited Object.prototype names ("toString", …) from a hostile file.
+  return Object.hasOwn(AGENT_CREDENTIAL_PATHS, key);
+}
+
 export function readSessionAccountMarker(
   credentialsRoot: string,
   sessionId: string,
@@ -149,7 +210,7 @@ export function readSessionAccountMarker(
     if (!parsed || typeof parsed !== "object") return {};
     const out: Partial<Record<AgentId, string>> = {};
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if ((key === "claude" || key === "codex" || key === "opencode") && typeof value === "string") out[key] = value;
+      if (isAgentId(key) && typeof value === "string") out[key] = value;
     }
     return out;
   } catch {
@@ -172,7 +233,85 @@ export function writeSessionAccountMarker(
   } else {
     current[agentId] = accountId;
   }
-  fs.writeFileSync(path.join(dir, SESSION_ACCOUNT_MARKER), JSON.stringify(current));
+  // Temp + rename, for the reason `atomicCopyFile` uses it one module over: a
+  // plain `writeFileSync` truncates first, and every reader here treats an
+  // unparseable file as `{}` — "the subtree holds no recorded account". A
+  // reader landing inside that truncation window therefore does not merely
+  // retry later; `syncProviderAccountTokenBack` DROPS the rotation it was
+  // called with, and with rotating refresh tokens a dropped rotation kills the
+  // source credential permanently (planning#445).
+  const file = path.join(dir, SESSION_ACCOUNT_MARKER);
+  const tmp = `${file}.tmp-${process.pid}-${randomUUID()}`;
+  fs.writeFileSync(tmp, JSON.stringify(current));
+  fs.renameSync(tmp, file);
+}
+
+/**
+ * The SUBTREE BORROW LEDGER — which sessions currently have their credential
+ * subtree lent out to a sub-agent, and whose account the borrow displaced.
+ *
+ * Process-local by design, and the one piece of state in this otherwise pure
+ * filesystem module. It exists because {@link SESSION_ACCOUNT_MARKER} alone
+ * cannot answer two questions a borrow makes urgent:
+ *
+ *   - **What do we put back?** The borrow overwrites the marker with its own
+ *     account, so the session's own account has to be captured before the
+ *     overwrite. Both call sites did that themselves, reading the marker some
+ *     lines earlier — and a read that returns `undefined` (a concurrent borrow
+ *     had it cleared, a torn read before the atomic write above) silently
+ *     turned the restore into a no-op, stranding the session with NO marker and
+ *     refusing every write-back after it. Capturing inside the borrow closes
+ *     the window to zero, and a second borrow taken while one is outstanding
+ *     inherits the first's captured account instead of capturing the borrowed
+ *     one.
+ *   - **Is an absent marker a LOSS or a flat borrow?** A borrow on a legacy
+ *     (no-account) route writes `null`, so absence is ambiguous on disk. The
+ *     write-back's marker repair needs to tell those apart, and a ledger entry
+ *     spanning the whole borrow — provision through wipe — says so exactly.
+ *
+ * Process-local is also the correct durability: a restart means no borrow is in
+ * flight (the spawns died with it), and a subtree left holding borrowed
+ * credentials still carries the borrowed account's MARKER, so the next turn's
+ * `ensureSessionAccountCredentials` reprovisions it.
+ */
+const outstandingBorrows = new Map<string, string | undefined>();
+
+const borrowKey = (sessionId: string, agentId: AgentId): string => `${sessionId}:${agentId}`;
+
+/**
+ * Record that `agentId`'s subtree in `sessionId` is about to be lent out,
+ * capturing the account it displaces. Called by `provisionSubAgentCredentials`
+ * immediately before it overwrites the marker. Re-entrant: a nested or
+ * concurrent borrow keeps the account the FIRST one displaced, which is the
+ * session's own.
+ */
+export function beginSubtreeBorrow(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+  const key = borrowKey(sessionId, agentId);
+  if (outstandingBorrows.has(key)) return;
+  outstandingBorrows.set(key, readSessionAccountMarker(credentialsRoot, sessionId)[agentId]);
+}
+
+/**
+ * End the borrow and report the account it displaced — what the caller must
+ * reprovision to put the session back on its own credentials. `undefined` when
+ * the subtree held no account of its own (a legacy/flat session, or a
+ * cross-provider borrow of a harness this session never ran).
+ */
+export function endSubtreeBorrow(sessionId: string, agentId: AgentId): string | undefined {
+  const key = borrowKey(sessionId, agentId);
+  const displaced = outstandingBorrows.get(key);
+  outstandingBorrows.delete(key);
+  return displaced;
+}
+
+/** Is a borrow of this session's `agentId` subtree in flight right now? */
+export function subtreeBorrowInFlight(sessionId: string, agentId: AgentId): boolean {
+  return outstandingBorrows.has(borrowKey(sessionId, agentId));
+}
+
+/** Drop every recorded borrow. Test cleanup only. */
+export function clearSubtreeBorrows(): void {
+  outstandingBorrows.clear();
 }
 
 /**
@@ -285,6 +424,18 @@ export function ensureSessionCredentialsScaffold(credentialsRoot: string, sessio
   }
   // Generate a token-free gitconfig (identity + brokering credential helper).
   writeSessionGitConfig(credentialsRoot, sessionId);
+  // #2432 — and take away anything an orchestrator-shaped writer left INSIDE
+  // the sandbox. Nothing on the session side ever creates this file: the
+  // container's credential is brokered per request by `shipit-git-credential`,
+  // and the only code that writes one is `setGlobalCredentialHelper`, which
+  // derives its path from `GIT_CONFIG_GLOBAL` — a variable every session
+  // container exports as `/credentials/.gitconfig`. So a copy here means
+  // orchestrator code ran in the sandbox (the server test suite did, which is
+  // the bug) and wrote a credential file the freshly-regenerated gitconfig
+  // above no longer points at. Leaving it would abandon a stale secret in a
+  // directory the agent can traverse, and would make the next investigation
+  // start from the same confusing artifact.
+  fs.rmSync(path.join(dir, GLOBAL_CREDENTIAL_FILENAME), { force: true });
   // Hand the freshly-written subtree to the unprivileged worker user (docs/150).
   chownSessionCredentialsTree(credentialsRoot, sessionId);
 }

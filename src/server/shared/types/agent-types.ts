@@ -7,7 +7,7 @@ import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
 // ---- Agent identity ----
 
-export type AgentId = "claude" | "codex" | "opencode";
+export type AgentId = "claude" | "codex" | "opencode" | "grok";
 
 /**
  * The permission modes the Claude Code adapter supports (docs/138). Single
@@ -16,6 +16,21 @@ export type AgentId = "claude" | "codex" | "opencode";
  * drift. `guarded` is the classifier-gated mode (CLI `--permission-mode auto`).
  */
 export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
+
+/**
+ * The permission modes the Grok Build adapter supports (docs/274).
+ *
+ * Deliberately its **own** constant rather than a reference to
+ * {@link CLAUDE_PERMISSION_MODES}, even though the two currently hold the same
+ * three values: what they state is not the same fact. Grok's CLI has a *wider*
+ * native set than Claude's (`default | acceptEdits | auto | dontAsk |
+ * bypassPermissions | plan`), and this list is the subset ShipIt's three-mode
+ * vocabulary maps onto — `plan` → `--permission-mode plan`, `guarded` →
+ * `--permission-mode auto` (Grok's classifier-gated mode, the same spelling
+ * Claude uses), `auto` → `--always-approve`. Sharing Claude's constant would
+ * make a later divergence in either CLI silently change the other's row.
+ */
+export const GROK_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
 
 // ---- Agent capabilities ----
 
@@ -30,8 +45,48 @@ export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guard
 export interface AgentReasoningCapability {
   /** Control label, e.g. "Reasoning" (claude) or "Reasoning effort" (codex). */
   label: string;
-  /** Selectable effort levels. Does NOT include the implicit "Default"/no-flag entry. */
+  /**
+   * The harness's VOCABULARY: every effort level this CLI understands, with the
+   * label each renders under. Does NOT include the implicit "Default"/no-flag
+   * entry.
+   *
+   * Naming a level here says the CLI accepts the word — **not that every
+   * selection honours it**. That second question is {@link billingModes} and
+   * `ModelDef.reasoningEfforts`, and the three compose in
+   * `catalogue/index.ts`'s `reasoningOptionsFor`, which is the only honest
+   * answer to "what goes in the picker".
+   */
   options: { value: string; label: string }[];
+  /**
+   * docs/274 req 14 — the billing modes under which this harness's CLI actually
+   * SENDS the level, when that is not all of them. Absent means all of them,
+   * which is every harness but one.
+   *
+   * The axis exists because grok needs it and neither of the other two can
+   * express it. `--reasoning-effort` reaches the wire when xAI's SUBSCRIPTION
+   * catalogue authenticated the CLI and is silently discarded under an API key
+   * — both recorder-verified with a negative control (docs/274 Resolved
+   * questions). That gate is the billing mode and nothing else:
+   *
+   *   - **Per-harness ({@link options}) cannot say it.** One list must either
+   *     offer four levels that do nothing under a key, or hide four that work
+   *     under a subscription.
+   *   - **Per-row (`ModelDef.reasoningEfforts`) cannot say it either**, and
+   *     this is the part that looks like it could. A `ModelDef` is per
+   *     *(service, mode, model)* and NOT per harness, while grok shares gateway
+   *     rows (`x-ai/grok-4.6` at OpenRouter and Vercel, DeepSeek and GLM via
+   *     chat-completions) with three harnesses that DO honour levels there. On
+   *     such a row `[]` strips the levels from those three and absent leaks
+   *     grok's four onto a row that drops them — there is no value that is
+   *     right for all four at once.
+   *
+   * So the row field keeps the job only it can do — narrowing WITHIN a mode,
+   * where `grok-4.6` offers `xhigh` and `grok-4.5` does not — and this field
+   * carries the mode gate. Stated as the modes that DO honour it rather than
+   * the ones that do not, so the default (absent) is the permissive, correct
+   * answer for a harness with no such split.
+   */
+  billingModes?: BillingMode[];
 }
 
 /*
@@ -75,9 +130,11 @@ export interface RoleOverrides {
  *    overridden (req 10). Available to both commands. The role supplies
  *    everything the caller did not name; for the shipped reviewer ShipIt
  *    resolves the params instead (req 2).
- *  - **`explicit`** — no base at all, so the call must name all five itself.
- *    Available to both commands. Kept implemented for a repository that holds a
- *    complete target of its own (req 15), and no longer the shape ShipIt teaches.
+ *  - **`explicit`** — no base at all, so the call must name every parameter the
+ *    named harness has: the four identity flags always, the reasoning level
+ *    exactly where the harness declares levels (docs/275 req 2). Available to
+ *    both commands. Kept implemented for a repository that holds a complete
+ *    target of its own (req 15), and no longer the shape ShipIt teaches.
  *  - **`inherit`** — the **parent session** is the base (`shipit session create`
  *    only, because a one-shot run has no parent). This is the shipped
  *    `--model X` form docs/261 req 10 guarantees, and it is now one of the
@@ -105,10 +162,29 @@ export type SpawnTarget =
       serviceId: string;
       billingMode: BillingMode;
       modelId: string;
-      /** The reasoning level — part of the call, never the harness's default. */
-      reasoningEffort: string;
+      /**
+       * The reasoning level — part of the call, never the harness's default,
+       * wherever the harness declares levels. A harness that declares none has
+       * no level parameter at all (docs/275 req 2), so the field is absent
+       * there — and only there: `resolveSpawnTarget` refuses an omission on a
+       * level-having harness and a named level on a level-less one.
+       */
+      reasoningEffort?: string;
     }
-  | { kind: "inherit"; overrides: RoleOverrides };
+  | {
+      kind: "inherit";
+      overrides: RoleOverrides;
+      /**
+       * docs/264-agent-roles req 20 — the caller declined the parent's role
+       * (`--no-role`). The child still inherits the parent's parameters; what it
+       * does not inherit is the role's name and its standing instructions.
+       *
+       * Absent is the default, which inherits the role whole. The flag exists so
+       * that a session working under a brief can still spawn a child for
+       * something else — a brief that cannot be declined is not a default.
+       */
+      noRole?: boolean;
+    };
 
 /**
  * What a **one-shot** `shipit agent run` runs on: {@link SpawnTarget} minus the
@@ -142,19 +218,29 @@ export const REVIEWER_SLOTS: readonly ReviewerSlot[] = ["first", "second"];
  * one extra preference (avoid the implementer's), so storing it would freeze an
  * answer that has to be recomputed per review anyway.
  *
- * **`reasoningEffort` is required, and that is the type-level statement of
- * "pinning is atomic".** Editing any field of an auto-configured slot pins the
- * whole resolved tuple; a half-pinned slot — a pinned effort over a derived
- * model — is not expressible, because the alternative is a slot that silently
- * re-derives half of itself when a service is added. A reviewer that left the
- * level to the harness's own default would also fail req 5 outright.
+ * **`reasoningEffort` is present exactly when the derived harness declares
+ * levels, and that is the type-level statement of "pinning is atomic".**
+ * Editing any field of an auto-configured slot pins the whole resolved tuple; a
+ * half-pinned slot — a pinned effort over a derived model — is not expressible,
+ * because the alternative is a slot that silently re-derives half of itself when
+ * a service is added. A reviewer that left the level to the harness's own
+ * default would also fail req 5 outright.
+ *
+ * It became optional in docs/274 and the reason is narrow: Grok Build is the
+ * first harness that declares NO reasoning levels (`reasoning.options: []` — in
+ * API-key mode the CLI silently drops `--reasoning-effort`). Absent here means
+ * "this harness has no level to pin", never "the user did not choose one" —
+ * naming a level on a harness that declares none is still refused, and omitting
+ * one on a harness that declares some is still an incomplete pin. Both halves
+ * are enforced in `reviewer-settings.ts`, because a type cannot say "required
+ * iff a sibling field's harness declares levels".
  */
 export interface ReviewerPin {
   serviceId: string;
   billingMode: BillingMode;
   modelId: string;
-  /** A value from the derived harness's `reasoning.options`. */
-  reasoningEffort: string;
+  /** A value from the derived harness's `reasoning.options`; absent iff it declares none. */
+  reasoningEffort?: string;
 }
 
 /**
@@ -174,9 +260,34 @@ export interface ReviewerResolved {
   /** Derived (req 3), never stored. */
   harnessId: AgentId;
   harnessName: string;
-  /** Req 5 — the pin's level, or the harness's ShipIt-authored review default. */
-  reasoningEffort: string;
-  /** That level's display label on this harness, when the harness declares one. */
+  /**
+   * Req 5 — the pin's level, or the review default derived for what this slot
+   * resolved onto. Absent only for a selection that offers no level (docs/274).
+   */
+  reasoningEffort?: string;
+  /** That level's display label on this selection, when there is one. */
+  reasoningLabel?: string;
+  /**
+   * planning#352 — every harness this reviewer could resolve onto that does
+   * **not** offer the pinned level, and what a review there runs at instead.
+   *
+   * Present only on a pinned slot, and empty (omitted) when the pin applies
+   * everywhere. It exists because a pin is applied *partially*: the pinned model
+   * is kept and the level is re-derived per resolution, so the tab has to say
+   * what the level became rather than report a pin that is not in force. The
+   * harness this view names is included when it is one of them — the tab names
+   * ONE harness while a review derives its own, so a note scoped to the tab's
+   * own resolution would stay silent about the crossing that made this a defect.
+   */
+  effortSubstitutions?: ReviewerEffortElsewhere[];
+}
+
+/** planning#352 — one harness a pinned level does not survive onto. */
+export interface ReviewerEffortElsewhere {
+  harnessId: AgentId;
+  harnessName: string;
+  /** What a review there runs at; absent when that row carries no level at all. */
+  reasoningEffort?: string;
   reasoningLabel?: string;
 }
 
@@ -250,14 +361,40 @@ export const RESERVED_ROLE_NAME = "reviewer";
  * docs/264-agent-roles reqs 1, 6 — a role whose params the **user** pinned: the complete
  * tuple, the harness included.
  *
- * Every field is required, which is req 1's "a role is complete on its own"
- * stated in the type. `harnessId` is the departure from {@link ReviewerPin},
- * which deliberately omits it (docs/261 req 3 derives the harness from the
- * model): a role is a *job definition*, and which agent performs the job is part
- * of the job — Claude Code driving a model and Codex driving the same model are
- * different agents. Stored and frozen, never re-derived per run, so a role whose
- * harness is uninstalled reports that it cannot run rather than quietly running
- * on another one.
+ * `harnessId` is the departure from {@link ReviewerPin}, which deliberately
+ * omits it (docs/261 req 3 derives the harness from the model): a role is a *job
+ * definition*, and which agent performs the job is part of the job — Claude Code
+ * driving a model and Codex driving the same model are different agents. Stored
+ * and frozen, never re-derived per run, so a role whose harness is uninstalled
+ * reports that it cannot run rather than quietly running on another one.
+ *
+ * **`reasoningEffort` is optional, and absent means `Default`** — the level the
+ * named harness runs at when ShipIt passes no flag, exactly as it already means
+ * in {@link AgentSpawnOptions} and in the composer's own picker
+ * (`ReasoningSelector.tsx`, where `Default` has been a listed, selectable option
+ * since docs/217).
+ *
+ * This does not weaken req 1's "a role is complete on its own". `Default` is a
+ * choice the user makes and ShipIt records, not a blank: starting such a role
+ * still needs nothing added to it (req 4), and ShipIt still substitutes nothing
+ * (req 7) — it passes no flag, which is what the role says to do. What made the
+ * level *look* required was the storage encoding (no flag ⇒ no value), and an
+ * editor built on that encoding offered a different option list from the
+ * composer for the same knob. See docs/264 req 1's resolved question.
+ *
+ * **This subsumes docs/274 req 8 rather than competing with it.** That rule
+ * reached the same optionality from the other end — a harness declaring no
+ * reasoning levels has no level for a role to carry, and refusing to define a
+ * role on it at all would be a restriction req 1 never asked for. Such a role is
+ * at `Default`, because `Default` is the only thing it can be; the difference is
+ * that absent is now legal on *every* harness, not only that one. What docs/274
+ * kept as a refusal is kept: naming a level on a harness that declares none is
+ * still false about the harness.
+ *
+ * Contrast {@link ReviewerPin}, where the level stays required: ShipIt derives
+ * the reviewer's harness **per review**, so `Default` there would name no
+ * harness and could mean a different level on each run. A pinned role names its
+ * harness (req 6), so its `Default` is unambiguous.
  */
 export interface RolePinnedParams {
   kind: "pinned";
@@ -266,8 +403,13 @@ export interface RolePinnedParams {
   serviceId: string;
   billingMode: BillingMode;
   modelId: string;
-  /** A level the *named* harness declares — validated against that one, not a derived one. */
-  reasoningEffort: string;
+  /**
+   * A level the *named* harness declares — validated against that one, not a
+   * derived one. Absent ⇒ `Default`: pass no flag, and let the harness use its
+   * own level. Always legal, including on a harness that declares no levels at
+   * all (docs/274 req 8), where it is the only possibility.
+   */
+  reasoningEffort?: string;
 }
 
 /**
@@ -340,7 +482,8 @@ export interface RoleResolved {
   modelId: string;
   /** Model label, not the raw id — the same string the picker shows. */
   label: string;
-  reasoningEffort: string;
+  /** Absent ⇒ the role runs at `Default` (see {@link RolePinnedParams}). */
+  reasoningEffort?: string;
   /** That level's display label on this harness, when the harness declares one. */
   reasoningLabel?: string;
 }

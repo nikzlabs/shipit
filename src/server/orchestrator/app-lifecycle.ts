@@ -107,6 +107,7 @@ export {
   runRepoMigration,
   runRemoteCredentialScrub,
   runMcpOAuthStartupRefresh,
+  retireWarmSessions,
   scheduleStartupTasks,
   handleContainerExited,
   setupContainerHealthMonitoring,
@@ -264,6 +265,25 @@ export async function setupContainerManager(
     } else {
       throw new Error("Docker is not available (is /var/run/docker.sock mounted?)");
     }
+  }
+
+  // A standby container never survives the process that made it. `bootstrapManagers`
+  // has already retired the warm session rows (`retireWarmSessions`), so on the
+  // production path above the orphan sweep has usually removed these already —
+  // this is what makes the guarantee independent of that. It runs OUTSIDE the
+  // branch on purpose: an injected container manager (tests, and any future
+  // caller supplying its own) skips every sweep in that branch, and "warm
+  // containers die on restart" must not be a property only the production
+  // wiring has. Reaping by label also catches the standby that rediscovery
+  // could not adopt — no IP, no resolvable workspace — which the row-driven
+  // sweeps cannot see at all.
+  //
+  // The session set is passed because the label is create-time and immutable: a
+  // CLAIMED standby's container still carries it, and only the row says the
+  // session is someone's now. Re-read here rather than reusing `activeIds`
+  // above, which the injected-manager path never computes.
+  if (containerManager) {
+    await containerManager.reapStandbyContainers(new Set(sessionManager.allIds()));
   }
 
   // ---- Docker API proxy (optional, for Docker-enabled sessions) ----
@@ -1567,8 +1587,18 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
    * user just re-authed. Best-effort and self-limiting: `repushAgentToken` only
    * overwrites sessions that already hold the agent's token (no cross-agent
    * leak, no-op in local mode where there are no per-session dirs).
+   *
+   * `accountId` is required, and that is load-bearing rather than tidiness: an
+   * unscoped call skipped the marker check below AND fell to the flat repush
+   * for every session, so it copied `<credentialsRoot>/.claude/…` — a root that
+   * nothing account-scoped ever refreshes — over the per-session copy of every
+   * pinned session, including sessions whose marker names some other account.
+   * That both undid the scoped push that had just delivered the fresh token and
+   * left sessions running on a foreign, ageing bearer. The only caller that
+   * could reach it was the duplicate `complete` fixed in the Claude auth
+   * manager; making the parameter required is what stops a future one.
    */
-  const repushTokenToPinnedSessions = (agentId: AgentId, accountId?: string): void => {
+  const repushTokenToPinnedSessions = (agentId: AgentId, accountId: string): void => {
     let healed = 0;
     for (const session of sessionManager.list()) {
       if (!session.agentPinned || session.agentId !== agentId) continue;
@@ -1577,7 +1607,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       // subtree with no marker keeps the legacy flat repush below, which only
       // overwrites a token file the session already has.
       const marked = readSessionAccountMarker(credentialsDir, session.id)[agentId];
-      if (accountId && marked !== undefined && marked !== accountId) continue;
+      if (marked !== undefined && marked !== accountId) continue;
       try {
         // docs/179 §4 — a sign-in can complete at any moment, including while
         // a streaming CLI is resident. Deliver the fresh token, but leave
@@ -1591,7 +1621,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         // class), so an unmarked session only ever gets the legacy flat repush,
         // which overwrites nothing but a flat token file it already has. Its
         // next turn's env-prep provisions and marks it properly.
-        const wrote = accountId && marked !== undefined
+        const wrote = marked !== undefined
           ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
           : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
         if (wrote) healed++;
@@ -1692,10 +1722,15 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
           return;
         }
       } else {
-        console.warn(`[auth] ${loginId} reported a completed sign-in with no account scope; nothing to mark ready`);
+        // Nothing here is safe to act on: with no account we cannot say whose
+        // credentials just landed, so marking a row ready and pushing tokens
+        // are both guesses. The re-push in particular is destructive — see
+        // `repushTokenToPinnedSessions` — so an unscoped completion stays a
+        // logged anomaly and touches no session's credentials.
+        console.warn(`[auth] ${loginId} reported a completed sign-in with no account scope; nothing to mark ready, and no token re-push`);
       }
       agentRegistry.refreshAuthForLogin(loginId);
-      if (credentialHarness) repushTokenToPinnedSessions(credentialHarness, accountId);
+      if (credentialHarness && accountId) repushTokenToPinnedSessions(credentialHarness, accountId);
       sseBroadcast("agent_auth_complete", { loginId, ...(accountId ? { accountId } : {}) });
       sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });

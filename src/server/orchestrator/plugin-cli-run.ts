@@ -100,7 +100,13 @@ import {
   type PluginNetns,
 } from "./plugin-egress.js";
 import { holdGeneration, type ReleaseHold } from "./plugin-leases.js";
-import { ensurePluginRuntimeOverlay, resolvePluginOverlayRoots } from "./plugin-overlay.js";
+import { assertOverlayVolumesMatch } from "./overlay-volume.js";
+import {
+  ensurePluginRuntimeOverlay,
+  pluginRuntimeOverlaySpec,
+  resolvePluginOverlayRoots,
+  type PluginOverlaySpec,
+} from "./plugin-overlay.js";
 import { resolveLiveGenerations } from "./plugin-generations.js";
 import {
   createPluginImportResolver,
@@ -179,15 +185,23 @@ export interface PluginCliDeps {
    * container. Absent in dev, in local mode and in tests — all places where
    * there is no overlay and nothing to nest.
    *
-   * **It re-derives from `shipit.yaml`; it does not read back what the agent
-   * container actually mounted** — nothing exposes that, and the creation-time
-   * specs are not kept anywhere a later call can reach. So editing
-   * `agent.dep-dirs` mid-session makes this answer and the container's mounts
-   * disagree until the container is recreated (an edit to `dep-dirs` takes
-   * effect next session by design — docs/183). Re-deriving is still the better
-   * of the two: it CONVERGES on the container's next recreate, where a value
-   * frozen once per session would stay wrong for good. Reviewed and accepted
-   * rather than overlooked (independent review, this branch).
+   * **It reads back what the agent container actually mounted** (#2426), and
+   * re-derives from `shipit.yaml` only when there is no container record to
+   * read. That reverses an earlier decision here, so the reversal is recorded
+   * rather than quietly made: this doc used to state that re-derivation was
+   * reviewed and accepted because nothing exposed the container's mounts, and
+   * because a value resolved once would "stay wrong for good" while a
+   * re-derivation at least converges on the container's next recreate.
+   *
+   * Both halves of that premise have expired. `provisionedOverlayDepDirs`
+   * exposes the mounts, and it is scoped to the CONTAINER rather than the
+   * session — a recreate rebuilds it from the new specs, so it converges on
+   * precisely the event the old argument relied on, while ALSO agreeing with
+   * the agent in between. The live workspace does not: flipping the pnpm
+   * signals mid-session (a `pnpm-lock.yaml` lands) makes the re-derivation
+   * answer `[]` for a session whose agent container still holds live overlays,
+   * which restores the empty `/project/node_modules` this whole mechanism
+   * exists to remove. See `resolveSiblingOverlayDepDirs`.
    */
   overlayDepDirs?: () => Promise<readonly { depDir: string; volumeName: string }[]>;
   timeoutMs?: number;
@@ -386,6 +400,7 @@ async function runHeldPluginCommand(
   // stated for services in `compose-generator.ts`.
   const workspaceTreeTargets: string[] = [];
   let commit: string | null = null;
+  let overlaySpec: PluginOverlaySpec | undefined;
   if (!pinned) {
     addSessionMount(deps.workspaceDir, CONTAINER_PLUGIN_DIR, false);
     // req 27 — under `repo: self` the working tree is BOTH of these, and the
@@ -395,7 +410,7 @@ async function runHeldPluginCommand(
     commit = pinned.commit;
     try {
       const roots = await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot);
-      const volume = await ensurePluginRuntimeOverlay(deps.docker, {
+      const overlayArgs = {
         sessionId: deps.sessionId,
         repoName,
         // Both from the SAME pinned directory, so the volume's name and its
@@ -408,7 +423,9 @@ async function runHeldPluginCommand(
         // describe two generations either.
         ...(deps.depStoreDir ? { depStoreDir: deps.depStoreDir } : {}),
         ...roots,
-      });
+      };
+      overlaySpec = pluginRuntimeOverlaySpec(overlayArgs);
+      const volume = await ensurePluginRuntimeOverlay(deps.docker, overlayArgs);
       // A NAMED volume, so it needs no path translation: the daemon already
       // knows where it is, which is exactly why install could get away with one
       // bind and this cannot.
@@ -538,6 +555,7 @@ async function runHeldPluginCommand(
       workingDir: mapWorkingDir(deps.workspaceDir, req.cwd),
       stdin: req.stdin ?? "",
       networkMode: netns.networkMode,
+      overlaySpec,
     });
   } catch (err) {
     // The daemon refusing to create or start the container is the ordinary
@@ -786,6 +804,13 @@ interface ExecuteSpec {
    * container's own (req 19).
    */
   networkMode: string;
+  /**
+   * The runtime overlay this container was built to mount, when it mounts one.
+   * Re-verified after `createContainer` and before `start()` — the same
+   * placement as the session dep-dir path (nikzlabs/shipit#2495). Absent for
+   * `repo: self`, which binds the working tree instead.
+   */
+  overlaySpec?: PluginOverlaySpec;
 }
 
 /** Create, attach, run, and collect. */
@@ -829,6 +854,18 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
 
   const timeoutMs = deps.timeoutMs ?? DEFAULT_PLUGIN_CLI_TIMEOUT_MS;
   try {
+    // nikzlabs/shipit#2495 / planning#451 — the volume was verified at ensure
+    // time, and `createContainer` is the first instant Docker's implicit
+    // named-volume creation (a missing name becomes a plain empty local volume)
+    // is observable. Checked before start() so this `finally` still owns the
+    // container removal; the volume itself is shared with plugin services, so
+    // it is not removed here. An unattached impostor is repaired on the next
+    // `ensurePluginRuntimeOverlay`.
+    if (spec.overlaySpec) {
+      await assertOverlayVolumesMatch(deps.docker, [spec.overlaySpec], {
+        sessionId: deps.sessionId,
+      });
+    }
     // Attached BEFORE start: output written between start and attach is simply
     // gone, and for a command that only prints one line that is all of it.
     const stream = await container.attach({

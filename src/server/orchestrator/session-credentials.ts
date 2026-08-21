@@ -29,6 +29,8 @@ export {
   ensureSessionCredentialsScaffold,
   removeSessionCredentials,
   sessionCredentialsRoot,
+  clearSubtreeBorrows,
+  subtreeBorrowInFlight,
 } from "./session-credentials-scaffold.js";
 
 // ---- Per-agent / provider-account credential provisioning ----
@@ -41,6 +43,7 @@ export {
   provisionSubAgentCredentials,
   readSessionAccountMarker,
   readSessionResidentRoute,
+  releaseSubAgentCredentials,
   removeSubAgentCredentials,
   writeSessionAccountMarker,
   writeSessionResidentRoute,

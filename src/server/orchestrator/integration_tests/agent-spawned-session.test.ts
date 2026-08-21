@@ -1174,6 +1174,156 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(cp.lastPrompt).toContain("Standing instructions");
   });
 
+  // docs/264-agent-roles req 20 — a child inherits its parent's ROLE, not only
+  // the three parameters that role set.
+  //
+  // What these pin is the half that has no other way in: the standing
+  // instructions. The parameters were already inherited, so a child of a
+  // role-running parent always ran the right model — and always ran it under no
+  // brief, with nothing on either side saying so.
+  describe("inheriting the parent's role (req 20)", () => {
+    /** A parent that is itself running `deep dive`, as a user-selected role leaves it. */
+    async function roleRunningParent(prompt?: string): Promise<string> {
+      seedPinnedRole("deep dive", prompt ?? "Read the whole subsystem first.");
+      const parentId = await createParentSession();
+      sessionManager.setAgentId(parentId, "claude");
+      sessionManager.setModelSelection(parentId, {
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+      });
+      sessionManager.setReasoning(parentId, "high");
+      sessionManager.setRoleName(parentId, "deep dive");
+      return parentId;
+    }
+
+    /** The prompt the child's agent was actually started with. */
+    async function firstPromptOf(): Promise<string> {
+      const deadline = Date.now() + 3000;
+      while (createdClaudes.length === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      const cp = createdClaudes[createdClaudes.length - 1];
+      const runDeadline = Date.now() + 3000;
+      while (!cp.runCalled && Date.now() < runDeadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      return cp.lastPrompt ?? "";
+    }
+
+    it("carries the name, the record and the standing instructions", { timeout: 15_000 }, async () => {
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "Port the API", title: "Inherited role" },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      // Both fields, because they answer different questions: what it STARTED as
+      // (provenance, req 14) and what it is running now (docs/272 req 5, which is
+      // what the child's own composer names).
+      expect(child?.originRoleName).toBe("deep dive");
+      expect(child?.roleName).toBe("deep dive");
+      const prompt = await firstPromptOf();
+      expect(prompt).toContain("Read the whole subsystem first.");
+      expect(prompt).toContain("Port the API");
+    });
+
+    it("keeps the role when the spawn overrides a parameter", { timeout: 15_000 }, async () => {
+      // The user's rule, and the same one `--role NAME --model X` already
+      // follows: an override changes that parameter and says nothing about the
+      // brief. The two spawn shapes would otherwise disagree about what an
+      // override means.
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", title: "Overridden", modelId: "claude-sonnet-5" },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      expect(child?.model).toBe("claude-sonnet-5");
+      expect(child?.roleName).toBe("deep dive");
+      expect(await firstPromptOf()).toContain("Read the whole subsystem first.");
+    });
+
+    it("declines it on --no-role, keeping the parameters", { timeout: 15_000 }, async () => {
+      // The escape hatch that makes the inheritance a default rather than a
+      // sentence: a session under a brief spawning a child for something else.
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "Fix the unrelated logging bug", title: "No role", noRole: true },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      expect(child?.roleName).toBeUndefined();
+      expect(child?.originRoleName).toBeUndefined();
+      // …and it still inherited what the parent RUNS ON. `--no-role` declines a
+      // brief, not a configuration.
+      expect(child?.agentId).toBe("claude");
+      expect(child?.model).toBe("claude-opus-5");
+      const prompt = await firstPromptOf();
+      expect(prompt).not.toContain("Read the whole subsystem first.");
+      expect(prompt).toContain("Fix the unrelated logging bug");
+    });
+
+    it("refuses --no-role alongside --role rather than picking one", { timeout: 15_000 }, async () => {
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", title: "Both", role: "deep dive", noRole: true },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/opposite things/);
+    });
+
+    it("inherits nothing role-shaped when the role has since been deleted", { timeout: 15_000 }, async () => {
+      // The parent's row still names it, and there is nothing behind the name.
+      // A child recorded as started on a role whose instructions never reached
+      // it would be a provenance line that means the opposite of what it says.
+      const parentId = await roleRunningParent();
+      credentialStore.setRole("deep dive", null);
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", title: "Ghost role" },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      expect(child?.roleName).toBeUndefined();
+      expect(child?.originRoleName).toBeUndefined();
+      expect(child?.model).toBe("claude-opus-5");
+    });
+
+    it("leaves a complete explicit target role-less", { timeout: 15_000 }, async () => {
+      // docs/275 — naming every parameter states what the child runs on
+      // completely, and that statement has always been role-less. Inheritance is
+      // for the case where the PARENT is the base.
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: {
+          prompt: "x",
+          title: "Explicit",
+          agentId: "claude",
+          serviceId: "anthropic",
+          billingMode: "key",
+          modelId: "claude-sonnet-5",
+          reasoningEffort: "high",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      expect(child?.roleName).toBeUndefined();
+      expect(child?.originRoleName).toBeUndefined();
+    });
+  });
+
   it("still refuses an empty prompt when the role carries standing instructions", { timeout: 15_000 }, async () => {
     // The join must not make an empty task look non-empty. Standing instructions
     // say what the job IS; they are never a substitute for what to do now, and a

@@ -268,8 +268,13 @@ which is why it was unaffected by the bug in the first place.
 
 ### Still outstanding
 
-**planning#358 is unrelated and still open** — `anthropic:sub` remains the one failing Claude
-route, and none of these three fixes touch it.
+**planning#358 is now diagnosed and closed as the likely same defect as planning#354** — the
+`anthropic:sub` failures above are exactly what a shaped subscription token delivered as an
+`x-api-key` header produces (the stored `ANTHROPIC_AUTH_TOKEN` was moved into
+`ANTHROPIC_API_KEY` by the pre-fix catalogue; planning#354's `targetOverride`, PR #2468, fixes
+the delivery, keeping the bearer token under `ANTHROPIC_AUTH_TOKEN`). If it resurfaces on a
+token-authenticated install of a fixed build, the remaining suspect from planning#358's report
+is a stale/expired seeded token, not the catalogue.
 
 ## Coverage this sweep does not have
 

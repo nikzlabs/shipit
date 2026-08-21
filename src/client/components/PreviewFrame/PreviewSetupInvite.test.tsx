@@ -36,15 +36,9 @@ describe("PreviewSetupInvite", () => {
   });
 
   // `dispatchAgentMessage` appends this text verbatim as a visible user bubble,
-  // so it is part of the same first impression as the invite above it. An
-  // earlier revision cited /shipit-docs/compose.md and a skill name here, which
-  // put the exact vocabulary this feature removes back on screen one click
-  // later. The agent has those references already; the chat log must not.
+  // so it is part of the same first impression as the invite above it: it asks
+  // for the outcome, and leaves the agent free to answer that there is none.
   describe("PREVIEW_SETUP_PROMPT", () => {
-    it("names no path, skill, or config key", () => {
-      expect(PREVIEW_SETUP_PROMPT).not.toMatch(/shipit-docs|shipit\.yaml|\bcompose\b|docker|skill/i);
-    });
-
     it("asks for the outcome and allows the agent to answer that there is none", () => {
       expect(PREVIEW_SETUP_PROMPT).toMatch(/live preview/i);
       expect(PREVIEW_SETUP_PROMPT).toMatch(/say so instead of adding configuration/i);

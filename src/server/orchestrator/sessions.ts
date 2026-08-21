@@ -104,6 +104,8 @@ interface SessionRow {
   pinned_at: string | null;
   /** docs/241 — 1 while the session owns an always-on preview reservation. */
   keep_preview_running: number;
+  /** docs/277 — ISO instant the user muted the session; NULL = not muted. */
+  muted_at: string | null;
   /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
   merge_watch: string | null;
   /** docs/213 — JSON `SessionSecretBlock` while auto-commit is refused, or NULL. */
@@ -359,7 +361,10 @@ export class SessionManager {
     if (row.closed_at) info.closedAt = row.closed_at;
     if (row.model) info.model = row.model;
     if (row.reasoning_effort) info.reasoningEffort = row.reasoning_effort;
-    if (row.agent_id === "claude" || row.agent_id === "codex" || row.agent_id === "opencode") info.agentId = row.agent_id;
+    if (
+      row.agent_id === "claude" || row.agent_id === "codex"
+      || row.agent_id === "opencode" || row.agent_id === "grok"
+    ) info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
     // docs/252 — the rest of the selection triple. Read independently of
     // `model`: a row can legitimately carry a service and mode with no model yet
@@ -384,6 +389,7 @@ export class SessionManager {
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
     if (row.pinned_at) info.pinnedAt = row.pinned_at;
     if (row.keep_preview_running) info.keepPreviewRunning = true;
+    if (row.muted_at) info.mutedAt = row.muted_at;
     if (row.merge_watch) {
       try {
         info.mergeWatch = JSON.parse(row.merge_watch) as SessionInfo["mergeWatch"];
@@ -728,6 +734,36 @@ export class SessionManager {
   }
 
   /**
+   * Drop every record of a prior pull request, for a session whose branch has
+   * been replaced by a brand-new one cut off the default branch (unarchive —
+   * `unarchiveSession`). Unconditional, and deliberately NOT {@link clearMerged}:
+   *
+   *  - `clearMerged` only fires `WHERE merged_at IS NOT NULL`, so it leaves the
+   *    breadcrumb standing on a session that was re-armed *before* it was
+   *    archived — which feeds `computeResetBlocker`'s `previousMergedPr`
+   *    fallback and makes the fresh branch look like it shipped work.
+   *  - `clearMerged` WRITES a `previousMergedPr` breadcrumb. Here the correct
+   *    breadcrumb is none at all: the breadcrumb exists to name a reset target
+   *    for a branch that still carries the merged PR's work, and this branch
+   *    carries none of it. Retaining the old PR's base would point the docs/218
+   *    gate at a target with no relationship to the new branch.
+   *
+   * Paired with `PrStatusPoller.clearPersisted` (which nulls `pr_status`) inside
+   * `unarchiveSession`: the two express ONE decision — "the old pull request no
+   * longer applies to this session" — and splitting them across two call sites
+   * is how the merged half came to be forgotten, leaving `merged_at` alive next
+   * to a nulled snapshot. That state made the pre-turn auto-reset (docs/218)
+   * refuse every turn with `no-base-branch`, and then propagated: the next PR's
+   * snapshot coexisted with the stale merge record, so the refusal notice
+   * claimed an OPEN pull request had merged.
+   */
+  clearPriorPrRecord(id: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL WHERE id = ?",
+    ).run(id);
+  }
+
+  /**
    * Mark a session's PR as closed without a merge (sets closed_at timestamp).
    * No-op if the PR already merged — a merge is the stronger terminal state and
    * must not be downgraded to "closed". Unlike `markMerged` this does NOT delete
@@ -784,9 +820,15 @@ export class SessionManager {
 
   /**
    * docs/255 — literally every session row, warm pool included, most recently
-   * used first. Only the Ops inventory's `--include-warm` uses this: every other
-   * "all sessions" caller means {@link listAll}'s non-warm set, because a warm
-   * row is a pre-provisioned shell rather than someone's work.
+   * used first. Most "all sessions" callers mean {@link listAll}'s non-warm set,
+   * because a warm row is a pre-provisioned shell rather than someone's work.
+   *
+   * Two kinds of caller need this one instead: the Ops inventory's
+   * `--include-warm`, and **disk-reclaim liveness** (planning#439) — a warm
+   * session runs a container that mounts overlay bases and plugin artifacts
+   * exactly like any other, so excluding it from a live-set means deleting a
+   * live mount's backing directory. "Whose work is this" and "what is on disk
+   * right now" are different questions; only the first one skips warm rows.
    */
   listAllIncludingWarm(): SessionInfo[] {
     const rows = this.db.prepare(
@@ -859,6 +901,29 @@ export class SessionManager {
       "UPDATE sessions SET pinned_at = ? WHERE id = ?",
     ).run(pinnedAt, id);
     if (result.changes === 0) return null;
+    return this.get(id) ?? null;
+  }
+
+  /**
+   * docs/277 — mute or unmute a session. Pass an ISO instant to mute, or null to
+   * unmute. Records nothing but the flag: a mute suppresses the session's
+   * attention signals (req 2) and changes no other property of the session
+   * (req 3), so pin, disk tier and the idle clocks are all left alone.
+   *
+   * Returns the updated session, or null if not found. Also returns null when
+   * nothing changed — the caller uses that to skip the SSE broadcast on the
+   * overwhelmingly common case: an ordinary turn on an unmuted session.
+   */
+  setMuted(id: string, mutedAt: string | null): SessionInfo | null {
+    const current = this.get(id);
+    if (!current) return null;
+    // Compare on PRESENCE, not on the value. Muting is a flag whose timestamp is
+    // incidental, so a second mute of an already-muted session must be a no-op:
+    // gating the UPDATE on the value instead (`muted_at IS NOT ?`) rewrote the
+    // instant every time, which reported a change that nothing had asked for and
+    // made the no-op path depend on two calls landing in the same millisecond.
+    if (!!current.mutedAt === !!mutedAt) return null;
+    this.db.prepare("UPDATE sessions SET muted_at = ? WHERE id = ?").run(mutedAt, id);
     return this.get(id) ?? null;
   }
 
@@ -1162,6 +1227,44 @@ export class SessionManager {
    */
   setRoleName(id: string, roleName: string | null): void {
     this.db.prepare("UPDATE sessions SET role_name = ? WHERE id = ?").run(roleName, id);
+  }
+
+  /**
+   * docs/272-user-selectable-roles req 18 — the user chose **"No role"**, which is
+   * not the same fact as never having chosen one.
+   *
+   * Both are "no role in force", and every reader of {@link SessionInfo.roleName}
+   * sees exactly that: the row holds `''`, and `fromRow`'s truthiness test drops
+   * it, so nothing downstream gains a third case to handle. The one place the
+   * difference matters is the `?role=` connect seed, which asks
+   * {@link SessionManager.roleExplicitlyCleared}.
+   *
+   * **Why the distinction has to be stored at all.** The browser's seed slot
+   * (req 12) is baked into the session WebSocket's URL, and that URL is memoized
+   * per session — so a socket that reconnects after the clear still carries the
+   * cleared role's name. The connect handler would then apply it to a session
+   * with no role in force, and the user's clear would silently undo itself
+   * somewhere between the clear and the first message. The handler's own note
+   * used to say no such guard was needed, and it was right at the time: the only
+   * clears that existed were the automatic ones, which happen precisely because
+   * the role became unrunnable, so re-applying it refuses harmlessly. An
+   * explicitly cleared role is perfectly runnable, and that is what breaks the
+   * old argument.
+   *
+   * The automatic clears keep writing `null` (see {@link SessionManager.setRoleName}):
+   * "the role stopped being true" is not the user saying "none", and only the
+   * second should outrank a seed.
+   */
+  clearRoleName(id: string): void {
+    this.db.prepare("UPDATE sessions SET role_name = '' WHERE id = ?").run(id);
+  }
+
+  /** Did the user choose "No role" on this session? See {@link SessionManager.clearRoleName}. */
+  roleExplicitlyCleared(id: string): boolean {
+    const row = this.db
+      .prepare("SELECT role_name FROM sessions WHERE id = ?")
+      .get(id) as { role_name: string | null } | undefined;
+    return row?.role_name === "";
   }
 
   /**

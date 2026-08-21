@@ -267,11 +267,10 @@ describe("decideWorkerRequest", () => {
   });
 
   it("planning#421: a tokenless worker refuses /install from a peer container", () => {
-    // The dependency docs/271-agent-install-trust-boundary rests on and does not
-    // own: its `agent.install` gate sits at `runInstall`, not on a direct POST to
-    // the worker, and `compose-service-egress.ts` lets a contained plugin service
-    // reach the agent container. What keeps that POST out is this rule — so it
-    // gets a test rather than a paragraph in a plan.
+    // `/install` executes `agent.install` with `shell: true` in the
+    // credential-bearing agent container, and `compose-service-egress.ts` lets a
+    // contained plugin service reach that container. What keeps the POST out is
+    // this rule — so it gets a test rather than a paragraph in a plan.
     const denied = decide({
       url: "/install",
       remoteAddress: "172.18.0.9",

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { nativeServiceForHarness, selectionExists } from "../shared/catalogue/index.js";
+import { nativeServiceForHarness, selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
 import { applyModelRetirement } from "./model-retirement.js";
+import { buildAgentRerouteNotice } from "./agent-reroute-notice.js";
 import {
   conformSelectionToAgent,
   describeSelectionMove,
@@ -595,6 +596,11 @@ export async function registerRoutes(
       // carries none (docs/142 Problem C; quick-session regression).
       let perConnectionAgentId: AgentId;
       let selectedModel: string | undefined;
+      // planning#389 — set when the reconciliation below moves an unpinned session
+      // off the harness the browser explicitly asked for. Delivered on the first
+      // turn (see the persist block), never emitted from here, so it costs nothing
+      // on the overwhelmingly common connect where nothing is rerouted.
+      let agentRerouteNotice: string | undefined;
       // docs/252 phase 8 (req 13) — resolve a retired model to its successor
       // BEFORE anything else reads the row. Without this the self-heals below
       // see an id no harness lists and drop the session onto `models[0]`, which
@@ -626,6 +632,12 @@ export async function registerRoutes(
         // pick. The product rule (docs/142 C): the model is the user's only real
         // control, so the **model is authoritative** — derive the agent that
         // owns it. This is the server-side guard against the Opus→gpt-5.5 switch.
+        //
+        // …and it applies only where the two genuinely CONFLICT. docs/252 made a
+        // harness pick a real control of its own for any model more than one
+        // harness can speak, so "authoritative" cannot mean "the model re-decides
+        // the harness every connect" any more; it means the model wins the cases
+        // where the pair cannot both be honoured. See the membership guard below.
         const model = selectedModel;
         // docs/272-user-selectable-roles reqs 8, 13 — **a role's harness is never re-derived**,
         // and this is the one place that would have done it behind the user's
@@ -642,11 +654,77 @@ export async function registerRoutes(
         // user chose. Nothing to derive, so nothing is derived — which is
         // docs/264 req 6's rule reaching the one path that predates it.
         const roleDecidesHarness = !!session.roleName;
-        const modelOwner = model && !roleDecidesHarness
+        // planning#389 / docs/252 — MEMBERSHIP, not the single "owner" the
+        // registry-order lookup above answers with. That ambiguity is not only the
+        // role's problem: `deepseek-v4-flash` carries three API styles, so ALL
+        // three harnesses list it and the derived owner is always Claude Code. A
+        // harness that was actually NAMED and can actually run the model is not
+        // the stale-key case this guard is for — deriving there discarded the
+        // user's own pick, persisted it two blocks down, and pinned it write-once
+        // on the first turn while the composer went on displaying the harness they
+        // chose (the client applies this same tie-break in `newSessionAgentId`, so
+        // screen and session disagreed with nothing to tell). Reproduced
+        // 2026-08-18: a session created on OpenCode with `deepseek-v4-flash` ran
+        // its whole life on Claude Code.
+        //
+        // The candidates are the harnesses somebody actually NAMED, in the same
+        // precedence `perConnectionAgentId` is built with above — the session's own
+        // row first, the query param second — since both are choices and only
+        // `defaultAgentId` is a fallback. Ordered rather than "the first one only",
+        // because the row and the param disagree exactly when the user has just
+        // moved the model: a session row still naming Claude Code, a browser asking
+        // for OpenCode, and a model only OpenCode can run is a pick to honour, not
+        // a pair to derive an unrelated third harness from.
+        //
+        // "Can run it" includes the install, exactly as `newSessionAgentId` has it:
+        // a browser key outlives a deployment that dropped the harness, and
+        // honouring one of those would pin a session whose first turn cannot start.
+        //
+        // The two sibling copies of this rule were already corrected — the client's
+        // `newSessionAgentId` (docs/166) and `createHeadlessSession`'s
+        // `explicitAgentRunsModel` (planning#304/#389). This connect handler was
+        // the third and the one that never got the fix.
+        const namedAgents = [session.agentId, requestedAgent].filter(
+          (id): id is AgentId => !!id,
+        );
+        // Gated on the role too: under a role NOTHING is reconciled, so this must
+        // not become a second way to move the harness. The role's own harness is
+        // already `session.agentId`, so honouring it would be a no-op in the case
+        // that matters — but a role whose model its harness cannot run would fall
+        // through to the query param and move the session, which is precisely what
+        // docs/272 reqs 8, 13 forbid.
+        const honouredAgent = model && !roleDecidesHarness
+          ? namedAgents.find((id) => {
+              const info = agentRegistry.get(id);
+              return info?.installed && info.capabilities.models.includes(model);
+            })
+          : undefined;
+        const modelOwner = model && !roleDecidesHarness && !honouredAgent
           ? agentRegistry.list().find((a) => a.capabilities.models.includes(model))
           : undefined;
+        if (honouredAgent) {
+          perConnectionAgentId = honouredAgent;
+        }
         if (modelOwner) {
           perConnectionAgentId = modelOwner.id;
+          // planning#389 — what is left for the derivation is the case docs/142
+          // Problem C is really about: a named harness that shares NO API style
+          // with the model. Rerouting is still the answer here (a WS upgrade
+          // cannot refuse with a 400 the way `createHeadlessSession` does without
+          // taking the session's whole channel down, and the stale `vibe-agent-id`
+          // it was written for is the majority of this input) — but it must not be
+          // SILENT. planning#389 measured the cost of silence on the headless path:
+          // a user asked for Codex, got Claude, and was billed $0.14 with
+          // `pending_agent_notice` left NULL. So the reroute now leaves the
+          // sentence for the first turn to deliver.
+          //
+          // Only when it contradicts a harness the BROWSER explicitly asked for.
+          // A reroute that lands on the requested harness is the client's own rule
+          // agreeing with the server's, which is the ordinary "user changed the
+          // model, so the harness followed" path and has nothing to announce.
+          if (model && requestedAgent && requestedAgent !== modelOwner.id) {
+            agentRerouteNotice = buildAgentRerouteNotice(requestedAgent, modelOwner.id, model);
+          }
         } else {
           const agentInfo = agentRegistry.get(perConnectionAgentId);
           if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
@@ -663,6 +741,21 @@ export async function registerRoutes(
       // `session.agentId` is immutable.
       if (!session.agentPinned && perConnectionAgentId !== session.agentId) {
         try { sessionManager.setAgentId(sessionId, perConnectionAgentId); } catch { /* ignore */ }
+        // planning#389 — gated on the same condition as the write, so the sentence
+        // is recorded exactly when the persisted harness actually CHANGES. On the
+        // next connect the session's own row names the new harness, which can run
+        // the model, so nothing is derived and nothing is re-recorded: one notice
+        // per reroute, not one per reconnect.
+        //
+        // APPENDS rather than sets — docs/221's slot is last-write-wins because
+        // every writer described the same fact (where the branch now points), and
+        // "your harness changed" is a different fact; overwriting a branch-movement
+        // or LFS notice with it would lose one of the two.
+        if (agentRerouteNotice) {
+          try {
+            sessionManager.appendPendingAgentNotice(sessionId, agentRerouteNotice);
+          } catch { /* ignore */ }
+        }
       }
       if (selectedModel && selectedModel !== sessionModel) {
         // docs/252 — persist the SELECTION. The browser's seed carries the
@@ -725,8 +818,19 @@ export async function registerRoutes(
           : undefined;
       let selectedReasoning: string | undefined = session.reasoningEffort ?? requestedReasoning;
       {
-        const reasoningOpts = agentRegistry.get(perConnectionAgentId)?.capabilities.reasoning?.options;
-        if (selectedReasoning && !reasoningOpts?.some((o) => o.value === selectedReasoning)) {
+        // docs/274 req 14 — asked of the SELECTION, not of the harness's raw
+        // vocabulary. A harness can declare a level and honour none on a given
+        // row (grok, key-billed), so a vocabulary check would rehydrate a
+        // session with a level its every turn silently discards — and persist
+        // it, since the branch below writes the reconciled value back.
+        const reasoningSelection =
+          session.serviceId && session.billingMode && session.model
+            ? { serviceId: session.serviceId, billingMode: session.billingMode, modelId: session.model }
+            : undefined;
+        if (
+          selectedReasoning
+          && !selectionHonoursEffort(perConnectionAgentId, reasoningSelection, selectedReasoning)
+        ) {
           selectedReasoning = undefined;
         }
         if (selectedReasoning !== (session.reasoningEffort ?? undefined)) {
@@ -781,17 +885,29 @@ export async function registerRoutes(
           ? request.query.role
           : undefined;
       //
-      // **It does not need a fourth guard against re-applying a role the clear
-      // just above removed**, which cross-agent review expected it to: the seed
-      // outlives the clear, so a later connect does reach here with the role's
-      // name — and `resolveUserRole` refuses it, because the only two things
-      // that clear a role here (a retired model, a model the harness no longer
-      // lists) are both things that make the ROLE unrunnable too. A retired id
-      // lives in its mode's `retired[]` and not in its model list, so
-      // `selectionExists` is already false for it. Pinned by a test in
-      // `services/session-role.test.ts`, since it is a property of the catalogue
-      // rather than of this block.
-      if (requestedRole && !session.agentPinned && !session.roleName) {
+      // **The clear just above needs no guard of its own**: the seed outlives it,
+      // so a later connect does reach here with the role's name — and
+      // `resolveUserRole` refuses it, because the only two things that clear a
+      // role there (a retired model, a model the harness no longer lists) are
+      // both things that make the ROLE unrunnable too. A retired id lives in its
+      // mode's `retired[]` and not in its model list, so `selectionExists` is
+      // already false for it. Pinned by a test in `services/session-role.test.ts`,
+      // since it is a property of the catalogue rather than of this block.
+      //
+      // **req 18's clear is the case that argument does not cover, and it needs
+      // the fourth guard.** A role the USER cleared is perfectly runnable, so
+      // nothing downstream would refuse it — and the browser's seed sits inside
+      // a per-session memoized WebSocket URL, so a reconnect between the clear
+      // and the first message arrives here still naming it. Without
+      // `roleExplicitlyCleared` the clear would silently undo itself, standing
+      // instructions and all. It reads the row directly because "chose none" and
+      // "never chose" are one value in `SessionInfo` on purpose.
+      if (
+        requestedRole
+        && !session.agentPinned
+        && !session.roleName
+        && !sessionManager.roleExplicitlyCleared(sessionId)
+      ) {
         try {
           const seededRole = resolveUserRole(requestedRole, { credentialStore });
           applyRoleToSession(sessionId, seededRole, { sessionManager });
@@ -1632,8 +1748,15 @@ export async function registerRoutes(
               // alone). Reasoning is per-agent, so self-heal it here too —
               // otherwise a stale Claude `max` could ride a Codex spawn as
               // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
+              // docs/274 req 14 — against what the model being MOVED TO honours,
+              // not the new harness's vocabulary. The two differ for grok, so a
+              // `high` carried over from another harness would survive onto a
+              // key-billed grok row and be dropped before the wire every turn.
               const currentReasoning = ctx.getSelectedReasoning();
-              if (currentReasoning && !modelOwner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+              if (
+                currentReasoning
+                && !selectionHonoursEffort(modelOwner.id, verdict?.selection, currentReasoning)
+              ) {
                 ctx.setSelectedReasoning(undefined);
                 if (activeAppSessionId) {
                   sessionManager.setReasoning(activeAppSessionId, null);
@@ -1673,8 +1796,18 @@ export async function registerRoutes(
             const reasoningAgent = agentRegistry.get(ctx.getActiveAgentId());
             const effort = msg.effort;
             if (effort !== null) {
-              const allowed = reasoningAgent?.capabilities.reasoning?.options.some((o) => o.value === effort);
-              if (!allowed) {
+              // docs/274 req 14 — validated against this session's SELECTION.
+              // The vocabulary is what the CLI understands; whether this row
+              // puts it on the wire is a different question, and accepting a
+              // level the row discards stores a preference that silently does
+              // nothing (the picker no longer offers one, so this is the
+              // defence for a stale client or a direct WS caller).
+              const active = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+              const reasoningSelection =
+                active?.serviceId && active.billingMode && active.model
+                  ? { serviceId: active.serviceId, billingMode: active.billingMode, modelId: active.model }
+                  : undefined;
+              if (!selectionHonoursEffort(ctx.getActiveAgentId(), reasoningSelection, effort)) {
                 send({ type: "error", message: `Invalid reasoning effort "${effort}" for ${reasoningAgent?.name ?? "this agent"}` });
                 return;
               }
@@ -1693,8 +1826,8 @@ export async function registerRoutes(
             return;
           }
           case "set_role": {
-            // docs/272-user-selectable-roles reqs 1, 2, 4, 8, 9, 10 — start this session on a
-            // configured role.
+            // docs/272-user-selectable-roles reqs 1, 2, 4, 8, 9, 10, 18 — start this session on a
+            // configured role, or take the role off it.
             //
             // **Decide everything before mutating anything**, the rule
             // `set_model` above states: `resolveUserRole` refuses an unknown
@@ -1718,6 +1851,22 @@ export async function registerRoutes(
                 type: "error",
                 message: "A role can only be chosen before the session's first message.",
               });
+              return;
+            }
+            // req 18 — **"No role" is a choice of role, and it is the whole of
+            // this branch.** The three parameters are deliberately left where
+            // they are: the role's values are the last thing the user chose, so
+            // putting ShipIt's defaults back would undo a choice they did not
+            // ask to undo. What clearing takes away is the name and, with it,
+            // the standing instructions the first turn would otherwise carry —
+            // the one thing no parameter can express.
+            if (msg.roleName === null) {
+              // `clearRoleName`, not `setRoleName(…, null)`: the row records that
+              // the user chose none, so the `?role=` seed cannot put it back on
+              // the next reconnect. See that method for why the two clears
+              // differ.
+              sessionManager.clearRoleName(activeAppSessionId);
+              sendSelectionChanged(ctx.getActiveAgentId());
               return;
             }
             let resolvedRole;

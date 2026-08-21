@@ -54,7 +54,15 @@ export type HarnessId = AgentId;
  * credential root on disk, and `AgentRegistry.refreshAuth` — is documented at
  * `harnessesForLoginIntegration` in `./index.ts`.
  */
-export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
+export type LoginIntegrationId =
+  | "anthropic-oauth"
+  | "openai-chatgpt"
+  // planning#435 — xAI's own device-code flow (`grok login --device-auth`),
+  // which authenticates a SuperGrok / X Premium+ subscription. Named for the
+  // VENDOR and not for the harness, like its two siblings: the credential it
+  // writes is an xAI account login, and `grok` is merely the CLI that presents
+  // it.
+  | "xai-oauth";
 
 /**
  * Selects the quota-reporting implementation — what fills req 10's indicator.
@@ -73,7 +81,13 @@ export type QuotaIntegrationId =
   // in before planning#339 wrote its reader, except that here there is nothing
   // to read rather than nobody to write it. ShipIt reacts to the service's own
   // 429 instead.
-  | "opencode-go-usage";
+  | "opencode-go-usage"
+  // planning#435 — SuperGrok's weekly pool, from `/v1/billing?format=credits`
+  // on the subscription host. Read by `XaiLimitsProvider`. One window, not two:
+  // the plan has a weekly allowance and no short window at all, which the
+  // provider reports by leaving the session slot empty rather than by filling
+  // it with a dash the pill would draw for ever.
+  | "xai-plan-usage";
 
 /**
  * Per-model unit rates, USD per million tokens. **Always the service's API rate
@@ -163,6 +177,41 @@ export interface ModelDef {
   price: ModelPrice;
   /** Absorbs the server's old `MODEL_CONTEXT_WINDOWS` record. */
   contextWindow: ContextWindow;
+  /**
+   * docs/274 req 14 — the reasoning-effort levels THIS row actually honours,
+   * narrowing the harness's {@link AgentReasoningCapability}. Absent means "the
+   * harness's list applies unchanged", which is every pre-existing row, so this
+   * field costs nothing to ignore.
+   *
+   * It lives on the MODEL rather than on the mode or the harness because that
+   * is where the fact is, and the two alternatives are each wrong in a way that
+   * shows up on screen:
+   *
+   *   - **Per-harness** cannot express it at all. `--reasoning-effort` is
+   *     honoured by grok's SUBSCRIPTION selections and silently discarded by
+   *     its key-billed ones (both recorder-verified, docs/274 Resolved
+   *     questions), so one list per harness must either offer levels that do
+   *     nothing or hide levels that work.
+   *   - **Per-mode** is the right granularity for the host and the API style,
+   *     but not for this: within xAI's one subscription mode, `grok-4.6` offers
+   *     `xhigh` and `grok-4.5` does not. A mode-level list would have to be the
+   *     intersection, dropping a level the user is paying for.
+   *
+   * A `ModelDef` is already scoped to *this service, under this mode* (see
+   * `styles`), so per-model is per-mode plus the extra precision, at no extra
+   * concept.
+   *
+   * **An empty array is meaningful and is not the same as absent**: it says
+   * this row honours NO levels, so the control is hidden rather than
+   * defaulted. That is the key-mode grok case, and it is why the field is
+   * `string[] | undefined` and never just falsy-checked.
+   *
+   * INVARIANT: every entry must be a `value` of the owning harness's
+   * `capabilities.reasoning.options` — the harness owns the vocabulary and its
+   * labels, this only selects from it. `catalogue.test.ts` enforces it, because
+   * a typo here would silently render a level with no label.
+   */
+  reasoningEfforts?: string[];
 }
 
 /**
@@ -216,7 +265,31 @@ export type CredentialTarget =
  * outage into a stopped session.
  */
 export type ModeCredential =
-  | { via: "account"; login: LoginIntegrationId }
+  | {
+      via: "account";
+      login: LoginIntegrationId;
+      /**
+       * The harnesses that can authenticate with this ACCOUNT — same meaning as
+       * the `string` variant's field below, and here for a sharper reason.
+       *
+       * An API key is often genuinely portable: any harness that speaks the
+       * wire format can use it, so `carriers` is the exception there. An OAuth
+       * account is the opposite — it is a login to one vendor's account system,
+       * and no harness outside that vendor's own CLI can present it. So the
+       * safe default would be "nobody", except that the style join covered this
+       * for as long as each account-bearing service had exactly one harness
+       * that spoke its style.
+       *
+       * That stopped being true with Grok (planning#435): it carries an
+       * `account` target AND speaks `openai-responses`, so the join silently
+       * offered it OpenAI's ChatGPT subscription — a turn that would 401, and
+       * the same hole docs/268 found when OpenCode was offered Anthropic's
+       * env-OAuth token. Caught by `catalogue.test.ts`'s login fan-out
+       * assertion, which is why that test enumerates harnesses per login rather
+       * than counting them.
+       */
+      carriers?: HarnessId[];
+    }
   | {
       via: "string";
       /**
@@ -278,12 +351,25 @@ interface ModeCommon {
  * difference — `IMPLEMENTED_QUOTA_INTEGRATIONS` in `./index.ts` is what
  * actually decides whether a mode shows a read-out.
  *
- * So if a future service has a subscription with no usage API at all, the fix
- * is an explicit no-reader variant of this union, not another dangling id.
+ * A third arm — `quota: null`, "the vendor publishes nothing to read" — lived
+ * here for one release and has been removed, because the service it was written
+ * for turned out not to be that case: xAI does publish its weekly pool, and the
+ * probe that said otherwise had missed a query parameter (planning#454). It is
+ * recorded here rather than silently dropped, because the argument for it was
+ * sound and a future service may genuinely need it. What the episode adds is
+ * where the burden of proof sits: `null` asserts something about the VENDOR
+ * that no amount of code review can check, so it should be written only from a
+ * probe that looked for a reader and found none — not from one that stopped at
+ * the first plausible answer.
+ *
+ * Until then a subscription with no reader declares an id nothing implements,
+ * the way `opencode-go-usage` does, and `IMPLEMENTED_QUOTA_INTEGRATIONS` in
+ * `./index.ts` is the single list that decides what a user actually sees.
  */
 export type BillingModeDef =
   | (ModeCommon & { kind: "key" })
   | (ModeCommon & { kind: "sub"; quota: QuotaIntegrationId });
+
 
 export interface ServiceDef {
   id: string;

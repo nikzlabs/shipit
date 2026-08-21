@@ -19,6 +19,7 @@ import { persistTurnInProgress, emitNoticePostTurn } from "./chat-card-persisten
 import { deleteSession } from "./services/session.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
+import { reclaimRegenerableSessionDirs } from "./disk-utils.js";
 import { hasUrlCredentials, repoUrlToHash, stripRemoteUrlCredentials } from "./git-utils.js";
 
 // ---- Migration + startup ----
@@ -106,7 +107,11 @@ export async function runRepoMigration(
  * **Warm sessions are included** (`listAllIncludingWarm`): `listAll` filters
  * `warm = 0`, and a warm row is a real pre-provisioned checkout that a later
  * claim hands to a user — skipping it left the token in the one workspace most
- * likely to be handed out next (independent review, finding 2).
+ * likely to be handed out next (independent review, finding 2). At boot there
+ * are now none left to find: {@link retireWarmSessions} runs earlier and deletes
+ * every warm row *and* its checkout, which reaches the same end more thoroughly.
+ * The clause stays because this function does not depend on that ordering — a
+ * warm row present when it runs is still scrubbed.
  *
  * Boot-only and idempotent: a clean installation reads a few tiny queries and
  * one small file per session, and rewrites nothing. It converges within one
@@ -281,6 +286,93 @@ async function scrubGitRemotes(dir: string): Promise<boolean> {
 }
 
 /**
+ * A warm session does not survive an orchestrator restart. Retire every
+ * `warm = 1` row — the pool sessions a repo points at, and the
+ * claimed-but-never-graduated drafts nothing points at — clearing each repo's
+ * `warmSessionId` and reclaiming the clone.
+ *
+ * The point is the **standby container**. A standby is a container nobody has
+ * claimed, built by the *previous* process from the *previous* worker image,
+ * and it is invisible to every mechanism that would otherwise reap it: the idle
+ * enforcer skips standbys by design (`idle-enforcer.ts`), and boot's
+ * `rediscoverContainers` re-adopts it standby flag and all. So before this it
+ * survived indefinitely, and a user claiming that warm session after a deploy
+ * got a grandfathered worker — with a pre-install and an overlay base built
+ * under the image the deploy just replaced. Grandfathering a *real* session's
+ * container across a deploy is deliberate (docs/113: never kill work in
+ * flight); a standby has no work in flight, so the same argument says the
+ * opposite for it.
+ *
+ * This kills no container itself — `reapStandbyContainers` does, by label, from
+ * `setupContainerManager`. What this owns is the ROW, and the ordering is still
+ * load-bearing: **it must run before `setupContainerManager`.** Those rows are
+ * what `cleanupOrphanContainers` and `rediscoverContainers` read
+ * (`sessionManager.allIds()`), so retiring first means the sweep treats each
+ * standby as an orphan and adoption never re-registers one that is about to be
+ * reaped. Run it afterwards and the boot ends with adopted, tracked containers
+ * whose sessions no longer exist. Guard:
+ * `integration_tests/standby-container.test.ts`.
+ *
+ * The pool is not left cold: every ready repo now has no `warmSessionId`, so
+ * {@link scheduleStartupTasks}'s re-warm loop — which already handles exactly
+ * that state — makes a fresh warm session with a fresh standby on the new
+ * image. Discarding the clone rather than keeping it and re-booting only the
+ * container is deliberate: `warmSessionForRepo` is one path that clones AND
+ * boots AND pre-installs, so reusing it costs a local hardlinked clone and adds
+ * no second warm mechanism to keep in step with the first.
+ *
+ * Never rejects — a failure here must not stop the orchestrator from booting.
+ * Returns the number of warm sessions retired.
+ */
+export async function retireWarmSessions(deps: {
+  repoStore: RepoStore;
+  sessionManager: SessionManager;
+  chatHistoryManager?: ChatHistoryManager;
+  usageManager?: UsageManager;
+  presentStore?: { deleteSession: (sessionId: string) => void };
+}): Promise<number> {
+  let retired = 0;
+  try {
+    for (const repo of deps.repoStore.list()) {
+      if (repo.warmSessionId) deps.repoStore.setWarmSessionId(repo.url, undefined);
+    }
+    // `listAll` filters `warm = 0`, so the rows this is about are precisely the
+    // ones it cannot see.
+    for (const session of deps.sessionManager.listAllIncludingWarm()) {
+      if (!session.warm) continue;
+      try {
+        if (session.workspaceDir) {
+          // planning#194's helper, not a blanket `rm` of the session root: it
+          // takes the checkout AND the overlay upper (the expensive half every
+          // hand-rolled reclaim has historically orphaned) and preserves
+          // `uploads/`, which a claimed-but-ungraduated draft can already hold.
+          const { failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
+          for (const f of failed) {
+            console.warn(`[warm] Could not reclaim ${f.dir} for retired warm session ${session.id}: ${f.message}`);
+          }
+        }
+        deleteSession(
+          deps.sessionManager, session.id,
+          deps.chatHistoryManager, deps.usageManager, undefined, deps.presentStore,
+        );
+        retired += 1;
+      } catch (err) {
+        console.warn(`[warm] Failed to retire warm session ${session.id}:`, getErrorMessage(err));
+      }
+    }
+  } catch (err) {
+    console.error("[warm] Warm-session retirement failed:", getErrorMessage(err));
+  }
+  if (retired > 0) {
+    console.log(
+      `[warm] Retired ${retired} warm session(s) from the previous process — `
+      + "their standby containers are reaped as orphans by the boot sweep, and the pool re-warms on the new image",
+    );
+  }
+  return retired;
+}
+
+/**
  * docs/088 Phase 2 follow-up: refresh any MCP OAuth tokens whose access
  * tokens are within the safety margin of expiry.
  *
@@ -325,6 +417,13 @@ export async function runMcpOAuthStartupRefresh(opts: {
 /**
  * Schedule startup tasks: validate warm sessions, re-warm missing, clean up zombies.
  * Returns the timer handle so it can be cleared on shutdown.
+ *
+ * Runs after {@link retireWarmSessions}, which has already dropped every
+ * `warm = 1` row and cleared every repo's `warmSessionId`. So on a normal boot
+ * the two sweeps below find nothing and the re-warm loop does all the work —
+ * they are kept for the rows retirement cannot recognise (a zombie whose warm
+ * flag was already cleared, identifiable only by its title) and for a warm
+ * session created *after* retirement by some other path.
  */
 export function scheduleStartupTasks(
   startupDeps: StartupDeps,

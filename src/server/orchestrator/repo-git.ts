@@ -309,11 +309,11 @@ export class RepoGit {
    * both the ordering and the object awareness. Nothing about that half changes.
    *
    * **The SOURCE is what failed.** The clone below is a bare `safeSimpleGit()` —
-   * no `baseDir`, so no ownership predicate, so it runs as **root** — and once
-   * `SHIPIT_GIT_STRICT_OWNERSHIP` removes `safe.directory=*`, root reading a
-   * uid-1000 bare cache is `fatal: detected dubious ownership in repository at
-   * '<cache>'`. 6 of 10 production caches were uid 1000, so most repositories
-   * could not start a session, and the arming was rolled back on this line.
+   * no `baseDir`, so no ownership predicate, so it runs as **root** — and ShipIt
+   * grants no `safe.directory`, so root reading a uid-1000 bare cache is
+   * `fatal: detected dubious ownership in repository at '<cache>'`. 6 of 10
+   * production caches were uid 1000, so most repositories could not start a
+   * session; that is what rolled back the first arming attempt, on this line.
    *
    * So the question is narrower than "pick a uid": **as which identity may ShipIt
    * read a shared cache it does not own?** The answer is *as itself, having first
@@ -341,8 +341,9 @@ export class RepoGit {
    */
   async cloneFromCache(sessionDir: string, remoteUrl?: string): Promise<void> {
     // docs/272-shared-cache-ownership req 4 — the source must be ShipIt's own
-    // before root reads it, or git refuses the repository once armed. One `lstat`
-    // when it already is.
+    // before root reads it, or git refuses the repository outright. Not "once
+    // armed": ShipIt grants no `safe.directory` (planning#410), so the refusal is
+    // unconditional. One `lstat` when it already is.
     ensureSharedTreeOwnedByShipIt(this.repoDir, "session clone from bare cache");
     // git clone --local creates hardlinks for objects on the same volume
     await safeSimpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);

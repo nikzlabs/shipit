@@ -31,7 +31,7 @@ identity — see the "Services share the agent's user" section of
 What this means in practice:
 
 - **Writable:** `/workspace`, `/persist`, `/dep-cache`, `/credentials`,
-  and your home `/home/shipit` (including `~/.claude`, `~/.codex`, the npm
+  and your home `/home/shipit` (including `~/.claude`, `~/.codex`, `~/.grok`, the npm
   global prefix at `~/.npm-global`, and the npm cache at `~/.npm`).
 - **Persistent scratch:** `/persist` is a writable, non-git directory that
   **survives container restarts** (like `/workspace`, but never committed). Put
@@ -60,7 +60,7 @@ What this means in practice:
 | `/workspace` | Project root. This is the git repo. Your working directory. |
 | `/persist` | **Persistent, non-git scratch.** Writable; survives container restarts but is never committed. Put files here that the user should still see tomorrow without polluting the repo (e.g. presented artifacts you don't want tracked). Cleared only by a full session reset. |
 | `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
-| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex` or `~/.local/share/opencode`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex` → `/credentials/...`). Write-protected (see below). |
+| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, `~/.local/share/opencode` or `~/.grok`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.grok` → `/credentials/...`). Write-protected (see below). |
 | `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |
 | `/home/shipit` | Your home directory. Agent credentials (via symlink), npm global prefix, and caches live here. |
 
@@ -80,7 +80,7 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
 - **Node.js** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version). The container bakes Node 24, but **a repo's own Node pin wins** — see [Node version](#node-version) below.
 - **git**, **git-lfs**, **curl** (see [Git LFS](#git-lfs) below)
 - **python3**, **make**, **g++** (for native npm addons)
-- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex, and `opencode` / OpenCode are all installed by default; an install can narrow the set) are installed; ShipIt invokes whichever the user selected for the session
+- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex and `opencode` / OpenCode are installed by default; `grok` / Grok Build is available but off by default, and an install can narrow or widen the set) are installed; ShipIt invokes whichever the user selected for the session
 
   Codex authentication has two modes — they are not interchangeable:
 
@@ -146,7 +146,18 @@ pick up changes automatically. No need to restart dev servers after code edits.
 install reads — trigger an automatic install + service restart (throttled with
 a 30s cooldown). This covers **git operations** (`git reset`/`checkout`/`rebase`
 that change the dependency tree), not just direct edits — so a reset to a commit
-that added a dependency reinstalls and restarts the preview automatically.
+that added a dependency reinstalls and restarts the preview automatically. It
+also covers the rewrites **ShipIt itself** performs on the session from outside
+the container (syncing/rebasing onto the base, a rollback, a post-merge reset
+onto the base), which are reported directly rather than through the file
+watcher. The one case it does not cover is an `agent.install` that is not
+content-keyable — a codegen step or a shell script with no declared
+`install-inputs`; there ShipIt has no way to tell a dependency change from any
+other, and you re-run the install yourself. **You are told when that happens**,
+and when a re-install fails: both post a `[System]` note and add a
+`Dependencies:` line to `shipit service list`. Check that line before treating a
+`Failed to resolve import` as a code fault — the service will still report
+`running`, and restarting it will not help.
 
 **Compose services**: Project services (dev servers, databases, caches) run as
 Docker Compose containers managed by ShipIt. Define them in

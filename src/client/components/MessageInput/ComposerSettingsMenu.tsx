@@ -30,7 +30,12 @@ import {
 import { modelRowsFor } from "../../utils/model-rows.js";
 import { useReasoningPickerState } from "../ReasoningSelector.js";
 import { formatModelName } from "../../utils/format-model.js";
-import { ROLE_PILL_CLASS, roleUnavailableDetail, useRolePickerState } from "./RoleSelector.js";
+import {
+  ROLE_LOCKED_REASON,
+  ROLE_PILL_CLASS,
+  roleUnavailableDetail,
+  useRolePickerState,
+} from "./RoleSelector.js";
 import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
@@ -210,6 +215,7 @@ export function ComposerSettingsMenu({
   seedFromHistory = false,
   permissionMode,
   onPermissionModeChange,
+  modeInRow = false,
   guardedModelOk = true,
   disabled = false,
   pickersLocked = false,
@@ -241,6 +247,13 @@ export function ComposerSettingsMenu({
   seedFromHistory?: boolean;
   permissionMode: PermissionMode;
   onPermissionModeChange?: (mode: PermissionMode) => void;
+  /**
+   * docs/260 req 19 — the composer row is carrying the mode control itself, so
+   * this menu drops its Mode row rather than offering the same setting twice.
+   * Only the quick-capture overlay on a desktop viewport does this; everywhere
+   * else the compact layout owns the mode, as req 3 says.
+   */
+  modeInRow?: boolean;
   /** False when the effective model cannot run guarded (Haiku) — same gate the standalone selector applies. */
   guardedModelOk?: boolean;
   /** The composer is dead as a whole (docs/257 `disabledReason`) — the anchor does not open. */
@@ -257,8 +270,11 @@ export function ComposerSettingsMenu({
    * inert.
    */
   pickersLocked?: boolean;
-  /** docs/272-user-selectable-roles req 1 — start this session on the named role. */
-  onRoleChange?: (roleName: string) => void;
+  /**
+   * docs/272-user-selectable-roles reqs 1, 18 — start this session on the named
+   * role, or take the role off it with `undefined`.
+   */
+  onRoleChange?: (roleName: string | undefined) => void;
   /** docs/272 req 5 — the role IN FORCE, which replaces the three rows below it. */
   sessionRoleName?: string;
   /** docs/272 req 15 — "Adjust parameters…" was chosen, so the three rows are back. */
@@ -272,7 +288,12 @@ export function ComposerSettingsMenu({
    * server answer to follow) stops naming the role.
    */
   onLeaveRole?: () => void;
-  /** docs/272 req 4 — the first turn has run, so no role applies any more. */
+  /**
+   * docs/272 req 4 — the first turn has run, so no role can be CHOSEN any more.
+   * Not "no role applies": the Role row still names the role in force, and still
+   * opens onto the parameters it set until those have been asked for
+   * (`roleRowOpens`).
+   */
   roleLocked?: boolean;
 }) {
   const [panel, setPanel] = useState<Panel>("root");
@@ -281,8 +302,15 @@ export function ComposerSettingsMenu({
   // still in force keeps its row even if the list has since emptied, or the row
   // naming the session would vanish while the session still runs as it.
   const showRole = !!onRoleChange && (hasRoles || !!sessionRoleName);
-  // req 5 — the three rows the role replaced, folded away until asked for.
+  // req 5 — the three rows the role replaced, folded away until asked for. The
+  // lock is deliberately not in this: it takes the choice of role, not the route
+  // to what the role set (req 4), and it does not put the rows back unasked.
   const showParams = !sessionRoleName || roleParamsRevealed;
+  // …which is why the Role row still opens once locked. What is behind it there
+  // is "Adjust parameters…" and no roles; once those have been asked for there is
+  // nothing left, and the row goes inert rather than opening onto an empty panel.
+  const roleRowOpens =
+    !pickersLocked && (!roleLocked || (!!sessionRoleName && !roleParamsRevealed));
 
   const harness = useHarnessPickerState({ agents, activeAgentId, hasActiveSession, seedFromHistory });
   const model = useModelPickerState({
@@ -395,6 +423,11 @@ export function ComposerSettingsMenu({
       >
         {panel === "root" && (
           <>
+            {/* docs/260 req 19 — absent, not inert, when the row carries the
+                control: a Mode row here as well would be a second place to
+                change one setting, and the two would have to agree about which
+                is the real one. */}
+            {!modeInRow && (
             <RootRow
               testId="composer-settings-row-mode"
               icon={
@@ -409,13 +442,14 @@ export function ComposerSettingsMenu({
               valueAccent={!modeIsDefault}
               onSelect={canPickMode ? () => setPanel("mode") : undefined}
             />
+            )}
             {showRole && (
               <RootRow
                 testId="composer-settings-row-role"
                 icon={<BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />}
                 label="Role"
                 value={sessionRoleName ?? "None"}
-                onSelect={roleLocked || pickersLocked ? undefined : () => setPanel("role")}
+                onSelect={roleRowOpens ? () => setPanel("role") : undefined}
                 trailing={
                   roleLocked ? (
                     <LockIcon
@@ -481,7 +515,33 @@ export function ComposerSettingsMenu({
           <>
             <PanelHeader title="Role" onBack={() => setPanel("root")} />
             <DropdownMenuSeparator />
-            {roles.map((role) => {
+            {/* req 4 — a locked panel lists no roles. The server refuses
+                `set_role` on a pinned session, so rows here would all be
+                unselectable; the one line says why, and "Adjust parameters…"
+                below it is what the lock does NOT take away. */}
+            {roleLocked && (
+              <p
+                className="px-3 py-2 text-xs text-(--color-text-tertiary)"
+                data-testid="composer-settings-role-locked"
+              >
+                {ROLE_LOCKED_REASON}
+              </p>
+            )}
+            {/* req 18 — the same first entry the wide row's list carries, and
+                what the panel shows as chosen while no role is in force. */}
+            {!roleLocked && (
+              <ChoiceRow
+                testId="composer-settings-role-none"
+                label="No role"
+                description="Run this session without a role's standing instructions"
+                isCurrent={!sessionRoleName}
+                onSelect={() => {
+                  onRoleSelected?.();
+                  onRoleChange?.(undefined);
+                }}
+              />
+            )}
+            {!roleLocked && roles.map((role) => {
               const unavailable = roleUnavailableDetail(role);
               return (
                 <ChoiceRow

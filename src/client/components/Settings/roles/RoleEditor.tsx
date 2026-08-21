@@ -53,6 +53,9 @@ import {
   type HarnessChoice,
   type ServiceChoice,
 } from "../../pickers/model-choice.js";
+import { reasoningOptionsFor } from "../../../../server/shared/catalogue/index.js";
+import type { ModelSelection } from "../../../../server/shared/catalogue/index.js";
+import type { AgentId } from "../../../../server/shared/types.js";
 import type { AgentOption, EligibleModelOption } from "../../../agent-types.js";
 import type { RoleView, RoleWrite } from "../../../../server/shared/types/agent-types.js";
 
@@ -61,14 +64,23 @@ const INPUT_CLASS =
   + "text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none "
   + "focus:border-(--color-border-focus)";
 
-/** The five parameters, as the editor holds them while they are being edited. */
+/**
+ * The five parameters, as the editor holds them while they are being edited.
+ *
+ * `reasoningEffort` is `undefined` for **Default** — the same encoding the
+ * composer's picker uses (`ReasoningSelector.tsx`), and the same one the role is
+ * stored and spawned with.
+ */
 interface DraftParams {
   harnessId: string;
   serviceId: string;
   billingMode: "sub" | "key";
   modelId: string;
-  reasoningEffort: string;
+  reasoningEffort: string | undefined;
 }
+
+/** What both pickers show for "no flag, the harness's own level". */
+const DEFAULT_LEVEL_LABEL = "Default";
 
 export function RoleEditor({
   role,
@@ -102,6 +114,20 @@ export function RoleEditor({
   const harness = harnesses.find((h) => h.id === params?.harnessId);
   const modelLabel =
     serviceModels.find((m) => m.modelId === params?.modelId)?.label ?? params?.modelId ?? "";
+  /**
+   * docs/274 req 14 — the levels this role's SELECTION honours, which is what
+   * both the menu and the harness/model moves below must go on. A harness can
+   * declare levels and honour none on a given row (grok, key-billed), and
+   * `validateRoleParams` refuses a level in exactly that case.
+   */
+  const roleLevels =
+    params?.harnessId && params.serviceId && params.billingMode && params.modelId
+      ? reasoningOptionsFor(params.harnessId as AgentId, {
+          serviceId: params.serviceId,
+          billingMode: params.billingMode,
+          modelId: params.modelId,
+        })
+      : (harness?.reasoning?.options ?? []);
 
   /**
    * Move the draft onto a new model, keeping the harness and the level **only
@@ -119,13 +145,23 @@ export function RoleEditor({
         serviceId: model.serviceId,
         billingMode: model.billingMode,
         modelId: model.modelId,
-        reasoningEffort: prev?.reasoningEffort ?? "",
+        reasoningEffort: prev?.reasoningEffort,
       };
       const valid = harnessesForModel(agentList, next);
       const harnessId = valid.some((h) => h.id === next.harnessId)
         ? next.harnessId
         : (valid[0]?.id ?? next.harnessId);
-      return { ...next, harnessId, reasoningEffort: effortFor(valid, harnessId, next.reasoningEffort) };
+      return {
+        ...next,
+        harnessId,
+        // The SELECTION being moved to, not the one being moved from — a level
+        // valid on the old row can be meaningless on the new one.
+        reasoningEffort: effortFor(valid, harnessId, next.reasoningEffort, {
+          serviceId: next.serviceId,
+          billingMode: next.billingMode,
+          modelId: next.modelId,
+        }),
+      };
     });
   };
 
@@ -140,7 +176,14 @@ export function RoleEditor({
         ? {
             ...prev,
             harnessId: choice.id,
-            reasoningEffort: effortFor([choice], choice.id, prev.reasoningEffort),
+            reasoningEffort: effortFor(
+              [choice],
+              choice.id,
+              prev.reasoningEffort,
+              prev.serviceId && prev.billingMode && prev.modelId
+                ? { serviceId: prev.serviceId, billingMode: prev.billingMode, modelId: prev.modelId }
+                : undefined,
+            ),
           }
         : prev,
     );
@@ -164,11 +207,16 @@ export function RoleEditor({
           ? { kind: "auto" }
           : {
               kind: "pinned",
-              harnessId: params.harnessId as "claude" | "codex" | "opencode",
+              harnessId: params.harnessId as "claude" | "codex" | "opencode" | "grok",
               serviceId: params.serviceId,
               billingMode: params.billingMode,
               modelId: params.modelId,
-              reasoningEffort: params.reasoningEffort,
+              // Omitted for Default — the absence IS the value, so sending an
+              // explicit `undefined` (or `""`) would be a different thing on the
+              // wire from what the role means.
+              ...(params.reasoningEffort !== undefined
+                ? { reasoningEffort: params.reasoningEffort }
+                : {}),
             },
     });
   };
@@ -203,12 +251,22 @@ export function RoleEditor({
             </Field>
           )}
 
-          <Field label="Description" hint="Optional — what this role is for.">
+          {/*
+            docs/264 req 19 — the hint names the READER, not just the field. The
+            description is the one thing the agent reads to decide which role an
+            unnamed request means and how much its prompt has to spell out, and a
+            user who thinks it is a label for themselves writes "The thorough
+            one" instead of something either job can be done from.
+          */}
+          <Field
+            label="Description"
+            hint="Optional — what this role is for. The agent reads it to pick this role and to pitch the prompts it sends here."
+          >
             <input
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="The thorough one"
+              placeholder="Deep research on a hard problem — takes an open brief"
               className={INPUT_CLASS}
               data-testid="role-editor-description"
             />
@@ -279,16 +337,27 @@ export function RoleEditor({
                 {/*
                   The level's options come from the harness the ROLE names, not
                   from a derived one — the whole reason req 6 makes the harness
-                  part of a role. A harness this install no longer has declares
-                  nothing, so the stored level is shown as text rather than as a
-                  menu of one wrong answer.
+                  part of a role.
+
+                  **"Default" leads the list, exactly as it does in the
+                  composer.** It is a level the user picks, not a blank: the role
+                  stores no level and the harness runs at its own. Offering a
+                  different option set here from the one the same knob shows
+                  beside the message box was the inconsistency this fixes
+                  (docs/264 req 1's resolved question).
+
+                  A harness this install no longer has declares nothing, so the
+                  stored level is shown as text rather than as a menu of one
+                  wrong answer — but Default still reads as "Default" there,
+                  since it needs no harness to mean what it means.
                 */}
-                {harness?.reasoning && harness.reasoning.options.length > 0 ? (
+                {/* docs/274 req 14 — the levels this role's SELECTION honours, not
+                    the harness's vocabulary. `validateRoleParams` refuses a level
+                    a selection does not honour, so offering the vocabulary here
+                    renders options the save then rejects. */}
+                {harness?.reasoning && roleLevels.length > 0 ? (
                   <Picker
-                    label={
-                      harness.reasoning.options.find((o) => o.value === params.reasoningEffort)
-                        ?.label ?? params.reasoningEffort
-                    }
+                    label={levelLabel(roleLevels, params.reasoningEffort)}
                     icon={<BrainIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />}
                     ariaLabel={`${harness.reasoning.label} for this role`}
                     triggerTestId="role-editor-reasoning-trigger"
@@ -297,24 +366,25 @@ export function RoleEditor({
                     menuWidth="w-48"
                     disabled={busy}
                   >
-                    {harness.reasoning.options.map((option) => (
-                      <PickerOption
-                        key={option.value}
-                        label={option.label}
-                        selected={option.value === params.reasoningEffort}
-                        onSelect={() =>
-                          setParams((prev) =>
-                            prev ? { ...prev, reasoningEffort: option.value } : prev,
-                          )
-                        }
-                        testId={`role-editor-reasoning-option-${option.value}`}
-                        indent
-                      />
-                    ))}
+                    {[{ value: undefined, label: DEFAULT_LEVEL_LABEL }, ...roleLevels]
+                      .map((option) => (
+                        <PickerOption
+                          key={option.value ?? "__default__"}
+                          label={option.label}
+                          selected={option.value === params.reasoningEffort}
+                          onSelect={() =>
+                            setParams((prev) =>
+                              prev ? { ...prev, reasoningEffort: option.value } : prev,
+                            )
+                          }
+                          testId={`role-editor-reasoning-option-${option.value ?? "default"}`}
+                          indent
+                        />
+                      ))}
                   </Picker>
                 ) : (
                   <Readout testId="role-editor-reasoning-readout">
-                    {params.reasoningEffort}
+                    {params.reasoningEffort ?? DEFAULT_LEVEL_LABEL}
                   </Readout>
                 )}
               </div>
@@ -474,6 +544,16 @@ function initialParams(
 ): DraftParams | undefined {
   if (role?.params.kind === "pinned") {
     const { harnessId, serviceId, billingMode, modelId, reasoningEffort } = role.params;
+    // **Verbatim, including an absent level** — `undefined` IS the draft's
+    // Default, the same encoding every other line in this file uses.
+    //
+    // Not `?? ""`, which is what docs/274 put here when a stored absent level
+    // only ever meant "this harness declares none". It breaks twice now that
+    // absent means Default on any harness: `levelLabel` finds no option whose
+    // value is `""` and renders the trigger EMPTY, and `submit` tests
+    // `!== undefined`, so it would send `reasoningEffort: ""` — which the server
+    // refuses outright ("must be a non-empty string, or omitted for Default").
+    // Opening an existing Default role and pressing Save would fail.
     return { harnessId, serviceId, billingMode, modelId, reasoningEffort };
   }
   if (role) return undefined; // the reviewer — its params are the two slot cards
@@ -486,13 +566,47 @@ function initialParams(
     serviceId: first.serviceId,
     billingMode: first.billingMode,
     modelId: first.modelId,
-    reasoningEffort: effortFor(valid, harnessId, ""),
+    // A new role opens at **Default**, not at whichever level the harness
+    // happens to declare first. The old first-option pick meant a new Claude
+    // role silently opened on "Low" and a new Codex one on "None" — an
+    // arbitrary answer to a question the user had not been asked.
+    reasoningEffort: undefined,
   };
 }
 
-/** The level to hold: the current one where the harness declares it, else its first. */
-function effortFor(harnesses: HarnessChoice[], harnessId: string, current: string): string {
-  const options = harnesses.find((h) => h.id === harnessId)?.reasoning?.options ?? [];
-  if (options.length === 0) return current;
-  return options.some((o) => o.value === current) ? current : options[0].value;
+/**
+ * The level to hold when the harness changes: the current one where the new
+ * harness declares it, else **Default**.
+ *
+ * Falling back to Default rather than to the harness's first option keeps this
+ * honest about what it does not know. The user picked "high" on a harness that
+ * is going away; the new harness not declaring "high" says nothing about which
+ * of ITS levels they would have wanted, so the editor drops to the one answer
+ * that needs no guess and shows it.
+ */
+function effortFor(
+  harnesses: HarnessChoice[],
+  harnessId: string,
+  current: string | undefined,
+  selection?: ModelSelection,
+): string | undefined {
+  if (current === undefined) return undefined;
+  // Asked of the SELECTION when there is one (docs/274 req 14): a level the new
+  // row does not honour must drop to Default, exactly as a level the new harness
+  // does not declare does. Without the selection this falls back to the
+  // vocabulary, which is the pre-catalogue answer.
+  const options = selection
+    ? reasoningOptionsFor(harnessId as AgentId, selection)
+    : (harnesses.find((h) => h.id === harnessId)?.reasoning?.options ?? []);
+  if (options.length === 0) return undefined;
+  return options.some((o) => o.value === current) ? current : undefined;
+}
+
+/** A level's display label, with `undefined` reading as "Default". */
+function levelLabel(
+  options: { value: string; label: string }[],
+  current: string | undefined,
+): string {
+  if (current === undefined) return DEFAULT_LEVEL_LABEL;
+  return options.find((o) => o.value === current)?.label ?? current;
 }

@@ -27,7 +27,7 @@ const cssPath = path.join(dir, "index.css");
 const themesDir = path.join(dir, "themes");
 
 /** Themes whose <html> class receives the dark palette overrides. */
-const DARK_THEMES = ["dark", "midnight", "forest", "rose", "claude", "codex", "opencode", "solarized", "high-contrast"];
+const DARK_THEMES = ["dark", "midnight", "forest", "rose", "claude", "codex", "opencode", "grok", "solarized", "high-contrast"];
 
 /**
  * Status colors that appear as sidebar glyphs on or beside a session row — the

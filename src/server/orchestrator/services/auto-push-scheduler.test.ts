@@ -186,6 +186,105 @@ describe("auto-push scheduler — the push does not depend on a runner", () => {
     expect(runner.endPostTurnWork).toHaveBeenCalledTimes(1);
   });
 
+  it("releases the lease on the runner that took it when the runner is replaced before the push fires", async () => {
+    // planning#424. The release used to re-resolve the runner by session id, so
+    // a runner disposed and rebuilt while a push was armed received a release
+    // for a lease it never took — its own post-turn hold went short and the
+    // enforcer could reclaim it mid-push — while the predecessor's hold leaked.
+    // The lease must unwind on the ORIGINAL object: the disposed predecessor's
+    // counter returns to zero (harmless, nobody consults it), and the
+    // successor's hold is untouched.
+    const original = fakeRunner();
+    const successor = fakeRunner();
+    let current: SessionRunnerInterface | null = original;
+    const deps = makeDeps({ getRunner: () => current });
+    const git = fakeGit();
+    createAutoPushScheduler(deps).schedule(git, "s1");
+    expect(original.beginPostTurnWork).toHaveBeenCalledTimes(1);
+
+    // A forced disposal or a crash-rebuild swaps the session's runner while
+    // the push is armed.
+    current = successor;
+
+    await fireDebounce();
+
+    expect(original.endPostTurnWork).toHaveBeenCalledTimes(1);
+    expect(successor.endPostTurnWork).not.toHaveBeenCalled();
+    // The push itself is host-side git and must not care about the swap.
+    expect(git.push).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the original runner's lease when the pending push is cancelled after a runner replacement", () => {
+    // The public `cancel` (a synchronous push already shipped the work) drops
+    // the armed timer. Its release must land on the runner that took the lease,
+    // not on the successor that happens to exist now.
+    const original = fakeRunner();
+    const successor = fakeRunner();
+    let current: SessionRunnerInterface | null = original;
+    const scheduler = createAutoPushScheduler(makeDeps({ getRunner: () => current }));
+    scheduler.schedule(fakeGit(), "s1");
+    current = successor;
+
+    scheduler.cancel("s1");
+
+    expect(original.endPostTurnWork).toHaveBeenCalledTimes(1);
+    expect(successor.endPostTurnWork).not.toHaveBeenCalled();
+  });
+
+  it("superseding a pending push releases the old runner's lease and holds the current one for the replacement", async () => {
+    // Re-arming (`schedule` once per turn, or the retry chain) drops the
+    // pending timer and arms a fresh one. Each lease is released on the object
+    // it was taken on: the superseded hold unwinds the ORIGINAL runner, and the
+    // replacement hold protects the CURRENT one — never the other way around.
+    const original = fakeRunner();
+    const successor = fakeRunner();
+    let current: SessionRunnerInterface | null = original;
+    const deps = makeDeps({ getRunner: () => current });
+    const git = fakeGit();
+    const scheduler = createAutoPushScheduler(deps);
+    scheduler.schedule(git, "s1");
+    current = successor;
+    scheduler.schedule(git, "s1"); // superseded before it fired
+
+    expect(original.beginPostTurnWork).toHaveBeenCalledTimes(1);
+    expect(original.endPostTurnWork).toHaveBeenCalledTimes(1);
+    expect(successor.beginPostTurnWork).toHaveBeenCalledTimes(1);
+    expect(successor.endPostTurnWork).not.toHaveBeenCalled();
+
+    await fireDebounce();
+
+    expect(original.endPostTurnWork).toHaveBeenCalledTimes(1); // exactly once
+    expect(successor.endPostTurnWork).toHaveBeenCalledTimes(1);
+    expect(git.push).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps each runner's lease balanced when a deferred push retries across a runner replacement", async () => {
+    // The retry chain (a rebase in flight) re-arms at PUSH_DEFER_RETRY_MS. The
+    // re-arm resolves the runner fresh, so across a replacement the first hold
+    // unwinds the original and the retry holds the successor — both exactly
+    // balanced, so neither runner ends up under-held for its own push.
+    const original = fakeRunner();
+    const successor = fakeRunner();
+    let current: SessionRunnerInterface | null = original;
+    const deps = makeDeps({ getRunner: () => current });
+    let probes = 0;
+    const git = fakeGit({
+      isRebaseInProgress: vi.fn(async () => { probes++; return probes === 1; }),
+    });
+    createAutoPushScheduler(deps).schedule(git, "s1");
+    current = successor;
+
+    await fireDebounce(); // deferred mid-rebase; the retry is now armed
+    expect(original.beginPostTurnWork.mock.calls.length).toBe(original.endPostTurnWork.mock.calls.length);
+    expect(successor.beginPostTurnWork.mock.calls.length - successor.endPostTurnWork.mock.calls.length).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(PUSH_DEFER_RETRY_MS);
+    await vi.waitFor(() => {});
+
+    expect(git.push).toHaveBeenCalledTimes(1);
+    expect(successor.beginPostTurnWork.mock.calls.length).toBe(successor.endPostTurnWork.mock.calls.length);
+  });
+
   it("cancel drops a pending push", async () => {
     const deps = makeDeps();
     const git = fakeGit();
@@ -238,6 +337,25 @@ describe("auto-push scheduler — a push that cannot happen is never silent", ()
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     createAutoPushScheduler(makeDeps()).schedule(fakeGit(), undefined);
     expect(warn).toHaveBeenCalled();
+  });
+
+  it("says so on the server log when shutdown drops an armed push", () => {
+    // `cancelAll` is the one timer-drop path with no replacement: at shutdown
+    // no synchronous push has landed, and the process exits with the commit
+    // local. That is exactly the "path that ends without a push" the module
+    // refuses to go silent about — one line per dropped push.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const scheduler = createAutoPushScheduler(makeDeps());
+    scheduler.schedule(fakeGit(), "s1");
+    scheduler.schedule(fakeGit(), "s2");
+
+    scheduler.cancelAll();
+
+    const warned = warn.mock.calls.flat().join(" ");
+    expect(warned).toContain("s1");
+    expect(warned).toContain("s2");
+    expect(warned).toContain("shutdown");
+    expect(scheduler.pending("s1")).toBe(false);
   });
 
   it("records a failed push in the session log even with no runner attached", async () => {
@@ -558,7 +676,12 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
       getCurrentBranch: vi.fn()
         .mockImplementationOnce(async () => "shipit/feature")
         .mockImplementationOnce(async () => { throw new Error("git is unhappy"); }),
-      push: vi.fn(async () => { throw new Error("failed to push some refs"); }),
+      // A real rejection, marker and all. The bare summary line
+      // ("failed to push some refs") deliberately no longer classifies as a
+      // divergence — see `classifyPushFailure`.
+      push: vi.fn(async () => {
+        throw new Error(" ! [rejected] shipit/feature -> shipit/feature (fetch first)\nerror: failed to push some refs");
+      }),
     });
     createAutoPushScheduler(deps).schedule(git, "s1");
 

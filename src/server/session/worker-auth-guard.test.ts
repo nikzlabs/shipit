@@ -165,9 +165,9 @@ describe("worker auth guard", () => {
   it("planning#421: a worker with no token configured refuses every peer container", async () => {
     // The orchestrator-facing leg used to be served here, as a compatibility
     // fallback for a container created by an orchestrator that predates the
-    // token. `/install` is the one that matters most: docs/271's `agent.install`
-    // gate sits at `runInstall`, not on this route, so a plugin service that can
-    // reach the agent container had a direct-POST bypass of the whole gate.
+    // token. `/install` is the one that matters most: it runs `agent.install`
+    // with `shell: true` in the credential-bearing container, and a plugin
+    // service can reach that container.
     app = buildGuardedApp(undefined);
     for (const url of ["/agent-ops/voice/note", "/terminal/start", "/install"]) {
       const res = await app.inject({
@@ -365,12 +365,11 @@ describe("the container entry point refuses to serve without a token (planning#4
 
 describe("SessionWorker installs the guard", () => {
   it("planning#421: a tokenless real worker refuses a peer container's POST /install", async () => {
-    // Pins the dependency docs/271-agent-install-trust-boundary states but does
-    // not own, on the REAL route table rather than a hand-built app: its
-    // `agent.install` gate sits at `runInstall`, so a plugin service that can
-    // reach the agent container bypasses it entirely by posting here. Before
-    // planning#421 this reached the handler (400 — the body is empty on purpose, so
-    // the assertion never runs an install either way).
+    // The same rule on the REAL route table rather than a hand-built app.
+    // `/install` runs `agent.install` in the credential-bearing container, and a
+    // plugin service can reach that container. Before planning#421 this reached
+    // the handler (400 — the body is empty on purpose, so the assertion never
+    // runs an install either way).
     const worker = new SessionWorker({
       agentFactory: () => { throw new Error("not used"); },
     });

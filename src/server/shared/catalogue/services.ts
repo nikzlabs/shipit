@@ -193,6 +193,7 @@ const OPENROUTER_PRICES = {
   v4flash: { input: 0.06146, output: 0.12292, cacheRead: 0.012292, cacheWrite: 0.06146 },
   v4pro: { input: 1.168, output: 2.336, cacheRead: 0.09855, cacheWrite: 1.168 },
   glm52: { input: 0.308, output: 0.968, cacheRead: 0.0572, cacheWrite: 0.308 },
+  oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
 /**
@@ -246,6 +247,7 @@ const OPENCODE_ZEN_PRICES = {
   // Zen publishes no cache-write rate for Grok; 0 is "not charged", not
   // "unknown" — the vendor's table omits the column for this model.
   grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+  oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
 /**
@@ -266,6 +268,49 @@ const OPENCODE_GO_PRICES = {
   // Go's own rate for Luna is HALF Zen's (0.1/0.6 against 0.2/1.2), which is
   // the clearest single case of why the two products keep separate constants.
   gpt56luna: { input: 0.1, output: 0.6, cacheRead: 0.01, cacheWrite: 0.125 },
+  oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+} as const;
+
+/**
+ * xAI's own published API rates, per million tokens, read from
+ * `docs.x.ai/docs/models` on **2026-08-18** and cross-checked against the live
+ * `GET https://api.x.ai/v1/models` response captured during the docs/274 Phase 0
+ * probe (raw capture: `/persist/grok-capture/models.json`, not in git).
+ *
+ * The API expresses each rate as an integer 10⁴× the dollars-per-million figure
+ * (`grok-4.6` → `prompt_text_token_price: 20000` = $2.00/M); the two sources
+ * agree on every row below, which is what makes the unit a checked fact rather
+ * than an inferred one.
+ *
+ * Two deliberate simplifications, both matching how the rest of this file
+ * treats the same situations:
+ * - **Long-context tier dropped.** xAI doubles every rate above a 200K-token
+ *   prompt (`long_context_threshold`). {@link ModelPrice} carries one figure per
+ *   axis, so these are the sub-200K rates — the tier a coding turn is
+ *   overwhelmingly in. A turn that crosses the threshold is under-costed, the
+ *   same way GLM's tiering is.
+ * - **`cacheWrite === input`.** xAI publishes a cached-input rate and no
+ *   cache-write rate, i.e. a cache miss is billed as ordinary input — the
+ *   DeepSeek/GLM convention. Independently corroborated by
+ *   {@link OPENROUTER_PRICES}.grok46, authored from OpenRouter's own model
+ *   endpoint, which carries the identical `cacheWrite: 2`.
+ */
+const XAI_PRICES = {
+  grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
+  // planning#435 — re-read live from `GET https://api.x.ai/v1/models` on
+  // 2026-08-19 for the subscription mode's second model
+  // (`prompt_text_token_price: 20000`, `cached_prompt_text_token_price: 3000`,
+  // `completion_text_token_price: 60000`). It differs from 4.6 in exactly one
+  // axis — a cheaper cache read — which is the kind of near-miss that makes
+  // copying a sibling's row wrong.
+  //
+  // A SUBSCRIPTION row still carries the API rate: under a plan it is req 16's
+  // "would have cost" comparison rather than what the user paid (see
+  // {@link ModelPrice}).
+  grok45: { input: 2, output: 6, cacheRead: 0.3, cacheWrite: 2 },
+  grok43: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
+  // The 4.20 line bills identically whether or not it reasons.
+  grok420: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 1.25 },
 } as const;
 
 /**
@@ -289,6 +334,24 @@ export const SERVICES = [
         endpoints: { [A_MSG]: "https://api.anthropic.com" },
         quota: "anthropic-oauth-usage",
         credentials: [
+          // **Deliberately NO `carriers`**, unlike OpenAI's row below, and the
+          // asymmetry is the point rather than an oversight (planning#435).
+          //
+          // OpenAI's is load-bearing: Grok speaks `openai-responses`, so once it
+          // carries an `account` target the style join alone would offer a
+          // ChatGPT subscription on Grok. Nothing speaks `anthropic-messages`
+          // but Claude Code, so the join already settles this row — and the
+          // widening it guards against is ALREADY caught, visibly, by
+          // `catalogue.test.ts`'s login fan-out assertion, which pins
+          // `["claude"]` precisely so a second anthropic-messages harness shows
+          // up as a failing test to review.
+          //
+          // Adding it "for symmetry" is not free: it makes `(anthropic, sub)`
+          // on Codex refuse at `harnessCanCarry`, which deletes the only pair in
+          // the real catalogue where "the selected service" and "the harness's
+          // vendor" give different answers — the exact axis
+          // `service-routing.test.ts` exists to pin (planning#342). That test is
+          // worth more than a redundant declaration.
           { via: "account", login: "anthropic-oauth" },
           // `claude-env-oauth`: a subscription delivered as an env-supplied
           // OAuth token — quota-bearing, and ranked above the metered key route.
@@ -296,7 +359,15 @@ export const SERVICES = [
           // `carriers`: the token is a Claude-Code OAuth artifact (Bearer
           // semantics; Anthropic prohibits third-party harnesses on
           // subscription auth — docs/268), so no other harness may carry it.
-          { via: "string", storageEnv: "ANTHROPIC_AUTH_TOKEN", carriers: ["claude"] },
+          // The `targetOverride` is the same shape as GLM's coding plan:
+          // Bearer semantics must not inherit Claude's string target
+          // `ANTHROPIC_API_KEY`, which the CLI sends as an `x-api-key` header.
+          {
+            via: "string",
+            storageEnv: "ANTHROPIC_AUTH_TOKEN",
+            targetOverride: { claude: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" } },
+            carriers: ["claude"],
+          },
         ],
         retired: [],
         models: [
@@ -345,7 +416,12 @@ export const SERVICES = [
         // base URL below look inconsistent and are not.)
         endpoints: { [O_RESP]: "https://api.openai.com/v1" },
         quota: "openai-chatgpt-usage",
-        credentials: [{ via: "account", login: "openai-chatgpt" }],
+        // `carriers` — a ChatGPT subscription is a login to OpenAI's account
+        // system and only Codex can present it. Load-bearing since
+        // planning#435: Grok also speaks `openai-responses` and now carries an
+        // `account` target, so without this the style join would offer this
+        // subscription on Grok and every such turn would 401.
+        credentials: [{ via: "account", login: "openai-chatgpt", carriers: ["codex"] }],
         // The `gpt-5.6 → gpt-5.6-sol` remap. It arrived as the hand-written
         // `normalizeCodexModelId` shim, which was mode-blind and style-blind —
         // so its placement under both modes under `openai-responses` is this
@@ -382,6 +458,112 @@ export const SERVICES = [
           { id: "gpt-5.5", label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
           { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", ...MODEL_IDENTITIES.gpt53codex, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codex },
           { id: "gpt-5.2", label: "GPT-5.2", ...MODEL_IDENTITIES.gpt52, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt52 },
+        ],
+      },
+    ],
+  },
+  {
+    // docs/274 — xAI, the `grok` harness's native service, and the third
+    // first-party vendor row.
+    //
+    // TWO MODES, and they are two genuinely different offerings rather than one
+    // offering with two ways to pay (planning#435, verified live on 2026-08-19
+    // with a real SuperGrok login). Different host, different API style, and a
+    // DISJOINT model set — `grok-4.5` exists only on the subscription, the 4.20
+    // pair and 4.3 only on the key. Only `grok-4.6` is on both, which is why it
+    // is one identity spread into both mode rows.
+    //
+    // That disjointness is also why docs/274 req 17 (subscription ranks above
+    // the metered key) is a bigger decision than it looks: preferring the
+    // subscription decides which MODELS a session gets, not only who is billed.
+    // Nik was asked with that caveat stated and chose it anyway.
+    //
+    // VERIFIED (docs/274 Phase 0, CLI 1.0.1, against a local HTTP recorder
+    // with a dummy key). Pointed at an arbitrary `GROK_XAI_API_BASE_URL` the
+    // CLI issues `POST <base>/chat/completions` for an explicit `-m` turn and
+    // `POST <base>/responses` for its title side-call — appending nothing, so
+    // the base URL carries its own `/v1`, the same convention the OpenAI
+    // Responses rows use. Both styles come from ONE CLI, which is why the
+    // harness row lists two.
+    id: "xai",
+    name: "xAI",
+    modes: [
+      {
+        // FIRST, and that is req 17 rather than tidiness: the mode order is
+        // what makes a connected SuperGrok subscription rank above the metered
+        // key, the way every other connected account outranks a key. Because
+        // the two modes offer DISJOINT model sets, this decides which models a
+        // Grok session gets and not only who pays — Nik was asked with that
+        // caveat stated and chose it anyway (docs/274 Resolved questions).
+        kind: "sub",
+        // The weekly pool, read by `XaiLimitsProvider` (req 16).
+        //
+        // This row said `quota: null` — "the vendor publishes nothing to read" —
+        // for one release, on a probe that was wrong. `GET /v1/billing` on the
+        // host below answers 200 with a CALENDAR-MONTH credit object, all zeros
+        // on a subscription, and that 200 was read as proof there was nothing
+        // else. `GET /v1/billing?format=credits` — the same path, one query
+        // parameter — returns the weekly pool the CLI's own usage screen shows.
+        // The lesson is recorded where the reader lives: a 200 that answers a
+        // different question is more dangerous than a 404, because a 404 is
+        // never mistaken for an answer.
+        quota: "xai-plan-usage",
+        // ONE style, and a different one from the key mode's. The subscription
+        // is a genuinely separate product surface reached at
+        // `cli-chat-proxy.grok.com` — a different host, speaking Responses —
+        // which is exactly why req 10 makes it a second MODE and not a second
+        // credential on the key mode. The CLI reaches this host by itself once
+        // `auth.json` authenticates it, so ShipIt sets no base URL for a
+        // subscription turn (`serviceRoutingForSelection` returns nothing for
+        // an account-delivered credential); the endpoint is declared because a
+        // mode whose models name a style must declare it, and because it is
+        // what the egress allowlist is authored against.
+        endpoints: {
+          [O_RESP]: "https://cli-chat-proxy.grok.com/v1",
+        },
+        // The one and only credential: xAI's own device-code login. `carriers`
+        // is not redundant with the style join — Codex also speaks
+        // `openai-responses` and carries an account target, so without this the
+        // join would offer a SuperGrok subscription to the Codex CLI, which
+        // cannot present it.
+        credentials: [{ via: "account", login: "xai-oauth", carriers: ["grok"] }],
+        retired: [],
+        // Req 18 — BOTH models, decided for this mode on its own terms. Req 9's
+        // launch set was chosen for key mode and does not constrain this one:
+        // `grok-4.5` is superseded at the API and is a current, offered model on
+        // the subscription, so leaving it out would hide something the user is
+        // paying for.
+        //
+        // `reasoningEfforts` narrows the harness vocabulary per ROW, and the two
+        // rows genuinely disagree: the subscription catalogue declares
+        // `supports_reasoning_effort: true` with xhigh/high/medium/low for 4.6
+        // and high/medium/low for 4.5. A mode-level list would have to be the
+        // intersection and would drop `xhigh` from the top model.
+        models: [
+          { id: "grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_RESP], contextWindow: HALF_M, price: XAI_PRICES.grok46, reasoningEfforts: ["xhigh", "high", "medium", "low"] },
+          { id: "grok-4.5", label: "Grok 4.5", ...MODEL_IDENTITIES.grok45, styles: [O_RESP], contextWindow: HALF_M, price: XAI_PRICES.grok45, reasoningEfforts: ["high", "medium", "low"] },
+        ],
+      },
+      {
+        kind: "key",
+        endpoints: {
+          [O_CC]: "https://api.x.ai/v1",
+          [O_RESP]: "https://api.x.ai/v1",
+        },
+        credentials: [{ via: "string", storageEnv: "XAI_API_KEY" }],
+        retired: [],
+        // The launch set is docs/274 req 9, not a mirror of `/v1/models`:
+        // grok-4.6 as the top model, grok-4.3, and the 4.20 reasoning /
+        // non-reasoning pair the CLI itself defaults to in key mode.
+        // Deliberately unauthored from the same live response: `grok-4.5`
+        // (superseded by 4.6), `grok-4.20-multi-agent-0309` (an orchestration
+        // product, not a coding model), `grok-build-0.1` and the
+        // `grok-imagine-*` image/video rows.
+        models: [
+          { id: "grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_CC, O_RESP], contextWindow: HALF_M, price: XAI_PRICES.grok46 },
+          { id: "grok-4.3", label: "Grok 4.3", ...MODEL_IDENTITIES.grok43, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok43 },
+          { id: "grok-4.20-0309-reasoning", label: "Grok 4.20 (reasoning)", ...MODEL_IDENTITIES.grok420Reasoning, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok420 },
+          { id: "grok-4.20-0309-non-reasoning", label: "Grok 4.20", ...MODEL_IDENTITIES.grok420NonReasoning, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: XAI_PRICES.grok420 },
         ],
       },
     ],
@@ -618,6 +800,7 @@ export const SERVICES = [
           // open-weight all-rounder.
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
           { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
+          { id: "stealth/ox-alpha", label: "Ox Alpha", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.oxAlpha, reasoningEfforts: ["high", "low"] },
         ],
       },
     ],
@@ -833,6 +1016,7 @@ export const SERVICES = [
         //     rows of this mode (2026-08-17 receipt) and left unauthored — each
         //     duplicates a paid row in a rate-limited form, and none is a
         //     frontier coding model, which is the subset rule this list follows.
+        //     Ox Alpha is the exception, added on request.
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           // Zen undercuts Anthropic's own rate here (2/10 against 3/15) — the
@@ -847,6 +1031,7 @@ export const SERVICES = [
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4pro },
           { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.glm52 },
+          { id: "x-preview-f-free", label: "Ox Alpha Free", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.oxAlpha, reasoningEfforts: ["max", "high", "low"] },
           // The `openai-responses` rows. Authored after the first pass on the
           // user's instruction, because without one Codex could not be paired
           // with this service at all: it speaks only that style, so the join
@@ -916,6 +1101,7 @@ export const SERVICES = [
           { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.kimiK3 },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4pro },
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4flash },
+          { id: "ox-alpha-free", label: "Ox Alpha Free", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.oxAlpha, reasoningEfforts: ["max", "high", "low"] },
           // Go's one `openai-responses` model, and the only way Codex can run
           // on the subscription rather than on Zen credits. ✅ live registry
           // probe on `/zen/go/v1/responses`, with `gpt-5.6-sol` answering

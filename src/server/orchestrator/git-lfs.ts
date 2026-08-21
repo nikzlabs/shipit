@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { killChild } from "../shared/kill-child.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
+import { lfsDeclarationGrepArgs } from "../shared/git-lfs-push.js";
 import {
   type GitRemoteCredential,
   type GitRemoteCredentialResolver,
@@ -298,13 +299,14 @@ export function resetGitLfsAvailabilityCache(): void {
  * The `*.gitattributes` pathspec catches nested declarations too: git pathspec
  * globs match across `/` and `*` matches the empty string, so it covers both
  * `.gitattributes` at the root and `packages/ui/.gitattributes`.
+ *
+ * The argv itself is {@link lfsDeclarationGrepArgs}, defined in `shared/` so the
+ * push-side upload asks this same question the same way. This function is the
+ * spawn-based answer (it reads exit codes directly, and works on a bare cache);
+ * the push path asks it through simple-git.
  */
 export async function repoDeclaresLfs(dir: string, ref = "HEAD"): Promise<boolean> {
-  const res = await runGit(
-    ["grep", "--ignore-case", "--fixed-strings", "-l", "-e", "filter=lfs", ref, "--", "*.gitattributes"],
-    dir,
-    PROBE_TIMEOUT_MS,
-  );
+  const res = await runGit(lfsDeclarationGrepArgs(ref), dir, PROBE_TIMEOUT_MS);
   // 0 = matched, 1 = no match, anything else (128: unborn HEAD, bad object) is
   // "can't tell" — answer no, which degrades to today's behaviour rather than
   // firing a spurious warning at every non-repo caller.

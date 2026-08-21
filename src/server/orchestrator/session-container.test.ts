@@ -20,6 +20,7 @@ import {
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
 import { allowEgressHost, clearEgressPolicy } from "./egress-policy.js";
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Mock Docker types
@@ -59,6 +60,10 @@ function createMockDocker() {
   // provisioned (for the `requireProvisioned` compose-path filter). Inspect
   // succeeds for any other name so `resolveVolumeMountpoint` keeps working.
   const missingVolumes = new Set<string>();
+  const volumeSpecs = new Map<string, { Options?: Record<string, string>; Labels?: Record<string, string> }>();
+  // Containers that currently mount a volume — a `docker volume rm` against one of
+  // these 409s, exactly as the daemon's does. Models the session's Compose siblings.
+  const volumeHolders = new Map<string, string[]>();
 
   const eventEmitter = new EventEmitter();
 
@@ -74,23 +79,46 @@ function createMockDocker() {
     _liveVolumes: liveVolumes,
     _removedVolumes: removedVolumes,
     _missingVolumes: missingVolumes,
+    _volumeHolders: volumeHolders,
+
+    // The driver opts + labels each live volume was created with. `createOverlayVolume`
+    // re-inspects after creating and throws if they are not the ones it asked for
+    // (the 2026-08-19 ops finding — Docker silently returns the existing volume when
+    // the name is taken), so a double that forgets them fails every overlay create.
+    _volumeSpecs: volumeSpecs,
 
     createVolume: vi.fn(async (opts: any) => {
       liveVolumes.add(opts.Name);
+      if (!volumeSpecs.has(opts.Name)) {
+        volumeSpecs.set(opts.Name, { Options: opts.DriverOpts, Labels: opts.Labels });
+      }
       return { Name: opts.Name };
     }),
     getVolume: vi.fn((name: string) => ({
       inspect: vi.fn(async () => {
-        if (missingVolumes.has(name)) {
+        // An overlay volume that was never created 404s, like the daemon's — the
+        // create path asks "does one already exist, and does it match?" before it
+        // removes anything, and answering "exists, opts unknown" would send it
+        // down the recreate branch for a volume that is simply absent.
+        const uncreatedOverlay = name.includes("_overlay") && !liveVolumes.has(name);
+        if (missingVolumes.has(name) || uncreatedOverlay) {
           const err: any = new Error("no such volume"); err.statusCode = 404; throw err;
         }
-        return { Name: name, Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+        return {
+          Name: name,
+          Mountpoint: `/var/lib/docker/volumes/${name}/_data`,
+          ...(volumeSpecs.get(name) ?? {}),
+        };
       }),
       remove: vi.fn(async () => {
         if (!liveVolumes.has(name)) {
           const err: any = new Error("no such volume"); err.statusCode = 404; throw err;
         }
+        if ((volumeHolders.get(name) ?? []).length > 0) {
+          const err: any = new Error("conflict - volume is in use"); err.statusCode = 409; throw err;
+        }
         liveVolumes.delete(name);
+        volumeSpecs.delete(name);
         removedVolumes.push(name);
       }),
     })),
@@ -156,12 +184,25 @@ function createMockDocker() {
         }),
         remove: vi.fn(async () => {
           if (c) c.removed = true;
+          for (const [vol, ids] of volumeHolders) {
+            volumeHolders.set(vol, ids.filter((held) => held !== id));
+          }
         }),
         inspect: vi.fn(async () => c?.inspectResult ?? {}),
       };
     }),
 
-    listContainers: vi.fn(async () => {
+    listContainers: vi.fn(async (args?: { filters?: { volume?: string[] } }) => {
+      // A `volume=` filter is the overlay holder release. Only `_volumeHolders`
+      // declares mounts here — no other test container has any.
+      if (args?.filters?.volume) {
+        const wanted = new Set(args.filters.volume);
+        const ids = new Set<string>();
+        for (const [vol, held] of volumeHolders) {
+          if (wanted.has(vol)) for (const id of held) ids.add(id);
+        }
+        return [...ids].map((id) => ({ Id: id, Names: [`/${id}`] }));
+      }
       return [...containers.values()]
         .filter((c) => !c.removed)
         .map((c) => ({
@@ -221,7 +262,7 @@ function buildConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
     sessionDir: TEST_SESSION_DIR,
     workspaceDir: TEST_WORKSPACE_DIR,
     sessionStateDir: path.join(TEST_SESSION_DIR, "state"),
-    credentialsDir: "/credentials",
+    credentialsDir: TEST_CREDENTIALS_DIR,
     imageName: "shipit-session-worker:test",
     memoryLimit: 512 * 1024 * 1024,
     cpuQuota: 50_000,
@@ -371,7 +412,7 @@ describe("SessionContainerManager", () => {
               `${TEST_WORKSPACE_DIR}:/workspace:rw`,
               // docs/138 — the container gets its private per-session credentials
               // subtree, never the shared root.
-              "/credentials/sessions/test-session-1:/credentials:rw",
+              `${TEST_CREDENTIALS_DIR}/sessions/test-session-1:/credentials:rw`,
             ]),
             Memory: 512 * 1024 * 1024,
             CpuQuota: 50_000,
@@ -798,6 +839,103 @@ describe("SessionContainerManager", () => {
       }
     });
 
+    // --- The ops finding of 2026-08-19 -----------------------------------------
+    //
+    // `prepareOverlayDirs` reaps the superseded generation's upper/work moments
+    // before the volumes are recreated against the new one. The session's Compose
+    // siblings mount those same volumes, so the removal 409'd, `docker volume
+    // create` returned the EXISTING volume and ignored the new driver opts, and
+    // four production sessions ran on an overlay whose upperdir no longer existed
+    // — reads frozen at the old base, writes silently discarded.
+    describe("base generation rotated under a running Compose stack", () => {
+      const rotated = overlaySpecs.map((s) => ({
+        ...s,
+        lowerdir: `${s.lowerdir}/g3`,
+        upperdir: `${s.upperdir}/g3`,
+        workdir: `${s.workdir}/g3`,
+        generation: 3,
+      }));
+
+      /** Seed each volume at the previous generation, held by a Compose sibling. */
+      function seedStaleHeldVolumes(): void {
+        for (const [i, spec] of overlaySpecs.entries()) {
+          mockDocker._liveVolumes.add(spec.volumeName);
+          mockDocker._volumeSpecs.set(spec.volumeName, {
+            Options: {
+              type: "overlay",
+              device: "overlay",
+              o: `lowerdir=${spec.lowerdir}/g2,upperdir=${spec.upperdir}/g2,workdir=${spec.workdir}/g2`,
+            },
+            Labels: { "shipit-managed": "true" },
+          });
+          mockDocker._volumeHolders.set(spec.volumeName, [`compose-sibling-${i}`]);
+        }
+      }
+
+      it("removes the holders first, so the volume really is recreated over the new generation", async () => {
+        seedStaleHeldVolumes();
+
+        await manager.create(buildConfig({ overlaySpecs: rotated }));
+
+        for (const spec of rotated) {
+          // The stale volume was actually removed (not 409'd away), and the live
+          // one names the generation the agent is about to mount.
+          expect(mockDocker._removedVolumes).toContain(spec.volumeName);
+          expect(mockDocker._volumeSpecs.get(spec.volumeName)?.Options?.o).toBe(
+            `lowerdir=${spec.lowerdir},upperdir=${spec.upperdir},workdir=${spec.workdir}`,
+          );
+          expect(mockDocker._volumeSpecs.get(spec.volumeName)?.Options?.o).not.toContain("/g2");
+        }
+        // …and the compose path is told it owes the stack a reconcile, since the
+        // service containers that were holding those volumes are now gone.
+        expect(manager.consumeOverlayVolumesRecreated("test-session-1")).toBe(true);
+        // Read-and-clear.
+        expect(manager.consumeOverlayVolumesRecreated("test-session-1")).toBe(false);
+      });
+
+      it("fails the create loudly when a holder survives every attempt, rather than mounting the reaped generation", async () => {
+        seedStaleHeldVolumes();
+        // A holder the daemon refuses to remove, on every retry — the guard is what
+        // turns the old silent corruption into a visible, recoverable create
+        // failure. `mockImplementation`, not `…Once`: the create converges, so a
+        // holder that goes away after one round is a success, not a failure.
+        const realGetContainer = mockDocker.getContainer.getMockImplementation()!;
+        mockDocker.getContainer.mockImplementation((id: string) =>
+          id.startsWith("compose-sibling-")
+            ? { remove: vi.fn(async () => { throw Object.assign(new Error("cannot remove"), { statusCode: 500 }); }) } as any
+            : realGetContainer(id));
+
+        await expect(manager.create(buildConfig({ overlaySpecs: rotated }))).rejects.toThrow(
+          /could not be recreated with the requested driver opts/,
+        );
+      });
+
+      it("leaves an unrotated stack alone — no holder is removed and no reconcile is owed", async () => {
+        // The restart-agent path (docs/127) deliberately keeps the Compose stack
+        // running. A volume that already matches its spec must not cost it that.
+        for (const [i, spec] of overlaySpecs.entries()) {
+          mockDocker._liveVolumes.add(spec.volumeName);
+          mockDocker._volumeSpecs.set(spec.volumeName, {
+            Options: {
+              type: "overlay",
+              device: "overlay",
+              o: `lowerdir=${spec.lowerdir},upperdir=${spec.upperdir},workdir=${spec.workdir}`,
+            },
+            Labels: { "shipit-managed": "true" },
+          });
+          mockDocker._volumeHolders.set(spec.volumeName, [`compose-sibling-${i}`]);
+        }
+
+        await manager.create(buildConfig({ overlaySpecs }));
+
+        expect(mockDocker._removedVolumes).toEqual([]);
+        for (const spec of overlaySpecs) {
+          expect(mockDocker._volumeHolders.get(spec.volumeName)).toHaveLength(1);
+        }
+        expect(manager.consumeOverlayVolumesRecreated("test-session-1")).toBe(false);
+      });
+    });
+
     it("removes every overlay volume when container creation fails (no leak)", async () => {
       // Regression: createOverlayVolume must run inside the try block so a
       // later failure removes the volumes instead of leaking them.
@@ -925,7 +1063,7 @@ describe("SessionContainerManager", () => {
           // and `scratchDir` default to siblings of the clone as in production.
           sessionDir: path.dirname(dir),
           workspaceDir: dir,
-          credentialsDir: "/credentials",
+          credentialsDir: TEST_CREDENTIALS_DIR,
           overlaySpecs: specs,
         }));
         // The daemon's overlay mount ENOENTs unless all three exist — create()
@@ -956,6 +1094,8 @@ describe("SessionContainerManager", () => {
     it("requireProvisioned keeps specs whose overlay volume exists", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const dir = await ws({ gitignore: "node_modules\n" });
+      const all = await ovlManager.prepareOverlaySpecs({ sessionId: "abc123def456", workspaceDir: dir, session: eligible });
+      mockDocker._liveVolumes.add(all[0].volumeName);
       const provisioned = await ovlManager.prepareOverlaySpecs({
         sessionId: "abc123def456", workspaceDir: dir, session: eligible, requireProvisioned: true,
       });
@@ -971,7 +1111,7 @@ describe("SessionContainerManager", () => {
         sessionId: "e2e-session-1",
         sessionDir: path.dirname(dir),
         workspaceDir: dir,
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
         overlaySpecs,
       });
       await ovlManager.create(config);
@@ -1001,7 +1141,7 @@ describe("SessionContainerManager", () => {
       expect(overlaySpecs).toHaveLength(1);
       const config = ovlManager.buildConfigForWorkspace({
         sessionId: appSessionId, sessionDir: path.dirname(dir), workspaceDir: dir,
-        credentialsDir: "/credentials", overlaySpecs,
+        credentialsDir: TEST_CREDENTIALS_DIR, overlaySpecs,
       });
       const sc = await ovlManager.createStandby(config);
 
@@ -1022,7 +1162,7 @@ describe("SessionContainerManager", () => {
       expect(overlaySpecs).toEqual([]);
       const config = ovlManager.buildConfigForWorkspace({
         sessionId: "warm-off-1", sessionDir: path.dirname(dir), workspaceDir: dir,
-        credentialsDir: "/credentials", overlaySpecs,
+        credentialsDir: TEST_CREDENTIALS_DIR, overlaySpecs,
       });
       await ovlManager.createStandby(config);
       const call = mockDocker.createContainer.mock.calls.at(-1)![0];
@@ -1141,7 +1281,7 @@ describe("SessionContainerManager", () => {
         const pnpmStoreDir = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
         const config = mgr.buildConfigForWorkspace({
           sessionId: "pnpm-e2e-1", sessionDir: path.dirname(dir), workspaceDir: dir,
-          credentialsDir: "/credentials", overlaySpecs, pnpmStoreDir,
+          credentialsDir: TEST_CREDENTIALS_DIR, overlaySpecs, pnpmStoreDir,
         });
         await mgr.create(config);
         const call = mockDocker.createContainer.mock.calls.at(-1)![0];
@@ -1698,7 +1838,7 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
       sessionId: "sbx123456789",
       sessionDir: tmpDir,
       workspaceDir: path.join(tmpDir, "workspace"),
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       ...(dockerAccess !== undefined ? { dockerAccess } : {}),
     });
 

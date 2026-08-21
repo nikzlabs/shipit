@@ -89,6 +89,42 @@ describe("reading provider account identity (req 22)", () => {
     });
   });
 
+  it("reads Grok's user_id and email from the scope-keyed .grok/auth.json", () => {
+    fs.mkdirSync(path.join(root, ".grok"), { recursive: true });
+    // Scope-keyed: the top level maps a scope NAME to that scope's record, so a
+    // reader hard-coded to one key would report an unauthenticated file the
+    // moment xAI renamed or added one.
+    fs.writeFileSync(
+      path.join(root, ".grok", "auth.json"),
+      JSON.stringify({
+        "grok-build": {
+          access_token: "tok",
+          refresh_token: "ref",
+          user_id: "0195c0de-1234-7890-abcd-ef0123456789",
+          email: "dev@example.com",
+        },
+      }),
+    );
+
+    expect(readProviderAccountIdentity("grok", root)).toEqual({
+      externalId: "0195c0de-1234-7890-abcd-ef0123456789",
+      email: "dev@example.com",
+    });
+  });
+
+  it("does not mistake Grok's plan for identity", () => {
+    // The same trap Claude's `.credentials.json` sets: a plan is shared by every
+    // account on that tier, so two SuperGrok subscriptions would collide on it
+    // and req 22's duplicate detection would refuse a legitimate second account.
+    fs.mkdirSync(path.join(root, ".grok"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, ".grok", "auth.json"),
+      JSON.stringify({ "grok-build": { access_token: "tok", plan: "supergrok" } }),
+    );
+
+    expect(readProviderAccountIdentity("grok", root)).toBeNull();
+  });
+
   it("returns null rather than throwing on missing, malformed, or identity-less files", () => {
     expect(readProviderAccountIdentity("claude", root)).toBeNull();
 
@@ -98,6 +134,17 @@ describe("reading provider account identity (req 22)", () => {
     // An older CLI writes the config without `oauthAccount` at all.
     fs.writeFileSync(path.join(root, ".claude.json"), JSON.stringify({ projects: {} }));
     expect(readProviderAccountIdentity("claude", root)).toBeNull();
+
+    // Same for Grok, and for the same reason: an unreadable identity must
+    // degrade the connect to "generated label, no duplicate detection" rather
+    // than fail it.
+    expect(readProviderAccountIdentity("grok", root)).toBeNull();
+    fs.mkdirSync(path.join(root, ".grok"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".grok", "auth.json"), "{ not json");
+    expect(readProviderAccountIdentity("grok", root)).toBeNull();
+
+    // OpenCode still has no account credential at all (docs/268 req 5).
+    expect(readProviderAccountIdentity("opencode", root)).toBeNull();
   });
 });
 

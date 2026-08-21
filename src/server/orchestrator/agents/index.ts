@@ -24,12 +24,24 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import * as claude from "./claude/index.js";
 import * as codex from "./codex/index.js";
 import * as opencode from "./opencode/index.js";
+import * as grok from "./grok/index.js";
 
 export interface BuildAgentRuntimeDeps {
   /** Already-constructed Claude OAuth manager from `app-di`. */
   authManager: claude.AuthManager;
   /** Already-constructed Codex device-flow manager from `app-di`. */
   codexAuthManager: codex.CodexAuthManager;
+  /**
+   * Already-constructed xAI device-flow manager from `app-di` (planning#435).
+   *
+   * Optional, unlike its two siblings, because every existing caller builds this
+   * table without one and a required field would be a compile error at each of
+   * them for no behavioural gain. An absent manager simply leaves `xai-oauth`
+   * out of the map, which is the pre-subscription behaviour — and
+   * `catalogue.test.ts` is what keeps a build from SHIPPING that state, since
+   * the catalogue declares the login.
+   */
+  xaiAuthManager?: grok.XaiAuthManager;
   /**
    * docs/150 — provider-account registry, so a limits provider can enumerate
    * connected accounts and resolve a route id to the credential dir whose token
@@ -63,8 +75,13 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
   // Keyed by LOGIN FLOW, not by harness — see `AgentAuthManager`. The key is
   // each manager's own `loginId`, so the table cannot disagree with the
   // managers it holds.
+  const declared: (AgentAuthManager | undefined)[] = [
+    deps.authManager,
+    deps.codexAuthManager,
+    deps.xaiAuthManager,
+  ];
   const authManagers = new Map<LoginIntegrationId, AgentAuthManager>(
-    [deps.authManager, deps.codexAuthManager].map((mgr) => [mgr.loginId, mgr]),
+    declared.filter((mgr) => mgr !== undefined).map((mgr) => [mgr.loginId, mgr]),
   );
 
   const limitsProviders = new Map<AgentId, LimitsProvider>([
@@ -93,6 +110,7 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     ["claude", claude.prepareClaudeRunParams],
     ["codex", codex.prepareCodexRunParams],
     ["opencode", opencode.prepareOpencodeRunParams],
+    ["grok", grok.prepareGrokRunParams],
   ]);
 
   const parallelSessionsSections = new Map<AgentId, string>([
@@ -101,6 +119,12 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
     // No authManagers / limitsProviders entry for OpenCode (docs/268 req 5):
     // no login integration and no quota API ship at launch.
     ["opencode", opencode.OPENCODE_PARALLEL_SESSIONS_SECTION],
+    // Grok now HAS an `authManagers` entry (planning#435's `xai-oauth` device
+    // flow) and still has no `limitsProviders` one — deliberately, because xAI
+    // publishes no per-account usage API for a provider to read (docs/274
+    // req 16). The two omissions had one cause at launch and now have none in
+    // common.
+    ["grok", grok.GROK_PARALLEL_SESSIONS_SECTION],
   ]);
 
   return { authManagers, limitsProviders, runParamsPreps, parallelSessionsSections };

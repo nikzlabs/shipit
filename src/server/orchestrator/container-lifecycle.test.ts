@@ -13,6 +13,7 @@ import {
   buildEnv,
   buildOrchestratorCallbackEnv,
   buildContainerConfig,
+  createContainer,
   destroyContainer,
   prepareOverlayDirs,
   ensurePnpmStoreDir,
@@ -29,7 +30,9 @@ import {
   sessionSharedStateDir,
   sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
+import { OVERLAY_VERIFY_FAILURE } from "./overlay-volume.js";
 import type { HostMount } from "../shared/shipit-config.js";
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,7 +44,7 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
     sessionDir: "/workspace/sessions/sess-1",
     workspaceDir: "/workspace/sessions/sess-1/workspace",
     sessionStateDir: "/workspace/sessions/sess-1/state",
-    credentialsDir: "/credentials",
+    credentialsDir: TEST_CREDENTIALS_DIR,
     imageName: "shipit-worker:test",
     memoryLimit: 512 * 1024 * 1024,
     cpuQuota: 50_000,
@@ -61,8 +64,8 @@ describe("buildMounts", () => {
     expect(result.binds).toContain("/workspace/sessions/sess-1/workspace:/workspace:rw");
     // docs/138 — the container gets its PRIVATE credentials subtree, never the
     // shared root, so a Claude session can't read Codex's creds and vice versa.
-    expect(result.binds).toContain("/credentials/sessions/sess-1:/credentials:rw");
-    expect(result.binds).not.toContain("/credentials:/credentials:rw");
+    expect(result.binds).toContain(`${TEST_CREDENTIALS_DIR}/sessions/sess-1:/credentials:rw`);
+    expect(result.binds).not.toContain(`${TEST_CREDENTIALS_DIR}:/credentials:rw`);
     // docs/246 / planning#288 — every session mounts the container-visible slice of
     // its state dir; there is no "no state dir" case left to skip it for.
     expect(result.binds).toContain(
@@ -488,6 +491,61 @@ describe("buildEnv", () => {
     expect(env.some((e) => e.startsWith("SHIPIT_SESSION_WORKER_UID="))).toBe(false);
   });
 
+  // planning#415 — the entrypoint's workspace chown must PRUNE the declared dep
+  // dirs: a docs/183 overlay dep dir's lowerdir is a base generation shared by
+  // every session of the repo, and chowning a lower-only entry forces a copy-up
+  // into the session's private upper layer. The entrypoint cannot read
+  // shipit.yaml (POSIX sh, and the config is resolved — validated, defaulted —
+  // orchestrator-side), so the list travels as SHIPIT_DEP_DIRS, colon-separated,
+  // alongside the uid/gid pair.
+  describe("planning#415: forwards the dep-dir prune list", () => {
+    let tmpDir: string | undefined;
+    afterEach(() => {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    });
+
+    /** A workspace whose shipit.yaml declares the given `agent:` block. */
+    function workspaceWith(agentBlock: string): string {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "buildenv-depdirs-"));
+      fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), `agent:\n${agentBlock}`);
+      return tmpDir;
+    }
+
+    function envFor(workspaceDir: string, procEnv: NodeJS.ProcessEnv): string[] {
+      return buildEnv(baseConfig({ workspaceDir }), "/workspace", 9100, undefined, undefined, procEnv);
+    }
+
+    it("forwards the workspace's declared dep dirs, colon-separated", () => {
+      const ws = workspaceWith("  dep-dirs:\n    - node_modules\n    - vendor\n");
+      const env = envFor(ws, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env).toContain("SHIPIT_DEP_DIRS=node_modules:vendor");
+    });
+
+    it("falls back to the default list when the workspace has no shipit.yaml", () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "buildenv-depdirs-"));
+      const env = envFor(tmpDir, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env).toContain("SHIPIT_DEP_DIRS=node_modules");
+    });
+
+    it("forwards nothing for an explicitly empty dep-dir list", () => {
+      // `agent.dep-dirs: []` means "no dep dirs" — forwarding an empty value
+      // would be indistinguishable from it anyway (the entrypoint's `[ -n … ]`
+      // reads both as none), so nothing is pushed at all.
+      const ws = workspaceWith("  dep-dirs: []\n");
+      const env = envFor(ws, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env.some((e) => e.startsWith("SHIPIT_DEP_DIRS="))).toBe(false);
+    });
+
+    it("forwards no dep dirs when the worker uid is unset", () => {
+      // The entrypoint reads the list only on the non-root path, so it rides
+      // the same gate as the uid/gid pair.
+      const ws = workspaceWith("  dep-dirs:\n    - node_modules\n");
+      const env = envFor(ws, {} as NodeJS.ProcessEnv);
+      expect(env.some((e) => e.startsWith("SHIPIT_DEP_DIRS="))).toBe(false);
+    });
+  });
+
   // docs/183 — the orchestrator resolves the worker image id at startup into
   // SESSION_WORKER_IMAGE_ID; buildEnv forwards it so the worker's
   // install-runtime runtimeKey() shares the same ABI fingerprint and a
@@ -612,7 +670,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       depCacheDir: "/workspace/dep-cache/hash",
     });
     expect(config.depCacheDir).toBe("/workspace/dep-cache/hash");
@@ -623,7 +681,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.depCacheDir).toBeUndefined();
   });
@@ -636,7 +694,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.scratchDir).toBe("/workspace/sessions/s1/scratch");
     // Sibling of workspace/, never nested inside it.
@@ -648,7 +706,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       scratchDir: "/custom/scratch",
     });
     expect(config.scratchDir).toBe("/custom/scratch");
@@ -665,7 +723,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       dockerAccess: true,
       opsSession: true,
     });
@@ -678,7 +736,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       dockerAccess: true,
     });
     expect(config.dockerAccess).toBe(true);
@@ -692,7 +750,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
   });
@@ -709,7 +767,7 @@ describe("buildContainerConfig", () => {
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
       scratchDir: "/custom/scratch",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     // The overridable siblings still honour their overrides...
     expect(config.scratchDir).toBe("/custom/scratch");
@@ -728,7 +786,7 @@ describe("buildContainerConfig", () => {
         sessionId: "s1",
         sessionDir: "/workspace/sessions/s1",
         workspaceDir: "/workspace/sessions/s1",
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
       }),
     ).toThrow(/<sessionDir>\/workspace/);
   });
@@ -920,6 +978,181 @@ describe("destroyContainer — overlay volume teardown", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createContainer — overlay volumes re-verified after the container is built
+// (nikzlabs/shipit#2495)
+// ---------------------------------------------------------------------------
+
+describe("createContainer — overlay volume re-verification (nikzlabs/shipit#2495)", () => {
+  /**
+   * A daemon that models the one behaviour this whole fix exists for: a
+   * `createContainer` naming a volume that does not exist does NOT fail — the
+   * daemon silently auto-creates a plain, driver-option-less volume under that
+   * name. `vanishBeforeContainerCreate` removes the named volume in the window
+   * between `createOverlayVolume` and `docker createContainer`, which is exactly
+   * what the production session hit.
+   */
+  function fakeDaemon(opts: { vanishBeforeContainerCreate?: string[] } = {}) {
+    const store = new Map<string, { Options: Record<string, string> | null }>();
+    const removedVolumes: string[] = [];
+    const started: string[] = [];
+    let containerRemoved = false;
+
+    const docker = {
+      createVolume: async (cfg: { Name: string; DriverOpts?: Record<string, string> }) => {
+        if (store.has(cfg.Name)) return; // Docker's silent no-op on a taken name.
+        store.set(cfg.Name, { Options: cfg.DriverOpts ?? null });
+      },
+      getVolume: (name: string) => ({
+        inspect: async () => {
+          const v = store.get(name);
+          if (!v) throw Object.assign(new Error("no such volume"), { statusCode: 404 });
+          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data`, ...v };
+        },
+        remove: async () => {
+          removedVolumes.push(name);
+          store.delete(name);
+        },
+      }),
+      listContainers: async () => [],
+      listNetworks: async () => [],
+      getNetwork: () => ({ remove: async () => {} }),
+      listVolumes: async () => ({ Volumes: [] }),
+      getContainer: () => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => { containerRemoved = true; },
+      }),
+      createContainer: async (cfg: { HostConfig?: { Mounts?: { Type: string; Source: string }[] } }) => {
+        for (const name of opts.vanishBeforeContainerCreate ?? []) store.delete(name);
+        // Docker's implicit named-volume creation: any referenced volume that is
+        // missing is conjured up as a plain local volume with no driver options.
+        for (const m of cfg.HostConfig?.Mounts ?? []) {
+          if (m.Type === "volume" && !store.has(m.Source)) store.set(m.Source, { Options: null });
+        }
+        return {
+          id: "cid-new",
+          start: async () => { started.push("cid-new"); },
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    } as unknown as Docker;
+
+    return { docker, store, removedVolumes, started, wasContainerRemoved: () => containerRemoved };
+  }
+
+  function makeDeps(docker: Docker): LifecycleDeps {
+    return {
+      docker,
+      containers: new Map(),
+      standbySessionIds: new Set<string>(),
+      emitter: new EventEmitter(),
+      baseLabels: () => ({ "shipit-managed": "true" }),
+      networkName: "shipit-net",
+      workerPort: 9100,
+      imageName: "shipit-worker:test",
+      // No workspaceVolume → dev bind-mount mode, so `selfHealWorkspaceOwnership`
+      // is the documented no-op and the test needs no root.
+      skipHealthCheck: true,
+    } as unknown as LifecycleDeps;
+  }
+
+  function overlaySpec(depDir: string, volumeName: string): DepDirOverlaySpec {
+    return {
+      depDir,
+      mountPath: `/workspace/${depDir}`,
+      volumeName,
+      lowerdir: `/data/overlay-base/h-${depDir}/g1`,
+      upperdir: `/data/sessions/s1/overlay/h-${depDir}/g1/upper`,
+      workdir: `/data/sessions/s1/overlay/h-${depDir}/g1/work`,
+      generation: 1,
+      scopeHash: `h-${depDir}`,
+    } as unknown as DepDirOverlaySpec;
+  }
+
+  const NODE_MODULES_VOL = "shipit-3f6d1497-c46_overlay-dba27c31";
+  const DIST_VOL = "shipit-3f6d1497-c46_overlay-bcae0416";
+
+  function configWithSpecs(tmp: string, specs: DepDirOverlaySpec[]): ContainerConfig {
+    return baseConfig({
+      sessionId: "3f6d1497-c466-4b2c-b9af-0f1800fbf759",
+      sessionDir: path.join(tmp, "session"),
+      workspaceDir: path.join(tmp, "session", "workspace"),
+      sessionStateDir: path.join(tmp, "session", "state"),
+      overlaySpecs: specs,
+    });
+  }
+
+  const tmpDirs: string[] = [];
+  function tmpDir(): string {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-create-"));
+    tmpDirs.push(d);
+    fs.mkdirSync(path.join(d, "session", "workspace"), { recursive: true });
+    return d;
+  }
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it("starts the container when every dep-dir volume is still the overlay we created", async () => {
+    const daemon = fakeDaemon();
+    const deps = makeDeps(daemon.docker);
+    const tmp = tmpDir();
+
+    const sc = await createContainer(deps, configWithSpecs(tmp, [
+      overlaySpec("node_modules", NODE_MODULES_VOL),
+      overlaySpec("dist", DIST_VOL),
+    ]));
+
+    expect(daemon.started).toEqual(["cid-new"]);
+    expect(sc.workerUrl).toBe("http://172.20.0.9:9100");
+    expect(daemon.removedVolumes).toEqual([]);
+  });
+
+  // The reported failure, end to end: `node_modules`'s volume is gone by the time
+  // the container is built, Docker conjures a plain one, and before this fix the
+  // container started on a dep dir the session uid could never write.
+  it("refuses to start when a dep-dir volume was auto-created by Docker mid-window", async () => {
+    const daemon = fakeDaemon({ vanishBeforeContainerCreate: [NODE_MODULES_VOL] });
+    const deps = makeDeps(daemon.docker);
+    const tmp = tmpDir();
+
+    await expect(createContainer(deps, configWithSpecs(tmp, [
+      overlaySpec("node_modules", NODE_MODULES_VOL),
+      overlaySpec("dist", DIST_VOL),
+    ]))).rejects.toThrow(OVERLAY_VERIFY_FAILURE);
+
+    // Never started — that is the whole point: a session that fails to create is
+    // recoverable, one that boots wedged is not.
+    expect(daemon.started).toEqual([]);
+    // …and the cleanup removed the container AND both overlay volumes, the plain
+    // impostor included. Leaving it behind would make the create retry reuse it.
+    expect(daemon.wasContainerRemoved()).toBe(true);
+    expect([...daemon.removedVolumes].sort()).toEqual([DIST_VOL, NODE_MODULES_VOL].sort());
+    expect(daemon.store.has(NODE_MODULES_VOL)).toBe(false);
+    expect(deps.containers.has("3f6d1497-c466-4b2c-b9af-0f1800fbf759")).toBe(false);
+  });
+
+  it("leaves a non-overlay session's create path untouched", async () => {
+    const daemon = fakeDaemon();
+    const deps = makeDeps(daemon.docker);
+    const tmp = tmpDir();
+
+    const sc = await createContainer(deps, baseConfig({
+      sessionId: "plain-session",
+      sessionDir: path.join(tmp, "session"),
+      workspaceDir: path.join(tmp, "session", "workspace"),
+      sessionStateDir: path.join(tmp, "session", "state"),
+    }));
+
+    expect(daemon.started).toEqual(["cid-new"]);
+    expect(sc.status).toBe("running");
   });
 });
 

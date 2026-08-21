@@ -89,7 +89,33 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
         startedAt: new Date(NOW + 116 * HOUR - 7 * 24 * HOUR).toISOString(),
       },
       plan: "Lite",
+      // planning#454 — `data.limits[]` is a COMPLETE statement of the plan's
+      // windows, so this reader can say which ones exist and the pill can drop
+      // a slot the plan does not have. Claude's reader cannot say it: its
+      // events deliver one window at a time.
+      windows: ["session", "weekly"],
     });
+  });
+
+  /*
+    An ambiguous slot counts as PRESENT. Two entries landed in it, so the window
+    plainly exists and only its number is unresolvable — reporting it absent
+    would delete the meter from the pill on the strength of a parse failure.
+  */
+  it("still names a window whose two candidate entries could not be told apart", () => {
+    const twoSessions = {
+      data: {
+        level: "lite",
+        limits: [
+          { unit: 3, number: 5, usage: 2000, remaining: 1999, nextResetTime: NOW + 5 * HOUR },
+          { unit: 3, number: 5, usage: 3000, remaining: 2000, nextResetTime: NOW + 4 * HOUR },
+          MEASURED.data.limits[1],
+        ],
+      },
+    };
+    const parsed = parseZaiQuota(twoSessions, NOW);
+    expect(parsed?.session).toBeNull();
+    expect(parsed?.windows).toEqual(["session", "weekly"]);
   });
 
   it("treats `usage` as the allowance, never as a percentage", () => {

@@ -33,6 +33,7 @@ import path from "node:path";
 import type { AgentId, CredentialRoute } from "../shared/types.js";
 import { nativeServiceForHarness } from "../shared/catalogue/index.js";
 import { extractCodexIdentity } from "./agents/codex/auth-manager.js";
+import { extractXaiIdentity } from "./agents/grok/auth-manager.js";
 
 export interface ProviderAccountIdentity {
   /** The provider's stable id for this account. Used for duplicate detection. */
@@ -60,6 +61,18 @@ export function readCodexAccountIdentity(credentialRoot: string): ProviderAccoun
   return extractCodexIdentity(auth);
 }
 
+/**
+ * Read `<credentialRoot>/.grok/auth.json`'s xAI account id (planning#435).
+ *
+ * `user_id` rather than the email, for the reason the Claude reader gives:
+ * an email can change under one account, so it is a label and never the key.
+ */
+export function readGrokAccountIdentity(credentialRoot: string): ProviderAccountIdentity | null {
+  const auth = readJsonObject(path.join(credentialRoot, ".grok", "auth.json"));
+  if (!auth) return null;
+  return extractXaiIdentity(auth);
+}
+
 /** Identity for whichever provider owns this credential root, or null. */
 export function readProviderAccountIdentity(
   provider: AgentId,
@@ -67,9 +80,10 @@ export function readProviderAccountIdentity(
 ): ProviderAccountIdentity | null {
   if (provider === "claude") return readClaudeAccountIdentity(credentialRoot);
   if (provider === "codex") return readCodexAccountIdentity(credentialRoot);
-  // OpenCode has no provider accounts at launch (docs/268 req 5 — key-mode
-  // services only), so there is no auth.json identity to extract yet. A future
-  // login integration adds a reader here.
+  if (provider === "grok") return readGrokAccountIdentity(credentialRoot);
+  // OpenCode still has no provider accounts (docs/268 req 5) — it is key-mode
+  // only, with no `account` credential target — so there is no auth.json
+  // identity to extract for it.
   return null;
 }
 

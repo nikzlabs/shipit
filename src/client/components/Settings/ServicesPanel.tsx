@@ -58,7 +58,7 @@
 // useEffect: a reconnect dialog is MOUNTED by the Reconnect click, so mount is
 // the event that starts its sign-in — see the call site.
 // eslint-disable-next-line no-restricted-imports -- mount-is-the-event, see above
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { CheckIcon, CircleHalfIcon, InfoIcon, MinusIcon, PlusIcon, WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
@@ -747,14 +747,23 @@ function ServiceModeCard({
 }
 
 /**
- * A standing **billing hazard** of one `(service, mode)` — something the service
- * does with the user's money that ShipIt cannot see, so it cannot be surfaced as
- * a number, a status or a failure and has to be said in words.
+ * A standing **billing hazard** on one `(service, mode)`: something the service
+ * does with the user's money out of ShipIt's sight, which no control on the card
+ * can carry because it is neither a number, a status, nor a failure.
  *
  * Deliberately a short, closed map rather than a `description` field on every
  * card: req 19 deleted per-card prose precisely because it printed something on
  * every service whether or not there was anything to say. An entry here is the
- * exception that earns its line, and today there is exactly one.
+ * exception that earns its line.
+ *
+ * A second kind briefly lived here — the **absence of a read-out**, to explain a
+ * quota pill ShipIt had suppressed because it had no reader (docs/274 req 16).
+ * It is gone with the case that needed it: xAI turned out to publish its weekly
+ * figure after all, so the pill now shows a number instead of a sentence
+ * apologising for having none. The lesson is worth more than the mechanism was —
+ * a line of copy explaining why a surface is empty is a reasonable last resort
+ * and a poor substitute for filling it, so reach for it only once the reader is
+ * genuinely impossible rather than merely unwritten.
  *
  * It also lives here rather than in the catalogue: the rows are routing data
  * (endpoints, credentials, models), and a sentence of user-facing copy is not
@@ -772,7 +781,7 @@ const MODE_NOTICES: Record<string, string> = {
     "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
 };
 
-/** The hazard line for a `(service, mode)`, or nothing where there is none. */
+/** The notice line for a `(service, mode)`, or nothing where there is none. */
 function ModeNotice({
   serviceId,
   billingMode,
@@ -1011,20 +1020,79 @@ function StringCredentialRow({
 }
 
 /**
- * The service list's width on step 1 — **the width it had before the support
- * table existed**, which is what keeps the rows themselves untouched: `max-w-md`
- * (28rem) less the dialog's `p-4`. `basis` rather than `w`, so a viewport too
- * narrow for the pair still shrinks the list instead of overflowing it.
+ * The service list's column on step 1 — the 26rem it has always had (`max-w-md`
+ * less the dialog's `p-4`) as the *maximum*, and **a floor under it**.
+ *
+ * The floor is the fix for what the old `basis-[26rem]` did on a narrow
+ * viewport: the list was the only thing in the pair allowed to shrink, so the
+ * table took its 5.5rem per installed harness first and handed the rows what was
+ * left. With four harnesses installed on a 484px-wide window that remainder was
+ * *negative* — the service name was squeezed to nothing, the mode label spilled
+ * out of the button it sits in, and the row the user presses had no readable
+ * name at all.
+ *
+ * **The floor is `min-content`, which is the widest name — not a number chosen
+ * to hold today's names.** The name spans are `whitespace-nowrap`, so a row's
+ * minimum contribution is exactly its mark, its gap and its whole title (or its
+ * mode label, whichever is wider), and the column can never be sized below the
+ * longest of them. A service named something longer than "Vercel AI Gateway"
+ * widens the floor by itself, with nothing here to update — which is the part a
+ * literal could not do: `13rem` was measured against the eight services that
+ * exist, and would have started cutting the first title that outgrew it.
+ *
+ * Below the pair's total the whole grid scrolls sideways (see
+ * `STEP_1_SCROLLER`) rather than crushing a column.
  */
-const STEP_1_LIST = "min-w-0 grow-0 basis-[26rem]";
+const STEP_1_LIST_COLUMN = "minmax(min-content, 26rem)";
 
 /**
  * One column of step 1's support table, shared by the heads and the cells so the
  * two cannot drift apart. Measured, not guessed: at `4.5rem` the head "Claude
- * Code" clipped to "CLAUDE C…". A name longer than both shipped ones truncates
- * rather than moving the column.
+ * Code" clipped to "CLAUDE C…". A longer name now **wraps** inside the column
+ * rather than truncating — the grid gives that row's whole track the extra
+ * height, so a wrapped head cannot push the columns out of line.
  */
 const HARNESS_COLUMN = "w-[5.5rem] shrink-0 text-center";
+
+/**
+ * The dialog's width, from the columns actually drawn: the list, the gap, one
+ * `HARNESS_COLUMN` per installed harness with a `gap-1` between them, and the
+ * dialog's own `p-4`. This used to be the literal `40.25rem`, which was that
+ * arithmetic done once for the two harnesses shipped at the time; a third and a
+ * fourth then had nowhere to go and were simply cut off.
+ *
+ * **Stated, not inferred.** A dialog is `position: fixed`, so leaving its width
+ * to `auto` makes it shrink-to-fit its content — and step 1's rows wrap, which
+ * collapses what they ask for to about the width of their longest *word*. The
+ * dialog then came out ~620px on a 800px window, the list column landed on its
+ * 13rem floor, and every row wrapped its modes with 150px of unused room beside
+ * it. Saying the width removes that circularity: the columns decide the dialog,
+ * the dialog decides the columns, in that order.
+ *
+ * `min(…, 100vw - 2rem)` keeps it on screen; past that cap `STEP_1_SCROLLER`
+ * takes over. It is applied `md:` and up only, so the fullscreen mobile dialog
+ * (`max-md:w-full`) is untouched.
+ */
+function addServiceDialogWidth(step1: boolean, harnessCount: number): string {
+  if (!step1 || harnessCount === 0) return "28rem";
+  return `min(calc(26rem + 1rem + ${harnessCount} * 5.5rem + ${harnessCount - 1} * 0.25rem + 2rem), calc(100vw - 2rem))`;
+}
+
+/**
+ * The pair scrolls sideways as ONE unit when the window cannot hold it, with the
+ * service names pinned (`sticky left-0` on the list column below). A tick is
+ * only information next to the name it is about, so the alternative — dropping
+ * the table on a narrow screen, or letting a column crush — loses either the
+ * answer or the question.
+ *
+ * **`overflow-x` only, and it must stay that way.** The vertical scroll belongs
+ * to the dialog, one level up. Adding `overflow-y` here — or a child that scrolls
+ * vertically — puts the sticky column inside two scrolling ancestors, which is
+ * the Chromium configuration where `position: sticky` quietly stops sticking:
+ * the names would scroll away under the ticks with nothing in the layout to say
+ * why.
+ */
+const STEP_1_SCROLLER = "overflow-x-auto";
 
 /**
  * **Can this harness run this service?** — asked of the catalogue, before the
@@ -1073,9 +1141,10 @@ function HarnessSupportCell({ harness, service }: { harness: AgentOption; servic
   return (
     <span
       // The row button's own box metrics — a transparent border, `py-2`,
-      // `text-xs` — so this cell is exactly as tall as the row it sits beside,
-      // and stays so if the row's padding is ever changed. Alignment by shared
-      // metrics, never by a measured height.
+      // `text-xs` — so a cell reads at the same size as the row it sits beside.
+      // It no longer carries the *alignment*: step 1's grid puts this cell and
+      // its row in one shared track, and the row is free to be two lines tall
+      // when a name needs the space (see `STEP_1_LIST_COLUMN`).
       className={`${HARNESS_COLUMN} border border-transparent py-2 text-xs`}
       title={answer}
       data-testid={`add-service-support-${service.id}-${harness.id}`}
@@ -1216,12 +1285,44 @@ function AddServiceDialog({
    * flow's LAST screen at the moment the user asked to start it again.
    *
    * Adjusted during render rather than in an effect, which is what makes it a
-   * frame-exact answer instead of a frame-late one. A start that fails outright
-   * leaves the account `ready` and this `false`, which is precisely the
-   * `signInStalled` shape — so that path ends on *Try again*, not on a wait
-   * with no end.
+   * frame-exact answer instead of a frame-late one.
+   *
+   * **It gates `signedIn` and nothing else.** A start that fails outright leaves
+   * the account `ready` and this `false` — correctly, because the reconnect did
+   * not take effect — and the failure is reported by `attemptUnseen` instead.
+   * While this flag was also read by `signInStalled`, that same "still `ready`"
+   * state had to mean *both* "not connected yet" and "the attempt is over", so
+   * the catch set it and turned a refused login into the success screen.
    */
   const [reconnectLeftReady, setReconnectLeftReady] = useState(reconnectAccountId === undefined);
+  /**
+   * **This dialog has asked for a login and has not yet seen it take effect.**
+   *
+   * Everything `signInStalled` reads — the row's status, the challenge slot, the
+   * filed reason — describes *an* attempt, and until the one we just started
+   * shows up, every one of them still describes the **previous** one. That is
+   * not a corner: reconnect exists precisely because the last attempt failed, so
+   * the state the dialog opens over is a failure by default, and Claude's wizard
+   * takes about six seconds to replace it. Both shapes were reproducible:
+   *
+   * - a stale `authError` from the failure that prompted the reconnect (only
+   *   ever cleared when the *next* challenge arrives), and
+   * - a row still reading `auth_failed`, which is `status !== "authenticating"`.
+   *
+   * Either one drew the flow's failure screen, with a live *Try again*, over a
+   * sign-in that was running normally — the user's press had worked, and the one
+   * thing on screen inviting a press said otherwise. `reconnectLeftReady` did
+   * not cover it: "has left `ready`" is answered `true` by `auth_failed`, and it
+   * is about the *account*, while this is about the *attempt*.
+   *
+   * Armed at every start (so *Try again* re-arms it) and disarmed by the first
+   * evidence the attempt is real — `authenticating`, a challenge, or a reason,
+   * which is now necessarily this attempt's because `startSignIn` clears the
+   * previous one's. A start that throws disarms it in the catch, so a genuine
+   * failure to start still reaches the stalled panel rather than waiting for a
+   * broadcast that is not coming.
+   */
+  const [attemptUnseen, setAttemptUnseen] = useState(reconnectAccountId !== undefined);
 
   /**
    * **Choosing the mode starts its sign-in, when signing in is all the step
@@ -1361,19 +1462,29 @@ function AddServiceDialog({
   const authStatus = useAuthStatus(signInProvider === "claude" ? signInAccountId : undefined);
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
+  // Adjusted during render, like `reconnectLeftReady` above and for the same
+  // reason: the answer has to be frame-exact, and a frame late is a frame of the
+  // failure screen.
+  if (attemptUnseen && (signInAccount?.status === "authenticating" || pendingAuth || authError)) {
+    setAttemptUnseen(false);
+  }
   /**
-   * `reconnectLeftReady` is in the test for the same reason `startingSignIn`
-   * is, one beat later. A reconnect starts from a `ready` account, and the
-   * server's `authenticating` broadcast arrives AFTER `startSignIn` resolves —
-   * so in the window between them the row is `ready`, nothing is pending and
-   * nothing is starting, which is this predicate exactly. The dialog flashed
-   * "The sign-in stopped before the account connected." with a *Try again*
-   * over a sign-in that was proceeding normally. For an add it is initialised
-   * `true`, so it changes nothing there; a start that genuinely throws sets it
-   * (see `startSignIn`'s catch), which is what keeps the real failure reachable.
+   * **`reconnectLeftReady` is deliberately NOT in this test.** It used to be,
+   * and the two questions it was answering pull in opposite directions.
+   *
+   * It guards the SUCCESS direction: "has the reconnect taken effect?", so the
+   * dialog cannot open on "Connected … Done" for the 50 ms before the account
+   * leaves `ready`. Reading it here made it guard the FAILURE direction too —
+   * "is the attempt over?" — and a reconnect whose start is *refused* leaves the
+   * row `ready`, which is the one state where the same flag cannot answer both.
+   * The catch therefore had to set it to reach this panel, and setting it
+   * completed `signedIn` instead: a refused login answered with the flow's
+   * success screen. `attemptUnseen` now owns the failure direction on its own —
+   * it is armed by the start rather than inferred from the row, so it is true of
+   * the attempt and not of the credential.
    */
   const signInStalled = !!signInAccount && !signedIn && !pendingAuth && !startingSignIn
-    && reconnectLeftReady
+    && !attemptUnseen
     && (!!authError || signInAccount.status !== "authenticating");
 
   /**
@@ -1432,6 +1543,9 @@ function AddServiceDialog({
     // Read now, not at the last render, for the same reason.
     const known = providerAccountsOf(useSettingsStore.getState().providerAccounts, provider);
     setStartingSignIn(true);
+    // Nothing on screen describes this attempt yet — see `attemptUnseen`. Set
+    // before the first request, so the window it covers has no gap at its start.
+    setAttemptUnseen(true);
     setError("");
     try {
       /**
@@ -1442,6 +1556,32 @@ function AddServiceDialog({
        * and, otherwise, no attempt yet, so make one.
        */
       const existing = adoptableAttempt(known, signInAccountId);
+      /**
+       * **A new attempt invalidates the last one's reason — and it has to be
+       * gone before this dialog next renders.**
+       *
+       * `providerAccountAuthErrors` is written by `agent_auth_failed` and
+       * cleared only when the *next* challenge arrives (`agent_auth_pending`),
+       * which for Claude is about six seconds away. Until then the previous
+       * attempt's reason is still filed against this account, and
+       * `signInStalled` reads it as this attempt's outcome — the failure screen,
+       * with a live *Try again*, over a sign-in that is running. On reconnect
+       * that is the ordinary case: the reason you reconnect is that the last
+       * attempt failed.
+       *
+       * Synchronously, before the first `await`, because `attemptUnseen`
+       * disarms on the first evidence of an attempt and a leftover error is
+       * exactly what it would mistake for evidence. Clearing it after the
+       * cancel round-trip left the latch already disarmed, with nothing to
+       * re-arm it — the retry then showed the failure screen again.
+       *
+       * Only for an adopted row: an account created a moment ago cannot carry a
+       * reason under an id that did not exist.
+       */
+      const startingLoginId = loginForProvider(provider);
+      if (existing && startingLoginId) {
+        useSettingsStore.getState().setProviderAccountAuthError(startingLoginId, existing.id, null);
+      }
       const account = existing ?? await createAccount(provider, known.map((a) => a.id));
       // Recorded the moment it is true, and never unset: from here on this
       // dialog is entitled to delete the row on the way out. A *Try again*
@@ -1450,6 +1590,11 @@ function AddServiceDialog({
       if (!existing && account) mintedHere.current = true;
       if (!account) {
         setError("Could not start the sign-in — no account was created.");
+        // There is no attempt to wait for, so stop waiting to see one. The
+        // dialog recovers either way (with no account, `signInIdle` puts *Sign
+        // in* back), but a latch left armed over a start that never happened is
+        // a state that says something untrue about the flow. Found by review.
+        setAttemptUnseen(false);
         return;
       }
       // Taken BEFORE the login starts, on purpose: the account exists from the
@@ -1498,10 +1643,16 @@ function AddServiceDialog({
       await startAccountLogin(provider, account.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the sign-in");
-      // The reconnect is over and it failed, so stop suppressing the stalled
-      // panel: that is where its *Try again* lives, and without this a failed
-      // start would wait for a broadcast that is never coming.
-      setReconnectLeftReady(true);
+      // The attempt is over before anything could be observed of it, so stop
+      // waiting to observe one: this is what keeps the stalled panel — and its
+      // *Try again* — reachable on a start that never got off the ground.
+      //
+      // And `reconnectLeftReady` is deliberately NOT set here. It once was, to
+      // reach that same panel, back when `signInStalled` read it — but a refused
+      // start leaves the row `ready`, so setting it completed `signedIn` and the
+      // dialog answered the refusal with "Connected … Done". The flag says the
+      // reconnect took effect; a start that never happened did not.
+      setAttemptUnseen(false);
     } finally {
       setStartingSignIn(false);
     }
@@ -1599,10 +1750,11 @@ function AddServiceDialog({
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) cancel(); }}>
       {/*
         **Only step 1 is wide, and it is wider by exactly the table.** The
-        service list keeps the width it always had (`STEP_1_LIST` below), so the
-        rows are untouched and the support table is what the extra room is for;
-        `40.25rem` is that arithmetic — 26rem of list, the `gap-4` between, two
-        `5.5rem` columns with a `gap-1`, and the dialog's own `p-4`.
+        service list keeps the width it always had (`STEP_1_LIST_COLUMN` below),
+        so the rows are untouched and the support table is what the extra room is
+        for — `step1DialogWidth` is that arithmetic, done for however many
+        harnesses this install has rather than for the two that existed when the
+        table was written.
 
         Steps 2 and 3 go back to `max-w-md`. The dialog does visibly change width
         once, when a service is picked, and that is the better of the two costs:
@@ -1610,7 +1762,12 @@ function AddServiceDialog({
         and a code — in a box nearly half as wide again as their content.
       */}
       <DialogContent
-        className={`${service ? "max-w-md" : "max-w-[40.25rem]"} rounded-lg border-(--color-border-secondary) p-4`}
+        className="rounded-lg border-(--color-border-secondary) p-4 md:w-(--add-service-width) md:max-w-(--add-service-width)"
+        style={
+          {
+            "--add-service-width": addServiceDialogWidth(!service, supportHarnesses.length),
+          } as CSSProperties
+        }
         data-testid="add-service-dialog"
       >
         {/*
@@ -1629,83 +1786,125 @@ function AddServiceDialog({
 
         {!service && (
           <div className="mt-3" data-testid="add-service-step-service">
-            <div className="flex gap-4">
-              {/*
-                The service list, unchanged: the same rows at the same width they
-                had before the table existed. The support answers are NOT in
-                here — putting them inside the row was the first cut and was
-                rejected on sight, because it grows a control the user presses
-                into a place to read facts from.
-              */}
-              <div className={`${STEP_1_LIST} space-y-1`}>
-                <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-                  1 · Which service
-                </p>
-                {allServices().map((s) => (
-                  <button
-                    key={s.id}
-                    onClick={() => pickService(s)}
-                    className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-                    data-testid={`add-service-option-${s.id}`}
-                  >
-                    {/*
-                      The same mark the card will carry once the service is
-                      configured, so the row the user picks and the row they
-                      come back to are recognisably the same thing. It rides
-                      inside the row here rather than in a tile: the rows are
-                      already a bordered list, and a box inside a box is chrome
-                      the step does not need. The glyph is 12px against a 16px
-                      line box, so the support table beside this list — aligned
-                      by shared row metrics, not by measurement — does not move.
-                    */}
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="flex w-3 shrink-0 justify-center">
-                        <ServiceLogo service={s} />
-                      </span>
-                      <span className="truncate">{s.name}</span>
-                    </span>
-                    <span className="shrink-0 text-(--color-text-tertiary)">
-                      {s.modes.map((m) => MODE_LABEL[m.kind]).join(" · ")}
-                    </span>
-                  </button>
-                ))}
-              </div>
+            {/*
+              **One grid, two columns of content, shared row tracks.** The list
+              and the table are still two separate containers — the answers stay
+              out of the row the user presses — but each one is a `subgrid` over
+              the same rows, so row N of the list and row N of the table are
+              literally the same track. That replaces the previous arrangement,
+              where the two stacks were merely built out of matching box metrics
+              and stayed level only for as long as every row was exactly one line
+              tall. The first thing to wrap — a two-line "1 · Which service" head
+              on a narrow window — knocked every tick out of line with its row.
 
-              {/*
-                The table, beside the list and drawn around nothing: the two
-                columns line up with the rows and that alignment IS the
-                relationship. An enclosing box was prototyped and dropped — it
-                added chrome to a quiet dialog and an alignment constraint
-                between two containers, which it promptly failed.
+              Rows can now grow, which is what lets a name never be cut.
+            */}
+            <div className={STEP_1_SCROLLER}>
+              <div
+                className="grid gap-x-4 gap-y-1"
+                style={{
+                  gridTemplateColumns:
+                    supportHarnesses.length > 0
+                      ? `${STEP_1_LIST_COLUMN} auto`
+                      : STEP_1_LIST_COLUMN,
+                  gridTemplateRows: `repeat(${allServices().length + 1}, auto)`,
+                }}
+              >
+                {/*
+                  The service list, in the same rows at the same width it had
+                  before the table existed. The support answers are NOT in
+                  here — putting them inside the row was the first cut and was
+                  rejected on sight, because it grows a control the user presses
+                  into a place to read facts from.
 
-                **The alignment is a shared row height, not a measurement.** Each
-                cell carries the row button's own box metrics (a transparent
-                border, `py-2`, `text-xs`) so neither side is told the other's
-                height, and both columns walk `allServices()` in one order, so
-                row N here is service N there.
-              */}
-              {supportHarnesses.length > 0 && (
-                <div className="shrink-0 space-y-1" data-testid="add-service-support-table">
-                  <div className="flex gap-1">
-                    {supportHarnesses.map((harness) => (
-                      <span
-                        key={harness.id}
-                        className={`${HARNESS_COLUMN} truncate text-[10px] uppercase tracking-wider text-(--color-text-tertiary)`}
-                        data-testid={`add-service-support-head-${harness.id}`}
-                      >
-                        {harness.name}
-                      </span>
-                    ))}
-                  </div>
+                  `sticky left-0` keeps the names on screen while the ticks
+                  scroll: a tick is only an answer beside the question it is
+                  about, so the names are the one thing that must never leave.
+                */}
+                <div className="sticky left-0 z-10 row-span-full grid grid-rows-subgrid gap-y-1 bg-(--color-bg-elevated) pr-1">
+                  <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
+                    1 · Which service
+                  </p>
                   {allServices().map((s) => (
-                    <div key={s.id} className="flex gap-1">
-                      {supportHarnesses.map((harness) => (
-                        <HarnessSupportCell key={harness.id} harness={harness} service={s} />
-                      ))}
-                    </div>
+                    <button
+                      key={s.id}
+                      onClick={() => pickService(s)}
+                      // `flex-wrap`, and a name that wraps rather than truncates:
+                      // between them the service name is never cut, at any width.
+                      // The modes are the first thing to give — they drop to a
+                      // second line under the name — because they are a fact
+                      // about the service that step 2 asks again, while the name
+                      // is the only thing identifying the row being pressed.
+                      className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-0.5 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+                      data-testid={`add-service-option-${s.id}`}
+                    >
+                      {/*
+                        The same mark the card will carry once the service is
+                        configured, so the row the user picks and the row they
+                        come back to are recognisably the same thing. It rides
+                        inside the row here rather than in a tile: the rows are
+                        already a bordered list, and a box inside a box is chrome
+                        the step does not need.
+                      */}
+                      <span className="flex items-center gap-2">
+                        <span className="flex w-3 shrink-0 justify-center">
+                          <ServiceLogo service={s} />
+                        </span>
+                        {/*
+                          `whitespace-nowrap` is what makes the column's
+                          `min-content` floor mean "the longest title": a name
+                          that cannot break is a minimum the grid must honour,
+                          so the title is never cut and never split across two
+                          lines either. The modes wrap under it instead.
+                        */}
+                        <span className="whitespace-nowrap">{s.name}</span>
+                      </span>
+                      <span className="shrink-0 text-(--color-text-tertiary)">
+                        {s.modes.map((m) => MODE_LABEL[m.kind]).join(" · ")}
+                      </span>
+                    </button>
                   ))}
                 </div>
-              )}
+
+                {/*
+                  The table, beside the list and drawn around nothing: the two
+                  columns line up with the rows and that alignment IS the
+                  relationship. An enclosing box was prototyped and dropped — it
+                  added chrome to a quiet dialog and an alignment constraint
+                  between two containers, which it promptly failed.
+
+                  **The alignment is the grid's own row tracks**, not a pair of
+                  heights that happen to agree: this container is a `subgrid`
+                  over the same rows as the list, and both walk `allServices()`
+                  in one order, so row N here is service N there however tall
+                  either side's content turns out to be.
+                */}
+                {supportHarnesses.length > 0 && (
+                  <div
+                    className="row-span-full grid grid-rows-subgrid gap-y-1"
+                    data-testid="add-service-support-table"
+                  >
+                    <div className="flex items-end gap-1">
+                      {supportHarnesses.map((harness) => (
+                        <span
+                          key={harness.id}
+                          className={`${HARNESS_COLUMN} break-words text-[10px] uppercase tracking-wider text-(--color-text-tertiary)`}
+                          data-testid={`add-service-support-head-${harness.id}`}
+                        >
+                          {harness.name}
+                        </span>
+                      ))}
+                    </div>
+                    {allServices().map((s) => (
+                      <div key={s.id} className="flex items-center gap-1">
+                        {supportHarnesses.map((harness) => (
+                          <HarnessSupportCell key={harness.id} harness={harness} service={s} />
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             {supportHarnesses.length > 0 && (
               <p className="pt-2 text-[11px] text-(--color-text-tertiary)">
@@ -1728,7 +1927,9 @@ function AddServiceDialog({
                 className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 data-testid={`add-service-mode-${m.kind}`}
               >
-                <span className="truncate">{MODE_LABEL[m.kind]}</span>
+                {/* Wraps, like the service names one step earlier: the label is
+                    what the button is, and the count beside it is `shrink-0`. */}
+                <span className="min-w-0 break-words">{MODE_LABEL[m.kind]}</span>
                 <span className="shrink-0 text-(--color-text-tertiary)">
                   {m.models.length} model{m.models.length === 1 ? "" : "s"}
                 </span>

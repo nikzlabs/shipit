@@ -17,6 +17,11 @@
  * (Claude: `claudeAiOauth.expiresAt`; Codex: the access-token JWT `exp` claim /
  * `last_refresh`, since its `auth.json` carries no plain expiry field).
  *
+ * A reader that cannot answer is not the same as a file with nothing to lose —
+ * see {@link TokenFreshnessReading} for the tri-state that separates them, and
+ * `token-freshness-guard.test.ts` for the fixtures that keep every declared
+ * reader honest against the file its CLI really writes (planning#449).
+ *
  * This module also owns the docs/153 leaked-subtree-symlink repair, which the
  * sync-in / repush paths run before the per-turn copy so the orchestrator and
  * the agent container converge on the same physical file.
@@ -27,11 +32,14 @@ import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { PROVIDER_ACCOUNTS_SUBDIR, providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { readXaiTokenFreshnessFile } from "./agents/grok/auth-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
   chownSessionCredentialsTree,
   perSessionCredentialsDir,
   readSessionAccountMarker,
+  subtreeBorrowInFlight,
+  writeSessionAccountMarker,
 } from "./session-credentials-scaffold.js";
 
 /**
@@ -44,6 +52,26 @@ import {
 export const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   claude: [".claude/.credentials.json", ".claude/credentials.json", ".claude/auth.json"],
   codex: [".codex/auth.json"],
+  // planning#435 — Grok's subscription login, and the reason docs/274 req 13
+  // exists as a separate requirement from req 12. The access token lives ~6
+  // HOURS with a refresh token beside it, which is short enough that an ordinary
+  // working session outlives one: a write-once copy would 401 mid-turn, and the
+  // rotation the CLI then performs would be stranded in the session's own copy
+  // where the next container never sees it. Declaring the file here is what puts
+  // grok on the same per-turn sync-in / publish-back path Claude and Codex use.
+  //
+  // planning#448 — declaring the file is not enough on its own. The session
+  // adapter's throwaway GROK_HOME *symlinks* auth.json at this path, and the
+  // CLI's refresh is an atomic rename onto $GROK_HOME/auth.json, which replaces
+  // the symlink with a regular file. The rotation then lives only in the
+  // throwaway root, this path never moves, and publish-back is a no-op. The
+  // adapter copies a replaced file back onto this path (freshness-guarded)
+  // before deleting the throwaway home, which is what makes the declaration
+  // actually observe a grok rotation.
+  //
+  // Only `auth.json` — NOT the rest of `.grok`, which holds config.toml,
+  // sessions and logs the CLI writes in place and must never be clobbered.
+  grok: [".grok/auth.json"],
 };
 
 // Claude keys conversation history by its encoded cwd. Session agents always
@@ -64,8 +92,12 @@ function atomicCopyFile(src: string, dst: string): void {
 /**
  * Parse the OAuth expiry (epoch ms) from a Claude credentials file. Tolerant of
  * the `claudeAiOauth.expiresAt` (ms) and `expires_at` (seconds) shapes; returns
- * null when the file is missing, unparseable, or carries no expiry — which the
- * write-back guard treats as "can't prove it's newer, don't risk it".
+ * null when the file is missing, unparseable, or carries no expiry.
+ *
+ * What null then MEANS is decided by {@link classifyTokenFreshness}, not here:
+ * a null on a file that is nonetheless a credential reads as `unorderable` and
+ * stops the guards from overwriting it, because that is what a reader which has
+ * stopped matching its CLI looks like (planning#449).
  */
 function readClaudeTokenExpiry(file: string): number | null {
   try {
@@ -86,8 +118,8 @@ function readClaudeTokenExpiry(file: string): number | null {
  * a more-recently-refreshed token. Codex writes no plain `expiresAt`, so we
  * read, in order: an explicit `expires_at`/`expiresAt` if a future CLI adds
  * one; else the access/id-token JWT `exp` claim (advances on every refresh);
- * else the `last_refresh` ISO timestamp. Returns null when none is parseable —
- * which the guards treat as "can't prove it's newer".
+ * else the `last_refresh` ISO timestamp. Returns null when none is parseable;
+ * {@link classifyTokenFreshness} decides what that null means for the guards.
  */
 export function readCodexTokenFreshness(file: string): number | null {
   try {
@@ -123,11 +155,118 @@ export function readCodexTokenFreshness(file: string): number | null {
  * Per-agent token "freshness" reader (epoch ms). Source and session files for
  * the *same* agent are always compared with the same reader, so the metrics
  * never mix across agents.
+ *
+ * Exported for the guard test in `token-freshness-guard.test.ts`, which runs
+ * every reader in this table against a committed REAL-shape credential file.
+ * A reader that has quietly stopped matching the file its CLI writes returns
+ * null on every real file and is otherwise invisible (planning#449) — the
+ * fixture is what turns that into a red build. A new harness joining
+ * {@link AGENT_TOKEN_FILES} needs a reader here AND a fixture there.
  */
-const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number | null>> = {
+export const TOKEN_FRESHNESS: Partial<Record<AgentId, (file: string) => number | null>> = {
   claude: readClaudeTokenExpiry,
   codex: readCodexTokenFreshness,
+  // Imported rather than re-implemented: the auth manager already parses this
+  // file's scope-keyed shape for the identity and plan, and two parsers of one
+  // format are how the guards come to disagree about which copy is newer.
+  grok: readXaiTokenFreshnessFile,
 };
+
+/**
+ * What a freshness reader was able to say about ONE token file.
+ *
+ * The tri-state exists because `null` collapsed two facts that call for
+ * opposite actions (planning#449):
+ *
+ *   - **`absent`** — nothing here to protect. The file is missing, empty, or
+ *     not a JSON object at all, so overwriting it destroys no credential and
+ *     the sync-in copy proceeds exactly as it always has.
+ *   - **`unorderable`** — the file IS a structurally valid credential and the
+ *     reader could not find a freshness signal in it. That is what a renamed
+ *     field, a changed encoding, or a new layout looks like: grok's live
+ *     `auth.json` writes `expires_at` as an ISO-8601 **string** where the first
+ *     reader accepted only epoch numbers, so it returned null on every real
+ *     file. Treated as the dangerous reading — never overwrite it, and say so
+ *     loudly.
+ *   - **`ordered`** — the reader answered; the guards compare `at`.
+ *
+ * The distinction matters because the sync-in guard is deliberately "copy
+ * unless proven unnecessary" (docs/142 A: a session must start from the
+ * freshest token, and a session with no token at all must get one). Under a
+ * plain null that direction cannot tell "this session has nothing worth
+ * keeping" from "this reader has stopped working", and picks the answer that
+ * clobbers a just-refreshed rotating token with a staler source copy — which
+ * the CLI has already invalidated upstream. The direction is unchanged for the
+ * first case and inverted only for the second.
+ */
+export type TokenFreshnessReading =
+  | { kind: "ordered"; at: number }
+  | { kind: "unorderable" }
+  | { kind: "absent" };
+
+/**
+ * Is there a credential here that overwriting would destroy?
+ *
+ * Deliberately generic and shallow: every file in {@link AGENT_TOKEN_FILES} is
+ * JSON today, so "parses as a non-empty JSON object" is the whole test. It
+ * answers the only question the guards ask — "could a CLI have written this?"
+ * — without a second per-agent parser, which is how two readers of one format
+ * come to disagree about which copy is newer. A future harness whose
+ * credential is not JSON needs its own probe here; until it has one, its file
+ * reads as `absent` and stays overwritable, which is what every file was
+ * before this existed.
+ */
+function looksLikeStructuredCredential(file: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    // An array is excluded deliberately: `Object.keys(["x"]).length` is 1, so a
+    // JSON array would otherwise read as a credential on its indices alone.
+    // No agent writes one, and none of the readers would understand it.
+    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      && Object.keys(parsed).length > 0;
+  } catch {
+    return false; // missing, unreadable, or not JSON — nothing to preserve
+  }
+}
+
+/** Read one token file through its agent's reader and classify the answer. */
+function classifyTokenFreshness(
+  read: (file: string) => number | null,
+  file: string,
+): TokenFreshnessReading {
+  if (!fs.existsSync(file)) return { kind: "absent" };
+  const at = read(file);
+  if (at !== null) return { kind: "ordered", at };
+  return looksLikeStructuredCredential(file) ? { kind: "unorderable" } : { kind: "absent" };
+}
+
+/**
+ * One COUNTABLE line whenever a freshness reader met a credential it could not
+ * order, in the shape {@link logWriteBackOutcome} established.
+ *
+ * Logged on EVERY occurrence rather than once per process, matching the
+ * write-back refusals: each line is a rotation that did not move, so the count
+ * is the measurement. A healthy reader never prints one — source and session
+ * hold the same shape, so either both order or neither file exists. A stream
+ * of them says the reader has stopped matching what its CLI writes, which is
+ * the failure this whole tri-state exists to make visible.
+ */
+function logUnorderableToken(
+  outcome: "refused-copy" | "skipped-copy" | "stranded-rotation" | "refused-publish",
+  fields: { sessionId: string; agentId: AgentId; direction: "sync-in" | "sync-back"; file: string },
+  prose: string,
+): void {
+  console.warn(
+    `[session-credentials] token-freshness=unorderable outcome=${outcome} session=${fields.sessionId} `
+      + `agent=${fields.agentId} direction=${fields.direction} file=${fields.file} — ${prose}`,
+  );
+}
+
+/** The same closing advice on every unorderable line — the reader, not the file, is the suspect. */
+const UNORDERABLE_HINT =
+  "the file parses as a credential but carries no freshness signal this reader recognizes, "
+  + "which is what a renamed field or a changed encoding looks like — re-check the reader "
+  + "against a REAL captured credential file (docs/266-harness-integration-recipe)";
 
 /**
  * Before a turn: copy the freshest token file from the orchestrator source into
@@ -325,10 +464,37 @@ function syncAgentTokenInFromRoot(
     // sessions, naming included, while the orchestrator token was expired).
     // Skip only when we can prove the session token is already as fresh or
     // fresher; copy on a missing/corrupt/older session token. (docs/142 A)
-    const dstExp = fs.existsSync(dst) ? freshness(dst) : null;
-    if (dstExp !== null) {
-      const srcExp = freshness(src);
-      if (srcExp === null || srcExp <= dstExp) continue;
+    //
+    // planning#449 — "corrupt" is where that used to fail unsafe. A reader that
+    // returns null on a session file which IS a credential is not evidence that
+    // the copy is safe; it is evidence that the reader stopped working, and the
+    // copy it licensed destroys a token the CLI had just rotated. See
+    // {@link TokenFreshnessReading}: `absent` still copies, `unorderable` does
+    // not.
+    const dstReading = classifyTokenFreshness(freshness, dst);
+    if (dstReading.kind === "unorderable") {
+      logUnorderableToken(
+        "refused-copy",
+        { sessionId, agentId, direction: "sync-in", file: dst },
+        `refusing to copy ${src} over the session's own credential: ${UNORDERABLE_HINT}`,
+      );
+      continue;
+    }
+    if (dstReading.kind === "ordered") {
+      const srcReading = classifyTokenFreshness(freshness, src);
+      if (srcReading.kind === "unorderable") {
+        // The mirror signal: the SOURCE is the file we cannot order. Nothing is
+        // at risk (we skip, as a null source expiry always did), but a rotation
+        // the orchestrator holds is not reaching this session, and silence is
+        // how that goes unnoticed for months.
+        logUnorderableToken(
+          "skipped-copy",
+          { sessionId, agentId, direction: "sync-in", file: src },
+          `not pulling the source token into ${sessionId}: ${UNORDERABLE_HINT}`,
+        );
+        continue;
+      }
+      if (srcReading.kind !== "ordered" || srcReading.at <= dstReading.at) continue;
     }
     atomicCopyFile(src, dst);
   }
@@ -509,9 +675,24 @@ const CODEX_SESSION_STATE_SUBPATHS: readonly string[] = [
  * One definition, two consumers — a second hand-maintained copy is exactly
  * how the `.codex` case got missed the first time.
  */
+/**
+ * The `.grok/` equivalent (planning#435). Grok resumes with `-r <sessionId>`
+ * against its own `sessions/` store under `$GROK_HOME`, so that directory is the
+ * conversation state a repair must rescue before dropping an orphan.
+ *
+ * Deliberately an allowlist of *state*, like the two above: `.grok/` also holds
+ * `auth.json` and `config.toml`, which are the shared authentication/config
+ * baseline the repair has just copied in from the source root. The merge is
+ * `force: false` (shared wins), so even a same-named orphan copy could not
+ * clobber the fresh credential — keeping them out of the list makes that
+ * structural rather than incidental.
+ */
+const GROK_SESSION_STATE_SUBPATHS: readonly string[] = ["sessions"];
+
 export const SUBTREE_STATE_SUBPATHS: Readonly<Record<string, readonly string[]>> = {
   ".claude": CLAUDE_SESSION_STATE_SUBPATHS,
   ".codex": CODEX_SESSION_STATE_SUBPATHS,
+  ".grok": GROK_SESSION_STATE_SUBPATHS,
 };
 
 /** Subtrees under a Codex home that can hold a thread's rollout jsonl. */
@@ -831,9 +1012,23 @@ function materializeLeakedSubtreeSymlinks(
       // (the incident that motivated the discovery fix above took a container
       // forensics session to find). One greppable line per turn is the cost of
       // never having to do that again.
+      //
+      // **Only for an ACCOUNT-scoped flow** (planning#435). "No token file" is a
+      // defect when the session is pinned to a subscription account and a
+      // perfectly ordinary state when it is not: a key-billed session's
+      // credential travels as an environment variable and NOTHING is ever
+      // written to its credential subtree — which is provisioned as an empty
+      // directory regardless, because a dangling symlink kills the CLI at
+      // startup (planning#444). Warning there would tell every key-billed grok
+      // and Codex turn that it "will fail authentication" while it works fine,
+      // and a warning that cries wolf on the common path is how the real one
+      // stops being read. `sourceRoot !== credentialsRoot` is exactly the
+      // account-scoped case — `syncProviderAccountTokenIn` resolves an account
+      // root, the plain path passes the credentials root through unchanged.
       const tokenNames = tokenFileNamesForSubtree(rel);
       if (
         tokenNames.length > 0
+        && sourceRoot !== credentialsRoot
         && dstStat.isDirectory()
         && !tokenNames.some((name) => fs.existsSync(path.join(dst, name)))
       ) {
@@ -1357,12 +1552,22 @@ export function sessionTokenIsAheadOfSource(
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of files) {
     const sessionFile = path.join(sessionDir, rel);
-    if (!fs.existsSync(sessionFile)) continue;
-    const sessionExp = freshness(sessionFile);
-    if (sessionExp === null) continue; // can't prove it's newer
+    const sessionReading = classifyTokenFreshness(freshness, sessionFile);
+    if (sessionReading.kind !== "ordered") continue; // can't prove it's newer
     const sourceFile = path.join(sourceRoot, rel);
-    const sourceExp = fs.existsSync(sourceFile) ? freshness(sourceFile) : null;
-    if (sourceExp !== null && sessionExp <= sourceExp) continue;
+    const sourceReading = classifyTokenFreshness(freshness, sourceFile);
+    // An unorderable source is one the sync-back refuses to overwrite
+    // (planning#449), so promising a write here would send the publisher into a
+    // call that can only decline.
+    //
+    // Silent on purpose, and the reason is verifiable rather than assumed: this
+    // runs per file-change event, while the turn-end sync-back that logs the
+    // same fact is UNCONDITIONAL — `finalizeSessionAgentEnvironment`
+    // (`session-agent-env.ts`) calls it whatever this pre-check answered, as do
+    // the non-turn and sub-agent publishers. So the refusal is reported once
+    // per turn instead of once per write the CLI makes during it.
+    if (sourceReading.kind === "unorderable") continue;
+    if (sourceReading.kind === "ordered" && sessionReading.at <= sourceReading.at) continue;
     return true;
   }
   return false;
@@ -1376,7 +1581,27 @@ export function sessionTokenIsAheadOfSource(
  * FAILED to refresh (same/older expiry) can never clobber a fresher source
  * token. No-op for agents without a registered token file. (docs/142 A)
  */
-export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+export function syncAgentTokenBack(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  opts?: ProviderTokenWriteBackOptions,
+): void {
+  // planning#445 — the marker is written after the borrow's copy lands, so for an
+  // instant the subtree holds the borrowed account's bearer under the session's
+  // own (or no) marker. A session-route caller refuses for the whole borrow
+  // instead of trusting the marker alone; the borrow's own write-back passes no
+  // `sessionOwnRoute` and is unaffected, since it is publishing to the very
+  // account whose copy is on disk.
+  if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
+    logWriteBackOutcome(
+      "refused",
+      { sessionId, agentId, target: "flat-root", holder: undefined, reason: "borrow-in-flight" },
+      `refusing ${agentId} token write-back for ${sessionId} to the flat root: `
+        + `the subtree is lent to a sub-agent`,
+    );
+    return;
+  }
   // The same identity-before-ordering rule as the account write-back below, in
   // the direction that looks like it cannot be wrong and is worse when it is: a
   // session on a reserved/legacy route still gets same-harness background work,
@@ -1390,8 +1615,10 @@ export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, a
   // duplicate quarantine would then demand a reconnect of both.
   const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
   if (holder !== undefined) {
-    console.warn(
-      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to the flat root: `
+    logWriteBackOutcome(
+      "refused",
+      { sessionId, agentId, target: "flat-root", holder, reason: "subtree-holds-account" },
+      `refusing ${agentId} token write-back for ${sessionId} to the flat root: `
         + `the subtree holds account ${holder}`,
     );
     return;
@@ -1414,24 +1641,118 @@ export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, a
  * afterwards authenticating as the same subscription.
  *
  * So identity is checked before ordering: the subtree's own marker says whose
- * copy is on disk, and a write-back may only publish to that account. A marker
- * that names nothing is equally a refusal — every account-routed turn writes one
- * (`ensureSessionAccountCredentials`), so its absence means no account turn has
- * happened here and there is nothing of that account's to publish.
+ * copy is on disk, and a write-back may only publish to that account.
+ *
+ * A marker that names a DIFFERENT account is always a refusal. A marker that
+ * names NOTHING is the ambiguous case, and treating it as a refusal outright
+ * was itself an incident (planning#445): a rotation refused is a rotation
+ * DROPPED, and the token it was carrying has already invalidated the source's
+ * copy upstream, so the account dies — the refresher then fails every tick,
+ * the CLI eventually erases the source file, and the user is made to sign in
+ * again. So absence is resolved rather than assumed, and only two readings
+ * exist:
+ *
+ *   - **A borrow is in flight** ({@link subtreeBorrowInFlight}). The subtree is
+ *     lent out, so nothing in it is the session's to publish — an absent marker
+ *     there is a flat-route borrow saying exactly that. Refuse; and a
+ *     session-route caller refuses for the WHOLE borrow whatever the marker
+ *     says, because the borrow writes its marker after its copy lands and a
+ *     failed provision can leave that gap open indefinitely.
+ *   - **No borrow is in flight, and the caller is publishing the SESSION'S OWN
+ *     turn route** (`sessionOwnRoute`, set only by the turn-end sync-back and
+ *     the mid-turn publisher, both armed from the route the turn resolved).
+ *     Then the copy on disk is that account's — an account-routed turn cannot
+ *     have spawned otherwise — and the missing marker is the defect, not the
+ *     subtree. Repair it and publish.
+ *
+ * Note what this does NOT relax: a borrowed account's marker still names that
+ * account, so `holder !== accountId` refuses it exactly as before, and a
+ * borrow's own write-back (which passes no `sessionOwnRoute`) can never repair
+ * its way into another account's root.
  */
+export interface ProviderTokenWriteBackOptions {
+  /**
+   * The caller's `accountId` is the SESSION'S own resolved turn route, not an
+   * account borrowed for a sub-agent. Only such a caller may repair a lost
+   * marker; see the refusal rules above.
+   */
+  sessionOwnRoute?: boolean;
+}
+
+/**
+ * One COUNTABLE line per write-back outcome that is not an ordinary publish.
+ *
+ * The prose is unchanged from what these paths have always printed, because an
+ * incident was diagnosed by grepping it (`refusing claude token write-back for
+ * … the subtree holds no recorded account`) and a runbook that stops matching
+ * is worse than no structure at all. The `key=value` prefix is what is new: an
+ * operator can count `write-back=repaired` against `write-back=refused
+ * reason=…` instead of eyeballing sentences, and `reason` says which of the
+ * rules fired rather than leaving it to be inferred from the wording.
+ *
+ * What a repair count does and does not measure (planning#445): it counts marker
+ * losses **that a rotation happened to land on**, which is the population that
+ * matters — a lost marker with no rotation behind it costs nothing. A loss
+ * whose session simply stops rotating is invisible here and shows up instead as
+ * the next turn's `[credentials] <session> account subtree replaced for <id>`
+ * heal (`session-agent-env.ts`). Count both to see the whole shape.
+ */
+function logWriteBackOutcome(
+  outcome: "repaired" | "refused",
+  fields: { sessionId: string; agentId: AgentId; target: string; holder: string | undefined; reason: string },
+  prose: string,
+): void {
+  console.warn(
+    `[session-credentials] write-back=${outcome} session=${fields.sessionId} agent=${fields.agentId} `
+      + `target=${fields.target} holder=${fields.holder ?? "none"} reason=${fields.reason} — ${prose}`,
+  );
+}
+
 export function syncProviderAccountTokenBack(
   credentialsRoot: string,
   sessionId: string,
   agentId: AgentId,
   accountId: string,
+  opts?: ProviderTokenWriteBackOptions,
 ): void {
-  const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
-  if (holder !== accountId) {
-    console.warn(
-      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
-        + `the subtree holds ${holder ?? "no recorded account"}`,
+  // A borrow in flight settles the question before the marker is consulted, and
+  // in the direction the marker cannot: the borrow writes its marker AFTER its
+  // copy lands, so for an instant the subtree holds the borrower's bearer under
+  // the session's own marker — and a provisioning failure can leave that state
+  // indefinitely. A session-route caller therefore publishes nothing for the
+  // duration of a borrow, which is also what makes the missing-marker repair
+  // below safe.
+  if (opts?.sessionOwnRoute === true && subtreeBorrowInFlight(sessionId, agentId)) {
+    logWriteBackOutcome(
+      "refused",
+      { sessionId, agentId, target: `account:${accountId}`, holder: undefined, reason: "borrow-in-flight" },
+      `refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
+        + `the subtree is lent to a sub-agent`,
     );
     return;
+  }
+  const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
+  if (holder !== accountId) {
+    const repairable = holder === undefined && opts?.sessionOwnRoute === true;
+    if (!repairable) {
+      logWriteBackOutcome(
+        "refused",
+        {
+          sessionId, agentId, target: `account:${accountId}`, holder,
+          reason: holder === undefined ? "no-recorded-account" : "other-account",
+        },
+        `refusing ${agentId} token write-back for ${sessionId} to account ${accountId}: `
+          + `the subtree holds ${holder ?? "no recorded account"}`,
+      );
+      return;
+    }
+    logWriteBackOutcome(
+      "repaired",
+      { sessionId, agentId, target: `account:${accountId}`, holder, reason: "lost-marker" },
+      `repairing lost ${agentId} account marker for ${sessionId}: recording ${accountId} `
+        + `(the session's own turn route, no borrow in flight) and publishing its rotation`,
+    );
+    writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
   }
   syncAgentTokenBackToRoot(
     credentialsRoot,
@@ -1453,12 +1774,46 @@ function syncAgentTokenBackToRoot(
   const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of files) {
     const sessionFile = path.join(sessionDir, rel);
-    if (!fs.existsSync(sessionFile)) continue;
-    const sessionExp = freshness(sessionFile);
-    if (sessionExp === null) continue; // can't prove it's newer — don't risk a regression
+    const sessionReading = classifyTokenFreshness(freshness, sessionFile);
+    // Missing / empty / not-a-credential: nothing to publish, exactly as a null
+    // expiry always meant here.
+    if (sessionReading.kind === "absent") continue;
+    if (sessionReading.kind === "unorderable") {
+      // Can't prove it's newer — don't risk a regression. Unchanged behavior,
+      // newly audible: this direction fails SAFE, so a broken reader silently
+      // strands every rotation instead of corrupting anything (planning#449).
+      logUnorderableToken(
+        "stranded-rotation",
+        { sessionId, agentId, direction: "sync-back", file: sessionFile },
+        `not publishing this session's token to ${sourceRoot}: ${UNORDERABLE_HINT}`,
+      );
+      continue;
+    }
     const sourceFile = path.join(sourceRoot, rel);
-    const sourceExp = fs.existsSync(sourceFile) ? freshness(sourceFile) : null;
-    if (sourceExp !== null && sessionExp <= sourceExp) continue; // source already as fresh or fresher
+    const sourceReading = classifyTokenFreshness(freshness, sourceFile);
+    if (sourceReading.kind === "unorderable") {
+      // Same invariant as the sync-in refusal, in the direction that would
+      // damage every session at once: a source credential we cannot order may
+      // be newer than this session's copy (the refresher writes it too), so
+      // publishing over it can bury the live token the whole install shares.
+      //
+      // What it costs, stated rather than discovered later: for as long as the
+      // source stays unorderable, EVERY session's rotation is stranded — this
+      // refusal and the `stranded-rotation` one above between them stop the
+      // publish loop entirely. That window closes when the reader is fixed
+      // (which is what the log line asks for), and `repushAgentToken` remains
+      // the unconditional escape hatch a re-auth uses meanwhile (docs/142 A3).
+      // The alternative is publishing blind into a file we cannot read, which
+      // is planning#449 pointed at the source instead of at one session.
+      logUnorderableToken(
+        "refused-publish",
+        { sessionId, agentId, direction: "sync-back", file: sourceFile },
+        `refusing to overwrite the source credential with ${sessionFile}: ${UNORDERABLE_HINT}`,
+      );
+      continue;
+    }
+    // source already as fresh or fresher
+    if (sourceReading.kind === "ordered" && sessionReading.at <= sourceReading.at) continue;
     atomicCopyFile(sessionFile, sourceFile);
   }
   // Back-sync writes the orchestrator's own copy, but keep the session subtree's

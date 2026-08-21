@@ -611,9 +611,11 @@ export async function prepareSessionAgentEnvironment(
   // `selectAccountForTurn(nativeService)` — reaches the same credential, so
   // writing would change nothing about routing and plenty about the spawn:
   // shaping a previously-unshaped first-party turn also starts sending
-  // `--model`, and for `anthropic:sub` it would move the secret from
-  // `ANTHROPIC_AUTH_TOKEN` into `ANTHROPIC_API_KEY` — a bearer token delivered
-  // as an `x-api-key` header (planning#354). Cross-agent review caught that.
+  // `--model` and an explicit endpoint, which is a behavior change for no
+  // routing gain (a derived `anthropic:sub` would ALSO have delivered the
+  // stored `ANTHROPIC_AUTH_TOKEN` through the shaped path — fixed at the
+  // catalogue in planning#354, so the credential hazard is gone but the
+  // spawn-shape change is not). Cross-agent review caught that.
   // So the write is confined to the case the old answer got wrong: a harness
   // whose own vendor this install cannot authenticate.
   //
@@ -1162,11 +1164,19 @@ export function finalizeSessionAgentEnvironment(
     capturedRoute?: Pick<SessionInfo, "providerRouteKind" | "providerRouteId">;
   },
 ): void {
-  // docs/153 — the turn is over, so the CLI can no longer rotate. Drop the
-  // mid-turn watch (and any debounced publish still pending) first; the
-  // unconditional sync-back below is the authoritative final publication.
-  // Unconditional so a watch can never outlive its turn, whatever the runner.
-  stopTokenWriteBackWatch(args.sessionId);
+  // docs/153 — the turn is over; the CLI is not necessarily gone. A streaming
+  // process stays resident across turns and refreshes on its own schedule
+  // hours later, so tearing the watch down here left those rotations
+  // unobserved until the next turn — the daily-reconnect bug. Keep watching
+  // while a process is alive; the runner's `disposed` event stops it when the
+  // container goes. With no resident process nothing can rotate, so drop the
+  // watch (and any debounced publish still pending) — the unconditional
+  // sync-back below is then the authoritative final publication.
+  // `?? null` for the same reason `sessionHasLiveAgent` uses it: actual process
+  // liveness is the question, and a runner that cannot answer counts as no.
+  const residentAgentAlive =
+    runner instanceof ContainerSessionRunner && (runner.getAgent() ?? null) !== null;
+  if (!residentAgentAlive) stopTokenWriteBackWatch(args.sessionId);
   if (!(runner instanceof ContainerSessionRunner)) return;
   const session = args.deps.sessionManager.get(args.sessionId);
   // docs/260 — the write-back target is the TURN'S OWN captured route; with
@@ -1186,9 +1196,15 @@ export function finalizeSessionAgentEnvironment(
         args.sessionId,
         args.agentId,
         route.providerRouteId,
+        // `sessionOwnRoute` — both branches above resolve the SESSION'S route
+        // (the turn's own capture, or failing that the subtree's own marker),
+        // never an account borrowed for a sub-agent. planning#445: that is the
+        // caller class allowed to repair a marker lost mid-turn rather than
+        // drop the rotation, which for a rotating token kills the source.
+        { sessionOwnRoute: true },
       );
     } else if (route?.providerRouteId !== "claude-env-oauth") {
-      syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId);
+      syncAgentTokenBack(args.deps.credentialsDir, args.sessionId, args.agentId, { sessionOwnRoute: true });
     }
   } catch (err) {
     console.warn("[credentials] token sync-back failed:", getErrorMessage(err));

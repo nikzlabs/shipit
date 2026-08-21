@@ -4,7 +4,7 @@
  * while the mount comes up empty, a long way from the cause.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -144,34 +144,68 @@ describe("pluginOverlayVolumeName", () => {
  * (review finding).
  */
 describe("ensurePluginRuntimeOverlay", () => {
-  function fakeDocker() {
+  /**
+   * @param seed  A volume the daemon already holds. `options: null` is the
+   *   production impostor (nikzlabs/shipit#2495): Docker's implicit named-volume
+   *   create leaves `Options: null`. `held` makes every `remove` 409, the way a
+   *   container that already mounted it does.
+   */
+  function fakeDocker(seed?: {
+    name: string;
+    options?: Record<string, string> | null;
+    held?: boolean;
+  }) {
     const live = new Set<string>();
     const creates: string[] = [];
     const removes: string[] = [];
+    const containerRemoves: string[] = [];
     const notFound = (): never => {
       throw Object.assign(new Error("no such volume"), { statusCode: 404 });
     };
+    // `createOverlayVolume` re-inspects after creating and throws unless the opts
+    // and labels come back as the ones it asked for (the 2026-08-19 ops finding),
+    // so the double has to remember them.
+    const opts = new Map<string, { Options?: Record<string, string> | null; Labels?: Record<string, string> }>();
+    if (seed) {
+      live.add(seed.name);
+      opts.set(seed.name, { Options: seed.options ?? null });
+    }
     const docker = {
-      createVolume: async (spec: { Name: string }) => {
+      createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string>; Labels?: Record<string, string> }) => {
         creates.push(spec.Name);
+        // Docker: create against a taken name returns the EXISTING volume and
+        // ignores DriverOpts. Overwriting here would hide the 409 path.
+        if (live.has(spec.Name)) return;
         live.add(spec.Name);
+        opts.set(spec.Name, { Options: spec.DriverOpts, Labels: spec.Labels });
       },
       getVolume: (name: string) => ({
         inspect: async () => {
           if (!live.has(name)) notFound();
-          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data`, ...(opts.get(name) ?? {}) };
         },
         remove: async () => {
           // 404 when absent, like the daemon — `createOverlayVolume` calls
           // remove-if-exists unconditionally, and counting those would hide the
           // destructive case this test is about.
           if (!live.has(name)) notFound();
+          if (seed?.held && name === seed.name) {
+            throw Object.assign(new Error("volume is in use"), { statusCode: 409 });
+          }
           removes.push(name);
           live.delete(name);
         },
       }),
+      // So a test can observe whether `createOverlayVolume` was asked to
+      // `releaseHolders` — that path lists holders and force-removes them.
+      listContainers: async () => (
+        seed?.held ? [{ Id: "holder-1", Names: ["/cli-1"] }] : []
+      ),
+      getContainer: (id: string) => ({
+        remove: async () => { containerRemoves.push(id); },
+      }),
     };
-    return { docker: docker as unknown as Docker, creates, removes };
+    return { docker: docker as unknown as Docker, creates, removes, containerRemoves, opts };
   }
 
   const args = (stateDir: string) => ({
@@ -216,6 +250,65 @@ describe("ensurePluginRuntimeOverlay", () => {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
   });
+
+  // planning#451 — a plain named volume satisfies `volumeExists`, so the
+  // existence-only skip used to return it forever. The production shape is
+  // `Options: null` (Docker's implicit create when a container referenced a
+  // name that no longer existed). The skip is now an opts-match, so this
+  // removes the impostor and creates the overlay.
+  it("repairs a plain impostor volume instead of latching on it", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
+    try {
+      const name = pluginOverlayVolumeName(base.sessionId, "tools", base.generationId);
+      const { docker, creates, removes, opts } = fakeDocker({ name, options: null });
+      await ensurePluginRuntimeOverlay(docker, args(stateDir));
+      expect(removes).toEqual([name]);
+      expect(creates).toEqual([name]);
+      expect(opts.get(name)?.Options?.type).toBe("overlay");
+      expect(opts.get(name)?.Options?.o).toContain("lowerdir=");
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs a concurrent pair of first consumers against one impostor exactly once", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
+    try {
+      const name = pluginOverlayVolumeName(base.sessionId, "tools", base.generationId);
+      const { docker, creates, removes } = fakeDocker({ name, options: null });
+      const [a, b] = await Promise.all([
+        ensurePluginRuntimeOverlay(docker, args(stateDir)),
+        ensurePluginRuntimeOverlay(docker, args(stateDir)),
+      ]);
+      expect(a).toBe(b);
+      expect(removes).toEqual([name]);
+      expect(creates).toEqual([name]);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  // Held mismatch: a container already mounted the impostor. We do not
+  // `releaseHolders` (the volume is shared), so the converge loop exhausts
+  // and throws rather than starting another consumer on the plain mount.
+  it("throws on a held impostor rather than mounting it, and does not evict the holder", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
+    try {
+      const name = pluginOverlayVolumeName(base.sessionId, "tools", base.generationId);
+      const { docker, removes, containerRemoves } = fakeDocker({ name, options: null, held: true });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(ensurePluginRuntimeOverlay(docker, args(stateDir)))
+          .rejects.toThrow(/could not be recreated with the requested driver opts/);
+        expect(removes).toEqual([]);
+        expect(containerRemoves).toEqual([]);
+      } finally {
+        warn.mockRestore();
+      }
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -252,16 +345,22 @@ describe("ensurePluginRuntimeOverlay with shared dependency bases", () => {
   /** Records the driver options, which is where the lowerdir stack shows up. */
   function fakeDocker() {
     const live = new Set<string>();
-    const creates: { Name: string; DriverOpts?: Record<string, string> }[] = [];
+    const creates: { Name: string; DriverOpts?: Record<string, string>; Labels?: Record<string, string> }[] = [];
     const docker = {
-      createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
+      createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string>; Labels?: Record<string, string> }) => {
         creates.push(spec);
         live.add(spec.Name);
       },
       getVolume: (name: string) => ({
         inspect: async () => {
           if (!live.has(name)) throw Object.assign(new Error("no such volume"), { statusCode: 404 });
-          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+          const created = creates.find((c) => c.Name === name);
+          // The post-create verification in `createOverlayVolume` reads these back.
+          return {
+            Mountpoint: `/var/lib/docker/volumes/${name}/_data`,
+            Options: created?.DriverOpts,
+            Labels: created?.Labels,
+          };
         },
         remove: async () => {
           if (!live.has(name)) throw Object.assign(new Error("no such volume"), { statusCode: 404 });

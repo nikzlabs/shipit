@@ -31,6 +31,7 @@ import { ContainerSessionRunner, WorkerUnavailableError } from "./container-sess
 import type { SessionContainerManager, SessionContainer } from "./session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "./session-runner.js";
 import type { AgentId, AgentRunParams, WsServerMessage, LogSource } from "../shared/types.js";
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 // --------------------------------------------------------------------------
 // Fakes
@@ -128,7 +129,7 @@ function startRunner(mgr: SessionContainerManager, broadcastLog?: (sid: string, 
   const factory = buildRunnerFactory({
     deps: {},
     containerManager: mgr,
-    credentialsDir: "/credentials",
+    credentialsDir: TEST_CREDENTIALS_DIR,
     runtimeMode: "containerized",
     ...(broadcastLog ? { broadcastLog } : {}),
   });

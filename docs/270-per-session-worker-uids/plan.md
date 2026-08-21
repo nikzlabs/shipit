@@ -254,6 +254,10 @@ rounding them off.
 - **planning#384 is not closed.** `safe.directory` is still `*` (planning#403),
   the dropped git still reaches the PAT (planning#404), and a project's hooks
   still do not fire on ShipIt's auto-commit (docs/266-orchestrator-git-trust-boundary E4).
+  **Correction, 2026-08-18:** the first clause no longer holds — planning#410
+  deleted the `safe.directory=*` write after a clean production soak, so
+  orchestrator-side git is fail-closed. The other two still hold, and
+  planning#384 is still open.
 
 ## 5. What I could not verify
 

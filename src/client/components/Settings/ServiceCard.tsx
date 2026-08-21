@@ -179,7 +179,13 @@ export function ServiceCard({
             ShipIt's catalogue rather than about the user's setup. */}
         <div className="flex items-center gap-2">
           <ServiceAvatar service={service} />
-          <h3 className="truncate text-xs font-medium text-(--color-text-primary)">{service.name}</h3>
+          {/* The card's name wraps rather than truncating — a card whose name
+              reads "Vercel AI Gate…" in a narrow panel says less than the pill
+              beside it. The pill, count and models control are all `shrink-0`,
+              so the line grows in height and keeps its order. */}
+          <h3 className="min-w-0 break-words text-xs font-medium text-(--color-text-primary)">
+            {service.name}
+          </h3>
           <BillingModePill
             billingMode={billingMode}
             data-testid={`service-mode-pill-${testId}`}

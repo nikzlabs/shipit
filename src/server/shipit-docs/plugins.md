@@ -213,6 +213,12 @@ this session's skill directories, so you discover them exactly like the
 project's own — namespaced `plugins--<alias>--<skill>` so two plugins can ship
 a skill with the same name.
 
+They reach **you**, not the user: they are left out of the composer's
+autocomplete, because a plugin's instructions are something the plugin brought
+rather than a command the user chose to have. So do not tell the user to run
+one — run it yourself, and refer to it as `<alias>/<skill>`, which is how the
+plugin card names it and how the transcript labels it.
+
 They are **not part of the project**. ShipIt keeps them out of git for this
 clone, so they never appear in a diff or a commit, and the project never holds
 a copy that has to be kept in sync. Do not edit them: a refresh rewrites them
@@ -376,10 +382,14 @@ append the detail. "ShipIt could not read this project's own compose file"
 means ShipIt could not make sense of it at all — unreadable on disk, invalid
 YAML, or not a compose document; the appended detail says which. "ShipIt
 refuses this project's own compose file" means it parses fine and a rule
-declined it, and the detail names the service, the rule and the fix. On a
-contained session the usual one is a service with no `user:`: contained
-services must declare a numeric, non-root `user:`, so add one (or run the
-project in an Open session if the image needs a root init).
+declined it, and the detail names the service, the rule and the fix. Read that
+detail rather than reaching for a remembered rule — in particular, **a service
+with no `user:` is no longer a refusal**, in a contained session or an open one.
+ShipIt fills in the session's own identity for an undeclared service, which is
+numeric and non-root by construction, so leaving `user:` out is the right answer
+for a plugin fragment exactly as it is for the project's own compose file (see
+`compose.md`). What is still refused is a `user:` that is *declared* and wrong —
+root, the reserved egress UIDs, or one inside ShipIt's per-session range.
 
 ## When a declared surface does not appear
 

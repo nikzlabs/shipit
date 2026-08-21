@@ -14,6 +14,10 @@ import {
   allHarnesses,
   allServices,
   catalogueEntriesForHarness,
+  getHarness,
+  getService,
+  reasoningOptionsFor,
+  selectionHonoursEffort,
   catalogueContextWindows,
   catalogueModelLabels,
   contextWindowFor,
@@ -41,6 +45,7 @@ import {
   harnessSupportsService,
   isSelectionEligible,
   resolveSpawnShaping,
+  spawnCredentialTarget,
   parseSelection,
   resolveEndpoint,
   resolveModelSelection,
@@ -111,7 +116,7 @@ describe("no shipped row still carries a sentinel", () => {
       // A rate expressed per *token* rather than per million would come out
       // vanishingly small; a rate expressed per thousand would come out huge.
       // These bounds catch the unit slip that a spot-check by eye does not.
-      expect(model.price.input, where).toBeGreaterThan(0.001);
+      if (model.price.input > 0) expect(model.price.input, where).toBeGreaterThan(0.001);
       expect(model.price.input, where).toBeLessThan(1000);
       expect(model.price.output, where).toBeGreaterThanOrEqual(model.price.input);
       expect(model.price.cacheRead, where).toBeLessThanOrEqual(model.price.input);
@@ -379,10 +384,22 @@ describe("every mode can be authenticated", () => {
     }
   });
 
-  it("a subscription mode names a quota integration", () => {
+  /**
+   * Every subscription NAMES the reader that fills req 10's indicator.
+   *
+   * A `quota: null` arm meaning "the vendor publishes nothing to read" existed
+   * for one release and was removed with the claim that motivated it: xAI does
+   * publish its weekly pool, and the probe that said otherwise had missed a
+   * query parameter (planning#454). So the field is a reader id again, always —
+   * and a subscription with no reader yet declares an id nothing implements,
+   * which `modeReportsQuota` is what actually gates on.
+   */
+  it("a subscription mode names the reader that fills its indicator", () => {
     for (const service of CATALOGUE) {
       for (const mode of service.modes) {
-        if (mode.kind === "sub") expect(mode.quota, `${service.id}/sub`).toBeTruthy();
+        if (mode.kind !== "sub") continue;
+        expect(Object.hasOwn(mode, "quota"), `${service.id}/sub declares no quota field`).toBe(true);
+        expect(typeof mode.quota, `${service.id}/sub quota must be a reader id`).toBe("string");
       }
     }
   });
@@ -414,6 +431,10 @@ describe("quota integrations that are implemented, and those that can be re-read
     // per-key usage API at all (docs/272 req 6), so it reports nothing by
     // decision rather than while waiting for one.
     ["opencode", false, false],
+    // planning#454 — SuperGrok reads its weekly pool on demand. Pinned here
+    // because this row spent a release at `false, false` on a probe that was
+    // wrong, and the pill it produced was the bug the user reported.
+    ["xai", true, true],
   ])("%s: reports quota %s, refreshable %s", (serviceId, reports, refreshable) => {
     expect(modeReportsQuota(serviceId, "sub")).toBe(reports);
     expect(subQuotaRefreshable(serviceId)).toBe(refreshable);
@@ -999,6 +1020,26 @@ describe("spawn shaping", () => {
     });
   });
 
+  it("keeps Anthropic's subscription token a bearer token, not an x-api-key (planning#354)", () => {
+    // `ANTHROPIC_AUTH_TOKEN` is an OAuth artifact with Bearer semantics; without
+    // a `targetOverride` it inherited Claude's string target `ANTHROPIC_API_KEY`
+    // and the CLI would deliver it as an `x-api-key` header (harnesses.ts,
+    // measured at the wire). Same shape as GLM's override above.
+    const shaping = resolveSpawnShaping("claude", {
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-opus-5",
+    });
+    expect(shaping?.credential).toEqual({
+      sourceEnv: "ANTHROPIC_AUTH_TOKEN",
+      target: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" },
+    });
+    expect(spawnCredentialTarget("claude", "anthropic", "sub")).toEqual({
+      kind: "env",
+      name: "ANTHROPIC_AUTH_TOKEN",
+    });
+  });
+
   it("has nothing to shape for a selection the harness shares no style with", () => {
     expect(
       resolveSpawnShaping("codex", {
@@ -1339,6 +1380,39 @@ describe("credentials", () => {
     expect(credentialModeForStorageEnv("NOT_A_CATALOGUE_KEY")).toBeUndefined();
   });
 
+  it("never delivers a Bearer-semantics credential as an x-api-key (planning#354)", () => {
+    // `ANTHROPIC_AUTH_TOKEN` is the only storage name in the catalogue from
+    // which Bearer semantics can be READ OFF THE NAME — `ZAI_CODING_PLAN_KEY`
+    // is bearer-delivered too, but its row's override states that explicitly,
+    // and a future bearer credential named `*_API_KEY` gets no coverage here.
+    // This key exists for the silent kind: a credential stored under it must
+    // never land in `ANTHROPIC_API_KEY` (Claude's harness default), because
+    // the CLI sends that variable as an `x-api-key` header and the turn 401s
+    // with an error that looks like a bad key. The negative form is
+    // harness-general: a second carrier whose string target is a different
+    // api-key variable (OpenCode's `OPENCODE_PROVIDER_API_KEY`) is correct.
+    let checked = 0;
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        for (const credential of mode.credentials) {
+          if (credential.via !== "string" || credential.storageEnv !== "ANTHROPIC_AUTH_TOKEN") continue;
+          const where = `${service.id}:${mode.kind}`;
+          for (const harness of allHarnesses()) {
+            // `carriers` already gates who may authenticate with this token;
+            // the invariant binds the harnesses that can actually carry it.
+            if (!harnessCanCarry(harness.id, { serviceId: service.id, billingMode: mode.kind, via: "string" })) continue;
+            checked += 1;
+            expect(
+              spawnCredentialTarget(harness.id, service.id, mode.kind),
+              `${where} → ${harness.id}`,
+            ).not.toEqual({ kind: "env", name: "ANTHROPIC_API_KEY" });
+          }
+        }
+      }
+    }
+    expect(checked, "the loop must bind at least one carrying harness").toBeGreaterThan(0);
+  });
+
   it("declares at least one credential shape for every mode", () => {
     // A mode with no way in is a row that can never be selected (req 8) — it
     // would appear in the add-flow and reject every credential offered to it.
@@ -1381,6 +1455,7 @@ describe("credentials", () => {
       // own home. Re-keying them would orphan every connected account.
       expect(credentialHarnessForLogin("anthropic-oauth")).toBe("claude");
       expect(credentialHarnessForLogin("openai-chatgpt")).toBe("codex");
+      expect(credentialHarnessForLogin("xai-oauth")).toBe("grok");
     });
 
     it("fans a completed sign-in out to every harness that can use the credential", () => {
@@ -1394,12 +1469,167 @@ describe("credentials", () => {
       // the expectation.
       expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude"]);
       expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex"]);
+      expect(harnessesForLoginIntegration("xai-oauth")).toEqual(["grok"]);
     });
 
-    it("keeps every declared login backed by a manager key", () => {
-      // The auth-manager map is keyed by these ids, so a catalogue row naming a
-      // login nothing implements would be a lookup that always throws.
-      expect(allLoginIntegrations().sort()).toEqual(["anthropic-oauth", "openai-chatgpt"]);
+    it("restricts an account credential to the harnesses that can present it", () => {
+      // planning#435. `carriers` used to be read for `via: "string"` only, which
+      // was safe only while every account-bearing service had exactly ONE
+      // harness speaking its style. Grok breaks that: it speaks
+      // `openai-responses`, so the moment it carries an `account` target the
+      // style join alone would offer it a ChatGPT subscription — a guaranteed
+      // 401, the same class as docs/268's Anthropic-on-OpenCode hole.
+      //
+      // The declaration pin is still load-bearing (dropping `carriers` from
+      // the row while leaving the harnessCanCarry clause would also pass a
+      // refusal-only test). The refusal is no longer vacuous: Grok now has
+      // an `account` target, so without the clause it WOULD join ChatGPT.
+      const chatgpt = getService("openai")?.modes
+        .find((m) => m.kind === "sub")
+        ?.credentials.find((c) => c.via === "account");
+      expect(chatgpt?.carriers).toEqual(["codex"]);
+      expect(harnessCanCarry("grok", {
+        serviceId: "openai", billingMode: "sub", via: "account",
+      })).toBe(false);
+      expect(eligibleEntriesForHarness("grok", [{
+        serviceId: "openai", billingMode: "sub", via: "account",
+      }])).toEqual([]);
+
+      const xaiAccount = getService("xai")?.modes
+        .find((m) => m.kind === "sub")
+        ?.credentials.find((c) => c.via === "account");
+      expect(xaiAccount?.carriers).toEqual(["grok"]);
+      // The other direction — a SuperGrok login is not a Codex credential.
+      // `shipit agent params` listing only `xai --billing-mode key` on Codex
+      // is this clause, not a missing account row. OpenCode is excluded
+      // earlier (no `account` target at all, docs/268) and is not asserted
+      // here: that refusal would still pass with the clause deleted.
+      expect(harnessCanCarry("codex", {
+        serviceId: "xai", billingMode: "sub", via: "account",
+      })).toBe(false);
+      expect(harnessCanCarry("grok", {
+        serviceId: "xai", billingMode: "sub", via: "account",
+      })).toBe(true);
+
+      // Anthropic deliberately has NONE — see the row's comment. Adding one
+      // deletes the only real-catalogue pair where "selected service" and
+      // "harness vendor" differ, which `service-routing.test.ts` exists to pin.
+      const anthropic = getService("anthropic")?.modes
+        .find((m) => m.kind === "sub")
+        ?.credentials.find((c) => c.via === "account");
+      expect(anthropic?.carriers).toBeUndefined();
+    });
+
+    it("an xAI account makes subscription models eligible on Grok only", () => {
+      // The join `listSpawnParameters` reads: grok's eligibleModels, given
+      // this credential. An xAI account credential produces `--billing-mode
+      // sub` rows on Grok (grok-4.6 and grok-4.5). A params dump that only
+      // looked at Codex's xAI rows would read as "key only" — that is the
+      // carriers refusal below, not a missing account. The listing is
+      // install-wide; docs/138's worker mount is a different layer.
+      const xaiAccount = { serviceId: "xai", billingMode: "sub" as const, via: "account" as const };
+      const xaiKey = { serviceId: "xai", billingMode: "key" as const, via: "string" as const };
+
+      const grokSub = eligibleEntriesForHarness("grok", [xaiAccount]);
+      expect(grokSub.map((e) => e.model.id).sort()).toEqual(["grok-4.5", "grok-4.6"]);
+      expect(grokSub.every((e) => e.selection.billingMode === "sub")).toBe(true);
+      // Codex is the load-bearing refusal (it has an `account` target and
+      // speaks `openai-responses`). Claude and OpenCode also get nothing, but
+      // from earlier clauses (style join / no account target) and are not
+      // what pins `carriers`.
+      expect(eligibleEntriesForHarness("codex", [xaiAccount])).toEqual([]);
+
+      // Key mode is unchanged — every harness that speaks xAI's key style
+      // still gets the metered rows from a stored key.
+      expect(eligibleEntriesForHarness("grok", [xaiKey]).some((e) => e.model.id === "grok-4.6")).toBe(true);
+      expect(eligibleEntriesForHarness("codex", [xaiKey]).some((e) => e.model.id === "grok-4.6")).toBe(true);
+
+      expect(harnessServiceSupport("grok", "xai")).toBe("all");
+      expect(harnessServiceSupport("codex", "xai")).toBe("some");
+      expect(harnessServiceSupport("opencode", "xai")).toBe("some");
+      expect(harnessSupportsMode("grok", "xai", "sub")).toBe(true);
+      expect(harnessSupportsMode("codex", "xai", "sub")).toBe(false);
+    });
+
+    /**
+     * Every declared login is BACKED, and this asks the runtime table rather
+     * than a hand-kept list.
+     *
+     * The list version described this invariant and never checked it: it would
+     * have passed for a catalogue declaring `xai-oauth` with no manager anywhere,
+     * as long as somebody edited the literal — which is precisely the state it
+     * exists to prevent, because a `LoginIntegrationId` the map has no entry for
+     * is a sign-in the UI offers and nothing can run. Building the real map costs
+     * three constructors, none of which touches the filesystem or spawns anything
+     * until a flow is started.
+     */
+    it("keeps every declared login backed by a real auth manager", async () => {
+      const { buildAgentRuntime } = await import("../../orchestrator/agents/index.js");
+      const { AuthManager } = await import("../../orchestrator/agents/claude/auth-manager.js");
+      const { CodexAuthManager } = await import("../../orchestrator/agents/codex/auth-manager.js");
+      const { XaiAuthManager } = await import("../../orchestrator/agents/grok/auth-manager.js");
+      const { authManagers } = buildAgentRuntime({
+        authManager: new AuthManager(),
+        codexAuthManager: new CodexAuthManager(),
+        xaiAuthManager: new XaiAuthManager(),
+      });
+      for (const loginId of allLoginIntegrations()) {
+        expect(authManagers.get(loginId)?.loginId, `no auth manager for ${loginId}`).toBe(loginId);
+      }
+      // And the reverse, so a manager built for a login the catalogue dropped is
+      // visible rather than dead weight.
+      expect([...authManagers.keys()].sort()).toEqual(allLoginIntegrations().sort());
+    });
+  });
+
+  describe("reasoning levels per selection (docs/274 req 14)", () => {
+    // The requirement is "levels are offered where they exist and never where
+    // they are silently dropped". Grok is the harness that forced it: the CLI
+    // accepts `--reasoning-effort` under an API key and discards it before the
+    // wire, so the harness-level list over-promises on its own.
+    it("distinguishes an empty list from an absent one", () => {
+      // The distinction the field exists for: `[]` hides the control, absent
+      // inherits the harness's list. Claude declares no per-model narrowing, so
+      // its rows must still offer the harness's full set — a truthiness check
+      // in the resolver would collapse these two and silently strip them.
+      const claude = reasoningOptionsFor("claude", {
+        serviceId: "anthropic",
+        billingMode: "sub",
+        modelId: "claude-opus-5",
+      });
+      expect(claude).toEqual(getHarness("claude")?.capabilities.reasoning?.options);
+      expect(claude.length).toBeGreaterThan(0);
+    });
+
+    it("falls back to the harness list when no selection is known", () => {
+      expect(reasoningOptionsFor("codex", undefined))
+        .toEqual(getHarness("codex")?.capabilities.reasoning?.options);
+    });
+
+    it("refuses a level the selection does not honour", () => {
+      const keyGrok = { serviceId: "xai", billingMode: "key" as const, modelId: "grok-4.6" };
+      expect(selectionHonoursEffort("grok", keyGrok, "high")).toBe(false);
+      expect(selectionHonoursEffort("claude", {
+        serviceId: "anthropic", billingMode: "sub" as const, modelId: "claude-opus-5",
+      }, "high")).toBe(true);
+    });
+
+    it("keeps every declared per-model level inside its harness vocabulary", () => {
+      // The INVARIANT `reasoningOptionsFor` relies on: a row may only narrow the
+      // harness's list, never add to it. A typo here would otherwise vanish
+      // silently (intersected away) instead of failing the build.
+      for (const harness of allHarnesses()) {
+        const vocabulary = new Set(harness.capabilities.reasoning?.options.map((o) => o.value) ?? []);
+        for (const entry of catalogueEntriesForHarness(harness.id)) {
+          if (!harnessSupportsMode(harness.id, entry.service.id, entry.mode.kind)) continue;
+          for (const level of entry.model.reasoningEfforts ?? []) {
+            expect(
+              vocabulary.has(level),
+              `${harness.id}/${entry.model.id} names effort "${level}", which the harness does not declare`,
+            ).toBe(true);
+          }
+        }
+      }
     });
   });
 });

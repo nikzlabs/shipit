@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -10,6 +10,11 @@ import { runSteadyStateReclaim } from "./steady-state-reclaim.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { liveOverlayScopeHashes, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
+import {
+  claimOverlayBaseGeneration,
+  clearOverlayBaseClaims,
+  OVERLAY_BASE_CLAIM_MS,
+} from "./overlay-base-claims.js";
 
 /**
  * Build a `runDocker` stub that simulates a RUNNING session-worker container
@@ -32,6 +37,11 @@ function liveMountDocker(genLowerdirs: string[]): (args: string[]) => Promise<st
   };
 }
 
+/** The overlay volume name a session-worker container mounts (overlay-volume.ts). */
+function overlayVolName(i: number): string {
+  return `shipit-${i.toString(16).padStart(12, "0")}_overlay-dba27c31`;
+}
+
 describe("runSteadyStateReclaim", () => {
   let tmpDir: string;
   let dbPath: string;
@@ -50,6 +60,10 @@ describe("runSteadyStateReclaim", () => {
     underlyingDb = null;
     dbManager = null;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    // The claim registry is process-wide (planning#440), so a case that claims
+    // would otherwise protect the next case's fixtures.
+    clearOverlayBaseClaims();
+    vi.restoreAllMocks();
   });
 
   it("keeps a plugin repository's caches, which no repo store can vouch for", async () => {
@@ -365,6 +379,329 @@ describe("runSteadyStateReclaim", () => {
     expect(fs.existsSync(tmpYoung)).toBe(true);
     expect(fs.existsSync(scopeDir)).toBe(true);
     expect(result.overlayBasesRemoved).toBe(3);
+  });
+
+  describe("live-mount probe failures (planning#439)", () => {
+    /**
+     * Fixture in the shape of the 2026-08-18 prod incident: one LIVE scope whose
+     * pointer sits at `g273` while running containers still pin the superseded
+     * `g269`–`g272`, plus a second scope that belongs to a WARM-pool session and
+     * so is absent from the resumable-session union.
+     */
+    function incidentFixture() {
+      const liveHash = "8769b50c2dd9cea5";
+      const warmHash = "45dab20e664868ce";
+      const mkGen = (hash: string, gen: number) => {
+        const d = path.join(tmpDir, "overlay-base", hash, `g${gen}`);
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(path.join(d, "marker"), "x");
+        return d;
+      };
+      // Superseded but pinned: six containers were on g272 alone, others on g269–g271.
+      const pinned = [269, 270, 271, 272].map((g) => mkGen(liveHash, g));
+      const current = mkGen(liveHash, 273);
+      const warmGen = mkGen(warmHash, 1);
+      const metaDir = path.join(tmpDir, "overlay-base-meta");
+      fs.mkdirSync(metaDir, { recursive: true });
+      const pointer = (hash: string, generation: number, baseDir: string) => {
+        fs.writeFileSync(
+          path.join(metaDir, `${hash}.json`),
+          JSON.stringify({
+            scopeHash: hash, commit: "c".repeat(40), depth: 2, generation, baseDir,
+            updatedAt: "2026-08-18T14:04:03Z",
+          }),
+        );
+      };
+      pointer(liveHash, 273, current);
+      pointer(warmHash, 1, warmGen);
+      return { liveHash, warmHash, pinned, current, warmGen };
+    }
+
+    it("sweeps NOTHING when the live-mount reading cannot be completed", async () => {
+      // Prod: `docker container inspect` exited 1, the catch discarded the whole
+      // reading as an empty set, and 0.5 s later the sweep deleted a generation
+      // six running containers had mounted — and a whole warm scope dir. An
+      // unreadable live set must mean "sweep nothing", never "nothing is mounted".
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = incidentFixture();
+      // A base that really is reclaimable — it must ALSO survive, because the
+      // pass cannot tell it apart from the live ones without the probe.
+      const orphan = path.join(tmpDir, "overlay-base", "cccccccccccccccc");
+      fs.mkdirSync(orphan, { recursive: true });
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.liveHash]),
+        runDocker: (args) =>
+          args[0] === "ps"
+            ? Promise.resolve("live0\n")
+            : Promise.reject(new Error("docker container exited 1: shipit_workspace")),
+      });
+
+      expect(result.overlayBasesRemoved).toBe(0);
+      for (const gen of fx.pinned) expect(fs.existsSync(gen)).toBe(true);
+      expect(fs.existsSync(fx.current)).toBe(true);
+      expect(fs.existsSync(fx.warmGen)).toBe(true);
+      expect(fs.existsSync(orphan)).toBe(true); // deferred to the next pass, not deleted
+    });
+
+    it("keeps reclaiming when a container merely VANISHED between ps and inspect", async () => {
+      // The common case on a busy host, and the one that must NOT freeze the
+      // sweep: the batch `container inspect` exits 1 because one listed id has
+      // exited, having printed valid output for every survivor. Re-reading the
+      // ids one at a time recovers the live set; the exited one pins nothing.
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = incidentFixture();
+      const vol = overlayVolName(0);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.liveHash, fx.warmHash]),
+        runDocker: (args) => {
+          if (args[0] === "ps") return Promise.resolve("live0\nexited1\n");
+          if (args[0] === "container" && args[1] === "inspect") {
+            const ids = args.slice(4);
+            // Docker prints the survivors' mounts and STILL exits 1; that stdout
+            // is unreachable through the rejection, hence the per-id re-read.
+            if (ids.includes("exited1")) {
+              return Promise.reject(new Error(
+                `docker container exited 1: ${vol}\nError: No such container: exited1`,
+              ));
+            }
+            return Promise.resolve(`${vol}\n`);
+          }
+          if (args[0] === "volume" && args[1] === "inspect") {
+            return Promise.resolve(
+              `lowerdir=${fx.pinned[3]},upperdir=/x/overlay/upper,workdir=/x/overlay/work\n`,
+            );
+          }
+          return Promise.resolve("");
+        },
+      });
+
+      // g272 is pinned by the surviving container → kept. g269–g271 are pinned by
+      // nothing in this reading → reclaimed, which is the sweep doing its job.
+      expect(fs.existsSync(fx.pinned[3])).toBe(true);
+      expect(fs.existsSync(fx.pinned[0])).toBe(false);
+      expect(fs.existsSync(fx.current)).toBe(true);
+      expect(result.overlayBasesRemoved).toBe(3);
+    });
+
+    it("tolerates a vanished VOLUME the same way, and still fails closed on any other error", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = incidentFixture();
+      const [live, gone] = [overlayVolName(0), overlayVolName(1)];
+
+      const runDocker = (volumeFailure: Error) => (args: string[]): Promise<string> => {
+        if (args[0] === "ps") return Promise.resolve("live0\nlive1\n");
+        if (args[0] === "container" && args[1] === "inspect") {
+          return Promise.resolve(`${live}\n${gone}\n`);
+        }
+        if (args[0] === "volume" && args[1] === "inspect") {
+          const names = args.slice(4);
+          if (names.includes(gone)) return Promise.reject(volumeFailure);
+          return Promise.resolve(
+            `lowerdir=${fx.pinned[3]},upperdir=/x/overlay/upper,workdir=/x/overlay/work\n`,
+          );
+        }
+        return Promise.resolve("");
+      };
+      const deps = {
+        repoStore, stateDir: tmpDir, cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.liveHash, fx.warmHash]),
+      };
+
+      // An unexplained failure is a HOLE in the reading — sweep nothing. Run this
+      // first, on the intact fixture, so the pass below can only reclaim what
+      // this one refused to.
+      const unexplained = await runSteadyStateReclaim({
+        ...deps, runDocker: runDocker(new Error("Cannot connect to the Docker daemon")),
+      });
+      expect(unexplained.overlayBasesRemoved).toBe(0);
+      for (const gen of fx.pinned) expect(fs.existsSync(gen)).toBe(true);
+
+      // A removed volume has no container using it (the daemon refuses that), so
+      // it pins nothing and the reading stays complete.
+      const vanished = await runSteadyStateReclaim({
+        ...deps, runDocker: runDocker(new Error(`Error: No such volume: ${gone}`)),
+      });
+      expect(vanished.overlayBasesRemoved).toBe(3);
+      expect(fs.existsSync(fx.pinned[3])).toBe(true);
+    });
+
+    it("counts WARM-pool sessions as live — the union must come from listAllIncludingWarm", async () => {
+      // The warm session whose scope dir prod deleted had no user, no branch and
+      // no PR, so `listAll()` (which filters `warm = 0`) never mentioned it: the
+      // docker probe was its ONLY protection, and the probe had just failed.
+      setup();
+      const sessionManager = new SessionManager(dbManager!);
+      const repoStore = new RepoStore(dbManager!);
+
+      const remoteUrl = "https://github.com/nicolasalt/tanks.git";
+      underlyingDb!.prepare(
+        "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, warm)"
+        + " VALUES (?, ?, ?, ?, ?, 0, 1)",
+      ).run("dc4a9d74-a9b4-4741-8e20-9381a991b4f7", "Warm", "2026-08-18", "2026-08-18", remoteUrl);
+
+      const env = { OVERLAY_DEP_STORE: "1", SESSION_WORKER_IMAGE_ID: "img-9" } as NodeJS.ProcessEnv;
+      const depDirs = ["node_modules"];
+      const warmHash = overlayScopeHash(remoteUrl, overlayRuntimeKey(env), depDirs[0]);
+      const warmBase = path.join(tmpDir, "overlay-base", warmHash);
+      fs.mkdirSync(warmBase, { recursive: true });
+
+      // What prod ran: the warm row is invisible, so the base reads as an orphan.
+      expect(
+        liveOverlayScopeHashes(sessionManager.listAll(), () => depDirs, env).has(warmHash),
+      ).toBe(false);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () =>
+          liveOverlayScopeHashes(sessionManager.listAllIncludingWarm(), () => depDirs, env),
+        runDocker: () => Promise.resolve(""),
+      });
+
+      expect(fs.existsSync(warmBase)).toBe(true);
+      expect(result.overlayBasesRemoved).toBe(0);
+    });
+  });
+
+  describe("in-flight base-generation claims (planning#440)", () => {
+    /**
+     * The window `docker ps` cannot see into: a session's overlay volume names
+     * `…/overlay-base/<hash>/g<N>` as its lowerdir BEFORE its container exists,
+     * so between the spec decision and `container.start()` a same-scope publish
+     * moves the pointer to `g<N+1>` and `g<N>` reads as neither current nor
+     * mounted. Without a claim the sweep deletes it — with no age delay — and
+     * the starting container mounts a lowerdir that is gone.
+     */
+    function creatingFixture() {
+      const hash = "1f2e3d4c5b6a7988";
+      const mkGen = (gen: number) => {
+        const d = path.join(tmpDir, "overlay-base", hash, `g${gen}`);
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(path.join(d, "marker"), "x");
+        return d;
+      };
+      const claimed = mkGen(7);      // what the in-flight container will mount
+      const superseded = mkGen(6);   // nothing pins it — genuinely reclaimable
+      const current = mkGen(8);      // the publish that raced the create
+      const metaDir = path.join(tmpDir, "overlay-base-meta");
+      fs.mkdirSync(metaDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(metaDir, `${hash}.json`),
+        JSON.stringify({
+          scopeHash: hash, commit: "d".repeat(40), depth: 2, generation: 8,
+          baseDir: current, updatedAt: "2026-08-19T10:00:00Z",
+        }),
+      );
+      return { hash, claimed, superseded, current };
+    }
+
+    it("keeps a generation a container being CREATED will mount, and still reaps its unclaimed sibling", async () => {
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      // What `prepareOverlaySpecs` does on a creation path, and the ONLY thing
+      // standing between g7 and deletion: no container exists yet, so the
+      // live-mount probe reads an empty (but complete) set.
+      claimOverlayBaseGeneration(fx.hash, 7);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker: () => Promise.resolve(""),
+      });
+
+      expect(fs.existsSync(fx.claimed)).toBe(true);
+      expect(fs.existsSync(fx.current)).toBe(true);
+      // The claim protects exactly what it names — it must not turn the sweep off.
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(result.overlayBasesRemoved).toBe(1);
+    });
+
+    it("keeps the whole scope dir alive on the claim alone, when nothing else vouches for it", async () => {
+      // A warm standby being created: no running container, and its scope is
+      // absent from the resumable-session union. Whole-scope removal and
+      // generation reaping are two different arms of the sweep, and the claim
+      // has to reach both — the scope dir is what holds the generation.
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      claimOverlayBaseGeneration(fx.hash, 7);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set<string>(),
+        runDocker: () => Promise.resolve(""),
+      });
+
+      expect(fs.existsSync(path.join(tmpDir, "overlay-base", fx.hash))).toBe(true);
+      expect(fs.existsSync(fx.claimed)).toBe(true);
+      // The scope survives on the claim; inside it, only the unclaimed
+      // superseded generation goes — the sweep is still doing its job.
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(result.overlayBasesRemoved).toBe(1);
+    });
+
+    it("stops protecting once the claim expires, so a dead create cannot pin a base forever", async () => {
+      // The release path, such as it is: an orchestrator that dies mid-create
+      // never mounted the generation, so the claim must lapse rather than
+      // retain the directory for the life of the process.
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      claimOverlayBaseGeneration(fx.hash, 7);
+      const realNow = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(realNow + OVERLAY_BASE_CLAIM_MS + 1);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker: () => Promise.resolve(""),
+      });
+
+      expect(fs.existsSync(fx.claimed)).toBe(false);
+      expect(fs.existsSync(fx.superseded)).toBe(false);
+      expect(fs.existsSync(fx.current)).toBe(true);
+      expect(result.overlayBasesRemoved).toBe(2);
+    });
+
+    it("never widens the sweep: an unreadable live-mount reading still skips the pass", async () => {
+      // planning#439's rule outranks the claim. The claim is additive — it can
+      // only ever protect more — so a hole in the docker reading must still stop
+      // the pass, claim or no claim.
+      setup();
+      const repoStore = new RepoStore(dbManager!);
+      const fx = creatingFixture();
+
+      claimOverlayBaseGeneration(fx.hash, 7);
+
+      const result = await runSteadyStateReclaim({
+        repoStore, stateDir: tmpDir,
+        cacheDays: 30,
+        liveOverlayScopeHashes: () => new Set([fx.hash]),
+        runDocker: (args) =>
+          args[0] === "ps"
+            ? Promise.reject(new Error("Cannot connect to the Docker daemon"))
+            : Promise.resolve(""),
+      });
+
+      expect(result.overlayBasesRemoved).toBe(0);
+      expect(fs.existsSync(fx.superseded)).toBe(true);
+    });
   });
 
   it("retains EVERY per-(session, dep-dir) base in the live-set; reaps only unreferenced ones", async () => {

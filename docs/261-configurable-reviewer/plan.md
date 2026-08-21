@@ -330,6 +330,17 @@ parser, the worker relay body, the HTTP route schema, `RunSubAgentInput`, valida
 spawn and attribution. An omission is an **error**, not a silent completion — which is req 7
 restated, and is why `fallbackModel` cannot survive on this path.
 
+> **Amended by docs/275-roleless-explicit-run.** "Every part is mandatory" turned out to
+> over-state req 7 by one flag: a harness that declares **no** reasoning levels (Grok,
+> docs/274 req 8) has no `--effort` that could be true about it, so the fixed five made an
+> explicit target on such a harness unassemblable — the docs/274 Phase 10 run hit that as a
+> structural blocker. Completeness is now **per-harness** (docs/275 req 2): the four
+> identity flags always, `--effort` exactly where the harness declares levels, and a level
+> named on a level-less harness refused by name (the same rule the role path ships).
+> Req 7's substance is unchanged — an omission of a parameter that *exists* is still
+> refused, and nothing is ever filled in from a stored setting. Who may *assemble* a
+> role-less target also stays where it was: a prompt-side rule (docs/275 req 7).
+
 - `--role reviewer` — mutually exclusive with all five. A call naming a role *and* a reviewer
   is asking two different questions, and req 6 separates them.
 - The spawn's read of `getAgentSubAgentDefaults` (`sub-agent.ts:285`) is replaced by the role
@@ -618,17 +629,17 @@ Code and the "prefer a harness that is not the implementer's" preference had not
 between. That is phase 1's already-recorded gap, unchanged here — the tab renders whatever harness
 the server names, and the test fixture is where the two-harness case is pinned.
 
-**And one latent bug the same gap hides, found by cross-backend review and deliberately NOT fixed
+**And one latent bug the same gap hid, found by cross-backend review and deliberately not fixed
 here.** A pin's effort is validated against the *implementer-independent* harness
 (`reviewer-settings.ts`, which is the only honest choice for a setting — see above), while
-`selectReviewer` may resolve the review onto a **different** harness and copies the pinned effort
-across without revalidating (`reviewer-model.ts`'s `buildTarget`). A future model carried by both
-harnesses could therefore take Claude-only `max` to Codex. It cannot happen today for the reason
-above, and it is left open on purpose: the fix is a choice between refusing the review and
-silently substituting the other harness's default, and both are worse than they look — refusing
-loses a review over a level nobody chose deliberately, and substituting is the silent replacement
-req 5 and phase 2's `--effort` decision both rule out. It belongs with whoever makes a model
-dual-harness, which is the commit that makes the case reachable and the one that can test it.
+`selectReviewer` may resolve the review onto a **different** harness and copied the pinned effort
+across without revalidating (`reviewer-model.ts`'s `buildTarget`). A model carried by both
+harnesses could therefore take Claude-only `max` to Codex.
+
+> **Fixed, 2026-08-20 (planning#352).** It stopped being latent when
+> `deepseek-v4-flash` became dual-harness, and it is now closed. See
+> [A pinned level applies partially](#a-pinned-level-applies-partially-planning352) below for
+> the decision, what shipped, and the guard that will notice the next catalogue edit.
 
 ## One set of controls, and a service you can choose (reqs 11, 12, 13)
 
@@ -746,17 +757,15 @@ Six things worth recording, three of which are decisions the design left open:
 - **Group headers left the Settings model menus.** With the service chosen on its own control,
   every row belongs to it, so a header on each group restates the answer to a question already
   asked. The composer keeps its headers, because it has no service control (req 11's scope).
-- **One requirement conflict is left open, named rather than papered over.** Cross-backend
+- **One requirement conflict was left open, named rather than papered over.** Cross-backend
   review put the sharpest form of it: `canonicalModelKey` proves *same model*, not *same
   harness*, so a service change that keeps the model can carry a level the newly-derived harness
-  does not declare. The server refuses that (`reviewer-settings.ts`), which means the service
-  change fails until the user lowers the level first — req 11 meeting req 5, with no third
-  option that is not a silent replacement. It is unreachable in today's catalogue, where no
-  model is dual-harness and both spellings of a model derive the same harness. The review also
-  restated phase 3's already-recorded latent bug from this angle — a pin validated against the
-  settings-time harness can be carried onto a different harness by `selectReviewer`. Both belong
-  to the commit that makes a model dual-harness: that is the change that makes them reachable,
-  and the only one that can test them.
+  does not declare. The server refused that (`reviewer-settings.ts`), which meant the service
+  change failed until the user lowered the level first — req 11 meeting req 5, with no third
+  option that is not a silent replacement. It was unreachable in the catalogue of the time,
+  where no model was dual-harness and both spellings of a model derived the same harness. The
+  review also restated phase 3's already-recorded latent bug from this angle — a pin validated
+  against the settings-time harness can be carried onto a different harness by `selectReviewer`.
 
   > **Correction, 2026-08-15 (docs/264).** "Unreachable in today's catalogue" is **false as of
   > now**: the two DeepSeek direct-key rows are dual-harness (see the correction above). Both
@@ -767,6 +776,10 @@ Six things worth recording, three of which are decisions the design left open:
   > xhigh` and include no `max`. This is now planning#381, owned there rather than here; docs/264's
   > role path does not inherit the defect, because a role's level is validated against the one
   > harness it names.
+
+  > **Both fixed, 2026-08-20 (planning#352, which absorbed planning#381).** One decision answers
+  > both, because they are one root cause: [A pinned level applies
+  > partially](#a-pinned-level-applies-partially-planning352).
 - **Driven in the dogfood instance** across three seeded services: the two Settings surfaces
   render the reference control, the service menu carries a billing-mode pill per row, switching
   Reviewer 1 from Anthropic to OpenRouter kept **Opus 5 and High** and flipped the slot to
@@ -782,6 +795,60 @@ One consequence worth stating because it looks like a regression and is not: the
 panel on the vendor tabs disappears with them. It is not a loss — it writes through to the
 same `(anthropic, key)` / `(openai, key)` credential route the Services add-flow writes
 (`services/settings.ts:664`, `:634`), so the credential remains reachable, as a card.
+
+## A pinned level applies partially (planning#352)
+
+**Decision, 2026-08-20, from the user.** A pin whose reasoning level the resolved selection does
+not offer keeps its **model** and has its **level re-derived**, and the Reviewer tab says so.
+This closes the two defects this document deferred above — one on the review path, one on the
+settings path — which were always one root cause: *a level is validated against a harness derived
+at one moment and used at another.*
+
+The two rejected options, and why:
+
+- **Refuse the review.** It loses a review over a level nobody chose deliberately — the user
+  pinned a *model*, and the level came along with it.
+- **Substitute silently.** The replacement req 5 and phase 2's `--effort` decision both rule out.
+  Dropping a level quietly is how a spawn ends up running at a level nobody asked for.
+
+Applying the pin partially takes neither cost: the review happens, on the pinned model, and what
+changed is stated where the user configured it.
+
+**Re-validated against the resolved SELECTION, not the resolved harness's vocabulary.** This is
+the half that is easy to get wrong and would leave a live case broken. `defaultEffortFor` already
+asks `reasoningOptionsFor(harnessId, selection)` because of docs/274 req 14 — grok declares four
+levels that are real on a subscription row and dropped before the wire on a key-billed one — so a
+pinned level can stop applying **with no harness change at all**. A harness-vocabulary check would
+satisfy req 5 with a field that changes nothing.
+
+Where it lives:
+
+| Path | Before | After |
+|---|---|---|
+| Review | `buildTarget` copied `plan.pin.reasoningEffort` across verbatim | `reviewer-model.ts`'s `effortFor` keeps it only where `selectionHonoursEffort` says the resolved selection offers it |
+| Settings write | `resolveReviewerPinPatch` answered 400 | the same re-derivation, and the **response** carries the pin that was stored |
+| Settings tab | the level stated flat; a crossed-over level rendered as a bare unlabelled value | `reviewerEffortSubstitutions` names every routable harness the pinned level does not survive onto, and what a review there runs at |
+
+**The tab's note is not scoped to the tab's own resolution, and that is the point.** This view is
+implementer-independent (`avoidHarnessId: undefined`) while a review prefers a harness the
+reviewed session is not on — so the headline case, a pin accepted on Claude Code and run on Codex,
+would show *nothing* under a note that only described what this view resolved onto. The list
+includes the named harness when it is one of them, so one mechanism answers both questions.
+
+**On the settings path the response is what makes the replacement visible.** The stored pin is
+returned, the tab renders it, and `reportEffortChange` (`ReviewerSection.tsx`) names both levels
+in a toast when the level that came back is not the one that was sent. That is a comparison of
+sent-against-returned, not a client-side re-derivation: which harness offers which level stays the
+server's rule (req 8).
+
+**A guard, because "fix it when it becomes reachable" already failed once.** This document said
+the fix "belongs to the commit that makes a model dual-harness". That commit landed — a catalogue
+edit gave `deepseek-v4-flash` a third style — nothing failed, and the defect became reachable
+unnoticed. So `reviewer-model.test.ts` scans the **real catalogue** for every row two harnesses
+carry with different level sets, pins a level one of them does not offer, and asserts the resolved
+target's level is one its own selection honours. It names no model, because naming today's
+dual-harness rows is exactly what could not notice tomorrow's; and it was verified by making it
+fail, against the pre-fix `pin ?? derived` line.
 
 ## Phases
 

@@ -1,0 +1,16 @@
+{
+  "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+    "key": "eyJ0eXAiOiJhdCtqd3QiLCJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3ODcxNjgyNzMsInRpZXIiOjEsInByaW5jaXBhbF90eXBlIjoiVXNlciJ9.REDACTED-SIGNATURE gitleaks:allow",
+    "auth_mode": "oidc",
+    "create_time": "2026-08-19T13:37:53.982150334Z",
+    "user_id": "eb48b549-2c2a-4f56-aef2-543179bd88fe",
+    "email": "someone@example.com",
+    "first_name": "Nik",
+    "last_name": "Zherebtsov",
+    "principal_type": "User",
+    "team_id": "cc0429e2-fd03-412c-956a-f721824b551e",
+    "refresh_token": "REDACTED-FIXTURE-REFRESH-TOKEN",
+    "expires_at": "2026-08-19T19:37:53.982150334Z",
+    "oidc_issuer": "https://auth.x.ai"
+  }
+}

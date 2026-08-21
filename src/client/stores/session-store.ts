@@ -236,6 +236,12 @@ interface SessionState {
   /** docs/241 — reserve/release the session runtime for its managed preview. */
   setKeepPreviewRunning: (sessionId: string, enabled: boolean) => Promise<void>;
   /**
+   * docs/277 — mute/unmute a session: while muted it is suppressed from every
+   * "needs you" surface. Optimistic; the server clears the mute on its own at
+   * the start of the session's next turn and broadcasts `session_list`.
+   */
+  setMuted: (sessionId: string, muted: boolean) => Promise<void>;
+  /**
    * docs/110 Phase 2 — reorder a repo's pinned sessions to the given id order
    * (top-first). Optimistic; the authoritative `session_list` broadcast
    * reconciles.
@@ -291,7 +297,15 @@ interface SessionState {
   // All sessions dialog
   allSessions: SessionInfo[];
   allSessionsDialogOpen: boolean;
-  setAllSessionsDialogOpen: (open: boolean) => void;
+  /**
+   * Repo the dialog opens filtered to, when it was opened FROM a repo (the
+   * sidebar's "View All Sessions"). `undefined` means "no repo was named" and
+   * the dialog falls back to the current session's repo. Carried here rather
+   * than read off the active session because the two differ exactly when it
+   * matters — opening the menu on repo B while a session of repo A is current.
+   */
+  allSessionsDialogRepoUrl: string | undefined;
+  setAllSessionsDialogOpen: (open: boolean, repoUrl?: string) => void;
   fetchAllSessions: () => Promise<void>;
   unarchiveSession: (sessionId: string) => Promise<void>;
 
@@ -369,6 +383,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
   allSessionsDialogOpen: false,
+  allSessionsDialogRepoUrl: undefined,
 
   setSessionId: (sessionId) => set({ sessionId }),
 
@@ -536,6 +551,39 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  setMuted: async (sessionId, muted) => {
+    // Patched in both lists for the same reason as the reservation toggle above:
+    // the sidebar renders `sessions` and the All Sessions dialog renders
+    // `allSessions`, and either row can carry the control.
+    const patch = (value: string | undefined) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, mutedAt: value } : s)),
+        allSessions: state.allSessions.map((s) => (s.id === sessionId ? { ...s, mutedAt: value } : s)),
+      }));
+    const prev = (get().sessions.find((s) => s.id === sessionId)
+      ?? get().allSessions.find((s) => s.id === sessionId))?.mutedAt;
+    // Optimistic: the row's attention marker goes quiet on the click, not on the
+    // round-trip. The server's `session_list` broadcast reconciles the real
+    // timestamp a moment later.
+    patch(muted ? new Date().toISOString() : undefined);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/muted`, {
+        method: "PUT",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ muted }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        patch(prev);
+        useUiStore.getState().setToast({ message: data.error ?? "Failed to update session mute" });
+      }
+    } catch (err) {
+      console.error("[session-store] Mute toggle failed:", err);
+      patch(prev);
+      useUiStore.getState().setToast({ message: "Failed to update session mute" });
+    }
+  },
+
   reorderPins: async (remoteUrl, ids) => {
     // Snapshot pinnedAt for the affected sessions so we can revert on failure.
     const prev = new Map(
@@ -662,7 +710,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   reset: () => set(initialResettableState),
 
-  setAllSessionsDialogOpen: (allSessionsDialogOpen) => set({ allSessionsDialogOpen }),
+  setAllSessionsDialogOpen: (allSessionsDialogOpen, allSessionsDialogRepoUrl) =>
+    // Clear the scope on close as well as on a scope-less open, so the next
+    // open never inherits the previous one's repo.
+    set({ allSessionsDialogOpen, allSessionsDialogRepoUrl }),
 
   fetchAllSessions: async () => {
     const res = await fetch("/api/sessions/all", {

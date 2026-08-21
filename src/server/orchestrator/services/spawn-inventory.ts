@@ -35,11 +35,23 @@
  * Both reads report **this install**, not the catalogue: an uninstalled harness
  * and a model with no credential are not things an override may name, and
  * listing them would produce exactly the refusals the list exists to prevent.
+ *
+ * **Install-wide, not the calling worker's mount.** `GET /agent/params` uses
+ * the session id only to 404; the listing is `agentRegistry.eligibleModels`.
+ * A Claude session therefore still sees Grok's xAI subscription rows, even
+ * though docs/138 never copies grok's `auth.json` into that worker. A
+ * `shipit agent run` onto that row provisions the subtree for the spawn and
+ * wipes it (docs/144) — the same path `--role GrokSub` already takes. The
+ * listing answering "what may an override name *here*" and the worker
+ * answering "what is on disk for the resident CLI" are two questions, and
+ * collapsing them would either hide a runnable consult or put every
+ * harness's account in every container.
  */
 
 import type { AgentId, RoleView } from "../../shared/types.js";
-import type { AgentRegistry } from "../../shared/agent-registry.js";
+import type { AgentInfo, AgentRegistry } from "../../shared/agent-registry.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
+import { reasoningOptionsFor } from "../../shared/catalogue/index.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { buildRoleSettings, type RoleDeps } from "./roles.js";
 
@@ -96,7 +108,11 @@ export function listRolesForAgent(deps: RoleDeps): AgentRoleListing[] {
           runsOn: [
             role.resolved.harnessName,
             role.resolved.label,
-            role.resolved.reasoningLabel ?? role.resolved.reasoningEffort,
+            // Both absent ⇒ the role is at **Default** (docs/264 req 1): it runs
+            // at whatever level its harness runs at with no flag. Named rather
+            // than dropped — the agent reads this to decide whether it needs an
+            // override at all, and a missing segment reads as "unknown".
+            role.resolved.reasoningLabel ?? role.resolved.reasoningEffort ?? "Default",
           ].join(" · "),
         }
       : {}),
@@ -118,6 +134,28 @@ export function listRolesForAgent(deps: RoleDeps): AgentRoleListing[] {
  * `installed` probe, matching every other spawn-adjacent gate: a `which` miss in
  * a report-less environment is not the deployment saying no.
  */
+/**
+ * The levels this harness declares that at least one of its credentialed rows
+ * honours, in the harness's own declared order (docs/274 req 14).
+ *
+ * Empty when the harness has no eligible rows at all — there is then nothing to
+ * complete against, which is the honest answer rather than the vocabulary.
+ */
+function honouredLevels(harness: AgentInfo): string[] {
+  const vocabulary = harness.capabilities.reasoning?.options ?? [];
+  if (vocabulary.length === 0) return [];
+  const honoured = new Set(
+    harness.eligibleModels.flatMap((model) =>
+      reasoningOptionsFor(harness.id, {
+        serviceId: model.serviceId,
+        billingMode: model.billingMode,
+        modelId: model.modelId,
+      }).map((option) => option.value),
+    ),
+  );
+  return vocabulary.map((option) => option.value).filter((value) => honoured.has(value));
+}
+
 export function listSpawnParameters(agentRegistry: AgentRegistry): SpawnParameterInventory {
   return {
     harnesses: agentRegistry
@@ -126,7 +164,20 @@ export function listSpawnParameters(agentRegistry: AgentRegistry): SpawnParamete
       .map((harness) => ({
         id: harness.id,
         name: harness.name,
-        reasoningLevels: (harness.capabilities.reasoning?.options ?? []).map((o) => o.value),
+        // docs/274 req 14 — the harness's own vocabulary, NARROWED to the levels
+        // at least one of its credentialed rows actually honours.
+        //
+        // The list drives tab completion for `--effort`, and
+        // `parseSubAgentSpawnTarget` refuses a level the named selection does
+        // not honour — so offering the bare vocabulary would complete a flag the
+        // run then rejects. A union across rows rather than a per-row list,
+        // because completion happens before a model is named.
+        //
+        // Narrowed rather than replaced: the vocabulary and its ORDER come from
+        // the registry the caller injected, which stays authoritative about what
+        // this harness declares; the catalogue only says which of those a row
+        // sends.
+        reasoningLevels: honouredLevels(harness),
         models: harness.eligibleModels.map((model) => ({
           serviceId: model.serviceId,
           billingMode: model.billingMode,

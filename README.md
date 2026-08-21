@@ -28,14 +28,23 @@ ShipIt is a browser-based, chat-driven IDE for running coding agents through you
   stack, so the agent can build, run, and fix before you preview and merge.
 - **Bring your own agent** — on the subscription or API key you already have (Anthropic, OpenAI,
   DeepSeek, OpenRouter, etc.).
-  - Supported harnesses: Claude Code, Codex, and OpenCode — all installed by default. Cursor CLI
-    support is coming.
+  - Supported harnesses: Claude Code, Codex, OpenCode, and Grok Build.
 - **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving
   ShipIt.
 - **Runs on Linux, macOS, and Windows (WSL2)** — in isolated Docker containers.
 - **Ship from your phone** — mobile-first, with voice.
 
 ## Quickstart
+
+### Let an agent install it
+
+Tell an agent — Claude Code, Codex, or another — **"install ShipIt"**. Both installers describe
+their own questions in JSON (`--describe`), so the agent asks you which agent CLIs to install and
+how you want to reach ShipIt, then runs the install with your answers. It needs no root and
+changes nothing to read the questions. See
+[`deployment/README.md`](deployment/README.md#installing-with-an-agent).
+
+Prefer to do it yourself? Both commands below are unchanged.
 
 ### Run locally
 
@@ -47,9 +56,10 @@ Run ShipIt on your own machine — Linux, macOS, or Windows via
 bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
 ```
 
-This installs ShipIt under `~/.shipit`, builds the Docker images, and starts it **detached** at
-[http://localhost:4123](http://localhost:4123). Fork installs, custom paths, updates, and
-stop/uninstall are in [`deployment/README.md`](deployment/README.md).
+It asks which agent CLIs to install, then installs ShipIt under `~/.shipit`, builds the Docker
+images, and starts it **detached** at [http://localhost:4123](http://localhost:4123). Fork
+installs, custom paths, updates, and stop/uninstall are in
+[`deployment/README.md`](deployment/README.md).
 
 #### Reaching a local install from your phone
 

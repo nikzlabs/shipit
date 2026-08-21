@@ -14,6 +14,7 @@ import type { CredentialRoute } from "../../../server/shared/types.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServicesPanel } from "./ServicesPanel.js";
+import { queryServiceMark } from "../service-mark.testing.js";
 
 const route = (over: Partial<CredentialRoute> & Pick<CredentialRoute, "id" | "serviceId" | "billingMode" | "via">): CredentialRoute => ({
   label: over.id,
@@ -119,6 +120,23 @@ describe("ServicesPanel", () => {
     // Two credentials, one card.
     expect(screen.getByTestId("credential-row-cred_1")).toBeInTheDocument();
     expect(screen.getByTestId("credential-row-cred_2")).toBeInTheDocument();
+  });
+
+  it("cuts neither a card's name nor a credential's label", () => {
+    // Two labels for one service differ only at their END — an ellipsis there
+    // leaves two rows reading identically, which is what a narrow panel used to
+    // draw. Both wrap now; jsdom cannot measure a clip, so the class that would
+    // cause one is what is pinned.
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "zai", billingMode: "key", via: "string", label: "GLM (Z.ai) (ZAI_API_KEY)" }),
+      route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", label: "GLM (Z.ai) (ZAI_CODING_PLAN_KEY)" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("credential-row-cred_1").querySelector(".truncate")).toBeNull();
+    expect(screen.getByTestId("credential-row-cred_2").querySelector(".truncate")).toBeNull();
+    expect(screen.getByTestId("service-card-zai:key").querySelector("h3")?.className).not.toContain(
+      "truncate",
+    );
   });
 
   it("gives no card a way of its own to add a credential (req 17)", () => {
@@ -232,6 +250,47 @@ describe("ServicesPanel", () => {
       ).toBeInTheDocument();
     });
 
+    it("never cuts a service name, and keeps each tick in its row's own grid track", async () => {
+      // What this pins is the pair of decisions that survive a narrow window,
+      // and jsdom cannot measure either — so both are read off the contract
+      // that produces them.
+      //
+      // The window that provoked this was 484px wide with four harnesses
+      // installed: the table took 5.5rem a column first, the list was the only
+      // thing allowed to shrink, and the row the user presses ended up with a
+      // name clipped to nothing and its mode label spilling out of the button.
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      // 1. No name is drawn with an ellipsis. `truncate` anywhere inside the
+      //    row is exactly the clipping this replaced; the name wraps instead.
+      const row = screen.getByTestId("add-service-option-zai");
+      expect(row.className).toContain("flex-wrap");
+      expect(row.querySelector(".truncate")).toBeNull();
+      expect(screen.getByTestId("add-service-support-head-claude").className).not.toContain(
+        "truncate",
+      );
+
+      // 2. A row that grows keeps its ticks level, because the two containers
+      //    are subgrids over ONE set of row tracks rather than two stacks of
+      //    matching heights. The old arrangement went out of line the first
+      //    time anything wrapped.
+      const table = screen.getByTestId("add-service-support-table");
+      const list = table.parentElement?.firstElementChild as HTMLElement;
+      expect(list.className).toContain("grid-rows-subgrid");
+      expect(table.className).toContain("grid-rows-subgrid");
+      // One track per service, plus the head — read off the rows actually
+      // drawn, so adding a service to the catalogue does not fail this.
+      const rows = screen.getAllByTestId(/^add-service-option-/).length;
+      expect(table.parentElement?.style.gridTemplateRows).toBe(`repeat(${rows + 1}, auto)`);
+
+      // 3. The column's floor is the widest name, not a number measured against
+      //    today's names — `min-content` against titles that cannot break. A
+      //    literal here would start cutting the first title that outgrew it.
+      expect(table.parentElement?.style.gridTemplateColumns).toContain("minmax(min-content, 26rem)");
+      expect(row.querySelector(".whitespace-nowrap")?.textContent).toBe("GLM (Z.ai)");
+    });
+
     it("carries the same vendor mark the card will carry", async () => {
       // The row the user picks and the card they come back to are the same
       // service, so they show the same thing. The row keeps its name too — the
@@ -242,7 +301,7 @@ describe("ServicesPanel", () => {
       const row = screen.getByTestId("add-service-option-anthropic");
       // The mark's 24×24 grid rather than any `svg` — Phosphor's glyphs are
       // 256×256, so this cannot pass on a tick from the support table.
-      expect(row.querySelector('svg[viewBox="0 0 24 24"]')).not.toBeNull();
+      expect(queryServiceMark(row)).not.toBeNull();
       expect(row).toHaveTextContent("Anthropic");
     });
 
@@ -1686,6 +1745,183 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
   });
 
   /**
+   * **The state a reconnect opens over belongs to the PREVIOUS attempt.**
+   *
+   * `providerAccountAuthErrors` is written by `agent_auth_failed` and cleared
+   * only when the *next* challenge arrives — and the reason anyone presses
+   * *Reconnect* is usually that the last attempt failed, so the reason it failed
+   * is still filed against the account. `signInStalled` read it as this
+   * attempt's outcome, so for the ~6 s Claude's wizard takes to print its link
+   * the dialog drew its failure screen with a live *Try again*: the press had
+   * worked, and the one control on screen inviting another press said it had
+   * not. Reported from use.
+   */
+  it("does not show a failed attempt's reason over a reconnect that is running", async () => {
+    seedConnected();
+    // The credential expired; the toast that offers a reconnect is the reason
+    // the user is here, and the failure is still in the store.
+    useSettingsStore.getState().setProviderAccountAuthError(
+      "anthropic-oauth", "acct_1", "Your Anthropic session expired.",
+    );
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+    // The server's `authenticating` broadcast lands — the sign-in is under way,
+    // and the link has not been printed yet.
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([
+        { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "authenticating", externalId: "ext-1", createdAt: now, updatedAt: now },
+      ]);
+    });
+
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-signin-stalled")).toBeNull();
+    // The rule the dialog states for itself: while a sign-in runs there is one
+    // button and it says Cancel.
+    expect(screen.queryByTestId("add-service-sign-in")).toBeNull();
+  });
+
+  /**
+   * The same defect wearing the row's status instead of a filed reason. An
+   * expired credential sits at `auth_failed`, which is `status !==
+   * "authenticating"` — so between the login request returning and the
+   * broadcast landing, the dialog judged the attempt by the state the *previous*
+   * one left. `reconnectLeftReady` does not cover this: "has left `ready`" is
+   * answered `true` by `auth_failed` before the user presses anything.
+   */
+  it("does not judge the attempt by the status the last one left", async () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+    ]);
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "auth_failed", externalId: "ext-1", createdAt: now, updatedAt: now },
+    ]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    // No broadcast yet — the row still says what the last attempt did.
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-signin-stalled")).toBeNull();
+    expect(screen.queryByTestId("add-service-sign-in")).toBeNull();
+  });
+
+  /**
+   * The other half of the same rule, and what stops the fix above from being a
+   * dialog that can never say a sign-in failed: a failure arriving *during* the
+   * attempt is this attempt's, and it must land on the stalled panel with its
+   * *Try again* — which then re-arms the whole guard for the retry.
+   */
+  it("still reaches Try again when the attempt itself fails, and hides it again on the retry", async () => {
+    seedConnected();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([
+        { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "authenticating", externalId: "ext-1", createdAt: now, updatedAt: now },
+      ]);
+    });
+    // The CLI gives up: the row fails and the reason is filed.
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([
+        { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "auth_failed", externalId: "ext-1", createdAt: now, updatedAt: now },
+      ]);
+      useSettingsStore.getState().setProviderAccountAuthError(
+        "anthropic-oauth", "acct_1", "The authorization code expired.",
+      );
+    });
+    expect(screen.getByTestId("add-service-signin-stalled")).toHaveTextContent("The authorization code expired.");
+
+    // Pressing it starts a second attempt, and the second attempt is no more
+    // judged by the first one's wreckage than the first was by the one before.
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-signin-stalled")).toBeNull();
+    expect(screen.queryByTestId("add-service-sign-in")).toBeNull();
+  });
+
+  /**
+   * **A reconnect that never started is not a reconnect that succeeded.**
+   *
+   * The provider runs one login at a time, so pressing *Reconnect* while another
+   * account is signing in makes the `POST …/login` a refusal. The row is
+   * untouched by that — still `ready`, because the old credential is still
+   * there — and the catch then set `reconnectLeftReady`, which is the other half
+   * of `signedIn`. So the dialog answered a refused request with the flow's
+   * SUCCESS screen: "Connected. Anthropic subscription is ready — its models are
+   * selectable now." over a *Done* button, with the refusal in small text
+   * underneath. Nothing on it offered another try.
+   *
+   * The old credential really is still usable, which is what makes the wrong
+   * screen plausible enough to ship. It is still the wrong one: the user asked
+   * to re-authenticate, that did not happen, and the way back has to be on
+   * screen.
+   */
+  it("reports a refused reconnect as failed, not as connected", async () => {
+    seedConnected();
+    // The provider is busy with the other account, so the login is refused.
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      const refused = (init?.method ?? "GET") === "POST" && url.endsWith("/login");
+      return Promise.resolve({
+        ok: !refused,
+        status: refused ? 409 : 200,
+        json: () => Promise.resolve(
+          refused ? { error: 'Claude is already signing in on "Personal". Finish or cancel that sign-in first.' } : { routes: [] },
+        ),
+      });
+    });
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    // The refusal is the outcome, and the way back is the flow's own retry.
+    expect(screen.getByTestId("add-service-signin-stalled")).toBeInTheDocument();
+    expect(screen.getByTestId("add-service-sign-in")).toHaveTextContent("Try again");
+    expect(screen.queryByTestId("add-service-signed-in")).toBeNull();
+    expect(screen.queryByTestId("add-service-done")).toBeNull();
+    // Said once, in the reason line the stalled panel is built around, rather
+    // than as an aside under a screen claiming the opposite.
+    expect(screen.getByTestId("add-service-error")).toHaveTextContent("already signing in");
+  });
+
+  /**
+   * The other half of the case above, and the one that must not regress while
+   * fixing it: a refused *start* changes nothing about the credential. It was
+   * connected before the press and it is connected after — the dialog reports a
+   * failed attempt, it does not revoke anything.
+   */
+  it("leaves the credential connected when the reconnect is refused", async () => {
+    seedConnected();
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+      fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      const refused = (init?.method ?? "GET") === "POST" && url.endsWith("/login");
+      return Promise.resolve({
+        ok: !refused,
+        status: refused ? 409 : 200,
+        json: () => Promise.resolve(refused ? { error: "Busy." } : { routes: [] }),
+      });
+    });
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+    await userEvent.click(screen.getByText("Cancel"));
+
+    const rows = screen.getAllByTestId(/^provider-account-row-acct_\d+$/);
+    expect(rows.map((r) => r.getAttribute("data-testid"))).toEqual([
+      "provider-account-row-acct_1",
+      "provider-account-row-acct_2",
+    ]);
+    expect(fetchCalls.filter((c) => c.method === "DELETE")).toEqual([]);
+  });
+
+  /**
    * The one thing that could go badly wrong. `AddServiceDialog` abandons the
    * attempt IT created; a connected account is not an attempt
    * (`isUnconnectedAttempt` is false once it has an `externalId`), so cancelling
@@ -1801,6 +2037,69 @@ describe("the OpenCode Go billing hazard (docs/272 req 6)", () => {
     await userEvent.click(screen.getByTestId("add-service-option-opencode"));
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
     expect(await screen.findByTestId("mode-notice-opencode:sub")).toBeInTheDocument();
+  });
+});
+
+/**
+ * planning#454 — the SuperGrok card carries a NUMBER, not a sentence about not
+ * having one.
+ *
+ * This card spent a release explaining an absence: ShipIt had concluded xAI
+ * published no usage API, suppressed the pill, and printed a line saying so.
+ * The conclusion was wrong — the weekly pool is one query parameter away — and
+ * these cases exist to keep the apology from coming back. A sentence explaining
+ * an empty surface is a last resort, and the reader is what makes it
+ * unnecessary.
+ */
+describe("the xAI subscription's weekly pool (planning#454)", () => {
+  it("prints no absence notice on the subscription card, because there is a reader", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("service-card-xai:sub")).toBeInTheDocument();
+    expect(screen.queryByTestId("mode-notice-xai:sub")).not.toBeInTheDocument();
+  });
+
+  it("says nothing on the metered xAI key card, which promises no allowance", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_xai", serviceId: "xai", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("service-card-xai:key")).toBeInTheDocument();
+    expect(screen.queryByTestId("mode-notice-xai:key")).not.toBeInTheDocument();
+  });
+
+  /**
+   * The weekly figure on the account row, and — the half that was the reported
+   * bug — NO second meter beside it. SuperGrok has one pool and no short
+   * window, so a `5h · —` here would be the same permanently-empty read-out the
+   * user reported, merely next to a real number.
+   */
+  it("shows the weekly figure on the account row, and no empty short window", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      route({ id: "acct_xai", serviceId: "xai", billingMode: "sub", via: "account", label: "nik@x" }),
+    ]);
+    useUiStore.getState().setSubscriptionLimits({
+      "xai:sub": {
+        acct_xai: {
+          // `plan: null` is deliberate, not a gap — see requirements.md, the
+          // 2026-08-20 receipt: the plan name is reachable and was declined.
+          serviceId: "xai", billingMode: "sub", routeId: "acct_xai", plan: null,
+          session: null,
+          weekly: { usedPct: 10, resetAt: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+          // The reader STATES the plan has one window; the pill does not infer
+          // it from the null (planning#454).
+          availableWindows: ["weekly"],
+          fetchedAt: Date.now(),
+        },
+      },
+    });
+    render(<ServicesPanel />);
+    const row = screen.getByTestId("provider-account-row-acct_xai");
+    expect(row).toHaveTextContent("nik@x");
+    expect(row).toHaveTextContent(/7d\s*10%/);
+    expect(row.textContent).not.toMatch(/5h/);
   });
 });
 

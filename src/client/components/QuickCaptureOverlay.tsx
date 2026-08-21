@@ -401,9 +401,13 @@ export function QuickCaptureOverlay({
               // server applies it to the session it creates.
               saveRoleName(roleName);
               // …and the three pickers' seeds become the role's, so this overlay
-              // shows what the role set rather than what it held before.
-              applyRoleSeeds(useSettingsStore.getState().roles.find((r) => r.name === roleName));
-              clearParkedHarness();
+              // shows what the role set rather than what it held before. req 18 —
+              // "No role" has none to apply: it drops the name and the standing
+              // instructions, and the parameters stay where the role left them.
+              if (roleName !== undefined) {
+                applyRoleSeeds(useSettingsStore.getState().roles.find((r) => r.name === roleName));
+                clearParkedHarness();
+              }
               seedWritten();
             }}
             modelInfo={modelInfo}

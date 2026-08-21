@@ -61,12 +61,17 @@ export function applyRoleSeeds(role: RoleView | undefined): boolean {
     && current?.serviceId === selection.serviceId
     && current?.billingMode === selection.billingMode
     && current?.modelId === selection.modelId
-    && getSavedReasoning(resolved.harnessId) === resolved.reasoningEffort;
+    && getSavedReasoning(resolved.harnessId) === (resolved.reasoningEffort ?? null);
   if (unchanged) return false;
   saveAgentId(resolved.harnessId);
   saveModelSelection(selection);
   // Per-agent, like the picker's own writes: a level means something different
   // on each harness, so it is stored against the one the role names.
-  saveReasoning(resolved.harnessId, resolved.reasoningEffort);
+  //
+  // `null` — not `undefined` — is this store's "no level", and it is how the
+  // seed says **Default**: it clears the stored level, so the composer shows
+  // "Default" rather than whatever the last role happened to seed. A harness
+  // that declares no levels resolves to exactly the same thing (docs/274).
+  saveReasoning(resolved.harnessId, resolved.reasoningEffort ?? null);
   return true;
 }

@@ -26,6 +26,7 @@ import {
 } from "./overlay-session.js";
 import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
+import { claimOverlayBaseGeneration } from "./overlay-base-claims.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -201,7 +202,22 @@ export async function prepareOverlaySpecs(
       ? (scopeHash) => readBasePointerByHash(stateDir, scopeHash)?.generation ?? 0
       : undefined,
   });
-  if (!opts.requireProvisioned) return specs;
+  if (!opts.requireProvisioned) {
+    // planning#440 — a creation path has just DECIDED which generation this
+    // session will mount, and from here until `container.start()` returns
+    // nothing the disk janitor can see pins it: the pointer may advance (a
+    // same-scope publish) and `docker ps` cannot list a container that does not
+    // exist yet, so `sweepStaleBaseGenerations` would reap the lowerdir this
+    // container is on its way to mounting. Claim it for the duration. Done here
+    // rather than at volume-create time because the window opens at the
+    // decision, not at the volume; and only on creation paths —
+    // `requireProvisioned` callers (compose mounts, sibling containers) are
+    // reading back what a RUNNING container already has, which `docker ps`
+    // already pins. See overlay-base-claims.ts for why the claim expires
+    // instead of being released.
+    for (const spec of specs) claimOverlayBaseGeneration(spec.scopeHash, spec.generation);
+    return specs;
+  }
   const provisioned: DepDirOverlaySpec[] = [];
   for (const spec of specs) {
     if (await volumeExists(deps.docker, spec.volumeName)) {
@@ -214,6 +230,74 @@ export async function prepareOverlaySpecs(
     }
   }
   return provisioned;
+}
+
+// ---------------------------------------------------------------------------
+// Sibling-container overlay resolution (nikzlabs/shipit#2426)
+// ---------------------------------------------------------------------------
+
+/**
+ * The (dep dir → overlay volume) pairs a container OTHER than the agent's should
+ * nest under its copy of the session's working tree — a plugin companion CLI's
+ * invocation container, whose `/project` (and `/plugin` under `repo: self`)
+ * otherwise hold the empty mount point the dep dir is on the workspace volume.
+ *
+ * **The agent container's record is the answer; re-derivation is the fallback.**
+ * The record says what the agent ACTUALLY has mounted. Re-deriving reads the
+ * live workspace — `shipit.yaml`'s `dep-dirs`, the pnpm signals,
+ * `git check-ignore` — all of which move under a running session, and any
+ * disagreement hands the sibling a different dependency tree than the agent has.
+ * The pnpm signals are the sharp edge: adding a `pnpm-lock.yaml` mid-session
+ * flips `isPnpmRepo`, `prepareOverlaySpecs` then returns `[]` for a session whose
+ * agent container is still holding live overlays, and the CLI gets the empty
+ * directory this whole mechanism exists to avoid.
+ *
+ * This supersedes an earlier decision, and the reason it does is that the
+ * decision's premise expired rather than that it was wrong. `plugin-cli-run.ts`
+ * recorded re-derivation as reviewed-and-accepted on the grounds that nothing
+ * exposed the container's mounts and that a value resolved once would "stay
+ * wrong for good" while a re-derivation at least converges on the next
+ * container recreate. Both halves have since stopped holding: the record is
+ * exposed (`provisionedOverlayDepDirs`), and it is scoped to the CONTAINER, not
+ * the session — a recreate rebuilds it from the new specs, so it converges on
+ * exactly the same event, while also being right in between.
+ *
+ * `null` from the record still means "cannot say" (no container record at all),
+ * and only that falls through. Both paths are filtered to volumes that exist:
+ * naming one that does not is how a `compose up` fails outright, and how a
+ * `docker create` silently conjures an empty volume instead.
+ */
+export async function resolveSiblingOverlayDepDirs(
+  deps: OverlayProvisionerDeps,
+  opts: {
+    sessionId: string;
+    workspaceDir: string;
+    session: Pick<SessionInfo, "remoteUrl" | "kind">;
+    /** The agent container's recorded pairs, or `null` when there is no record. */
+    provisioned: { depDir: string; volumeName: string }[] | null,
+  },
+): Promise<{ depDir: string; volumeName: string }[]> {
+  if (opts.provisioned === null) {
+    const specs = await prepareOverlaySpecs(deps, {
+      sessionId: opts.sessionId,
+      workspaceDir: opts.workspaceDir,
+      session: opts.session,
+      requireProvisioned: true,
+    });
+    return specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }));
+  }
+  const usable: { depDir: string; volumeName: string }[] = [];
+  for (const pair of opts.provisioned) {
+    if (await volumeExists(deps.docker, pair.volumeName)) usable.push(pair);
+    else {
+      console.warn(
+        `[overlay:${opts.sessionId}] ${pair.depDir} is overlay-mounted in the agent container ` +
+        `but its volume (${pair.volumeName}) is gone — a plugin command that loads a dependency ` +
+        `from there will not see the agent's installed tree.`,
+      );
+    }
+  }
+  return usable;
 }
 
 // ---------------------------------------------------------------------------

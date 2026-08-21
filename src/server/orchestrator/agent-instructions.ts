@@ -25,6 +25,7 @@ import { loadPrompt, fillPromptTokens } from "./load-prompt.js";
 import { CLAUDE_PARALLEL_SESSIONS_SECTION } from "./agents/claude/system-prompt.js";
 import { CODEX_PARALLEL_SESSIONS_SECTION } from "./agents/codex/system-prompt.js";
 import { OPENCODE_PARALLEL_SESSIONS_SECTION } from "./agents/opencode/system-prompt.js";
+import { GROK_PARALLEL_SESSIONS_SECTION } from "./agents/grok/system-prompt.js";
 
 /**
  * Per-agent "Parallel sessions" prompt fragments, keyed so the builder
@@ -43,6 +44,7 @@ const PARALLEL_SESSIONS_SECTIONS: ReadonlyMap<AgentId, string> = new Map([
   ["claude", CLAUDE_PARALLEL_SESSIONS_SECTION],
   ["codex", CODEX_PARALLEL_SESSIONS_SECTION],
   ["opencode", OPENCODE_PARALLEL_SESSIONS_SECTION],
+  ["grok", GROK_PARALLEL_SESSIONS_SECTION],
 ]);
 
 export interface AgentSystemInstructionOptions {
@@ -147,8 +149,6 @@ const NEW_PROJECT_BEST_PRACTICE = loadPrompt(import.meta.url, "./prompts/new-pro
 // A sandbox renders no preview, so it drops this section entirely.
 const LIVE_PREVIEW = loadPrompt(import.meta.url, "./prompts/live-preview.md");
 const COMPOSE_SERVICES_OPS = loadPrompt(import.meta.url, "./prompts/compose-services-ops.md");
-// docs/241 — optional per-feature requirements workflow, shared by every variant.
-const SPEC_DISCIPLINE = loadPrompt(import.meta.url, "./prompts/spec-discipline.md");
 // docs/245 — Codex needs an explicit tie-breaker for confirmation-shaped
 // continuations; Claude already follows the intended behavior without one.
 const CODEX_IMPLIED_ACTION = loadPrompt(
@@ -211,7 +211,6 @@ function renderInstructions(
     RELEASES: isOps || isSandbox ? "" : RELEASES,
     PARALLEL_SESSIONS: parallelSessionsSection,
     IMPLIED_ACTION: agentId ? IMPLIED_ACTION_SECTIONS.get(agentId) ?? "" : "",
-    SPEC_DISCIPLINE,
     NEW_PROJECT_BEST_PRACTICE: isOps || isSandbox ? "" : NEW_PROJECT_BEST_PRACTICE,
   });
 }

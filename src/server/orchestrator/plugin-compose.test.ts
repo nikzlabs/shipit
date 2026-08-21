@@ -648,6 +648,65 @@ services:
     expect(issuesByRepo.size).toBe(0);
     expect(services).toHaveLength(1);
   });
+
+  // github#2374 — the contained case of the test above, which had no coverage of
+  // its own and so left the docs free to keep teaching the pre-docs/271 rule.
+  // `plugins.md` told the agent that a contained session refuses a service with
+  // no `user:` and to "add one"; adding one is precisely what produces a service
+  // that cannot write the workspace, because the uid it would need is the
+  // session's own and the per-session range refuses a project that names it.
+  //
+  // Pinned as ACCEPTANCE rather than as a message, because the wrong behaviour
+  // here is a refusal that takes the whole file — and with it every one of the
+  // project's own services, not just the plugin's.
+  //
+  // Both cases set `SHIPIT_SESSION_WORKER_UID` explicitly and restore it, like
+  // the equivalents in `compose-generator.test.ts`. It is NOT boilerplate here:
+  // the acceptance depends entirely on that variable (`shipitFillsIn` requires a
+  // fill-in uid `> 0`), and a session container has it set in the ambient
+  // environment while CI does not — so a test that merely inherits it passes
+  // locally, fails in CI, and proves nothing in either place.
+  describe("an undeclared user: under containment (github#2374)", () => {
+    const orig = process.env.SHIPIT_SESSION_WORKER_UID;
+    afterEach(() => {
+      if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = orig;
+    });
+
+    it("is accepted when ShipIt has an identity to fill in", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+`);
+      const { services, issuesByRepo } = collect(SELF_USE, defaultManifest(), { containEgress: true });
+      expect(issuesByRepo.size).toBe(0);
+      expect(services).toHaveLength(1);
+      // And it stays undeclared all the way through `toComposeService`, which is
+      // what lets the generator inject the session identity. A `user:` appearing
+      // here — from a future "helpfully" defaulted value — would suppress the
+      // fill-in and put the service back where #2374 started: running as a uid
+      // that does not own the workspace and is not in its group.
+      const built = build(services);
+      expect(built.issuesByRepo.size).toBe(0);
+      expect(toComposeService(built.services[0]!).user).toBeUndefined();
+    });
+
+    // The other half of the same rule, and the reason the case above must set the
+    // variable rather than read it: with no worker uid there is no fill-in, the
+    // image's own default user applies, and that is often root — so the
+    // declaration is still required and the refusal is correct. docs/271 relaxed
+    // the rule where ShipIt can supply a better answer, not everywhere.
+    it("is still refused when there is no worker uid to fill in", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      expect(reject(`
+services:
+  probe:
+    image: node:22-alpine
+`, { containEgress: true })).toContain("numeric, non-root `user:`");
+    });
+  });
 });
 
 describe("buildPluginComposeServices", () => {

@@ -10,6 +10,9 @@ import {
 } from "react";
 /* eslint-enable no-restricted-imports */
 import { Dialog, DialogContent } from "./components/ui/dialog.js";
+// The mobile Chat/Workspace rule, from the component that implements it — so
+// "is the preview on screen?" has one definition rather than two that drift.
+import { mobileChatInFront } from "./components/MobileContentPanels.js";
 import { TooltipProvider } from "./components/ui/tooltip.js";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useSessionWebSocket } from "./hooks/useSessionWebSocket.js";
@@ -370,6 +373,7 @@ export default function App() {
   const newRepoDialogOpen = useRepoStore((s) => s.newRepoDialogOpen);
   const creatingRepo = useSessionStore((s) => s.creatingRepo);
   const allSessionsDialogOpen = useSessionStore((s) => s.allSessionsDialogOpen);
+  const allSessionsDialogRepoUrl = useSessionStore((s) => s.allSessionsDialogRepoUrl);
   const allSessions = useSessionStore((s) => s.allSessions);
   const currentSession = useMemo(
     () => sessions.find((s) => s.id === sessionId),
@@ -1623,8 +1627,16 @@ export default function App() {
    * got it wrong in the one case the rule exists for.
    */
   const handleRoleChange = useCallback(
-    (roleName: string) => {
+    (roleName: string | undefined) => {
       saveRoleName(roleName);
+      // req 18 — "No role" clears the name and the standing instructions, and
+      // leaves the parameters alone. So there are no seeds to apply: the three
+      // pickers go on displaying what the role set, which is what the session
+      // goes on running.
+      if (roleName === undefined) {
+        send({ type: "set_role", roleName: null });
+        return;
+      }
       // req 15 — the seeds the three pickers display become the role's, so
       // "Adjust parameters…" shows what the role actually set rather than what
       // some earlier session left behind. See `utils/role-seed.ts`.
@@ -1707,6 +1719,13 @@ export default function App() {
   // tab. The `pr && !hasPr` case keeps the preview up while a PR is pending.
   const previewVisible =
     !isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr));
+  // Whether that pane is actually ON SCREEN. `previewVisible` only answers "is
+  // it the selected right-panel tab" — on mobile the whole workspace tree sits
+  // behind the Chat tab as well, and a preview hidden either way must stop
+  // rendering and be told it is hidden (nikzlabs/shipit#2418, second site).
+  const previewOnScreen =
+    previewVisible &&
+    !(isMobile && mobileChatInFront({ showHomeScreen, showNewSessionView, activePanel: mobilePanel }));
   // Re-measure the tab bar whenever the set of visible tabs changes so the
   // icon-only collapse adapts to the actual tab count, not a fixed worst-case
   // width. (See useTabLabelCollapse.)
@@ -1841,6 +1860,7 @@ export default function App() {
         >
           <div className="flex-1 min-h-0 relative">
             <PreviewFrame
+              paneVisible={previewOnScreen}
               preview={effectivePreviewStatus}
               sessionId={sessionId}
               detectedPorts={detectedPorts}
@@ -2236,12 +2256,13 @@ export default function App() {
           sessionReasoning={currentSession?.reasoningEffort}
           {...(currentSession?.roleName ? { sessionRoleName: currentSession.roleName } : {})}
           onRoleChange={handleRoleChange}
-          // docs/272 req 4 — a role applies until the session's first turn and
-          // not after. `agentPinned` IS that moment: it is set when the first
-          // turn provisions per-agent credentials, which is the same fact that
-          // makes the harness irreversible. Server-side `set_role` refuses on
-          // it too; this only stops the user reaching for a control that would
-          // be refused.
+          // docs/272 req 4 — a role can be CHOSEN until the session's first turn
+          // and not after. What the role set goes on applying for the session's
+          // whole life, and stays adjustable (req 4, second half): this locks the
+          // choice alone. `agentPinned` IS that moment — set when the first turn
+          // provisions per-agent credentials, the same fact that makes the
+          // harness irreversible. Server-side `set_role` refuses on it too; this
+          // only stops the user reaching for a control that would be refused.
           roleLocked={!!currentSession?.agentPinned}
           modelInfo={modelInfo}
           contextTokens={contextTokens}
@@ -2639,7 +2660,9 @@ export default function App() {
           }
           sessions={allSessions}
           repos={repos}
-          currentRepoUrl={currentRepoUrl}
+          // The repo the dialog was opened FROM wins; the current session's
+          // repo is only the fallback for openers that name none.
+          initialRepoUrl={allSessionsDialogRepoUrl ?? currentRepoUrl}
           onFetch={() => useSessionStore.getState().fetchAllSessions()}
           onResume={(sid) => handleSessionResume(sid, navigate)}
           onUnarchive={(sid) =>

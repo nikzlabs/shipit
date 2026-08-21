@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CredentialRoute, NonTurnFailureCard, WsServerMessage } from "../../shared/types.js";
 import type { PersistedMessage } from "../chat-history.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
+import { TEST_CREDENTIALS_DIR } from "../credentials-test-helpers.js";
 
 /**
  * docs/252 phase 7 (req 9) — running the work outside a turn.
@@ -331,7 +332,15 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const restored: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
       provisionSubAgentCredentials: () => calls.push("provision"),
-      removeSubAgentCredentials: () => calls.push("wipe"),
+      // docs/260 — the restore uses the credential subtree's own account
+      // MARKER, not session.providerRoute* (the row records no route any more).
+      // planning#445 — and the borrow reports it on release, having captured it
+      // when it overwrote the marker; a caller that re-reads the marker itself
+      // is the shape that lost it.
+      releaseSubAgentCredentials: () => {
+        calls.push("wipe");
+        return "acct_marker";
+      },
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
       provisionProviderAccountCredentials: (
@@ -340,10 +349,6 @@ describe("makeNonTurnGenerateText — credential window", () => {
         calls.push("restore");
         restored.push(accountId);
       },
-      // docs/260 — the restore reads the credential subtree's own account
-      // MARKER, not session.providerRoute* (the row records no route any
-      // more). Seed it with the account the session's subtree held.
-      readSessionAccountMarker: () => ({ claude: "acct_marker" }),
     }));
     // The runner has to BE a ContainerSessionRunner for the window to open —
     // local mode provisions nothing, by design (docs/138).
@@ -362,7 +367,7 @@ describe("makeNonTurnGenerateText — credential window", () => {
       // A session whose primary agent is the same harness the run borrowed —
       // the case whose subtree must be put back after the consult.
       sessionManager: { get: () => ({ agentId: "claude" }) },
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);
 
@@ -380,13 +385,16 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const calls: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
       provisionSubAgentCredentials: () => calls.push("provision"),
-      removeSubAgentCredentials: () => calls.push("wipe"),
+      // docs/260 — the wipe path reports the account to restore; `undefined`
+      // means the subtree held none, which is fine: the wipe is what this test
+      // pins.
+      releaseSubAgentCredentials: () => {
+        calls.push("wipe");
+        return undefined;
+      },
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
       provisionProviderAccountCredentials: () => calls.push("restore"),
-      // docs/260 — read on the wipe path; an empty marker means no account to
-      // restore, which is fine: the wipe is what this test pins.
-      readSessionAccountMarker: () => ({}),
     }));
     const { ContainerSessionRunner } = await import("../container-session-runner.js");
     const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
@@ -397,12 +405,58 @@ describe("makeNonTurnGenerateText — credential window", () => {
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);
 
     expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
     expect(calls).toContain("wipe");
+  });
+
+  /**
+   * planning#445 — a provisioning failure must still close the credential window.
+   * The provision used to run BEFORE the try, so an ENOSPC (or a source root
+   * deleted between route resolution and copy) threw past every cleanup: the
+   * borrow it had already opened stayed open for the process's life, and a
+   * subtree recorded as lent out refuses the session's own token write-backs —
+   * the permanent-refusal state this whole fix exists to end.
+   */
+  it("closes the credential window when provisioning itself throws", async () => {
+    const calls: string[] = [];
+    vi.doMock("../session-credentials.js", () => ({
+      provisionSubAgentCredentials: () => {
+        calls.push("provision");
+        throw new Error("ENOSPC: no space left on device");
+      },
+      releaseSubAgentCredentials: () => {
+        calls.push("wipe");
+        return "acct_marker";
+      },
+      syncAgentTokenBack: () => calls.push("sync"),
+      syncProviderAccountTokenBack: () => calls.push("sync-account"),
+      provisionProviderAccountCredentials: () => calls.push("restore"),
+    }));
+    const { ContainerSessionRunner } = await import("../container-session-runner.js");
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    const runner = fakeContainerRunner(ContainerSessionRunner, {
+      spawnSubAgent: async () => {
+        calls.push("spawn");
+        return OK_RESULT;
+      },
+    });
+    const { deps } = buildDeps({});
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      getRunnerRegistry: () => ({ get: () => runner }),
+      sessionManager: { get: () => ({ agentId: "claude" }) },
+      credentialsDir: TEST_CREDENTIALS_DIR,
+      fallback: async () => "unused",
+    } as never);
+
+    // The generation fails (nothing spawned), but the window closes and the
+    // session goes back to its own account.
+    expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
+    expect(calls).toEqual(["provision", "sync", "wipe", "restore"]);
   });
 });
 
