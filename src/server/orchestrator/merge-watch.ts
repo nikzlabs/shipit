@@ -22,7 +22,7 @@
  * startup, so a crash between merge-detection and delivery doesn't strand the
  * parent.
  *
- * ## Retrying a failed delivery (SHI-258)
+ * ## Retrying a failed delivery (planning#260)
  *
  * `deliverWakeTurn` can throw — the parent's container won't resume, its
  * credential refresh fails, the worker is unreachable. The design always claimed
@@ -42,7 +42,7 @@
  * already fought twice. So the retry distinguishes in-flight from failed on two
  * independent axes:
  *
- *   1. **A durable delivery id, asked of the runner that owns it** (SHI-264).
+ *   1. **A durable delivery id, asked of the runner that owns it** (planning#266).
  *      Every attempt is stamped `watchId:attempt`, persisted on the watch row,
  *      sent to the worker, and reported back from `/agent/status`. "Is this
  *      delivery still live?" is then a question with a ground-truth answer —
@@ -54,9 +54,9 @@
  *      backoff window has elapsed, so a failing container boot is retried on a
  *      sane cadence rather than every tick.
  *
- * ## Why derived and not tracked (SHI-264)
+ * ## Why derived and not tracked (planning#266)
  *
- * SHI-258 answered axis 1 with an in-memory `inFlight` set: added when a
+ * planning#260 answered axis 1 with an in-memory `inFlight` set: added when a
  * dispatch returned, removed when the turn completed. That is *tracked* state
  * beside the thing it describes, so it desynchronized from every transition it
  * did not observe — a disposed runner, a second runner for the same session,
@@ -125,7 +125,7 @@ import { loadPrompt, fillPromptTokens } from "./load-prompt.js";
 const SELF_MERGE_WAKE_PROMPT = loadPrompt(import.meta.url, "./prompts/self-merge-wake.md");
 
 /**
- * SHI-258 — how many times a merge wake-turn delivery is attempted before the
+ * planning#260 — how many times a merge wake-turn delivery is attempted before the
  * watch gives up and moves to the terminal `delivery-failed` state. Counts every
  * `deliverWakeTurn` invocation, not only the failing ones, so a watch can never
  * loop indefinitely however the attempts are spread across restarts.
@@ -174,10 +174,10 @@ export class MergeWatchManager {
   private prStatusLookup?: (sessionId: string) => PrStatusSummary | undefined;
 
   /**
-   * SHI-264 — child session ids whose `deliverWakeTurn` call is IN PROGRESS
+   * planning#266 — child session ids whose `deliverWakeTurn` call is IN PROGRESS
    * right now, in this process.
    *
-   * This is all that remains of SHI-258's `inFlight` set, and the reduction is
+   * This is all that remains of planning#260's `inFlight` set, and the reduction is
    * the point. That set tried to answer "is this delivery still pending?" by
    * *tracking* it — added at dispatch, removed on completion — so it
    * desynchronized from every state change it didn't observe: a disposed
@@ -194,7 +194,7 @@ export class MergeWatchManager {
   private readonly dispatching = new Set<string>();
 
   /**
-   * SHI-258 — the terminal PR facts a watch was fired with, kept so a retry can
+   * planning#260 — the terminal PR facts a watch was fired with, kept so a retry can
    * rebuild the identical self-describing prompt. The persisted PR snapshot
    * (`prStatusLookup`) is the restart-safe fallback, but it carries no merge
    * SHA, so preferring the observed info keeps a same-process retry's prompt
@@ -329,7 +329,7 @@ export class MergeWatchManager {
       // container boot failure, credential refresh failure, unreachable worker)
       // also leaves the watch at `merge-observed` — `attemptDelivery` records
       // the attempt and hands it to the retry supervisor, which re-attempts it
-      // in-process on a backoff (SHI-258); before that fix only a restart could
+      // in-process on a backoff (planning#260); before that fix only a restart could
       // recover it.
       await this.attemptDelivery(parent, child, info);
       return;
@@ -340,7 +340,7 @@ export class MergeWatchManager {
     // The wake-turn is best-effort and deliberately NOT retried: the watch is
     // already terminal, which is what makes the close path fire-once. A failure
     // is surfaced as a delivery-failure card instead of vanishing into a log, so
-    // the human still learns the session wasn't woken (SHI-258).
+    // the human still learns the session wasn't woken (planning#260).
     this.surfaceCard(parent.id, child, info, cardOutcome);
     this.deps.sessionManager.setMergeWatch(info.sessionId, {
       parentSessionId: watch.parentSessionId,
@@ -505,7 +505,7 @@ export class MergeWatchManager {
     const childId = child.id;
     const watch = this.deps.sessionManager.getMergeWatch(childId);
     if (watch?.state !== "merge-observed") return;
-    // SHI-264 — the single funnel every delivery path goes through (poller,
+    // planning#266 — the single funnel every delivery path goes through (poller,
     // register-time check, retry supervisor, startup reconcile), so the
     // liveness guard belongs HERE rather than at each caller. The case it
     // closes: after a restart, the previous process's wake-turn is still
@@ -515,7 +515,7 @@ export class MergeWatchManager {
 
     const attempts = (watch.deliveryAttempts ?? 0) + 1;
     const observedAt = watch.observedAt ?? new Date().toISOString();
-    // SHI-264 — mint the delivery identity and persist it WITH the attempt, in
+    // planning#266 — mint the delivery identity and persist it WITH the attempt, in
     // the same write. The id must be durable for the same reason
     // `deliveryAttempts` is: it is read back by a process that did not dispatch
     // it. `watchId` scopes it to this arming (a docs/202 re-arm replaces the row
@@ -577,7 +577,7 @@ export class MergeWatchManager {
    * The completion settlement for one delivery attempt — the callback that
    * turns a {@link TurnOutcome} into the watch's next state.
    *
-   * Factored out because SHI-264 needs to build the IDENTICAL callback twice:
+   * Factored out because planning#266 needs to build the IDENTICAL callback twice:
    * once at dispatch time ({@link attemptDelivery}) and once when turn adoption
    * re-acquires a delivery whose original callback died with a restarted
    * orchestrator ({@link rebindDelivery}). Two hand-written copies of this is
@@ -594,15 +594,15 @@ export class MergeWatchManager {
       // docs/240 — `delivered` means the turn RAN CLEANLY, not merely that it
       // reached a terminal state. The pre-docs/240 callback discarded the
       // outcome, so a wake-turn that crashed, exited without ever producing a
-      // result (SHI-260), or was dropped when the parent's queue was cleared
+      // result (planning#262), or was dropped when the parent's queue was cleared
       // still stamped `delivered` — a watch that looked healthy and was not.
-      // Anything but `completed` hands the watch back to SHI-258's supervisor,
+      // Anything but `completed` hands the watch back to planning#260's supervisor,
       // which re-attempts it on a backoff (or fails it once the budget is spent).
       if (outcome.status === "completed") {
         this.markDelivered(childSessionId, observedAt);
         return;
       }
-      // SHI-316 — `interrupted` is terminal, NOT retryable. The retry supervisor
+      // planning#318 — `interrupted` is terminal, NOT retryable. The retry supervisor
       // exists for a wake that never reached the session: a container that would
       // not boot, an unreachable worker, a queue entry dropped before it ran.
       // `interrupted` means the opposite — the prompt reached a live agent, and
@@ -635,7 +635,7 @@ export class MergeWatchManager {
   }
 
   /**
-   * SHI-264 — hand back the settlement for a delivery whose turn outlived an
+   * planning#266 — hand back the settlement for a delivery whose turn outlived an
    * orchestrator restart. Called by turn adoption with the delivery id the
    * WORKER reported for the surviving turn (`SystemTurnDeps.rebindDelivery`).
    *
@@ -676,7 +676,7 @@ export class MergeWatchManager {
    *      stays busy. This is the guard that makes "retry on a timer" safe at
    *      all; a naive per-poll reconcile without it spams duplicate turns at
    *      exactly the busiest parents.
-   *   2. **Parent busy** (SHI-316) — some OTHER turn is in flight in the parent
+   *   2. **Parent busy** (planning#318) — some OTHER turn is in flight in the parent
    *      right now. Unlike (1) this is asked of the WORKER, not of the local
    *      `runner.running` mirror, because a retry that starts while `running` is
    *      stale-false does not queue politely: `dispatchOnRunner` takes the
@@ -728,7 +728,7 @@ export class MergeWatchManager {
   }
 
   /**
-   * SHI-264 — is this watch's last delivery still live? Answered by DERIVING it
+   * planning#266 — is this watch's last delivery still live? Answered by DERIVING it
    * rather than tracking it.
    *
    * Two sources, in order:
@@ -737,7 +737,7 @@ export class MergeWatchManager {
    *      delivery exists nowhere else, guarded by a lock scoped to that `await`.
    *   2. **The runner that owns the delivery** — is `watch.deliveryId` running
    *      as its current turn, or queued behind one? The runner is the thing that
-   *      actually holds the turn, so its answer cannot drift the way SHI-258's
+   *      actually holds the turn, so its answer cannot drift the way planning#260's
    *      side-set did: a disposed runner is simply gone from the registry, a
    *      replacement runner has an empty queue, and after a RESTART the answer
    *      comes from the worker's own `/agent/status` report by way of turn
@@ -755,7 +755,7 @@ export class MergeWatchManager {
   }
 
   /**
-   * SHI-316 — is some OTHER turn running in the parent right now?
+   * planning#318 — is some OTHER turn running in the parent right now?
    *
    * Distinct from {@link isDeliveryInFlight}, which asks about THIS watch's own
    * delivery. This asks whether re-dispatching now would land on a busy session.
@@ -894,12 +894,12 @@ export class MergeWatchManager {
    *
    * Best-effort: one watch failing doesn't block the rest.
    *
-   * SHI-264 — this no longer wipes an in-memory marker set on the way in. It
+   * planning#266 — this no longer wipes an in-memory marker set on the way in. It
    * used to, because the set was *tracked* liveness and a restart had to be
    * modelled as "forget everything". It now asks each delivery's owner instead
    * (`attemptDelivery` → `isDeliveryInFlight`), so a wake-turn that survived the
    * restart inside its worker — and was ADOPTED by the sweep this reconcile is
-   * chained behind (SHI-259) — is recognized as still live and NOT duplicated,
+   * chained behind (planning#261) — is recognized as still live and NOT duplicated,
    * while a turn that genuinely died reports nothing and is redispatched exactly
    * once.
    */
@@ -984,7 +984,7 @@ export class MergeWatchManager {
    * it live to any attached viewer. Fires outside any turn, so it's an `append`
    * (durable, sorts at the current end of history) rather than `emitChatCard`.
    *
-   * With `deliveryFailure` set this surfaces the SHI-258 failure variant instead
+   * With `deliveryFailure` set this surfaces the planning#260 failure variant instead
    * — a *second* card, appended when the watch gives up, telling the human the
    * merge they were already shown could not wake this session. It goes through
    * the same persisted-append path for the same reason: a card the user expects
@@ -1086,7 +1086,7 @@ export class MergeWatchManager {
     // queue is in-memory, so the un-run turn was genuinely lost) — the real
     // in-flight recovery case the design intended.
     //
-    // SHI-264 — `deliveryId` is the durable half of the same signal. `onSettled`
+    // planning#266 — `deliveryId` is the durable half of the same signal. `onSettled`
     // is an in-memory closure and dies with this process; the id travels to the
     // worker, comes back on `/agent/status`, and lets a RESTARTED orchestrator
     // rebind the settlement to the surviving turn instead of dispatching a
@@ -1102,7 +1102,7 @@ export class MergeWatchManager {
 
 /**
  * The fire-once guard, in one place. `delivery-failed` joins the terminal set
- * (SHI-258): the watch gave up and told the human, so a later re-observation
+ * (planning#260): the watch gave up and told the human, so a later re-observation
  * must not silently resurrect it — re-arming is the user's / agent's call.
  */
 function isTerminalWatchState(state: SessionMergeWatch["state"]): boolean {

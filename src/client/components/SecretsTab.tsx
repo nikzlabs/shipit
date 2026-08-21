@@ -1,6 +1,8 @@
-import { useState, useRef } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: clear the pending save-confirmation timer on unmount
+import { useState, useRef, useEffect } from "react";
 import { Button } from "./ui/button.js";
-import { DeclaredSecretRow } from "./DeclaredSecretRow.js";
+import { DeclaredSecretRow, isPlatformProvided } from "./DeclaredSecretRow.js";
+import { SettingsTabPane } from "./Settings/SettingsTabPane.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 
 /**
@@ -65,6 +67,22 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const loadedRef = useRef(false);
+  /**
+   * The pending "Saved" confirmation timer.
+   *
+   * Held in a ref so it can be cancelled. Left dangling, its callback runs
+   * `setSaving`/`setSaved` on an unmounted component — harmless in a browser,
+   * fatal in a test worker, where the timer outlives the jsdom teardown and
+   * React's scheduler dereferences a `window` that no longer exists. That
+   * surfaced as a red CI run whose every test had passed
+   * (`ReferenceError: window is not defined`, UNHANDLED ERRORS).
+   */
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // eslint-disable-next-line no-restricted-syntax -- cancel the confirmation timer when the tab goes away
+  useEffect(() => () => {
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+  }, []);
 
   // Lazy-load on first render. Subsequent re-renders skip.
   if (!loadedRef.current && repoUrl && onSecretsLoad) {
@@ -167,8 +185,10 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
 
     // Declared rows (guaranteed-unique names).
     for (const d of declared) {
-      // Skip platform-sourced rows — they're not user-configurable.
-      if (d.source?.startsWith("platform:")) continue;
+      // Skip platform-sourced rows — they're not user-configurable. A row a
+      // plugin also claims is NOT one of them (docs/262 req 23): it needs a
+      // real value, and the row is editable, so it must save like any other.
+      if (isPlatformProvided(d)) continue;
       const typed = values[d.name];
       if (typeof typed === "string" && typed.length > 0) {
         set[d.name] = typed;
@@ -191,7 +211,11 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
     }
 
     onSecretsSave(repoUrl, { set, keep });
-    setTimeout(() => {
+    // Replace any in-flight confirmation so two quick saves can't race to
+    // decide whether the button reads "Saving..." or "Saved".
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = setTimeout(() => {
+      savedTimerRef.current = null;
       setSaving(false);
       setSaved(true);
     }, 500);
@@ -202,19 +226,42 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
   }
 
   return (
-    <>
-      {/* Declared secrets (from x-shipit-secrets). Hidden when the repo's
-          compose file declares nothing — the tab shrinks to the custom-only
-          legacy form. */}
+    <SettingsTabPane
+      testId="secrets-tab"
+      footer={
+        <Button
+          variant="primary"
+          size="md"
+          disabled={saving}
+          onClick={save}
+          className="rounded-md"
+          data-testid="secrets-save"
+        >
+          {saving ? "Saving..." : saved ? "Saved" : "Save"}
+        </Button>
+      }
+    >
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium text-(--color-text-primary)">Environment Variables</h3>
+        <p className="text-xs text-(--color-text-secondary)">
+          Secrets are injected into the services that declare them in <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>. The agent only sees values you explicitly mark with <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">agent: true</code>.
+        </p>
+      </div>
+
+      {/* Declared secrets — `x-shipit-secrets`, plus the credential names
+          activated plugins declare (docs/262 req 23). Hidden when nothing
+          declares anything — the tab shrinks to the custom-only legacy form. */}
       {declared.length > 0 && (
         <section className="space-y-2" data-testid="secrets-declared-section">
           <header className="space-y-1">
             <h4 className="text-xs font-medium uppercase tracking-wide text-(--color-text-secondary)">
-              Declared by your compose file
+              Declared for this project
             </h4>
             <p className="text-xs text-(--color-text-tertiary)">
-              From <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>.
-              Each value is injected only into the services that listed it.
+              From <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>, and
+              from the plugins this project uses. Each value is injected only
+              into the services that listed it; a plugin row shows which plugin
+              asked for the name.
             </p>
           </header>
           <div className="space-y-3">
@@ -286,19 +333,6 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
           + Add variable
         </button>
       </section>
-
-      <div className="flex justify-end mt-2">
-        <Button
-          variant="primary"
-          size="md"
-          disabled={saving}
-          onClick={save}
-          className="rounded-md"
-          data-testid="secrets-save"
-        >
-          {saving ? "Saving..." : saved ? "Saved" : "Save"}
-        </Button>
-      </div>
-    </>
+    </SettingsTabPane>
   );
 }

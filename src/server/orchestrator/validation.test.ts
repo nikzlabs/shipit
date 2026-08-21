@@ -11,7 +11,7 @@ describe("formatFileContext", () => {
     expect(formatFileContext([])).toBe("");
   });
 
-  it("wraps attached files in the untrusted-input envelope (SHI-98)", () => {
+  it("wraps attached files in the untrusted-input envelope (planning#100)", () => {
     const files: FileAttachment[] = [
       { path: "hello.ts", content: "const x = 42;" },
     ];

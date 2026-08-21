@@ -8,6 +8,7 @@ import type {
   BranchAutoResetCard,
   BranchSyncedCard,
   SessionRenamedCard,
+  NonTurnFailureCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
@@ -63,6 +64,19 @@ export interface WsBugReportFiled {
   url: string;
 }
 
+/**
+ * docs/164 / nikzlabs/shipit#2350 — terminal *declined* state for a bug-report card.
+ * Cancel used to be a purely local collapse, so the card came back as an
+ * editable draft on reload and the agent was never told the user had said no.
+ * The click now round-trips, persists `phase: "dismissed"`, and echoes here so
+ * every attached viewer collapses the same card.
+ */
+export interface WsBugReportDismissed {
+  type: "bug_report_dismissed";
+  sessionId: string;
+  cardId: string;
+}
+
 /** docs/164 — terminal failure state for a bug-report card. */
 export interface WsBugReportFailed {
   type: "bug_report_failed";
@@ -74,7 +88,7 @@ export interface WsBugReportFailed {
 }
 
 /**
- * docs/172 / SHI-90 — the inline egress allow-once card. Emitted when the Tier C
+ * docs/172 / planning#92 — the inline egress allow-once card. Emitted when the Tier C
  * SNI proxy denies a non-allowlisted host and the orchestrator's decision
  * endpoint surfaces it for the user. The user's choice comes back as
  * `egress_decision`; the resolution echoes via `WsEgressPromptResolved`.
@@ -89,7 +103,7 @@ export interface WsEgressPromptCard {
   createdAt: string;
 }
 
-/** docs/172 / SHI-90 — terminal state for an egress allow-once card. */
+/** docs/172 / planning#92 — terminal state for an egress allow-once card. */
 export interface WsEgressPromptResolved {
   type: "egress_prompt_resolved";
   sessionId: string;
@@ -98,7 +112,7 @@ export interface WsEgressPromptResolved {
 }
 
 /**
- * docs/193 / SHI-112 — the inline permission-request card (agent-agnostic).
+ * docs/193 / planning#114 — the inline permission-request card (agent-agnostic).
  * Emitted when an agent backend raises a gated action the user must approve (a
  * sensitive-file edit, an escalated command). Carries everything the card
  * renders; the user's answer comes back as `resolve_permission`.
@@ -114,6 +128,8 @@ export interface WsPermissionRequestCard {
   path?: string;
   /** One-line human summary of what is being requested. */
   summary?: string;
+  /** The gated call in full (raw command / pretty-printed input) for the card's disclosure. */
+  details?: string;
   /** Which agent raised it (display only). */
   agentId?: string;
   createdAt: string;
@@ -227,7 +243,7 @@ export interface WsSubAgentConsultCard {
 }
 
 /**
- * docs/207 / SHI-153 — the persisted "action checklist" transcript card. Emitted
+ * docs/207 / planning#155 — the persisted "action checklist" transcript card. Emitted
  * via `emitChatCard` so it both broadcasts live AND records in-band with the
  * turn, surviving a reconnect, a session switch, and a full reload. Carries the
  * full `ActionChecklistCard`; the card has no lifecycle (it is an immutable,
@@ -284,4 +300,32 @@ export interface WsSessionRenamedCard {
   type: "session_renamed_card";
   sessionId: string;
   card: SessionRenamedCard;
+}
+
+/**
+ * docs/252 phase 7 (req 9) — the persisted, dismissible notice that non-turn
+ * work (session naming, a pull-request description) failed.
+ *
+ * Emitted via `emitChatCard` so it broadcasts live AND is persisted in-band,
+ * because the requirement is explicit that this must still be findable after a
+ * reload or a session switch: naming is fire-and-forget and routinely finishes
+ * with no viewer attached, which is precisely when a transient message says
+ * nothing at all.
+ *
+ * The card HAS a lifecycle — dismissal — but it is one-way and carries no
+ * payload, so the follow-up rides {@link WsNonTurnFailureDismissed} rather than
+ * re-broadcasting the whole card. Idempotent on the client by `card.cardId`.
+ */
+export interface WsNonTurnFailureCard {
+  type: "non_turn_failure_card";
+  sessionId: string;
+  card: NonTurnFailureCard;
+}
+
+/** docs/252 phase 7 — the user dismissed a {@link WsNonTurnFailureCard}. */
+export interface WsNonTurnFailureDismissed {
+  type: "non_turn_failure_dismissed";
+  sessionId: string;
+  cardId: string;
+  dismissedAt: string;
 }

@@ -207,7 +207,73 @@ describe("POST /api/sessions/:id/pr/merge — agent-running guard", () => {
 
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({
-      error: expect.stringContaining("Agent turn in progress"),
+      error: expect.stringContaining("Agent still working"),
+    });
+  });
+
+  // docs/266 — the guard covers `agentBusy`, not bare `running`. The turn's
+  // commit and the debounced auto-push it arms both run once `running` is
+  // false, so a merge accepted in that window still orphans work on a branch
+  // whose PR just closed.
+  it("returns 409 while post-turn work (commit + debounced push) is in flight", async () => {
+    githubAuth.setGraphqlResult({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [{
+              number: 42,
+              title: "Test PR",
+              url: "https://github.com/test-user/test-repo/pull/42",
+              state: "OPEN",
+              mergeable: "MERGEABLE",
+              autoMergeRequest: null,
+              headRefName: "shipit/test-feature",
+              baseRefName: "main",
+              additions: 10,
+              deletions: 5,
+              commits: {
+                nodes: [{
+                  commit: {
+                    oid: "abc123",
+                    statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } },
+                  },
+                }],
+              },
+            }],
+          },
+        },
+      },
+    });
+    prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
+    await new Promise((r) => setTimeout(r, 100));
+
+    // The turn has ENDED (`running: false`) but its terminal sequence has not.
+    const setBusy = await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ running: false, postTurnWork: true }),
+    });
+    expect(setBusy.json()).toMatchObject({ running: false, agentBusy: true });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/merge`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ method: "squash" }),
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining("Agent still working"),
+    });
+
+    // Release the hold so it can't leak into the next test's runner.
+    await app.inject({
+      method: "POST",
+      url: `/api/_test/runner/${sessionId}/running`,
+      headers: { "Content-Type": "application/json" },
+      payload: JSON.stringify({ postTurnWork: false }),
     });
   });
 

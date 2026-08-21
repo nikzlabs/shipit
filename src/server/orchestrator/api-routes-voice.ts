@@ -36,7 +36,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   const ttsCache = new TtsCache(cacheDir);
 
   /**
-   * docs/150 req 19 — transcript cleanup is a real Claude call, so it reads a
+   * docs/150-multiple-provider-subscriptions req 19 — transcript cleanup is a real Claude call, so it reads a
    * real account: the same route a turn would pick. Resolved per request rather
    * than once at registration because the user can connect, reorder, or
    * disconnect accounts while the server is up. `undefined` for a reserved
@@ -49,7 +49,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
    */
   const cleanupCredentialRoot = (): string | undefined => {
     try {
-      const route = deps.providerAccountManager?.selectRouteForTurn("claude");
+      const route = deps.providerAccountManager?.selectRouteForTurn("anthropic");
       if (route?.kind !== "account") return undefined;
       return deps.providerAccountManager?.resolveCredentialRoot("claude", route.id);
     } catch {

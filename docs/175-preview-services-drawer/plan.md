@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-95
+issue: planning#97
 description: Fold the standalone Services tab into a collapsible, resizable drawer at the bottom of the Preview tab.
 ---
 
@@ -30,6 +30,15 @@ of competing for a tab.
   list (passed as a prop from `App.tsx`, sourced from `preview-store`). Owns:
   - `expanded` (collapse toggle) and `height` (drag-resize), both persisted to
     `localStorage` (`shipit:preview-services:expanded` / `:height`).
+  - **The drawer opens itself while no preview is running** (`previewRunning`
+    prop ← `deriveEffectivePreviewStatus` in `App.tsx`). With nothing to render
+    above it, the drawer is the only place to start a service, so asking for a
+    "Show services" click first is a step with no decision in it. The saved
+    preference keeps its own meaning — "how I like the drawer while a preview is
+    up" — and a hand collapse still wins, held in the ephemeral
+    `servicesDrawerIdleCollapsed` store flag until a preview starts — the
+    drawer's own caret undoes it, so the empty state below needs no button.
+    Helper: `isServicesDrawerOpen()` (`preview-store.ts`).
   - `selectedService` — list view vs single-service log view, mirroring the old
     panel's two-view design.
   - Plain-text log accumulation for the "Send to Agent" button (same
@@ -67,9 +76,13 @@ of competing for a tab.
 When the compose stack is up but nothing is running, `PreviewFrame` used to
 render an **inline `ServiceList`** in its overlay (with Start/Stop) for the
 manual-only dogfooding case. That duplicated the drawer, so it was removed: the
-overlay is now just a "No preview running" nudge with a **Show services** button
-that expands the drawer (`setServicesDrawerExpanded(true)`). `PreviewFrame` no
-longer imports `ServiceList` or takes `onStartService`/`onStopService` props.
+overlay is now just a "No preview running" nudge. `PreviewFrame` no longer
+imports `ServiceList` or takes `onStartService`/`onStopService` props.
+
+The nudge carries **no button**. It once held a **Show services** button that
+expanded the drawer; now that the drawer opens itself whenever no preview runs,
+the only state that button could act on is a collapse the user made by hand —
+a deliberate act, with the drawer's own caret one click away to undo it.
 
 ## Visual redesign
 

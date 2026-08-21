@@ -24,8 +24,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // docs/156 — session creation ends in graduateSession → generateSessionName
 // (a real CLI child). Mock to null so naming is a no-op and we never fork a
 // real claude/codex process here.
+// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
+// `{ name: null }` is "naming produced no title", which is what these tests want.
 vi.mock("../session-namer.js", () => ({
-  generateSessionName: vi.fn().mockResolvedValue(null),
+  generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
 
 import fs from "node:fs";

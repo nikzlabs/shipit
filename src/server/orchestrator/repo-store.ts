@@ -1,7 +1,7 @@
 import type { RepoInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
 import { isValidRepoColorIndex, pickRepoColorIndex } from "../shared/repo-colors.js";
-import { canonicalRepoKey } from "./git-utils.js";
+import { canonicalRepoKey, hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 
 interface RepoRow {
   url: string;
@@ -20,6 +20,25 @@ export class RepoStore {
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
+  }
+
+  /**
+   * The row key for a URL: the URL with any embedded credential removed
+   * (docs/262 req 19 — a credential is never *persisted* to reach a
+   * repository; fetches are credentialed by the per-remote helper instead).
+   *
+   * Applied to every method that takes a url, not just `add`, so the two
+   * spellings of one repository — `https://x-access-token:<pat>@github.com/o/r`
+   * and `https://github.com/o/r` — address the SAME row. Stripping in `add`
+   * alone would store the clean URL and then leave every follow-up call
+   * (`setReady`, `setWarmSessionId`, `get`) silently addressing a row that does
+   * not exist, which is how a repo stays stuck at status "cloning" forever.
+   *
+   * This is a *strip*, not `canonicalRepoKey`: the stored URL must stay a URL
+   * git can clone from, so casing and the `.git` suffix are preserved.
+   */
+  private key(url: string): string {
+    return stripRemoteUrlCredentials(url);
   }
 
   private fromRow(row: RepoRow): RepoInfo {
@@ -44,22 +63,81 @@ export class RepoStore {
    * sidebar (docs/222) — no separate unhide step needed.
    */
   add(url: string): RepoInfo {
-    const existing = this.get(url);
+    const key = this.key(url);
+    const existing = this.get(key);
     if (existing) {
-      this.db.prepare("UPDATE repos SET last_used_at = ?, hidden = 0 WHERE url = ?").run(new Date().toISOString(), url);
+      this.db.prepare("UPDATE repos SET last_used_at = ?, hidden = 0 WHERE url = ?").run(new Date().toISOString(), key);
       // docs/254 — a re-add must NOT reassign the color: it's the same repo
       // coming back (often straight out of the Hidden section), and req 6 says
       // the color survives hide/unhide. Only fill a hole left by an older build.
       if (existing.colorIndex === undefined) {
-        this.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(this.nextColorIndex(), url);
+        this.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(this.nextColorIndex(), key);
       }
-      return this.get(url)!;
+      return this.get(key)!;
     }
     const now = new Date().toISOString();
     this.db.prepare(
       "INSERT INTO repos (url, added_at, last_used_at, status, color_index) VALUES (?, ?, ?, 'cloning', ?)",
-    ).run(url, now, now, this.nextColorIndex());
-    return this.get(url)!;
+    ).run(key, now, now, this.nextColorIndex());
+    return this.get(key)!;
+  }
+
+  /**
+   * docs/262 req 19 — rewrite any row whose URL was stored with an embedded
+   * credential by an earlier build. Returns `{ from, to }` for each row it
+   * changed, so the boot sweep can carry the directories keyed by that URL
+   * (bare cache, dep cache, per-repo memory) across with it.
+   *
+   * Strip-on-write only covers rows added from now on; this is what closes the
+   * rows an existing installation already has, and it is why the boot sweep
+   * (`startup-tasks.ts:runRemoteCredentialScrub`) exists.
+   *
+   * **Collision — the same repository as two rows, added once with a credential
+   * and once without — MERGES rather than deletes.** An earlier version dropped
+   * the credentialed row outright on the reasoning that `isTrusted` matches by
+   * canonical key, so trust survived either way. It does not: an independent
+   * review reproduced the realistic order (add + trust the credentialed URL,
+   * later add the clean one, upgrade) where the credentialed row is the trusted,
+   * ready, warm-linked one and the clean row is a fresh untrusted `cloning`
+   * shell — deleting the first silently un-trusts the repository and drops its
+   * warm session, default branch and colour. So each field is carried over only
+   * where the surviving row has nothing: trust and readiness win if EITHER row
+   * has them, and the nullable columns fill the survivor's holes. Runs in a
+   * transaction so a concurrent reader never sees a half-merged pair.
+   */
+  scrubCredentialedUrls(): { from: string; to: string }[] {
+    const rows = this.db.prepare("SELECT * FROM repos").all() as RepoRow[];
+    const affected = rows.filter((r) => hasUrlCredentials(r.url));
+    if (affected.length === 0) return [];
+    const cleaned: { from: string; to: string }[] = [];
+    const tx = this.db.transaction(() => {
+      for (const row of affected) {
+        const clean = this.key(row.url);
+        const twin = this.db.prepare("SELECT * FROM repos WHERE url = ?").get(clean) as RepoRow | undefined;
+        if (twin) {
+          this.db.prepare(
+            `UPDATE repos SET
+               trusted = MAX(trusted, ?),
+               status = CASE WHEN status = 'ready' OR ? = 'ready' THEN 'ready' ELSE status END,
+               hidden = MIN(hidden, ?),
+               warm_session_id = COALESCE(warm_session_id, ?),
+               default_branch = COALESCE(default_branch, ?),
+               color_index = COALESCE(color_index, ?),
+               display_order = COALESCE(display_order, (SELECT display_order FROM repos WHERE url = ?))
+             WHERE url = ?`,
+          ).run(
+            row.trusted, row.status, row.hidden, row.warm_session_id,
+            row.default_branch, row.color_index, row.url, clean,
+          );
+          this.db.prepare("DELETE FROM repos WHERE url = ?").run(row.url);
+        } else {
+          this.db.prepare("UPDATE repos SET url = ? WHERE url = ?").run(clean, row.url);
+        }
+        cleaned.push({ from: row.url, to: clean });
+      }
+    });
+    tx();
+    return cleaned;
   }
 
   /**
@@ -78,13 +156,13 @@ export class RepoStore {
    * true when a row was updated, false when the url isn't tracked.
    */
   setColorIndex(url: string, colorIndex: number): boolean {
-    const result = this.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(colorIndex, url);
+    const result = this.db.prepare("UPDATE repos SET color_index = ? WHERE url = ?").run(colorIndex, this.key(url));
     return result.changes > 0;
   }
 
   /** Flip status to "ready" after clone completes. */
   setReady(url: string): void {
-    this.db.prepare("UPDATE repos SET status = 'ready' WHERE url = ?").run(url);
+    this.db.prepare("UPDATE repos SET status = 'ready' WHERE url = ?").run(this.key(url));
   }
 
   /**
@@ -96,23 +174,23 @@ export class RepoStore {
   setDefaultBranch(url: string, branch: string): boolean {
     const result = this.db
       .prepare("UPDATE repos SET default_branch = ? WHERE url = ?")
-      .run(branch, url);
+      .run(branch, this.key(url));
     return result.changes > 0;
   }
 
   /** Store the warm session's ID. */
   setWarmSessionId(url: string, sessionId: string | undefined): void {
-    this.db.prepare("UPDATE repos SET warm_session_id = ? WHERE url = ?").run(sessionId ?? null, url);
+    this.db.prepare("UPDATE repos SET warm_session_id = ? WHERE url = ?").run(sessionId ?? null, this.key(url));
   }
 
   /** Update lastUsedAt timestamp. */
   touch(url: string): void {
-    this.db.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(new Date().toISOString(), url);
+    this.db.prepare("UPDATE repos SET last_used_at = ? WHERE url = ?").run(new Date().toISOString(), this.key(url));
   }
 
   /** Remove a repo. */
   remove(url: string): boolean {
-    const result = this.db.prepare("DELETE FROM repos WHERE url = ?").run(url);
+    const result = this.db.prepare("DELETE FROM repos WHERE url = ?").run(this.key(url));
     return result.changes > 0;
   }
 
@@ -149,7 +227,7 @@ export class RepoStore {
     const update = this.db.prepare("UPDATE repos SET display_order = ? WHERE url = ?");
     const tx = this.db.transaction((urls: string[]) => {
       for (let i = 0; i < urls.length; i++) {
-        update.run(i, urls[i]);
+        update.run(i, this.key(urls[i]));
       }
     });
     tx(urls);
@@ -157,7 +235,7 @@ export class RepoStore {
 
   /** Get a single repo by URL. */
   get(url: string): RepoInfo | undefined {
-    const row = this.db.prepare("SELECT * FROM repos WHERE url = ?").get(url) as RepoRow | undefined;
+    const row = this.db.prepare("SELECT * FROM repos WHERE url = ?").get(this.key(url)) as RepoRow | undefined;
     return row ? this.fromRow(row) : undefined;
   }
 
@@ -197,13 +275,13 @@ export class RepoStore {
    * when a row was updated, false when the url isn't tracked.
    */
   setHidden(url: string, hidden: boolean): boolean {
-    const result = this.db.prepare("UPDATE repos SET hidden = ? WHERE url = ?").run(hidden ? 1 : 0, url);
+    const result = this.db.prepare("UPDATE repos SET hidden = ? WHERE url = ?").run(hidden ? 1 : 0, this.key(url));
     return result.changes > 0;
   }
 
   /** Check if a repo URL is already tracked. */
   has(url: string): boolean {
-    const row = this.db.prepare("SELECT 1 FROM repos WHERE url = ? LIMIT 1").get(url);
+    const row = this.db.prepare("SELECT 1 FROM repos WHERE url = ? LIMIT 1").get(this.key(url));
     return row !== undefined;
   }
 

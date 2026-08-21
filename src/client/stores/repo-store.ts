@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
-import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedCollapsedResolved, saveCollapsedResolved, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
+import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedCollapsedResolved, saveCollapsedResolved, getSavedExpandedResolvedChildren, saveExpandedResolvedChildren, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed, getSavedHiddenReposCollapsed, saveHiddenReposCollapsed } from "../utils/local-storage.js";
 
 /** Buffers SSE status updates that arrive before addRepo stores the repo. */
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
@@ -24,6 +24,14 @@ interface RepoState {
    * actively shipping. Absence = expanded (the default). Persisted to localStorage.
    */
   collapsedResolved: Set<string>;
+  /**
+   * Root session IDs whose RESOLVED spawned children are shown. Note the
+   * inversion against {@link collapsedResolved}: a brood's merged/closed
+   * children are hidden by default (absence = hidden), because a feature that
+   * spawns 10-15 children leaves most of them finished, and the sidebar row
+   * for a merged child is dead weight. Persisted to localStorage.
+   */
+  expandedResolvedChildren: Set<string>;
   /** Whether the "Host / Ops" sidebar group is collapsed. Persisted to localStorage. */
   opsCollapsed: boolean;
   /** docs/211 — whether the "Sandbox" sidebar group is collapsed. Persisted to localStorage. */
@@ -41,6 +49,7 @@ interface RepoState {
   toggleRepoCollapsed: (url: string) => void;
   toggleParentCollapsed: (parentId: string) => void;
   toggleResolvedCollapsed: (url: string) => void;
+  toggleResolvedChildrenExpanded: (rootId: string) => void;
   toggleOpsCollapsed: () => void;
   toggleSandboxCollapsed: () => void;
   toggleHiddenReposCollapsed: () => void;
@@ -88,6 +97,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   collapsedRepos: getSavedCollapsedRepos(),
   collapsedParents: getSavedCollapsedParents(),
   collapsedResolved: getSavedCollapsedResolved(),
+  expandedResolvedChildren: getSavedExpandedResolvedChildren(),
   opsCollapsed: getSavedOpsCollapsed(),
   sandboxCollapsed: getSavedSandboxCollapsed(),
   hiddenReposCollapsed: getSavedHiddenReposCollapsed(),
@@ -156,6 +166,15 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       else next.add(url);
       saveCollapsedResolved(next);
       return { collapsedResolved: next };
+    }),
+
+  toggleResolvedChildrenExpanded: (rootId) =>
+    set((state) => {
+      const next = new Set(state.expandedResolvedChildren);
+      if (next.has(rootId)) next.delete(rootId);
+      else next.add(rootId);
+      saveExpandedResolvedChildren(next);
+      return { expandedResolvedChildren: next };
     }),
 
   toggleOpsCollapsed: () =>

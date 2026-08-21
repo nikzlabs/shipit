@@ -104,7 +104,7 @@ describe("dispatchMessage — transcript session scoping", () => {
   });
 
   it("applies the secret-scan commit block only to its owning active session", () => {
-    // SHI-315 — the banner is session state, and the browser holds exactly one
+    // planning#317 — the banner is session state, and the browser holds exactly one
     // session's view, so a foreign block must not raise it here.
     const block = {
       findings: [{ rule: "github-pat", description: "PAT", file: "a.ts", line: 1, redacted: "ghp_…" }],

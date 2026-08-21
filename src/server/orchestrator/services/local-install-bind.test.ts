@@ -307,7 +307,65 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
   });
 });
 
-describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs/254 req 9)", () => {
+describe("deployment/local/lib.sh — shipit_persist_env (docs/276 req 3)", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-persist-"));
+  });
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  /** Run a snippet with lib.sh sourced against a throwaway SHIPIT_HOME. */
+  function run(snippet: string): string {
+    return execFileSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+         SHIPIT_HOME=${JSON.stringify(home)}
+         . ${JSON.stringify(LIB_SH)}
+         ${snippet}`,
+      ],
+      { env: { ...process.env, HOME: home }, encoding: "utf8" },
+    );
+  }
+
+  it("writes the harness answer where every later build reads it", () => {
+    // The whole point of persisting: `update.sh` never re-asks, so an answer that
+    // did not land here would silently revert to the default set on the next
+    // update — an install quietly growing back a harness the operator removed.
+    run('shipit_persist_env SHIPIT_HARNESSES "codex"');
+    const out = run('shipit_load_env_file; printf "%s" "$SHIPIT_HARNESSES"');
+    expect(out).toBe("codex");
+    expect(fs.readFileSync(path.join(home, ".shipit.env"), "utf8")).toContain("SHIPIT_HARNESSES=codex");
+  });
+
+  it("replaces an earlier answer instead of appending a second line", () => {
+    // Two lines for one key is not a cosmetic problem: `. file` takes the LAST
+    // one, so a re-run would look correct in the file and install the old set.
+    run('shipit_persist_env SHIPIT_HARNESSES "codex"');
+    run('shipit_persist_env SHIPIT_HARNESSES "claude,codex"');
+    const lines = fs
+      .readFileSync(path.join(home, ".shipit.env"), "utf8")
+      .split("\n")
+      .filter((l) => l.startsWith("SHIPIT_HARNESSES="));
+    expect(lines).toEqual(["SHIPIT_HARNESSES=claude,codex"]);
+  });
+
+  it("leaves the other operator settings alone", () => {
+    run("shipit_persist_env SESSION_EGRESS_ENFORCE 0");
+    run('shipit_persist_env SHIPIT_HARNESSES "claude"');
+    const body = fs.readFileSync(path.join(home, ".shipit.env"), "utf8");
+    expect(body).toContain("SESSION_EGRESS_ENFORCE=0");
+    expect(body).toContain("SHIPIT_HARNESSES=claude");
+    // 0600: it sits in the checkout and now carries install-shaping answers.
+    expect(fs.statSync(path.join(home, ".shipit.env")).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs/254-local-bind-and-tailnet-access req 9)", () => {
   let root: string;
   let home: string;
   let bare: string;
@@ -389,7 +447,7 @@ describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs
   });
 });
 
-describe("docker/local/prod/compose.yml — default bind address (docs/254 req 2)", () => {
+describe("docker/local/prod/compose.yml — default bind address (docs/254-local-bind-and-tailnet-access req 2)", () => {
   it("defaults to loopback, so a laptop on untrusted wifi exposes nothing", () => {
     const yml = fs.readFileSync(COMPOSE_YML, "utf8");
     const ports = yml

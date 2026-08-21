@@ -23,6 +23,11 @@ import {
   stopAllTokenWriteBackWatches,
   hasTokenWriteBackWatch,
 } from "./session-token-publisher.js";
+import {
+  clearSubtreeBorrows,
+  provisionSubAgentCredentials,
+  writeSessionAccountMarker,
+} from "./session-credentials.js";
 
 /** Fast enough that a test settles quickly, slow enough not to spin. */
 const FAST = { pollIntervalMs: 15, debounceMs: 5 } as const;
@@ -46,6 +51,16 @@ function sessionFile(sessionId = "s1"): string {
 function writeToken(file: string, expiresAt: number, extra: Record<string, unknown> = {}): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ claudeAiOauth: { expiresAt, accessToken: `tok-${expiresAt}` }, ...extra }));
+}
+
+/**
+ * Record which account's copy the session's subtree holds — what a real
+ * account-routed turn writes before it spawns. The write-back reads it to
+ * refuse publishing a token the subtree does not own, so an account fixture
+ * without it is not an account-pinned session at all.
+ */
+function markSubtreeAccount(sessionId: string, accountId: string | null): void {
+  writeSessionAccountMarker(tmpDir, sessionId, "claude", accountId);
 }
 
 function readExpiry(file: string): number | null {
@@ -75,6 +90,10 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
   afterEach(() => {
     stopAllTokenWriteBackWatches();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    // A test that borrows the subtree leaves the borrow outstanding in the
+    // process-local ledger; real callers release it in their `finally`, and a
+    // leaked one would make the next test's session-route publish refuse.
+    clearSubtreeBorrows();
   });
 
   it("publishes a rotation to the source mid-turn, without waiting for turn end", async () => {
@@ -139,6 +158,7 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
     writeToken(sourceFile(), 1_000);
     writeToken(accountSourceFile("acct-work"), 1_000);
     writeToken(sessionFile(), 1_000);
+    markSubtreeAccount("s1", "acct-work");
 
     startTokenWriteBackWatch({
       credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", accountId: "acct-work", ...FAST,
@@ -148,6 +168,56 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
 
     await waitFor(() => readExpiry(accountSourceFile("acct-work")) === 2_000_000_000_000);
     expect(readExpiry(sourceFile())).toBe(1_000);
+  });
+
+  // The mid-turn publisher polls for the whole turn, and a same-harness consult
+  // (`shipit agent run`, session naming, voice cleanup) borrows the session's
+  // subtree mid-turn for an account chosen independently of the session's. The
+  // borrowed token is typically the NEWER of the two — a freshly reconnected
+  // account has the latest expiry there is — so freshness alone waves it
+  // straight into the wrong account's root, and both accounts end up
+  // authenticating as one subscription.
+  it("does not publish a borrowed account's token into the session's own account root", async () => {
+    writeToken(accountSourceFile("acct-b"), 1_000); // the session's account
+    writeToken(accountSourceFile("acct-a"), 2_000_000_000_000); // just reconnected
+    writeToken(sessionFile(), 1_000);
+    markSubtreeAccount("s1", "acct-b");
+
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", accountId: "acct-b", ...FAST,
+    });
+
+    // A consult borrows the subtree for the other account, mid-turn.
+    provisionSubAgentCredentials(tmpDir, "s1", "claude", "acct-a");
+    await settle();
+
+    expect(readExpiry(accountSourceFile("acct-b"))).toBe(1_000);
+    expect(readExpiry(accountSourceFile("acct-a"))).toBe(2_000_000_000_000);
+  });
+
+  /**
+   * planning#445 — the production incident, end to end. The session's marker went
+   * missing mid-turn (a borrow whose restore captured nothing), so every
+   * publish this watch attempted was refused with "the subtree holds no
+   * recorded account". A refused publish is a DROPPED rotation, and the token
+   * it dropped had already invalidated the source's copy upstream: the account
+   * failed every refresher tick afterwards and the user was made to sign in
+   * again every day or two. The publisher runs on the turn's own route, so it
+   * can repair the marker and publish instead.
+   */
+  it("publishes a rotation after the subtree's marker went missing mid-turn", async () => {
+    writeToken(accountSourceFile("acct-b"), 1_000);
+    writeToken(sessionFile(), 1_000);
+    markSubtreeAccount("s1", "acct-b");
+
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", accountId: "acct-b", ...FAST,
+    });
+
+    markSubtreeAccount("s1", null); // the marker is lost, with no borrow in flight
+    writeToken(sessionFile(), 2_000_000_000_000); // the CLI rotates
+
+    await waitFor(() => readExpiry(accountSourceFile("acct-b")) === 2_000_000_000_000);
   });
 
   it("stops publishing after the watch is stopped", async () => {
@@ -185,6 +255,28 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
     expect(readExpiry(sourceFile())).toBe(1_000);
   });
 
+  it("rebinds the disposed backstop when the same route re-arms on a new runner", async () => {
+    // A watch now outlives its turn, so the container it was armed against can
+    // be destroyed and rebuilt underneath it. Keeping the first binding would
+    // leave the only teardown signal attached to a dead emitter.
+    writeToken(sourceFile(), 1_000);
+    writeToken(sessionFile(), 1_000);
+    const first = new EventEmitter();
+    const second = new EventEmitter();
+
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", runner: first, ...FAST,
+    });
+    startTokenWriteBackWatch({
+      credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", runner: second, ...FAST,
+    });
+
+    first.emit("disposed"); // the retired runner must no longer speak for this session
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+    second.emit("disposed");
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
   it("is idempotent for the same session + route, and re-arms on a route change", async () => {
     writeToken(sourceFile(), 1_000);
     writeToken(accountSourceFile("acct-b"), 1_000);
@@ -198,6 +290,10 @@ describe("session token publisher (docs/153 mid-turn publication)", () => {
     await waitFor(() => readExpiry(sourceFile()) === 2_000_000_000_000);
 
     // A docs/150 account failover repoints the source; the watch must follow.
+    // The subtree follows it too (`ensureSessionAccountCredentials` reprovisions
+    // before the spawn), and the write-back only publishes to the account the
+    // subtree says it holds.
+    markSubtreeAccount("s1", "acct-b");
     startTokenWriteBackWatch({
       credentialsDir: tmpDir, sessionId: "s1", agentId: "claude", accountId: "acct-b", ...FAST,
     });

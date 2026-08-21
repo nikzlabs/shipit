@@ -1,5 +1,6 @@
 import { useState, type RefObject } from "react";
 import { Button } from "../../ui/button.js";
+import { SettingsTabPane } from "../SettingsTabPane.js";
 
 const MAX_LENGTH = 50_000;
 
@@ -33,7 +34,31 @@ export function InstructionsTab({
   const isOverLimit = charCount > MAX_LENGTH;
 
   return (
-    <div className="px-5 py-4 flex flex-col gap-3 overflow-y-auto h-full">
+    <SettingsTabPane
+      bodyClassName="gap-3"
+      footer={
+        <>
+          <Button
+            variant="ghost"
+            size="md"
+            onClick={onClose}
+            className="rounded-md"
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={onSave}
+            disabled={isOverLimit}
+            className="rounded-md"
+            data-testid="settings-save"
+          >
+            Save
+          </Button>
+        </>
+      }
+    >
       {/* Agent system instructions (built-in) */}
       <div className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 space-y-2" data-testid="agent-system-instructions">
         <div className="flex items-center justify-between">
@@ -105,27 +130,6 @@ export function InstructionsTab({
           {charCount.toLocaleString()} / {MAX_LENGTH.toLocaleString()}
         </span>
       </div>
-
-      <div className="flex items-center justify-end gap-2">
-        <Button
-          variant="ghost"
-          size="md"
-          onClick={onClose}
-          className="rounded-md"
-        >
-          Cancel
-        </Button>
-        <Button
-          variant="primary"
-          size="md"
-          onClick={onSave}
-          disabled={isOverLimit}
-          className="rounded-md"
-          data-testid="settings-save"
-        >
-          Save
-        </Button>
-      </div>
-    </div>
+    </SettingsTabPane>
   );
 }

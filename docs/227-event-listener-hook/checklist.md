@@ -1,4 +1,4 @@
-# Checklist — Shared browser event-listener hook (SHI-214)
+# Checklist — Shared browser event-listener hook (planning#216)
 
 ## This PR — prototype the primitive (no migration)
 
@@ -14,8 +14,8 @@
 - [x] Decide the SSE `es.addEventListener` table is out of scope (documented)
 - [x] `npx vitest run` on the new test — green
 - [x] `npm run typecheck` + `eslint` on the new files — clean
-- [x] Create Linear issue (SHI-214) and link it in `plan.md` frontmatter
-- [x] PR with `Refs SHI-212` + `Closes SHI-214`
+- [x] Create Linear issue (planning#216) and link it in `plan.md` frontmatter
+- [x] PR with `Refs planning#214` + `Closes planning#216`
 - [x] Second-opinion review (Codex) + fixes: honor `once`/`passive`/`signal` on add
       (not just `capture`); multi-form key tracks all three booleans; correct the
       `null`-target/ref guidance; expand the call-site audit (now non-exhaustive +

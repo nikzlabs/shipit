@@ -1,6 +1,6 @@
 /**
  * ActionChecklistCard — inline batch-resolve card for agent-proposed optional
- * actions (docs/207 / SHI-153).
+ * actions (docs/207 / planning#155).
  *
  * The agent proposes one or more INDEPENDENT optional follow-ups via the
  * `propose_actions` tool; the user resolves the subset they want with a SINGLE

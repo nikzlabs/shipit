@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import type { SessionManager } from "./sessions.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { sessionStateDir, SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
+import { allocateAndSealSessionDir } from "./session-uid-allocator.js";
+import { chownTreeToSessionWorker } from "./session-worker-uid.js";
 
 // ---- Session directory creation ----
 
@@ -30,11 +32,31 @@ export function createSessionDirFactory(
     const sessionDir = path.join(sessionsRoot, appSessionId);
     const workspaceDir = path.join(sessionDir, SESSION_WORKSPACE_SUBDIR);
     await fs.mkdir(workspaceDir, { recursive: true });
+
     // docs/246 — ShipIt's own generated artifacts live here, a sibling of the
     // clone, so the post-turn `git add -A` can never stage them into the user's
     // repository. Created up front: writers treat it as existing.
     await fs.mkdir(sessionStateDir(sessionDir), { recursive: true });
 
+    // docs/270 — give the session its own uid and seal its directory, before
+    // anything is written INTO it (the clone, the credential scaffold, the first
+    // turn). Order matters in both directions: the mkdirs above must come first
+    // so the handoff below has something to hand over, and this must come before
+    // any content, because every later chown and every dropped orchestrator-side
+    // git resolves the identity by reading this directory's owner.
+    //
+    // Gated on `sessionWorkerGid()`, i.e. on `SHIPIT_SESSION_WORKER_UID`: with
+    // the non-root runtime off (local mode, dogfood, every test) nothing is
+    // allocated and behaviour is byte-for-byte what it was.
+    if (allocateAndSealSessionDir(sessionDir) !== null) {
+      // The directories just created are still `root:root`, and the seal above
+      // is what makes every later chown and every dropped git resolve to the
+      // allocated uid. Leaving them root-owned would mean a session whose RECORD
+      // says one uid and whose contents say another — the state that makes an
+      // unprivileged git EACCES on a tree ShipIt believes is its own. The tree
+      // is empty here, so this is a handful of `lchown`s, not a walk.
+      chownTreeToSessionWorker(sessionDir);
+    }
     sessionManager.track(appSessionId, title, workspaceDir);
     console.log("[server] Created session directory:", sessionDir);
 
@@ -52,10 +74,25 @@ export function createSessionDirFactory(
 export function createBareCacheDirHelper(
   stateDir: string,
 ): (repoUrl: string) => string {
-  const cacheRoot = path.join(stateDir, "repo-cache");
   return (repoUrl: string): string => {
-    return path.join(cacheRoot, repoUrlToHash(repoUrl));
+    return path.join(bareCacheRoot(stateDir), repoUrlToHash(repoUrl));
   };
+}
+
+/**
+ * The directory the per-repo bare caches live IN — `<hash>` children.
+ *
+ * Exported for the one caller that addresses a cache by a hash it did not
+ * compute from a current URL: the docs/262 req 19 boot scrub, which has to find
+ * a directory an OLDER build named after a credentialed URL.
+ */
+export function bareCacheRoot(stateDir: string): string {
+  return path.join(stateDir, "repo-cache");
+}
+
+/** The directory the per-repo dependency caches live IN — see {@link bareCacheRoot}. */
+export function depCacheRoot(stateDir: string): string {
+  return path.join(stateDir, "dep-cache");
 }
 
 /**
@@ -65,8 +102,7 @@ export function createBareCacheDirHelper(
 export function createDepCacheDirHelper(
   stateDir: string,
 ): (repoUrl: string) => string {
-  const depCacheRoot = path.join(stateDir, "dep-cache");
   return (repoUrl: string): string => {
-    return path.join(depCacheRoot, repoUrlToHash(repoUrl));
+    return path.join(depCacheRoot(stateDir), repoUrlToHash(repoUrl));
   };
 }

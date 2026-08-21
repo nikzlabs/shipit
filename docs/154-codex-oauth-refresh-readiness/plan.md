@@ -104,6 +104,14 @@ then repush the rotated token into pinned sessions.
 Same scheduler / single-flight / per-account isolation / file-state delta
 detection / debug-log classification. The Codex-specific pieces:
 
+The terminal source-state semantics do not change: an existing account with a
+missing or unparseable `auth.json` is marked `auth_failed` through the same
+account-qualified persistence and SSE path as revocation. Repeated probes are
+deduplicated, and a later account-scoped `auth_complete` restores the row,
+re-pushes credentials, and rearms refresh even when the healthy token does not
+rotate during the status probe. This is shared behavior because both providers
+use copied account credential sources and the same subscription route selector.
+
 ### 1. Source file location
 
 Codex source lives at `/credentials/.codex/auth.json` (account-aware path:

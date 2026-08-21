@@ -4,7 +4,6 @@ import type {
   FileReview,
   FileReviewType,
   ReviewComment,
-  ReviewCommentSource,
 } from "../shared/types.js";
 
 interface ReviewRow {
@@ -18,6 +17,7 @@ interface ReviewRow {
   created_at: string;
   updated_at: string;
   sent_at: string | null;
+  note: string | null;
 }
 
 interface CommentRow {
@@ -27,13 +27,19 @@ interface CommentRow {
   line: number | null;
   // Legacy columns from migration 7 — retained for back-compat with sent
   // review history (see migration 16). New writes use the selection columns.
+  //
+  // The table also still carries a `source` column ('human' | 'ai'). It is
+  // deliberately neither read nor written here: the AI write path is gone
+  // (docs/203, docs/220), so every comment is human-authored. The column keeps
+  // its `NOT NULL DEFAULT 'human'`, which is what lets the inserts below omit
+  // it — and leaving it in place keeps a downgrade to an older ShipIt (which
+  // still writes it) working.
   section_heading: string | null;
   section_index: number | null;
   quoted_text: string | null;
   context_before: string | null;
   context_after: string | null;
   text: string;
-  source: string;
   created_at: string;
 }
 
@@ -61,7 +67,6 @@ export class FileReviewStore {
           kind: "line",
           line: c.line ?? 0,
           text: c.text,
-          source: c.source as ReviewCommentSource,
         };
       }
       return {
@@ -71,7 +76,6 @@ export class FileReviewStore {
         contextBefore: c.context_before ?? "",
         contextAfter: c.context_after ?? "",
         text: c.text,
-        source: c.source as ReviewCommentSource,
       };
     });
 
@@ -86,6 +90,7 @@ export class FileReviewStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       sentAt: row.sent_at ?? undefined,
+      note: row.note ?? undefined,
     };
   }
 
@@ -168,16 +173,15 @@ export class FileReviewStore {
     reviewId: string,
     line: number,
     text: string,
-    source: ReviewCommentSource = "human",
   ): ReviewComment {
     const id = crypto.randomUUID();
     this.db.prepare(`
       INSERT INTO file_review_comments
-        (id, review_id, kind, line, text, source, created_at)
-      VALUES (?, ?, 'line', ?, ?, ?, ?)
-    `).run(id, reviewId, line, text, source, new Date().toISOString());
+        (id, review_id, kind, line, text, created_at)
+      VALUES (?, ?, 'line', ?, ?, ?)
+    `).run(id, reviewId, line, text, new Date().toISOString());
     this.touchReview(reviewId);
-    return { id, kind: "line", line, text, source };
+    return { id, kind: "line", line, text };
   }
 
   /** Add a selection-anchored comment to a draft review. */
@@ -187,13 +191,12 @@ export class FileReviewStore {
     contextBefore: string,
     contextAfter: string,
     text: string,
-    source: ReviewCommentSource = "human",
   ): ReviewComment {
     const id = crypto.randomUUID();
     this.db.prepare(`
       INSERT INTO file_review_comments
-        (id, review_id, kind, quoted_text, context_before, context_after, text, source, created_at)
-      VALUES (?, ?, 'selection', ?, ?, ?, ?, ?, ?)
+        (id, review_id, kind, quoted_text, context_before, context_after, text, created_at)
+      VALUES (?, ?, 'selection', ?, ?, ?, ?, ?)
     `).run(
       id,
       reviewId,
@@ -201,7 +204,6 @@ export class FileReviewStore {
       contextBefore,
       contextAfter,
       text,
-      source,
       new Date().toISOString(),
     );
     this.touchReview(reviewId);
@@ -212,7 +214,6 @@ export class FileReviewStore {
       contextBefore,
       contextAfter,
       text,
-      source,
     };
   }
 
@@ -233,11 +234,22 @@ export class FileReviewStore {
   }
 
   /** Mark a review as sent. */
-  markSent(reviewId: string): void {
+  /**
+   * Mark a draft sent. Returns false when the row was NOT a draft any more —
+   * the `status = 'draft'` clause is the atomic half of the double-send guard:
+   * `sendReview` checks the status, then awaits file I/O before getting here,
+   * so two concurrent sends both pass that check and only this UPDATE can tell
+   * them apart. The loser gets 0 changes and is rejected (docs/260).
+   */
+  markSent(reviewId: string, note?: string): boolean {
     const now = new Date().toISOString();
-    this.db.prepare(
-      "UPDATE file_reviews SET status = 'sent', sent_at = ?, updated_at = ? WHERE id = ?",
-    ).run(now, now, reviewId);
+    // A whitespace-only note is stored as NULL: "sent without a note" gets one
+    // representation, so readers never have to treat "" and NULL alike.
+    const trimmed = note?.trim();
+    const result = this.db.prepare(
+      "UPDATE file_reviews SET status = 'sent', sent_at = ?, updated_at = ?, note = ? WHERE id = ? AND status = 'draft'",
+    ).run(now, now, trimmed && trimmed.length > 0 ? trimmed : null, reviewId);
+    return result.changes > 0;
   }
 
   /** Delete a draft review and its comments. */

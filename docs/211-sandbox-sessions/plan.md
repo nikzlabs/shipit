@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-161
+issue: planning#163
 title: Sandbox sessions (repo-less, capability-scoped)
 description: Repo-less sessions that start from an empty workspace; the agent clones what it needs, with Git and session-scoped Docker granted as explicit capability toggles at creation.
 ---
@@ -17,7 +17,7 @@ sessions *under* repos.
 That makes cross-repo and multi-PR agent work awkward or impossible: inspect
 repo A while patching repo B, coordinate related PRs, create follow-up PRs
 across repos, or do repo-less scratch/compute work where no single repo should
-own the session (SHI-161).
+own the session (planning#163).
 
 ## Design decision: ShipIt stays out of the repos
 
@@ -36,7 +36,7 @@ privileges.
 
 ### Consciously-dropped acceptance criterion
 
-SHI-161 lists "The UI shows all attached repos/PRs and their status." By this
+planning#163 lists "The UI shows all attached repos/PRs and their status." By this
 design ShipIt intentionally does **not** see what the agent cloned, so that
 criterion is dropped.
 
@@ -48,7 +48,7 @@ workspace* (closer to a terminal than to a repo-bound project): the user opts
 into it from the "advanced session" menu knowing ShipIt won't render the agent's
 repos/PRs. It must therefore **not** be marketed as a full inline multi-PR
 ShipIt workflow — that richer experience (per-repo PR cards, inline status) stays
-a future, separate effort. The narrower SHI-120 "secondary private repo mounting"
+a future, separate effort. The narrower planning#122 "secondary private repo mounting"
 is subsumed: in a Sandbox the agent just clones the private repo itself, given
 GitHub access.
 
@@ -89,7 +89,7 @@ brokering capabilities on request instead of automatically.
     contained* egress is. It only ever **tightens**, never loosens (a Sandbox is
     never wider than a normal session):
     - **On** (default) = the standard Tier A allowlist every session already runs
-      under (docs/172 / SHI-90): default-deny except `EGRESS_DEFAULT_ALLOWLIST`
+      under (docs/172 / planning#92): default-deny except `EGRESS_DEFAULT_ALLOWLIST`
       (LLM API, GitHub, package registries) + user-added hosts, with the Tier C
       "allow this host?" card for anything new. **Not** a wide-open mode — there
       is no fully-open option; the allowlist *is* the default.
@@ -203,7 +203,7 @@ So a Sandbox needs a **repo-aware PR broker**:
 - The `/agent-ops/pr/*` routes build their `GitManager`/remote from that resolved
   clone, not `session.remoteUrl`.
 - The token still never reaches the agent — brokering and the
-  per-repo-scoped-token path (SHI-79) are preserved; we widen *which* repo the
+  per-repo-scoped-token path (planning#81) are preserved; we widen *which* repo the
   broker may act on (any repo the user can access) but keep the no-raw-token
   property.
 
@@ -245,7 +245,7 @@ across idle container destruction** (the "re-clone from git" only happens at
 initial claim; idle eviction preserves the dir for resume). So a Sandbox keeps
 whatever the agent cloned/created between turns. The only reaper is the opt-in
 archived-workspace sweep, which touches *archived* sessions only. This satisfies
-SHI-161's "artifacts and logs remain discoverable even when no repo is attached."
+planning#163's "artifacts and logs remain discoverable even when no repo is attached."
 
 ### The session banner is derived chrome, not a chat card
 
@@ -272,7 +272,7 @@ access**, and **Network access** toggles plus inline docs on what each grants an
 limitations (no preview, no PR card). This centralizes the privileged-session
 story in one discoverable place and leaves the normal repo-claim flow untouched.
 
-- "Start a session from chat without choosing a repo" (SHI-161 acceptance) ⇒
+- "Start a session from chat without choosing a repo" (planning#163 acceptance) ⇒
   Sandbox with both toggles is a one-click empty session.
 
 ### Session-switch isolation
@@ -291,7 +291,7 @@ during the switch. Regression contracts live in `session-actions.test.ts` and
 - **GitHub access is a real trust expansion.** With `git` granted, the broker can
   act on **any repo the user can access**, not a single bound repo. There is no
   cross-repo credential *inheritance* (the agent never holds a raw token; ops are
-  brokered, repo-scoped per SHI-79) — but the *blast radius* widens from one repo
+  brokered, repo-scoped per planning#81) — but the *blast radius* widens from one repo
   to the user's whole reachable set. Surfaced explicitly in the creation dialog.
 - **"GitHub access off" ≠ network-sealed.** It removes the GitHub credential
   broker (no token, no push to the user's repos), but the container still has its
@@ -385,6 +385,12 @@ What shipped, and where it diverged from the sketch above:
   before constructing a `GitManager`, which suppresses auto-commit, auto-push, and
   (being downstream of a commit hash) the PR card — all keyed on `kind`, not
   `remoteUrl`. `PostTurnCtx` gained `sessionManager` for the lookup.
+
+  **Widened since** (docs/128 §4b): the rule now lives in
+  `services/auto-commit-gate.ts` and covers `ops` as well as `sandbox`, and every
+  *other* automatic commit path consults it too — the turn executor's fallback
+  commit, a late sub-agent consult, a UI file edit, and the commit-before-disk-
+  eviction. `postTurnCommit` is one of five consult sites, not the whole gate.
 - **Branch-op shim.** Turned off via a `SHIPIT_SANDBOX=1` CLI env the orchestrator
   sets for sandbox sessions (a `sandbox` flag threaded
   buildAgentRunParams → Claude run-params-prep → adapter → `ClaudeProcess` spawn

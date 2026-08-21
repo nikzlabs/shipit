@@ -18,9 +18,15 @@ import {
   CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
-import { CONTAINER_WORKSPACE_DIR, DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
+import {
+  CONTAINER_PLUGIN_STORE_DIR,
+  CONTAINER_WORKSPACE_DIR,
+  DEP_CACHE_CONTAINER_PATH,
+} from "../shared/fs-constants.js";
+import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
+  INSTALL_MARKER_FILE,
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
 } from "./session-state-dir.js";
@@ -32,12 +38,20 @@ import {
   perSessionCredentialsDir,
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
-import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
-import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
+import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
+import {
+  preStampInstallMarker,
+  sortOverlayDepDirs,
+  supersededSessionOverlayLayers,
+  type DepDirOverlaySpec,
+} from "./overlay-session.js";
 import {
   chownToSessionWorker,
   handWorkspaceBackToWorker,
   reconcileDepDirCacheOwnership,
+  sessionWorkerGid,
+  shareTreeOnce,
+  identityForTarget,
 } from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import {
@@ -59,6 +73,7 @@ import {
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { readonlyRootfsTmpfs } from "./container-hardening.js";
 import { generateWorkerToken, setWorkerAuthToken, clearWorkerAuthToken } from "./worker-auth.js";
+import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -100,7 +115,7 @@ export interface LifecycleDeps {
   dockerProxyHost?: string;
   dockerProxyPort?: number;
   /**
-   * docs/172 Gap 1 (SHI-90) — Tier A egress enforcement. When `egressEnforce` is
+   * docs/172 Gap 1 (planning#92) — Tier A egress enforcement. When `egressEnforce` is
    * true, after the agent container starts a privileged installer sidecar is run
    * in its netns to apply the default-deny iptables/ipset firewall (using
    * `egressSidecarImage`). Both come from `SESSION_EGRESS_ENFORCE` /
@@ -109,21 +124,21 @@ export interface LifecycleDeps {
   egressEnforce?: boolean;
   egressSidecarImage?: string;
   /**
-   * docs/172 Tier B (SHI-90) — controlled DNS. When true (requires
+   * docs/172 Tier B (planning#92) — controlled DNS. When true (requires
    * `egressEnforce`), the agent's resolv.conf is pointed at an in-netns dnsmasq
    * resolver that forwards only allowlisted domains (closing DNS tunneling) and
    * pins resolved IPs into the egress ipset. From `SESSION_EGRESS_DNS=1`.
    */
   egressDns?: boolean;
   /**
-   * docs/172 Tier C (SHI-90) — transparent SNI proxy. When true (requires
+   * docs/172 Tier C (planning#92) — transparent SNI proxy. When true (requires
    * `egressDns`), a long-lived SNI-peek proxy is launched in the agent's netns
    * and the installer REDIRECTs the agent's :443 to it for hostname-level HTTPS
    * policy (closing the CDN co-tenancy gap). From `SESSION_EGRESS_PROXY=1`.
    */
   egressProxy?: boolean;
   /**
-   * docs/172 (SHI-90) — per-session egress configuration resolved at container
+   * docs/172 (planning#92) — per-session egress configuration resolved at container
    * start from the durable allowlist store + live MCP credential store. Lets the
    * browser global toggle / per-session override govern whether THIS session is
    * contained (so "Open mode" skips the firewall install entirely) and feeds the
@@ -141,7 +156,7 @@ export interface LifecycleDeps {
    */
   reopenJoinedEgress?: (sessionId: string) => Promise<void>;
   /**
-   * docs/172 Gap 5 (SHI-97) — kernel-tier hardening, all env-gated default-OFF
+   * docs/172 Gap 5 (planning#99) — kernel-tier hardening, all env-gated default-OFF
    * (resolved in session-container.ts from `container-hardening.ts`). Omitted in
    * tests / when the operator hasn't opted in → byte-for-byte unchanged.
    *
@@ -226,6 +241,81 @@ export const JAVA_HOME = "/opt/java";
  */
 export const PNPM_STORE_CONTAINER_PATH = "/workspace/.pnpm-store";
 
+/**
+ * Create the shared pnpm store dir on the host and hand it to the session-worker
+ * UID, before any container mounts it. Returns whether the store is safe to
+ * mount — `false` means the caller must drop the mount (planning#2286).
+ *
+ * The chown is the load-bearing half. Every OTHER writable mount is handed over
+ * by the entrypoint's chown loop (`docker/session-worker/entrypoint.sh`), which
+ * stamps a `.shipit-uid-<uid>` sentinel into each one. The pnpm store is not in
+ * that loop and cannot be: it is mounted NESTED at `/workspace/.pnpm-store`, so
+ * it is only ever chowned as collateral of the `chown -R /workspace` walk — and
+ * that walk is sentinel-gated on the WORKSPACE, whose sentinel is stamped on the
+ * session's first boot. The walk does traverse the nested mount, so a store that
+ * is already mounted at that first boot gets handed over; what the loop never
+ * does is REVISIT the store once the workspace sentinel exists. A store dir
+ * created after that boot — a container recreated post-idle, a runtime-key
+ * rotation, a janitor sweep that reclaimed the previous store — is therefore
+ * never walked, and stays `root:root` from this very `mkdirSync`. The agent runs
+ * as `SHIPIT_SESSION_WORKER_UID` with no `sudo`, and the dir is a mount point it
+ * can neither chown nor remove, so `pnpm install` dead-ends on
+ * `EACCES: permission denied, mkdir '/workspace/.pnpm-store/…'` with no
+ * in-session recovery.
+ *
+ * Chowning here instead makes the handoff unconditional — it runs on every
+ * container create, so it also repairs a store left root-owned by an earlier
+ * build. Two properties are deliberate:
+ *
+ *  - **Verified, not best-effort.** `chownToSessionWorker` logs and swallows a
+ *    failure, which is right for the writers it was built for (a stale credential
+ *    file is repaired by the next sync). Here the same swallow would reproduce
+ *    the unrecoverable EACCES this function exists to prevent. So we re-`lstat`
+ *    and report the truth, and the caller mounts nothing it could not hand over:
+ *    pnpm then falls back to relocating its store into the workspace
+ *    (`.pnpm-store`, already in the template gitignore) — per-session and slower,
+ *    but working, which a root-owned mount is not.
+ *  - **Marker-gated for the contents, not blanket-recursive.** This used to be
+ *    flatly non-recursive, justified by "the next boot's `chown -R /workspace`
+ *    walks the nested store and repairs the contents". docs/270 falsified that
+ *    in the same breath as it needed it: `chown_workspace()` now `-prune`s
+ *    `.pnpm-store`, so nothing walks the contents at all. That left an upgraded
+ *    deployment with a store whose entries carry the OLD gid and `0755`/`0644`,
+ *    which a session at an allocated uid can read and cannot add to — `pnpm`
+ *    EACCESes writing into an existing fanout directory, and (with
+ *    `protected_hardlinks=1`) cannot even link an existing store file into
+ *    `node_modules`. `shareTreeOnce` walks it exactly once per gid and costs one
+ *    `existsSync` on every create after that, which keeps the hot path the
+ *    reason the walk was avoided in the first place.
+ */
+export function ensurePnpmStoreDir(storeDir: string): boolean {
+  try {
+    fs.mkdirSync(storeDir, { recursive: true });
+  } catch (err) {
+    console.warn(`[containers] pnpm store mkdir failed for ${storeDir}:`, err);
+    return false;
+  }
+  const gid = sessionWorkerGid();
+  if (gid === null) return true; // legacy root runtime — the worker owns everything
+  // docs/270 — the store is shared per runtime across sessions, so it is handed
+  // over by GROUP, not by owner. Chowning it to one session's uid would take it
+  // from every other session, which is the failure this dir's own docstring
+  // describes (an EACCES with no in-session recovery) arriving by a new route.
+  // The verification below follows: the property that matters is now the group.
+  //
+  // `shareTreeOnce`, not `shareWithAllSessions`: the dir itself is not enough
+  // when the store was POPULATED under a previous identity, and no other code
+  // path walks its contents any more (see the docstring). The marker keeps that
+  // walk to once per gid.
+  shareTreeOnce(storeDir);
+  try {
+    return fs.lstatSync(storeDir).gid === gid;
+  } catch (err) {
+    console.warn(`[containers] pnpm store ownership check failed for ${storeDir}:`, err);
+    return false;
+  }
+}
+
 export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
@@ -277,7 +367,7 @@ export function buildMounts(
   }
 
   // Mount the uploads directory for user-uploaded files **read-only**
-  // (docs/172 Gap 6 / SHI-45). The agent has no legitimate write need under
+  // (docs/172 Gap 6 / planning#47). The agent has no legitimate write need under
   // /uploads — uploads are produced by the user from the browser, the agent
   // only consumes them — so a `:ro` mount removes the ability for a
   // prompt-injected agent to delete or tamper with the user's uploads. This is
@@ -342,6 +432,33 @@ export function buildMounts(
     });
   } else {
     binds.push(`${sessionSharedStateDir(config.sessionStateDir)}:${CONTAINER_SESSION_STATE_DIR}:rw`);
+  }
+
+  // docs/262 — the session's plugin root, mounted READ-ONLY. `/plugins/<name>`
+  // symlinks resolve through it, so the agent can browse a plugin but cannot
+  // edit one from the consuming session (req 7). There is deliberately NO
+  // writable view of this at any path: an earlier revision added one so an
+  // in-container install could write `node_modules`, which made the read-only
+  // guarantee decorative. Plugin code that writes runs in its own container
+  // against an overlay volume instead (plan §1b).
+  //
+  // Mounting each generation directly would have been simpler and wrong:
+  // Docker resolves a bind source's symlinks at creation, which would pin
+  // whichever generation was live when the session opened and leave refresh
+  // (req 12) invisible until the container was recreated. Mounting the ROOT
+  // keeps both hops — `<name>/active` → `generations/<sha>` — inside the
+  // container, where they resolve per access.
+  const hostPluginsRoot = pluginsRoot(config.sessionStateDir);
+  if (workspaceVolume) {
+    mounts.push({
+      Type: "volume",
+      Source: workspaceVolume,
+      Target: CONTAINER_PLUGIN_STORE_DIR,
+      ReadOnly: true,
+      VolumeOptions: { Subpath: hostPluginsRoot.replace(/^\/workspace\//, "") },
+    });
+  } else {
+    binds.push(`${hostPluginsRoot}:${CONTAINER_PLUGIN_STORE_DIR}:ro`);
   }
 
   // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded
@@ -438,7 +555,7 @@ export function buildEnv(
     `WORKSPACE_DIR=${workspaceDir}`,
     // docs/246 — where the worker writes the install marker: the mounted slice
     // of the session's state dir, never a path inside the clone. Every session
-    // gets the mount (SHI-286 removed the un-mountable flat layout), so this is
+    // gets the mount (planning#288 removed the un-mountable flat layout), so this is
     // unconditional and the worker can rely on the directory existing.
     `SHIPIT_SESSION_STATE_DIR=${CONTAINER_SESSION_STATE_DIR}`,
     `WORKER_PORT=${workerPort}`,
@@ -476,7 +593,41 @@ export function buildEnv(
   // own default (1000) still applies in-image, and orchestrator-side chowns are
   // no-ops, preserving today's behavior.
   if (procEnv.SHIPIT_SESSION_WORKER_UID) {
-    env.push(`SHIPIT_SESSION_WORKER_UID=${procEnv.SHIPIT_SESSION_WORKER_UID}`);
+    // docs/270 — the UID is now per-session and the GID is the shared one. The
+    // identity is read from the session's own directory (the record the session
+    // cannot write), so a session created before docs/270 resolves to the shared
+    // value and its container boots exactly as it did. Both are forwarded: the
+    // entrypoint needs the pair, because `gosu <uid>:<gid>` and the chown loop
+    // can no longer assume they are equal.
+    const identity = identityForTarget(config.workspaceDir);
+    const uid = identity?.uid ?? procEnv.SHIPIT_SESSION_WORKER_UID;
+    const gid = identity?.gid ?? procEnv.SHIPIT_SESSION_WORKER_UID;
+    env.push(`SHIPIT_SESSION_WORKER_UID=${uid}`);
+    env.push(`SHIPIT_SESSION_WORKER_GID=${gid}`);
+    // planning#415 — forward the resolved `agent.dep-dirs` (colon-separated,
+    // the PATH convention) so the entrypoint's workspace chown can PRUNE them
+    // exactly like this side's worktree walk does
+    // (`chownWorktreeToSessionWorker`'s `excludeRelDirs`). The entrypoint has
+    // no other way to learn the list: shipit.yaml lives in the workspace, but
+    // the entrypoint is POSIX sh and the config is resolved — validated,
+    // defaulted — here. Without the prune, the entrypoint's walk chowns a dep
+    // dir mounted as a docs/183 overlay entry-by-entry, and `chown` sets
+    // ATTR_UID even when the value does not change, so overlayfs answers with
+    // a copy-up of each shared-base file into the session's private upper
+    // layer. Forwarded only alongside the uid because the entrypoint reads it
+    // solely on the non-root path; an explicitly empty resolved list
+    // (`agent.dep-dirs: []`) forwards nothing, which the entrypoint reads as
+    // "no dep dirs" — the same prune set as an orchestrator that predates
+    // this change.
+    let depDirs: string[];
+    try {
+      depDirs = resolveShipitConfig(config.workspaceDir).agent.depDirs;
+    } catch {
+      depDirs = [...DEFAULT_DEP_DIRS];
+    }
+    if (depDirs.length > 0) {
+      env.push(`SHIPIT_DEP_DIRS=${depDirs.join(":")}`);
+    }
   }
 
   // docs/183 — forward the session-worker image id so the worker's
@@ -492,7 +643,7 @@ export function buildEnv(
     env.push(`SESSION_WORKER_IMAGE_ID=${workerImageId}`);
   }
 
-  // SHI-194 — forward the pinned base-image digest so the worker's install-runtime
+  // planning#196 — forward the pinned base-image digest so the worker's install-runtime
   // `runtimeKey()` (the install-marker ABI gate) keys on the SAME base digest the
   // orchestrator's `overlayRuntimeKey()` scope uses. The worker image also bakes
   // `BASE_IMAGE_DIGEST` as an ENV, so this forward is normally identical to the
@@ -587,14 +738,14 @@ export async function waitForWorkerHealth(workerUrl: string): Promise<void> {
 /**
  * Create the orchestrator-visible lower/upper/work dirs an overlay spec needs
  * before the daemon mounts it, and hand the per-session dirs to the worker uid
- * (docs/183 × docs/150, SHI-145).
+ * (docs/183 × docs/150, planning#147).
  *
  * The daemon's `mount -t overlay` fails with ENOENT unless lowerdir, upperdir AND
  * workdir all exist, and nothing else creates them: a cold scope has no published
  * base yet (no `overlay-base/<hash>/`; an empty `g0` lowerdir is a valid cold
  * start), and the per-session upper/work dirs are born here.
  *
- * **The ownership handoff (SHI-145).** These dirs are created by the **root**
+ * **The ownership handoff (planning#147).** These dirs are created by the **root**
  * orchestrator, but the non-root worker (uid `SHIPIT_SESSION_WORKER_UID`) is what
  * writes through the merged mount. overlayfs creates a new upper file with the
  * fsuid of the writing process, so the worker can only `npm install` a NEW dep if
@@ -606,18 +757,111 @@ export async function waitForWorkerHealth(workerUrl: string): Promise<void> {
  * populated base generation is made worker-owned at publish time (the base
  * materialization's recursive chown), so copy-up of an existing dep preserves
  * worker ownership and stays writable.
+ *
+ * **Superseded-generation reset (the ops finding of 2026-08-17).** The per-session
+ * upper/work dirs are keyed by the base generation they were built against
+ * (`sessionOverlayGenDir`), so a session that slept through a publish arrives here
+ * with its previous `g<M>/` still on disk beside the `g<N>/` it is about to mount.
+ * Those bytes are only meaningful over the lower that produced them — carrying them
+ * across gave the prod host its `overlayfs: failed to get index nlink (…, err=-61)`
+ * warnings and, worse, a merged dep tree torn between two generations. They are a
+ * pure install-delta cache, so they are simply reaped.
+ *
+ * **The install marker goes with them**, for the reason `reclaimBlockedSessionCaches`
+ * documents (planning#296): after the reset the session's dep dir remounts over a
+ * *populated* base, so it is not present-but-EMPTY, `overlay-dep-check.ts` sees no
+ * contradiction, and a still-matching marker would skip `agent.install` — leaving
+ * the session with the base's deps and none of its own. Removed marker FIRST, same
+ * ordering rule: a half-failure must land on "no marker, deps present" (a harmless
+ * extra install), never "marker present, deps gone". `preStampInstallMarker` then
+ * re-stamps post-start if the NEW generation genuinely satisfies this checkout, so
+ * the base-hit fast path survives a rotation instead of paying a full install.
  */
-export function prepareOverlayDirs(specs: DepDirOverlaySpec[] | undefined): void {
+export function prepareOverlayDirs(
+  specs: DepDirOverlaySpec[] | undefined,
+  opts: { workspaceDir?: string; sessionId?: string } = {},
+): void {
   if (!specs) return;
+  const tag = opts.sessionId ? `[overlay:${opts.sessionId}]` : "[overlay]";
+  const superseded = specs.flatMap((spec) =>
+    spec.orchDirs
+      ? supersededSessionOverlayLayers(spec.orchDirs.sessionScopeDir, spec.generation)
+      : [],
+  );
+  if (superseded.length > 0) {
+    // Marker first — see the ordering rule in the docstring.
+    if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir);
+    for (const dir of superseded) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        // Best-effort: a leftover upper we could not remove is disk, not
+        // correctness — the mount below pins the new generation's own dirs.
+        console.warn(
+          `${tag} could not reap superseded session upper ${dir}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    const markerNote = opts.workspaceDir
+      ? " and dropped the install marker so agent.install re-validates over the new base"
+      : "";
+    console.log(
+      `${tag} base generation rotated — reset ${superseded.length} superseded upper layer(s)${markerNote}`,
+    );
+  }
   for (const spec of specs) {
     if (!spec.orchDirs) continue;
     fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
     fs.mkdirSync(spec.orchDirs.upperdir, { recursive: true });
     fs.mkdirSync(spec.orchDirs.workdir, { recursive: true });
+    // docs/270 req 9 — a base generation PUBLISHED BEFORE this deployment gained
+    // a shared gid is owned `<old-uid>:<old-gid>` with `0644` files, and nothing
+    // else ever revisits it: `publishBase` shares only the generation it is
+    // creating. overlayfs copy-up preserves the lower file's owner AND mode, so
+    // a session at an allocated uid copies up an unwritable file and EACCESes on
+    // its first edit of an inherited dependency — precisely the bug docs/183's
+    // chown exists to prevent, reintroduced for every pre-upgrade generation.
+    // Marker-gated so the walk happens once per generation per gid; it lives
+    // beside the generation, never inside it, because the generation is mounted
+    // as the user's `node_modules` lower layer.
+    shareTreeOnce(spec.orchDirs.lowerdir, { beside: true });
     // Hand the per-session copy-on-write dirs to the worker uid so the agent's
     // `npm install` of a new dep lands in the upper as the worker, not root.
+    chownToSessionWorker(path.dirname(spec.orchDirs.upperdir));
     chownToSessionWorker(spec.orchDirs.upperdir);
     chownToSessionWorker(spec.orchDirs.workdir);
+    // docs/272 — the upperdir's own mode IS the merged dep dir's mode (overlayfs
+    // takes the merged root from the upper once it exists), so a Compose service
+    // at a different uid can only create its `node_modules/.vite`-style cache if
+    // this dir is group-writable. `selfHealWorkspaceOwnership` asserts that on
+    // every boot, but it runs BEFORE this function — so on a rotation it sees an
+    // upperdir that does not exist yet and the freshly-mkdir'd one would stay at
+    // the umask default until the boot after. Idempotent and O(1) on an empty
+    // dir; a no-op in the legacy root runtime.
+    reconcileDepDirCacheOwnership(spec.orchDirs.upperdir);
+  }
+}
+
+/**
+ * Drop this session's `.install-done` marker because its overlay lower rotated
+ * under it (see {@link prepareOverlayDirs}). Best-effort and never throws — a
+ * marker we failed to remove costs a skipped install we would rather have run,
+ * which the worker's own gate (`overlay-dep-check.ts`) still backstops for the
+ * empty-dep-dir case; throwing here would fail container creation outright.
+ */
+function removeInstallMarkerForRotation(workspaceDir: string): void {
+  try {
+    const markerFile = path.join(
+      sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
+      INSTALL_MARKER_FILE,
+    );
+    fs.rmSync(markerFile, { force: true });
+  } catch (err) {
+    console.warn(
+      "[overlay] could not drop the install marker after a base-generation rotation:",
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 
@@ -744,9 +988,20 @@ export async function createContainer(
     fs.mkdirSync(config.depCacheDir, { recursive: true });
   }
 
-  // docs/197 Part 2 — create the shared pnpm store dir lazily before mounting it.
-  if (config.pnpmStoreDir) {
-    fs.mkdirSync(config.pnpmStoreDir, { recursive: true });
+  // docs/197 Part 2 — create the shared pnpm store dir lazily before mounting it,
+  // and hand it to the worker uid (planning#2286). A store we could not hand over
+  // must not be mounted at all: a root-owned mount point is unrecoverable from
+  // inside the container, whereas dropping it just costs the session the SHARED
+  // store — pnpm relocates into the workspace's own `.pnpm-store` instead. Drop
+  // it before `buildMounts`/`buildEnv` so the mount and `npm_config_store_dir`
+  // can never disagree about whether the store exists.
+  if (config.pnpmStoreDir && !ensurePnpmStoreDir(config.pnpmStoreDir)) {
+    console.warn(
+      `[containers] could not hand pnpm store ${config.pnpmStoreDir} to the session-worker uid; ` +
+        `skipping the shared-store mount for ${config.sessionId} — pnpm will use its own ` +
+        `per-session store (slower, still correct)`,
+    );
+    config = { ...config, pnpmStoreDir: undefined };
   }
 
   // docs/138 — create the session's private credentials subtree before the
@@ -761,6 +1016,20 @@ export async function createContainer(
   } catch (err) {
     console.warn(
       `[containers] credentials scaffold failed for ${config.sessionId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  // docs/262 — create the plugin root before the two mounts reference it.
+  // Activation creates it lazily, and a session with no plugins never has one
+  // at all; letting Docker auto-create the missing bind source would leave a
+  // root-owned directory that the non-root worker cannot write into, breaking
+  // the install runner for every session that later declares a plugin.
+  try {
+    fs.mkdirSync(pluginsRoot(config.sessionStateDir), { recursive: true });
+  } catch (err) {
+    console.warn(
+      `[containers] plugin root scaffold failed for ${config.sessionId}:`,
       err instanceof Error ? err.message : String(err),
     );
   }
@@ -795,7 +1064,7 @@ export async function createContainer(
     env.push("SHIPIT_SKIP_WORKSPACE_CHOWN=1");
   }
 
-  // docs/172 Gap 5 (SHI-97) — under a read-only rootfs, /home/shipit is a tmpfs
+  // docs/172 Gap 5 (planning#99) — under a read-only rootfs, /home/shipit is a tmpfs
   // (see readonlyRootfsTmpfs) which shadows the image-baked credential symlinks
   // (`.claude`→/credentials, etc.). Signal the non-root entrypoint to re-create
   // them into the tmpfs HOME before it gosu-drops. No-op when readonly-rootfs is
@@ -808,7 +1077,7 @@ export async function createContainer(
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
-  // SHI-311 — the per-container secret the worker requires on every call that
+  // planning#313 — the per-container secret the worker requires on every call that
   // doesn't come from its own loopback, i.e. every orchestrator call. Fresh per
   // container so a token learned in one session opens nothing in another; the
   // container env is the source of truth, so an orchestrator restart re-reads it
@@ -883,6 +1152,15 @@ export async function createContainer(
     // docs/183 dep-dir design — recorded so destroyContainer can `docker volume
     // rm` each per-session overlay volume on teardown (and the failure path below).
     overlayVolumeNames: config.overlaySpecs?.map((s) => s.volumeName),
+    // #2426 — what the compose path mounts, so it never has to re-derive
+    // eligibility from a workspace that has moved on since. See the field doc.
+    // Sorted for the reason `sortOverlayDepDirs` documents: this list's ORDER is
+    // part of the compose override's bytes, and the adoption path records the
+    // same set from a source whose order is not ours. The two must agree, or a
+    // session alternating between created and rediscovered rewrites the override
+    // — and recreates every compose service — on each transition.
+    overlayDepDirs: config.overlaySpecs
+      && sortOverlayDepDirs(config.overlaySpecs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }))),
   };
   deps.containers.set(config.sessionId, sc);
 
@@ -913,11 +1191,40 @@ export async function createContainer(
     // orchestrator-visible twins (`orchDirs`, same volume via stateDir — the spec's
     // own paths are daemon-host paths the orchestrator container cannot reach) AND
     // hands the per-session upper/work dirs to the worker uid so the non-root agent
-    // can `npm install` into the overlay (SHI-145).
+    // can `npm install` into the overlay (planning#147).
     if (config.overlaySpecs) {
-      prepareOverlayDirs(config.overlaySpecs);
+      // `workspaceDir` lets the rotation reset drop this session's install
+      // marker along with the superseded upper — see prepareOverlayDirs.
+      prepareOverlayDirs(config.overlaySpecs, {
+        workspaceDir: config.workspaceDir,
+        sessionId: config.sessionId,
+      });
+      // The ops finding of 2026-08-19. `prepareOverlayDirs` has just DELETED the
+      // superseded generation's upper/work, so every volume whose opts still name
+      // it must be recreated — and a volume cannot be removed while a container
+      // mounts it (409). The session's Compose siblings mount exactly these
+      // volumes, and on the restart-agent path (docs/127) they are deliberately
+      // left running, so the removal failed, `createVolume` returned the existing
+      // volume with its stale opts, and the session ran on an overlay whose upper
+      // layer no longer existed on the host: writes ENOENT'd, `agent.install`
+      // failed, and gated compose services never started. `releaseHolders` lets
+      // the create tear those siblings down — re-derived on every attempt,
+      // because an unrelated compose reconcile can mint a new holder at any
+      // moment (operator finding) — and verify the result instead of trusting it.
       for (const spec of config.overlaySpecs) {
-        await createOverlayVolume(deps.docker, spec, deps.baseLabels());
+        const { releasedHolders } = await createOverlayVolume(
+          deps.docker,
+          spec,
+          deps.baseLabels(),
+          { releaseHolders: true, sessionId: config.sessionId },
+        );
+        // Those siblings are gone now, and nothing else brings them back: the
+        // dep-dir SET is unchanged, so the compose path's own "did the overlay
+        // change?" test says no and skips the reconcile. Record it so
+        // `applyOverlayDepDirs` asks for one anyway — a service container freezes
+        // its mounts at create time, so the recreate is the only way it can ever
+        // see the new generation.
+        if (releasedHolders.length > 0) sc.overlayVolumesRecreated = true;
       }
     }
 
@@ -958,7 +1265,7 @@ export async function createContainer(
         // affects only this session — least privilege (no Privileged installer).
         // Gated on Tier C (egressProxy); unset otherwise so Tier A/B are unchanged.
         Sysctls: deps.egressProxy ? { "net.ipv4.conf.all.route_localnet": "1" } : undefined,
-        // docs/172 Gap 5 (SHI-97) — kernel-tier hardening, all env-gated
+        // docs/172 Gap 5 (planning#99) — kernel-tier hardening, all env-gated
         // default-OFF (see container-hardening.ts). With every flag unset this
         // is byte-for-byte the prior config: no Runtime override (Docker default
         // runc), SecurityOpt: ["no-new-privileges"], ReadonlyRootfs: false, no
@@ -1000,6 +1307,22 @@ export async function createContainer(
     // correctly attributed instead of being mistaken for a stale event.
     sc.id = container.id;
 
+    // nikzlabs/shipit#2495 — the SECOND verification, and the one that closes the
+    // window. `createOverlayVolume` above verified each volume at creation and
+    // nothing re-checked it after; the container is only built with these mounts
+    // here, ~twenty lines later. A volume removed inside that window does not fail
+    // `createContainer` — Docker silently auto-creates a plain, empty, root-owned
+    // one under the same name — and the session then boots with a dep dir its own
+    // uid cannot write, permanently. Checked before `start()` so the catch below
+    // still owns the cleanup (container removed, then every overlay volume,
+    // INCLUDING the plain impostor — leaving it would make the retry reuse it).
+    // See assertOverlayVolumesMatch for the full failure account.
+    if (config.overlaySpecs && config.overlaySpecs.length > 0) {
+      await assertOverlayVolumesMatch(deps.docker, config.overlaySpecs, {
+        sessionId: config.sessionId,
+      });
+    }
+
     await container.start();
 
     // Get the container's IP on the bridge network
@@ -1013,17 +1336,17 @@ export async function createContainer(
 
     sc.containerIp = networkInfo.IPAddress;
     sc.workerUrl = `http://${sc.containerIp}:${deps.workerPort}`;
-    // SHI-311 — bind the token to the base URL the transports key off. Done the
+    // planning#313 — bind the token to the base URL the transports key off. Done the
     // moment the URL is known, before anything can dial it.
     setWorkerAuthToken(sc.workerUrl, sc.workerToken);
 
-    // docs/172 Gap 1 (SHI-90) Tier A — install the default-deny egress firewall
+    // docs/172 Gap 1 (planning#92) Tier A — install the default-deny egress firewall
     // into the agent's netns via a privileged sidecar, BEFORE the container is
     // declared ready (no user turn has run yet, so the injected-agent surface
     // doesn't exist until after this point). Fail-closed: if the firewall can't
     // be installed we throw, and the catch below tears the container down rather
     // than run it with unrestricted egress. Gated on the flag → default no-op.
-    // docs/172 (SHI-90) — the browser global toggle / per-session override can
+    // docs/172 (planning#92) — the browser global toggle / per-session override can
     // turn containment OFF for a session ("Open mode — stop babysitting"); when
     // it does we skip the firewall install entirely. The composed extra-host
     // allowlist (operator extras + live MCP hosts + durable user allowlist) is
@@ -1076,12 +1399,12 @@ export async function createContainer(
       // session label so cleanupSessionDockerResources tears it down on destroy,
       // PLUS a distinct EGRESS_RESOLVER_LABEL so the compose pre-start stale-sweep
       // (killStaleContainers) doesn't mistake this long-lived sidecar for a stale
-      // compose container and SIGKILL it (docs/172 Bug-2 fix, SHI-90).
+      // compose container and SIGKILL it (docs/172 Bug-2 fix, planning#92).
       if (deps.egressDns) {
         const configB64 = buildResolverConfigB64({
           // Ops sessions additionally need their docker-socket-proxy compose
           // alias forwarded to Docker's embedded DNS — without it the Tier B
-          // resolver REFUSES DOCKER_HOST by name (SHI-90 Tier B host verification).
+          // resolver REFUSES DOCKER_HOST by name (planning#92 Tier B host verification).
           internalDomains: sessionInternalNames({ opsSession: config.opsSession }),
           extraDomains: egressCfg.extraHosts,
           ...(egressCfg.base ? { base: egressCfg.base } : {}),
@@ -1090,7 +1413,7 @@ export async function createContainer(
           agentContainerId: container.id,
           sidecarImage: deps.egressSidecarImage,
           configB64,
-          labels: { ...egressLabels, [EGRESS_RESOLVER_LABEL]: config.sessionId },
+          labels: { ...egressLabels, [EGRESS_RESOLVER_LABEL]: config.sessionId, "shipit-egress-parent": container.id },
         });
       }
       // Tier C: launch the SNI proxy into the agent's netns (after the resolver,
@@ -1111,7 +1434,7 @@ export async function createContainer(
           sessionId: config.sessionId,
           decisionUrl,
           ...(egressCfg.identityRules ? { identityRules: egressCfg.identityRules } : {}),
-          labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId },
+          labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId, "shipit-egress-parent": container.id },
         });
       }
       const dnsNote = deps.egressDns ? " + Tier B controlled resolver" : "";
@@ -1181,7 +1504,7 @@ export async function createContainer(
     // them — the agent container itself isn't parent-session-labeled, so the
     // explicit stop/remove around the cleanup is still required.
     deps.containers.delete(config.sessionId);
-    // SHI-311 — same reasoning as destroyContainer: the URL may already be
+    // planning#313 — same reasoning as destroyContainer: the URL may already be
     // registered (the throw can come after the IP was resolved), and this
     // container is going away.
     clearWorkerAuthToken(sc.workerUrl);
@@ -1217,6 +1540,18 @@ export async function createContainer(
     // docs/183 dep-dir design — drop every per-session overlay volume we created
     // above so a failed create doesn't leak them. The disk-janitor orphan-volume
     // sweep is the backstop, but reclaim eagerly here.
+    //
+    // Two properties here are LOAD-BEARING for the #2495 verification above, not
+    // incidental. **It must run after the container removal** a few lines up: a
+    // `volume rm` while a container still references the volume is a 409, which
+    // `removeOverlayVolume` swallows by design — reorder these and the impostor
+    // silently survives. And **it must reclaim by `sc.overlayVolumeNames`**, every
+    // name the specs ASKED for rather than every volume we successfully created,
+    // because the volume the verification rejects is precisely the one this path
+    // did not create: the plain one Docker conjured under an overlay-intended
+    // name. (`createOverlayVolume`'s converge loop would also repair it on the
+    // next attempt — this is what keeps it from sitting on disk in between, and
+    // on the paths where there is no next attempt.) Do not narrow the list.
     if (sc.overlayVolumeNames) {
       for (const name of sc.overlayVolumeNames) {
         await removeOverlayVolume(deps.docker, name);
@@ -1272,7 +1607,7 @@ export async function cleanupSessionDockerResources(
         // 304 = already stopped, 409 = removal already in progress, 404 = already
         // gone — all safe to ignore, they're the outcome we wanted.
         //
-        // 404 is now *routine*, not exceptional (SHI-222): every orchestrator
+        // 404 is now *routine*, not exceptional (planning#224): every orchestrator
         // teardown stops the agent container, which fires a Docker `die`, which
         // fires the crash-site egress reap — so the reaper and this sweep race for
         // the same two sidecars on every healthy destroy. Whoever loses sees a 404.
@@ -1346,10 +1681,14 @@ export async function destroyContainer(
   if (!sc) return;
 
   sc.status = "stopping";
-  // SHI-311 — drop the token binding with the container. Bridge IPs are
+  // planning#313 — drop the token binding with the container. Bridge IPs are
   // recycled, so a stale entry would otherwise hand the previous container's
   // token to whatever lands on that address next.
   clearWorkerAuthToken(sc.workerUrl);
+  // planning#371 — the same for the session's egress decision-query tokens: this
+  // teardown reaps every `shipit-parent-session` child below, sidecars included,
+  // so nothing that could present one survives it.
+  clearEgressDecisionTokens(sessionId);
 
   // Stop the session container first so it can't create new child resources
   try {
@@ -1442,7 +1781,7 @@ export function buildContainerConfig(
     // this session's state lives. Throws for a clone that isn't
     // `<sessionDir>/workspace`.
     //
-    // Deliberately NOT overridable (SHI-286). It used to accept an explicit
+    // Deliberately NOT overridable (planning#288). It used to accept an explicit
     // `sessionStateDir`, which no production caller ever passed and which the
     // overlay pre-stamp would now ignore: `preStampInstallMarker` derives the
     // marker's home from the clone path, so an override would mount

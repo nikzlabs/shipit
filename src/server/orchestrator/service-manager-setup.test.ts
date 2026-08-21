@@ -19,8 +19,9 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
-import { applyShipitConfigChange, setupServiceManager } from "./service-manager-setup.js";
+import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager } from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
+import { installContentKeyDiagnostic } from "./install-content-key.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
@@ -64,7 +65,7 @@ function makeDeps(remoteUrl: string | undefined) {
     composeWarnings: new Map<string, string>(),
     composeNotConfigured: new Set<string>(),
     containerManager: null,
-    // Sibling of the workspace — required (SHI-290) and must resolve outside it.
+    // Sibling of the workspace — required (planning#292) and must resolve outside it.
     serviceEnvDir: path.join(tmpDir, "..", "service-env"),
   };
 }
@@ -147,6 +148,162 @@ describe("applyShipitConfigChange", () => {
     return deps;
   }
 
+  // docs/262 — an activation round settles on every session activation and every
+  // shipit.yaml edit, so the reconcile it can trigger must be gated on the
+  // plugin services actually having changed, and must never overlap the first
+  // start() (which is what `serializeStackOp` guarantees).
+  describe("plugin services on an activation round (docs/262)", () => {
+    function makePluginManager(services: unknown[]) {
+      return {
+        ...makeFakeManager(),
+        setPluginServices: vi.fn((next: unknown[]) =>
+          JSON.stringify(next) !== JSON.stringify(services)),
+        // req 23 — a settled round also resyncs the declared credential names,
+        // so a manager in the map has to answer this too.
+        refreshSecretsStatus: vi.fn(async () => { /* no secrets store in tests */ }),
+      };
+    }
+
+    it("reconciles once when the round changes the plugin services", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const mgr = makePluginManager([]);
+      const deps = {
+        ...makeLiveDeps(mgr),
+        resolvePluginServices: vi.fn(async () => [{ name: "probe" }] as never),
+      };
+
+      emitPluginReposUpdated(runner, deps)("s1");
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalledTimes(1));
+      expect(deps.resolvePluginServices).toHaveBeenCalledWith("s1", tmpDir);
+    });
+
+    it("does not reconcile when the round changes nothing", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const mgr = makePluginManager([]);
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      emitPluginReposUpdated(runner, deps)("s1");
+      await vi.waitFor(() => expect(deps.resolvePluginServices).toHaveBeenCalled());
+      expect(mgr.reconcile).not.toHaveBeenCalled();
+    });
+
+    it("still tells viewers the round settled when there is no manager", () => {
+      const runner = makeRunner();
+      const deps = { ...makeDeps(""), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      emitPluginReposUpdated(runner, deps)("s1");
+      expect(runner.emitMessage).toHaveBeenCalledWith({ type: "plugin_repos_updated", sessionId: "s1" });
+      expect(deps.resolvePluginServices).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * docs/262 req 20 — a collision the project's OWN compose file gains after the
+   * last activation round.
+   *
+   * The plugin service set is derived from three inputs: the declaration, each
+   * repository's live generation, and the project's own service names
+   * (`collectPluginFragments` seeds its name domain with them). Only the first
+   * two used to re-resolve it. So a user who added a service under a name an
+   * imported plugin already surfaces got both definitions handed to Compose as
+   * one service — the plugin's overlaying theirs — with the collision computed
+   * only when some later activation round happened to settle, which for a
+   * repository that has to be fetched is a network round-trip away.
+   */
+  describe("plugin services on a project config change (docs/262 req 20)", () => {
+    /** A manager that records the ORDER the applier drives it in. */
+    function makeRecordingManager(surfacedLastRound: unknown[]) {
+      const calls: string[] = [];
+      const mgr = {
+        ...makeFakeManager(),
+        reconcile: vi.fn(async () => { calls.push("reconcile"); }),
+        setPluginServices: vi.fn((next: unknown[]) => {
+          calls.push("setPluginServices");
+          return JSON.stringify(next) !== JSON.stringify(surfacedLastRound);
+        }),
+      };
+      return { mgr, calls };
+    }
+
+    it("re-resolves the plugin services before the reconcile runs the new file", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      // Last round surfaced the plugin's `probe`; the project's compose file has
+      // just taken that name, so this round withholds it.
+      const { mgr, calls } = makeRecordingManager([{ name: "probe" }]);
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      applyShipitConfigChange(runner, deps);
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
+
+      expect(deps.resolvePluginServices).toHaveBeenCalledWith("s1", tmpDir);
+      // BEFORE, not after: `reconcile()` regenerates the override and runs
+      // `compose up`, so a set resolved afterwards is one the ambiguous service
+      // has already been started against.
+      expect(calls).toEqual(["setPluginServices", "reconcile"]);
+    });
+
+    it("tells viewers to refetch when the re-resolution changed the set", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const { mgr } = makeRecordingManager([{ name: "probe" }]);
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      applyShipitConfigChange(runner, deps);
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
+
+      // The withholding alone would make the plugin's service vanish with no
+      // reason attached. The card recomputes the collision on every snapshot, so
+      // the push is what makes the reason arrive with the change.
+      expect(runner.emitMessage).toHaveBeenCalledWith({
+        type: "plugin_repos_updated",
+        sessionId: "s1",
+      });
+    });
+
+    it("says nothing extra when the set is unchanged, and still reconciles", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const { mgr } = makeRecordingManager([]);
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      applyShipitConfigChange(runner, deps);
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
+
+      // An ordinary compose edit that collides with nothing must not light the
+      // Plugins tab up — the reconcile is the whole of its effect.
+      expect(runner.emitMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "plugin_repos_updated" }),
+      );
+    });
+
+    // The last-resort path. The resolver's own contract is that it never fails a
+    // session — its one daemon round-trip degrades to a per-repository reason on
+    // the card (`plugin-services.ts`) — so reaching this catch at all means an
+    // unattributable fault. Then: reconcile the project's file anyway on the
+    // previous plugin set. Refusing the project's own reconcile over a plugin
+    // fault inverts req 14, and dropping every repository's services over a
+    // fault none of them can be blamed for takes working siblings away.
+    it("reconciles anyway when the resolution itself fails", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const { mgr } = makeRecordingManager([]);
+      const deps = {
+        ...makeLiveDeps(mgr),
+        resolvePluginServices: vi.fn(async () => { throw new Error("docker is away"); }),
+      };
+
+      applyShipitConfigChange(runner, deps);
+
+      // req 13 — the project's own stack comes up regardless, on the previous
+      // plugin set rather than on none.
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
+      expect(mgr.setPluginServices).not.toHaveBeenCalled();
+    });
+  });
+
   it("reconciles when only the compose file's contents changed", async () => {
     writeConfig("compose: docker-compose.yml\n");
     const runner = makeRunner();
@@ -155,7 +312,13 @@ describe("applyShipitConfigChange", () => {
     applyShipitConfigChange(runner, makeLiveDeps(mgr));
     await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
 
-    expect(mgr.updateComposeConfig).toHaveBeenCalledWith({ file: "docker-compose.yml", dockerSocket: false });
+    // docs/262 — the second argument says whether the project HAS a compose file
+    // of its own, which it does not only when its stack is its declared plugins
+    // alone.
+    expect(mgr.updateComposeConfig).toHaveBeenCalledWith(
+      { file: "docker-compose.yml", dockerSocket: false },
+      { noProjectCompose: false },
+    );
     expect(mgr.composeFile).toBe("docker-compose.yml");
   });
 
@@ -313,7 +476,7 @@ describe("applyShipitConfigChange — compose-removal is gated on a trustworthy 
 });
 
 /**
- * SHI-290 — `serviceEnvDir` is required, and the wiring hop that supplies it is
+ * planning#292 — `serviceEnvDir` is required, and the wiring hop that supplies it is
  * `ServiceSetupDeps → ServiceManagerOptions → ServiceSecretsResolver`.
  *
  * The `ServiceManager` tests construct a manager directly with an explicit root,
@@ -324,7 +487,7 @@ describe("applyShipitConfigChange — compose-removal is gated on a trustworthy 
  * whole stack at start. This test closes it by asserting the effect — where the
  * env file actually lands — through the real construction path.
  */
-describe("setupServiceManager threads serviceEnvDir to the secrets resolver (SHI-290)", () => {
+describe("setupServiceManager threads serviceEnvDir to the secrets resolver (planning#292)", () => {
   it("writes service env files under the deps' root, never into the clone", async () => {
     // A real session layout: the clone at `<sessionDir>/workspace`, which is what
     // `ServiceManager` resolves its state dir from.
@@ -357,5 +520,123 @@ describe("setupServiceManager threads serviceEnvDir to the secrets resolver (SHI
 
     expect(fs.existsSync(path.join(serviceEnvDir, "s1", ".env.api"))).toBe(true);
     expect(fs.existsSync(path.join(clone, ".shipit"))).toBe(false);
+  });
+});
+
+/**
+ * Follow-up to nikzlabs/shipit#2429 — the condition is detected where the
+ * dependency-input set is resolved, so the user learns from the diagnostics
+ * panel that content-keying is off *before* the failure it eventually causes.
+ *
+ * Driven through `applyShipitConfigChange` because that is the path a user's
+ * `shipit.yaml` edit takes, and it is where the record can go stale: the
+ * remedy (`agent.install-inputs`) leaves `agent.install` untouched, so a check
+ * living inside the command-list delta would never see it.
+ */
+describe("content-key reporting (install-content-key.ts)", () => {
+  /** A production-shaped clone — the state dir derives from `<sessionDir>/workspace`. */
+  function makeClone(): string {
+    const clone = path.join(tmpDir, "session", "workspace");
+    fs.mkdirSync(clone, { recursive: true });
+    return clone;
+  }
+
+  function makeContainerRunner(clone: string): ContainerSessionRunner {
+    const runner = new ContainerSessionRunner({
+      sessionId: "s1",
+      sessionDir: clone,
+      defaultAgentId: "claude",
+      workerUrl: "http://0.0.0.0:0",
+    });
+    vi.spyOn(runner, "requestDepReinstall").mockImplementation(() => { /* no worker */ });
+    return runner;
+  }
+
+  function makeCloneDeps(clone: string) {
+    const deps = makeDeps("");
+    deps.sessionManager = {
+      get: () => ({ workspaceDir: clone, remoteUrl: undefined }),
+    } as unknown as SessionManager;
+    deps.serviceManagers.set("s1", {
+      reconcile: vi.fn(async () => { /* no compose stack in tests */ }),
+      stop: vi.fn(async () => { /* no compose stack in tests */ }),
+      startError: null,
+      updateComposeConfig: vi.fn(() => false),
+    } as unknown as ServiceManager);
+    return deps;
+  }
+
+  it("records a non-content-keyable install so diagnostics can report it", () => {
+    const clone = makeClone();
+    fs.writeFileSync(
+      path.join(clone, "shipit.yaml"),
+      "compose: docker-compose.yml\nagent:\n  install:\n    - npm ci\n    - npm run build\n",
+    );
+    const runner = makeContainerRunner(clone);
+
+    applyShipitConfigChange(runner, makeCloneDeps(clone));
+
+    expect(installContentKeyDiagnostic(clone)?.commands).toEqual(["npm ci", "npm run build"]);
+    runner.dispose({ force: true });
+  });
+
+  it("stops reporting when install-inputs is added, though agent.install is unchanged", () => {
+    const clone = makeClone();
+    const install = "compose: docker-compose.yml\nagent:\n  install:\n    - npm ci\n    - npx prisma generate\n";
+    fs.writeFileSync(path.join(clone, "shipit.yaml"), install);
+    const runner = makeContainerRunner(clone);
+    const deps = makeCloneDeps(clone);
+
+    applyShipitConfigChange(runner, deps);
+    expect(installContentKeyDiagnostic(clone)).not.toBeNull();
+
+    // The remedy the notice names. The command list does not move, so this is
+    // exactly what a check inside the `sameCommands` delta would miss.
+    fs.writeFileSync(
+      path.join(clone, "shipit.yaml"),
+      `${install}  install-inputs: [package.json, package-lock.json, prisma/schema.prisma]\n`,
+    );
+    applyShipitConfigChange(runner, deps);
+
+    expect(installContentKeyDiagnostic(clone)).toBeNull();
+    runner.dispose({ force: true });
+  });
+
+  // The other tests here drive `applyShipitConfigChange`. This one drives the
+  // INITIAL setup, which is where the spec puts the detection: the two paths
+  // are separate call sites, so an early return added to one would otherwise
+  // diverge silently from the other.
+  it("detects at first setup, not only on a later config change", () => {
+    const clone = makeClone();
+    fs.writeFileSync(
+      path.join(clone, "shipit.yaml"),
+      "agent:\n  install:\n    - npm ci\n    - npm run build\n",
+    );
+    const runner = makeContainerRunner(clone);
+    // The install itself needs a worker; the detection sits beside it and does not.
+    vi.spyOn(runner, "runInstall").mockResolvedValue({ ok: true });
+    const deps = makeDeps("");
+    deps.sessionManager = {
+      get: () => ({ workspaceDir: clone, remoteUrl: undefined }),
+    } as unknown as SessionManager;
+
+    setupServiceManager(runner, deps);
+
+    expect(installContentKeyDiagnostic(clone)?.commands).toEqual(["npm ci", "npm run build"]);
+    runner.dispose({ force: true });
+  });
+
+  it("says nothing for a pure dependency install", () => {
+    const clone = makeClone();
+    fs.writeFileSync(
+      path.join(clone, "shipit.yaml"),
+      "compose: docker-compose.yml\nagent:\n  install: npm ci\n",
+    );
+    const runner = makeContainerRunner(clone);
+
+    applyShipitConfigChange(runner, makeCloneDeps(clone));
+
+    expect(installContentKeyDiagnostic(clone)).toBeNull();
+    runner.dispose({ force: true });
   });
 });

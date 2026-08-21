@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-244
+issue: planning#246
 title: Agent self-wake liveness
 description: Teach the orchestrator that a self-woken agent turn (background task completion) is real work, so idle eviction and disk-tier escalation stop tearing the container down underneath it.
 ---
@@ -61,7 +61,7 @@ opposite, and the real defects are these two:
    `drainFired`, `tokenSyncFired`), so the wake turn's `agent_result` returns
    early. A self-woken turn that edits files therefore gets **no auto-commit, no
    push, and no PR card** until the next user turn. Split out of this doc's PR
-   and fixed under SHI-247 — see §6.
+   and fixed under planning#249 — see §6.
 
 `capturedSessionId` is *not* stale, which is why persistence still lands in the
 right session: it is the ShipIt session id, constant for the runner's lifetime.
@@ -245,6 +245,73 @@ emitted three lines below — that event already carries
 re-derive after a reconnect), so it is the established precedent rather than a
 new mechanism.
 
+> **Corrected after shipping — the "live push" never reached the sidebar.** This
+> section reads the snapshot as a top-up on a live push that already worked. It
+> did not: the live push is `background_tasks`, emitted through
+> `runner.emitMessage`, which reaches only the clients attached to *that
+> session's* WebSocket — and a browser holds exactly one. So the cross-session
+> marker was populated **only** by the connect snapshot, and covered only work
+> already outstanding when the SSE opened. Work that started afterwards — the
+> common case, a `shipit agent run` consult backgrounded mid-session — left the
+> session reading as idle in the sidebar until the user either reloaded the page
+> or *opened* the session, whose WS attach replayed `background_tasks` and lit
+> the dot then. (Reported as: "a session that requested a review using shipit
+> agent is not shown as active until I open it, then the status updates.")
+>
+> Fix: the incremental counterpart of the snapshot. `agent_background_tasks` now
+> also `sseBroadcast`s `session_attention { sessionId, backgroundTasks }` —
+> descriptions, not ids, so a switch gets the named label instead of the
+> snapshot's unnamed fallback; an empty list means drained. The client applies
+> each live axis only when its own field is present, so a background-task
+> transition cannot clear an outstanding permission prompt's signal.
+>
+> The drain needs saying explicitly on the paths where the process *dies*
+> (`turn-executor`'s `done`, `agent-listeners`' process `error`): those call
+> `clearBackgroundTasks()` but the CLI is gone and emits no draining event, so
+> without a broadcast there the marker would keep a dead session pulsing green
+> in every sidebar until the next SSE connect. Container disposal is covered on
+> the client instead — the existing `session_status` idle-disposal handler now
+> drops the background-work marker alongside the running one, since a reaped
+> container can hold nothing outstanding.
+>
+> **Superseded by 5h.** Announcing per call site is what left the *other* five
+> clears silent. The runner announces its own changes now, and the per-site
+> broadcasts described above are gone.
+
+**5g. The marker is the UNION with in-flight consults, not the task list.**
+Added by planning#246 after a cross-backend review pointed out that the fix above
+still missed its own reported workload. §5a–5f all read
+`backgroundTaskDescriptions`, the list the CLI reports — and a brokered
+`shipit agent run` consult is invisible in it three ways over: it outlives the
+turn that started it (docs/236 makes backgrounding the recommended shape), it
+needs no resident streaming process (so the tracker's liveness gate zeroes the
+count), and **Codex reports no background tasks at all**, so a Codex-pinned
+session never populates the list in the first place.
+
+The orchestrator already owns the missing fact. `subAgentSpawnsInFlight`
+(planning#298) is the in-flight spawn set, and `agentBusy` — the predicate every
+container-reclaim path consults — is defined as
+`running || backgroundTaskCount > 0 || subAgentSpawnsInFlight > 0` precisely
+because the first two are not enough. planning#298 had already been burned by this:
+it reaped a live 12-minute Codex review. The UI simply never read the third term.
+
+So the marker becomes `backgroundWorkDescriptions` — one getter on the runner
+interface, `backgroundTaskDescriptions` ++ one label per in-flight consult
+("Codex consult") — and every surface reads it: the SSE broadcasts, the
+`session_attention` connect snapshot, and the `GET /history` payload. The
+runners track the consulted `AgentId` alongside each in-flight spawn so the
+label can name it, and `services/sub-agent.ts` announces the marker when a
+spawn starts and again in its `finally`.
+
+Two consequences worth stating. The process-death broadcasts send the union
+rather than a bare `[]`, because a consult routinely outlives its parent turn
+and asserting "nothing outstanding" would blank the marker on exactly the
+session still waiting on a review. And the announcement at spawn time reads the
+runner *after* calling `spawnSubAgent`, relying on both runners registering the
+spawn synchronously ahead of their first `await`; a guard test in
+`container-session-runner.test.ts` pins that, so an `await` inserted before the
+registration is a red build rather than a marker that quietly stops appearing.
+
 > **Corrected after shipping — the chat status line also needs a snapshot.** The
 > SSE snapshot restores the *sidebar* marker, but the chat's status line is
 > re-established from `GET /history`, and that payload only ever carried
@@ -414,7 +481,7 @@ turn's opening was gone from the DB for good — a reload or session switch show
 the turn missing its first half, permanently. Regression test:
 `integration_tests/self-wake-midturn.test.ts`.
 
-### 7. Give the self-woken turn its own post-turn flow (SHI-247)
+### 7. Give the self-woken turn its own post-turn flow (planning#249)
 
 Defect 2 in "The second, quieter bug" above — split out of this doc's PR because
 it touches auto-commit and PR creation, and landed separately. Production hit it
@@ -430,7 +497,16 @@ are first-wins and scoped to one `executeAgentTurn` call. For a resident
 streaming process the wake turn runs through the *previous* turn's still-attached
 listener closure, so all of them were already tripped and its `agent_result`
 returned early. The executor now listens for `agent_self_wake` itself and hands
-that closure a fresh set — `rearmForSelfWokenTurn`.
+that closure a fresh set — `rearmForCliStartedTurn` (named `rearmForSelfWokenTurn`
+when this shipped; docs/140 Phase 6.11 added a second edge — top-level assistant
+output after a turn's `result` — and renamed it).
+
+**Caveat on edge signal 1 above, added by docs/140 Phase 6.11:** a `system/init`
+is NOT on its own proof that a turn started. The CLI also emits one in reply to a
+`set_permission_mode` control_request, with no turn behind it and no `result` to
+follow — so adopting on a bare init can wedge a session as permanently busy. The
+`task_notification` edge is unaffected (it genuinely precedes a wake turn); the
+init half of this sentence should not be reused as an adoption signal.
 
 Three gates make the re-arm safe, and each is pinned by a test in
 `turn-self-wake-commit.test.ts` that fails without it:
@@ -470,7 +546,7 @@ shell work a supported persistence primitive.
 
 ## Key files
 
-- `src/server/orchestrator/turn-executor.ts` — `rearmForSelfWokenTurn` (§7) and
+- `src/server/orchestrator/turn-executor.ts` — `rearmForCliStartedTurn` (§7) and
   the post-turn guards it re-arms
 - `src/server/orchestrator/turn-self-wake-commit.test.ts` — §7's regression tests
 - `src/server/orchestrator/idle-enforcer.ts` — count-based idle eviction
@@ -496,3 +572,56 @@ shell work a supported persistence primitive.
 - `src/client/hooks/useAttentionInfo.ts` — `computeAttentionReason`
 - `src/client/hooks/useAttentionNotifications.ts` — the settle window before a
   reason is worth interrupting the user for
+
+**5h. The runner announces the marker; exactly one subscriber broadcasts it.**
+Added by planning#246 after the cross-backend review enumerated the clears 5b's
+per-call-site broadcasts did not cover — a spawn-identity change and a
+credential rotation (`resident-spawn-guard`), the stuck-running reconciler
+(`verifyRunningState`), and both runners' `dispose`. Each one clears the tracker
+directly and emits no draining event, so each left the sidebar dot lit on a
+session with nothing running until the next SSE connect.
+
+Adding a broadcast to each was the wrong shape: the marker's inputs are mutated
+from a dozen places (`setBackgroundTasks`, `clearBackgroundTasks`, the
+`isStreamingActive` gate, consult registration, `dispose`), and any future sixth
+one would be silent again by default. So the announcement moves to the one place
+that can see every mutation. The runner emits `background_work` whenever
+`backgroundWorkDescriptions` actually changes, and a single subscriber wired in
+`runner-registry-factory`'s `onRunnerCreated` turns it into the
+`session_attention` SSE broadcast.
+
+This *removes* mechanism rather than adding it: the explicit broadcasts in
+`turn-executor`, `agent-listeners`, and `services/sub-agent.ts` are all gone,
+along with the service's `sseBroadcast` dependency and its route wiring. It also
+makes the guarantee structural — a new way to clear the tracker is announced
+because it goes through the same setters, not because someone remembered.
+
+The emit is deduped on the rendered value. `isStreamingActive` is set at both
+ends of every turn and a clear on an already-empty tracker is the common case,
+so a bare pass-through would spend an SSE frame per browser saying nothing.
+Convergence after a genuinely missed frame stays the connect snapshot's job.
+
+**5i. `background_tasks` is not replayed on reattach.** The same review noted
+that WS, SSE, and `GET /history` all write this marker with no shared ordering,
+and proposed a per-session revision. That is more mechanism than the exposure
+warrants — each transport preserves its own order, the updates are
+level-triggered re-statements rather than deltas, and the connect snapshot
+reconciles wholesale. But one concrete instance was worth closing: the
+turn-event replay buffer holds the last `background_tasks`, and the clears that
+announce over SSE alone (a crashed process, a disposed runner) leave that copy
+saying "outstanding" after the truth became "none". Replaying it on reattach
+resurrected the dot, and which value won depended on whether the replay landed
+before or after the HTTP history it contradicts.
+
+`background_tasks` therefore joins the replay loop's existing skip list in
+`route-registry.ts`, beside `agent_event` and `turn_snapshot`. The attach's own
+`GET /history` carries the runner's current `backgroundTasks` read live at
+request time, so history is the single attach-time source and there is no race
+left to lose.
+
+**Residual, accepted.** `BackgroundTaskTracker` decays a non-zero count after
+its TTL through the getter alone, with no mutation to announce. A marker can
+therefore outlive the tracker's own honoring of it by up to one window in a
+browser that stays connected. The decay only fires when events stopped arriving
+entirely — the liveness gate catches the ordinary process-death case first — and
+the connect snapshot corrects it.

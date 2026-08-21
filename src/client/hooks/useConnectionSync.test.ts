@@ -151,6 +151,42 @@ describe("useConnectionSync — pending message flush (docs/144 fix #2)", () => 
     expect(useSessionStore.getState().messages).toEqual([{ role: "user", text: "keep going" }]);
   });
 
+  // The suppression window above is for a real resume. The preview iframe
+  // fires a bare `focus` on every load (and `MessageInput` reclaims focus,
+  // firing another), which used to count as foregrounding and kept the 8s
+  // window permanently open next to a live preview — so a genuine mid-stream
+  // disconnect silently skipped the error below and stranded the composer in
+  // its loading state with nothing on screen to explain it.
+  it("still injects a connection-lost agent error after an iframe focus steal", () => {
+    useSessionStore.setState({
+      sessionId: "s1",
+      isLoading: true,
+      messages: [{ role: "user", text: "keep going" }],
+    });
+
+    const { rerender } = renderHook(
+      ({ status }) => useConnectionSync({ status, send: vi.fn() }),
+      { initialProps: { status: "open" } },
+    );
+
+    // An iframe taking focus leaves the browser window with system focus —
+    // that is what tells the two apart. See `useForegroundSignal`.
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    act(() => {
+      window.dispatchEvent(new Event("blur"));
+      window.dispatchEvent(new Event("focus"));
+    });
+    hasFocus.mockRestore();
+
+    rerender({ status: "closed" });
+
+    expect(useSessionStore.getState().isLoading).toBe(false);
+    expect(useSessionStore.getState().messages.at(-1)).toMatchObject({
+      role: "assistant",
+      isError: true,
+    });
+  });
+
   it("clears the transient compacting indicator on disconnect (docs/178)", () => {
     useSessionStore.setState({ sessionId: "s1", compacting: true });
 

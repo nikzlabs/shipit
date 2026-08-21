@@ -1,5 +1,5 @@
 /**
- * propose-actions API route (docs/207 / SHI-153 — action checklist cards).
+ * propose-actions API route (docs/207 / planning#155 — action checklist cards).
  *
  * Surface:
  *   POST /api/sessions/:sessionId/propose-actions   { title?, actions: [...] }

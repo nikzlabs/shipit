@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-68
+issue: planning#70
 description: Serve buffered present artifacts at a worker-local URL so the agent can screenshot its own visual output with the browser it already has and iterate.
 ---
 

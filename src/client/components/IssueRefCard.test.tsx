@@ -50,7 +50,7 @@ describe("IssueRefCard", () => {
     });
   });
 
-  // docs/248 req 16 — a reference resolves when it is USED. A read card records
+  // docs/248-declared-issue-trackers req 16 — a reference resolves when it is USED. A read card records
   // the name it was addressed through, so re-pointing that name in shipit.yaml
   // re-targets the card, exactly as it re-targets a write card.
   it("opens the name's CURRENT destination after a re-point", () => {

@@ -1,4 +1,4 @@
-// ---- Egress settings (docs/172 / SHI-90) ----
+// ---- Egress settings (docs/172 / planning#92) ----
 
 /**
  * Global egress containment settings surfaced to the browser Settings panel.
@@ -18,7 +18,7 @@ export interface EgressSettings {
    * this is false the UI must warn ("Contained — NOT enforced on this deployment")
    * rather than show a reassuring green state: the policy says contain, but a
    * session would fail closed (or, if disabled, run open) instead of being
-   * contained. Distinguishes policy from enforcement (docs/172, SHI-90).
+   * contained. Distinguishes policy from enforcement (docs/172, planning#92).
    */
   enforcementActive: boolean;
 }
@@ -82,6 +82,109 @@ export interface EgressAllowlistEntry {
   /** True only for `user-global` / `user-session` — built-ins/MCP/operator are read-only. */
   removable: boolean;
 }
+
+// ---- Can a host be made reachable at all, and by whom (planning#383) ----
+
+/**
+ * The answer to ONE question about one host in one session: **can this host be
+ * made reachable, and by whom?** Every surface that reports on a declared or
+ * denied host reads this verdict, and nothing re-derives its own.
+ *
+ * It exists because three defects came out of the same requirement (docs/262
+ * req 24 — enforcement and the card must not disagree) and differed only in what
+ * the reporting side was optimistic ABOUT: a compose file (planning#377), a
+ * session (planning#380), a deployment (planning#383). Three predicates that
+ * each get one case right is the defect pattern, so there is one:
+ * `orchestrator/egress-host-reach.ts`.
+ *
+ *  - `allowed` — reachable as things stand. Nothing to grant.
+ *  - `grantable` — not reachable, and a USER act closes it: adding the host for
+ *    this session or for the whole instance takes effect. This is the only
+ *    verdict that may render a grant button.
+ *  - `blocked-by-session` — no user grant can work HERE: this session's own
+ *    resolved policy carries no user hosts at all (docs/211's Network-off
+ *    sandbox, whose `network` capability only ever tightens). The entry saves
+ *    and stays inert; another session on the same deployment is unaffected.
+ *  - `blocked-by-deployment` — no user grant can work in ANY session on this
+ *    deployment: with `SESSION_EGRESS_DNS=0` there is no Tier B resolver and no
+ *    Tier C proxy, so a contained session reaches the fixed Tier A IP floor and
+ *    nothing else, however the allowlist reads. Only an operator can change it.
+ *
+ * The two `blocked-*` verdicts are the ones a button may never sit on: every
+ * button there writes a durable entry that changes nothing.
+ */
+export type EgressHostReach = "allowed" | "grantable" | "blocked-by-session" | "blocked-by-deployment";
+
+// ---- What an allowlist ADD actually took effect on (planning#376) ----
+
+/**
+ * One class of surface an allowlist add either has already reached or has not.
+ *
+ *  - `new-containers` — anything created from now on reads the live config, so
+ *    it starts with the new host: a fresh session container, and notably a
+ *    plugin's companion-CLI or install container, which is created per
+ *    invocation (`plugin-egress.ts`).
+ *  - `agent` — the session's agent container. Its Tier B resolver and Tier C
+ *    proxy are launched with a snapshot taken at container creation, so it is
+ *    reached live only by a `reloadEgress` (a session-scoped add), never by a
+ *    global one.
+ *  - `services` — the session's running Compose services, re-contained by the
+ *    same `reloadEgress` and otherwise stale until they restart.
+ */
+export type EgressGrantSurface = "new-containers" | "agent" | "services";
+
+/**
+ * planning#376 — what an allowlist add took effect on, reported BY the route
+ * that performed it.
+ *
+ * The two scopes behave very differently (a session add reloads the live
+ * resolver, proxy and every running service; a global add reloads nothing), and
+ * predicting that in a tooltip beforehand was both unreachable after the click
+ * and wrong. The server knows which reload it ran and what is running, so it
+ * says so; the client renders this rather than re-deriving it from the scope,
+ * which would be a second source of truth for one answer.
+ *
+ * `liveNow` and `staleUntilRestart` are disjoint, and a surface absent from both
+ * is one this outcome makes no claim about.
+ */
+export interface EgressHostGrantOutcome {
+  /** The host as the user gave it, for the confirmation sentence. */
+  host: string;
+  /** Where the entry was written — this session's extras, or the instance. */
+  scope: "session" | "global";
+  /** Surfaces already running the new allowlist. */
+  liveNow: EgressGrantSurface[];
+  /** Surfaces that keep the OLD allowlist until their next start. */
+  staleUntilRestart: EgressGrantSurface[];
+  /**
+   * The session whose container restart would bring `staleUntilRestart` in
+   * step, when one is in scope and there is something to fix. `null` means the
+   * client must not offer a restart: nothing is stale, or the add was made
+   * where no single session is in scope (the global Settings editor), where
+   * "restart" has no unambiguous subject.
+   */
+  restartSessionId: string | null;
+  /**
+   * {@link EgressHostReach} for this host, from the one predicate every host
+   * surface reads (`egress-host-reach.ts`) — so what the Plugins card said
+   * BEFORE the click and what this outcome says after it cannot disagree.
+   *
+   * Either `blocked-*` verdict means the entry was saved and still reaches
+   * nothing here: `blocked-by-session` for docs/211's Network-off sandbox
+   * (another session on this deployment is fine), `blocked-by-deployment` for a
+   * deployment that installs no resolver or proxy (no session is fine). Both
+   * empty the surface lists and offer no restart, because no restart helps.
+   */
+  reach: EgressHostReach;
+}
+
+/**
+ * `POST /api/egress/hosts` — the scope's refreshed settings view (unchanged, so
+ * existing readers keep working) plus what the add actually took effect on.
+ */
+export type EgressHostAddResponse = (EgressSettings | EgressSessionSettings) & {
+  grant: EgressHostGrantOutcome;
+};
 
 /**
  * The full effective-allowlist view for the Settings editor: every host the

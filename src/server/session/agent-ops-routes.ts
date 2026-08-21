@@ -113,7 +113,7 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/bug-report", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/propose-actions — action checklist card (docs/207 / SHI-153).
+  // POST /agent-ops/propose-actions — action checklist card (docs/207 / planning#155).
   // The consolidated `shipit` bridge forwards `propose_actions` here; the worker
   // relays to the orchestrator with the trusted SESSION_ID injected. The
   // orchestrator validates, stamps provenance, and posts a reusable
@@ -304,6 +304,51 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
+  // POST /agent-ops/plugin/refresh — docs/262 req 12. `shipit plugin refresh
+  // [name]` re-activates a declared plugin repository and waits for the answer.
+  // Unbounded: the round can fetch, check out, and run the plugin's install, so
+  // a default deadline would abort a refresh that is still working.
+  app.post<{ Body: { repo?: string; force?: boolean } }>(
+    "/agent-ops/plugin/refresh",
+    async (request, reply) =>
+      relay("POST", "/plugin/refresh", {
+        repo: request.body?.repo,
+        // docs/266-plugin-install-diagnosability reqs 5, 6 — forwarded as a strict boolean; the orchestrator
+        // re-checks it the same way. Discarding a live version's writable layer
+        // is not something a truthy string should be able to ask for.
+        force: request.body?.force === true,
+      }, reply, { timeoutMs: 0 }));
+
+  // GET /agent-ops/plugin/status — docs/266-plugin-install-diagnosability reqs 1–4. `shipit plugin status
+  // [name]`: why the live version of a declared repository is (or is not)
+  // usable, including the last install's outcome.
+  //
+  // Bounded, unlike refresh, and that is the point: it reads state that is
+  // already on disk and in memory, and activates nothing (req 9). A diagnostic
+  // that could hang is one an agent stops running when it most needs it.
+  app.get<{ Querystring: { repo?: string } }>(
+    "/agent-ops/plugin/status",
+    async (request, reply) => {
+      const repo = request.query?.repo?.trim();
+      const qs = repo ? `?${new URLSearchParams({ repo }).toString()}` : "";
+      return relay("GET", `/plugin/status${qs}`, undefined, reply);
+    });
+
+  // POST /agent-ops/plugin/exec — docs/262 req 17. The other end of a generated
+  // companion-CLI wrapper: the command runs in an invocation container the
+  // orchestrator builds, never here. Unbounded for the same reason refresh is —
+  // a plugin's CLI is a real program and may run for minutes.
+  app.post<{
+    Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string };
+  }>("/agent-ops/plugin/exec", async (request, reply) =>
+    relay("POST", "/plugin/exec", {
+      alias: request.body?.alias,
+      command: request.body?.command,
+      args: request.body?.args,
+      cwd: request.body?.cwd,
+      stdin: request.body?.stdin,
+    }, reply, { timeoutMs: 0 }));
+
   // Tracker-neutral issue access (docs/175 read + docs/177 write)
   //
   // These back the `shipit issue view|list|create|comment|edit|status|assign`
@@ -314,7 +359,7 @@ export function registerAgentOpsRoutes(
   // ---------------------------------------------------------------------------
 
   // GET /agent-ops/issue/trackers — the destinations this session can reach plus
-  // its shipit.yaml declaration warnings (docs/248 reqs 8, 10). The shim calls
+  // its shipit.yaml declaration warnings (docs/248-declared-issue-trackers reqs 8, 10). The shim calls
   // this before resolving a reference, so names resolve against exactly the set
   // the orchestrator holds.
   app.get("/agent-ops/issue/trackers", async (_request, reply) => relay("GET", "/issue/trackers", undefined, reply));
@@ -343,7 +388,7 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/labels?tracker= — the tracker's pickable label set (read, SHI-199)
+  // GET /agent-ops/issue/labels?tracker= — the tracker's pickable label set (read, planning#201)
   app.get<{ Querystring: { tracker?: string } }>(
     "/agent-ops/issue/labels",
     async (request, reply) => {
@@ -352,7 +397,7 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/statuses?tracker= — the tracker's assignable statuses (read, SHI-199)
+  // GET /agent-ops/issue/statuses?tracker= — the tracker's assignable statuses (read, planning#201)
   app.get<{ Querystring: { tracker?: string } }>(
     "/agent-ops/issue/statuses",
     async (request, reply) => {
@@ -361,7 +406,7 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // GET /agent-ops/issue/comments?tracker=&id= — issue comment thread (read, SHI-137)
+  // GET /agent-ops/issue/comments?tracker=&id= — issue comment thread (read, planning#139)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/comments",
     async (request, reply) => {
@@ -373,16 +418,22 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent?, createMissingLabels? } (docs/187, SHI-92, SHI-206, SHI-230)
+  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent?, createMissingLabels? } (docs/187, planning#94, planning#208, planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/create",
     async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/label/create { tracker, name, color?, description? } (SHI-230)
+  // POST /agent-ops/issue/label/create { tracker, name, color?, description? } (planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; name?: string; color?: string; description?: string } }>(
     "/agent-ops/issue/label/create",
     async (request, reply) => relay("POST", "/issue/label/create", request.body ?? {}, reply),
+  );
+
+  // POST /agent-ops/issue/label/edit { tracker, name, newName?, color?, description? } (planning#88)
+  app.post<{ Body: { tracker?: string; trackerName?: string; name?: string; newName?: string; color?: string; description?: string } }>(
+    "/agent-ops/issue/label/edit",
+    async (request, reply) => relay("POST", "/issue/label/edit", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/comment { tracker, id, body }
@@ -391,13 +442,13 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/comment/edit { tracker, id, commentId, body } (SHI-86)
+  // POST /agent-ops/issue/comment/edit { tracker, id, commentId, body } (planning#88)
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; commentId?: string; body?: string } }>(
     "/agent-ops/issue/comment/edit",
     async (request, reply) => relay("POST", "/issue/comment/edit", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (SHI-92, SHI-206, SHI-230)
+  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent?, createMissingLabels? } (planning#94, planning#208, planning#232)
   app.post<{ Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean } }>(
     "/agent-ops/issue/edit",
     async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
@@ -509,14 +560,43 @@ export function registerAgentOpsRoutes(
   // request open until the subprocess exits.
   // ---------------------------------------------------------------------------
 
-  // POST /agent-ops/agent/spawn { agentId, prompt, depth }
-  app.post<{ Body: { agentId?: string; prompt?: string; depth?: number } }>(
+  // POST /agent-ops/agent/spawn { prompt, depth, and the spawn target }
+  //
+  // docs/261 reqs 6 + 7 — the target is EITHER `role` (ShipIt resolves the
+  // reviewer from its own settings) or the five explicit fields, which the
+  // orchestrator refuses unless all five are present. They are declared here
+  // rather than left to the `relay` pass-through so this hop states what it
+  // carries: `--model` was parsed by the shim for three releases and named by
+  // nothing between it and the spawn, which is exactly how it went missing.
+  app.post<{
+    Body: {
+      prompt?: string;
+      depth?: number;
+      role?: string;
+      agentId?: string;
+      serviceId?: string;
+      billingMode?: string;
+      modelId?: string;
+      reasoningEffort?: string;
+    };
+  }>(
     "/agent-ops/agent/spawn",
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
 
+  // GET /agent-ops/agent/roles — docs/264-agent-roles req 12. The roles this install has
+  // (name, description, what each resolves to), so `--role NAME` can name one
+  // the agent knows exists. Cheap read; the default timeout applies.
+  app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
+
+  // GET /agent-ops/agent/params — docs/264-agent-roles req 12's other half: the harnesses,
+  // reasoning levels and credentialed models an override (req 10) may name on
+  // this install. Ships with the roles read, never without it — an agent that may
+  // name a model and cannot see which models exist names one from memory.
+  app.get("/agent-ops/agent/params", async (_request, reply) => relay("GET", "/agent/params", undefined, reply));
+
   // GET /agent-ops/agent/result[?spawnId=…&wait=true&timeout=N&segment=S] —
-  // SHI-245. Re-read a completed spawn's persisted consult card: the same
+  // planning#247. Re-read a completed spawn's persisted consult card: the same
   // artifact the UI renders, so the agent can verify its copy or recover one
   // whose `shipit agent run` died before the text reached it. Cheap read; the
   // default timeout applies.
@@ -563,12 +643,32 @@ export function registerAgentOpsRoutes(
   // ---------------------------------------------------------------------------
 
   // POST /agent-ops/session/create — create a new spawned child session
+  //
+  // docs/264-agent-roles req 16 — the target half is the SAME vocabulary `agent/spawn`
+  // carries: a role with any subset of its parameters overridden, or all five
+  // named. `agentId` / `reasoningEffort` are the wire names both commands use, so
+  // one parser reads both bodies; the legacy `agent` / `model` keys stay accepted
+  // because the shim has sent them since docs/117. Declared here rather than left
+  // to the `relay` pass-through so this hop states what it carries — a field
+  // named by nothing between the shim and the spawn is exactly how `--model` went
+  // missing for three releases.
   app.post<{
     Body: {
       prompt?: string;
       title?: string;
       agent?: string;
       model?: string;
+      role?: string;
+      agentId?: string;
+      serviceId?: string;
+      billingMode?: string;
+      modelId?: string;
+      reasoningEffort?: string;
+      // docs/264-agent-roles req 20 — `--no-role`: inherit the parent's
+      // parameters without the role it is running. Named here for the same
+      // reason every field above is, and it is the newest one, so it is the one
+      // a rename would drop first.
+      noRole?: boolean;
       // docs/205 — completely separate (parentless) spawn; forwarded verbatim.
       detached?: boolean;
     };
@@ -618,6 +718,28 @@ export function registerAgentOpsRoutes(
       }
       const qs = params.toString() ? `?${params.toString()}` : "";
       return relay("GET", `/host-sessions${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/session/host-session-logs?target=&since=&until=&lines=
+  //
+  // docs/264 — another session's SERVER-SOURCE log entries, Ops sessions only.
+  // Backs `shipit session logs`. The worker injects the trusted SESSION_ID as
+  // the CALLER; the session being read is `target`. The orchestrator gates on
+  // `session.kind === "ops"` and returns orchestrator-generated lines only —
+  // never agent output, prompts, assistant text, or workspace contents.
+  app.get<{
+    Querystring: { target?: string; since?: string; until?: string; lines?: string };
+  }>(
+    "/agent-ops/session/host-session-logs",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      for (const key of ["target", "since", "until", "lines"] as const) {
+        const value = request.query[key];
+        if (value) params.set(key, value);
+      }
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/host-session-logs${qs}`, undefined, reply);
     },
   );
 
@@ -724,7 +846,7 @@ export function registerAgentOpsRoutes(
   // the self-merge wake turn runs first. Destructive-looking but gated: the
   // orchestrator refuses unless the branch provably carries nothing unmerged.
   //
-  // SHI-277 — `{ force, reason }` carries the break-glass through. Forwarded
+  // planning#279 — `{ force, reason }` carries the break-glass through. Forwarded
   // verbatim and validated ORCHESTRATOR-side: this relay is not a checkpoint,
   // it just moves the body across the container boundary.
   app.post<{ Body: { force?: boolean; reason?: string } }>(
@@ -733,7 +855,7 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
-  // Upward / lateral session reports (docs/233, SHI-241)
+  // Upward / lateral session reports (docs/233, planning#243)
   //
   // Every route above is parent→child. These two are the reverse: they're called
   // with THIS container's own session id (injected by `OrchestratorClient`, as

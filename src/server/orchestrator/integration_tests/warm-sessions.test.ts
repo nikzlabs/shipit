@@ -12,8 +12,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // title/branch. Mock to null so the placeholder slice sticks; the cross-
 // flow AI naming logic is covered by `graduate-session.test.ts` with the
 // CLI fully mocked.
+// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
+// `{ name: null }` is "naming produced no title", which is what these tests want.
 vi.mock("../session-namer.js", () => ({
-  generateSessionName: vi.fn().mockResolvedValue(null),
+  generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
 
 import fs from "node:fs";

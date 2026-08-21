@@ -4,7 +4,7 @@
  * Modeled on the `agents/` registry: adding a tracker later is "write an
  * adapter + register it," and the Issues tab's sub-tabs are generated from the
  * configured-tracker registry. v1 registers Linear only; the interface is
- * shaped so a GitHub Issues adapter (deferred per the SHI-67 scope) can slot in
+ * shaped so a GitHub Issues adapter (deferred per the planning#69 scope) can slot in
  * without touching the route, the registry contract, or the client.
  *
  * Trackers are repo/workspace-scoped, not session-scoped: a Linear workspace is
@@ -52,8 +52,8 @@ export class TrackerResolutionError extends Error {
     message: string,
     /**
      * Which write tripped: a status target, an assignee handle, a label name,
-     * a priority value (SHI-92 added label/priority), or a parent pointer
-     * (SHI-206 added parent — used to reject `--parent` on GitHub).
+     * a priority value (planning#94 added label/priority), or a parent pointer
+     * (planning#208 added parent — used to reject `--parent` on GitHub).
      */
     readonly kind: "status" | "assignee" | "label" | "priority" | "parent",
     /** Concrete, valid choices the agent can retry with. */
@@ -67,7 +67,7 @@ export class TrackerResolutionError extends Error {
 /**
  * A write the tracker would happily perform but ShipIt refuses — thrown by
  * {@link Tracker.updateComment} when the comment was authored by someone other
- * than the identity ShipIt writes as (SHI-86).
+ * than the identity ShipIt writes as (planning#88).
  *
  * Deliberately NOT a {@link TrackerResolutionError}: nothing failed to resolve
  * and there is no alternative value to retry with, so it carries no options and
@@ -119,7 +119,7 @@ export interface Tracker {
   listStatuses(): Promise<{ name: string; type?: string; color?: string }[]>;
 
   /**
-   * The full set of labels for the tracker's bound scope (SHI-92 foundation) —
+   * The full set of labels for the tracker's bound scope (planning#94 foundation) —
    * Linear's team/workspace `issueLabels`, GitHub's repo labels — each with its
    * tracker-supplied color. Powers the available-labels endpoint a follow-up
    * label filter/editor consumes, and is the same fetch that yields the real
@@ -148,11 +148,11 @@ export interface Tracker {
    *
    * `labels` are display names resolved per tracker; an unknown/ambiguous name
    * throws {@link TrackerResolutionError} (`kind: "label"`) listing candidates
-   * rather than silently creating a stray label (SHI-92). `priority` is a
+   * rather than silently creating a stray label (planning#94). `priority` is a
    * normalized level (`urgent|high|medium|low|none`) or a native priority name —
    * Linear maps it to its numeric field; GitHub (no native priority) throws.
    * `parent` is a tracker-native issue id/key the new issue nests under as a
-   * sub-issue (SHI-206) — Linear-only; GitHub (flat issues) throws
+   * sub-issue (planning#208) — Linear-only; GitHub (flat issues) throws
    * {@link TrackerResolutionError} (`kind: "parent"`).
    */
   createIssue(input: {
@@ -165,7 +165,7 @@ export interface Tracker {
 
   /**
    * Create a new label in the bound scope (Linear team / GitHub repo) so it can
-   * be applied via `--label` (SHI-230 — the agent's `shipit issue label create`).
+   * be applied via `--label` (planning#232 — the agent's `shipit issue label create`).
    * `color` is a CSS-ready `#rrggbb` (adapters renormalize per tracker API).
    * Callers pre-check for an existing same-name label (case-insensitive) — the
    * adapter does not dedupe. Returns the created label plus its tracker-internal
@@ -175,8 +175,45 @@ export interface Tracker {
   createLabel(input: { name: string; color?: string; description?: string }): Promise<IssueLabel & { id: string }>;
 
   /**
+   * Look one label up by display name (case-insensitive), or null when the
+   * tracker has none by that name (planning#88 — `shipit issue label edit`).
+   *
+   * Distinct from {@link listLabels}, which returns the pickable `{name, color}`
+   * set the UI renders: this carries the tracker-internal `id` {@link updateLabel}
+   * writes through and the `description`, so one lookup both resolves the target
+   * and yields the snapshot undo restores. Linear prefers a label owned by the
+   * declared team over a same-named one in another team; the team guard in
+   * `updateLabel` is what actually refuses the latter.
+   */
+  findLabel(name: string): Promise<(IssueLabel & { id: string; description?: string }) | null>;
+
+  /**
+   * Rewrite an existing label's name, color and/or description in the bound
+   * scope (planning#88), returning it as it now stands. `id` is the tracker-internal
+   * id from {@link findLabel} / {@link createLabel} (Linear UUID; for GitHub the
+   * label's current name IS its id). Only the fields present in `patch` are
+   * touched.
+   *
+   * A rename is deliberately in scope and is NOT a re-labeling: both backends
+   * rename in place (`PATCH /labels/{name}` with `new_name`; `issueLabelUpdate`),
+   * so every issue carrying the label keeps carrying it and simply displays the
+   * new name — which is what makes the reverse write a true undo. Callers
+   * pre-check that a new name doesn't collide with a DIFFERENT label, because
+   * neither backend merges cleanly.
+   *
+   * Linear only: the label must belong to the declared team (`assertOwnTeam`, the
+   * guard `deleteUnusedLabel` also applies) — a label id is workspace-global, so
+   * the check is enforced here, server-side, where a direct relay POST can't
+   * bypass it.
+   */
+  updateLabel(
+    id: string,
+    patch: { name?: string; color?: string; description?: string },
+  ): Promise<IssueLabel & { id: string; description?: string }>;
+
+  /**
    * Delete a label ONLY when no issues carry it — the reverse write behind a
-   * label-creation card's Undo (SHI-230). When the label is in use the adapter
+   * label-creation card's Undo (planning#232). When the label is in use the adapter
    * throws with an explanation (surfaced as the card's undo error) instead of
    * stripping it off issues; `name` is for that message, `id` is the tracker-
    * internal delete target from {@link createLabel}.
@@ -190,7 +227,7 @@ export interface Tracker {
   deleteComment(commentId: string): Promise<void>;
 
   /**
-   * Rewrite a comment's body (SHI-86 — `shipit issue comment edit`), returning
+   * Rewrite a comment's body (planning#88 — `shipit issue comment edit`), returning
    * the updated comment **and the body it replaced** so the caller can snapshot
    * the prior text for undo. The prior body comes back from here rather than
    * from a separate read because the adapter must fetch the comment anyway to
@@ -220,9 +257,9 @@ export interface Tracker {
    * Edit an issue's title, description, labels, and/or priority. Returns the
    * updated issue. `labels`, when present, is the EXACT set to apply (a replace,
    * not a merge) — the caller computes the additive set and passes the full list
-   * (SHI-92); names resolve per tracker, an unknown one throws
+   * (planning#94); names resolve per tracker, an unknown one throws
    * {@link TrackerResolutionError}. `priority` follows the same rules as
-   * {@link createIssue}. `parent` reparents the issue (SHI-206): a tracker-native
+   * {@link createIssue}. `parent` reparents the issue (planning#208): a tracker-native
    * id/key to nest under, or `null` to detach into a top-level issue — Linear-only
    * (GitHub throws `kind: "parent"`).
    */

@@ -1,5 +1,5 @@
 /**
- * SHI-311 — the worker's `onRequest` gate. Policy lives in
+ * planning#313 — the worker's `onRequest` gate. Policy lives in
  * `shared/worker-auth.ts` ({@link decideWorkerRequest}); this module is the
  * Fastify wiring plus the one-time startup log.
  *
@@ -10,6 +10,12 @@
  * the path prefix. That keeps a newly-added agent-ops route protected by
  * construction — the failure mode of the orchestrator's route-level allowlist
  * (forgetting the annotation) can't happen here.
+ *
+ * planning#421 adds {@link requireWorkerToken}: the container process resolves the
+ * token from its environment and refuses to start without one, so "a worker
+ * serving with no token" is a state a container cannot be in. The guard's own
+ * behaviour for a tokenless worker (refuse every remote caller) is the second
+ * layer, not the first.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -22,32 +28,63 @@ import {
 
 export interface WorkerAuthGuardDeps {
   /**
-   * The per-session token the orchestrator must present. Falls back to
-   * {@link WorkerAuthGuardDeps.env}`[WORKER_TOKEN_ENV]` when nullish — which is
-   * the REAL container path, not a test convenience: `SessionWorker` always
-   * passes this key and its own `workerToken` dep is unset in the standalone
-   * entry point, so the env read is how a live worker gets its token. Resolving
-   * to `undefined` (no container env) leaves remote callers ungated — see
-   * {@link decideWorkerRequest} step 6 for why that is deliberate.
+   * The per-session token the orchestrator must present, or `undefined` for a
+   * worker that has none — which since planning#421 means every remote caller is
+   * refused ({@link decideWorkerRequest} step 6).
    *
-   * SHI-239 raises the stakes on the `env` dep below rather than changing this
-   * shape: the token now gates the lifecycle routes too, so a test-built worker
-   * that picked the value out of the ambient environment would 403 its own
-   * loopback `/agent/start`. The suite-wide strip in `server-test-setup.ts` is
-   * what keeps that from happening.
+   * There is deliberately NO fallback to `process.env` here. The container
+   * process reads {@link WORKER_TOKEN_ENV} once, in {@link requireWorkerToken},
+   * and refuses to start without it; leaving a second reader in the guard is how
+   * a test meaning "a worker with no token" silently picked up the ambient
+   * container token instead (it passed in CI and failed in-container). One
+   * reader, at the one place that knows it is a real container.
    */
   token?: string | undefined;
-  /**
-   * Environment the token falls back to. Defaults to `process.env`; injectable
-   * so a caller can exercise the "no token configured" branch **hermetically**.
-   * Without it the branch is untestable inside a session container, where
-   * `WORKER_TOKEN_ENV` is always set and an explicit `token: undefined` falls
-   * straight through to the ambient token. Same shape as
-   * `egressEnforceEnabled(env)`.
-   */
-  env?: NodeJS.ProcessEnv;
   /** Log sink, injectable so tests don't write to the console. */
   log?: (message: string) => void;
+}
+
+/**
+ * Error thrown by {@link requireWorkerToken}. A named type so the entry point
+ * can report it as a configuration fault rather than a crash.
+ */
+export class MissingWorkerTokenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MissingWorkerTokenError";
+  }
+}
+
+/**
+ * planning#421 — resolve the container's worker token, or refuse.
+ *
+ * The container entry point calls this BEFORE building a worker, so a container
+ * that came up without {@link WORKER_TOKEN_ENV} dies at startup instead of
+ * serving its orchestrator-facing surface to anything that can reach it on the
+ * session subnet. That is the honest reading of "fail closed": a worker that
+ * cannot authenticate its orchestrator cannot tell it from a peer container, so
+ * there is no useful state for it to serve from. The process exits before it
+ * listens, so `/health` never answers and creation fails at
+ * `waitForWorkerHealth` (`container-lifecycle.ts:691`, 30s) with the container's
+ * own logs carrying one line that names the variable.
+ *
+ * An EMPTY value is treated as absent, matching the orchestrator's
+ * `workerTokenFromContainerEnv` (which maps `SHIPIT_WORKER_TOKEN=` to
+ * `undefined`, and so sends no header). Accepting `""` as a token would 403
+ * every orchestrator call instead — a worker that is up but unusable, which is
+ * strictly worse to diagnose than one that refused to start.
+ */
+export function requireWorkerToken(env: NodeJS.ProcessEnv): string {
+  const token = env[WORKER_TOKEN_ENV];
+  if (!token) {
+    throw new MissingWorkerTokenError(
+      `${WORKER_TOKEN_ENV} is not set. The orchestrator injects it at container ` +
+        "creation and presents it on every call, so a worker without it cannot " +
+        "distinguish its orchestrator from another session's container. Refusing " +
+        "to start rather than serving the orchestrator-facing routes unauthenticated.",
+    );
+  }
+  return token;
 }
 
 /** Message body for a rejected request. Deliberately says nothing specific. */
@@ -65,25 +102,16 @@ export function registerWorkerAuthGuard(
   app: FastifyInstance,
   deps: WorkerAuthGuardDeps = {},
 ): string | undefined {
-  // An EMPTY env value means "no token", matching the orchestrator's
-  // `workerTokenFromContainerEnv` (which maps `SHIPIT_WORKER_TOKEN=` to
-  // `undefined`). Without the emptiness check the two halves disagree: the
-  // orchestrator would send no header while the worker held `""` as its
-  // expected token, and since `tokensMatch("", …)` is always false every
-  // orchestrator→worker call would 403 — the exact bricked session that step 6
-  // of `decideWorkerRequest` exists to prevent, reached through an empty value
-  // instead of an absent one.
-  const fromEnv = (deps.env ?? process.env)[WORKER_TOKEN_ENV];
-  const configuredToken = deps.token ?? (fromEnv ? fromEnv : undefined);
+  const configuredToken = deps.token ? deps.token : undefined;
   const log = deps.log ?? ((message: string) => console.warn(message));
 
   if (!configuredToken) {
-    // Not fatal (see decideWorkerRequest step 6) but always worth a line: in a
-    // real container this means the orchestrator that created it predates the
-    // token, so only the loopback-only groups are protected.
+    // In a container this is unreachable — `requireWorkerToken` refuses to start
+    // the process first — so reaching it means an in-process worker (a test) or
+    // a future embedding that skipped that check. Say what the consequence is.
     log(
-      `[worker-auth] ${WORKER_TOKEN_ENV} is not set — orchestrator-facing and lifecycle ` +
-        "routes are ungated. Loopback-only routes (/agent-ops, /present-files) are still enforced.",
+      `[worker-auth] no ${WORKER_TOKEN_ENV} configured — every non-loopback caller ` +
+        "will be refused. Only this container's own agent can reach this worker.",
     );
   }
 

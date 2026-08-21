@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-131
+issue: planning#133
 title: Large-file split & architectural tech-debt plan
 description: Inventory of oversized modules and type barrels with a per-file plan for splitting them by responsibility.
 ---

@@ -1,3 +1,4 @@
+import type { LoginIntegrationId } from "../../shared/catalogue/types.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -6,12 +7,13 @@ import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager, providerAccountCredentialRoot } from "../provider-account-manager.js";
 import { SessionManager } from "../sessions.js";
 import { createTestDatabaseManager } from "../integration_tests/test-helpers.js";
+import { writeSessionAccountMarker } from "../session-credentials.js";
 import { signOutProvider } from "./settings.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
 /**
- * SHI-283 — provider-wide sign-out has to take the account away from the
+ * planning#285 — provider-wide sign-out has to take the account away from the
  * sessions running on it, not just delete the rows.
  *
  * The row is not where the token lives: every pinned session holds its own copy
@@ -32,11 +34,17 @@ describe("signOutProvider", () => {
   let signedOutProviders: string[];
 
   const registry = () => ({
+    ids: () => [...new Set([...residentAgents.keys(), ...runningSessionIds])],
     get: (id: string) => {
       const resident = residentAgents.get(id);
       if (!resident && !runningSessionIds.has(id)) return undefined;
       return {
+        sessionId: id,
         running: runningSessionIds.has(id),
+        backgroundWorkDescriptions: [] as string[],
+        // No spawn stamp in these fakes — the marker fallback identifies the
+        // process's account, which is exactly the post-restart shape.
+        residentRoute: undefined,
         getAgent: () => (resident ? { kill: () => { resident.killed = true; } } : null),
         setAgent: (agent: unknown) => { if (resident && agent === null) resident.cleared = true; },
       };
@@ -61,16 +69,21 @@ describe("signOutProvider", () => {
 
   /** A connected account with credentials on disk. */
   function connectAccount(label: string): string {
-    const account = accounts.create("claude", label);
-    accounts.setAccountStatus("claude", account.id, "ready");
+    const account = accounts.create("anthropic", label);
+    accounts.setAccountStatus("anthropic", account.id, "ready");
     seedAccount(account.id, `token-${label}`);
     return account.id;
   }
 
+  /**
+   * docs/260 — a session "on" an account means its credential subtree records
+   * that account in its marker; no session-row pin exists any more.
+   */
   function pinSession(id: string, accountId: string, agentId: "claude" | "codex" = "claude"): void {
     sessions.track(id, id);
     sessions.setAgentId(id, agentId);
-    sessions.setProviderRoute(id, "account", accountId);
+    fs.mkdirSync(path.join(root, "sessions", id), { recursive: true });
+    writeSessionAccountMarker(root, id, agentId, accountId);
   }
 
   beforeEach(() => {
@@ -87,9 +100,9 @@ describe("signOutProvider", () => {
       getActiveAccountId: () => null,
       cancel: () => {},
     } as unknown as AgentAuthManager);
-    accounts.attachAuthManagers(new Map<"claude" | "codex", AgentAuthManager>([
-      ["claude", stubAuthManager("claude")],
-      ["codex", stubAuthManager("codex")],
+    accounts.attachAuthManagers(new Map<LoginIntegrationId, AgentAuthManager>([
+      ["anthropic-oauth", stubAuthManager("claude")],
+      ["openai-chatgpt", stubAuthManager("codex")],
     ]));
     sessions = new SessionManager(createTestDatabaseManager());
     runningSessionIds = new Set();
@@ -106,7 +119,7 @@ describe("signOutProvider", () => {
 
     signOutProvider(accounts, sessions, registry(), "claude", { credentialsDir: root });
 
-    expect(accounts.list("claude")).toEqual([]);
+    expect(accounts.list("anthropic")).toEqual([]);
     expect(fs.existsSync(accountRoot)).toBe(false);
     expect(signedOutProviders).toEqual(["claude"]);
   });
@@ -168,15 +181,17 @@ describe("signOutProvider", () => {
    * strand the session, since env prep only provisions for a session that is not
    * yet pinned.
    */
-  it("leaves the pin pointing at the gone account so the session can re-route", () => {
+  it("routes the session's next turn through selection once accounts are gone (req 1)", () => {
     const a = connectAccount("A");
     pinSession("s1", a);
     seedSessionCredentials("s1", "token-A");
 
     signOutProvider(accounts, sessions, registry(), "claude", { credentialsDir: root });
 
-    expect(sessions.get("s1")?.providerRouteId).toBe(a);
-    expect(accounts.isRouteUsableForTurn("claude", { kind: "account", id: a })).toBe(false);
+    // docs/260 — no pin survives sign-out because no pin exists at all: the
+    // next turn selects among whatever accounts remain, and with none left the
+    // selector answers auth_required rather than naming a ghost.
+    expect(accounts.selectAccountForTurn("anthropic")).toEqual({ ok: false, reason: "auth_required" });
   });
 
   /**
@@ -199,8 +214,8 @@ describe("signOutProvider", () => {
   /** Signing out of one provider must not touch the other's sessions. */
   it("leaves the other provider's pinned sessions alone", () => {
     const claudeAccount = connectAccount("A");
-    const codexAccount = accounts.create("codex", "Codex A");
-    accounts.setAccountStatus("codex", codexAccount.id, "ready");
+    const codexAccount = accounts.create("openai", "Codex A");
+    accounts.setAccountStatus("openai", codexAccount.id, "ready");
     pinSession("s1", claudeAccount);
     pinSession("s2", codexAccount.id, "codex");
     seedSessionCredentials("s1", "token-A");
@@ -212,7 +227,7 @@ describe("signOutProvider", () => {
 
     expect(fs.existsSync(sessionTokenPath("s1"))).toBe(false);
     expect(fs.readFileSync(codexAuth, "utf-8")).toBe("codex-token");
-    expect(accounts.list("codex").map((account) => account.id)).toEqual([codexAccount.id]);
+    expect(accounts.list("openai").map((account) => account.id)).toEqual([codexAccount.id]);
   });
 
   /**
@@ -246,7 +261,7 @@ describe("signOutProvider", () => {
       .toThrow(/mid-turn/i);
 
     expect(fs.existsSync(sessionTokenPath("s1"))).toBe(true);
-    expect(accounts.list("claude").map((account) => account.id)).toEqual([a]);
+    expect(accounts.list("anthropic").map((account) => account.id)).toEqual([a]);
     expect(signedOutProviders).toEqual([]);
   });
 });

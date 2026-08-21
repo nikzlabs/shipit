@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-208
+issue: planning#210
 title: Installable PWA (no-cache, always-latest)
 description: Make ShipIt installable to the mobile home screen and run standalone (no address bar), without ever serving stale code.
 ---

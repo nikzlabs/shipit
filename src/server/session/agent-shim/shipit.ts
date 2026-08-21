@@ -49,6 +49,7 @@ import {
   handleSessionCreate,
   handleSessionFind,
   handleSessionList,
+  handleSessionLogs,
   handleSessionMessage,
   handleSessionNotifyOnMerge,
   handleSessionRename,
@@ -69,7 +70,12 @@ import {
   handleIssueStatuses,
   handleIssueView,
 } from "./shipit-issue.js";
-import { handleAgentRun, handleAgentResult } from "./shipit-agent.js";
+import {
+  handleAgentRun,
+  handleAgentResult,
+  handleAgentRoles,
+  handleAgentParams,
+} from "./shipit-agent.js";
 import {
   handleServiceList,
   handleServiceLogs,
@@ -93,6 +99,7 @@ import {
 export { parseFlags, type ShimIO };
 
 import { handleBranchResetToBase, RESET_USAGE } from "./shipit-branch.js";
+import { runPlugin } from "./shipit-plugin.js";
 
 const SHIM_NAME = "shipit (ShipIt)";
 
@@ -108,8 +115,15 @@ const HELP = `${SHIM_NAME} — agent-driven session management.
 
 Supported subcommands:
   shipit session create  --prompt-file FILE --title T
-                          [--agent claude|codex] [--model M]
+                          [--role NAME | --no-role]
+                          [--agent claude|codex|opencode|grok] [--model M]
+                          [--service S] [--billing-mode sub|key] [--effort E]
                           [--turn ID] [--detached] [--shipit-source] [--approximate] [--json]
+                          Name no role and the child inherits what YOU run on —
+                          including the role you are running, whole, standing
+                          instructions and all. '--no-role' declines it: the
+                          child takes your parameters and no brief. Use it when
+                          the child's work is not the role's work.
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
   shipit session message <id> -m "TEXT" [--json]
@@ -149,6 +163,7 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   shipit issue status    <ref> <state> [--tracker NAME] [--json]
   shipit issue assign    <ref> <user|me | --none> [--tracker NAME] [--json]
   shipit issue label create --tracker NAME --name NAME [--color '#rrggbb'] [--description TEXT] [--json]
+  shipit issue label edit   --tracker NAME --name NAME [--new-name NAME] [--color '#rrggbb'] [--description TEXT] [--json]
 
   Every tracker this repository uses is declared in its shipit.yaml with a NAME;
   there is no built-in tracker and no implicit fallback. Three reference forms
@@ -158,9 +173,9 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   re-pointed. A reference naming no declared tracker fails with the declared
   names listed; fix the reference or the declaration, never retry elsewhere.
 
-  Naming nothing means this session's own repository — except on 'create' and
-  'label create', which ALWAYS need --tracker NAME so a forgotten flag can't file
-  into a possibly-public repo. Writes are do-then-surface: the change is made
+  Naming nothing means this session's own repository — except on 'create' and the
+  'label' verbs, which ALWAYS need --tracker NAME so a forgotten flag can't file
+  into (or repaint the labels of) a possibly-public repo. Writes are do-then-surface: the change is made
   immediately and an inline provenance card with an Undo button is posted in the
   chat; Undo cancels a newly created issue.
 
@@ -177,6 +192,23 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   fly (each gets its own Undo card). On 'edit' labels are added to the issue's
   existing set. --priority is urgent|high|medium|low|none on Linear; GitHub has
   no priority field, so use a label there instead.
+
+  'label edit' fixes a label that already exists with the wrong color, casing or
+  description — 'create' still refuses a name that exists in any casing, so a
+  typo can never repaint a live label. A rename happens in place: every issue
+  carrying the label keeps it and just shows the new name. Undo restores the
+  previous values. There is no 'label delete' (undo would mint a fresh label no
+  issue carries) — delete in the tracker's own UI if one truly must go.
+
+  A declared PLUGIN REPOSITORY (docs/262) is addressable the same way, under the
+  name in its 'plugins.repos' entry — that is how you report a bug, a limitation
+  or a feature request about a plugin you are USING: 'shipit issue create
+  --tracker <plugin-repo-name> ...' files it on the plugin's own repository, and
+  ShipIt appends the exact plugin commit this session runs. Put the reproduction
+  and any proposed fix (as a diff) in the body. A project session still never
+  pushes to a plugin repository — filing an issue is the whole channel. A plugin
+  repository gets no Issues tab: it is a dependency, not one of this project's
+  trackers. Declare it in 'issues.trackers' too if you want one.
 
   'labels'/'statuses' list the tracker's valid label names and status targets so
   you can pick one before a create/edit/status write instead of guessing. 'list
@@ -205,6 +237,16 @@ Releases (docs/214 — deterministic, merge-triggered; CI publishes):
   (a tag push is always confirmation-gated). There is no 'release tag',
   'release publish', or 'release push' — publishing is CI's job.
 
+Plugin repositories (docs/262 — tools this project consumes from another repo):
+  shipit plugin refresh [repo-name] [--json]
+
+  Brings a declared plugin repository to its declared version NOW, and waits.
+  Use it after pushing a change to the plugin repository — otherwise a tracked
+  branch only re-activates when shipit.yaml changes or the session opens.
+  Prints the before and after commit per repository. A failed refresh leaves
+  the previous version live and exits non-zero, so the session keeps working —
+  on the OLD version.
+
 Compose services (docs/238 — start the services declared in docker-compose.yml):
   shipit service list    [--json]
   shipit service start   <name> [--timeout SECONDS] [--json]
@@ -230,8 +272,33 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
   compose file and ShipIt reconciles it.
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
-  shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
+  shipit agent run --role NAME [OVERRIDES] --prompt-file FILE [--json]
+  shipit agent run --agent claude|codex|opencode|grok --service S --billing-mode sub|key
+                   --model M --effort E --prompt-file FILE [--json]
   shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
+  shipit agent roles  [--json]     the roles configured on this install
+  shipit agent params [--json]     the harnesses, levels and models it has
+
+  What a run happens on is said the SAME way here and on 'shipit session
+  create' (docs/264): name a ROLE, and override only what the user asked to
+  change. '--role reviewer' asks ShipIt for the reviewer the USER configured —
+  you name the role, never the reviewer. 'shipit agent roles' lists the roles
+  this install has; map the user's intent onto one ("review the PR" -> the
+  reviewer role) rather than assembling a target of your own.
+
+  An override rides alongside and names only what changes:
+  '--role deep-dive --model M', '--role reviewer --effort high'. RELAY an
+  override the user asked for; never DECIDE one — which model or effort a run
+  deserves is the user's call, and ShipIt cannot tell the two apart.
+  'shipit agent params' is what makes an override name something real on this
+  install, instead of a model you remember from somewhere else.
+
+  A run that names NO role must name EVERY parameter — harness, service,
+  billing mode, model, reasoning level. Nothing is filled in from a stored
+  default, so an incomplete call is refused rather than quietly completed from
+  somewhere you cannot see. (On 'session create' the same partial call IS
+  allowed, because a child has a parent to inherit the rest from. That is the
+  only difference between the two commands.)
 
   'run' spawns ANOTHER registered agent with the prompt from --prompt-file (or
   --prompt-file - for stdin) and prints its final text on stdout. Use it for a
@@ -246,7 +313,7 @@ Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   through tail/head/grep — the sub-agent's report IS the deliverable, and the
   finding you need is as likely to be at the top as the bottom. Example:
 
-    shipit agent run --agent codex --prompt-file - <<'EOF'
+    shipit agent run --role reviewer --prompt-file - <<'EOF'
     Review this diff for bugs. Report findings as file:line — comment.
     $(git diff)
     EOF
@@ -468,12 +535,15 @@ const SESSION_HANDLERS: Record<
   // docs/255 — Ops-only host inventory: resolve a branch / PR / container name
   // back to the session that produced it. Read-only, metadata only.
   find: handleSessionFind,
+  // docs/264 — Ops-only: another session's SERVER-SOURCE log entries. Read-only,
+  // orchestrator lifecycle lines only; never that session's agent output.
+  logs: handleSessionLogs,
   view: handleSessionView,
   message: handleSessionMessage,
   wait: handleSessionWait,
   archive: handleSessionArchive,
   "notify-on-merge": handleSessionNotifyOnMerge,
-  // docs/233 (SHI-241) — the upward channel. Every subcommand above operates
+  // docs/233 (planning#243) — the upward channel. Every subcommand above operates
   // parent→child; these are the only ones a session can point at itself.
   report: handleSessionReport,
   whoami: handleSessionWhoami,
@@ -522,6 +592,11 @@ const AGENT_HANDLERS: Record<
 > = {
   run: handleAgentRun,
   result: handleAgentResult,
+  // docs/264-agent-roles req 12 — the two reads that make `--role NAME` and an override
+  // nameable: what roles exist here, and what parameters exist here. They ship
+  // together deliberately; see `shipit-agent.ts`.
+  roles: handleAgentRoles,
+  params: handleAgentParams,
 };
 
 /**
@@ -634,6 +709,14 @@ export async function runShim(
     return;
   }
 
+  // docs/262 req 12 — the plugin verb. Its own handler rather than a branch of
+  // the service dispatch: a plugin repository is not a Compose service, and the
+  // two surfaces share nothing but the transport.
+  if (command === "plugin" || command === "plugins") {
+    await runPlugin(args.slice(1), { ...deps, io });
+    return;
+  }
+
   if (command !== "session") {
     fail(io, `Unknown shipit subcommand: ${command}\n${REJECTED_HELP}`);
   }
@@ -719,7 +802,7 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
  * Dispatch a `shipit issue <sub>` invocation (docs/175 read + docs/177 +
  * docs/187 write). Reads map to view/list/labels/statuses; writes (create/
  * comment/edit/status/assign) are do-then-surface. Only destructive verbs
- * (close/delete) are gated. `<sub> --help` prints per-subcommand usage (SHI-199).
+ * (close/delete) are gated. `<sub> --help` prints per-subcommand usage (planning#201).
  */
 async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
@@ -748,7 +831,7 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
 }
 
 /**
- * Dispatch a `shipit agent <sub>` invocation (docs/144, SHI-245). `run` is the
+ * Dispatch a `shipit agent <sub>` invocation (docs/144, planning#247). `run` is the
  * one-shot sub-agent spawn primitive; `result` re-reads a finished run's
  * persisted output.
  */

@@ -28,7 +28,10 @@
 #   node attribute"; the sslip.io default keeps working regardless.
 #   Access is HTTP over the WireGuard-encrypted tailnet (no wildcard TLS cert
 #   exists for *.ts.net — tracked upstream at tailscale/tailscale#7081). For real
-#   HTTPS, point an owned wildcard domain at the node IP (see deployment/README.md).
+#   HTTPS, point an owned wildcard domain at the node IP (see deployment/README.md)
+#   — and declare it in SHIPIT_ALLOWED_ORIGINS, since planning#378's hostname check
+#   cannot prove a registrable name is ours. The .ts.net and sslip.io names below
+#   prove themselves and need nothing.
 #
 # Usage:
 #   bash /opt/shipit/deployment/vps/tailscale.sh

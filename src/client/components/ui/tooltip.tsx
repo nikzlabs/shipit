@@ -29,13 +29,20 @@ const TooltipContent = forwardRef<
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;
 
 /** Convenience wrapper: wraps a single child element with a Radix tooltip.
- *  Includes its own TooltipProvider so it works in isolation (e.g. tests). */
+ *  Includes its own TooltipProvider so it works in isolation (e.g. tests).
+ *
+ *  `label` is a `ReactNode`, not a string: docs/252's compacted routing band
+ *  moves each option's name AND its explanation into the option's own tooltip,
+ *  which needs the name on a bold first line. A `title` attribute cannot do
+ *  that, and — the reason the band uses this at all — a `title` never opens on
+ *  keyboard focus, so the copy the compaction promised to keep would be
+ *  unreachable without a mouse. */
 function WithTooltip({
   label,
   side,
   children,
 }: {
-  label: string;
+  label: React.ReactNode;
   side?: "top" | "bottom" | "left" | "right";
   children: React.ReactNode;
 }) {

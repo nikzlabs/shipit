@@ -4,6 +4,7 @@
  */
 
 import fs from "node:fs/promises";
+import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
 import path from "node:path";
 import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
@@ -30,9 +31,12 @@ import {
   ensureCatalogCloned,
   killAgent,
 } from "./services/index.js";
+import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
 import { getErrorMessage } from "./validation.js";
 import { pushToOrigin } from "./git-utils.js";
+import { emitNoticePostTurn, persistNoticeUnattached } from "./chat-card-persistence.js";
+import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 
 /**
  * Commit a manual file edit so it lands as its own commit instead of being
@@ -55,19 +59,51 @@ async function commitManualEdit(
   dir: string,
   filePath: string,
 ): Promise<void> {
-  const runner = deps.runnerRegistry.get(sessionId) as { running?: boolean } | undefined;
-  if (runner?.running) return;
+  const runner = deps.runnerRegistry.get(sessionId);
+  if ((runner as { running?: boolean } | undefined)?.running) return;
+  // docs/128 / docs/211 — ShipIt does not auto-commit an ops or sandbox session
+  // (`services/auto-commit-gate.ts`). A UI file edit is still ShipIt committing
+  // on its own: the agent asked for nothing, and for a sandbox `/workspace` is
+  // not even a repo. The edit is still written to disk; committing it is the
+  // agent's business in those kinds.
+  if (!sessionAutoCommitAllowed(deps.sessionManager, sessionId)) return;
   try {
     const git = deps.createGitManager(dir);
-    const { commitHash } = await withWorkspaceLock(dir, () =>
+    const { commitHash, unreadable } = await withWorkspaceLock(dir, () =>
       git.autoCommit(`Edit ${path.basename(filePath)}`),
     );
+    // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — the save itself succeeded (the file is
+    // on disk), but the user was told nothing about the commit either way, and
+    // a `blocked` add commits NOTHING while returning the same null hash as
+    // "nothing to commit". Persisted, because the point is that the edit the
+    // user just made is not on the branch and will not be until the path is
+    // readable.
+    if (unreadable) {
+      const message = formatUnreadableWorkspaceNotice(unreadable, {
+        committed: commitHash !== null,
+        what: "This file edit",
+      });
+      if (runner) {
+        emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistoryManager, sessionId, message, "warn");
+      } else {
+        // A UI save reaches a session with no runner (the container was
+        // reclaimed while the file tree stayed open), and the notice still
+        // belongs in the transcript the user comes back to.
+        persistNoticeUnattached(deps.chatHistoryManager, sessionId, message, "warn");
+      }
+    }
     // Push so the change reaches the PR without waiting for the next turn,
     // matching ShipIt's inline-PR model. Fire-and-forget: push latency must
     // not block the save response, and auth failures surface on the next
     // post-turn auto-push rather than here.
     if (commitHash && deps.githubAuthManager.authenticated) {
-      void pushToOrigin(git).catch((err: unknown) => {
+      // `onSkip` for the same reason the post-turn scheduler passes one: both of
+      // `pushToOrigin`'s null returns are otherwise a commit that lands and a
+      // push that says nothing anywhere.
+      void pushToOrigin(git, (reason) => {
+        const why = reason === "no-origin" ? "no `origin` remote" : "no current branch (detached HEAD)";
+        console.warn(`[files] manual-edit auto-push skipped for ${sessionId}: ${why}`);
+      }).catch((err: unknown) => {
         console.warn("[files] manual-edit auto-push failed:", getErrorMessage(err));
       });
     }
@@ -84,10 +120,26 @@ export async function registerFileRoutes(
   const cacheRoot = getCatalogCacheRoot(deps.stateDir ?? deps.workspaceDir);
 
   // GET /api/sessions/:id/files — file tree
+  //
+  // planning#375 — this is now the ONLY place the workspace tree is served; it
+  // used to ride along with `GET /history` as well, where it was 325 KB of a
+  // 2.67 MB payload re-sent on every transcript change. It carries an ETag for
+  // the same reason the history route does: the tree changes far more rarely
+  // than the transcript, so an attach should usually cost a 304 and nothing
+  // else. The tag is the hash of the body, so it cannot disagree with it.
   app.get<{ Params: { id: string } }>("/api/sessions/:id/files", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
-    return { tree: await getFileTree(dir) };
+    const body = JSON.stringify({ tree: await getFileTree(dir) });
+    const etag = etagFor(body);
+    // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
+    // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
+    if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
+      reply.code(304).send();
+      return;
+    }
+    reply.header("etag", etag).header("cache-control", "no-cache").type("application/json");
+    return reply.send(body);
   });
 
   // GET /api/sessions/:id/files/* — file content
@@ -259,9 +311,11 @@ export async function registerFileRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       const session = sessionManager.get(request.params.id);
-      const queryAgent = request.query.agent === "codex" || request.query.agent === "claude"
-        ? request.query.agent
-        : undefined;
+      const queryAgent =
+        request.query.agent === "codex" || request.query.agent === "claude"
+        || request.query.agent === "opencode" || request.query.agent === "grok"
+          ? request.query.agent
+          : undefined;
       const agentId = session?.agentId ?? queryAgent ?? defaultAgentId;
 
       const skillsDirName = agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";

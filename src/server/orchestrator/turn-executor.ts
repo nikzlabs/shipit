@@ -25,20 +25,66 @@
  * `session-runner.ts`.
  */
 
-import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionMessageOrigin } from "../shared/types.js";
+import type { AgentId, AgentProcess, PermissionMode, AgentEvent, WsServerMessage, SessionInfo, SessionMessageOrigin } from "../shared/types.js";
+import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { createAgentStderrTail } from "./agent-stderr-tail.js";
 import {
   detectHardExhaustion,
   detectHardExhaustionInTurnText,
+  exhaustionLockoutUntil,
 } from "./ws-handlers/agent-rate-limits.js";
+import { credentialFailurePolicyForRoute, stopsOnCredentialFailure } from "./credential-failure-policy.js";
+import type { CredentialFailurePolicy } from "./credential-failure-policy.js";
+import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
+
+/**
+ * docs/260 §3 — one refused attempt in a turn's attempt loop: which credential,
+ * what the provider actually said, and when it claims the window resets.
+ */
+export interface RefusedAttempt {
+  routeId: string;
+  label: string;
+  providerMessage: string;
+  resetAt: string | null;
+  /** Why this route was excluded from the rest of this logical turn. */
+  failureKind: "quota" | "auth";
+}
+
+/**
+ * docs/260-turn-level-account-routing req 6 — the terminal all-refused message, built ONLY from this
+ * turn's actual refusals. Ends with what the user can do about it, matching
+ * the routing message it replaces — and a resend genuinely re-tries every
+ * account (req 12), so the sentence is true by construction.
+ */
+export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
+  const quotaAttempts = ledger.filter((entry) => entry.failureKind === "quota");
+  const authAttempts = ledger.filter((entry) => entry.failureKind === "auth");
+  const lines = quotaAttempts.map((entry) => {
+    const reset = entry.resetAt ? ` (resets at ${entry.resetAt})` : "";
+    return `- ${entry.label}${reset}: ${entry.providerMessage}`;
+  });
+  if (authAttempts.length === 0) {
+    return `Every connected account refused this turn for quota:\n${lines.join("\n")}\nSend this message again to re-try every account, or connect another account in Settings.`;
+  }
+  const quotaSection = lines.length > 0
+    ? `Quota refusals:\n${lines.join("\n")}\n`
+    : "";
+  const authSection = authAttempts.length > 0
+    ? `Authentication failed for: ${authAttempts.map((entry) => entry.label).join(", ")}.\n`
+    : "";
+  return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
+}
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
-import { emitChatCard, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
+import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
+import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
+import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 /**
  * Normalized, transport-agnostic description of one turn. The adapters
@@ -88,13 +134,15 @@ export interface TurnInput {
   /** One shared retry budget for automatic auth and stale-resume recovery. */
   recoveryRetryUsed?: boolean;
   /**
-   * docs/150 req 14 — set on the quota-retry re-dispatch (a turn re-run after
-   * the provider killed it for subscription exhaustion). Bounds the retry to
-   * exactly one: if the second account is spent too, the turn fails normally
-   * rather than walking down every account one process at a time. Absent on a
-   * first attempt.
+   * docs/260 §3 — the attempt ledger: every credential the provider refused
+   * during THIS logical turn, in refusal order. Present on attempt-loop
+   * re-dispatches, absent on a first attempt. It bounds the loop — each
+   * retry's selection excludes every entry, so a credential is attempted at
+   * most once per turn — and it is the only material the terminal all-refused
+   * message may be built from (req 6: what the provider said, not a
+   * deduction).
    */
-  isQuotaRetry?: boolean;
+  attemptLedger?: readonly RefusedAttempt[];
   /**
    * docs/179 — shared "user row persisted" latch, threaded from the original
    * attempt into the auth-retry (and docs/150's quota retry) so the user
@@ -182,11 +230,11 @@ export interface TurnInput {
    * docs/240 — this is the settlement hook: `dispatch` chains the handle's
    * `settle` onto it, and the `done` handler fires it from a `finally` so a turn
    * cannot exit without signalling completion. `runDispatchedTurn` owns "exactly
-   * once across no-result retries" on top of it (SHI-260).
+   * once across no-result retries" on top of it (planning#262).
    */
   onTurnComplete?: (outcome: TurnOutcome) => void;
   /**
-   * SHI-264 — durable identity of the server-side DELIVERY this turn runs on
+   * planning#266 — durable identity of the server-side DELIVERY this turn runs on
    * behalf of. Published on the runner (`activeDeliveryId`) for the turn's
    * duration and stamped onto the spawn so the worker reports it back — the two
    * halves that let a supervisor derive "is this delivery live?" instead of
@@ -219,7 +267,42 @@ export async function executeAgentTurn(
   input: TurnInput,
 ): Promise<void> {
   const { agentId, prompt, activity, sessionId, emit } = input;
+  // docs/233 — every started turn reactivates a terminal-PR session before
+  // any result exists. This is unconditional because echo rendering is not a
+  // lifecycle signal, and abnormal exits must retain the start activity.
+  deps.listenerDeps.sessionManager.track(sessionId);
+  // docs/277 (req 4) — a mute lasts until the session's next turn STARTS, and it
+  // ends here whatever started that turn: this is the one line both the WS path
+  // and the dispatch path (`shipit session message`, the CI-fix loop, a
+  // merge-wake, a queue drain) run through. `setMuted` returns null when the row
+  // was already unmuted, so the broadcast — and only the broadcast — is skipped
+  // on the ordinary turn, which is every turn but the rare muted one.
+  if (deps.listenerDeps.sessionManager.setMuted(sessionId, null)) {
+    deps.listenerDeps.sseBroadcast("session_list", {
+      sessions: deps.listenerDeps.sessionManager.list(),
+    });
+  }
   const useStreaming = input.useStreaming ?? false;
+  /**
+   * docs/140 Phase 6.11 — may a turn the CLI starts on its own be ADOPTED here
+   * (marked running, given a clean accumulator and its own post-turn flow)?
+   *
+   * Needs BOTH: a resident process (streaming) and a backend whose process
+   * survives its own turn boundary. Codex satisfies the first and not the
+   * second — its app-server is killed at `turn/completed` and it emits the
+   * turn's FINAL assistant text after that, so there the very shape adoption
+   * keys on means "the turn that just ended is still talking".
+   *
+   * DERIVED here from `agentId` rather than passed in by each caller. It is a
+   * compile-time fact about the adapter, and threading it through every entry
+   * point is how one gets missed: the WS path had it and `runDispatchedTurn` —
+   * which also streams, for quick/child/programmatic turns — did not, leaving
+   * the original production bug live on a supported path. Same static lookup
+   * and same reasoning as the dispatch path's `supportsSteering` (docs/163);
+   * deliberately NOT `AgentProcess.capabilities`, which `ProxyAgentProcess`
+   * hardcodes.
+   */
+  const adoptsCliStartedTurns = useStreaming && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false);
   // docs/169 — "none" elides commit/push/PR + queue drain (rebase). Default
   // preserves today's behavior for every other caller.
   const postTurn = input.postTurn ?? "commit-push";
@@ -236,7 +319,7 @@ export async function executeAgentTurn(
   let agentErrored = false;
   let turnCompleteFired = false;
   /**
-   * SHI-316 — a newer spawn took this turn's agent slot (see the `superseded`
+   * planning#318 — a newer spawn took this turn's agent slot (see the `superseded`
    * event on `AgentProcessEvents`). Latched rather than settled inline so the
    * outcome is built by the one `finishTurn` chain below.
    */
@@ -244,7 +327,7 @@ export async function executeAgentTurn(
   const settleTurn = (outcome: TurnOutcome): void => {
     if (turnCompleteFired) return;
     turnCompleteFired = true;
-    // SHI-264 — the delivery stops being live the moment the turn settles, and
+    // planning#266 — the delivery stops being live the moment the turn settles, and
     // it must stop being live BEFORE the consumer is told: the consumer's first
     // act on a non-`completed` outcome is to ask whether a retry is warranted,
     // and a delivery still reading as in-flight would suppress it forever.
@@ -272,7 +355,7 @@ export async function executeAgentTurn(
     // CI auto-fix loop — are unaffected; `status` carries the finer distinction
     // for consumers that opt into it.
     //
-    // SHI-316 — a turn that RAN and was then cut short settles as `interrupted`,
+    // planning#318 — a turn that RAN and was then cut short settles as `interrupted`,
     // not `no-result`. The two look identical from here (no `agent_result` ever
     // arrived) but mean opposite things to a delivery supervisor: `no-result` is
     // "the work never reached anyone, try again", while `interrupted` is "the
@@ -302,14 +385,14 @@ export async function executeAgentTurn(
 
   if (runner) {
     runner.running = true;
-    // docs/169 + SHI-255 — a system turn suppresses live steering for its whole
+    // docs/169 + planning#257 — a system turn suppresses live steering for its whole
     // duration. `dispatch` sets the flag synchronously for a turn it starts from
     // idle; a system turn that was ENQUEUED and drains later never went through
     // that branch, so set it here too (idempotent) — otherwise a wake-turn
     // drained behind a user turn would run steerable, and a message arriving
     // mid-turn would be injected into it. `finishTurn` clears it.
     if (input.systemTurn) runner.systemTurnInProgress = true;
-    // SHI-264 — publish this turn's delivery for its whole duration. `dispatch`
+    // planning#266 — publish this turn's delivery for its whole duration. `dispatch`
     // already set it synchronously on the start-now path; adoption and the
     // queue-drain path reach it only here.
     //
@@ -322,6 +405,24 @@ export async function executeAgentTurn(
     runner.isStreamingActive = useStreaming;
     resetRunnerTurnState(runner);
   }
+
+  // Identity of the turn these closures belong to, captured AFTER the reset
+  // above bumped it. The `done` handler can fire long after a SUCCESSOR turn
+  // took over the runner (the failover pre-check kills the resident process and
+  // its late exit unwinds while the new turn is already running env-prep) — at
+  // that point the per-turn accumulators and the session's in-progress chat
+  // rows belong to the successor, and this turn's teardown must not write
+  // through them. Concretely: `onInterruptedTurn` finalizes ALL of the
+  // session's in-progress rows from the runner's CURRENT accumulators, so run
+  // stale it flips the successor's freshly-recorded cards (the account-failover
+  // notice) to `in_progress=0`; the successor's next boundary then re-inserts
+  // them from `recordedCards`, and the transcript keeps both copies forever.
+  // Re-captured when the CLI starts a turn of its own (see
+  // `rearmForCliStartedTurn`): that turn runs through THESE same closures, so
+  // after `agent-listeners` gave it a fresh epoch the closures adopt it.
+  let thisTurnEpoch = runner?.turnEpoch;
+  const turnIsCurrent = (): boolean =>
+    !runner || thisTurnEpoch === undefined || runner.turnEpoch === thisTurnEpoch;
 
   // docs/179 — persist the user row EXACTLY ONCE across the original attempt and
   // a possible auth-retry re-dispatch. Without a shared guard, the retry would
@@ -358,9 +459,24 @@ export async function executeAgentTurn(
   // and to the listener's own turn latch (`agent-auth-handler.ts`), both of
   // which drop the duplicate before it reaches this gate at all.
   const willRecoverAuth = (): boolean => {
+    // docs/140 — same reason as `quotaRetryAllowed`: the re-dispatch would re-run
+    // the previous turn's prompt. See `servingAdoptedTurn`.
+    if (servingAdoptedTurn) return false;
     if (!canRecoverAuth) return false;
     automaticRecoveryInProgress = true;
     return true;
+  };
+  const finalizeAttemptOutput = (): void => {
+    if (!runner) return;
+    const messages = buildTurnMessages(
+      runner.chatMessageGroups,
+      runner.steeredMessages ?? [],
+      runner.recordedCards ?? [],
+      { inProgress: false },
+    );
+    if (messages.length === 0) return;
+    deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, messages);
+    deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
   };
   const recoverAuth = async (): Promise<boolean> => {
     let healed: boolean;
@@ -387,14 +503,44 @@ export async function executeAgentTurn(
       // beside them: every heal was a no-op that reported success, the turn
       // was re-dispatched ~120ms later on byte-identical credentials, and the
       // one shared recovery budget was spent for nothing.
-      if (deps.resolveTurnAccountId) {
-        const turnAccountId = deps.resolveTurnAccountId(sessionId);
-        healed = turnAccountId && deps.ensureAgentTokenFresh
-          ? await deps.ensureAgentTokenFresh(agentId, turnAccountId, { force: true })
+      // docs/260 — the account to heal is the TURN'S OWN capture (set after
+      // env-prep), never a session row: the row records no route any more, and
+      // the 401 being healed came from the process this capture describes.
+      // A RESERVED route stays unhealable here, as before — a bad API key or
+      // env token is not something the account refresher owns. No capture at
+      // all (tests / local runtime / no routing in play) keeps the
+      // provider-wide heal rather than silently disabling recovery.
+      if (capturedCredentialRoute?.providerRouteKind === "account") {
+        healed = deps.ensureAgentTokenFresh
+          ? await deps.ensureAgentTokenFresh(
+              agentId, capturedCredentialRoute.providerRouteId, { force: true },
+            )
           : false;
+      } else if (capturedCredentialRoute) {
+        healed = false;
+        // planning#358 — this branch IS the verdict, so write it down.
+        //
+        // A reserved capture is a supplied secret (`claude-env-oauth`, an API
+        // key): recovery was attempted and there is nothing to recover, which
+        // makes the 401 terminal rather than transient. Until now that
+        // conclusion was reached here and discarded — the row went on reading
+        // `ready` while every turn on it died, which is the gap the issue names.
+        //
+        // Marked HERE rather than in the auth handler, and the difference is not
+        // cosmetic: measured against the real credential, `willRecoverAuth()`
+        // answers **true** for this route (a healer is wired and it is a first
+        // attempt), so a `!willRecover` gate in the handler never fires. Only
+        // after the heal has been asked for and refused is the failure known to
+        // be terminal — anywhere earlier is a guess that would also brand a
+        // credential whose stale token was about to be rotated back to health.
+        //
+        // The account branch above needs none of this: a healed account is
+        // `ready` again, and an unhealable one is marked `auth_failed` by the
+        // refresher's own revoked classification.
+        if (capturedCredentialRoute.providerRouteId) {
+          deps.listenerDeps.markCredentialRouteAuthFailed?.(capturedCredentialRoute.providerRouteId);
+        }
       } else {
-        // No resolver wired (tests / local runtime): keep the pre-docs/150
-        // provider-wide behaviour rather than silently disabling recovery.
         healed = deps.ensureAgentTokenFresh
           ? await deps.ensureAgentTokenFresh(agentId, undefined, { force: true })
           : false;
@@ -404,14 +550,62 @@ export async function executeAgentTurn(
       healed = false;
     }
     if (!healed) {
+      // A confirmed unusable account is different from a transient stale token:
+      // the refresher has already marked this exact account auth_failed, so run
+      // the same logical turn once through the existing route-attempt loop. The
+      // ledger excludes the captured account, and env selection preserves the
+      // same service + subscription billing mode. Reserved routes and metered
+      // keys never enter this branch.
+      const policy = capturedRoutePolicy();
+      if (
+        !recoveryRetryUsed
+        && capturedCredentialRoute?.providerRouteKind === "account"
+        && !!capturedCredentialRoute.providerRouteId
+        && policy
+        && !policy.stopsOnFailure
+        && policy.vendorOwnedRecovery
+      ) {
+        const routeId = capturedCredentialRoute.providerRouteId;
+        automaticRecoveryInProgress = true;
+        // `ensureFresh` can return false before its full refresh tick when the
+        // credential file is missing. Nudge the existing account-qualified
+        // refresher path so it persists `auth_failed` and keeps Settings/UI
+        // behavior intact for future turns.
+        deps.listenerDeps.onAgentAuthRequired?.(agentId);
+        finalizeAttemptOutput();
+        await retryOnNextAccount(
+          {
+            routeId,
+            label: deps.routeLabel?.(routeId) ?? routeId,
+            providerMessage: "Authentication failed; this account must sign in again.",
+            resetAt: null,
+            failureKind: "auth",
+          },
+          true,
+        );
+        return true;
+      }
       // Heal genuinely failed (token revoked / rate-limited / no rotation). The
       // `done` handler stood down for us, so run the same terminal teardown it
       // would have, then return false so the listener surfaces the sign-in card.
-      if (runner) runner.running = false;
-      await postTurnStep("drain", tryDrain);
-      await postTurnStep("commit", runCommitAndPr);
-      await postTurnStep("finished", emitFinishedIfIdle);
-      finishTurn();
+      //
+      // docs/140 — the FOURTH terminal path, and it needs the same hand-over
+      // wait as `agent_result` / `onError` / `done`: without it the teardown
+      // below runs against a predecessor's latched `drainFired` and settled
+      // commit memos, so an adopted turn that fails auth commits nothing and
+      // strands the queue. (`rearmInFlight` is non-null only while a re-arm is
+      // actually running, so the ordinary heal is unchanged.)
+      if (rearmInFlight) await rearmInFlight;
+      holdPostTurn();
+      try {
+        if (runner) runner.running = false;
+        await postTurnStep("drain", tryDrain);
+        await postTurnStep("commit", runCommitAndPr);
+        await postTurnStep("finished", emitFinishedIfIdle);
+        finishTurn();
+      } finally {
+        releasePostTurn();
+      }
       return false;
     }
     // Healed — re-dispatch this turn once on a fresh agent. The retried turn
@@ -430,24 +624,9 @@ export async function executeAgentTurn(
     } catch (err) {
       console.warn("[turn] 401-recovery token repush failed:", err);
     }
-    if (runner) {
-      // The retry starts by resetting every per-turn accumulator. Finalize any
-      // output the first attempt already streamed before allowing that reset,
-      // otherwise a retry that fails before producing output rebuilds history
-      // from empty groups and deletes the transcript the user already saw.
-      // The user row is persisted independently and guarded across attempts;
-      // only the first attempt's assistant/tool groups are finalized here.
-      const firstAttemptMessages = buildTurnMessages(
-        runner.chatMessageGroups,
-        runner.steeredMessages ?? [],
-        runner.recordedCards ?? [],
-        { inProgress: false },
-      );
-      if (firstAttemptMessages.length > 0) {
-        deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, firstAttemptMessages);
-        deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
-      }
-    }
+    // Preserve any partial assistant/tool output before the retry resets the
+    // per-turn accumulators. The shared user-row guard is independent.
+    finalizeAttemptOutput();
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     await executeAgentTurn(runner, deps, freshAgent, {
@@ -464,6 +643,12 @@ export async function executeAgentTurn(
   // Captured after env preparation, immediately before buildRunParams reads
   // the same DB pointer. This is the exact resume id owned by this process.
   let activeResumeSessionId: string | null = null;
+  // Listener registration happens before environment preparation. Failover
+  // happens inside that preparation, so the route becomes immutable only
+  // after it returns and immediately before this process starts.
+  let capturedCredentialRoute:
+    | Pick<SessionInfo, "providerRouteKind" | "providerRouteId">
+    | undefined;
   const recoverMissingConversation = (invalidId: string): boolean => {
     // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery (docs/155)
     if (agentId !== "claude" || recoveryRetryUsed || invalidId !== activeResumeSessionId) return false;
@@ -497,7 +682,7 @@ export async function executeAgentTurn(
     return true;
   };
 
-  // docs/150 req 14 — same-turn quota failover. When the provider kills a turn
+  // docs/150-multiple-provider-subscriptions req 14 — same-turn quota failover. When the provider kills a turn
   // because the subscription is spent, the user should not have to notice or
   // resend: the turn re-runs once on the next eligible account, "regardless of
   // what that turn has already done."
@@ -517,10 +702,49 @@ export async function executeAgentTurn(
   // the listener, so the retry's fresh in-progress turn appends below it rather
   // than colliding with it — the transcript reads as attempt, notice, retry.
   let quotaRetryInProgress = false;
-  const retryOnNextAccount = async (): Promise<void> => {
+
+  /**
+   * docs/252 phase 5, req 12 — the gate account benching already had and this
+   * retry did not.
+   *
+   * The retry fires on *detected exhaustion*, from the error object or the
+   * turn's own text, with no idea what the failing turn was billed to. On a
+   * metered key there is nothing to fail over to — `selectRouteForSelection`
+   * resolves the same key again — so the turn would be re-run in full against
+   * the credential that just refused it, repeating every side effect the first
+   * attempt had. Req 12: keys do not fail over; ShipIt stops and says so, which
+   * here means letting the turn retire with the provider's own error.
+   *
+   * docs/260-turn-level-account-routing req 2 — the credential that refused is the TURN'S OWN capture,
+   * so ITS billing mode decides. The session row is only the fallback for a
+   * turn with no capture (failed before env-prep, tests, local runtime): the
+   * row's selection is mutable mid-turn (`set_model`), and its dead
+   * `provider_route_*` columns can still carry a pre-260 pin — neither changes
+   * which credential just failed.
+   */
+  const capturedRoutePolicy = (): CredentialFailurePolicy | undefined => {
+    const captured = capturedCredentialRoute;
+    if (!captured?.providerRouteKind || !captured.providerRouteId) return undefined;
+    const profile = deps.routeProfile?.(captured.providerRouteKind, captured.providerRouteId);
+    if (!profile) return undefined;
+    return credentialFailurePolicyForRoute(agentId, profile.billingMode, profile.serviceId);
+  };
+  const quotaRetryAllowed = (): boolean => {
+    // docs/140 — never re-dispatch an ADOPTED turn: the prompt this closure
+    // would re-run is the previous turn's. See `servingAdoptedTurn`.
+    if (servingAdoptedTurn) return false;
+    const policy = capturedRoutePolicy();
+    if (policy) return !policy.stopsOnFailure;
+    return !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
+  };
+
+  const retryOnNextAccount = async (
+    entry: RefusedAttempt,
+    consumeRecoveryBudget = false,
+  ): Promise<void> => {
     console.log(
-      `[turn] ${agentId} reported quota exhaustion for ${sessionId}; `
-      + "retrying once on the next eligible account",
+      `[turn] ${agentId} reported a quota refusal for ${sessionId} on ${entry.routeId}; `
+      + "retrying on the next eligible credential",
     );
     // The dying process still holds the spent account's token. Kill it before
     // the retry re-provisions, so nothing keeps spending the account we just
@@ -536,14 +760,140 @@ export async function executeAgentTurn(
       // The resident streaming process died with the account; the retry spawns
       // its own. Left set, the next turn would try to steer into a dead pipe.
       runner.isStreamingActive = false;
+      // The process that owned this route is dead. Keeping its identity would
+      // let the req-13 resident-route override defeat the ledger exclusion.
+      runner.residentRoute = undefined;
     }
     await executeAgentTurn(runner, deps, freshAgent, {
       ...input,
-      isQuotaRetry: true,
+      attemptLedger: [...(input.attemptLedger ?? []), entry],
+      ...(consumeRecoveryBudget ? { recoveryRetryUsed: true } : {}),
       reuseExistingAgent: false,
       emitUserEcho: false,
       persistGuard,
     });
+  };
+
+  // docs/260 §3 — the ledger entry for a refusal that just happened: the
+  // captured route (the credential this attempt actually authenticated with),
+  // its user-facing label, the provider's own words, and the lockout end.
+  const ledgerEntryFor = (
+    providerMessage: string,
+    detected: Parameters<typeof exhaustionLockoutUntil>[0],
+  ): RefusedAttempt => {
+    const routeId = capturedCredentialRoute?.providerRouteId ?? "unknown";
+    // docs/260-turn-level-account-routing req 6 — "resets at" only ever quotes the PROVIDER'S OWN stated
+    // instant. When it named none, `exhaustionLockoutUntil` synthesizes a
+    // short self-expiring lockout for the internal bench stamp — an estimate
+    // that must not be presented to the user as a provider-reported reset.
+    const statedReset =
+      detected.resetAt !== null && !Number.isNaN(Date.parse(detected.resetAt))
+        ? new Date(Date.parse(detected.resetAt)).toISOString()
+        : null;
+    return {
+      routeId,
+      label: (routeId !== "unknown" ? deps.routeLabel?.(routeId) : undefined) ?? routeId,
+      providerMessage: providerMessage.replace(/\s+/g, " ").trim().slice(0, 400),
+      resetAt: statedReset,
+      failureKind: "quota",
+    };
+  };
+
+  /**
+   * docs/252 phase 5 — the same failover, reached from an adapter-level `error`.
+   *
+   * Codex reports a spent subscription by refusing `turn/start`, and a rejected
+   * JSON-RPC request becomes an `error` rather than the `agent_result` the
+   * branch below watches — so on that path req 14's same-turn failover and
+   * req 7's exhaustion stamp both never fired. Verified by reading
+   * `codex/adapter.ts` (`initializeAndRun(...).catch(err => emit("error"))`)
+   * rather than inferred from Claude's shape.
+   *
+   * Stamping happens here rather than in `agent-listeners`, which only stamps on
+   * `agent_result`: without it the retry would re-select the same spent
+   * credential and the hop would be wasted. It is `markSessionAccountExhausted`
+   * that decides whether the failing route is stampable at all — a metered key
+   * has no window to bench (req 12).
+   *
+   * Synchronous by contract: the listener needs the answer before it starts
+   * tearing the turn down, so the re-dispatch is fired and not awaited.
+   *
+   * **Returning `true` claims a turn nobody else will finish**, which is what
+   * makes both failure modes below load-bearing rather than defensive. The
+   * listener has surrendered its terminal cleanup and the dead process's `done`
+   * stands down on `quotaRetryInProgress`, so if the retry never happens the turn
+   * sits with `running` true, its edits uncommitted and no viewer told anything
+   * — CLAUDE.md's "every terminal path runs the commit", broken by a path that
+   * looks terminal and is not. So: anything that can throw runs BEFORE the claim
+   * and un-claims by returning `false`, and a rejection after the claim runs the
+   * same teardown `recoverAuth` runs on a failed heal. Found by cross-backend
+   * review.
+   */
+  const willRetryOnQuotaError = (err: Error): boolean => {
+    // A STALE quota error — a successor turn already owns the runner — must not
+    // claim anything: the finalize below would flip the successor's rows, the
+    // stamp would bench the account the successor is pinned to, and the retry's
+    // fresh agent would displace the successor's. The listener checks this
+    // before calling; kept here too so no future caller ordering can reopen it.
+    if (!turnIsCurrent()) return false;
+    // A turn blocked by the router is not a turn that ran out mid-flight — it is
+    // req 13 already having decided there is nowhere to go. Retrying would loop.
+    if (err instanceof ProviderRouteUnavailableError) return false;
+    if (!quotaRetryAllowed()) return false;
+    const exhausted = detectHardExhaustion(err.message);
+    if (!exhausted) return false;
+    const refusedEntry = ledgerEntryFor(err.message, exhausted);
+    try {
+      deps.listenerDeps.markSessionAccountExhausted?.(
+        sessionId,
+        exhaustionLockoutUntil(exhausted),
+        capturedCredentialRoute?.providerRouteId,
+      );
+      // Finalize what the first attempt already streamed, BEFORE the retry resets
+      // every per-turn accumulator. The `agent_result` path gets this for free —
+      // `wireAgentListeners` runs its own handler first and has already persisted
+      // and finalized by the time the quota branch is reached — but this gate runs
+      // at the TOP of the listener's error handler, ahead of the persistence it is
+      // standing the listener down from. Without it a retry that fails before
+      // producing output rebuilds history from empty groups and deletes the
+      // transcript the user already saw, which is the hazard `recoverAuth`
+      // documents one recovery over.
+      if (runner) {
+        const firstAttemptMessages = buildTurnMessages(
+          runner.chatMessageGroups,
+          runner.steeredMessages ?? [],
+          runner.recordedCards ?? [],
+          { inProgress: false },
+        );
+        if (firstAttemptMessages.length > 0) {
+          deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, firstAttemptMessages);
+          deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+        }
+      }
+    } catch (prepErr) {
+      // Nothing has been claimed yet, so the cheapest correct answer is to let
+      // the listener finish the turn exactly as it would have without us.
+      console.error("[turn] quota-retry preparation failed; leaving the turn to the error path:", prepErr);
+      return false;
+    }
+    quotaRetryInProgress = true;
+    // Fire-and-forget: the listener's gate is synchronous, so the re-dispatch
+    // cannot be awaited here.
+    void retryOnNextAccount(refusedEntry).catch(async (retryErr: unknown) => {
+      console.error("[turn] quota retry from the error path failed:", retryErr);
+      // The claim is now a lie — run the teardown the listener would have.
+      holdPostTurn();
+      try {
+        if (runner) runner.running = false;
+        await postTurnStep("drain", tryDrain);
+        await postTurnStep("commit", runCommitAndPr);
+        await postTurnStep("finished", emitFinishedIfIdle);
+        finishTurn();
+      } finally {
+        releasePostTurn();
+      }
+    });
+    return true;
   };
 
   // Surface the user message. Dispatch emits a `system_user_message` bubble (no
@@ -568,11 +918,21 @@ export async function executeAgentTurn(
     persistUserMessage: persistUserMessageOnce,
     fallbackTitle: input.fallbackTitle,
     capturedSessionId: sessionId,
+    getCapturedRouteId: () => capturedCredentialRoute?.providerRouteId,
+    getCapturedRouteKind: () => capturedCredentialRoute?.providerRouteKind,
+    // docs/260-turn-level-account-routing req 2 — failure policy resolved from the captured route (see
+    // `capturedRoutePolicy`); the auth handler falls back to the session's
+    // selection when this answers undefined.
+    getCapturedRoutePolicy: capturedRoutePolicy,
     // docs/179 — auto-recovery hooks: the listener calls `willRecoverAuth`
     // synchronously to decide whether to suppress the sign-in card, then
     // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover
     // (already a retry, or no healer) so the listener keeps the legacy flow.
     ...(canRecoverAuth ? { willRecoverAuth, recoverAuth } : {}),
+    // docs/252 phase 5 — the adapter-`error` twin of the `agent_result` quota
+    // branch below. Wired on every attempt: the loop is bounded by the
+    // ledger's exclusion set (one attempt per credential), not by hop count.
+    willRetryOnQuotaError,
     // eslint-disable-next-line no-restricted-syntax -- Claude-only CLI stderr/--resume recovery (docs/155)
     ...(!recoveryRetryUsed && agentId === "claude" ? { recoverMissingConversation } : {}),
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
@@ -588,17 +948,33 @@ export async function executeAgentTurn(
     // whose `agent_done` never arrives), so this is the turn's last chance to
     // get its partial edits into git. `tryDrain` only commits when a turn is
     // queued behind this one, so an errored turn with an empty queue committed
-    // nothing. Ordered after the drain for the SHI-262 reason: with a queue,
+    // nothing. Ordered after the drain for the planning#264 reason: with a queue,
     // `tryDrain` has already committed and this reuses that commit; with none,
     // `drainNext` starts nothing, so no later turn's edits can be swept into
     // this turn's commit.
     onError: async () => {
       agentErrored = true;
-      finishTurn();
-      await postTurnStep("drain", tryDrain);
-      await postTurnStep("commit", runCommitAndPr);
+      // docs/140 — an ADOPTED turn can die here (an adapter error, a crashed
+      // process) while its re-arm is still awaiting the predecessor's post-turn
+      // sequence. Without this wait, the steps below run against the
+      // predecessor's latched `drainFired` and already-settled `commitPromise` /
+      // `commitAndPrPromise` — so they no-op, the re-arm clears the memos a
+      // moment later, and no terminal event is left to invoke them: the adopted
+      // turn's edits stay in the working tree. `rearmInFlight` is non-null only
+      // while a re-arm is genuinely running, so the ordinary error path is
+      // unchanged. (Defined below; `onError` fires long after.)
+      if (rearmInFlight) await rearmInFlight;
+      holdPostTurn();
+      try {
+        finishTurn();
+        await postTurnStep("drain", tryDrain);
+        await postTurnStep("commit", runCommitAndPr);
+      } finally {
+        releasePostTurn();
+      }
     },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
+    ...(adoptsCliStartedTurns ? { adoptsCliStartedTurns: true } : {}),
   });
 
   // For a resumed session (id already known) persist the user row synchronously
@@ -620,7 +996,7 @@ export async function executeAgentTurn(
   let receivedResult = false;
 
   /**
-   * SHI-277 — run ONE step of a turn's terminal sequence so that its failure
+   * planning#279 — run ONE step of a turn's terminal sequence so that its failure
    * cannot skip the steps after it. Above all: it cannot skip the commit.
    *
    * `7f6aeb85` made `runCommitAndPr` REACHABLE from every terminal path. It did
@@ -651,7 +1027,7 @@ export async function executeAgentTurn(
    *
    * So: no step of a terminal sequence may prevent a later one. A failure is
    * logged and the sequence continues. The ORDER is unchanged and still
-   * load-bearing (SHI-262 drain-after-commit, finished-SSE before the commit,
+   * load-bearing (planning#264 drain-after-commit, finished-SSE before the commit,
    * the runner "idle" signal after it) — this only removes the implicit
    * "…if everything before it succeeded".
    */
@@ -661,6 +1037,38 @@ export async function executeAgentTurn(
     } catch (err) {
       console.error(`[turn] post-turn step "${label}" failed for ${sessionId} (continuing):`, err);
     }
+  };
+
+  /**
+   * Keep the runner off the idle-reclaim list for the length of a terminal
+   * sequence (the 2026-08-10 duplicate-CI-fix incident).
+   *
+   * `tryDrain` clears `running` FIRST, so that every step after it — the
+   * auto-commit, the PR / re-arm / release flows, the settlement, and the
+   * debounced push the commit arms — runs while `agentBusy` reads false. The
+   * idle enforcer consults exactly `agentBusy` + `viewerCount` on a 30 s tick,
+   * so in a session whose last viewer detached more than the grace period ago
+   * (the ordinary shape for an autonomous CI-fix turn) it may dispose the runner
+   * mid-sequence. Production did, 31 ms after the commit: `dispose()` cancelled
+   * the pending auto-push, so the fix commit never reached the remote, and the
+   * `disposed` net settled the already-finished turn as `dropped`.
+   *
+   * Latched per `executeAgentTurn` call so `begin`/`end` are always balanced
+   * even when several terminal paths run (a `done` arriving after a clean
+   * `agent_result`, an `error` followed by a `done`). A retry hand-off leaves
+   * two live closures over one runner, which is why the runner side counts
+   * rather than flags.
+   */
+  let postTurnHeld = false;
+  const holdPostTurn = (): void => {
+    if (postTurnHeld || !runner) return;
+    postTurnHeld = true;
+    runner.beginPostTurnWork();
+  };
+  const releasePostTurn = (): void => {
+    if (!postTurnHeld || !runner) return;
+    postTurnHeld = false;
+    runner.endPostTurnWork();
   };
 
   // An auth-required turn legitimately ends without an `agent_result` — the
@@ -689,7 +1097,7 @@ export async function executeAgentTurn(
   const stderrTail = createAgentStderrTail();
   agent.on("log", (source: string, text: string) => { stderrTail.record(source, text); });
 
-  // SHI-316 — a newer spawn took this turn's agent slot. SETTLE ONLY: the turn
+  // planning#318 — a newer spawn took this turn's agent slot. SETTLE ONLY: the turn
   // that displaced this one owns the runner, the `_agent` slot and the working
   // tree, so this one must not clear `running`, drain the queue, broadcast a
   // finished-SSE or run a post-turn commit — doing any of that alongside a live
@@ -699,22 +1107,93 @@ export async function executeAgentTurn(
   // strands `systemTurnInProgress` (suppressing live steering for the rest of
   // the session) and, for a wake-turn, strands its merge-watch at
   // `merge-observed` where the retry supervisor re-delivers it.
+  //
+  // It must also GIVE UP its post-turn hold, which the non-streaming path opens
+  // at `agent_result` and closes in `done`. A retired turn's `done` carries the
+  // previous spawn's `runToken` and is dropped by the docs/146 stale-spawn
+  // guard, so `done` may never run for it — and the hold would then sit until
+  // its deadline, keeping an idle session unreclaimable for no reason. Releasing
+  // a LIVENESS CLAIM is not the teardown this handler is forbidden from doing:
+  // the displacing turn has `running` true, so the runner stays busy on its
+  // account, and the working tree is that turn's to sweep.
   agent.on("superseded", () => {
+    // docs/179 / docs/260 §3 — stand down when the displacement IS this turn's
+    // own recovery: the auth heal and the quota attempt loop replace the dying
+    // process on purpose (`runner.setAgent(freshAgent)` in `recoverAuth` /
+    // `retryOnNextAccount`) and the re-dispatched attempt owns settlement,
+    // exactly as the `done` handler already stands down on both flags. Worse
+    // than settling early: a quota-refused attempt has `receivedResult` true
+    // (the refusal arrived as its `agent_result`), so `finishTurn` here would
+    // settle the logical turn as COMPLETED — telling a multi-turn driver (the
+    // rebase conflict loop) that work the agent never did is done, which
+    // staged, continued and force-pushed unresolved conflict markers.
+    if (automaticRecoveryInProgress || quotaRetryInProgress) return;
     wasSuperseded = true;
     finishTurn();
+    releasePostTurn();
   });
 
   let tokenSyncFired = false;
   const trySyncToken = (): void => {
     if (tokenSyncFired) return;
     tokenSyncFired = true;
-    deps.finalizeAgentEnv?.(sessionId, agentId);
+    deps.finalizeAgentEnv?.(sessionId, agentId, capturedCredentialRoute);
   };
+
+  /**
+   * docs/140 — this turn's `turnSummary` as of its `agent_result`, read by
+   * `runCommit`. See the comment there: an adopted CLI-started turn can clear
+   * the live value before the commit runs. Cleared by `rearmForCliStartedTurn`
+   * so the adopted turn commits under its OWN summary.
+   */
+  let resultTurnSummary: string | null = null;
+
+  /**
+   * docs/140 Phase 6.11 — this executor is currently serving a turn the CLI
+   * started on its own, which has not yet produced its own `agent_result`.
+   *
+   * The closure still holds the turn it was INVOKED for — `input.prompt`,
+   * `receivedResult`, the dispatch handle — and an adopted turn shares none of
+   * that. Two consequences, both real:
+   *
+   *  - **No re-dispatch.** The quota failover and the auth-heal retry re-run
+   *    `input.prompt` on a fresh account. That prompt belongs to the turn the
+   *    USER sent; re-running it because an ADOPTED turn hit a limit repeats
+   *    work the agent already did and still doesn't retry what failed. Both
+   *    stand down and let the terminal teardown run instead.
+   *
+   *    **This half is reasoned from the code, not covered by a test** — unlike
+   *    everything else in this phase. Reaching the failover needs the credential
+   *    selection harness (`integration_tests/quota-exhaustion-retry.test.ts`'s
+   *    `prepareAgentEnv` routes) on a STREAMING dispatched turn, which no
+   *    existing harness sets up; a test written against the executor harness
+   *    alone passes with the guard removed, so it would pin nothing. Said out
+   *    loud rather than left implied.
+   *  - **The partial-turn finalize must still fire.** It is gated on
+   *    `!receivedResult`, which stays true from the turn that owns this closure
+   *    (deliberately — see `rearmForCliStartedTurn`), so an adopted turn that
+   *    dies on a bare `done` had its streamed rows left `in_progress` for the
+   *    next turn's `replaceInProgress` to delete. That is the same chat-history
+   *    loss this whole phase exists to stop, one path over.
+   */
+  let servingAdoptedTurn = false;
 
   let drainFired = false;
   const tryDrain = async (): Promise<void> => {
     if (drainFired) return;
     drainFired = true;
+    // docs/140 — stand down when the runner has moved on to a turn that is not
+    // this one. This step runs a few awaits after `agent_result`, and a turn the
+    // CLI starts on its own (a self-wake, or a live steer it acked too late to
+    // apply) is adopted inside that window: `adoptCliStartedTurn` bumps the
+    // epoch and sets `running` back to true. Clearing it again here would put
+    // the session back to IDLE for the whole adopted response — the original
+    // symptom, restored by the fix's own post-turn flow — and draining would
+    // start a queued turn CONCURRENTLY with the one the CLI is running. The
+    // adopted turn drains for itself: `rearmForCliStartedTurn` clears
+    // `drainFired` once this sequence settles. Same reasoning covers a
+    // successor orchestrator turn, which owns the runner for the same reason.
+    if (!turnIsCurrent()) return;
     if (runner) runner.running = false;
     // docs/169 — `postTurn: "none"` (rebase) still clears `running` so the
     // driver can dispatch the next resolution turn, but must NOT drain the
@@ -722,7 +1201,7 @@ export async function executeAgentTurn(
     // drains only after the rebase fully settles (the driver's own
     // `drainQueue` callback owns that).
     if (postTurn === "none") return;
-    // SHI-262 — the finished turn's edits MUST be in git before a queued turn
+    // planning#264 — the finished turn's edits MUST be in git before a queued turn
     // starts. A queued turn is free to begin by discarding working-tree state
     // (`git reset --hard`, `git checkout -f`, a branch reset); edits that never
     // entered git have no reflog entry and no way back, so draining first is a
@@ -739,6 +1218,14 @@ export async function executeAgentTurn(
     // where it was — after the `session_agent_finished` SSE broadcast, which
     // must not be delayed by post-turn work (see `broadcastFinishedIfIdle`).
     if ((runner?.queueLength ?? 0) > 0) await commitOnce();
+    // …and CHECK AGAIN. The commit above is real work (a `git add -A` on a large
+    // tree, plus chat-history bookkeeping), and a turn the CLI starts on its own
+    // can be adopted inside it — the check at the top of this function is stale
+    // by the time we get here. Draining now would start a queued turn CONCURRENTLY
+    // with the adopted one, which respawns the agent, removes the adopted turn's
+    // listeners and resets its accumulator mid-response. The adopted turn drains
+    // for itself once `rearmForCliStartedTurn` clears `drainFired`.
+    if (!turnIsCurrent()) return;
     await input.drainNext();
   };
 
@@ -752,7 +1239,23 @@ export async function executeAgentTurn(
     if (!runner?.sessionDir) return null;
     // Fallback chain: assistant-derived summary → dispatch activity label →
     // "Agent turn" (the unified default `postTurnCommit` also applies).
-    const summary = runner.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "Agent turn";
+    //
+    // docs/140 — prefer the LIVE summary, and fall back to the value snapshot at
+    // `agent_result` only when the runner has moved on to another turn.
+    //
+    // Both directions have a real failure. The commit is the last step of a
+    // sequence spanning several awaits, and a turn the CLI starts on its own is
+    // adopted inside that window — `adoptCliStartedTurn` runs
+    // `resetRunnerTurnState`, which clears `turnSummary` — so reading live
+    // UNCONDITIONALLY commits this turn's work under "Agent turn", or under the
+    // adopted turn's first line. But reading the snapshot unconditionally breaks
+    // Codex: it emits the turn's final text AFTER `turn/completed` as an
+    // `isStreamCompletion` event whose whole purpose is to replace the last tiny
+    // delta (often ".") as the commit summary, and the snapshot predates it.
+    // `turnIsCurrent()` separates the two: false means the live value belongs to
+    // someone else now.
+    const summarySource = turnIsCurrent() ? runner.turnSummary : (resultTurnSummary ?? runner.turnSummary);
+    const summary = summarySource.split("\n")[0]?.slice(0, 120) || activity || "Agent turn";
     try {
       if (deps.commitTurn) {
         return await deps.commitTurn({
@@ -767,10 +1270,31 @@ export async function executeAgentTurn(
       // Fallback for minimal test setups that wire `autoCommit` but not
       // `commitTurn`. Both production paths (`agent-execution.ts` and
       // `runner-registry-factory.ts`) wire `commitTurn` → `postTurnCommit`, which
-      // is where the SHI-315 banner state + remediation turn live; this path
+      // is where the planning#317 banner state + remediation turn live; this path
       // keeps the notice only, and deliberately has no `sessionManager` to
       // persist block state into.
+      //
+      // docs/128 / docs/211 — but it must not become the hole around the
+      // auto-commit gate: `postTurnCommit` refuses ops/sandbox at its top, and
+      // this fallback reaches `git.autoCommit` without going through it. Gated
+      // HERE, at the one call site, rather than inside the two identical
+      // `SystemTurnDeps.autoCommit` wirings (`agent-execution.ts` and
+      // `runner-registry-factory.ts`) — one check instead of two.
+      if (!sessionAutoCommitAllowed(deps.listenerDeps.sessionManager, sessionId)) return null;
       const result = await deps.autoCommit(runner.sessionDir, summary);
+      // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — same two states, same words as the
+      // `postTurnCommit` path. This path exists for setups that wire
+      // `autoCommit` without `commitTurn`, and requirement 15 is about the
+      // turn's outcome, not about which helper produced it.
+      if (result.unreadable) {
+        emitNoticePostTurn(
+          emit,
+          deps.listenerDeps.chatHistoryManager,
+          sessionId,
+          formatUnreadableWorkspaceNotice(result.unreadable, { committed: result.commitHash !== null }),
+          "warn",
+        );
+      }
       if (result.secretFindings.length > 0) {
         emitNoticePostTurn(
           emit,
@@ -794,7 +1318,7 @@ export async function executeAgentTurn(
       }
       if (!result.commitHash) return null;
       emit({ type: "git_committed", hash: result.commitHash, message: summary });
-      deps.scheduleAutoPush(runner.sessionDir);
+      deps.scheduleAutoPush(runner.sessionDir, sessionId);
       if (result.parentHash) {
         runner.pendingCommitLink = { commitHash: result.commitHash, parentCommitHash: result.parentHash };
         const updatedId = deps.listenerDeps.chatHistoryManager.updateLastMessage(sessionId, {
@@ -822,7 +1346,7 @@ export async function executeAgentTurn(
   };
 
   /**
-   * SHI-262 — run the local auto-commit at most once per turn, whichever path
+   * planning#264 — run the local auto-commit at most once per turn, whichever path
    * reaches it first. `tryDrain` calls this ahead of starting a queued turn;
    * `runCommitAndPr` calls it on the ordinary path. Memoizing the PROMISE (not
    * the resolved hash) means a second caller arriving while the commit is still
@@ -889,7 +1413,7 @@ export async function executeAgentTurn(
   // Guarded by `running` so a back-to-back queued turn that `tryDrain` just
   // started suppresses a spurious finished→started flicker.
   //
-  // SHI-262 caveat: when a message IS queued, `tryDrain` commits before starting
+  // planning#264 caveat: when a message IS queued, `tryDrain` commits before starting
   // it, so this broadcast lands after that commit. That path is suppressed by
   // the `running` guard anyway (the drained turn is already running), so the
   // promptness property above is unaffected — it only ever mattered for the
@@ -922,35 +1446,46 @@ export async function executeAgentTurn(
   // commit/PR/finished to `done` (the slow git work runs after the client has
   // cleared queued state).
   //
-  // SHI-262 — note that the non-streaming branch drains HERE, at `agent_result`,
+  // planning#264 — note that the non-streaming branch drains HERE, at `agent_result`,
   // while its commit runs later in `done`. Reordering the two statements in the
   // `done` handler would therefore have fixed nothing; the guarantee has to live
   // inside `tryDrain`, which is the one point every drain path goes through.
   let streamingPostTurnFired = false;
   /**
-   * SHI-247 — the streaming post-turn sequence currently in flight, assigned in
+   * planning#249 — the streaming post-turn sequence currently in flight, assigned in
    * the SAME synchronous block that sets `streamingPostTurnFired`. Anyone who
    * observes that flag as `true` therefore also observes this promise, which is
-   * what lets `rearmForSelfWokenTurn` wait the finished turn's flow out before
+   * what lets `rearmForCliStartedTurn` wait the finished turn's flow out before
    * clearing its memoized commit promises.
    */
   let streamingPostTurn: Promise<void> | null = null;
 
   /**
-   * SHI-247 — hand the guards back to a turn the CLI started on its own.
+   * planning#249 — hand the guards back to a turn the CLI started on its own.
    *
-   * A `Bash(run_in_background)` job finishing re-invokes the model, and for a
-   * resident streaming process that self-woken turn runs through THIS closure —
-   * the one the finished user turn left attached (listeners are removed only at
-   * the start of the next orchestrator-initiated turn). Every post-turn guard
-   * here is first-wins and scoped to one `executeAgentTurn` call, so the wake
-   * turn's `agent_result` hit `streamingPostTurnFired` and returned early:
-   * no token sync-back, no queue drain, no auto-commit, no push, no PR card.
-   * Production saw two sessions lose a 15-minute `shipit agent run` consult's
-   * edits to this in one hour, and ShipIt's own guidance tells agents to
-   * background that consult — so the wake path is the NORMAL case for
-   * cross-agent review, not a corner. docs/235 §6 deferred this deliberately;
-   * this is that follow-up.
+   * Two edges reach here, and both describe the same thing: the CLI opened a
+   * turn the orchestrator never asked for, on a resident streaming process, so
+   * it runs through THIS closure — the one the finished user turn left attached
+   * (listeners are removed only at the start of the next orchestrator-initiated
+   * turn).
+   *
+   *   - **`agent_self_wake`** (planning#249) — a `Bash(run_in_background)` job
+   *     finishing re-invokes the model.
+   *   - **top-level assistant output after this turn's `result`** (docs/140) —
+   *     the CLI acked a live steer too late to apply it to the finishing turn
+   *     and runs it as the next turn. Nothing announces it — there is no
+   *     `task_notification`, and the CLI's `init` is not proof of a turn (it is
+   *     emitted for `set_permission_mode` too; see `adoptCliStartedTurn`) — so
+   *     before this the orchestrator never learned the turn existed at all.
+   *
+   * Every post-turn guard here is first-wins and scoped to one
+   * `executeAgentTurn` call, so such a turn's `agent_result` hit
+   * `streamingPostTurnFired` and returned early: no token sync-back, no queue
+   * drain, no auto-commit, no push, no PR card. Production saw two sessions lose
+   * a 15-minute `shipit agent run` consult's edits to this in one hour, and
+   * ShipIt's own guidance tells agents to background that consult — so the wake
+   * path is the NORMAL case for cross-agent review, not a corner. docs/235 §6
+   * deferred this deliberately; this is that follow-up.
    *
    * Three things make it safe to re-arm here:
    *
@@ -970,7 +1505,9 @@ export async function executeAgentTurn(
    *     listener runs. `streamingPostTurnFired` is the executor-local equivalent
    *     — it is set only by this turn's `agent_result` — so `false` means the
    *     turn that owns these guards is still in flight and a re-arm would let a
-   *     duplicate `agent_result` run the whole post-turn flow twice.
+   *     duplicate `agent_result` run the whole post-turn flow twice. The same
+   *     flag is what makes the assistant edge safe: assistant output while the
+   *     turn is still in flight is just this turn talking.
    *
    *   - **After the in-flight sequence settles.** The wake can land in the
    *     window between `streamingPostTurnFired = true` and the finished turn's
@@ -988,32 +1525,101 @@ export async function executeAgentTurn(
    * later died. Same for `turnCompleteFired`: the wake turn is not the turn a
    * dispatch handle is waiting on, so it must not settle it a second time.
    */
-  const rearmForSelfWokenTurn = async (): Promise<void> => {
-    if (!useStreaming || !streamingPostTurnFired) return;
+  const rearmForCliStartedTurn = async (reason: string): Promise<void> => {
     await postTurnStep("await-post-turn", () => streamingPostTurn ?? Promise.resolve());
-    // A second wake can arrive while we await; the first one through re-arms and
+    // A second edge can arrive while we await (a wake and the wake turn's first
+    // assistant event are separate frames): the first one through re-arms and
     // the rest see the cleared flag and stand down.
     if (!streamingPostTurnFired) return;
-    console.log(`[turn] self-wake for ${sessionId}; re-arming the post-turn flow`);
+    console.log(`[turn] ${reason} for ${sessionId}; re-arming the post-turn flow`);
+    servingAdoptedTurn = true;
     tokenSyncFired = false;
     drainFired = false;
     streamingPostTurnFired = false;
     streamingPostTurn = null;
     commitPromise = null;
     commitAndPrPromise = null;
+    resultTurnSummary = null;
+    // The adopted turn now owns these closures. `agent-listeners` already gave
+    // it a fresh epoch (`adoptCliStartedTurn` runs `resetRunnerTurnState` before
+    // this listener fires); adopt it so that turn's own teardown — e.g.
+    // `onInterruptedTurn` after a crash — is not mistaken for a stale
+    // predecessor's.
+    thisTurnEpoch = runner?.turnEpoch;
+  };
+
+  /**
+   * docs/140 — the re-arm currently in flight, so the adopted turn's OWN
+   * `agent_result` can wait for it.
+   *
+   * The re-arm awaits the finished turn's whole post-turn sequence (commit + PR
+   * round-trip: seconds), and the CLI is not paused by that await. A short
+   * adopted turn — "rename the folder" is exactly that — can therefore reach its
+   * `result` while the guards it needs are still latched, hit
+   * `streamingPostTurnFired` and return: no commit, no drain, no PR card, i.e.
+   * precisely the bug this edge exists to fix, one window narrower. Awaiting
+   * here cannot deadlock: a re-arm is only ever created after this turn's own
+   * `result` published `streamingPostTurn`, and nothing in that sequence waits
+   * on a later event.
+   */
+  let rearmInFlight: Promise<void> | null = null;
+  const beginRearm = (reason: string): Promise<void> => {
+    // Non-null ONLY while a re-arm is genuinely in flight. Both halves matter:
+    // the guard keeps the ordinary turn (and every non-streaming one) from
+    // taking an extra microtask hop between `agent_result` and its post-turn
+    // work — `done` follows `agent_result` synchronously on those paths, so an
+    // unconditional await reorders the two — and the reset keeps a settled
+    // re-arm from doing the same to the adopted turn's own result.
+    if (!useStreaming || !streamingPostTurnFired) return Promise.resolve();
+    const pending = rearmForCliStartedTurn(reason).finally(() => {
+      if (rearmInFlight === pending) rearmInFlight = null;
+    });
+    rearmInFlight = pending;
+    return pending;
   };
 
   agent.on("event", async (event: AgentEvent) => {
-    // SHI-247 — the CLI is starting a turn nobody asked it for. `agent-listeners`
+    // planning#249 — the CLI is starting a turn nobody asked it for. `agent-listeners`
     // has already given it a clean accumulator and marked the runner running
     // (docs/235 §6); this gives it a post-turn flow to end on.
     if (event.type === "agent_self_wake") {
-      await rearmForSelfWokenTurn();
+      await beginRearm("self-wake");
+      return;
+    }
+    // docs/140 — the other edge for the same thing: top-level assistant output
+    // after this turn's `result` is the CLI running a live steer it acked too
+    // late to apply to the finishing turn. The `streamingPostTurnFired` guard
+    // inside is what makes this specific to output that arrives AFTER the turn
+    // ended; mid-turn assistant events no-op. Subagent output is excluded — a
+    // backgrounded subagent keeps talking after the parent turn's result and is
+    // not a turn (`agent-listeners` applies the same `parentToolUseId` filter).
+    if (event.type === "agent_assistant") {
+      // The capability gate belongs to THIS edge only. `agent_self_wake` above
+      // needs none: only the Claude adapter emits it, from the CLI's
+      // `task_notification`, so the event's own provenance is the gate (docs/235
+      // behaviour, unchanged). Assistant output has no such provenance — every
+      // backend emits it — so it needs `startsOwnTurns` to mean what it says.
+      if (!adoptsCliStartedTurns) return;
+      if (!event.parentToolUseId) await beginRearm("cli-started turn");
       return;
     }
     if (event.type !== "agent_result") return;
+    // docs/140 — snapshot the commit summary at the ONE instant it is certainly
+    // this turn's. Everything below runs across awaits, and an adopted turn can
+    // clear it in that window (see `runCommit`). Before the `rearmInFlight`
+    // await, which is exactly such a window.
+    if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
+    // See `rearmInFlight`: an adopted turn can finish before its re-arm has
+    // handed the guards over. Wait for it rather than reading a stale flag.
+    if (rearmInFlight) await rearmInFlight;
     receivedResult = true;
-    // docs/150 req 14 — before ANY post-turn work. Draining the queue or
+    // Announce the same fact on the runner. The executor-local `receivedResult`
+    // is invisible to the `disposed` / `turn_abandoned` nets in
+    // `dispatchOnRunner`, which is why a completed turn whose runner went away
+    // mid-teardown was reported to the CI auto-fix loop as never-run. Each
+    // dispatch latches this for its own turn — see `SessionRunnerEvents`.
+    runner?.emit("turn_result");
+    // docs/150-multiple-provider-subscriptions req 14 — before ANY post-turn work. Draining the queue or
     // broadcasting "finished" here would tell the user (and the next queued
     // turn) that a turn we are about to re-run is over. The retry owns
     // drain / commit / finished, exactly as the auth retry does.
@@ -1029,42 +1635,65 @@ export async function executeAgentTurn(
     // structurally invisible. `turnSummary` is this turn's own (it is cleared
     // by `resetRunnerTurnState` at turn start) and is already populated:
     // `wireAgentListeners` runs first and assigns it from `agent_assistant`.
-    if (!input.isQuotaRetry) {
+    if (quotaRetryAllowed()) {
       const exhausted = event.error
         ? detectHardExhaustion(event.error)
         : detectHardExhaustionInTurnText(runner?.turnSummary);
       if (exhausted) {
         quotaRetryInProgress = true;
-        await retryOnNextAccount();
+        await retryOnNextAccount(
+          ledgerEntryFor(event.error ?? runner?.turnSummary ?? "quota exhausted", exhausted),
+        );
         return;
       }
     }
+    // Cleared HERE, not at the top of this handler: the re-dispatch guards above
+    // are exactly what an adopted turn's result must still be judged by, and the
+    // turn is only "finished" once past them. Clearing it later would be wrong
+    // too — the `done` finalize below is widened by this flag, and a turn that
+    // DID produce a result had its rows finalized by `agent-listeners` already.
+    servingAdoptedTurn = false;
     if (useStreaming) {
       if (streamingPostTurnFired) return;
       streamingPostTurnFired = true;
-      // SHI-277 — every step runs through `postTurnStep`, so a throw in the
+      // planning#279 — every step runs through `postTurnStep`, so a throw in the
       // token sync-back, the drain or the finished-SSE broadcast can no longer
       // abandon the rest of the sequence (and with it the commit). This is the
       // path the ordinary streaming turn ends on, so it is the one that
       // silently dropped a completed turn's work.
       //
-      // SHI-247 — published as `streamingPostTurn` in this same synchronous
+      // planning#249 — published as `streamingPostTurn` in this same synchronous
       // block so a self-wake landing mid-flow waits it out before re-arming
-      // (see `rearmForSelfWokenTurn`). The sequence and its order are unchanged.
+      // (see `rearmForCliStartedTurn`). The sequence and its order are unchanged.
+      //
+      // The whole sequence runs under the post-turn hold: `agent-listeners`
+      // cleared `running` before this handler was reached, so without it every
+      // step below — including the commit and the push it arms — is exposed to
+      // idle reclaim.
+      holdPostTurn();
       streamingPostTurn = (async () => {
-        await postTurnStep("token-sync", trySyncToken);
-        // agent-listeners already set running=false; the resident process is NOT
-        // cleared (the next top-level turn reuses it via reuseExistingAgent).
-        // Drain through the guarded `tryDrain` (not `input.drainNext` directly)
-        // so the streaming `done` handler's drain — added for the abnormal-exit
-        // case below — can't double-drain after this normal end-of-turn drain.
-        await postTurnStep("drain", tryDrain);
-        await postTurnStep("finished-sse", broadcastFinishedIfIdle);
-        await postTurnStep("commit", runCommitAndPr);
-        await postTurnStep("idle", signalIdleIfIdle);
+        try {
+          await postTurnStep("token-sync", trySyncToken);
+          // agent-listeners already set running=false; the resident process is NOT
+          // cleared (the next top-level turn reuses it via reuseExistingAgent).
+          // Drain through the guarded `tryDrain` (not `input.drainNext` directly)
+          // so the streaming `done` handler's drain — added for the abnormal-exit
+          // case below — can't double-drain after this normal end-of-turn drain.
+          await postTurnStep("drain", tryDrain);
+          await postTurnStep("finished-sse", broadcastFinishedIfIdle);
+          await postTurnStep("commit", runCommitAndPr);
+          await postTurnStep("idle", signalIdleIfIdle);
+        } finally {
+          releasePostTurn();
+        }
       })();
       await streamingPostTurn;
     } else {
+      // Non-streaming ends across TWO events: this one drains (clearing
+      // `running`) and `done` commits. The hold therefore opens here and is
+      // released by the `done` handler's `finally` — the window the CI-fix turn
+      // in the 2026-08-10 incident was reclaimed inside.
+      holdPostTurn();
       await postTurnStep("token-sync", trySyncToken);
       await postTurnStep("drain", tryDrain);
     }
@@ -1077,16 +1706,43 @@ export async function executeAgentTurn(
     // owns the agent ref, the re-dispatch, and ALL terminal work (drain / commit
     // / finished). Stand down so we don't double-drain, emit a spurious error,
     // or finalize a turn that's about to be retried.
+    // NOTHING is released on either stand-down, deliberately. Both flags are set
+    // BEFORE this turn produced a result, so no hold of this turn's can be open
+    // here: `willRecoverAuth` runs before the agent is killed, and the quota
+    // gate returns ahead of the `agent_result` branch that opens the hold. The
+    // one state in which a hold IS open under `automaticRecoveryInProgress` is
+    // the FAILED heal — which is running the drain/commit sequence right now,
+    // under its own hold, and a release here would drop it mid-commit. The same
+    // race exists on the quota-retry rejection path. (Found by cross-backend
+    // review; the earlier "release so it can't leak behind the retry" reasoning
+    // was guarding a leak that cannot happen.)
     if (automaticRecoveryInProgress) return;
-    // docs/150 req 14 — same stand-down for the quota retry: `retryOnNextAccount`
+    // docs/150-multiple-provider-subscriptions req 14 — same stand-down for the quota retry: `retryOnNextAccount`
     // killed this process on purpose and the re-dispatched turn owns every
     // terminal step. Without this, the kill's `done` would drain the queue and
     // finalize a turn that is being re-run.
     if (quotaRetryInProgress) return;
+    // docs/140 — an ADOPTED turn can exit here (crash, OOM, SIGTERM) while its
+    // re-arm is still awaiting the predecessor's post-turn sequence. Everything
+    // below reads `drainFired` / `commitPromise` / `commitAndPrPromise` /
+    // `thisTurnEpoch`, all of which are still the predecessor's until the
+    // hand-over completes — so without this wait the adopted turn's partial
+    // edits reach neither the drain nor the commit, and the re-arm then clears
+    // the memos with no terminal event left to invoke them. `rearmInFlight` is
+    // non-null only while a re-arm is genuinely running, so the ordinary exit
+    // takes no extra hop — which matters: on the non-streaming path `done`
+    // follows `agent_result` synchronously, and an unconditional await here
+    // reorders the two.
+    if (rearmInFlight) await rearmInFlight;
+    // Hold the runner for the whole terminal sequence below — including the
+    // early `return`s, which the `finally` covers. On the non-streaming path
+    // this ADOPTS the hold `agent_result` already opened (the latch makes it a
+    // no-op) and is the point that finally closes it.
+    holdPostTurn();
     // docs/240 — everything below is wrapped so the turn SETTLES on every exit
     // path, including the early `return`s. The one that mattered is the
     // no-result hand-off near the bottom: it returns without calling
-    // `finishTurn`, which is exactly how SHI-260's callback ended up firing zero
+    // `finishTurn`, which is exactly how planning#262's callback ended up firing zero
     // times. Settling here is the structural version of that fix — a branch
     // added later that forgets to finish the turn still settles it, and
     // `runDispatchedTurn`'s attempt filter discards the settlement of an attempt
@@ -1104,13 +1760,40 @@ export async function executeAgentTurn(
           if (useStreaming) runner.isStreamingActive = false;
           // docs/235 — the CLI reaps its background tasks when it exits, so drop
           // our copy rather than leaving a stale count pinning `agentBusy` true
-          // and blocking idle reclaim forever.
+          // and blocking idle reclaim forever. planning#246 — this also announces
+          // the marker, so a process that exits without a draining event still
+          // clears the sidebar dot; it re-states the UNION, so a consult that
+          // outlived this turn keeps its half of it.
           runner.clearBackgroundTasks();
         }
       }
 
+      // A STALE, result-less exit stands down entirely. `!turnIsCurrent()`
+      // means a SUCCESSOR turn owns the runner, so every remaining step — the
+      // token sync-back, the no-result row, the partial finalize, the dispatch
+      // no-result hook (which would re-run this turn's prompt beside the live
+      // one), `running = false`, the queue drain, the finished-SSE, the commit
+      // and the idle signal — now belongs to that successor and running any of
+      // them here is interference (the double-failover-notice incident; see
+      // `turnIsCurrent`). This covers the exits the docs/146 SSE relay guard
+      // never sees: a RUNTIME_MODE=local child process, or a proxy event
+      // emitted locally. The `finally` below still settles the superseded turn
+      // (planning#318 — usually a no-op after the `superseded` event already did).
+      //
+      // Deliberately conditioned on `!receivedResult`: a COMPLETED turn's late
+      // `done` legitimately lands after its own drain started the next queued
+      // turn (which bumps the epoch) and must still run its memoized commit/PR
+      // flow. `receivedResult` is what separates "finished turn, late exit"
+      // from "killed mid-flight, superseded".
+      if (!receivedResult && !turnIsCurrent()) {
+        console.warn(
+          `[turn] stale exit (code ${code}) for ${sessionId} ignored — a newer turn owns the session`,
+        );
+        return;
+      }
+
       // Non-streaming captures the token here too (fallback if agent_result was
-      // lost); streaming already synced in the agent_result block. SHI-277 —
+      // lost); streaming already synced in the agent_result block. planning#279 —
       // guarded: a credentials-tree failure here must not skip the commit far
       // below.
       if (!useStreaming) await postTurnStep("token-sync", trySyncToken);
@@ -1152,7 +1835,7 @@ export async function executeAgentTurn(
         // read as "exited with code 1". Redacted + bounded by the tail itself.
         const detail = stderrTail.describe();
         const message = detail ? `${base}: ${detail}` : base;
-        // SHI-277 — this writes a chat row; a SQLite failure here must not skip
+        // planning#279 — this writes a chat row; a SQLite failure here must not skip
         // the commit below (a dead turn's partial edits are the whole reason
         // this path commits at all).
         await postTurnStep("no-result-row", () => {
@@ -1181,7 +1864,7 @@ export async function executeAgentTurn(
       // already owns the visible row. WS-only: dispatch leaves `onInterruptedTurn`
       // unset and surfaces no-result exits via `onNoResultExit` instead.
       if (!receivedResult && !sawAuthRequired) {
-        // SHI-277 — guarded for the same reason as the row above: it rewrites
+        // planning#279 — guarded for the same reason as the row above: it rewrites
         // chat-history rows, and its failure must not cost the turn its commit.
         await postTurnStep("finalize-partial-turn", () => input.onInterruptedTurn?.());
       }
@@ -1203,7 +1886,7 @@ export async function executeAgentTurn(
         !sawAuthRequired &&
         !(runner?.wasInterrupted ?? false)
       ) {
-        // SHI-277 — a hook that THROWS has not claimed the turn, so fall
+        // planning#279 — a hook that THROWS has not claimed the turn, so fall
         // through to the normal teardown (which commits) rather than
         // abandoning the sequence. Only a clean `true` hands the turn over.
         let handled = false;
@@ -1211,6 +1894,57 @@ export async function executeAgentTurn(
           handled = await input.onNoResultExit!(code, stderrTail.describe());
         });
         if (handled) return;
+      }
+
+      // Structural counterpart of `onInterruptedTurn` for turns whose caller
+      // supplied none (prod incident 2026-08-09, session 468191f5): a
+      // dispatched/steered turn whose process was SIGTERMed mid-turn reached
+      // this point with NOTHING finalizing its streamed rows when the
+      // no-result hook stood down (`wasInterrupted` true — e.g. an interrupt
+      // the resident process outlived) or threw. Those rows stayed
+      // `in_progress=1`, so the NEXT turn's `replaceInProgress()` deleted them
+      // — the user watched the turn's messages vanish on reload. Finalize here
+      // whenever no caller hook did, so a turn that dies without an
+      // `agent_result` can never leave rows behind for a later turn to sweep
+      // away. Three stand-downs: a SUPERSEDED turn's accumulator now belongs
+      // to the newer turn (rebuilding history from it would clobber that
+      // turn's live rows); a non-null agent slot means another turn is already
+      // live on this runner for the same reason; and an ERRORED turn was
+      // already finalized by the `error` listener (`agent-listeners.ts`),
+      // which leaves the accumulator populated — an adapter can emit `error`
+      // and then `done`, and re-running `replaceInProgress` here after the
+      // rows were finalized would append a duplicate copy of the turn.
+      if (
+        // docs/140 — `|| servingAdoptedTurn`: `receivedResult` describes the turn
+        // this closure was INVOKED for and deliberately survives an adoption, so
+        // on its own it would skip the finalize for an adopted turn that died
+        // without a result — leaving that turn's streamed rows `in_progress` for
+        // the next turn's `replaceInProgress` to delete. The no-result hook above
+        // stays disarmed (it would re-run the user's original prompt); only the
+        // row finalize is widened.
+        (!receivedResult || servingAdoptedTurn)
+        && !sawAuthRequired
+        && !agentErrored
+        && !input.onInterruptedTurn
+        && !wasSuperseded
+        && runner !== null
+        && runner.getAgent() === null
+      ) {
+        // planning#279 — guarded like every other step: this rewrites chat-history
+        // rows, and its failure must not cost the turn its commit below.
+        await postTurnStep("finalize-partial-turn-fallback", () => {
+          const partial = buildTurnMessages(
+            runner.chatMessageGroups,
+            runner.steeredMessages ?? [],
+            runner.recordedCards ?? [],
+            { inProgress: false },
+          );
+          deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, partial);
+          deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+          // Mirrors `onInterruptedTurn` (docs/163): the finalized turn must not
+          // be replayed on top of its persisted copy by a later WS reconnect.
+          runner.clearTurnEventBuffer();
+        });
       }
 
       if (useStreaming) {
@@ -1224,7 +1958,7 @@ export async function executeAgentTurn(
         // drained and only fires here on the abnormal-exit path. The done handler
         // above already cleared the resident ref + `isStreamingActive`, so the
         // drained turn spawns a fresh agent rather than writing to dead stdin.
-        // SHI-262 — on that abnormal-exit path `tryDrain` also runs the local
+        // planning#264 — on that abnormal-exit path `tryDrain` also runs the local
         // auto-commit first when something is queued, so the crashed turn's
         // partial edits are in git before the queued turn (which may reset the
         // working tree) starts.
@@ -1259,7 +1993,7 @@ export async function executeAgentTurn(
       // commit/PR, then signal idle (remediation) last. All guarded so a prior
       // agent_result that already drained/synced makes these no-ops — including
       // `runCommitAndPr`, whose `commitOnce` returns the commit `tryDrain`
-      // already made when it had a queued turn to start (SHI-262).
+      // already made when it had a queued turn to start (planning#264).
       await postTurnStep("drain", tryDrain);
       await postTurnStep("finished-sse", broadcastFinishedIfIdle);
       await postTurnStep("commit", runCommitAndPr);
@@ -1271,6 +2005,9 @@ export async function executeAgentTurn(
       // No-op whenever a branch above already called `finishTurn()`; the
       // backstop for the ones that returned early.
       settleTurn(turnNoResult(`agent process exited (code ${code}) without settling the turn`));
+      // Released only after the settlement, so the reclaim window this hold
+      // exists to close does not reopen one statement before it shuts.
+      releasePostTurn();
     }
   });
 
@@ -1278,7 +2015,18 @@ export async function executeAgentTurn(
   // listeners above are the whole job. Skip env-prep and the spawn entirely
   // (re-running `/agent/start` would 409 against the live process, and a
   // `sendUserMessage` would inject a phantom message into the user's turn).
-  if (input.adopt) return;
+  //
+  // docs/260 §5 — its route capture comes from the recovered resident identity
+  // (`turn-adoption.ts` restores it from the account marker), so refusals,
+  // rate-limit events, and write-back from the surviving process attribute to
+  // the account it actually runs on.
+  if (input.adopt) {
+    const resident = runner?.residentRoute;
+    capturedCredentialRoute = resident
+      ? { providerRouteKind: resident.kind, providerRouteId: resident.id }
+      : undefined;
+    return;
+  }
 
   try {
     // Sync the freshest OAuth token (and provision/pin on the first turn)
@@ -1299,11 +2047,59 @@ export async function executeAgentTurn(
     // (nikzlabs/shipit#1874). Credential *topology* changes only at a spawn
     // boundary; the token copy still happens either way.
     const envBegan = Date.now();
-    await deps.prepareAgentEnv?.(sessionId, agentId, {
+    const prep = await deps.prepareAgentEnv?.(sessionId, agentId, {
       reusingResidentAgent: input.reuseExistingAgent === true,
+      // docs/260 §3 — a credential the provider refused this turn is out of
+      // the running; selection may not hand it back.
+      ...(input.attemptLedger?.length
+        ? { excludeRouteIds: input.attemptLedger.map((entry) => entry.routeId) }
+        : {}),
+      // docs/260-turn-level-account-routing reqs 8/13 — the resident process's credential prefers to keep
+      // serving this session under `balanced`, and MUST keep it when the
+      // process is being reused (its token is in memory) or holds background
+      // work (killing it would lose the tokens already spent — req 13).
+      ...(runner?.residentRoute ? { residentRoute: runner.residentRoute } : {}),
+      requireResidentRoute:
+        runner?.residentRoute !== undefined
+        && (input.reuseExistingAgent === true
+          || (runner?.backgroundWorkDescriptions.length ?? 0) > 0),
     });
     console.log(`[turn] env-prep for ${sessionId} took ${Date.now() - envBegan}ms`);
-    activeResumeSessionId = deps.listenerDeps.sessionManager.get(sessionId)?.agentSessionId ?? null;
+    const preparedSession = deps.listenerDeps.sessionManager.get(sessionId);
+    activeResumeSessionId = preparedSession?.agentSessionId ?? null;
+    const turnRoute = prep?.turnRoute;
+    capturedCredentialRoute = turnRoute
+      ? { providerRouteKind: turnRoute.kind, providerRouteId: turnRoute.id }
+      : undefined;
+    // docs/260-turn-level-account-routing req 10 — say the account in the transcript when it changed:
+    // after a refusal ("X is out of quota — continuing on Y"), and between
+    // turns when routing moved the session ("Continuing on Y"). Labels are the
+    // user's own; both notices ride the in-turn persisted path.
+    const lastRefusal = input.attemptLedger?.at(-1);
+    if (runner && turnRoute) {
+      const routeLabel = deps.routeLabel?.(turnRoute.id) ?? turnRoute.id;
+      if (lastRefusal) {
+        const reason = lastRefusal.failureKind === "auth"
+          ? "could not authenticate"
+          : "is out of quota";
+        emitNoticeInTurn(
+          runner,
+          sessionId,
+          `${lastRefusal.label} ${reason} — continuing this turn on ${routeLabel}.`,
+          deps.listenerDeps.chatHistoryManager,
+        );
+      } else {
+        const previousRouteId = deps.listenerDeps.usageManager?.lastTurnCredentialRouteId?.(sessionId);
+        if (previousRouteId !== undefined && previousRouteId !== turnRoute.id) {
+          emitNoticeInTurn(
+            runner,
+            sessionId,
+            `Continuing on ${routeLabel}.`,
+            deps.listenerDeps.chatHistoryManager,
+          );
+        }
+      }
+    }
 
     if (input.reuseExistingAgent) {
       // docs/140 — carry the message into the resident streaming process. Push
@@ -1316,26 +2112,50 @@ export async function executeAgentTurn(
       }
       agent.sendUserMessage(prompt);
     } else {
-      // SHI-264 — stamp the delivery onto the spawn BEFORE it starts, so the
+      // planning#266 — stamp the delivery onto the spawn BEFORE it starts, so the
       // worker records it with the turn and reports it from `/agent/status`.
       // That report is the only thing that can tell an orchestrator which
       // started AFTER this turn what delivery the surviving turn belongs to.
       if (input.deliveryId !== undefined) agent.setDeliveryId?.(input.deliveryId);
       const paramsBegan = Date.now();
-      const runParams = await deps.buildRunParams(sessionId, agentId, prompt);
+      const runParams = await deps.buildRunParams(sessionId, agentId, prompt, turnRoute);
       console.log(`[turn] build-run-params for ${sessionId} took ${Date.now() - paramsBegan}ms; spawning agent`);
       // WS always carries `useStreaming` (true or false); dispatch leaves it
       // undefined so the run params are unchanged from the system-turn shape.
       agent.run(input.useStreaming !== undefined ? { ...runParams, useStreaming: input.useStreaming } : runParams);
       if (runner) runner.appliedPermissionMode = input.permissionMode;
-      // Record the model this process is actually running. The next turn
-      // compares its selection against this to decide whether the resident
-      // process can be reused (`resident-model-guard.ts`) — without it a
-      // mid-session model change is silently a no-op under live steering.
-      if (runner) runner.appliedModel = runParams.model;
+      // Record what this process was actually spawned AS — model, service,
+      // billing mode, style, endpoint and credential route. The next turn
+      // compares its own against this to decide whether the resident process can
+      // be reused (`resident-spawn-guard.ts`); without it a mid-session change
+      // is silently a no-op under live steering.
+      //
+      // Derived from the session row rather than from `runParams`, deliberately:
+      // the guard asks the same function of the same row, so the two agree by
+      // construction. Two derivations of "the same" tuple is how a spurious
+      // respawn on every turn gets built.
+      if (runner) {
+        runner.appliedSpawnIdentity = desiredSpawnIdentity(
+          deps.listenerDeps.sessionManager,
+          sessionId,
+          agentId,
+        );
+        // docs/260 §5 — the resident process's credential identity, typed
+        // runner state: what the next turn's pre-capture release check, the
+        // req-13 guard, and disconnect enumeration read.
+        runner.residentRoute = turnRoute ? { kind: turnRoute.kind, id: turnRoute.id } : undefined;
+      }
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
+    // docs/260-turn-level-account-routing req 6 — when the attempt loop ran out of candidates, the
+    // routing throw is generic while this turn holds the actual refusals.
+    // Replace the message with the ledger: each attempted credential, what
+    // the provider answered, and when it resets. Still the same error class,
+    // so the listener's blocked-turn path (no retry, verbatim surface) holds.
+    if (error instanceof ProviderRouteUnavailableError && input.attemptLedger?.length) {
+      error.message = allRefusedMessage(input.attemptLedger);
+    }
     agent.emit("error", error);
   }
 }

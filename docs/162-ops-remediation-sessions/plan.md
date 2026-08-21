@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-305
+issue: planning#307
 description: Give Ops sessions read-only ShipIt source access for diagnosis, then spawn targeted repo-backed fix sessions that can open normal PRs.
 ---
 

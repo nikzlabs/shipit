@@ -1,5 +1,5 @@
 /**
- * The docs/244 same-tick commit claim, exercised end-to-end (SHI-267).
+ * The docs/244 same-tick commit claim, exercised end-to-end (planning#269).
  *
  * The live emit strips a top-level tool result's body and replaces it with a
  * fetch. That is only safe because `replaceInProgress` is a synchronous
@@ -43,7 +43,7 @@ import { DatabaseManager } from "../../shared/database.js";
 const HEAVY = Array.from({ length: 5_000 }, (_, i) => `stdout line ${i}`).join("\n");
 const FILE_BODY = Array.from({ length: 500 }, (_, i) => `const x${i} = ${i};`).join("\n");
 
-describe("Integration: lazy bodies on a live turn (SHI-267)", () => {
+describe("Integration: lazy bodies on a live turn (planning#269)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -179,7 +179,7 @@ describe("Integration: lazy bodies on a live turn (SHI-267)", () => {
     client.close();
   });
 
-  it("a mid-turn reconnect no longer re-sends the bodies a boundary already committed (SHI-297)", async () => {
+  it("a mid-turn reconnect no longer re-sends the bodies a boundary already committed (planning#299)", async () => {
     // The third browser-facing path. The snapshot is built from the runner's
     // in-memory groups, so it can't tell "on disk" from "in memory" on its own
     // and used to ship the whole turn whole — re-sending, on every switch back,

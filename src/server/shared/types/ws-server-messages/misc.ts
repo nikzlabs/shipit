@@ -1,4 +1,5 @@
-import type { AgentId, SubAgentDefaults } from "../agent-types.js";
+import type { AgentId } from "../agent-types.js";
+import type { EligibleModel } from "../../agent-registry.js";
 import type { PermissionMode } from "../attachment-types.js";
 import type { FileDiff } from "../domain-types.js";
 import type { SubscriptionLimitsMap } from "../usage-limits-types.js";
@@ -25,8 +26,14 @@ export interface WsGlobalSettings {
     id: AgentId;
     name: string;
     installed: boolean;
-    authConfigured: boolean;
+    hasRunnableModels: boolean;
     models: string[];
+    /**
+     * docs/252 phase 3 (req 8) — the models this install can run on this
+     * harness, each as its `(service, billing mode, model)` triple. The picker
+     * reads this; `models` above is the same list's ids.
+     */
+    eligibleModels: EligibleModel[];
     /**
      * Whether the agent backend can run the chat-native AI review flow
      * (docs/125-chat-native-ai-review). Drives whether the "Ask agent to
@@ -48,12 +55,12 @@ export interface WsGlobalSettings {
   /** When true, mid-turn messages steer the running agent. (docs/140) */
   liveSteering: boolean;
   /**
-   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
    * id. Optional so an older orchestrator's payload still parses.
    */
   failoverCutoffs?: Record<string, { session: number; weekly: number }>;
   /**
-   * docs/150 req 21 — per-provider account selection mode, keyed by agent id.
+   * docs/150-multiple-provider-subscriptions req 21 — per-provider account selection mode, keyed by agent id.
    * Optional for the same reason as the cutoffs above: an older orchestrator's
    * payload must still parse, and its absence means "strict".
    */
@@ -66,8 +73,6 @@ export interface WsGlobalSettings {
   autoResetMergedBranch?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
-  /** docs/217 — per-agent sub-agent defaults (Control A), keyed by agent id. */
-  agentSubAgentDefaults?: Record<string, SubAgentDefaults>;
 }
 
 // ---- Template messages ----

@@ -7,9 +7,10 @@ import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { CredentialStore } from "../credential-store.js";
 import { ProviderAccountManager } from "../provider-account-manager.js";
+import { readSessionAccountMarker } from "../session-credentials.js";
 import { RepoStore } from "../repo-store.js";
 import { GitManager } from "../../shared/git.js";
-import { createHeadlessSession, seedFromIssueRef } from "./headless-sessions.js";
+import { createHeadlessSession, seedFromIssueRef, isIssueSeededBranch } from "./headless-sessions.js";
 import type { GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -17,6 +18,20 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { AgentId, AutoMergeState } from "../../shared/types.js";
+import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
+
+type InstalledHarnessesModule = typeof InstalledHarnesses;
+
+/**
+ * docs/252 phase 9 (req 14) — which harnesses this "deployment" has. Empty for
+ * every other test in this file, so they keep the pre-feature behaviour of
+ * "everything in the catalogue is installed".
+ */
+const uninstalledHarnesses = new Set<string>();
+vi.mock("../../shared/installed-harnesses.js", async (importOriginal) => {
+  const actual = await importOriginal<InstalledHarnessesModule>();
+  return { ...actual, isHarnessInstalled: (id: string) => !uninstalledHarnesses.has(id) };
+});
 
 interface FakeRunner {
   running: boolean;
@@ -53,7 +68,7 @@ function initWorkspace(dir: string): void {
 
 
 /**
- * docs/248 req 22 — the pushed branch name must never carry the issue title.
+ * docs/248-declared-issue-trackers req 22 — the pushed branch name must never carry the issue title.
  *
  * A branch is pushed to a public remote, so a title from a private planning
  * issue would be published there. The rule is unconditional: ShipIt has no
@@ -69,7 +84,7 @@ describe("seedFromIssueRef — branch names carry the pointer only", () => {
       identifier: "SHI-304",
       title: "Acquire competitor before Q3 board meeting",
     });
-    expect(seed.branch).toBe("shi-304");
+    expect(seed.branch).toMatch(/^shi-304-[a-z0-9_-]{1,6}$/);
     expect(seed.branch).not.toMatch(/acquire|competitor|board/);
   });
 
@@ -79,7 +94,7 @@ describe("seedFromIssueRef — branch names carry the pointer only", () => {
       identifier: "acme/planning#42",
       title: "Secret roadmap item",
     });
-    expect(seed.branch).toBe("acme-planning-42");
+    expect(seed.branch).toMatch(/^acme-planning-42-[a-z0-9_-]{1,6}$/);
     expect(seed.branch).not.toMatch(/secret|roadmap/);
   });
 
@@ -117,9 +132,56 @@ describe("seedFromIssueRef — branch names carry the pointer only", () => {
     expect(seed.branch).not.toContain("#");
   });
 
-  it("stays a pure function of the issue, so collisions are unchanged", () => {
+  // planning#413 — the pointer used to BE the branch, so a second session on
+  // one issue reused the first session's remote branch. Sequential sessions on
+  // one issue are ordinary (a follow-up, a re-run after a merge), and the reuse
+  // is silent in both directions: an open PR on that branch is returned as the
+  // new session's own PR with nothing pushed, and a merged one rejects the
+  // push non-fast-forward.
+  it("gives two sessions on the same issue different branches", () => {
     const ref = { tracker: "linear" as const, identifier: "SHI-1", title: "A" };
-    expect(seedFromIssueRef(ref).branch).toBe(seedFromIssueRef({ ...ref, title: "B" }).branch);
+    const first = seedFromIssueRef(ref).branch;
+    const second = seedFromIssueRef(ref).branch;
+    expect(first).not.toBe(second);
+    // …while both still read as that issue's branch.
+    expect(first).toMatch(/^shi-1-/);
+    expect(second).toMatch(/^shi-1-/);
+  });
+
+  it("keeps a long pointer's branch inside a sane length", () => {
+    const seed = seedFromIssueRef({
+      tracker: "github:acme/planning",
+      identifier: `acme/${"very-long-repo-name".repeat(5)}#4321`,
+      title: "T",
+    });
+    expect(seed.branch.length).toBeLessThanOrEqual(60);
+  });
+
+  it("recognizes a branch seeded from a given pointer, and only that pointer", () => {
+    const branch = seedFromIssueRef({ tracker: "linear", identifier: "SHI-1", title: "A" }).branch;
+    expect(isIssueSeededBranch(branch, "SHI-1")).toBe(true);
+    expect(isIssueSeededBranch("shipit/ab12cd", "SHI-1")).toBe(false);
+    // A pointer that slugifies to nothing matches nothing.
+    expect(isIssueSeededBranch("shipit/ab12cd", "###")).toBe(false);
+  });
+
+  // One stem being a character-prefix of another is what the trailing delimiter
+  // in the guard exists for, so both directions are pinned — the dangerous one
+  // is `shi-12-…` vs `SHI-1`, where the stem really is a prefix of the branch.
+  it("does not confuse pointers whose stems prefix each other", () => {
+    const one = seedFromIssueRef({ tracker: "linear", identifier: "SHI-1", title: "A" }).branch;
+    const twelve = seedFromIssueRef({ tracker: "linear", identifier: "SHI-12", title: "A" }).branch;
+    expect(isIssueSeededBranch(twelve, "SHI-1")).toBe(false);
+    expect(isIssueSeededBranch(one, "SHI-12")).toBe(false);
+    expect(isIssueSeededBranch(twelve, "SHI-12")).toBe(true);
+  });
+
+  // Branches seeded before the suffix existed are bare stems. They must still
+  // read as that issue's branch, or graduation would rename one out from under
+  // a PR that is already open on it.
+  it("still recognizes a legacy unsuffixed branch", () => {
+    expect(isIssueSeededBranch("shi-304", "SHI-304")).toBe(true);
+    expect(isIssueSeededBranch("shi-304", "SHI-30")).toBe(false);
   });
 });
 
@@ -162,6 +224,7 @@ describe("createHeadlessSession", () => {
   });
 
   afterEach(() => {
+    uninstalledHarnesses.clear();
     dbManager.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
     if (savedSessionId === undefined) delete process.env.SHIPIT_SESSION_ID;
@@ -218,7 +281,9 @@ describe("createHeadlessSession", () => {
       {
         repoUrl: "https://github.com/acme/app.git",
         prompt: "  Fix the failing tests  ",
-        branch: "quick-tests",
+        // A `title` pin (not a branch — there is no branch option since
+        // planning#413) is what makes graduation synchronous here.
+        title: "Fix the failing tests",
         agent: "codex",
         model: "gpt-5.4",
       },
@@ -230,11 +295,12 @@ describe("createHeadlessSession", () => {
     );
 
     expect(result.sessionId).toBe("quick-1");
-    expect(result.branch).toBe("quick-tests");
+    // The branch is always generated: `shipit/<6 base64url chars>`.
+    expect(result.branch).toMatch(/^shipit\/[a-z0-9_-]{1,6}$/);
     expect(result.session).toMatchObject({
       id: "quick-1",
       title: "Fix the failing tests",
-      branch: "quick-tests",
+      branch: result.branch,
       branchRenamed: true,
       model: "gpt-5.4",
     });
@@ -253,7 +319,229 @@ describe("createHeadlessSession", () => {
     expect(execSync("git branch --show-current", {
       cwd: path.join(tmpDir, "quick-1", "workspace"),
       encoding: "utf8",
-    }).trim()).toBe("quick-tests");
+    }).trim()).toBe(result.branch);
+  });
+
+  // docs/252 phase 9 (req 14) — Quick Capture is the one turn-dispatching path
+  // that does not go through `agentAdmissionError`: it dispatches straight onto
+  // the runner. Its agent comes from a catalogue-wide model lookup or from
+  // caller-supplied text, so a stale browser selection can name a harness this
+  // deployment does not have — and the pin is write-once.
+  it("falls back to the install's default agent when the requested one is not installed", async () => {
+    uninstalledHarnesses.add("claude");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "stale selection",
+        agent: "claude",
+      },
+      "codex",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
+    expect(registry.created).toEqual([expect.objectContaining({ agentId: "codex" })]);
+    // planning#389 — this substitution stays a substitution, and stays audible.
+    // It is a different question from the style check below: the harness COULD
+    // run the model, this deployment just doesn't ship it, and the user cannot
+    // re-aim a quick capture from where they are.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("is not installed in this deployment"));
+    warn.mockRestore();
+  });
+
+  it("still honours a requested agent the deployment does have", async () => {
+    uninstalledHarnesses.add("codex");
+
+    await createHeadlessSession(
+      sessionManager,
+      registry as unknown as SessionRunnerRegistry,
+      claimService(),
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        prompt: "deliberate pick",
+        agent: "claude",
+      },
+      "claude",
+      undefined,
+      undefined,
+      undefined,
+      graduationDeps,
+    );
+
+    expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude" });
+  });
+
+  // planning#389 — the four cases the harness/model pair can be in. Only the
+  // second is a refusal; the other three are the behaviours docs/166 and
+  // planning#304 settled, and they are asserted here so a future edit cannot
+  // widen the refusal into them.
+  describe("an explicit harness that disagrees with the model", () => {
+    it("refuses when the harness cannot speak the model's API style", async () => {
+      const service = claimService();
+
+      await expect(createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        service,
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "Run this on Codex",
+          // `claude-opus-5` declares anthropic-messages only; Codex speaks
+          // neither of that model's styles. Rerouting this to Claude ran and
+          // BILLED four sessions the callers never asked for.
+          agent: "codex",
+          model: "claude-opus-5",
+          serviceId: "anthropic",
+          billingMode: "sub",
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      )).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Codex cannot run Opus 5 — they share no API style. "
+          + "Choose a model Codex can run, or run Opus 5 on Claude Code.",
+      });
+
+      // Refused before any side effect: no warm session claimed, no runner, no
+      // session row, and above all no turn dispatched onto the other harness.
+      expect(service.claim).not.toHaveBeenCalled();
+      expect(registry.created).toEqual([]);
+      expect(sessionManager.list()).toEqual([]);
+    });
+
+    it("still derives the harness from the model when the caller named none (docs/166)", async () => {
+      await createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "no harness named",
+          model: "claude-opus-5",
+        },
+        "codex",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      );
+
+      // The model is the source of truth, and with nothing to contradict there
+      // is nothing to refuse — it beats the install default, exactly as before.
+      expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude", agentPinned: true });
+    });
+
+    it("honours a harness that shares the model with the other one (planning#304)", async () => {
+      await createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "shared model",
+          // Both harnesses list `deepseek-v4-pro`, so this is not a disagreement
+          // at all — `agentIdForModel` merely answers with whichever sorts first.
+          agent: "codex",
+          model: "deepseek-v4-pro",
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      );
+
+      expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
+    });
+
+    it("passes through a model id no harness lists, keeping the named harness", async () => {
+      await createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "forward compat",
+          // A versioned or newer id the catalogue hasn't surfaced yet. Nothing
+          // says the pair is incoherent, so refusing it would break the same
+          // forward-compat the child-session and role validators keep.
+          agent: "codex",
+          model: "gpt-5.7-not-in-the-catalogue-yet",
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      );
+
+      expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
+    });
+
+    it("refuses an agent id no harness has, rather than silently using the model's", async () => {
+      const service = claimService();
+
+      // Free text off the wire — the route casts it without checking. Falling
+      // through would resolve to the MODEL's harness, so a one-character typo
+      // created a session on Claude, pinned write-once, and billed its first
+      // turn: planning#389's defect one step out. The installed-harness gate
+      // below cannot catch it, because the id it is finally asked about is a
+      // real installed one.
+      await expect(createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        service,
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "unknown harness",
+          agent: "codexx" as AgentId,
+          model: "claude-opus-5",
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      )).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Unknown agent 'codexx'. Valid agents: claude, codex, opencode, grok.",
+      });
+
+      expect(service.claim).not.toHaveBeenCalled();
+      expect(sessionManager.list()).toEqual([]);
+    });
+
+    it("refuses an unknown agent id with no model too — one rule, not two", async () => {
+      // Without a model the old path fell back to the install default with a
+      // console warning, which is quieter than a 400 and says nothing to the
+      // caller. `spawnChildSession` refuses this id unconditionally; so does this.
+      await expect(createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "unknown harness, no model",
+          agent: "gemini" as AgentId,
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      )).rejects.toMatchObject({ statusCode: 400, message: /^Unknown agent 'gemini'\./ });
+    });
   });
 
   it("persists a valid reasoning effort on the session row before the first turn", async () => {
@@ -356,21 +644,16 @@ describe("createHeadlessSession", () => {
     expect(claim.claim).not.toHaveBeenCalled();
   });
 
-  it("routes credential provisioning through providerAccountManager when one is supplied", async () => {
-    // Regression for the quick-session "not logged in" bug. After
-    // `migrateDefaultAccounts()` runs at orchestrator startup, the legacy
-    // `<credentialsDir>/.claude` (and `.codex`) becomes a symlink into
-    // `provider-accounts/`. The headless path used to skip
-    // `providerAccountManager`, so `prepareSessionAgentEnvironment` fell into
-    // the legacy `provisionAgentCredentials` branch, which copied the symlink
-    // verbatim into the per-session subtree — pointing at an orchestrator path
-    // the container can't resolve. The fix forwards the manager so
-    // `selectRouteForTurn` picks the account route and provisions from the
-    // real account directory. Asserting `providerRoute*` metadata on the
-    // session is the cleanest way to prove the route selector was consulted
-    // without standing up a real container runner. The two agents share the
-    // exact same plumbing, so we exercise both to make sure the symmetry
-    // doesn't drift.
+  it("keeps env-prep account-neutral: no selection, no provisioning (docs/260 §5b)", async () => {
+    // docs/260 removed session→account pinning: headless create's env-prep is
+    // now a WARM-UP (`enforceAccountRouting` unset), and warm-ups are
+    // account-neutral by design — they select no account, stamp no route, and
+    // provision no per-session credential subtree. The real first turn's own
+    // pre-spawn env-prep, moments later, is what selects and provisions; a
+    // selection here would double-select against it. This test pins that
+    // neutrality with connected accounts present for BOTH providers, so a
+    // regression back to eager selection has something to select.
+    //
     // Real credential files, not bare directories: migration gates on a
     // credential marker having content, because an empty `.claude` is something
     // anything running with `HOME=/root` can create through the image-level
@@ -386,8 +669,11 @@ describe("createHeadlessSession", () => {
       credentialStore,
     });
     providerAccountManager.migrateDefaultAccounts();
-    expect(providerAccountManager.getPrimary("claude")?.id).toBe("claude-default");
-    expect(providerAccountManager.getPrimary("codex")?.id).toBe("codex-default");
+    expect(providerAccountManager.getPrimary("anthropic")?.id).toBe("claude-default");
+    expect(providerAccountManager.getPrimary("openai")?.id).toBe("codex-default");
+    // A resolved selection always stamps usage (docs/150-multiple-provider-subscriptions req 21) — so an
+    // untouched spy proves no selection resolved.
+    const markUsed = vi.spyOn(providerAccountManager, "markAccountUsed");
 
     await createHeadlessSession(
       sessionManager,
@@ -400,9 +686,19 @@ describe("createHeadlessSession", () => {
       providerAccountManager,
       graduationDeps,
     );
+    // No account selected, no route stamped anywhere: not on the session row,
+    // not on the runner, and no per-session credential subtree (whose account
+    // marker is provisioning's one durable trace — docs/260 §4).
+    expect(markUsed).not.toHaveBeenCalled();
     const claudeSession = sessionManager.get("quick-1");
-    expect(claudeSession?.providerRouteKind).toBe("account");
-    expect(claudeSession?.providerRouteId).toBe("claude-default");
+    expect(claudeSession?.providerRouteKind).toBeUndefined();
+    expect(claudeSession?.providerRouteId).toBeUndefined();
+    expect((registry.get("quick-1") as { residentRoute?: unknown } | undefined)?.residentRoute)
+      .toBeUndefined();
+    expect(readSessionAccountMarker(tmpDir, "quick-1")).toEqual({});
+    // Neutrality must not stall the session: the first turn still dispatches,
+    // and ITS env-prep is what provisions.
+    expect(registry.get("quick-1")?.dispatch).toHaveBeenCalledTimes(1);
 
     await createHeadlessSession(
       sessionManager,
@@ -415,9 +711,13 @@ describe("createHeadlessSession", () => {
       providerAccountManager,
       graduationDeps,
     );
+    // Same neutrality for the other harness — the two share the plumbing.
+    expect(markUsed).not.toHaveBeenCalled();
     const codexSession = sessionManager.get("quick-2");
-    expect(codexSession?.providerRouteKind).toBe("account");
-    expect(codexSession?.providerRouteId).toBe("codex-default");
+    expect(codexSession?.providerRouteKind).toBeUndefined();
+    expect(codexSession?.providerRouteId).toBeUndefined();
+    expect(readSessionAccountMarker(tmpDir, "quick-2")).toEqual({});
+    expect(registry.get("quick-2")?.dispatch).toHaveBeenCalledTimes(1);
   });
 
   it("defers branchRenamed when no explicit branch/title is pinned", async () => {
@@ -473,13 +773,14 @@ describe("createHeadlessSession", () => {
       graduationDeps,
     );
 
-    // docs/248 req 22 — the branch is the POINTER ONLY. A branch gets pushed to a
-    // public remote, so the issue title must not appear in it. The session title
-    // and the seed prompt still carry it: both stay inside ShipIt.
-    expect(result.branch).toBe("shi-67");
+    // docs/248-declared-issue-trackers req 22 — the branch is the POINTER (plus a uniqueness suffix,
+    // planning#413), never the title. A branch gets pushed to a public remote,
+    // so the issue title must not appear in it. The session title and the seed
+    // prompt still carry it: both stay inside ShipIt.
+    expect(result.branch).toMatch(/^shi-67-[a-z0-9_-]{1,6}$/);
     expect(result.branch).not.toContain("inline");
     expect(result.session.title).toBe("SHI-67: Inline tracker Issues tab");
-    expect(result.session.branch).toBe("shi-67");
+    expect(result.session.branch).toBe(result.branch);
     // The first dispatched prompt names the issue and tells the agent how to
     // read it — it does not carry a copy of the body (see the seed tests above).
     const text = registry.get(result.sessionId)?.dispatch.mock.calls[0][0].text as string;

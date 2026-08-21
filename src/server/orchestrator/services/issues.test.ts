@@ -25,6 +25,7 @@ import {
   userSetIssueLabels,
   createIssueForTracker,
   createLabelForTracker,
+  updateLabelForTracker,
   commentOnIssueForTracker,
   editCommentForTracker,
   updateIssueForTracker,
@@ -305,7 +306,7 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
   });
 });
 
-describe("listLabelsForTracker (SHI-92 foundation)", () => {
+describe("listLabelsForTracker (planning#94 foundation)", () => {
   it("returns the GitHub repo's labels with normalized colors", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
       expect((url as string)).toContain("/repos/octocat/hello-world/labels");
@@ -346,7 +347,7 @@ describe("listLabelsForTracker (SHI-92 foundation)", () => {
   });
 });
 
-describe("listStatusesForTracker (SHI-199)", () => {
+describe("listStatusesForTracker (planning#201)", () => {
   it("returns GitHub's fixed Open/Closed pair without a network call", async () => {
     // GitHub has no workflow states — the discovery list is the static pair, so
     // no fetch should fire.
@@ -591,7 +592,7 @@ function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
 }
 
 /**
- * A GitHub stub that also serves the repo `GET /labels` endpoint (SHI-92), so
+ * A GitHub stub that also serves the repo `GET /labels` endpoint (planning#94), so
  * label resolution can validate names. `existing` is the repo's label set.
  */
 function ghFetchWithLabels(existing: string[], over: Partial<{ issue: Record<string, unknown> }> = {}) {
@@ -675,7 +676,7 @@ describe("issue write services (docs/177)", () => {
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("create: forwards labels to the GitHub adapter (resolved against repo labels) (SHI-92)", async () => {
+  it("create: forwards labels to the GitHub adapter (resolved against repo labels) (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["security", "backend"]);
     const out = await createIssueForTracker(store, "github", "New", "", { labels: ["security"] }, fetchImpl, GH);
     // The POST /issues carried the resolved label.
@@ -684,20 +685,20 @@ describe("issue write services (docs/177)", () => {
     expect(out.summary).toContain("labels: security");
   });
 
-  it("create: rejects --priority on GitHub with a 422 (SHI-92)", async () => {
+  it("create: rejects --priority on GitHub with a 422 (planning#94)", async () => {
     await expect(
       createIssueForTracker(store, "github", "New", "", { priority: "high" }, ghFetch(), GH),
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  it("create: an unknown GitHub label is rejected with the candidate list (SHI-92)", async () => {
+  it("create: an unknown GitHub label is rejected with the candidate list (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["security", "backend"]);
     await expect(
       createIssueForTracker(store, "github", "New", "", { labels: ["nope"] }, fetchImpl, GH),
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  // docs/248 req 11's carve-out — reversing a write grants no access the write
+  // docs/248-declared-issue-trackers req 11's carve-out — reversing a write grants no access the write
   // did not already have (the card could only exist if the destination was
   // declared when it was written), so an Undo must survive the repository
   // dropping that declaration rather than being stranded behind a config edit.
@@ -841,7 +842,7 @@ describe("issue write services (docs/177)", () => {
     expect(preview.length).toBeLessThanOrEqual(281); // 280 + ellipsis
   });
 
-  // ---- comment edit (SHI-86) ----------------------------------------------
+  // ---- comment edit (planning#88) ----------------------------------------------
 
   /**
    * `ghFetch` plus the two calls a comment edit adds: the by-id comment read
@@ -935,7 +936,7 @@ describe("issue write services (docs/177)", () => {
     expect(out.content).toEqual({ descriptionChanged: true });
   });
 
-  it("edit: labels are additive (merged with existing) and snapshot the prior set (SHI-92)", async () => {
+  it("edit: labels are additive (merged with existing) and snapshot the prior set (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["existing", "added"], { issue: { labels: [{ name: "existing" }] } });
     const out = await updateIssueForTracker(store, "github", "42", { labels: ["added"] }, fetchImpl, GH);
     // PATCH carried the merged set (existing kept + added), not just "added".
@@ -947,7 +948,7 @@ describe("issue write services (docs/177)", () => {
     expect(out.content?.attrs).toContain("labels:");
   });
 
-  it("undo: edit → restores the prior label set by replacing (SHI-92)", async () => {
+  it("undo: edit → restores the prior label set by replacing (planning#94)", async () => {
     const fetchImpl = ghFetchWithLabels(["existing"], { issue: { labels: [{ name: "added" }] } });
     await undoIssueWrite(
       store,
@@ -959,7 +960,7 @@ describe("issue write services (docs/177)", () => {
     expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["existing"]);
   });
 
-  it("undo: edit → restores the prior parent on Linear (SHI-206)", async () => {
+  it("undo: edit → restores the prior parent on Linear (planning#208)", async () => {
     store.setLinearToken("lin_x");
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
@@ -983,7 +984,7 @@ describe("issue write services (docs/177)", () => {
     expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ parentId: "uuid-prior" });
   });
 
-  it("edit: snapshots the prior priority level for undo on Linear (SHI-92)", async () => {
+  it("edit: snapshots the prior priority level for undo on Linear (planning#94)", async () => {
     store.setLinearToken("lin_x");
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
@@ -1009,7 +1010,7 @@ describe("issue write services (docs/177)", () => {
     expect(out.undo).toMatchObject({ kind: "edit", previousPriority: "low" });
   });
 
-  it("edit: reparents on Linear, resolves the parentId, and snapshots the prior parent (SHI-206)", async () => {
+  it("edit: reparents on Linear, resolves the parentId, and snapshots the prior parent (planning#208)", async () => {
     store.setLinearToken("lin_x");
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
@@ -1019,7 +1020,7 @@ describe("issue write services (docs/177)", () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
       const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
       if (query.includes("query Issue")) {
-        // Prior issue already nests under SHI-100 → its internal id is snapshotted.
+        // Prior issue already nests under planning#102 → its internal id is snapshotted.
         return jsonResponse({ data: { issue: { ...node, parent: { id: "uuid-old", identifier: "SHI-100" } } } });
       }
       if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1", team: { key: "SHI" } } } });
@@ -1040,7 +1041,7 @@ describe("issue write services (docs/177)", () => {
     expect(out.content?.attrs).toContain("parent → roadmap#SHI-204");
   });
 
-  it("edit: detaching on Linear snapshots previousParentId null and sends parentId null (SHI-206)", async () => {
+  it("edit: detaching on Linear snapshots previousParentId null and sends parentId null (planning#208)", async () => {
     store.setLinearToken("lin_x");
         const node = {
       id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
@@ -1129,7 +1130,7 @@ describe("issue write services (docs/177)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Label creation (SHI-230): `shipit issue label create` + --create-missing-labels
+// Label creation (planning#232): `shipit issue label create` + --create-missing-labels
 // ---------------------------------------------------------------------------
 
 /**
@@ -1138,8 +1139,11 @@ describe("issue write services (docs/177)", () => {
  * on the issue write) sees its own creations. `used` marks labels the
  * usage-check endpoint reports as carried by an issue.
  */
-function ghLabelStoreFetch(existing: string[], used: string[] = []) {
-  const labels = [...existing];
+function ghLabelStoreFetch(
+  existing: (string | { name: string; color?: string; description?: string })[],
+  used: string[] = [],
+) {
+  const labels = existing.map((l) => (typeof l === "string" ? { name: l } : { ...l }));
   const issue = {
     id: 1,
     number: 42,
@@ -1157,11 +1161,24 @@ function ghLabelStoreFetch(existing: string[], used: string[] = []) {
       const name = decodeURIComponent(new URL(u).searchParams.get("labels") ?? "");
       return ghResponse(used.includes(name) ? [{ number: 42 }] : []);
     }
-    if (method === "GET" && u.includes("/labels")) return ghResponse(labels.map((name) => ({ name })));
+    if (method === "GET" && u.includes("/labels")) return ghResponse(labels.map((l) => ({ ...l })));
     if (method === "POST" && u.endsWith("/labels")) {
-      const body = JSON.parse(init?.body as string) as { name: string; color?: string };
-      labels.push(body.name);
-      return ghResponse({ name: body.name, color: body.color ?? "ededed" }, 201);
+      const body = JSON.parse(init?.body as string) as { name: string; color?: string; description?: string };
+      const created = { name: body.name, color: body.color ?? "ededed", ...(body.description ? { description: body.description } : {}) };
+      labels.push(created);
+      return ghResponse(created, 201);
+    }
+    if (method === "PATCH" && u.includes("/labels/")) {
+      // GitHub patches a label by its CURRENT name and renames in place via
+      // `new_name` — the label keeps its identity (and its issues).
+      const name = decodeURIComponent(u.slice(u.indexOf("/labels/") + "/labels/".length));
+      const target = labels.find((l) => l.name === name);
+      if (!target) return ghResponse({ message: "Not Found" }, 404);
+      const body = JSON.parse(init?.body as string) as { new_name?: string; color?: string; description?: string };
+      if (body.new_name !== undefined) target.name = body.new_name;
+      if (body.color !== undefined) target.color = body.color;
+      if (body.description !== undefined) target.description = body.description;
+      return ghResponse({ ...target });
     }
     if (method === "DELETE" && u.includes("/labels/")) return ghResponse(null, 204);
     if (method === "GET" && u.endsWith("/issues/42")) return ghResponse(issue);
@@ -1175,7 +1192,7 @@ function ghLabelStoreFetch(existing: string[], used: string[] = []) {
   });
 }
 
-describe("label creation (SHI-230)", () => {
+describe("label creation (planning#232)", () => {
   let store: CredentialStore;
   beforeEach(() => {
     store = tmpStore();
@@ -1294,5 +1311,203 @@ describe("label creation (SHI-230)", () => {
       ),
     ).rejects.toMatchObject({ message: expect.stringContaining("in use") });
     expect(fetchImpl.mock.calls.some(([, i]) => i?.method === "DELETE")).toBe(false);
+  });
+
+  it("createLabelForTracker's duplicate-name refusal points at `label edit`", async () => {
+    const fetchImpl = ghLabelStoreFetch(["Security"]);
+    // The 409 stands (a typo must never repaint a live label), but it is no
+    // longer a dead end — planning#88 gave it a verb to name.
+    await expect(createLabelForTracker(store, "github", "security", {}, fetchImpl, GH)).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringContaining("shipit issue label edit"),
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Label editing (planning#88): `shipit issue label edit`
+// ---------------------------------------------------------------------------
+
+describe("label editing (planning#88)", () => {
+  let store: CredentialStore;
+  beforeEach(() => {
+    store = tmpStore();
+  });
+
+  it("recolors a label and snapshots the prior color for undo", async () => {
+    const fetchImpl = ghLabelStoreFetch([{ name: "Feature", color: "ededed" }]);
+    const out = await updateLabelForTracker(store, "github", "Feature", { color: "#8b5cf6" }, fetchImpl, GH);
+    expect(out.label).toEqual({ name: "Feature", color: "#8b5cf6" });
+    expect(out.undo).toEqual({ kind: "label-edit", labelId: "Feature", previousColor: "#ededed" });
+    // A recolor is invisible to every issue carrying the label, so line 2 of the
+    // card is the only place the change shows.
+    expect(out.content).toEqual({ attrs: "color → #8b5cf6" });
+    expect(out.summary).toContain("color → #8b5cf6");
+  });
+
+  it("renames a label case-insensitively matched, snapshotting the prior name", async () => {
+    const fetchImpl = ghLabelStoreFetch([{ name: "bug", color: "d73a4a" }]);
+    // The motivating case: a label found by the wrong casing and fixed to the
+    // right one. Matching has to ignore case or the label is unreachable.
+    const out = await updateLabelForTracker(store, "github", "BUG", { name: "Bug" }, fetchImpl, GH);
+    expect(out.label.name).toBe("Bug");
+    // The undo address is the id AFTER the rename — on GitHub the name IS the id.
+    expect(out.undo).toEqual({ kind: "label-edit", labelId: "Bug", previousName: "bug" });
+    expect(out.content).toEqual({ label: { before: "bug", after: "Bug" } });
+    const patch = fetchImpl.mock.calls.find(([u, i]) => i?.method === "PATCH" && (u as string).includes("/labels/"))!;
+    expect(JSON.parse(patch[1]?.body as string)).toEqual({ new_name: "Bug" });
+  });
+
+  it("undo restores the previous color", async () => {
+    const fetchImpl = ghLabelStoreFetch([{ name: "Feature", color: "ededed" }]);
+    const out = await updateLabelForTracker(store, "github", "Feature", { color: "#8b5cf6" }, fetchImpl, GH);
+    await undoIssueWrite(store, { tracker: "github", issueId: "", undo: out.undo }, fetchImpl, GH);
+    const patches = fetchImpl.mock.calls.filter(([u, i]) => i?.method === "PATCH" && (u as string).includes("/labels/"));
+    // The reverse write restores ONLY the field the edit changed (GitHub's API
+    // takes the hex without '#', which the adapter strips).
+    expect(JSON.parse(patches[patches.length - 1][1]?.body as string)).toEqual({ color: "ededed" });
+    const labels = await listLabelsForTracker(store, "github", fetchImpl, GH);
+    expect(labels.labels).toEqual([{ name: "Feature", color: "#ededed" }]);
+  });
+
+  it("undo restores the previous name, leaving every other field alone", async () => {
+    const fetchImpl = ghLabelStoreFetch([{ name: "bug", color: "d73a4a" }]);
+    const out = await updateLabelForTracker(store, "github", "bug", { name: "Bug" }, fetchImpl, GH);
+    await undoIssueWrite(store, { tracker: "github", issueId: "", undo: out.undo }, fetchImpl, GH);
+    const labels = await listLabelsForTracker(store, "github", fetchImpl, GH);
+    expect(labels.labels).toEqual([{ name: "bug", color: "#d73a4a" }]);
+  });
+
+  it("404s on a label the tracker doesn't have, naming the valid set", async () => {
+    const fetchImpl = ghLabelStoreFetch(["security"]);
+    await expect(
+      updateLabelForTracker(store, "github", "t3code", { color: "#000000" }, fetchImpl, GH),
+    ).rejects.toMatchObject({ statusCode: 404, message: expect.stringContaining("security") });
+    expect(fetchImpl.mock.calls.every(([, i]) => (i?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  it("409s rather than merging when the new name is a different existing label", async () => {
+    const fetchImpl = ghLabelStoreFetch(["bug", "defect"]);
+    await expect(
+      updateLabelForTracker(store, "github", "defect", { name: "bug" }, fetchImpl, GH),
+    ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("does not merge") });
+    // Nothing was written — a silent merge is the one outcome no undo could fix.
+    expect(fetchImpl.mock.calls.every(([, i]) => (i?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  it("allows a casing-only rename, which is the label itself and not a collision", async () => {
+    const fetchImpl = ghLabelStoreFetch(["bug"]);
+    await expect(updateLabelForTracker(store, "github", "bug", { name: "Bug" }, fetchImpl, GH)).resolves.toMatchObject(
+      { label: { name: "Bug" } },
+    );
+  });
+
+  it("409s on an edit that would change nothing, instead of carding a dead Undo", async () => {
+    const fetchImpl = ghLabelStoreFetch([{ name: "Feature", color: "8b5cf6" }]);
+    // `#8B5CF6` vs stored `8b5cf6` — same color, differently written.
+    await expect(
+      updateLabelForTracker(store, "github", "Feature", { name: "Feature", color: "#8B5CF6" }, fetchImpl, GH),
+    ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("nothing to change") });
+  });
+
+  it("400s on a blank name or an empty patch, and 409s when the tracker is unconnected", async () => {
+    await expect(
+      updateLabelForTracker(store, "github", " ", { color: "#000000" }, ghLabelStoreFetch([]), GH),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(
+      updateLabelForTracker(store, "github", "bug", {}, ghLabelStoreFetch([]), GH),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    await expect(
+      updateLabelForTracker(store, "github", "bug", { color: "#000000" }, ghLabelStoreFetch([]), {
+        token: null,
+        repo: null,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+});
+
+/**
+ * docs/262 req 25 — filing feedback on a declared plugin repository. The path is
+ * the ordinary `create`; what the destination adds is the session's plugin
+ * context, stamped server-side because the agent cannot read the running commit
+ * from the staged checkout it browses.
+ */
+describe("plugin repository feedback (docs/262 req 25)", () => {
+  const PLUGIN_CTX: GitHubTrackerContext = {
+    token: "ghp_test",
+    repo: { owner: "octocat", repo: "hello-world" },
+    pluginRepos: [
+      { name: "tools", owner: "acme", repo: "dev-tools", ref: "branch main", commit: "9f2a1b3" },
+    ],
+  };
+  const store = () => tmpStore();
+
+  it("files on the plugin's own repository and stamps the running commit", async () => {
+    const fetchImpl = ghFetch();
+    const out = await createIssueForTracker(
+      store(),
+      "github:acme/dev-tools",
+      "reqs CLI drops --root",
+      "## Reproduction\n1. run `reqs --root docs`",
+      {},
+      fetchImpl,
+      PLUGIN_CTX,
+    );
+    expect(out.verb).toBe("create");
+    const [url, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+    // The plugin's repository, not the session's own — req 25's whole point.
+    expect(url as string).toContain("/repos/acme/dev-tools/issues");
+    const body = JSON.parse(init!.body as string).body as string;
+    expect(body).toContain("## Reproduction");
+    expect(body).toContain("plugin repository `tools`");
+    expect(body).toContain("branch main @ `9f2a1b3`");
+  });
+
+  it("leaves a declared tracker's issues alone", async () => {
+    const fetchImpl = ghFetch();
+    await createIssueForTracker(store(), "github", "Plain issue", "no footer", {}, fetchImpl, {
+      ...PLUGIN_CTX,
+    });
+    const [, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+    expect(JSON.parse(init!.body as string).body).toBe("no footer");
+  });
+
+  // A repository the project declares BOTH ways is one of its own trackers, and
+  // an ordinary planning issue filed there must not grow plugin context.
+  it("does not stamp a repository that is also a declared tracker", async () => {
+    const fetchImpl = ghFetch();
+    await createIssueForTracker(
+      store(),
+      "github:acme/dev-tools",
+      "Plain issue",
+      "no footer",
+      {},
+      fetchImpl,
+      {
+        ...PLUGIN_CTX,
+        declared: [{ kind: "github", name: "planning", owner: "acme", repo: "dev-tools" }],
+      },
+    );
+    const [, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+    expect(JSON.parse(init!.body as string).body).toBe("no footer");
+  });
+
+  it("files, and says so, when no generation is active yet", async () => {
+    const fetchImpl = ghFetch();
+    await createIssueForTracker(store(), "github:acme/dev-tools", "t", "b", {}, fetchImpl, {
+      ...PLUGIN_CTX,
+      pluginRepos: [{ name: "tools", owner: "acme", repo: "dev-tools", ref: "branch main" }],
+    });
+    const [, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+    expect(JSON.parse(init!.body as string).body).toContain("no plugin generation is active");
+  });
+
+  it("fails closed on a name nothing declares, naming the plugin repositories", async () => {
+    await expect(
+      createIssueForTracker(store(), "github:acme/other", "t", "b", {}, ghFetch(), PLUGIN_CTX),
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      message: expect.stringContaining("plugin repositories"),
+    });
   });
 });

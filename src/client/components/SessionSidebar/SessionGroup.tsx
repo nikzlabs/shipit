@@ -9,7 +9,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { SessionItem } from "./SessionItem.js";
 import { repoColorVar } from "../../../server/shared/repo-colors.js";
-import { isRecentlyResolved } from "./useSessionGrouping.js";
+import { isResolvedForGrouping } from "../../../server/shared/session-resolution.js";
 
 /**
  * docs/254 — the per-group identity edge. A 3px colored line on the LEFT of the
@@ -82,6 +82,18 @@ export const GROUP_GAP_CLASS = "mb-1.5";
 export const BAND_CLEARANCE_CLASS = "pt-1 pb-1";
 
 /**
+ * The vertical rhythm between session rows, 4px. It lives on the LIST as a flex
+ * `gap`, so a row itself carries no vertical margin — which means any wrapper
+ * interposed between the list and the rows swallows the gap for everything
+ * inside it, silently and only for that subtree. That is exactly what the
+ * pinned sub-section's drag shell did (docs/110 Phase 2): a pinned session and
+ * its spawned children sat flush against each other while every other row in
+ * the sidebar kept its 4px. So a wrapper that holds rows re-declares
+ * `flex flex-col` + this class rather than leaving the rhythm to its parent.
+ */
+export const ROW_GAP_CLASS = "gap-1";
+
+/**
  * docs/128 — pinned group for privileged ops/host-debugging sessions. Keyed off
  * the server-authoritative `kind: "ops"` field, separate from repo and orphan
  * groups, with a Wrench icon so it reads as "the host tools" rather than a repo.
@@ -109,7 +121,7 @@ export function OpsSessionGroup({
   separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
-  // docs/254 req 10 — a non-repo group gets its OWN semantic color, not a
+  // docs/254-repo-group-separation req 10 — a non-repo group gets its OWN semantic color, not a
   // palette entry, so the palette keeps meaning "a repository". Ops is amber,
   // matching the warning tone this group's docstring has always described.
   const color = separated ? "var(--color-warning)" : undefined;
@@ -138,7 +150,7 @@ export function OpsSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
+        <div className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -185,7 +197,7 @@ export function SandboxSessionGroup({
   separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
-  // docs/254 req 10 — semantic color, not a palette entry. Sandbox already owns
+  // docs/254-repo-group-separation req 10 — semantic color, not a palette entry. Sandbox already owns
   // teal (`--color-sandbox`) on its Cube icon; the edge reuses it.
   const color = separated ? "var(--color-sandbox)" : undefined;
   const edge = groupEdgeStyle(color);
@@ -213,7 +225,7 @@ export function SandboxSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
+        <div className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : ""}`}>
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -260,7 +272,7 @@ export function OrphanSessionGroup({
           {label}
         </span>
       </div>
-      <div className="flex flex-col gap-1">
+      <div className={`flex flex-col ${ROW_GAP_CLASS}`}>
         {sessions.map((session) => (
           <SessionItem
             key={session.id}
@@ -289,6 +301,8 @@ export function RepoGroup({
   onToggleResolvedCollapsed,
   collapsedParents,
   onToggleParentCollapsed,
+  expandedResolvedChildren,
+  onToggleResolvedChildren,
   onResume,
   onSelectCurrent,
   onArchive,
@@ -320,6 +334,12 @@ export function RepoGroup({
   onToggleResolvedCollapsed: () => void;
   collapsedParents: Set<string>;
   onToggleParentCollapsed: (parentId: string) => void;
+  /**
+   * Root session IDs whose resolved (merged/closed) spawned children are shown.
+   * Absence = hidden, the default — see the store field of the same name.
+   */
+  expandedResolvedChildren: Set<string>;
+  onToggleResolvedChildren: (rootId: string) => void;
   onResume: (id: string) => void;
   onSelectCurrent?: () => void;
   onArchive: (id: string) => void;
@@ -526,7 +546,7 @@ export function RepoGroup({
 
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
-        <div ref={listRef} data-testid="group-session-list" className={`flex flex-col gap-1 ${separated ? BAND_CLEARANCE_CLASS : "pb-2"}`}>
+        <div ref={listRef} data-testid="group-session-list" className={`flex flex-col ${ROW_GAP_CLASS} ${separated ? BAND_CLEARANCE_CLASS : "pb-2"}`}>
           {(() => {
             // New session row — matches SessionItem shape so it can render as
             // selected. docs/110 — rendered below the pinned sub-section (see the
@@ -581,11 +601,13 @@ export function RepoGroup({
                 broodByRoot.set(s.rootSessionId, list);
               }
               const isRecentlyResolvedForGroup = (s: SessionInfo): boolean =>
-                isRecentlyResolved(s) && !broodByRoot.has(s.id);
+                isResolvedForGrouping(s, { hasVisibleBrood: broodByRoot.has(s.id) });
               // Render a top-level (root) session followed by its (non-collapsed)
               // brood into `target`. The brood stays together; a root with a
               // visible brood stays Active even after its PR resolves so spawned
-              // work is never automatically moved under "Recently resolved".
+              // work is never automatically moved under "Recently resolved". The
+              // brood's OWN resolved members are tucked behind a per-root
+              // toggle (see below) rather than leaving the sidebar.
               const pushTree = (s: SessionInfo, target: React.ReactElement[]) => {
                 const brood = broodByRoot.get(s.id);
                 const childCount = brood?.length ?? 0;
@@ -605,20 +627,72 @@ export function RepoGroup({
                   />,
                 );
                 if (!brood || childrenCollapsed) return;
-                for (const member of brood) {
-                  target.push(
-                    <SessionItem
-                      key={member.id}
-                      session={member}
-                      isCurrent={member.id === currentSessionId}
-                      onResume={onResume}
-                      onSelectCurrent={onSelectCurrent}
-                      onArchive={onArchive}
-                      isTouch={isTouch}
-                      indented
-                    />,
-                  );
+                // A brood member that is ITSELF a parent inside the brood is
+                // never tucked away: hiding it would leave its own descendants
+                // rendered (they sit at the same indent level) with no visible
+                // ancestor. Mirrors `parentsWithChildren` in the group sort, so
+                // this split agrees with the order the list already arrives in.
+                const parentsInBrood = new Set<string>();
+                for (const m of brood) {
+                  if (m.parentSessionId) parentsInBrood.add(m.parentSessionId);
                 }
+                // A PINNED member is never tucked away either: docs/110 —
+                // an explicit pin outranks the automatic resolved-demotion. A
+                // pinned child stays under its parent rather than joining the
+                // pinned sub-section (see the `pinnedSessions` memo), so this
+                // split is its ONLY render path.
+                const isResolvedMember = (m: SessionInfo): boolean =>
+                  isResolvedForGrouping(m, { hasVisibleBrood: parentsInBrood.has(m.id) });
+                const renderMember = (member: SessionInfo) => (
+                  <SessionItem
+                    key={member.id}
+                    session={member}
+                    isCurrent={member.id === currentSessionId}
+                    onResume={onResume}
+                    onSelectCurrent={onSelectCurrent}
+                    onArchive={onArchive}
+                    isTouch={isTouch}
+                    indented
+                  />
+                );
+                const resolvedMembers: SessionInfo[] = [];
+                for (const member of brood) {
+                  if (isResolvedMember(member)) resolvedMembers.push(member);
+                  else target.push(renderMember(member));
+                }
+                // A big feature spawns 10-15 children and most of them end
+                // merged, so the resolved tail of a brood is hidden behind its
+                // own control — the same affordance as the repo-level "Recently
+                // resolved" section, but collapsed by default and only rendered
+                // when the brood actually has a resolved member. The one extra
+                // row it costs is paid back by every merged child it hides.
+                if (resolvedMembers.length === 0) return;
+                const resolvedShown = expandedResolvedChildren.has(s.id);
+                const countLabel = `${resolvedMembers.length} resolved spawned session${resolvedMembers.length === 1 ? "" : "s"}`;
+                target.push(
+                  <button
+                    key={`resolved-children-${s.id}`}
+                    type="button"
+                    data-testid="resolved-children-toggle"
+                    onClick={() => onToggleResolvedChildren(s.id)}
+                    aria-expanded={resolvedShown}
+                    aria-label={resolvedShown ? `Hide ${countLabel}` : `Show ${countLabel}`}
+                    className="group/resolvedkids flex items-center gap-1.5 px-2 pt-1 pb-0.5 mx-1 ml-5 text-left"
+                  >
+                    <GitMergeIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
+                      {resolvedMembers.length} resolved
+                    </span>
+                    <span className="shrink-0 flex items-center text-(--color-text-tertiary) group-hover/resolvedkids:text-(--color-text-secondary) transition-colors">
+                      {resolvedShown
+                        ? <CaretDownIcon size={ICON_SIZE.XS} />
+                        : <CaretRightIcon size={ICON_SIZE.XS} />
+                      }
+                    </span>
+                  </button>,
+                );
+                if (!resolvedShown) return;
+                for (const member of resolvedMembers) target.push(renderMember(member));
               };
               // docs/161 — split into Active and a demoted "Recently resolved"
               // group (merged OR closed-without-merge). The session list is
@@ -635,13 +709,17 @@ export function RepoGroup({
                 return (
                   <div
                     key={`pin-${s.id}`}
+                    data-testid="pinned-tree"
                     draggable={pinReorderEnabled}
                     onDragStart={pinReorderEnabled ? onPinDragStart(s.id) : undefined}
                     onDragOver={pinReorderEnabled ? onPinDragOver(s.id) : undefined}
                     onDragLeave={pinReorderEnabled ? onPinDragLeave(s.id) : undefined}
                     onDrop={pinReorderEnabled ? onPinDrop(s.id) : undefined}
                     onDragEnd={pinReorderEnabled ? onPinDragEnd : undefined}
-                    className={`relative ${pinDragId === s.id ? "opacity-40" : ""}`}
+                    // A flex column with the list's own row gap: the shell sits
+                    // BETWEEN the list and the rows, so without it the pin's
+                    // session and its children render flush (see ROW_GAP_CLASS).
+                    className={`relative flex flex-col ${ROW_GAP_CLASS} ${pinDragId === s.id ? "opacity-40" : ""}`}
                   >
                     {pinDropTarget?.id === s.id && pinDropTarget.position === "before" && (
                       <div className="absolute left-2 right-2 -top-px h-0.5 bg-(--color-success) z-20 rounded-full pointer-events-none" />

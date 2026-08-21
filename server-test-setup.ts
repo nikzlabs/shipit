@@ -1,7 +1,61 @@
 /**
  * Server test setup — runs in every server-test worker before the test modules
  * load (registered in `vitest.config.ts` under the `server` project).
+ */
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { beforeEach } from "vitest";
+import { credentialStorageEnvNames } from "./src/server/shared/catalogue/index.js";
+import { CREDENTIAL_ROUTE_ENV_PREFIX } from "./src/server/shared/types/domain-types/credential-route.js";
+
+/**
+ * **No server test may write the git config the SESSION ITSELF is using.**
  *
+ * Same CI-invisible class as the strips below, and the one that actually cost a
+ * user their session (#2432). Every ShipIt session container exports
+ * `GIT_CONFIG_GLOBAL=/credentials/.gitconfig` — the container's real, brokered
+ * git config, whose `credential.helper` is the `shipit-git-credential` shim. CI
+ * runners and developer boxes set the variable nowhere, so the suite's git
+ * writes land somewhere harmless there and on the live file in a container:
+ *
+ *   - `github-auth.test.ts`'s `createRepo` / `listOrgs` blocks build a real
+ *     `GitHubAuthManager` over a store holding the fixture token `ghp_x` and
+ *     call `checkCredentials()`, which installs it as the global credential
+ *     helper. In a container that rewrote `/credentials/.gitconfig` to `cat`
+ *     a fresh `/credentials/.git-credential-github` holding `password=ghp_x`,
+ *     replacing the brokering shim. Every later `git push` in that session
+ *     failed with "Invalid username or token" — a 5-character password is not
+ *     a GitHub token — while the `gh` shim, brokered separately, kept working.
+ *   - Any `buildApp()` whose `githubAuthManager` is real takes the same path,
+ *     and its no-token branch `--unset`s `credential.helper` outright.
+ *
+ * Per-file discipline cannot close this: it needs every present and future test
+ * touching git to remember a variable that is invisible where the suite is
+ * normally run. So the whole suite gets its own throwaway global config.
+ *
+ * **Pointed at a temp path, never deleted.** `globalCredentialFilePath()`
+ * (`orchestrator/git-config.ts`) derives the credential file from
+ * `dirname(GIT_CONFIG_GLOBAL)` and falls back to the hardcoded `/credentials`
+ * when the variable is unset — which inside a container is the live directory
+ * this exists to protect. Unsetting it would re-open the worse half of the bug.
+ *
+ * Eager, before the test modules load, because a test file can read the
+ * variable at module scope; a file that repoints it (`initGlobalGitConfig`)
+ * still wins, and restores to this path rather than to the session's.
+ */
+const testGitConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-test-gitconfig-"));
+process.env.GIT_CONFIG_GLOBAL = path.join(testGitConfigDir, ".gitconfig");
+process.on("exit", () => {
+  try {
+    fs.rmSync(testGitConfigDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort: a leftover empty temp dir is not worth failing a run over.
+  }
+});
+
+/**
  * Neutralize host-injected command-line-level git config. Some dev sandboxes
  * export `safe.bareRepository=explicit` (and similar) via git's
  * GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n> env protocol —
@@ -27,7 +81,7 @@ for (const key of keysToClear) {
 }
 
 /**
- * docs/172 (SHI-90) — agent egress containment is now ON by default
+ * docs/172 (planning#92) — agent egress containment is now ON by default
  * (`egressEnforceEnabled()` returns true unless `SESSION_EGRESS_ENFORCE=0`).
  * In production that's correct; in the server test suite it's an artifact: the
  * container-lifecycle / standby / warm-pool integration tests create sessions
@@ -43,35 +97,25 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
 }
 
 /**
- * SHI-311 — `SHIPIT_WORKER_TOKEN` is injected into EVERY session container
+ * planning#313 — `SHIPIT_WORKER_TOKEN` is injected into EVERY session container
  * unconditionally (`container-lifecycle.ts:createContainer`, no sandbox/ops
  * branch) and is set on nothing else: CI runners and developer boxes never have
- * it. `registerWorkerAuthGuard` resolves its token as
- * `deps.token ?? env[WORKER_TOKEN_ENV]`, so a test meaning "a worker with no
- * token configured" silently picked up the *ambient container* token and ran the
- * guard in token-configured mode — `worker-auth-guard.test.ts`'s "keeps
- * /agent-ops closed even on a worker with no token configured" then got 403 on
- * the orchestrator leg where it asserts 200, failing only inside a session
- * container. Same class as the git-config injection above: a local-env artifact,
- * not a code defect.
+ * it. So inside a dogfood session container it is ambient, and any test code
+ * that reads it from `process.env` behaves differently there than in CI — the
+ * CI-INVISIBLE failure class this file exists to kill (same shape as the
+ * git-config injection above).
  *
- * Stripping it is safe for the whole suite because no server test wants the
- * ambient value — every test needing a token passes a literal one, and the
- * guard's env fallback is exercised through its injectable `env` dep. The
- * literal is spelled out (this file has no imports by design) and is pinned to
- * `WORKER_TOKEN_ENV` by an assertion in `shared/worker-auth.test.ts`.
- *
- * SHI-239 made this line LOAD-BEARING, not just a tidy-up — do not narrow it to
- * the guard's own tests. Lifecycle routes (`/agent/start`, `/agent/kill`, …) now
- * require the token even from loopback, so a token-configured worker refuses
- * them. Roughly ten integration fixtures build an in-process `SessionWorker`
- * WITHOUT a token and drive `/agent/start` over loopback; with the ambient value
- * present they would silently become token-configured and 403 their own calls.
- * The failure is deliberately hard to read — `container-agent-wiring.test.ts`
- * surfaces it as `waitFor(agent.run()) timed out`, with only a stderr
- * `lifecycle-needs-token` line naming the cause — and it is CI-INVISIBLE,
- * because CI runners have no `SHIPIT_WORKER_TOKEN`. It reproduces only inside a
- * dogfood session container: exactly the class this strip was added to kill.
+ * planning#421 narrowed how far that can reach: `registerWorkerAuthGuard` no longer
+ * falls back to the environment at all, so a `SessionWorker` built without a
+ * `workerToken` is tokenless everywhere, and the ~ten integration fixtures that
+ * drive `/agent/start` over loopback no longer depend on this line. The single
+ * remaining reader is `requireWorkerToken`, called by the container entry point
+ * (never by a test) and given its env explicitly in its own tests. The strip
+ * stays as the cheap guarantee that a future `requireWorkerToken(process.env)`
+ * in a test cannot pass in a container and fail in CI. The literal is spelled
+ * out — this file imports only side-effect-free catalogue data (see the
+ * credential strip below) — and is pinned to `WORKER_TOKEN_ENV` by an assertion
+ * in `shared/worker-auth.test.ts`.
  */
 Reflect.deleteProperty(process.env, "SHIPIT_WORKER_TOKEN");
 
@@ -106,3 +150,68 @@ if (process.env.GIT_ALLOW_PROTOCOL === undefined) {
 if (process.env.GIT_TERMINAL_PROMPT === undefined) {
   process.env.GIT_TERMINAL_PROMPT = "0";
 }
+
+/**
+ * **A server test starts with NO credential configured**, whatever the machine
+ * running it holds.
+ *
+ * Same class as the `SHIPIT_WORKER_TOKEN` strip above, and the same
+ * CI-invisible shape: a ShipIt session container materializes the user's real
+ * credentials into the agent's `process.env` — a catalogue `storageEnv`
+ * (`DEEPSEEK_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, …) per credential group, plus a
+ * `SHIPIT_CREDENTIAL_*` per stored route (docs/252 phase 5) — and the test
+ * process inherits every one of them. CI runners and developer boxes have none,
+ * so service and credential discovery answers a *different question* in the two
+ * places and tests that assert on what an install can run diverge silently.
+ * Four tests across three files did, and none of them names a credential
+ * anywhere:
+ *
+ *   - `reviewer-settings-api` — the second reviewer slot is derived from the
+ *     families the install holds, so an ambient `DEEPSEEK_API_KEY` seeded the
+ *     very service the test then adds to prove re-derivation happens.
+ *   - `agent-spawn-route` — "no reviewer is available" and "Codex is not signed
+ *     in" are both statements about an install with nothing configured; an
+ *     ambient key makes a reviewer resolvable (the spawn then really runs, and
+ *     the test times out) and turns the sign-in refusal into a per-model one.
+ *   - `ask-user-question` — the quota-failover ledger walks every candidate
+ *     credential, so an ambient key adds an attempt the test never feeds.
+ *
+ * Stripped here rather than per test file: "inherits the host's credentials" is
+ * a property of the whole suite, and a per-file save/restore has to be
+ * remembered by every future test that asks what an install can run.
+ *
+ * **Twice, and both are load-bearing.** Eagerly, before the test modules are
+ * imported, because a test file can read the variable at module scope (several
+ * capture `process.env.OPENAI_API_KEY` into a `const` to restore later). And
+ * again before every test, because the ambient environment is not the only
+ * source: a credential written through the API materializes its mode's variable
+ * into THIS process — `setApiKey` and `credential-routes` both assign
+ * `process.env`, deliberately, since `AgentRegistry` and `reservedRouteFor`
+ * probe it — so a test that stores a credential leaves one set for the next
+ * test in its file. `http-mutations.test.ts` does exactly that with
+ * `POST /api/auth/api-key` and restores only `OPENAI_API_KEY`.
+ *
+ * Tests that *exercise* env-delivered credentials are unaffected: they set the
+ * variable themselves, in a `beforeEach` or in the test body, which runs after
+ * this hook and wins. (No test sets one in `beforeAll`, which this WOULD clear
+ * — set it per test, or stub it with `vi.stubEnv`.)
+ *
+ * The name list is DERIVED from the catalogue, so a new service needs no edit
+ * here — the same rule `ALLOWED_ENV_KEYS` follows, and the reason this file
+ * imports at all. Both imports are side-effect-free data.
+ *
+ * Pinned by `shared/test-env-hermeticity.test.ts` against a sentinel credential
+ * the `server` project injects, so CI — which has no real credentials and would
+ * otherwise pass whether or not any of this runs — fails if it regresses.
+ */
+function stripCredentialEnv(): void {
+  for (const name of credentialStorageEnvNames()) {
+    Reflect.deleteProperty(process.env, name);
+  }
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith(CREDENTIAL_ROUTE_ENV_PREFIX)) Reflect.deleteProperty(process.env, name);
+  }
+}
+
+stripCredentialEnv();
+beforeEach(stripCredentialEnv);

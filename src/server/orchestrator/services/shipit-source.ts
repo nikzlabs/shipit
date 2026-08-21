@@ -23,6 +23,8 @@ import { promisify } from "node:util";
 import { ServiceError } from "./types.js";
 import { resolveBuildId } from "../build-id.js";
 import { stripUrlCredentials, canonicalRepoKey } from "../git-utils.js";
+import { gitArgsWithHooksDisabled } from "../../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../../shared/git-tree-uid.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -79,11 +81,16 @@ export interface ShipitSourceDeps {
   runGit?: (dir: string, args: string[]) => Promise<string>;
 }
 
+// docs/266 — this site carries its working directory as `-C <dir>`, not as a
+// `cwd` option, which is the shape a `cwd`-only reading of the guard would miss.
+// `dir` is `/opt/shipit` (or `SHIPIT_SOURCE_DIR`), root-owned, so the drop
+// resolves to no-op — but it is resolved, not assumed.
 async function defaultRunGit(dir: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", dir, ...args], {
+  const { stdout } = await execFileAsync("git", gitArgsWithHooksDisabled(["-C", dir, ...args]), {
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",
+    ...gitSpawnOverridesForTree(dir),
   });
   return stdout;
 }

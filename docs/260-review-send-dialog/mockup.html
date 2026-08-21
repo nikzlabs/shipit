@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Review send dialog · prototype v2</title>
+<style>
+  :root {
+    --bg: #030712;
+    --panel: #0b1120;
+    --panel-2: #111827;
+    --elevated: #1f2937;
+    --border: #1f2937;
+    --border-2: #374151;
+    --text: #f3f4f6;
+    --text-dim: #9ca3af;
+    --text-faint: #6b7280;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --green: #22c55e;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1100px 600px at 50% -10%, #0e1524 0%, var(--bg) 60%);
+    color: var(--text);
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    padding: 32px 20px 80px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px; }
+  .sub { color: var(--text-dim); font-size: 13px; margin: 0 0 22px; max-width: 760px; }
+  .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-faint); font-weight: 600; margin: 0 0 8px 2px;
+  }
+  .cols { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 22px; align-items: start; }
+  @media (max-width: 940px) { .cols { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 20px 50px -30px rgba(0,0,0,0.9);
+  }
+  .panel-head {
+    padding: 9px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    color: var(--text-dim); font-size: 12px; background: var(--panel-2);
+  }
+  .path { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+  .doc { padding: 18px 20px; font-size: 13.5px; }
+  .doc h2 { font-size: 15px; margin: 0 0 10px; }
+  .doc p { margin: 0 0 12px; color: #d1d5db; }
+  mark.anchor {
+    background: rgba(59,130,246,0.18); color: inherit;
+    border-bottom: 2px solid rgba(59,130,246,0.55); border-radius: 2px; padding: 0 1px;
+  }
+  .footer {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+    padding: 11px 16px; border-top: 1px solid var(--border-2); background: var(--elevated);
+  }
+  .footer .status { font-size: 12px; color: var(--text-dim); }
+  .spacer { margin-left: auto; }
+  button {
+    font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid transparent;
+    padding: 7px 13px; display: inline-flex; align-items: center; gap: 7px;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-ghost { background: transparent; color: var(--text-dim); }
+  .btn-ghost:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+  .linky {
+    background: none; border: none; padding: 0; color: var(--text-dim);
+    font-size: 12px; text-decoration: underline dotted; text-underline-offset: 3px;
+  }
+  .linky:hover { color: var(--text); }
+
+  /* ---- modal ---- */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    display: none; align-items: center; justify-content: center; padding: 24px; z-index: 20;
+    backdrop-filter: blur(2px);
+  }
+  .overlay.open { display: flex; }
+  .modal {
+    width: 100%; max-width: 520px; display: flex; flex-direction: column;
+    background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 14px;
+    box-shadow: 0 40px 80px -20px rgba(0,0,0,0.9);
+  }
+  .modal-head { padding: 16px 20px 12px; }
+  .modal-head h3 { margin: 0; font-size: 15px; font-weight: 620; }
+  .modal-head .meta { margin-top: 4px; font-size: 12.5px; color: var(--text-dim); }
+  .modal-head .meta code { font-family: var(--mono); font-size: 11.5px; }
+  .modal-body { padding: 0 20px 4px; }
+  .note-label {
+    margin: 4px 0 6px; font-size: 12.5px; font-weight: 600; color: #e5e7eb;
+    display: flex; align-items: baseline; gap: 6px;
+  }
+  .note-label span { font-weight: 400; color: var(--text-faint); font-size: 11.5px; }
+  textarea {
+    width: 100%; min-height: 96px; resize: vertical; font: inherit; font-size: 13px;
+    color: var(--text); background: var(--panel); border: 1px solid var(--border-2);
+    border-radius: 9px; padding: 9px 11px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(59,130,246,0.18); }
+  .hint { margin-top: 6px; font-size: 11.5px; color: var(--text-faint); }
+  .modal-foot {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px; margin-top: 12px;
+    border-top: 1px solid var(--border); background: var(--elevated);
+    border-radius: 0 0 14px 14px;
+  }
+
+  /* ---- prompt preview ---- */
+  pre.prompt {
+    margin: 0; padding: 16px; font-family: var(--mono); font-size: 11.5px; line-height: 1.65;
+    color: #d1d5db; white-space: pre-wrap; word-break: break-word; max-height: 520px; overflow: auto;
+  }
+  pre.prompt .added { background: rgba(34,197,94,0.16); color: #bbf7d0; border-radius: 3px; }
+  .toggle { display: flex; gap: 6px; margin: 0 0 14px; }
+  .toggle button {
+    font-size: 12px; padding: 5px 11px; border: 1px solid var(--border-2);
+    background: var(--panel); color: var(--text-dim);
+  }
+  .toggle button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ---- past reviews ---- */
+  .past { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 12px; }
+  .past-row {
+    display: flex; gap: 10px; align-items: baseline;
+    padding: 5px 8px; border-radius: 6px;
+  }
+  .past-row:hover { background: rgba(255,255,255,0.04); }
+  .past-note {
+    margin: 2px 8px 10px 8px; padding: 7px 10px; font-size: 12px; color: #d1d5db;
+    border-left: 2px solid var(--accent); background: var(--panel);
+    border-radius: 0 6px 6px 0;
+  }
+  .past-note b { color: var(--text-faint); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 2px; }
+  .notes { margin-top: 26px; font-size: 13px; color: var(--text-dim); }
+  .notes h4 { color: var(--text); font-size: 13px; margin: 0 0 8px; }
+  .notes li { margin-bottom: 6px; }
+  .flash { color: var(--green); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Send-review dialog — prototype v2</h1>
+  <p class="sub">
+    Smallest version: the dialog gives the count and one free-text field. It does not list the comments —
+    you just read them in the file. The note is kept with the sent review, so it shows again in
+    <b>Past reviews</b>. Click <b>Send</b> to try it. The right panel is the message that the agent gets.
+  </p>
+
+  <div class="toggle">
+    <button id="t-file" class="on" onclick="setScenario('file')">Single file (doc review)</button>
+    <button id="t-diff" onclick="setScenario('diff')">Diff panel (3 files)</button>
+  </div>
+
+  <div class="cols">
+    <div>
+      <p class="label">Review surface</p>
+      <div class="panel">
+        <div class="panel-head">
+          <span>📄</span><span class="path" id="surface-path">docs/241-spec-discipline/plan.md</span>
+        </div>
+        <div class="doc" id="surface-doc"></div>
+        <div class="footer">
+          <span class="status" id="footer-status">3 comments — draft</span>
+          <button class="linky" onclick="togglePast()" id="past-toggle">Past reviews (2)</button>
+          <span class="spacer"></span>
+          <button class="btn-ghost">Cancel</button>
+          <button class="btn-primary" onclick="openModal()">✈ Send <span id="footer-count">3 comments</span></button>
+        </div>
+        <div class="past" id="past" style="display:none"></div>
+      </div>
+      <p class="notes" id="flash"></p>
+    </div>
+
+    <div>
+      <p class="label">What the agent receives</p>
+      <div class="panel">
+        <div class="panel-head"><span>💬</span><span>chat message</span></div>
+        <pre class="prompt" id="prompt"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h4>What this version does</h4>
+    <ul>
+      <li><b>No comment list.</b> The dialog gives the count and the file (or the file count for a diff
+        review). You read the comments in the file behind the dialog.</li>
+      <li><b>One field.</b> The note is optional, so an empty send costs one extra click.</li>
+      <li><b>The note is the first piece of feedback.</b> It comes after the lead-in line and before the
+        anchored comments, with no label. A note is either a summary (which belongs before what it
+        summarizes) or the one comment that fits no line (which has no other position). The closing
+        instruction — “address each piece of feedback” — stays last, so the note cannot push it away
+        from the comments.</li>
+      <li><b>The note is kept with the sent review.</b> Open <b>Past reviews</b> to see it on the review
+        of 8 Aug.</li>
+      <li><b>No keyboard bypass.</b> The dialog always opens. ⌘⏎ sends from inside it, Esc cancels.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="overlay" id="overlay" onclick="if(event.target===this) closeModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Send review</h3>
+      <div class="meta" id="modal-meta"></div>
+    </div>
+    <div class="modal-body">
+      <div class="note-label">Add a note for the agent <span>optional</span></div>
+      <textarea id="note" placeholder="Anything the comments do not say — priorities, constraints, why you are asking, what to leave alone…" oninput="render()"></textarea>
+      <div class="hint">Goes first in the message, before the comments.</div>
+    </div>
+    <div class="modal-foot">
+      <span class="hint">⌘⏎ to send</span>
+      <span class="spacer"></span>
+      <button class="btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn-primary" onclick="send()">✈ Send <span id="modal-count"></span></button>
+    </div>
+  </div>
+</div>
+
+<script>
+const DATA = {
+  file: {
+    path: "docs/241-spec-discipline/plan.md",
+    doc: `<h2>Spec discipline</h2>
+      <p>Requirements discipline is opt-in per feature. <mark class="anchor">Every new feature in this repo
+      gets a requirements.md before plan.md.</mark></p>
+      <p><mark class="anchor">The agent may fill a gap when the answer is obvious from the codebase.</mark>
+      Otherwise it asks.</p>
+      <p>Enforcement is the pull-request diff.
+      <mark class="anchor">Mechanical enforcement lands later.</mark></p>`,
+    comments: [
+      { anchor: "Every new feature in this repo gets a…", text: "Say what counts as a feature — the docs folder is the test, spell it out." },
+      { anchor: "The agent may fill a gap when the answer…", text: "This contradicts req 2. An agent inference never clears an open question." },
+      { anchor: "Mechanical enforcement lands later.", text: "Link the tracker issue instead of 'later'." },
+    ],
+  },
+  diff: {
+    path: "3 files changed",
+    doc: `<h2>Diff review</h2>
+      <p class="path">src/client/components/FileReviewFooter.tsx</p>
+      <p><mark class="anchor">const canSend = commentCount &gt; 0 &amp;&amp; !composing;</mark></p>
+      <p class="path">src/client/stores/file-review-store.ts</p>
+      <p><mark class="anchor">await request("POST", url + "/send");</mark></p>
+      <p class="path">src/server/orchestrator/services/reviews.ts</p>
+      <p><mark class="anchor">let prompt = \`I have the following comments…\`;</mark></p>`,
+    comments: [
+      { file: "src/client/components/FileReviewFooter.tsx", line: 128, text: "Disabled state needs a title so the reason is discoverable." },
+      { file: "src/client/stores/file-review-store.ts", line: 289, text: "Send failure is swallowed — the user sees nothing. Surface it." },
+      { file: "src/client/stores/file-review-store.ts", line: 296, text: "Optimistic history write before the server confirms." },
+      { file: "src/server/orchestrator/services/reviews.ts", line: 308, text: "Prompt should name the branch too." },
+    ],
+  },
+};
+
+const PAST = [
+  { date: "8 Aug", count: 4, note: "Focus on the requirements section. Leave the file layout alone — a separate PR moves it." },
+  { date: "2 Aug", count: 1, note: null },
+];
+
+let scenario = "file";
+let pastOpen = false;
+let sent = null;
+
+function setScenario(s) {
+  scenario = s;
+  document.getElementById("note").value = "";
+  document.getElementById("t-file").classList.toggle("on", s === "file");
+  document.getElementById("t-diff").classList.toggle("on", s === "diff");
+  document.getElementById("surface-path").textContent = DATA[s].path;
+  document.getElementById("surface-doc").innerHTML = DATA[s].doc;
+  document.getElementById("flash").textContent = "";
+  sent = null;
+  render();
+}
+
+function plural(n) { return n + " comment" + (n === 1 ? "" : "s"); }
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+function togglePast() { pastOpen = !pastOpen; render(); }
+
+function render() {
+  const cs = DATA[scenario].comments;
+  const note = document.getElementById("note").value.trim();
+  const fileCount = new Set(cs.map((c) => c.file)).size;
+
+  document.getElementById("footer-status").textContent = plural(cs.length) + " — draft";
+  document.getElementById("footer-count").textContent = plural(cs.length);
+  document.getElementById("modal-count").textContent = plural(cs.length);
+  document.getElementById("modal-meta").innerHTML =
+    scenario === "file"
+      ? plural(cs.length) + ' on <code>docs/241-spec-discipline/plan.md</code>'
+      : plural(cs.length) + " across " + fileCount + " files";
+
+  // past reviews — the stored note comes back here
+  const past = document.getElementById("past");
+  past.style.display = pastOpen ? "block" : "none";
+  const rows = sent ? [{ date: "today", count: sent.count, note: sent.note }, ...PAST] : PAST;
+  document.getElementById("past-toggle").textContent = "Past reviews (" + rows.length + ")";
+  past.innerHTML = rows.map((r) => `
+    <div class="past-row">
+      <span style="color:var(--text-dim)">${r.date}</span>
+      <span style="color:var(--text-faint)">${plural(r.count)}</span>
+      ${r.note ? '<span style="color:var(--text-faint)">· with a note</span>' : ""}
+    </div>
+    ${r.note ? `<div class="past-note"><b>Note</b>${esc(r.note)}</div>` : ""}
+  `).join("");
+
+  // message preview — the note is the FIRST piece of feedback, after the
+  // lead-in line and before the anchored comments. The closing instruction
+  // stays last.
+  const noteBlock = note ? `<span class="added">${esc(note)}\n\n</span>` : "";
+  let p = "";
+  if (scenario === "file") {
+    p += "I've reviewed docs/241-spec-discipline/plan.md and have the following feedback:\n\n";
+    p += noteBlock;
+    cs.forEach((c) => { p += `> ${esc(c.anchor)}\n\n${esc(c.text)}\n\n`; });
+    p += "Please read docs/241-spec-discipline/plan.md, address each piece of feedback by updating the file, and explain what you changed.";
+  } else {
+    p += "I have the following comments on the code:\n\n";
+    p += noteBlock;
+    cs.forEach((c) => { p += `**${c.file}:${c.line}**\nComment: ${esc(c.text)}\n\n`; });
+    p += "Please address each comment.";
+  }
+  document.getElementById("prompt").innerHTML = p;
+}
+
+function openModal() { document.getElementById("overlay").classList.add("open"); document.getElementById("note").focus(); }
+function closeModal() { document.getElementById("overlay").classList.remove("open"); }
+function send() {
+  const note = document.getElementById("note").value.trim();
+  sent = { count: DATA[scenario].comments.length, note: note || null };
+  pastOpen = true;
+  closeModal();
+  render();
+  document.getElementById("flash").innerHTML =
+    `<span class="flash">✓ Sent ${plural(sent.count)}${note ? " with a note" : ""}. The note is kept — see “Past reviews” above.</span>`;
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeModal();
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && document.getElementById("overlay").classList.contains("open")) send();
+});
+setScenario("file");
+</script>
+</body>
+</html>

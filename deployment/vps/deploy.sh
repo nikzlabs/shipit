@@ -22,6 +22,27 @@ if [ -f "$SHIPIT_ENV_FILE" ]; then
   set +a
 fi
 
+# planning#378 — the hostname the orchestrator answers to.
+#
+# api-origin-guard.ts refuses a request whose `Host` it cannot prove is ShipIt's
+# own, which closes DNS rebinding. Every hostname docs/254 supports proves itself
+# from its own shape (an IP literal, `*.ts.net`, an sslip.io name), so a loopback
+# or tailnet install configures nothing. A **public domain** cannot: nothing about
+# `shipit.example.com` distinguishes it from a name an attacker bought.
+#
+# So it is derived from the domain the operator already gave setup.sh /
+# cloudflare.sh, rather than asked for a second time. Deriving it HERE rather
+# than writing it once at setup time is what covers the installs that already
+# exist: they update through update.sh -> deploy.sh and would otherwise start
+# refusing their own domain, having never been asked anything. An explicit
+# SHIPIT_ALLOWED_ORIGINS in the env file always wins.
+if [ -z "${SHIPIT_ALLOWED_ORIGINS:-}" ] && [ -f /etc/shipit/setup.conf ]; then
+  SHIPIT_SETUP_DOMAIN="$(sed -n 's/^DOMAIN="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/shipit/setup.conf | tail -n1)"
+  if [ -n "$SHIPIT_SETUP_DOMAIN" ]; then
+    export SHIPIT_ALLOWED_ORIGINS="https://$SHIPIT_SETUP_DOMAIN"
+  fi
+fi
+
 # docs/113 Phase 1 — do NOT kill session-worker or compose service containers
 # here. Updates replace ONLY the orchestrator; running sessions (and any agent
 # turns mid-flight inside them) survive and the new orchestrator re-adopts them
@@ -34,10 +55,26 @@ fi
 # they idle out (lazy rotation); the wire contract stays additive-only, guarded
 # by src/server/shared/types/worker-wire-contract.test.ts.
 
-# Prune orphaned networks from previous sessions to reclaim address space.
-# Safe for surviving sessions: `network prune` only removes networks with no
-# containers attached, and live session networks have their containers on them.
-docker network prune -f
+# NO `docker network prune -f` here. It used to sit at this line to reclaim
+# per-session address space, arguing it was safe because prune only removes
+# networks with nothing attached and a live session's containers are attached
+# to its network. That holds in steady state. It does NOT hold during an update:
+#
+#   - a session created inside the build window has had its network created
+#     (`createContainer` makes it before the container joins) but not yet
+#     joined, so the prune deletes it out from under the session. Every child
+#     container it later spawns then logs
+#     `joinSessionNetwork failed: network shipit-session-<id> not found`.
+#     On the 2026-08-10 update this removed 18 session networks in one shot;
+#   - an idle-EVICTED session's network is deliberately kept for warm resume
+#     (`sweepOrphanSessionNetworks` preserves any session whose `diskTier` is
+#     not `evicted`) and has nothing attached, so a blind prune reclaims exactly
+#     what the janitor is holding on to.
+#
+# Nothing is leaked by dropping it: `sweepOrphanSessionNetworks`
+# (`startup-janitor.ts`) does this job properly on the boot that immediately
+# follows this deploy — same `dangling=true` set, but cross-referenced against
+# the live session list first.
 
 # Reclaim dangling images + stale BuildKit cache. Defined as a function and
 # fired from an EXIT trap (below) so it runs REGARDLESS of build outcome.
@@ -65,13 +102,26 @@ prune_build_artifacts() {
   # cache (entries reachable from prior builds' intermediate stages) is
   # skipped and the cache snowballs across deploys.
   #
-  # Cap the cache at 10 GB via a size-based filter. Time-based filters
+  # Cap the cache at 15 GB via a size-based filter. Time-based filters
   # (`--filter until=72h` / `--filter unused-for=72h`) do NOT work in our
   # build → prune flow: both translate to BuildKit's `KeepDuration`,
   # which is checked against `last_used`, and the build we just ran
   # refreshed `last_used` on every layer it touched. Tested on prod:
   # 0 B reclaimed against 83 GB of reclaimable cache. See the BuildKit
   # source at moby/buildkit's cache/manager.go for the comparison logic.
+  #
+  # On the 15 GB number: a measured prod cache totalled 9.115 GB — 2.66 GB
+  # of records from the build that had just run, 6.45 GB of older ones.
+  # That left only ~0.9 GB under the previous 10 GB cap. The margin matters
+  # more than it looks, because eviction is oldest-by-`last_used` over a set
+  # the just-finished build refreshed all at once, so once the cap bites,
+  # what it takes is near-arbitrary — as easily the 1.444 GB
+  # Playwright/Chrome layer or the 1.637 GB `/root/.npm` cache mount (`-a`
+  # prunes cache mounts too) as something genuinely stale. 15 GB restores
+  # real headroom while still bounding the disk. Note ~0.94 GB of that
+  # measured total was a DUPLICATED build prefix that a Dockerfile.prod fix
+  # has since removed, so the steady-state figure should be lower; re-measure
+  # with `docker buildx du` and revisit if totals climb back toward the cap.
   #
   # `--max-used-space` is the semantically-correct flag (caps total
   # cache size, prunes oldest-by-last-used to stay under) but requires
@@ -80,8 +130,8 @@ prune_build_artifacts() {
   # also acts as a cap (keepBytes = max(MaxUsedSpace, ReservedSpace) in
   # the GC, with MaxUsedSpace=0 when unset). The final unfiltered
   # `-af` is the nuke fallback if neither flag is recognized.
-  docker builder prune -af --max-used-space 10GB \
-    || docker builder prune -af --keep-storage 10GB \
+  docker builder prune -af --max-used-space 15GB \
+    || docker builder prune -af --keep-storage 15GB \
     || docker builder prune -af \
     || true
 }
@@ -113,7 +163,7 @@ if [ -n "$AVAIL_GB" ] && [ "$AVAIL_GB" -lt "$MIN_FREE_GB" ]; then
 fi
 
 # Build the images (session-worker + egress-sidecar are build-only profiles, must be
-# named explicitly). egress-sidecar (shipit-egress-sidecar:prod) is the SHI-90 egress
+# named explicitly). egress-sidecar (shipit-egress-sidecar:prod) is the planning#92 egress
 # firewall image — built every deploy so a docker/egress-sidecar/ change ships in lockstep
 # with main instead of lagging a stale manual build. It's independent of session-worker
 # (no FROM dependency), so it builds here alongside it. Egress containment is ON by default

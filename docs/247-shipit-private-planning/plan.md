@@ -1,5 +1,5 @@
 ---
-issue: roadmap#SHI-304
+issue: planning#306
 title: ShipIt private planning
 description: Track ShipIt's own planning in a private GitHub repository, and migrate off Linear by copying every issue and rewriting every reference.
 ---
@@ -12,25 +12,42 @@ this doc is only about ShipIt's own use of it and the one-time migration.
 
 ## Status
 
-**Ready to execute.** Both gates are cleared, and each was probed rather than
-assumed:
+**Done.** ShipIt's planning lives in `nikzlabs/shipit-planning`, declared as
+`planning`, and the Linear tracker is no longer declared.
 
-- **248 is deployed, not merely merged.** The `shipit` shim in a session
-  container comes from the deployed orchestrator, and it addresses trackers by
-  name (`--tracker NAME`), requires one on `create`, and fails closed on an
-  undeclared name with the declared set listed.
-- **`nikzlabs/shipit-planning` exists and the deployment's credential reaches
-  it** (req 5). Declared as `planning`, it lists, enumerates labels and statuses,
-  and accepts writes — a create, a comment and a close all round-tripped live.
+| Step | Result |
+|---|---|
+| Export | 330 issues, 0 misses — a working artifact, not an archive (req 13) |
+| Labels | 20 Linear labels + 4 `priority: …`, all matching Linear name and colour |
+| Pilot | `SHI-145` → `planning#2`, signed off at gate 1 |
+| Pass A | 330 issues → `planning#3`–`#332`, 33 min, offset uniformly `+2` |
+| Pass B | 1,164 comments replayed, every reference rewritten |
+| Sweep | 2,188 lines across 684 files, verified structurally + two adversarial reviews |
+| Retire | `roadmap` declaration dropped; `CLAUDE.md` tracker-neutral |
 
-The declaration landed on `main` in its own PR, so the tab is live. What remains
-is the copy, the reference rewrite, and retiring Linear.
+**Reversible.** Re-adding the `kind: linear` block to `shipit.yaml` restores read
+access to the originals. Nothing in the repository depends on it: the only
+surviving `roadmap#` strings are parser fixtures and syntax examples using a
+made-up tracker name, and `src/server/shipit-docs/design-docs.md`'s
+`roadmap#TRACKER-28`, which is a generic placeholder shipped to every repo rather
+than a pointer at this one.
 
-One gate is open, and it is the same merge-is-not-a-deploy trap: the two shim and
-adapter fixes the export depends on are on `main` (`9b031908`) but **not yet in
-the deployed shim** — verified from a session container, where a piped large issue
-still truncates at 65,536 bytes and `createdAt` is still absent. Confirm both
-before exporting.
+**What the migration cannot give back**: workflow state beyond open/closed
+(req 8), the 226 byte-identical duplicate comments the write-dedup window
+collapsed, and Linear's own attachment URLs.
+
+**The Linear workspace is the archive for all three, by decision — req 13.** It is
+untouched, since this migration only ever copied out of it, and it is kept rather
+than deleted. The export in `/persist/linear-export/` is a *working artifact* of
+the migration, not a deliverable: `/persist` is per-session, so it disappears with
+this session's container, and that is expected. Anything the copy could not carry
+is recoverable from Linear itself and nowhere else — which is precisely why the
+workspace stays.
+
+Two artifacts remain in the planning repo because ShipIt has no `issue delete` —
+`planning#1` (the reachability probe) and `planning#2` (the pilot, superseded by
+`planning#147`). Both are closed and retitled to say so; deleting them needs
+GitHub directly.
 
 ## Why a private repository
 
@@ -53,38 +70,44 @@ wrong summary of this change.
 
 ## Scale — measured, not estimated
 
-A full read-only export ran against Linear (322 keys, `SHI-1…SHI-322`; no gaps,
-`SHI-323` and above do not exist). The corpus:
+A full read-only export ran against Linear (330 keys, `SHI-1…SHI-330`; no gaps,
+`SHI-331` and above do not exist). The corpus, as of **2026-08-07**:
 
 | Surface | Count |
 |---|---|
-| Linear issues | 322 |
-| Comments | 1,344 (across 232 issues; 90 have none) |
-| Issue body text | 515 KB |
-| Comment text | 1.19 MB |
+| Linear issues | 330 |
+| Comments | 1,390 (across 240 issues; 90 have none) |
+| Issue body text | 516 KB |
+| Comment text | 1.17 MB |
 | Distinct labels | 20 |
 | Issues with a parent (sub-issue) | 15 |
 | Issues with an assignee | 75 — all one person |
-| Comment authors | 1 (`nicolas.zherebtsov`, all 1,344) |
+| Comment authors | 1 (`nicolas.zherebtsov`, all 1,390) |
 
-Status spread: Done 219, Backlog 78, Canceled 10, In Progress 7, Todo 7,
-Duplicate 1. Priority spread: none 214, Medium 42, High 31, Low 27, Urgent 8.
+Status spread: Done 226, Backlog 79, Canceled 10, In Progress 7, Todo 7,
+Duplicate 1. Priority spread: none 222, Medium 42, High 31, Low 27, Urgent 8.
 
 The reference surface in this repository:
 
 | Surface | Count |
 |---|---|
-| Distinct `SHI-N` keys referenced | 259 |
-| Total mentions | 2,623 across 667 files |
-| — in `src/` | 1,677 across 391 files |
-| — in `docs/` | 869 across 249 files |
-| Docs with an `issue:` frontmatter pointer | 186 |
-| Files containing a `linear.app` URL | 221 |
+| Distinct `SHI-N` keys referenced | 268 |
+| Total mentions | 2,797 across 686 files |
+| — in `src/` | 1,809 across 398 files |
+| — in `docs/` | 907 across 259 files |
+| Docs with an `issue:` frontmatter pointer | 196 |
+| Files containing a `linear.app` URL | 224 |
 
 And — the surface the earlier estimate missed entirely — **the corpus references
-itself**: 1,146 `SHI-N` mentions and 120 `linear.app` URLs live *inside* issue
+itself**: 1,174 `SHI-N` mentions and 122 `linear.app` URLs live *inside* issue
 bodies and comments. Those have to be rewritten too, or the migrated tracker is
 full of pointers back to the system being retired.
+
+**Every number here is a measurement with a date on it, and the corpus is live.**
+The first export, one day earlier, found 322 issues and 1,344 comments; eight
+issues and 46 comments arrived in between. So these figures size the work — they
+are not a checksum. Pass A's completeness check must come from the export it
+actually ran against, never from a count written down here.
 
 ## What GitHub cannot hold
 
@@ -112,19 +135,21 @@ requests; they cannot be chosen. `SHI-137` will not become `planning#137`. The
 `SHI-N → planning#M` mapping is the only authority.
 
 That mapping is needed *before* the copy, not after — because issue bodies and
-comments cross-reference each other (1,146 mentions). Writing them first and
-fixing them later would mean a second edit pass over most of the corpus, and
-**comment bodies cannot be edited at all** through the shim, so a
-comment's cross-references would be permanently stale.
+comments cross-reference each other (1,174 mentions). Writing them first and
+fixing them later would mean a second edit pass over the whole corpus. That is now
+merely wasteful rather than impossible: `comment edit` shipped on 2026-08-07, so a
+stale cross-reference in a comment is repairable. Getting it right on the first
+write is still the design — 1,390 avoidable edits is not a plan — but it is no
+longer the difference between correct and permanently wrong.
 
 The way out is to **split the copy in two, so the mapping is observed rather than
 predicted**. Creating an issue is what fixes its number, and nothing about a
 comment or a cross-reference influences it. So:
 
-- **Pass A** creates all 322 issues — title, body header, labels, and the body
+- **Pass A** creates all 330 issues — title, body header, labels, and the body
   text with its cross-references still in their original `SHI-N` form. Every
   number is now assigned and recorded.
-- **Pass B** replays the 1,344 comments and edits the 322 bodies, rewriting
+- **Pass B** replays the 1,390 comments and edits the 330 bodies, rewriting
   cross-references from the mapping Pass A produced.
 
 The split is what makes the mapping observed rather than guessed. It also draws
@@ -171,7 +196,7 @@ expected regardless (`planning#1` is the write probe, and the pilot consumes one
 
 ## Write volume and pacing
 
-The copy is roughly **2,000 brokered writes**: 322 creates + 1,344 comments + ~230
+The copy is roughly **2,000 brokered writes**: 330 creates + 1,390 comments + ~230
 closes + ~26 label creations. Three consequences, each of which shapes the driver:
 
 1. **No retry or backoff exists.** `trackers/github/adapter.ts` has no handling
@@ -181,26 +206,74 @@ closes + ~26 label creations. Three consequences, each of which shapes the drive
    constraint** — it can run unattended overnight — so pace conservatively. The
    reason to pace is to avoid failures, not to finish sooner.
 
-   No throughput figure here is measured. Reads were observed at ~2s each, and
-   only three writes have been run; the sustained write rate is unknown until the
-   first hundred are timed. Treat any duration in this doc as an order of
-   magnitude, and set the real pace from what the tracker actually returns.
-2. **It must be resumable.** It runs for a long time, across more than one turn.
-   The mapping and a per-issue completion marker are appended to disk after each
-   write, so a restart skips what is already done. Re-running a completed step
-   must be a no-op, not a duplicate. Idle cleanup is not a hazard: `dispose()`
+   **Now measured, by hitting the wall.** Pass A's 330 creates + 237 closes ran
+   at ~1s spacing with no trouble. Pass B, at the same pacing, died after roughly
+   **870 further writes in about 15 minutes** — GitHub's secondary limit on
+   content creation, which allows on the order of 500 an hour. The sustainable
+   pace is therefore **~8s between writes** (~450/hour), which is what `pass-b.py`
+   uses, with a 15-minute backoff-and-retry on a 403. At that rate the comment
+   replay is a ~2-hour job, which is fine — duration was never the constraint.
+
+   **The 403 does not say "rate limit".** The shim reports it as *"the repository
+   either does not exist or the connected GitHub credential cannot access it"* —
+   the same text as a genuinely missing repo or a revoked token, which sends you
+   to check the slug and the credential when the answer is "wait 15 minutes". The
+   distinguishing signal is that **reads keep working**: a secondary limit throttles
+   content creation only. Recorded as a shim finding; the driver retries rather
+   than trusting the message.
+2. **It must be resumable — and "per issue" is the wrong granularity.** The
+   completion marker is written once an issue's comments have *all* landed, but a
+   failure happens **mid-issue**: the rate limit hit `SHI-140` after 3 of its 9
+   comments. A resume keyed only on the marker would have re-posted all 9 and left
+   3 duplicates, silently. `pass-b.py` therefore re-reads the first issue of each
+   run and skips any comment whose rendered body is already present — one extra
+   read per run, since every issue *after* the failure was never touched. Matching
+   on the body rather than on a count keeps it idempotent. Idle cleanup is not a hazard: `dispose()`
    refuses to reap a runner whose agent is running unless explicitly forced
    (`container-session-runner.ts:2521`), so an unattended overnight pass survives.
 3. **Every write posts a persisted transcript card.** `api-routes-issues.ts` emits
    and *persists* an `issue_write_card` per write, with no suppression flag. ~2,000
    cards in one session's history is not something to inflict on a session anyone
-   wants to reopen. The copy therefore runs in its **own child session**, which is
+   wants to reopen. The copy should therefore run in its **own child session**,
    archived when it finishes.
 
-The write-dedup window (`handleWrite`) keys on session + tracker + verb + issue id
-+ content hash, so two *identical* comment bodies on the *same* issue would have
-the second silently swallowed. Prefixing each replayed comment with its original
-date (req 9) makes bodies distinct, which removes the hazard as a side effect.
+   **It didn't.** Passes A and B were run in the planning session itself, because
+   the export was started there and each subsequent step simply continued. By the
+   time it was noticeable the session held ~950 write cards and the user could no
+   longer see the conversation between them. Nothing was lost — the run is
+   unaffected — but the advice above was written before any of it existed and then
+   not followed, which is the more useful thing to record. The moment to act was
+   the *start of Pass B*, when the volume went from ~330 cards to ~1,700; that is
+   the decision point a future copy should watch for, not the start of the whole
+   job.
+
+The write-dedup window (`handleWrite`, `api-routes-issues.ts:733`) keys on session
++ tracker + verb + issue id + content hash over a 10-minute window, so two
+*identical* comment bodies on the *same* issue have the second silently swallowed.
+
+This doc previously claimed the date prefix (req 9) made bodies distinct and so
+"removes the hazard as a side effect". **That was wrong, and it cost 226
+comments.** The prefix only disambiguates when the *dates* differ — byte-identical
+comments posted on the same day render identically, and Pass B posts an issue's
+comments back-to-back, well inside the window. Measured after the fact across all
+330 issues: 17 issues short, 226 comments not posted, **226 explained by an
+identical rendered body, zero unexplained**. Every distinct comment is present.
+
+What collapsed was entirely ShipIt's own merge-bot noise — `SHI-126` and
+`SHI-128` each carried the *same* "Resolved by ShipIt on merge of PR #1294"
+comment **89 times**. So the copy is arguably cleaner than the original. It was
+still an accident rather than a decision, which is the part worth recording: a
+dedup window silently made a fidelity choice the migration never made explicitly.
+A driver that wanted true 1:1 fidelity would have to disambiguate identical
+same-day bodies deliberately.
+
+**Those duplicates were history, not a live defect** — and the raw count hid that.
+Every one in the corpus was created between 2026-06-11 and 2026-06-13, none after;
+`runMergeEffect` landed on 2026-06-13 in `4ee77aa5` ("Fix duplicate issue-status
+cards on PR merge"). An issue tracker is an append-only record, so a bug fixed
+months ago still reads as 89 live symptoms at the bottom of a closed issue. **Date
+a finding from a migrated corpus before acting on it**: this one was briefed to a
+child session as an open bug before anyone checked when it happened.
 
 ## Export fidelity
 
@@ -209,18 +282,67 @@ Two defects found while probing this migration are **fixed on `main`**
 
 - `shipit issue view --comments --json` silently truncated at 65,536 bytes when
   stdout was a pipe — the shim exited without draining, so anything past the pipe
-  buffer was lost and the JSON ended mid-string. Two of the 322 issues (`SHI-56`,
+  buffer was lost and the JSON ended mid-string. Two of the 330 issues (`SHI-56`,
   `SHI-90`) hit it. `shim-exit.ts` now flushes before exiting.
 - The Linear adapter's `ISSUE_FIELDS` did not select `createdAt`, so an issue's
   original creation date was unreadable. Req 9 needs it, and it is now selected.
 
-**Neither is live in the deployed shim yet** — checked from a session container:
-the piped form still returns exactly 65,536 bytes and `createdAt` is still absent.
-This is the same merge-is-not-a-deploy gap the sequencing constraints call out for
-248, and it gates the export: run it only after confirming from a fresh session
-that a piped large issue returns its full length and that `createdAt` comes back.
-Until then the export must redirect to files and never pipe, which is a sound
-habit regardless.
+**Both are now live in the deployed shim** — re-checked from a session container
+on 2026-08-07, after an earlier check had found neither. `SHI-56` and `SHI-90`
+pipe at 119,606 and 87,179 bytes rather than 65,536, and `createdAt` comes back on
+the issue and on every comment. The export should still redirect to files rather
+than pipe, which is a sound habit regardless of the fix.
+
+**Comments come back newest-first.** `view --comments --json` returns them in
+strictly descending `createdAt` order — SHI-56's 77 run from `2026-08-07` down to
+`2026-06-17`. Pass B posts them in conversation order, so it must reverse the
+array. Posting as-returned would invert all 1,390 conversations while every date
+header still read correctly, which is exactly the kind of error a spot-check
+passes over.
+
+**Three labels arrived with the wrong color, and at the time nothing could fix
+them — now fixed.** `label create` refuses a name that already exists in any
+casing, and there was no `label edit` or `label delete`, so a label that existed
+wrongly stayed wrong. `shipit issue label edit` landed afterwards (`e3e57269`),
+prompted by exactly this, and on 2026-08-07 corrected all three from inside
+ShipIt — one command each. **All 20 Linear labels now match name and color
+exactly**, and the `bug` → `Bug` rename carried across all 66 issues holding it
+without re-labelling anything by hand.
+
+| Wanted | Actually there | Affects | How it got there |
+|---|---|---|---|
+| `Feature` `#BB87FC` | `Feature` `#ededed` | 81 issues | Minted by the reachability probe with no `--color` |
+| `Bug` `#EB5757` | `bug` `#d73a4a` | 66 issues | GitHub's default `bug` label — collides case-insensitively |
+| `priority: high` `#D93F0B` | `priority: high` `#ededed` | 31 issues | Same probe |
+
+All three are cosmetic: `--label` resolves case-insensitively, so `--label Bug`
+applies the existing `bug`, and `mapGitHubPriority` reads the name, never the
+color. The copy is unaffected.
+
+**Nothing here has to be settled before the migration.** A GitHub label is an
+object that issues reference; its name and color are properties of that object,
+not values stamped onto each issue when the label is applied. So recoloring
+`Feature` fixes all 81 issues at once whenever it happens, and renaming `bug` to
+`Bug` carries across every issue already holding it. Deferring costs nothing and
+requires no re-copy. Two paths, whenever it is wanted: the planning repo's label
+settings by hand (a repo-settings page — one of the narrow legitimate link-outs),
+or `shipit issue label edit`, which is the durable fix and has since shipped
+(docs/177).
+
+What is *not* recoverable is a label that was never applied — which is why step 5
+had to happen before Pass A and the colors did not. That asymmetry is what made
+deferring safe, and the eventual fix cheap: three commands, months later, with no
+re-copy.
+
+The lesson generalizes past the colors: a **probe writes into the same namespace
+the migration will use**, and its leftovers are not always removable through the
+product. `planning#1` is on the checklist to delete; these three labels are the
+part of that probe ShipIt itself cannot clean up.
+
+**The sub-issue parent is in the export, under a name that doesn't look like it.**
+The adapter maps Linear's `parent` onto `parentIdentifier`, already in the docs/248
+name form (`roadmap#SHI-113`) — so a check for a `parent` key finds nothing and
+concludes the data is missing. All 15 sub-issues carry it.
 
 Two smaller traps in the same family: `src/client/hooks/useLazyToolInput.ts`
 contains a byte that makes `grep` treat it as binary, so the reference sweep needs
@@ -228,6 +350,255 @@ contains a byte that makes `grep` treat it as binary, so the reference sweep nee
 outside the git workspace (it holds private planning content) — it is written to
 `/persist/linear-export/`, which is per-session, so a child session re-runs it
 rather than inheriting it.
+
+## The copy format, as piloted
+
+`SHI-145` was copied to `planning#2` on 2026-08-07 — chosen because it exercises
+every awkward part at once: a 4 KB body, four comments, two internal
+cross-references, three labels (including `Bug`, which hits the case collision),
+`High` priority (the grey label), and a closed state.
+
+**Issue body** — a one-line header, then a rule, then the original body verbatim:
+
+```markdown
+> Migrated from Linear **SHI-145**, created 2026-06-14.
+
+---
+
+<original body>
+```
+
+The header deliberately carries **no link back to Linear**. Pass B rewrites the
+122 `linear.app` URLs already in the corpus precisely because they die when Linear
+is retired; minting 330 new ones in the headers would be self-defeating. Sub-issues
+add `Sub-issue of SHI-224.` to the header line, which Pass B rewrites like any
+other cross-reference.
+
+**Comments** — the same shape, one blockquote line carrying the original date:
+
+```markdown
+> _Originally posted 2026-06-14._
+
+<comment body>
+```
+
+**Everything else round-tripped as designed.** `--label Bug` resolved onto the
+existing lowercase `bug`; `--label "priority: high"` read back as
+`priority: High` through `mapGitHubPriority`; `status completed` closed it.
+
+**Editing a body later works, and was verified rather than assumed.** Pass B
+depends on it entirely — the pilot is copied with its cross-references still
+reading `SHI-31`, and only Pass B can fix them, once the mapping exists.
+`shipit issue edit planning#2 --body-file …` replaced the body, left labels,
+priority and closed state untouched, and restored the original byte-for-byte on a
+second edit. So a body is not a one-way write; the sequencing in this plan is a
+matter of doing the work once rather than of what is possible.
+
+That probe also exposed **two traps in the rewrite itself**:
+
+- **The header's own key must survive.** `> Migrated from Linear **SHI-145**` is
+  the origin marker required by req 9. A blanket `SHI-N → planning#M` sweep would
+  rewrite it into a pointer at itself and destroy the provenance the header exists
+  to carry. The rewrite has to skip the header line, or run only below the rule.
+- **A Linear reference is usually a markdown link, not a bare key.** 90 of the 122
+  `linear.app` URLs are `[SHI-31](https://linear.app/…/SHI-31/slug)`, where the key
+  appears *twice* — once as the label, once inside the URL. Rewriting the two
+  occurrences independently yields `[planning#57](https://linear.app/…/planning#57/slug)`:
+  a live link to a dead system wearing the right name. The link has to be rewritten
+  as a unit. The remaining 21 are bare URLs.
+
+Three things the pilot surfaced that the plan did not have:
+
+- **980 bare `#N` references, across 216 issues** — overwhelmingly ShipIt's own
+  "Resolved by ShipIt on merge of PR #1354" comments. In Linear these are inert
+  text. Inside a GitHub repository they are references, and they resolve against
+  **the planning repo**, not `nikzlabs/shipit` where the PR actually lives. Pass B
+  must qualify them to `nikzlabs/shipit#1354`, which is unambiguous in both
+  renderers. This is the same class of miss as the corpus referencing itself: a
+  string that was inert in Linear becomes active in GitHub.
+- **Five titles carry a cross-reference** (`SHI-79`, `SHI-144`, `SHI-145`,
+  `SHI-164`, `SHI-259`). Pass B rewrites bodies and comments; titles need the same
+  treatment, and `issue edit --title` already exists.
+- **Comment order is backwards between the two trackers.** Linear returns
+  newest-first, GitHub oldest-first. The reversal Pass B applies is a *Linear-side*
+  correction — verifying the result must not reverse a second time. The pilot's
+  four comments read in the right order on both sides.
+
+Pass A itself is [`pass-a.py`](./pass-a.py), committed beside this doc so the
+format gate 1 signs off on is reviewable as code rather than as prose. It renders
+in ascending key order, runs strictly sequentially, halts on the first failure,
+appends to the mapping as each number comes back, and resumes from that mapping if
+interrupted. `--dry-run` renders and validates all 330 while writing nothing —
+every title non-empty, every label resolving against the repository's 32, every
+status type mapped, every header well-formed. Building it surfaced three more
+findings:
+
+- **`SHI-1` … `SHI-4` are Linear's own onboarding boilerplate**: "Get familiar
+  with Linear", "Set up your teams", "Connect your tools", "Import your data",
+  all Canceled on the workspace's creation day. Real work starts at `SHI-5`.
+  They are copied anyway. Skipping them would put a hole in the mapping and
+  strand any reference to them, for the sake of four closed issues nobody sees in
+  the default view; a faithful 1:1 copy is worth more than a tidier repository.
+- **27 issues have no description at all.** Rendering the header, a rule and then
+  nothing leaves a dangling divider, so the rule is emitted only when there is a
+  body under it.
+- **Only 89 of the ~118 `linear.app` URLs point at an issue.** The rest are
+  attachment uploads, Linear's own documentation, a Slack invite and design-review
+  links. Pass B must rewrite the issue links and **leave the others alone** — they
+  have no key to map, and a blanket URL rewrite would mangle them. The upload
+  links die with the workspace either way; nothing can be done about that, and the
+  export is the archive.
+
+## The sweep is not a blanket rewrite
+
+Classifying all 2,797 `SHI-N` mentions before writing the sweep changed its shape.
+Most are **citations** — a key named in prose, a code comment, a test name — and
+those rewrite mechanically:
+
+| Category | Count | Rewrite |
+|---|---|---|
+| Code comments (`* SHI-239 made this line LOAD-BEARING`) | 867 | mechanical |
+| Markdown prose, incl. `CLAUDE.md` | 627 | mechanical |
+| Dockerfiles, seccomp JSON, other non-code | 100 | mechanical |
+| Test/fixture files | 837 | **mixed — see below** |
+| Doc `issue:` frontmatter pointers | 186 | mechanical |
+| Non-comment code | 8 | **inspect each** |
+
+The rest are **data**, and rewriting them breaks or silently changes what a test
+asserts. `src/client/stores/issues-store.test.ts` uses `SHI-1`, `SHI-9`, `SHI-28`
+as Linear identifiers under test; `trackers/linear/adapter.test.ts` builds fixture
+issues with `identifier: "SHI-1"`. Those are not pointers at anything — they are
+the *shape of a Linear key*, which is what the code under test parses. Roughly
+**330 such lines across 12 files**, led by:
+
+```
+46  src/server/session/agent-shim/shipit.test.ts
+45  src/server/orchestrator/trackers/linear/adapter.test.ts
+18  src/client/stores/issues-store.test.ts
+16  src/client/components/message-markdown.test.tsx
+```
+
+The same applies to reference-syntax **examples in user-facing strings** —
+`issue-ref-resolution.ts:160` names `roadmap#SHI-304` and `SHI-304` in an error
+message that teaches the three reference forms. Those stay valid only while a
+Linear tracker is declared, so they belong with step 11, not step 10.
+
+The distinction is not expressible as a regex: `it("… (SHI-278)")` is a citation
+and `identifier: "SHI-1"` is data, and both are `SHI-\d+` inside a string literal
+in a test file.
+
+**Two attempts at a clever exclusion failed before the blunt one worked**, and
+both failures are the reason the rule is what it is:
+
+1. A hand-built list of "data files" from a grep heuristic. It missed
+   `session-actions.test.ts`, where the sweep rewrote the *expectation*
+   (`toBe("SHI-1")` → `toBe("planning#3")`) while the fixture producing the value
+   sat in a file that was excluded. Green typecheck, red test — and had that
+   assertion been looser, a silent weakening.
+2. The URL pattern `[^\s)]*` for a Linear slug. It swallowed the closing quote of
+   `url: "https://linear.app/…/SHI-137"`, producing an unterminated string
+   literal. Caught by `tsc`, but only because it happened to break syntax rather
+   than meaning.
+
+So the sweep excluded **every test file wholesale**, plus 20 named source files
+that teach or parse the key shape, plus this doc folder — and skipped individual
+**syntax-example lines** (a line carrying both a `SHI-N` and a marker like
+`owner/repo#` or `bare `). Both exclusions were meant to err toward skipping, on
+the theory that a citation wrongly left alone is caught later while a
+wrongly-rewritten example is silent damage.
+
+**The theory was right and the markers were not.** `bare ` matched "the bare repo
+cache" and hid real citations; nothing matched "a Linear key (`SHI-304`)" at all.
+What the exclusions actually bought was a smaller blast radius, not correctness —
+see *Gate 3 needed a check AND two reviews* for what it took to find the rest.
+
+The mechanical half ran on 2026-08-07: **511 files, 1,778 rewrites**, typecheck
+clean, full suite green (699 files, 10,305 tests), lint clean.
+
+The manual half then inverted the rule. Rather than "rewrite everything except
+known-bad lines", `sweep-tests.py` rewrites **only lines that
+are provably citations** — a comment, or a `describe`/`it` title that carries no
+data marker — and leaves the rest. 431 lines across 156 files, suite still green.
+
+Three classes escaped both scripts, and each is a different kind of blind spot:
+
+- **Two false positives from the `bare ` marker.** `git-lfs-store.ts:6` says
+  "via the bare repo cache (docs/232, SHI-236)" — an ordinary citation on a line
+  the syntax-example heuristic vetoed because of an unrelated English word.
+- **24 hyphen-prefixed prose citations** — `pre-SHI-194`, `post-SHI-192`. The
+  `(?<![\w-])` lookbehind skips a key preceded by a hyphen *by design*, so it
+  never matches inside a compound identifier; the cost is that it also misses
+  prose that hyphenates a reference.
+- **One heading**, `SHI-129-protected`, for the same reason from the other side.
+
+### Gate 3 needed a check AND two reviews, and the check was never the hard part
+
+684 files is not reviewable by eye, so [`verify-sweep.py`](./verify-sweep.py)
+asserts the structural property: for every changed line, blank the reference
+tokens from both sides and the remainders must be byte-identical, paired per file
+and per hunk, every substitution agreeing with `mapping.tsv`.
+
+**That check found almost nothing that mattered.** Two Codex reviews did. The
+division is worth stating because it is the reusable lesson:
+
+| Class | Caught by |
+|---|---|
+| Structural corruption (mangled URL, dropped character, unbalanced hunk) | the checker |
+| **A `SHI-N` inside text *teaching* what a reference looks like** | reviews only |
+| Citations the rewrite never reached | reviews only |
+| Holes in the checker itself | reviews only |
+
+The check **cannot tell a pointer from text describing the shape of a pointer**,
+because both sides tokenize identically. That is not a bug to fix; it is the
+boundary of what a lexical assertion can express. Twenty-four lines were corrupted
+this way and every one had to be judged individually:
+
+| Was | Became |
+|---|---|
+| `planning#SHI-3` | `planning#planning#5` |
+| `name#SHI-304` | `name#planning#306` |
+| `<name>#<SHI-304\|57>` | `<name>#<planning#306\|57>` |
+| `` `SHI-319` tail of `roadmap#SHI-319` `` | `` `planning#321` tail of `planning#321` `` |
+| "a Linear key (`SHI-304`)" | "a Linear key (`planning#306`)" |
+| `…/issue/SHI-28/redesign-the-auth-flow` | `…/issue/planning#30/…` |
+
+The second one is docs/248's own example of *a name form whose suffix doesn't fit
+the named backend* — the error case that feature exists to reject. The reviews
+also found **49 unrewritten test-title citations**, **4 stale citations** hidden
+by the unrelated English word "bare" or buried in an assertion message, and — in
+the first round — three structural holes in the checker (it failed open, skipped
+a binary-flagged file, and paired lines globally).
+
+Two things went wrong in my own handling, both worth recording:
+
+- **I cited the 12 lines an early run "caught" as evidence the checker worked.**
+  They were caught by accident: each happened to carry a pre-existing `planning#N`
+  that made the token counts asymmetric. The script never had the power to find
+  that class, and the broader claim I attached to it was the actual error.
+- **Fixing by heuristic kept missing.** Each round of "restore the lines matching
+  these markers" left more behind, because the markers were guesses about
+  language. What worked was enumerating every line containing `planning#N` in a
+  shape-teaching context — 18 candidates — and judging each one, keeping 4 that
+  were genuine citations of issue `SHI-323` rather than examples.
+
+**The rewrite scripts are deliberately not committed.** Re-running `sweep.py`
+today would rewrite 27 more references, 15 of them re-corrupting the very syntax
+examples this section is about; `sweep-tests.py` would re-corrupt 17. They were
+one-shot tools whose correctness depended on the state of the tree at the moment
+they ran, and leaving them beside the doc would invite exactly that mistake.
+`mapping.tsv` and `verify-sweep.py` remain, because both stay meaningful.
+
+Final state: 2,106 hunks, 2,188 changed lines, 2,259 substitutions, zero
+unbalanced hunks, zero differing outside a reference, zero disagreeing with the
+mapping — plus two adversarial reviews covering what that cannot express.
+
+**What deliberately remains is 517 mentions across 63 files, and none of them are
+pointers.** They are `SHI-N` as the *shape of a Linear key* — fixtures and parser
+tests for the Linear adapter, the shim's key parsing, the viewer rendering a
+Linear issue — plus reference-syntax examples that teach the three forms. Linear
+support stays in the product (248 req 3); ShipIt retires it for *itself* by not
+declaring it. So those stay `SHI-N` permanently. They are not a later pass's
+backlog, and reading them as one would break the tests that keep Linear working.
 
 ## Where a human has to look
 
@@ -241,50 +612,63 @@ mapping's completeness, that ordering is monotonic (req 12), that every create
 returned the expected number, that lint and typecheck pass. Those are assertions,
 and an assertion that needs a human is a missing assertion.
 
-### Gate 1 — the pilot, before the format is repeated 322 times
+### Gate 1 — the pilot, before the format is repeated 330 times
 
-**Look at:** the one copied issue, in the Issues tab. Specifically —
+**Look at:** `planning#2` in the Issues tab — the copied `SHI-145`. Specifically —
 
 - Does the body header read well? It carries the `SHI-N` origin and the original
-  creation date, and it will sit at the top of all 322.
+  creation date, and it will sit at the top of all 330.
 - Do the replayed comments read as a conversation? Each is prefixed with its
   original date, and the prefix format is what makes a two-year-old discussion
   legible or noisy.
-- Did the internal cross-references get rewritten to the right issues, and do
-  they resolve when clicked?
 - Do labels and the `priority: …` label look right, and does the priority read
-  back correctly in the list?
+  back correctly in the list? This is also where the three known-wrong label
+  colors show up — `bug` lowercase and off-red, `priority: high` grey.
+- How do the bare `#N` PR references render? The pilot's comments mention
+  `#1354` and `#1453`, which live in `nikzlabs/shipit`, not here. This is the
+  finding that most needs a look at a real rendered issue.
+
+**Not checkable at this gate:** whether a rewritten cross-reference *resolves*
+when clicked. A single piloted issue has nothing to point at — its targets are
+created in Pass A. The pilot is therefore copied in Pass A's form, with
+cross-references still reading `SHI-31`; judging the rewritten form is gate 2's
+job, once the mapping exists. This gate was originally written as if one issue
+could check resolution, which by construction it cannot.
 
 **Why a human:** every one of these is "does this read well", which no test
 asserts.
 
-**Cost of getting it wrong:** depends on one capability that does not exist yet.
-Issue *bodies* can be edited later. **Comments cannot** — the shim has no
-comment-edit or comment-delete command, and deletion exists only via a write
-card's Undo, which is gone once the copy session's cards age out. Credentials are
-brokered, so there is no direct-API fallback. As things stand, a comment format
-settled here is settled for good.
+**Cost of getting it wrong: no longer permanent.** This gate was written when a
+comment, once posted, could not be changed — the shim had no comment-edit, and
+deletion existed only through a write card's Undo, which is gone once the copy
+session's cards age out. `shipit issue comment edit` shipped on 2026-08-07
+(docs/177) and is **live in the deployed shim**, verified by editing a comment on
+`planning#1` end to end. A wrong comment format is now a second pass over 1,390
+comments rather than a permanent defect, and wall-clock is not a constraint here,
+so that is a real remedy rather than a theoretical one.
 
-If `comment edit` ships first (docs/177 → *Proposed — editing and deleting a
-comment*), that changes: a wrong format becomes a second pass over 1,344
-comments rather than a permanent defect. Wall-clock is not a constraint on this
-migration, so "another full pass" is a real remedy rather than a theoretical one.
-This gate stays either way — it is far cheaper to read one issue than to
-re-drive 1,344 writes — but it stops being a one-way door.
+The gate stays, for a smaller reason than before: it is far cheaper to read one
+issue than to re-drive 1,390 writes. But it is no longer a one-way door, and it
+should not be treated as one — the remaining irreversible act in this migration
+is creating the issues themselves, since a number, once assigned, is never reused.
 
 ### Gate 2 — after Pass A, before the reference sweep
 
 **Look at:** the tracker list, and the mapping artifact. Specifically —
 
-- Are there 322 issues, and does spot-checking a handful against their Linear
+- Are there 330 issues, and does spot-checking a handful against their Linear
   originals show the right title, labels and open/closed state?
 - Does the list read in a sensible order — lowest Linear key first (req 12)?
 - Does the mapping cover every key, with no duplicates?
+Cross-reference *resolution* is still not checkable here, and moving it to this
+gate (as an earlier revision did) was wrong: Pass A deliberately leaves references
+in their `SHI-N` form, so nothing is rewritten until Pass B. The check belongs to
+the post-Pass-B round trip, which is the first moment a rewritten reference exists.
 
 **Why a human:** the agent asserts all of this, but the sweep that follows rewrites
-2,623 references in 667 files from this mapping. A wrong mapping propagates into
-every file in the repository, and the mistake is far cheaper to catch as 322 rows
-than as a 667-file diff.
+2,797 references in 686 files from this mapping. A wrong mapping propagates into
+every file in the repository, and the mistake is far cheaper to catch as 330 rows
+than as a 686-file diff.
 
 **Cost of getting it wrong:** a bad mapping means a bad sweep, and the sweep is
 the migration's only diff.
@@ -327,40 +711,58 @@ the tracker is used day to day, not about what the code does.
 1. ~~Create the planning repository and confirm the credential reaches it.~~ Done.
 2. ~~Land, release and deploy 248.~~ Done.
 3. ~~Add `createdAt` to the Linear adapter, and stop the shim truncating piped
-   output.~~ Both on `main` (`9b031908`) — but confirm they have reached the
-   **deployed** shim before step 4, since the export depends on both.
-4. **Export Linear** — 322 keys, `view --comments --json` redirected to a file per
-   key, resumable, outside the workspace. Read-only, and it doubles as the
-   archive. Already run once; the copy session re-runs it for itself.
-5. **Create the labels** the corpus uses — the 20 from Linear with their colors,
+   output, then confirm both have reached the **deployed** shim.~~ Done —
+   `9b031908` is live, verified from a session container on 2026-08-07.
+4. ~~**Export Linear** — 330 keys, `view --comments --json` redirected to a file
+   per key, resumable, outside the workspace. Read-only, and it doubles as the
+   archive.~~ Done 2026-08-07 — `/persist/linear-export/`, 330 files, 0 misses,
+   44 seconds. `/persist` is per-session, so a different session re-runs
+   `fetch.sh` rather than inheriting the output.
+5. ~~**Create the labels** the corpus uses — the 20 from Linear with their colors,
    plus the four `priority: …` labels that carry priority across. Workflow state
-   contributes none (req 8).
-6. **Pilot: copy exactly one issue and stop. — Human gate 1.** Pick one that exercises the awkward
-   parts — a long body, several comments, at least one internal `SHI-N`
-   cross-reference, a label and a priority — and copy it end to end. Then look at
-   it in the Issues tab and decide whether the body header, the dated comments and
-   the rewritten cross-references read the way they should. Everything downstream
-   repeats this 322 times, so the format is far cheaper to change here than after.
-   The pilot's issue number is consumed either way, so Pass A's consistency check
-   accounts for it rather than assuming an untouched repository.
+   contributes none (req 8).~~ Done 2026-08-07 — 21 created, all 24 now resolve.
+   Three arrived with the wrong color and **cannot be corrected through the
+   shim**; see below.
+6. ~~**Pilot: copy exactly one issue and stop.**~~ Done 2026-08-07 — `SHI-145` →
+   `planning#2`, chosen because it exercises a 4 KB body, four comments, two
+   cross-references, three labels including the colliding `Bug`, `High` priority
+   and a closed state. The format it established is written up under *The copy
+   format, as piloted*. **Waiting at Human gate 1.** Everything downstream repeats
+   this 330 times, so the format is far cheaper to change now than after. The
+   pilot consumed `planning#2`, so Pass A's consistency check starts from #3
+   rather than assuming an untouched repository.
 7. **Sync to the latest `main`.** Everything after this point is measured against
    the working tree — the mapping is applied to it, and the sweep rewrites it — so
    the copy starts from a current base rather than a stale one.
-8. **Pass A — create all 322 issues** in ascending key order (req 12): title,
+8. **Pass A — create all 330 issues** in ascending key order (req 12): title,
    labels, and a body carrying its `SHI-N` origin, its original creation date
    and, for the 15 sub-issues, its parent. Cross-references stay in their original
    `SHI-N` form for now. Closed issues are closed after creation. Every assigned
    number is appended to the `SHI-N → planning#M` mapping as it comes back, which
    makes the mapping complete and *observed* at the end of this pass.
    **Human gate 2 at the end of this step**, before anything reads the mapping.
-9. **Pass B — finish the tracker side.** Replay the 1,344 comments with their
-   original dates (req 9), and edit the 322 bodies so their internal
-   cross-references point at `planning#M`. Both are tracker writes against the
-   mapping Pass A produced; **nothing in this repository changes**, so this step
-   opens no PR and can run for as long as the pacing requires.
+9. **Pass B — finish the tracker side.** Replay the 1,390 comments with their
+   original dates (req 9) — **reversing each issue's array, since the Linear
+   export returns comments newest-first** — and rewrite references in the 330
+   bodies, the 1,390 comments and the **5 titles** that carry one. Three rewrites,
+   not one: internal `SHI-N` → `planning#M` from the mapping (1,174), `linear.app`
+   URLs → the same (the **89** that point at an issue; the other ~29 are uploads,
+   Linear docs and a Slack invite, with no key to map), and the **980 bare `#N`**
+   PR references → the qualified `nikzlabs/shipit#N`, since inside this repository
+   a bare `#N` points here rather than at the source repo. All tracker writes
+   against the mapping Pass A produced; **nothing in this repository changes**, so
+   this step opens no PR and can run for as long as the pacing requires.
+
+   [`pass-b.py`](./pass-b.py) implements it, and
+   [`test-rewrite.py`](./test-rewrite.py) pins the rewrite rules against the traps
+   this migration found the hard way — the markdown link rewritten as a unit, the
+   non-issue URLs left alone, the header's own key surviving, and `#1354` inside
+   inline or fenced code not being a reference at all. That last one matters at
+   this volume: 980 bare-number rewrites across a corpus full of shell snippets
+   would otherwise corrupt code samples in a way no count would reveal.
 10. **Rewrite every reference in this repository** — **Human gate 3.** From that mapping, in one PR
     (req 10): doc `issue:` frontmatter, inline doc mentions, code comments,
-    `CLAUDE.md`. 2,623 mentions across 667 files — it conflicts with every open
+    `CLAUDE.md`. 2,797 mentions across 686 files — it conflicts with every open
     branch, so it lands when nothing else is in flight. This is the only step of
     the migration that produces a diff.
 11. **Retire Linear** for ShipIt's own planning — **Human gate 4.** (req 11): drop the `roadmap`

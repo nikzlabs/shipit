@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, renderHook, screen, cleanup, waitFor } from "@testing-library/react";
 import {
   SubscriptionLimitsBadge,
   SubscriptionLimitPill,
+  useSubscriptionPillCount,
   tierColor,
   formatPct,
   formatResetCountdown,
@@ -10,10 +11,12 @@ import {
   meterDisplay,
   timeElapsedPct,
   resetAutoRefreshThrottle,
+  windowsShown,
   AUTO_REFRESH_MIN_INTERVAL_MS,
 } from "./SubscriptionLimitsBadge.js";
-import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
+import type { CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 /** docs/150 — wrap snapshots into the provider → route → limits wire shape. */
 function routed(...snaps: SubscriptionLimits[]): Record<string, SubscriptionLimits> {
@@ -24,6 +27,8 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useSettingsStore.getState().setProviderAccounts([]);
+  useSettingsStore.getState().setCredentialRoutes([]);
+  useUiStore.getState().setSettingsOpen(false);
 });
 
 // Reset timestamps live in the future relative to the test clock so the
@@ -34,10 +39,11 @@ const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
 
 function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimits {
-  const agentId = overrides.agentId ?? "claude";
+  const serviceId = overrides.serviceId ?? "anthropic";
   return {
-    agentId,
-    routeId: `acct-${agentId}`,
+    serviceId,
+    billingMode: "sub",
+    routeId: `acct-${serviceId}`,
     plan: "Pro",
     session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET },
     weekly: { usedPct: 50, resetAt: FUTURE_WEEKLY_RESET },
@@ -175,8 +181,8 @@ describe("SubscriptionLimitsBadge group", () => {
   it("keeps every connected provider visible before either has reported usage", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-claude", provider: "claude", label: "Claude work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-      { id: "acct-codex", provider: "codex", label: "Codex work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-claude", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-codex", serviceId: "openai", billingMode: "sub", via: "account", label: "Codex work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
 
     render(<SubscriptionLimitsBadge limits={{}} />);
@@ -188,23 +194,26 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(screen.getByRole("button", { name: "Refresh subscription usage" })).toBeInTheDocument();
   });
 
-  it("renders one row for one provider", () => {
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap()) };
+  // docs/252 req 10 — a group is a `(service, billing mode)`, so an unnamed
+  // route's pill carries the SERVICE's name. It used to say "Claude", which
+  // named the harness rather than the thing that owns the quota.
+  it("renders one row for one service", () => {
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap()) };
     render(<SubscriptionLimitsBadge limits={limits} />);
-    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
     expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
     expect(screen.getByText(/7d 50%/)).toBeInTheDocument();
-    expect(screen.queryByText("Codex")).toBeNull();
+    expect(screen.queryByText("OpenAI")).toBeNull();
   });
 
-  it("renders one labelled pill per connected account (docs/150 req 10)", () => {
+  it("renders one labelled pill per connected account (docs/150-multiple-provider-subscriptions req 10)", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-      { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-personal", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
     ]);
     const limits: SubscriptionLimitsMap = {
-      claude: {
+      "anthropic:sub": {
         // Reversed vs the account order to prove the pills follow the user's
         // account order, not map insertion order.
         "acct-personal": makeSnap({ routeId: "acct-personal", session: { usedPct: 12, resetAt: FUTURE_SESSION_RESET } }),
@@ -230,9 +239,9 @@ describe("SubscriptionLimitsBadge group", () => {
   it("lets a pill shrink by truncating its label, not by overflowing the row", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "nicolas.zherebtsov@gmail.com", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
 
     const pill = container.querySelector(":scope > span");
@@ -248,9 +257,9 @@ describe("SubscriptionLimitsBadge group", () => {
   it("labels a single account's pill with the account name", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
     expect(screen.getByText("Work")).toBeInTheDocument();
   });
@@ -258,37 +267,38 @@ describe("SubscriptionLimitsBadge group", () => {
   it("renders the quiet account alongside an account with a snapshot", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-      { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-personal", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
     ]);
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "acct-work" })) };
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
     expect(screen.getByText("Work")).toBeInTheDocument();
     expect(screen.getByText("Personal")).toBeInTheDocument();
     expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
   });
 
-  // Reserved env / API-key routes are not accounts, so they keep the provider
+  // Reserved env / API-key routes are not accounts, so they keep the service
   // label rather than inventing a name for something the user never named.
-  it("keeps the provider label for a reserved route", () => {
+  it("keeps the service label for a reserved route", () => {
     useSettingsStore.getState().setProviderAccounts([]);
-    const limits: SubscriptionLimitsMap = { claude: routed(makeSnap({ routeId: "claude-env-oauth" })) };
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "claude-env-oauth" })) };
     render(<SubscriptionLimitsBadge limits={limits} />);
-    expect(screen.getByText("Claude")).toBeInTheDocument();
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
   });
 
-  it("renders both rows in stable order: Claude then Codex", () => {
+  it("renders both rows in stable order: Anthropic then OpenAI", () => {
     const limits: SubscriptionLimitsMap = {
       // Map insertion order is reversed to confirm the component
       // doesn't naively use it.
-      codex: routed(makeSnap({ agentId: "codex", plan: "Plus", session: { usedPct: 10, resetAt: "x" }, weekly: { usedPct: 5, resetAt: "y" } })),
-      claude: routed(makeSnap({ agentId: "claude" })),
+      "openai:sub": routed(makeSnap({ serviceId: "openai",
+    billingMode: "sub", plan: "Plus", session: { usedPct: 10, resetAt: "x" }, weekly: { usedPct: 5, resetAt: "y" } })),
+      "anthropic:sub": routed(makeSnap({ serviceId: "anthropic", billingMode: "sub" })),
     };
     const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
     const rows = container.querySelectorAll(":scope > span");
     expect(rows.length).toBe(2);
-    expect(rows[0].textContent).toMatch(/^Claude/);
-    expect(rows[1].textContent).toMatch(/^Codex/);
+    expect(rows[0].textContent).toMatch(/^Anthropic/);
+    expect(rows[1].textContent).toMatch(/^OpenAI/);
   });
 });
 
@@ -369,14 +379,54 @@ describe("SubscriptionLimitPill", () => {
     expect(screen.getByText(/7d 90%/)).not.toHaveTextContent(/resets in/);
   });
 
-  it("keeps both window blocks visible when session usage has not been reported", () => {
+  /**
+   * REVERSED by planning#454, deliberately. This case used to assert that a
+   * `null` session inside a reading still drew `5h · —`, on the reading that a
+   * missing window means "not reported yet".
+   *
+   * It does not. A provider with a window reports it as an object even when it
+   * has no number for it — `{ usedPct: null, resetAt }`, the case immediately
+   * below — so `null` here is the provider saying the plan HAS no such window.
+   * Drawing a dash for it is the permanently-empty read-out the user reported.
+   * "Not reported yet" is the no-reading-at-all case, and it still draws both.
+   */
+  it("drops a window the reader says the plan does not have", () => {
+    render(
+      <SubscriptionLimitPill
+        label="nik@x"
+        snapshot={makeSnap({ session: null, weekly: { usedPct: 40, resetAt: "x" }, availableWindows: ["weekly"] })}
+      />,
+    );
+    expect(screen.queryByText(/5h/)).toBeNull();
+    expect(screen.getByText(/7d 40%/)).toBeInTheDocument();
+  });
+
+  /*
+    The case the independent review caught, and the reason the rule is declared
+    rather than derived. Claude's `rate_limit_event` carries ONE window per
+    event, so this snapshot — a five_hour reading with nothing weekly yet — is
+    what a first turn actually produces on a plan that HAS both. Its reader
+    states no `availableWindows`, and the 7d meter must survive.
+  */
+  it("keeps both windows when the reader makes no claim about them", () => {
     render(
       <SubscriptionLimitPill
         label="Claude"
-        snapshot={makeSnap({ session: null, weekly: { usedPct: 40, resetAt: "x" } })}
+        snapshot={makeSnap({ session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET }, weekly: null })}
       />,
     );
-    expect(screen.getByText(/5h · —/)).toHaveAttribute("title", expect.stringContaining("usage not reported yet"));
+    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
+    expect(screen.getByText(/7d · —/)).toBeInTheDocument();
+  });
+
+  it("still says 'not reported yet' for a window the provider reported without a number", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({ session: { usedPct: null, resetAt: FUTURE_SESSION_RESET }, weekly: { usedPct: 40, resetAt: "x" } })}
+      />,
+    );
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
     expect(screen.getByText(/7d 40%/)).toBeInTheDocument();
   });
 
@@ -489,7 +539,7 @@ describe("SubscriptionLimitPill", () => {
   });
 
   it("gives each quota block its own window-specific tooltip", () => {
-    render(<SubscriptionLimitPill label="Codex" snapshot={makeSnap({ agentId: "codex" })} />);
+    render(<SubscriptionLimitPill label="Codex" snapshot={makeSnap({ serviceId: "openai", billingMode: "sub" })} />);
 
     const session = screen.getByText(/5h 30%/).closest("[data-meter-pct]");
     const weekly = screen.getByText(/7d 50%/).closest("[data-meter-pct]");
@@ -593,6 +643,154 @@ describe("SubscriptionLimitPill", () => {
   });
 });
 
+// The reported failure: an Anthropic account whose sign-in had expired kept a
+// pill full of real-looking numbers, so the header said "healthy" while every
+// turn on it was refused, and only Settings knew why.
+describe("SubscriptionLimitsBadge credential attention", () => {
+  const now = Date.now();
+
+  function connect(overrides: Partial<CredentialRoute> = {}): void {
+    useSettingsStore.getState().setProviderAccounts([
+      {
+        id: "acct-work",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        via: "account",
+        label: "Work",
+        isPrimary: true,
+        status: "ready",
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      },
+    ]);
+  }
+
+  it("replaces the meters with 'reconnect needed' for an account whose sign-in failed", () => {
+    connect({ status: "auth_failed" });
+    // A snapshot IS present — the numbers are stale-but-real, which is exactly
+    // what made the broken state invisible.
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
+
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.getByText("reconnect needed")).toBeInTheDocument();
+    expect(screen.queryByText(/5h/)).toBeNull();
+    expect(screen.queryByText(/7d/)).toBeNull();
+    // Nothing to fetch until the sign-in is redone.
+    expect(screen.queryByLabelText("Refresh subscription usage")).toBeNull();
+  });
+
+  it("opens Settings → Services when the attention word is pressed", () => {
+    connect({ status: "auth_failed" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+
+    screen.getByText("reconnect needed").click();
+
+    expect(useUiStore.getState().settingsOpen).toBe(true);
+    expect(useUiStore.getState().settingsTab).toBe("services");
+  });
+
+  it("names the remedy the credential actually has — a pasted secret has no login to re-run", () => {
+    connect({ via: "string", status: "auth_failed" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("credential rejected")).toBeInTheDocument();
+  });
+
+  // `externalId` present ⇒ this is a *reconnect* of a real account, not a
+  // first sign-in. A row that has never been a credential is not in the header
+  // at all (see below).
+  it("says a sign-in is in flight rather than showing quota it cannot have", () => {
+    connect({ status: "authenticating", externalId: "user_1" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("signing in…")).toBeInTheDocument();
+  });
+
+  it("leaves a ready account's pill exactly as it was", () => {
+    connect();
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
+    expect(screen.queryByText("reconnect needed")).toBeNull();
+  });
+
+  // The row `POST /api/provider-accounts` creates the instant *Sign in* is
+  // pressed is not a credential, and Settings does not list it. Without the
+  // same test here, starting a sign-in put a red "reconnect needed" in the
+  // header about an account that had never been connected.
+  it("renders no pill at all for a sign-in attempt that was never a credential", () => {
+    connect({ status: "unavailable" });
+    const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("does show a signed-out account that WAS connected", () => {
+    connect({ status: "unavailable", externalId: "user_1" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("reconnect needed")).toBeInTheDocument();
+  });
+
+  // A supplied secret — an env-delivered token, a pasted plan key — is not an
+  // account row, so it reaches the header through its snapshot alone. planning#358
+  // records a provider refusing one exactly as it records a failed login, and
+  // the header has to say so too.
+  function supply(overrides: Partial<CredentialRoute> = {}): void {
+    useSettingsStore.getState().setCredentialRoutes([
+      {
+        id: "claude-env-oauth",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        via: "string",
+        label: "Anthropic (ANTHROPIC_AUTH_TOKEN)",
+        isPrimary: true,
+        status: "ready",
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      },
+    ]);
+  }
+
+  it("replaces a supplied secret's meters when the provider has refused it", () => {
+    supply({ status: "auth_failed" });
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "claude-env-oauth" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(screen.getByText("credential rejected")).toBeInTheDocument();
+    expect(screen.queryByText(/5h 30%/)).toBeNull();
+  });
+
+  // The hole the snapshot-only path left: every turn on the token failed, so it
+  // never reported a quota, so the header said nothing at all about the
+  // credential those turns were dying on.
+  it("gives a refused supplied secret a pill even though it never reported a quota", () => {
+    supply({ status: "auth_failed" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+    expect(screen.getByText("credential rejected")).toBeInTheDocument();
+  });
+
+  it("adds no pill for a healthy supplied secret that has never reported a quota", () => {
+    supply();
+    const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("does not double up a refused secret that also has a snapshot", () => {
+    supply({ status: "auth_failed" });
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "claude-env-oauth" })) };
+    const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
+  });
+
+  // Settings prints the same word one element to the left and hides the pill
+  // for a non-ready credential, so a pill rendered there must not repeat it.
+  it("stays silent when the host says the word itself", () => {
+    render(<SubscriptionLimitPill label="Work" snapshot={makeSnap()} />);
+    expect(screen.queryByText("reconnect needed")).toBeNull();
+    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
+  });
+});
+
 describe("SubscriptionLimitsBadge auto refresh", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -612,11 +810,15 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   }
 
   it("fetches fresh usage on mount when autoRefresh is set, scoped to the pill's route", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     const init = refreshCalls()[0][1] as RequestInit;
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body as string)).toEqual({ agentId: "claude", routeId: "acct-claude" });
+    expect(JSON.parse(init.body as string)).toEqual({
+      serviceId: "anthropic",
+      billingMode: "sub",
+      routeId: "acct-anthropic",
+    });
   });
 
   it("refreshes only the pressed account, not every connected subscription", async () => {
@@ -625,17 +827,18 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
     // allows a handful of calls per ~30 min, so pressing the pill that showed
     // no numbers spent the other subscription's budget and locked it out too.
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-one", provider: "claude", label: "Claude", status: "ready" },
-      { id: "acct-two", provider: "claude", label: "Claude2", status: "ready" },
+      { id: "acct-one", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude", status: "ready" },
+      { id: "acct-two", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Claude2", status: "ready" },
     ] as never);
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap({ routeId: "acct-two" })) }} />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap({ routeId: "acct-two" })) }} />);
 
     const buttons = screen.getAllByLabelText("Refresh subscription usage");
     expect(buttons).toHaveLength(2);
     buttons[0].click();
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     expect(JSON.parse((refreshCalls()[0][1] as RequestInit).body as string)).toEqual({
-      agentId: "claude",
+      serviceId: "anthropic",
+    billingMode: "sub",
       routeId: "acct-one",
     });
   });
@@ -672,7 +875,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   });
 
   it("does not fetch on mount without autoRefresh (the desktop header)", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(0);
   });
@@ -680,7 +883,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   it("skips the fetch while the provider is locked out after a 429", async () => {
     render(
       <SubscriptionLimitsBadge
-        limits={{ claude: routed(makeSnap({ lockedUntil: Date.now() + 10 * 60_000 })) }}
+        limits={{ "anthropic:sub": routed(makeSnap({ lockedUntil: Date.now() + 10 * 60_000 })) }}
         autoRefresh
       />,
     );
@@ -691,7 +894,8 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   it("does not fetch for a provider with no on-demand endpoint (Codex)", async () => {
     render(
       <SubscriptionLimitsBadge
-        limits={{ codex: routed(makeSnap({ agentId: "codex", plan: "Plus" })) }}
+        limits={{ "openai:sub": routed(makeSnap({ serviceId: "openai",
+    billingMode: "sub", plan: "Plus" })) }}
         autoRefresh
       />,
     );
@@ -700,17 +904,17 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
   });
 
   it("throttles repeated opens so re-opening the dropdown can't burn the budget", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     // Closing the popover unmounts the badge; re-opening remounts it.
     cleanup();
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(1);
   });
 
   it("fetches again once the throttle interval has elapsed", async () => {
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     cleanup();
 
@@ -719,7 +923,7 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
       .spyOn(Date, "now")
       .mockReturnValue(realNow + AUTO_REFRESH_MIN_INTERVAL_MS + 1);
     try {
-      render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+      render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
       await waitFor(() => expect(refreshCalls()).toHaveLength(2));
     } finally {
       nowSpy.mockRestore();
@@ -736,8 +940,222 @@ describe("SubscriptionLimitsBadge auto refresh", () => {
 
     // Opening the dropdown right after a manual refresh shouldn't spend a
     // second call — the numbers are seconds old.
-    render(<SubscriptionLimitsBadge limits={{ claude: routed(makeSnap()) }} autoRefresh />);
+    render(<SubscriptionLimitsBadge limits={{ "anthropic:sub": routed(makeSnap()) }} autoRefresh />);
     await Promise.resolve();
     expect(refreshCalls()).toHaveLength(1);
+  });
+});
+
+/**
+ * docs/274 req 16 — the reported failure: a connected subscription put a pill in
+ * the header reading `label  5h · —  7d · —`, with no refresh button beside it,
+ * and stayed that way forever. A pill that can only ever say "—" is not an
+ * honest absence, it is a broken-looking one, which is how it was reported.
+ *
+ * The example is OpenCode Go, and it changed. This was written against xAI on
+ * the finding that xAI published no usage API; the finding was wrong
+ * (planning#454), so the durable case is Go, where the vendor really does
+ * publish no per-key usage endpoint (docs/272 req 6). The rule under test never
+ * was about a service — it is `modeReportsQuota`.
+ */
+describe("a subscription ShipIt has no quota reader for (docs/274 req 16)", () => {
+  const now = Date.now();
+
+  function connectGo(overrides: Partial<CredentialRoute> = {}): void {
+    useSettingsStore.getState().setProviderAccounts([
+      {
+        id: "acct-go",
+        serviceId: "opencode",
+        billingMode: "sub",
+        via: "account",
+        label: "nik@go",
+        isPrimary: true,
+        status: "ready",
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      },
+    ]);
+  }
+
+  it("renders no pill at all for a healthy connected account", () => {
+    connectGo();
+    const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(container.innerHTML).toBe("");
+    expect(screen.queryByText("nik@go")).toBeNull();
+    expect(screen.queryByText(/5h · —/)).toBeNull();
+    expect(screen.queryByText(/7d · —/)).toBeNull();
+  });
+
+  it("still says when that account cannot run a turn", () => {
+    // The pill's second job is about the SIGN-IN, not about quota, so it
+    // survives: a Go account needing reconnection is exactly as worth saying
+    // as an Anthropic one, and the header is the only place that says it.
+    connectGo({ status: "auth_failed" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("nik@go")).toBeInTheDocument();
+    expect(screen.getByText("reconnect needed")).toBeInTheDocument();
+    expect(screen.queryByText(/5h/)).toBeNull();
+  });
+
+  it("does not count toward the header's pill budget", () => {
+    // `AppLayout` sizes the status group on this number; a pill that never
+    // renders must not reserve room for itself.
+    connectGo();
+    const { result } = renderHook(() => useSubscriptionPillCount({}));
+    expect(result.current).toBe(0);
+  });
+
+  it("leaves a service that DOES report a quota untouched", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-go", serviceId: "opencode", billingMode: "sub", via: "account", label: "nik@go", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
+    // The quiet Anthropic account keeps its `—` meters: there its blanks mean
+    // "no reading yet", and the refresh button beside them is what makes that
+    // true rather than decorative.
+    expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    // The direct form of the same claim, independent of the DOM shape above.
+    expect(screen.queryByText("nik@go")).toBeNull();
+    expect(screen.getAllByText(/5h · —/)).toHaveLength(1);
+    expect(screen.getByLabelText("Refresh subscription usage")).toBeInTheDocument();
+  });
+
+  /*
+    The snapshot loop is the one the review asked about: it derives a pill FROM
+    a snapshot, so it renders on the map's say-so alone. No reader means no
+    `LimitsProvider` and so no snapshot, which makes this unreachable through
+    the server — but a stale entry, or a service that loses its reader, would
+    put the blank meters straight back. Asserted by handing the badge a
+    snapshot that cannot legitimately exist.
+  */
+  it("ignores a snapshot for a mode with no reader, however it got there", () => {
+    const limits: SubscriptionLimitsMap = {
+      "opencode:sub": routed(makeSnap({ serviceId: "opencode", routeId: "go-reserved" })),
+    };
+    const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(container.innerHTML).toBe("");
+  });
+});
+
+/**
+ * planning#454 — **the pill draws the windows the reading carries, and no
+ * others.**
+ *
+ * Reported by a user looking at three subscriptions at once: SuperGrok, a
+ * ChatGPT plan and a GLM plan, each showing a `5h · —` that nothing would ever
+ * fill, two of them beside a real weekly number. The pill drew a fixed pair of
+ * meters on the assumption that every plan has both windows. Several do not —
+ * SuperGrok has a single weekly pool and no short window at all.
+ *
+ * No service is named in the rule or in these cases, which is the point: a
+ * provider that HAS a window reports it as an object even when it has no number
+ * for it yet (`SubscriptionLimitsWindow.usedPct` is nullable for exactly that),
+ * so a `null` window inside a reading already means "this plan has no such
+ * window". What the pill was missing was not a new field — it was the
+ * difference between a null window and no reading.
+ */
+describe("a plan whose reading carries only some of the windows (planning#454)", () => {
+  it("draws the weekly meter alone when the reader says there is no short window", () => {
+    render(
+      <SubscriptionLimitPill
+        label="nik@x"
+        snapshot={makeSnap({ serviceId: "xai", session: null, weekly: { usedPct: 10, resetAt: FUTURE_WEEKLY_RESET }, availableWindows: ["weekly"] })}
+      />,
+    );
+    expect(screen.getByText(/7d\s*10%/)).toBeInTheDocument();
+    expect(screen.queryByText(/5h/)).toBeNull();
+  });
+
+  it("draws the short meter alone when the reader says there is no weekly window", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Work"
+        snapshot={makeSnap({ weekly: null, session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET }, availableWindows: ["session"] })}
+      />,
+    );
+    expect(screen.getByText(/5h\s*30%/)).toBeInTheDocument();
+    expect(screen.queryByText(/7d/)).toBeNull();
+  });
+
+  it("draws both when the reader names both", () => {
+    render(<SubscriptionLimitPill label="Work" snapshot={makeSnap({ availableWindows: ["session", "weekly"] })} />);
+    expect(screen.getByText(/5h\s*30%/)).toBeInTheDocument();
+    expect(screen.getByText(/7d\s*50%/)).toBeInTheDocument();
+  });
+
+  /*
+    A window that EXISTS but has no number yet is not an absent window, and the
+    two are distinguished by shape rather than by a service list: the provider
+    sends `{ usedPct: null, resetAt }`. Claude below a warning threshold is
+    exactly this, and its `5h · —` is a pending state the refresh button can
+    still change.
+  */
+  it("keeps a window the provider reported without a number", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Work"
+        snapshot={makeSnap({ session: { usedPct: null, resetAt: FUTURE_SESSION_RESET } })}
+      />,
+    );
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
+    expect(screen.getByText(/7d\s*50%/)).toBeInTheDocument();
+  });
+
+  it("draws both as unread when there is no reading at all", () => {
+    // The connected-but-quiet account. Nothing is known yet, which is not the
+    // same as a plan with no windows — a refresh can still fill these.
+    render(<SubscriptionLimitPill label="Work" serviceId="anthropic" showRefresh />);
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
+    expect(screen.getByText(/7d · —/)).toBeInTheDocument();
+  });
+
+  /*
+    The case that makes the fallback load-bearing rather than defensive. A route
+    429'd before it ever reported gets a real snapshot whose only content is the
+    lockout countdown. Drawing nothing there would say the plan is unmetered.
+  */
+  it("draws both as unread for a lockout-only reading, not neither", () => {
+    render(
+      <SubscriptionLimitPill
+        label="Work"
+        serviceId="anthropic"
+        showRefresh
+        snapshot={makeSnap({ session: null, weekly: null, lockedUntil: Date.now() + 600_000 })}
+      />,
+    );
+    expect(screen.getByText(/5h · —/)).toBeInTheDocument();
+    expect(screen.getByText(/7d · —/)).toBeInTheDocument();
+  });
+
+  it("keeps the refresh button beside a single meter", () => {
+    // The half the user asked for by name: a number, and something to press to
+    // make it current. Losing a slot must not lose the button with it.
+    render(
+      <SubscriptionLimitPill
+        label="nik@x"
+        serviceId="xai"
+        showRefresh
+        snapshot={makeSnap({ serviceId: "xai", session: null, weekly: { usedPct: 10, resetAt: FUTURE_WEEKLY_RESET }, availableWindows: ["weekly"] })}
+      />,
+    );
+    expect(screen.getByLabelText("Refresh subscription usage")).toBeInTheDocument();
+  });
+
+  describe("windowsShown", () => {
+    const win = { usedPct: 1, resetAt: FUTURE_WEEKLY_RESET };
+
+    it.each([
+      ["no reading at all", undefined, { session: true, weekly: true }],
+      ["a reader that claims nothing", makeSnap({ session: win, weekly: null }), { session: true, weekly: true }],
+      ["both named", makeSnap({ availableWindows: ["session", "weekly"] }), { session: true, weekly: true }],
+      ["weekly only", makeSnap({ session: null, weekly: win, availableWindows: ["weekly"] }), { session: false, weekly: true }],
+      ["session only", makeSnap({ session: win, weekly: null, availableWindows: ["session"] }), { session: true, weekly: false }],
+      ["an empty claim, which is no claim", makeSnap({ availableWindows: [] }), { session: true, weekly: true }],
+    ])("%s", (_name, snapshot, expected) => {
+      expect(windowsShown(snapshot)).toEqual(expected);
+    });
   });
 });

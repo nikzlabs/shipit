@@ -19,7 +19,7 @@ That omission matters for Codex because its baseline autonomy policy distinguish
 
 Add a short Codex-only `implied-action.md` fragment to the existing static prompt composition. It tells Codex to use active-task context, answer and act in the same turn for clear safe/reversible/in-scope continuations, and retain the read-only boundary for genuine questions and the authorization boundary for ambiguous, destructive, externally consequential, or out-of-scope work.
 
-The same fragment makes required in-scope review and validation gates explicitly intermediate. Codex surfaces the phase as progress, completes the gate, handles its result, and proceeds to the remaining requested deliverables rather than ending the turn and waiting for a user ping. It still stops when the gate exposes a genuine need for user input or new authority. This is the agent-side correction; a product-level pending-review indicator for every backend is tracked separately in SHI-275.
+The same fragment makes required in-scope review and validation gates explicitly intermediate. Codex surfaces the phase as progress, completes the gate, handles its result, and proceeds to the remaining requested deliverables rather than ending the turn and waiting for a user ping. It still stops when the gate exposes a genuine need for user input or new authority. This is the agent-side correction; a product-level pending-review indicator for every backend is tracked separately in planning#277.
 
 ### The returned review (req 8)
 

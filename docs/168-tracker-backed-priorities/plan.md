@@ -1,7 +1,7 @@
 ---
 title: Tracker-backed priorities (doc decoupling)
 description: Move priority and work-status out of design-doc frontmatter into the issue tracker. Docs become reference material with an issue: pointer; the docs list groups by checklist state instead of status.
-issue: https://linear.app/shipit-ai/issue/SHI-28
+issue: planning#30
 ---
 
 # Tracker-backed priorities

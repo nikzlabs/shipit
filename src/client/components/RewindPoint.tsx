@@ -27,7 +27,7 @@ interface RewindPointProps {
    * A turn is currently running. In-place rewind (chat/code/both) mutates this
    * session's workspace and conflicts with the running agent, so it's hidden.
    * Fork is independent — it spins off a NEW session from an already-committed
-   * SHA without touching this one — so it stays available (SHI-182).
+   * SHA without touching this one — so it stays available (planning#184).
    */
   turnRunning?: boolean;
   /**

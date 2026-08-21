@@ -3,6 +3,7 @@ import { renderHook, act, waitFor } from "@testing-library/react";
 import { useMessageHandler } from "./useMessageHandler.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { resumeSessionInternal } from "../stores/actions/session-actions.js";
 import type { WsServerMessage } from "../../server/shared/types.js";
 
 function messageEvent(data: WsServerMessage): MessageEvent {
@@ -84,6 +85,70 @@ describe("useMessageHandler", () => {
       expect(useSessionStore.getState().subAgentSpawns["spawn-1"]).toMatchObject({
         subAgentId: "codex",
       });
+    });
+  });
+
+  /**
+   * The session-switch entry into the "switched away mid-turn, switched back,
+   * and the earlier messages are gone" hole. The switch clears the transcript
+   * and the incoming socket's attach sends `turn_snapshot` before the
+   * `GET /history` round trip resolves — so the snapshot must be QUEUED and
+   * replayed on top of the baseline, not applied under it.
+   *
+   * Deliberately driven without any WebSocket status transition: the
+   * `closed`/`connecting` reset in `useConnectionSync` covers most switches,
+   * but not one that starts while the socket is already connecting, so a test
+   * that rendered that intermediate status would pass even with the bug.
+   */
+  it("queues the attach snapshot across a session switch with no connection-status transition", async () => {
+    // Mid-turn on the outgoing session: its history is loaded.
+    useSessionStore.getState().setSessionId("session-1");
+    useSessionStore.getState().setHistoryLoaded(true);
+    useSessionStore.getState().setMessages([
+      { role: "assistant", text: "outgoing session" },
+    ]);
+
+    const snapshot: WsServerMessage = {
+      type: "turn_snapshot",
+      sessionId: "session-2",
+      messages: [{ role: "assistant", text: "live tail" }],
+    } as WsServerMessage;
+    const queued: MessageEvent[] = [];
+    const drainMessages = vi.fn(() => queued.splice(0));
+
+    const { rerender } = renderHook(
+      ({ last }: { last: MessageEvent | null }) =>
+        useMessageHandler({
+          lastMessage: last,
+          drainMessages,
+          send: vi.fn(),
+          terminalRef: { current: null },
+        }),
+      { initialProps: { last: null as MessageEvent | null } },
+    );
+
+    act(() => {
+      resumeSessionInternal("session-2");
+    });
+
+    // The incoming socket attaches and sends the running turn's snapshot.
+    act(() => {
+      queued.push(messageEvent(snapshot));
+      rerender({ last: queued[0] });
+    });
+    expect(useSessionStore.getState().messages).toEqual([]);
+
+    // The history response lands after it, carrying only the rows the DB held
+    // at the last tool-result boundary.
+    act(() => {
+      useSessionStore.getState().setMessages([
+        { role: "assistant", text: "stale baseline", inProgress: true },
+      ]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["live tail"]);
     });
   });
 

@@ -1,5 +1,5 @@
 /**
- * Tests for the Tier B resolver launch wiring (docs/172 Gap 1, SHI-90).
+ * Tests for the Tier B resolver launch wiring (docs/172 Gap 1, planning#92).
  */
 
 import os from "node:os";
@@ -49,7 +49,7 @@ describe("orchestratorInternalNames", () => {
     expect(names).not.toContain("10.0.0.5"); // IP literal — no DNS needed
   });
   it("falls back to os.hostname() when *_ORCHESTRATOR_* is unset, matching SHIPIT_HOST", () => {
-    // The bug from SHI-90 Tier B host verification: an unset SHIPIT_ORCHESTRATOR_HOST
+    // The bug from planning#92 Tier B host verification: an unset SHIPIT_ORCHESTRATOR_HOST
     // used to yield [] here while SHIPIT_HOST was still set to os.hostname(), so the
     // resolver allowlisted nothing and the callback channel broke. Now they agree.
     expect(orchestratorInternalNames({} as NodeJS.ProcessEnv)).toEqual([os.hostname()]);
@@ -76,6 +76,8 @@ describe("buildResolverConfigB64", () => {
     const b64 = buildResolverConfigB64({ extraDomains: ["internal-registry.corp"] });
     const cfg = Buffer.from(b64, "base64").toString("utf-8");
     expect(cfg).toContain(`server=/anthropic.com/${  EGRESS_DNS_DEFAULT_UPSTREAMS[0]}`);
+    expect(cfg).toContain(`server=/platform.claude.com/${  EGRESS_DNS_DEFAULT_UPSTREAMS[0]}`);
+    expect(cfg).not.toContain("server=/claude.com/");
     expect(cfg).toContain("server=/internal-registry.corp/");
     expect(cfg).toContain("no-resolv"); // no default upstream → tunneling closed
   });
@@ -84,7 +86,7 @@ describe("buildResolverConfigB64", () => {
     expect(cfg).toContain("server=/shipit-orch/127.0.0.11");
     expect(cfg).not.toContain("ipset=/shipit-orch/");
   });
-  it("forwards the docker-socket-proxy alias to Docker DNS for an ops session (SHI-90)", () => {
+  it("forwards the docker-socket-proxy alias to Docker DNS for an ops session (planning#92)", () => {
     const cfg = Buffer.from(
       buildResolverConfigB64({ internalDomains: sessionInternalNames({ opsSession: true }) }),
       "base64",

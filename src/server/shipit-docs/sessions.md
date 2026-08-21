@@ -116,20 +116,21 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
-| `shipit session create --prompt-file FILE --title T [--agent claude\|codex] [--model M] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. **`--agent`/`--model` selection (set these only when the user asks for a specific backend/model — e.g. "do this part with Codex"):** the **model is the source of truth** — pass `--model gpt-5.5` alone and the child is routed to its owning backend (Codex) automatically; you don't also need `--agent`. Pass `--agent` on its own to switch backend while keeping that backend's default model. A bad value fails fast before the child boots: an unknown `--agent`, or a `--model` that belongs to a *different* backend than the `--agent` you named, is rejected with a clear error (a model the picker hasn't surfaced yet is still accepted — the CLI forwards it as-is). When neither flag is set, the child inherits the parent's agent and model. |
+| `shipit session create --prompt-file FILE --title T [--role NAME\|--no-role] [OVERRIDE…] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. **What the child runs on** is named the same way as for `shipit agent run` — see *What the child runs on* below. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available, and the resolved `agent` + `model` the child actually runs on (use these to confirm the backend/model rather than trusting the child's own self-report, which models are unreliable at). |
-| `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt; exit is `0` either way and the response prints the queue position. |
+| `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt. A resolved child rejects the message, receives no card or wake, and returns a named non-zero result. |
 | `shipit session wait <id...> [--timeout SECONDS] [--any\|--all] [--json]` | Wait until the child reaches a terminal state, or the timeout elapses. **Resilient**: it polls in short segments and absorbs connection resets / orchestrator redeploys beneath you, so a single call is the robust unit — you never script your own retry loop. Default 5 minutes, capped at 1 hour. Outcomes are distinguishable by exit code: `idle`/`archived` → `0`, child **error** → `3`, timed-out → `1`. Pass multiple ids with `--any` (resolve on the first finisher) or `--all` (resolve when every child finishes); the `--timeout` is shared across all of them. See *Coordinating* below. Note: `wait` blocks only until the child's *agent turn* goes idle (code written / PR opened) — it does **not** wait on a human **merge**. For that, use `notify-on-merge`. |
 | `shipit session notify-on-merge <id> [--json]` | **Async** — arm a watch and return immediately (exit `0`, "armed"); the turn ends. When the child's PR later **merges**, the orchestrator wakes *this* session with a queued, self-describing system turn (child id, branch, merged PR ref, merge SHA, and the intent: "proceed with the planned rebase unless the user has since redirected you") and surfaces a "Child PR merged" card in this chat. If the PR **closes without merging**, you get a *distinct* wake-turn telling you the work did **not** ship — don't proceed as if it had. Use this instead of blocking a turn on a human merge (which can take days). The child's PR need not exist yet — the watch fires once it appears and resolves. Fires once. Only the parent that spawned the child may watch it. If the wake-turn itself can't be delivered (this session's container won't resume, for instance) the orchestrator retries it on a backoff; after repeated failures it gives up and posts a "Couldn't resume this session" card in this chat naming the merged PR, so the merge is never silently dropped — send a message here to continue by hand. |
 | `shipit session notify-on-merge --self [--json]` | **Async, and about YOUR own PR.** Arm a watch on this session's currently-open PR and return immediately; the turn ends. When that PR merges — by hand, from ShipIt or GitHub, or via auto-merge — the orchestrator wakes **this** session with a turn telling you to run `shipit branch reset-to-base` and then continue the work you were already asked for. Use it when the user asked for several PRs in a row and the next step can only start after this one lands. Refuses if the branch has no open PR (open one first; if your PR has *already* merged, just keep going in this turn). Arming always **replaces** any previous self-watch, so re-arming mid-chain is normal. **Nothing re-arms on your behalf** — after you open the next PR, run it again if more work remains. See *Chaining several PRs* below. |
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
-| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its cohort siblings, and any children it spawned. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
+| `shipit session whoami [--json]` | Resolve **this** session: id, title, branch, status, its parent, its cohort siblings, and any children it spawned. This topology view can include a resolved peer that cannot receive a message. `view <id>` is descendant-scoped, so passing your own id doesn't work — use this. A bare `shipit session view` (no id) is the same thing. |
 | `shipit session rename --title T [--json]` | Retitle **this** session (never another — there is no session-id argument). A session is named automatically from your first message, so once it has done more than that first piece of work the sidebar name is stale; renaming is what keeps it honest. Do it when you open a PR and when you continue past a merged one. Max 60 characters, **rejected** if longer rather than truncated. It changes only the title — never the git branch, which usually has a PR attached by then. If the user has renamed the session by hand, this refuses (exit non-zero) and that name is final: leave it alone. |
-| `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every live sibling). Each recipient gets a card in its chat **and** a queued system turn, so the report is pushed, not waiting to be pulled. See *Reporting upward* below. |
+| `shipit session report -b TEXT \| --body-file FILE [--severity fyi\|warn\|blocker] [--subject T] [--to parent\|cohort] [--json]` | Push a report **up** to the session that spawned you (and, with `--to cohort`, to every eligible sibling). Each eligible recipient gets a card and a queued system turn. Resolved siblings are named as not delivered and receive neither. See *Reporting upward* below. |
 | `shipit session help` | Print the subcommand reference. |
 | `shipit session find --branch NAME \| --pr NUMBER \| --container NAME \| --id ID [--include-archived] [--include-warm] [--limit N] [--offset N] [--json]` | **Ops sessions only** (docs/255). Resolve a branch, PR, or container name back to the session that produced it — the one-step answer to "what session created this PR?". `--container` takes a name exactly as `docker ps` or the host journal prints it (`agent-83292266-744`, `shipit-83292266-744-web-1`); a container with a project-set explicit `container_name:` carries no session id, and the error points you at its `shipit-parent-session` / `shipit-session-id` label instead of guessing. `--pr` accepts `1744`, `#1744`, or the PR URL and matches the session's *current* PR as well as the one immediately before it on the same branch (only one prior PR is retained — for an older one, look it up by `--branch`). Sessions the user archived, and warm pool sessions, are excluded from the default answer — `--include-archived` / `--include-warm` show them (a disk-**evicted** session is not hidden; eviction is orthogonal to visibility). Results are capped; when more exist the output names the exact `--offset N` for the next page. Returns **metadata only** — id, title, kind, branch, repo, parent session, agent/model, timestamps, container name, PR number/url/state — never another session's conversation, prompts, secrets, or workspace contents, and the repo URL is credential-stripped. In a non-Ops session this exits non-zero with "only available in Ops sessions". |
 | `shipit session list --all [--include-archived] [--include-warm] [--limit N] [--offset N] [--json]` | **Ops sessions only** (docs/255). The whole host inventory, same metadata-only projection and same flags as `find`. Without `--all`, `list` is unchanged: only the children **this** session spawned. |
+| `shipit session logs <session-id> [--since T] [--until T] [--lines N] [--json]` | **Ops sessions only** (docs/264). Another session's orchestrator lifecycle lines — auto-push outcomes, container recovery, idle disposal, agent process lifecycle. This is *not* that session's Logs panel, and it is narrower than "the orchestrator's lines" too: only text ShipIt itself authored is returned, matched whole against a fixed template. Agent stdout/stderr, preview errors, install output, and any orchestrator line quoting workspace content or a raw error message are withheld — counted and reported, never silently dropped. Takes a full id or the truncated prefix you lifted from a log line or container name; an ambiguous prefix is an error, not a guess. `--since`/`--until` accept an ISO-8601 instant or a relative age (`90s`, `30m`, `2h`, `3d`) and an unparseable value is **rejected** rather than ignored (so is a `--lines` that isn't a positive integer). Read from the durable store (docs/192), so a session whose container is already gone still answers; when a session's logs were pruned (archive / delete / full reset) the output says so, because "no lines" and "no logs" mean opposite things. In a non-Ops session this exits non-zero. |
 
 **Never poll for a merge in your shell.** A `while … gh pr view … sleep 60` loop
 is the wrong shape even when it works: it keeps the turn alive for hours, so the
@@ -164,6 +165,75 @@ non-zero with a pointer back to `--prompt-file`.
 know what the session is for, so you name it: pass a short, human-readable title
 (e.g. `--title "Port API to TypeScript"`) that identifies the session in the
 sidebar. A spawn with no title exits non-zero before any session is created.
+
+### What the child runs on
+
+**The same vocabulary as `shipit agent run`** — one parser, one validator, one
+refusal rule, so a flag means the same thing on both commands. See
+[agent.md](agent.md) for the whole of it; what follows is only what is specific
+to a child.
+
+**Name a role** when the user wants the child to run on something specific:
+
+```sh
+shipit session create --role deep-dive --title "Audit the auth layer" --prompt-file - <<'EOF'
+…
+EOF
+```
+
+The role supplies the harness, the model and the reasoning level together. It is
+resolved **once, at creation**, and decides what the child *starts* as — not what
+it is bound to. From then on the child is an ordinary session with the normal
+routing, account failover and model-retirement behaviour, and editing or deleting
+that role afterwards does not reach back into it. The child records which role
+started it. `shipit agent roles` lists the roles; `shipit agent params` lists
+every parameter an override may name on this install, and the flag that names
+each — read it rather than naming a model from memory.
+
+**Name no role and YOU are the base.** The child inherits your harness, model and
+reasoning level, and any parameter you *did* name overrides that. Set one only
+when the user asks for a specific backend or model — e.g. "do this part with
+Codex". (A call that names **every** parameter is a complete target with nothing
+left to inherit — it is validated as such, exactly as on `shipit agent run`;
+`--effort` belongs to it only where the named harness declares reasoning levels.)
+
+**And if YOU are running a role, the child inherits that too — whole.** Not just
+the parameters: the role's name and its standing instructions, which arrive in
+the child's first message the same way they would if you had named the role. That
+is the default because it is usually right — a session working under a brief
+spawns help for that same work — and overriding a parameter does **not** cancel
+it, exactly as `--role NAME --model X` does not.
+
+Pass **`--no-role`** when the child's work is not the role's work: a fix for an
+unrelated bug you noticed, a chore you are getting out of the way. The child still
+inherits your parameters; what it does not inherit is the brief. `--no-role` and
+`--role` contradict each other and the pair is refused. If you are running no
+role, nothing changes and `--no-role` is unnecessary.
+
+Inheritance is per-parameter, and the rules are deliberately not a role's:
+
+- **`--model M` alone** moves the child to a backend that can actually run that
+  model, so you do not also need `--agent`: pass `--model gpt-5.5` from a Claude
+  parent and the child lands on Codex. It switches only when it has to — where
+  **your own** harness already offers the model (a few models are carried by
+  both), the child stays on yours rather than being moved to a backend you never
+  named. It inherits **no** service or billing mode from you either way, because
+  a model id names one backend's catalogue and a credential you did not name must
+  not be attached to it. Name those alongside it (`shipit agent params` prints
+  the exact triple to copy) when the model needs them.
+- **`--agent` alone** switches backend and keeps that backend's default model —
+  your model is **not** carried across, for the same reason.
+- **`--effort LEVEL`** sets the child's reasoning level, validated against the
+  harness the child will actually run on. Omit it and the child inherits yours;
+  that inheritance is dropped only where the child's backend does not offer that
+  level (a level is a depth that means the same thing on either backend, so it
+  travels where a model id cannot).
+
+A bad value fails fast, before the child boots: an unknown `--agent`, a `--model`
+that belongs to a *different* backend than the `--agent` you named, a level the
+child's harness does not declare, or a named parameter with an empty value are
+each rejected with a clear error rather than quietly dropped. A model id the
+picker hasn't surfaced yet is still accepted — the CLI forwards it as-is.
 
 **Ops-only** (`kind: "ops"` sessions — see `ops-session.md`): pass
 `--shipit-source` to `shipit session create` to spawn a fix session that targets
@@ -378,11 +448,17 @@ shipit branch reset-to-base
 which moves this branch to the base your merged PR shipped into and force-updates
 the remote branch to match. **Exit 0** (`reset` or `already at base`) means the
 branch is ready — build the next step on it, and do not re-apply anything the
-merged PR already shipped. **Nonzero means STOP**: it refused because a reset
-would have destroyed something (uncommitted edits, commits that were never
-merged, a rebase in progress). Report what it said and let the user decide. Do
-**not** hand-roll `git reset --hard` / `git checkout -f` / `git push --force`
-instead — that is precisely the data loss the check exists to prevent.
+merged PR already shipped. **Nonzero means STOP.** The refusal names the exact
+clause that refused — uncommitted edits, commits that were never merged, a
+rebase in progress, no recorded merged pull request — so **read it and take it
+literally** rather than assuming which one fired. Report what it said and let
+the user decide. Do **not** hand-roll `git reset --hard` / `git checkout -f` /
+`git push --force` instead — that is precisely the data loss the check exists to
+prevent.
+
+A branch that is *behind* the base and carries nothing of its own resets without
+any override: when its HEAD is already contained in `origin/<base>`, the reset
+discards nothing by construction, so the command just does it.
 
 One shape of refusal is permanent: once this branch's work has shipped under a
 *different* commit — a cherry-pick recovery, or the squash merge you then built

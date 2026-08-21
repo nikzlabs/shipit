@@ -50,7 +50,7 @@ export const SUBAGENT_REPORT_TOOL_NAMES = new Set(["Task", "Agent"]);
  *     (`resolvedAnswer={result?.content}`), and the Ask branch of
  *     `MessageToolUse` **returns before the output modal**, so there is no
  *     click, no modal and no fetch. A >16 KB free-form answer used to lose its
- *     tail permanently (SHI-291): recorded as a requirement-4 shortfall, but it
+ *     tail permanently (planning#293): recorded as a requirement-4 shortfall, but it
  *     also broke requirement 2 (nothing displays or fetches the rest) and
  *     requirement 8 (the Ask card *is* the transcript). Bounding an answer, if
  *     ever wanted, belongs at the input — not at the projection, which is the
@@ -99,6 +99,14 @@ export function shipsResultBodyWhole(toolName: string | undefined): boolean {
  *     (`resolvedAnswer={result?.content}`, `message-tools.tsx:149`).
  *   - the `present` tool — the artifact id is parsed out of the result
  *     (`extractPresentPayload`, `message-tools.tsx:370/380`).
+ *   - `TaskCreate` — the CLI assigns the task's id and returns it in the
+ *     RESULT (`Task #1 created successfully: …`), never in the input. The task
+ *     panel's fold parses it (`createdTaskId`, `client/components/task-list.ts`)
+ *     and `TaskUpdate.taskId` refers to it, so a result emptied here strands
+ *     the task on its provisional key and every later update misses it. Like
+ *     `present`, it needs only the HEAD of a compact producer-controlled
+ *     string, so the ordinary slice is enough — this does not belong in
+ *     `WHOLE_RESULT_TOOL_NAMES`.
  *
  * `ExitPlanMode` is deliberately absent: it reads `resolved={!!result}`, result
  * *existence* only, which survives an emptied body.
@@ -111,5 +119,6 @@ export function rendersResultContentInline(toolName: string | undefined): boolea
   if (!toolName) return true;
   if (SUBAGENT_REPORT_TOOL_NAMES.has(toolName)) return true;
   if (toolName === "AskUserQuestion") return true;
+  if (toolName === "TaskCreate") return true;
   return isPresentTool(toolName);
 }

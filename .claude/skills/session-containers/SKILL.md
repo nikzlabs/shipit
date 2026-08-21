@@ -29,7 +29,7 @@ This skill covers Docker container management, session runners, idle disposal, a
   4. Wire `runner.on("idle")` -> `onRunnerIdle(sessionId)` callback
 - **`get(sessionId)`**: Returns runner if exists and not disposed
 - Max 10 concurrent runners; evicts oldest idle runner if at capacity
-- `disposeAll()` for graceful shutdown
+- `disposeAll(opts?)` for graceful shutdown and full reset. Forced — it kills running agents unless the caller passes `{ preserveAgent: true }`, which shutdown does and full reset does not
 
 ### Runner Factory (Production)
 
@@ -70,7 +70,18 @@ A standby is a normal session container pre-created by the warm pool and tagged
 `shipit-standby=true`, tracked in `standbySessionIds`:
 
 - **`createStandby(config)`** — `create()` + standby label + track. Called from
-  `warmSessionForRepo(..., { withStandby: true })` when there's idle headroom.
+  `warmSessionForRepo(...)` when there's idle headroom (there is no opt-out
+  parameter — see the `session-lifecycle` skill).
+- **`reapStandbyContainers(activeSessionIds)`** — boot-only: stops and removes
+  every `shipit-standby=true` container **whose session is no longer tracked**,
+  because a standby never outlives the process that created it.
+- **The standby label is set at create time and Docker cannot change it**, so
+  `claimStandby` can only drop the in-process flag: a claimed, graduated,
+  entirely ordinary session keeps a `shipit-standby=true` container for that
+  container's whole life. The label means "was born a standby", never "is one
+  now" — which is why the reap takes the live session set (a label-only sweep
+  would destroy live sessions on every restart, breaking docs/113) and why
+  `rediscoverContainers` does NOT restore the flag from it.
 - **`claimStandby(sessionId)`** — drops the standby flag and returns the
   container so the runner factory reuses it (cases 1 & 2). After claiming it's
   an ordinary container.
@@ -192,9 +203,25 @@ containerManager.on("container_exited", (sessionId, exitCode, error)):
 ### Orphan Cleanup + Container Rediscovery
 
 On startup, two phases restore the in-memory state from Docker.
-`activeSessionIds` is built from `sessionManager.allIds()` which includes warm
-and archived sessions — this is critical so warm session containers are not
-treated as orphans.
+`activeSessionIds` is built from `sessionManager.allIds()`, which includes
+archived sessions — critical so an idle-evicted session's container and volumes
+are not treated as orphans.
+
+**Warm sessions are the deliberate exception.** `retireWarmSessions` runs
+*before* this, deleting every `warm = 1` row, so a standby container from the
+previous process is an orphan by construction here and gets stopped and removed.
+`reapStandbyContainers(activeSessionIds)` then runs after both phases as the
+backstop for what they cannot see — a standby whose adoption would have failed,
+and a runtime with an injected container manager, which skips both phases below.
+See the `session-lifecycle` skill for why a standby must not survive a deploy.
+
+**Rediscovery adopts a labelled container as an ordinary one.** Retirement
+guarantees every id in `activeSessionIds` is a live non-warm session, so a
+surviving `shipit-standby=true` label there means "was claimed". Restoring the
+flag from it marked real sessions standby, and `isStandby` gates behaviour:
+`restart-turn-reattach.ts` skips standbys (so an adopted session's in-flight
+turn was never reattached) and so does the idle enforcer (so its container was
+never disposed).
 
 ```
 containerManager.cleanupOrphans(activeSessionIds):
@@ -243,12 +270,15 @@ live turn, so the flow completes even in sessions nobody opens.
 
 ### Container Persistence Across Runner Disposal
 
-When a `ContainerSessionRunner` is disposed (idle container cleanup), the Docker container is destroyed along with the runner. However, when a runner is disposed without explicit container destruction (e.g. server shutdown cleanup), the `dispose()` method:
-- Kills the agent process in the container (fire-and-forget)
-- Disconnects the SSE stream
-- Emits `"disposed"` -> removed from `SessionRunnerRegistry`
+**`runner.dispose()` never destroys the Docker container.** Where a container does go away — idle cleanup, archive, Rescue — it is a *separate, explicit* `containerManager.destroy(sessionId)` call by that caller, sitting next to the dispose. Read the two as independent: a runner is an in-memory object, a container is a process on the host, and their lifetimes are deliberately not tied.
 
-Containers that survive (e.g. after an unclean shutdown) are rediscovered on startup, enabling fast reconnection — a new runner can reconnect to the existing container without restarting anything.
+`dispose()` itself:
+- Kills the agent process in the container, fire-and-forget — **unless `{ preserveAgent: true }`**, which only the shutdown path passes (see *Graceful Shutdown*)
+- Cancels in-flight sub-agent spawns (same `preserveAgent` exception)
+- Disconnects the SSE stream
+- Emits `"disposed"` -> removed from `SessionRunnerRegistry`, and the session's Compose stack is `compose down`-ed
+
+Containers that survive — after any shutdown, clean or not — are rediscovered on startup, enabling fast reconnection: a new runner reconnects to the existing container without restarting anything, and `reattachInFlightTurns()` re-adopts a turn that is still running inside it.
 
 ## Idle Container Cleanup
 
@@ -307,13 +337,23 @@ When a user returns to a session whose runner was disposed:
 ```
 app.addHook("onClose"):
   1. authManager.kill()
-  2. runnerRegistry.disposeAll()
-     -> each runner: kill agent, disconnect SSE, emit "disposed"
+  2. runnerRegistry.disposeAll({ preserveAgent: true })
+     -> each runner: drop the local proxy, disconnect SSE, emit "disposed"
+     -> does NOT post /agent/kill: the CLI keeps running in the container
   3. containerManager.dispose()
-     -> for each container: stop + remove
+     -> stop the health monitor + drop listeners. Containers are NOT touched.
 ```
 
-All Docker containers are destroyed on server shutdown. On next startup, orphan cleanup catches any that survived an unclean shutdown.
+**Session containers survive orchestrator shutdown, and so do their in-flight turns.** This is what makes updates zero-downtime (docs/113): `deploy.sh` replaces only the orchestrator, and the next boot re-adopts the survivors via `rediscoverContainers()` and `reattachInFlightTurns()` (docs/240). Orphan cleanup at startup reaps whatever no longer maps to an active session.
+
+**Standby containers are the one exception, and for the same reason.** docs/113 protects work in flight; a standby holds none — nobody has claimed it — while it does carry the previous deploy's worker image, pre-install and overlay base. So boot kills every standby (`reapStandbyContainers()`) and the warm pool rebuilds itself on the new image.
+
+Two rules follow, and both have bitten production:
+
+- **`dispose()` on the container manager must never destroy a container.** It called `destroyAll()` until 2026-08-10, so every update destroyed every session ~9s before Compose even replaced the orchestrator; `destroyAll()` no longer exists. Teardown is per-session and explicit — `destroy(sessionId)`, from the idle enforcer, archive/repo-delete, tier escalation and Rescue.
+- **A forced runner dispose on the shutdown path must pass `preserveAgent`.** Without it the `/agent/kill` post clears the worker's `turnActive`, and `reattachInFlightTurns()` adopts a turn only while that flag is true — so the turn dies inside a healthy container, unadoptable, with its transcript tail unpersisted and its post-turn commit unrun. Full reset deliberately does not pass it.
+
+The session's **Compose stack** is the exception: it is still `compose down`-ed on dispose, because `ServiceManager.start()` opens with `killStaleContainers()` and rebuilds the stack on the next attach regardless.
 
 ## Resource Limits
 

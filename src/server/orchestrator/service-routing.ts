@@ -1,0 +1,785 @@
+/**
+ * docs/252 phase 3 — **the resolver**: a selection, plus what this install has,
+ * becomes the four facts a spawn needs — harness, endpoint, credential, style.
+ *
+ * It is a callable component rather than inline spawn code on purpose. Phase 7
+ * (non-turn work: session naming, pull-request descriptions) is its second
+ * caller and picks a model independently of any session, so a resolver reachable
+ * only from the turn path would have to be extracted then, under a phase that
+ * has no other reason to touch spawn code. Free if honoured up front.
+ *
+ * Three things live here and nothing else:
+ *
+ *  - **Eligibility inputs** — the user's configured credentials, in the shape
+ *    `catalogue/index.ts` states req 8's rule over. The rule itself is in the
+ *    catalogue (pure, no store); this only supplies the facts.
+ *  - **Turn routing** — WHICH credential of the selected `(service, billing
+ *    mode)` a turn authenticates with, replacing the per-`AgentId` question
+ *    `selectAccountForTurn` used to be asked on its own.
+ *  - **Spawn identity** — the whole spawn-relevant tuple the resident-process
+ *    guard compares, which is a model string no longer.
+ */
+
+import type { AgentId, ServiceRouting, SessionInfo } from "../shared/types.js";
+import { selectionOf } from "./turn-attribution.js";
+import type {
+  AccountSelection,
+  ProviderAccountManager,
+  ProviderRoute,
+  SelectAccountOptions,
+} from "./provider-account-manager.js";
+import {
+  accountServiceForHarness,
+  isOverCutoff,
+  orderForSelectionMode,
+  snapshotExhaustedResetAt,
+} from "./provider-account-manager.js";
+import type { CredentialStore } from "./credential-store.js";
+import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
+import {
+  SERVICES,
+  type ConfiguredCredential,
+  eligibleEntriesForHarness,
+  getMode,
+  getService,
+  harnessCanCarry,
+  modeCredentialFor,
+  resolveSpawnShaping,
+  storageEnvFor,
+} from "../shared/catalogue/index.js";
+import type { CredentialRoute } from "../shared/types/domain-types/credential-route.js";
+import {
+  credentialRouteEnvName,
+  orderCredentialRoutes,
+  refusalBlockedUntil,
+} from "../shared/types/domain-types/credential-route.js";
+import type { AccountSelectionMode, ProviderRouteKind } from "../shared/types/domain-types/provider.js";
+
+/**
+ * The `CredentialStore` surface this module reads. Narrow so tests can fake it.
+ *
+ * `getCredentialRoute` joined it with docs/252 req 20: spawn shaping has to ask
+ * whether a route id names a STORED row, and it can no longer answer that from
+ * the id's shape — adoption gives a stored row one of the legacy reserved ids
+ * on purpose, so pinned sessions keep resolving.
+ */
+export type ServiceRoutingCredentialSource = Pick<
+  CredentialStore,
+  | "listCredentialRoutes"
+  | "getCredentialSecret"
+  | "getSelectionMode"
+  | "getCredentialRoute"
+  // The string-delivered walk applies the user's cutoffs, exactly as the
+  // account walk does — see `stringSelectionFor`.
+  | "getFailoverCutoffs"
+>;
+
+/**
+ * ShipIt's historical route ids for the three env-delivered credentials that
+ * predate the credential store.
+ *
+ * These are not a special case in the routing rules — they are the *ids* a
+ * session row already holds, and re-deriving a new id for the same credential
+ * would orphan every pinned session written before this feature. Keyed by the
+ * catalogue's `storageEnv` so the mapping is stated once against the row that
+ * owns the variable, rather than per service.
+ *
+ * `claude-env-oauth` is the reason this is keyed on the variable and not on the
+ * billing mode: it is a *subscription* delivered as an environment token, so it
+ * belongs to `(anthropic, sub)` while `claude-api-key` belongs to
+ * `(anthropic, key)`.
+ */
+const LEGACY_RESERVED_ROUTE_IDS: Record<string, string> = {
+  ANTHROPIC_AUTH_TOKEN: "claude-env-oauth",
+  ANTHROPIC_API_KEY: "claude-api-key",
+  OPENAI_API_KEY: "codex-api-key",
+};
+
+/** The route id an environment-delivered credential of this mode is known by. */
+export function envRouteIdFor(storageEnv: string): string {
+  return LEGACY_RESERVED_ROUTE_IDS[storageEnv] ?? `env:${storageEnv}`;
+}
+
+/**
+ * docs/252 req 10 — which `(service, billing mode)` a **route id** belongs to.
+ *
+ * The inverse of {@link envRouteIdFor}, plus the credential store for stored
+ * routes. Quota is reported per billing mode of a service, so the one thing a
+ * quota snapshot needs is the mode that owns the credential the reporting turn
+ * ran on — and that is a property of the route, never of the harness that
+ * happened to report it. A harness redirected to another service must not file
+ * that service's usage against its own vendor's quota.
+ *
+ * `undefined` for a route this cannot classify, which callers treat as "we
+ * cannot say whose quota this is" and drop rather than guess.
+ */
+export function credentialOwnerForRouteId(
+  routeId: string,
+  credentialStore: Pick<CredentialStore, "getCredentialRoute">,
+): { serviceId: string; billingMode: BillingMode } | undefined {
+  const stored = credentialStore.getCredentialRoute(routeId);
+  if (stored) return { serviceId: stored.serviceId, billingMode: stored.billingMode };
+  // A deployment-supplied credential has no stored row — phase 2 only ever
+  // touches values this process put there — so its reserved id is resolved
+  // from the catalogue instead.
+  for (const service of servicesWithStringCredentials()) {
+    if (envRouteIdFor(service.storageEnv) === routeId) {
+      return { serviceId: service.serviceId, billingMode: service.billingMode };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Every credential this install holds, for req 8's rule.
+ *
+ * Two sources, and the second is easy to forget: the credential store, plus any
+ * catalogue `storageEnv` the **deployment** set in the environment itself. A
+ * deployment-supplied `ANTHROPIC_API_KEY` has no row in the store — phase 2 is
+ * explicit that ShipIt only ever touches a value it put there — so an
+ * eligibility rule reading the store alone would report that install as having
+ * no credential at all and empty its picker.
+ */
+export function listConfiguredCredentials(
+  credentialStore: ServiceRoutingCredentialSource,
+  env: NodeJS.ProcessEnv = process.env,
+  /**
+   * docs/252 req 9 — **for a decision that is written down, `authenticating` is
+   * not configured.**
+   *
+   * The default (`false`) counts an in-flight sign-in, and that is right for
+   * everything that reads this: the account exists, routing accepts it, and a
+   * picker that hid the model would flicker it back seconds later. It is wrong
+   * for exactly one caller — `seedNonTurnModel`, whose write is permanent. Load
+   * Settings while a sign-in is half-finished and the seed would freeze that
+   * service; req 17 then deletes the abandoned account, and the setting is left
+   * naming a service the user never connected, which nothing re-points because
+   * re-pointing is the thing req 9 removed. Found by cross-backend review.
+   */
+  opts: { requireReadyAccounts?: boolean } = {},
+): ConfiguredCredential[] {
+  const out: ConfiguredCredential[] = [];
+  const seen = new Set<string>();
+  const add = (serviceId: string, billingMode: BillingMode, via: "account" | "string"): void => {
+    const key = `${serviceId}:${billingMode}:${via}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ serviceId, billingMode, via });
+  };
+  for (const route of credentialStore.listCredentialRoutes()) {
+    // A `via: "string"` row with no secret behind it is a credential that
+    // reports configured and delivers nothing — the exact window phase 2's
+    // one-write upsert removed. Treat it as absent rather than offer a model
+    // whose turn cannot authenticate.
+    if (route.via === "string" && !credentialStore.getCredentialSecret(route.id)) continue;
+    // An account row exists from the moment the login STARTS, and a cancelled
+    // one is left `unavailable` forever. Turn routing accepts only `ready` or
+    // `authenticating` (`provider-account-manager.selectAccountForTurn`), so
+    // counting the rest here offers a model whose every turn is refused —
+    // eligibility has to ask the same question routing does, or the picker is
+    // promising something the router will not do.
+    if (route.via === "account" && route.status !== "ready" && route.status !== "authenticating") {
+      continue;
+    }
+    if (opts.requireReadyAccounts && route.via === "account" && route.status !== "ready") continue;
+    add(route.serviceId, route.billingMode, route.via);
+  }
+  for (const service of servicesWithStringCredentials()) {
+    const value = env[service.storageEnv];
+    if (typeof value === "string" && value.trim().length > 0) {
+      add(service.serviceId, service.billingMode, "string");
+    }
+  }
+  return out;
+}
+
+/**
+ * planning#353 — **what a session with no stored selection will actually run.**
+ *
+ * A session row's triple is written when someone picks a model, and plenty of
+ * sessions never have one: a headless create, a warm session opened and typed
+ * into, a row whose model id the catalogue has since dropped (`setModel` nulls
+ * the service and mode in that case, deliberately). Until now that state routed
+ * to the **harness's own vendor** — Anthropic for Claude Code — whatever the
+ * install actually held. On a DeepSeek-only, GLM-only or OpenRouter-only
+ * install that is precisely the service with no credential, so the turn died
+ * with `auth_required` while the composer displayed a perfectly runnable model.
+ *
+ * The rule here is the one `firstEligibleNonTurnSelection` already applies to
+ * background work, and for the same stated reason: a default naming a fixed
+ * vendor "would point at a vendor the install may have no credential for, which
+ * is exactly the install this feature exists to create (a user whose only
+ * credential is a DeepSeek key)". Turn routing simply kept the older answer.
+ *
+ * Expressed over `eligibleEntriesForHarness` rather than as a second walk. That
+ * list IS the picker's ordering — the catalogue join for this harness, narrowed
+ * to the modes holding a credential it can carry — so "the first model this
+ * install can run" and "the first model the picker would offer" cannot drift
+ * apart into two rules.
+ *
+ * Returns `undefined` when the install has nothing this harness can run, which
+ * keeps the caller on the pre-existing `auth_required` answer rather than
+ * inventing one.
+ */
+export function firstEligibleSelectionForHarness(
+  harnessId: AgentId,
+  deps: Pick<SelectRouteDeps, "credentialStore" | "env">,
+): ModelSelection | undefined {
+  const credentials = listConfiguredCredentials(deps.credentialStore, deps.env ?? process.env);
+  return eligibleEntriesForHarness(harnessId, credentials)[0]?.selection;
+}
+
+/** Every `(service, mode)` that accepts a string credential, with its variable name. */
+function servicesWithStringCredentials(): {
+  serviceId: string;
+  billingMode: BillingMode;
+  storageEnv: string;
+}[] {
+  const out: { serviceId: string; billingMode: BillingMode; storageEnv: string }[] = [];
+  for (const service of SERVICES) {
+    for (const mode of service.modes) {
+      const storageEnv = storageEnvFor(service.id, mode.kind);
+      if (storageEnv) out.push({ serviceId: service.id, billingMode: mode.kind, storageEnv });
+    }
+  }
+  return out;
+}
+
+// ---- Turn routing ----------------------------------------------------------
+
+export interface SelectRouteDeps {
+  credentialStore: ServiceRoutingCredentialSource;
+  /**
+   * `subscriptionLimitsFor` is in the Pick for the STRING path, not the account
+   * one: it is how `stringSelectionFor` reaches the same quota snapshots the
+   * account walk uses. A caller with no manager gets no snapshots and therefore
+   * no quota tiers, which is the honest neutral — "no opinion", not "clear".
+   */
+  providerAccountManager?: Pick<
+    ProviderAccountManager,
+    "selectAccountForTurn" | "subscriptionLimitsFor"
+  >;
+  env?: NodeJS.ProcessEnv;
+  /** Injected clock, so a benched-credential test does not have to wait one out. */
+  now?: () => number;
+}
+
+/**
+ * The credential route a turn on `(harness, selection)` should authenticate
+ * with — **scoped to the selected billing mode**, which is the whole change.
+ *
+ * Before this, route selection asked one question per `AgentId` and the answer
+ * could belong to the wrong mode entirely: a session selecting Anthropic's
+ * subscription landed on `claude-api-key` whenever no account was connected,
+ * so an included turn quietly became a metered one. That is the silent shift
+ * onto metered billing req 12 refuses, arriving through the routing path
+ * instead of through failover.
+ *
+ * The account walk is unchanged and still `ProviderAccountManager`'s: quota
+ * tiers, cutoffs, exclusions and the `all_exhausted` verdict are docs/150's
+ * machinery and this does not reimplement them. What it does is decide whether
+ * that walk is the right question at all, and supply the string-delivered
+ * answer when it is not.
+ *
+ * Returns `null` when the selection names nothing runnable, which the caller
+ * treats as "pin nothing" — the pre-feature behaviour for a session that has no
+ * selection yet.
+ */
+export function selectRouteForSelection(
+  harnessId: AgentId,
+  selection: ModelSelection | undefined,
+  deps: SelectRouteDeps,
+  /**
+   * docs/260 — the attempt loop's contract, threaded verbatim into both walks:
+   * `exclude` for routes refused this turn, `optimistic` for "I will attempt
+   * the result" (req 12), `residentRouteId` for balanced session-spreading
+   * (req 8). Omitted by non-turn callers, which keeps their failure shapes.
+   */
+  opts: SelectAccountOptions = {},
+): AccountSelection {
+  const mode = selection ? getMode(selection.serviceId, selection.billingMode) : undefined;
+  if (!selection || !mode) {
+    // No selection to scope by: ask about the harness's OWN vendor.
+    //
+    // planning#353 — this used to be justified as "the only service a session
+    // with no selection could ever have meant", which stopped being true the
+    // moment a harness could run another vendor's models. It is no longer the
+    // turn path's default: `prepareSessionAgentEnvironment` settles a
+    // selection-less session onto {@link firstEligibleSelectionForHarness}
+    // BEFORE calling this, so a DeepSeek-only install no longer arrives here
+    // and gets asked about Anthropic.
+    //
+    // What is left is the genuinely empty case — nothing this harness can run —
+    // where both answers are `auth_required`, plus callers that always supply a
+    // selection (`non-turn-model.ts`, `reviewer-model.ts`, `sub-agent.ts`,
+    // whose target "can no longer be unset"). Kept rather than rewritten
+    // because it is the honest answer to a question with no other information
+    // in it; do not restore it as a default for a session.
+    return (
+      deps.providerAccountManager?.selectAccountForTurn(accountServiceForHarness(harnessId), opts)
+      ?? { ok: false, reason: "auth_required" }
+    );
+  }
+
+  const acceptsAccount =
+    modeCredentialFor(selection.serviceId, selection.billingMode, "account") !== undefined
+    && harnessCanCarry(harnessId, { ...selection, via: "account" });
+
+  if (acceptsAccount && deps.providerAccountManager) {
+    // planning#342 — the walk is asked about the **selected** service, not the
+    // harness's own vendor. They diverge only for a session row naming, say,
+    // `(anthropic, sub)` while pinned to the Codex harness — a state the picker
+    // never offers, and one where asking about OpenAI's accounts (what the
+    // harness-keyed question did) was the wrong answer anyway.
+    //
+    // Note what does NOT make them equal: `acceptsAccount` asks whether this
+    // harness can carry an account-delivered credential at all, and Codex can.
+    // The equality is the catalogue's — each account-bearing mode's models are
+    // carried only by its own harness (`openai:sub` → Codex via `carriers`,
+    // `xai:sub` → Grok via `carriers`, `anthropic:sub` → Claude because the
+    // only other `anthropic-messages` harness — OpenCode — has no account
+    // target). So it is a property of today's rows rather than of this code.
+    // `service-routing.test.ts` pins the axis on the divergent pair.
+    const selected = deps.providerAccountManager.selectAccountForTurn(selection.serviceId, opts);
+    // Its answer is taken only when it names an ACCOUNT. Its own trailing
+    // env/key fallback is mode-blind — it is what would hand an `anthropic:sub`
+    // selection the metered `claude-api-key` — so the env-delivered case is
+    // resolved below, against THIS mode's own variable.
+    if (selected.ok && selected.route.kind === "account") return selected;
+    // `all_exhausted` is returned unchanged rather than falling through to this
+    // mode's env-delivered credential. **Phase 5 owns this decision and has
+    // taken it: no fall-through.** Every connected subscription being spent is
+    // exactly the state req 12 says to stop on, and the env-delivered token is
+    // not evidence of a subscription that is still good — it carries no row, so
+    // ShipIt tracks no quota for it and could neither bench it after it failed
+    // nor tell the user which credential the turn ended up on. Rolling onto it
+    // would replace req 13's "the earliest window resets at X" with a second
+    // failure and a worse message. Reaching a same-mode string credential from a
+    // spent account set is a hop ShipIt cannot see the far side of, so it does
+    // not make it.
+    if (!selected.ok && selected.reason === "all_exhausted") return selected;
+  }
+
+  return stringSelectionFor(harnessId, selection, deps, opts);
+}
+
+/**
+ * The string-delivered credential of this `(service, mode)` a turn should
+ * authenticate with — **and, for a subscription, which of them** (docs/252
+ * phase 5, req 12).
+ *
+ * Phase 2 made a subscription able to hold several string credentials and phase
+ * 3 delivered the first in order, which is where it stopped: a second GLM key
+ * was stored and unreachable. This is the walk that makes it reachable, and it
+ * is deliberately the same shape as `ProviderAccountManager.selectAccountForTurn`
+ * rather than a second policy:
+ *
+ *   - **`sub`** — skip credentials benched by {@link
+ *     CredentialStore.markCredentialRouteExhausted}, in the user's own order
+ *     (or least-recently-used under `balanced`). When every stored credential is
+ *     benched the answer is `all_exhausted` with the earliest reset, which is
+ *     req 12's "no subscription left to fail over to: stop and say so".
+ *   - **`key`** — the first in order, always. A key has no window to exhaust and
+ *     never fails over, so it never asks which of them is healthy — and the one
+ *     it names has to be the one delivery hands the worker, or the turn would be
+ *     attributed to a credential it did not authenticate with.
+ *
+ * The deployment's environment is the last resort **only when nothing is
+ * stored**, which is exactly what phase 3 did. It is not a failover target: it
+ * carries no row, so it can be neither benched nor ordered, and rolling onto it
+ * because the stored credentials are spent would be a hop ShipIt could never
+ * undo or explain.
+ */
+function stringSelectionFor(
+  harnessId: AgentId,
+  selection: ModelSelection,
+  deps: SelectRouteDeps,
+  opts: SelectAccountOptions = {},
+): AccountSelection {
+  if (!harnessCanCarry(harnessId, { ...selection, via: "string" })) {
+    return { ok: false, reason: "auth_required" };
+  }
+  const exclude = new Set(opts.exclude ?? []);
+  const stored = deps.credentialStore
+    .listCredentialRoutes(selection.serviceId, selection.billingMode)
+    .filter((route) => route.via === "string" && deps.credentialStore.getCredentialSecret(route.id));
+
+  if (stored.length > 0) {
+    if (selection.billingMode !== "sub") {
+      return { ok: true, route: { kind: "reserved", id: orderCredentialRoutes(stored)[0].id } };
+    }
+    const now = deps.now?.() ?? Date.now();
+    const mode = deps.credentialStore.getSelectionMode(selection.serviceId, selection.billingMode);
+    const ordered = orderStringCredentials(stored, mode)
+      .filter((route) => !exclude.has(route.id));
+    // docs/260-turn-level-account-routing reqs 9, 11, 12 — the account walk's contract, same shape for
+    // the string-delivered twin: refusal memory (the shared read rule) is the
+    // only skip, and an optimistic caller that finds everything blocked takes
+    // the best blocked credential anyway — only real refusals this turn may
+    // produce the terminal failure.
+    //
+    // req 8 — and the account walk's `balanced` rule too: balanced spreads
+    // SESSIONS, not turns, so the credential backing a live resident process
+    // keeps serving its session while it is unblocked. Without this,
+    // least-recently-used ordering alternates a two-credential install every
+    // turn and restarts the resident process each time.
+    if (mode === "balanced" && opts.residentRouteId) {
+      const resident = ordered.find(
+        (route) => route.id === opts.residentRouteId && refusalBlockedUntil(route, now) === null,
+      );
+      if (resident) return { ok: true, route: { kind: "reserved", id: resident.id } };
+    }
+    /**
+     * **The account walk's quota tiers, on the string-delivered twin.**
+     *
+     * This walk had refusal memory and nothing else, and the gap was invisible
+     * while a supplied subscription credential was invisible: docs/252 req 20
+     * put them on screen as ordinary rows beside accounts, and a threshold that
+     * works for one and not for the other is exactly the carve-out a user
+     * cannot predict. The Settings band offers *Use in order* / *Spread evenly*
+     * and two cutoffs over rows that look identical; only one delivery shape
+     * honoured the cutoffs.
+     *
+     * The data was always there. Quota is recorded per ROUTE and gated only on
+     * the mode being a subscription (`bootstrap-managers.ts` →
+     * `credentialOwnerForRouteId`), so an Anthropic plan token delivered as a
+     * string reports its 5h and 7d windows exactly as an account does. What was
+     * missing was a reader — which is why the previous comment's reason ("only
+     * account-backed subscriptions report a quota") was wrong even though its
+     * conclusion, *don't show the cutoffs yet*, was right.
+     *
+     * Same three tiers, same helpers, same rule that only refusal memory
+     * SKIPS: telemetry can order a credential to the back of the walk but must
+     * never take it out, because a credential whose data says it is spent is
+     * still the one to try when nothing else is left (docs/260-turn-level-account-routing req 9).
+     *
+     * A service with no quota reader needs no branch here: it reports no
+     * snapshot, `limits[id]` is undefined, and both helpers answer "no
+     * opinion". That is what let GLM's coding plan run through this walk
+     * unchanged while `zai-plan-usage` was a declared id with nothing behind
+     * it, and what let planning#339's reader switch its cutoffs on without
+     * touching a line of it.
+     */
+    const limits = deps.providerAccountManager?.subscriptionLimitsFor(
+      selection.serviceId,
+      selection.billingMode,
+    ) ?? {};
+    const cutoffs = deps.credentialStore.getFailoverCutoffs(
+      selection.serviceId,
+      selection.billingMode,
+    );
+    const clear: CredentialRoute[] = [];
+    const overCutoff: CredentialRoute[] = [];
+    const looksSpent: CredentialRoute[] = [];
+    for (const route of ordered) {
+      if (refusalBlockedUntil(route, now) !== null) continue;
+      if (snapshotExhaustedResetAt(limits[route.id], now) !== null) looksSpent.push(route);
+      else if (isOverCutoff(limits[route.id], cutoffs, now)) overCutoff.push(route);
+      else clear.push(route);
+    }
+    const next = [...clear, ...overCutoff, ...looksSpent][0];
+    if (next) return { ok: true, route: { kind: "reserved", id: next.id } };
+    const probe = ordered[0];
+    if (opts.optimistic && probe) return { ok: true, route: { kind: "reserved", id: probe.id } };
+    const benched = ordered
+      .map((route) => refusalBlockedUntil(route, now))
+      .filter((until): until is number => typeof until === "number");
+    return {
+      ok: false,
+      reason: "all_exhausted",
+      earliestResetAt: benched.length > 0 ? new Date(Math.min(...benched)).toISOString() : null,
+    };
+  }
+
+  const storageEnv = storageEnvFor(selection.serviceId, selection.billingMode);
+  const fromEnv = storageEnv ? (deps.env ?? process.env)[storageEnv] : undefined;
+  if (storageEnv && typeof fromEnv === "string" && fromEnv.trim().length > 0) {
+    return { ok: true, route: { kind: "reserved", id: envRouteIdFor(storageEnv) } };
+  }
+  return { ok: false, reason: "auth_required" };
+}
+
+/**
+ * The user's fallback order, or least-recently-used under `balanced` — the
+ * reason phase 2's *Use in order / Spread across accounts* control does
+ * something for a string-delivered subscription.
+ *
+ * `orderForSelectionMode` is the account walk's own step, shared rather than
+ * re-implemented (planning#342): the mode means one thing, so a change to what
+ * `balanced` sorts by must not have two places to land.
+ */
+function orderStringCredentials(
+  routes: readonly CredentialRoute[],
+  mode: AccountSelectionMode,
+): CredentialRoute[] {
+  return orderForSelectionMode(orderCredentialRoutes(routes), mode);
+}
+
+/**
+ * Stamp the credential a turn resolved onto, so `balanced` has something to
+ * sort by. A no-op for an account route (docs/150's `markAccountUsed` owns
+ * those) and for an env-delivered one, which has no row to stamp.
+ */
+export function markCredentialRouteUsed(
+  credentialStore: Pick<CredentialStore, "markCredentialRouteUsed">,
+  route: ProviderRoute | undefined,
+): void {
+  if (route?.kind !== "reserved") return;
+  credentialStore.markCredentialRouteUsed(route.id);
+}
+
+/**
+ * docs/260 — should the resident streaming process be released before this
+ * turn captures it, because selection would land on a DIFFERENT credential?
+ *
+ * Replaces the pinned-route failover checks: the comparison is between the
+ * live process's credential (`runner.residentRoute`, typed runner state) and
+ * what the router would choose right now — the same inputs env-prep's own
+ * selection reads moments later, so the two agree unless account state moves
+ * in between, and the per-turn provisioning identity check backstops that.
+ *
+ * Never true while the process holds background work (req 13): a sub-agent
+ * review or an agent-started background process must not be killed for a
+ * move; the turn runs on the resident credential instead
+ * (`requireResidentRoute`) and the move waits for a clean turn.
+ */
+export function residentRouteNeedsRelease(
+  session: SessionInfo | undefined,
+  harnessId: AgentId,
+  runner:
+    | {
+        residentRoute?: { kind: ProviderRouteKind; id: string } | undefined;
+        backgroundWorkDescriptions?: readonly string[];
+      }
+    | null
+    | undefined,
+  deps: SelectRouteDeps,
+): boolean {
+  const resident = runner?.residentRoute;
+  if (!session || !resident) return false;
+  if ((runner?.backgroundWorkDescriptions?.length ?? 0) > 0) return false;
+  const selection = selectRouteForSelection(harnessId, selectionOf(session), deps, {
+    optimistic: true,
+    // Any resident kind qualifies for balanced session-spreading — the
+    // account walk matches an account id, the string walk a stored-credential
+    // id, and an env-reserved id simply matches neither.
+    residentRouteId: resident.id,
+  });
+  if (!selection.ok) return false;
+  return selection.route.kind !== resident.kind || selection.route.id !== resident.id;
+}
+
+// ---- Spawn shaping ---------------------------------------------------------
+
+/**
+ * The `ServiceRouting` a turn carries to the worker, or `undefined` when there
+ * is nothing to shape.
+ *
+ * **Nothing to shape is the common case and must stay a true no-op**: a session
+ * on the harness's own vendor through a login account keeps today's spawn
+ * exactly — the CLI's own endpoint, its own credential root, no environment
+ * rewriting. Shaping an account-delivered credential would break it outright,
+ * because a `scoped-home` credential IS the vendor's login and its token
+ * exchange is bound to that vendor's endpoint.
+ *
+ * So the rule keys on **delivery**: a string-delivered credential is
+ * materialized into the harness's variable and the endpoint is set alongside
+ * it; an account-delivered one is left to the existing scoped-home path.
+ */
+export function serviceRoutingForSelection(
+  harnessId: AgentId,
+  selection: ModelSelection | undefined,
+  route: ProviderRoute | null | undefined,
+  /**
+   * Which route ids the store actually holds a row for — see
+   * `credentialSourceEnv` below.
+   *
+   * A parameter rather than an id-shape test, because docs/252 req 20 made the
+   * id-shape test wrong: `isStoredCredentialRouteId` asked `startsWith("cred_")`,
+   * which was a faithful proxy only while every stored row had a minted id.
+   * Adoption gives a stored row one of the three LEGACY reserved ids on purpose
+   * (`envRouteIdFor` — sessions are pinned to them), so a stored credential
+   * started answering "not stored" and was delivered the group's variable
+   * instead of its own. Required, not optional: a default would leave every
+   * site that forgot it silently authenticating with the wrong secret, which is
+   * exactly the failure being fixed.
+   */
+  credentialStore: Pick<CredentialStore, "getCredentialRoute">,
+): ServiceRouting | undefined {
+  if (!selection) return undefined;
+  if (route?.kind === "account") return undefined;
+  // A mode that can be account-delivered, with no route resolved yet, is not
+  // something to shape on a guess. The pinned route is the evidence, and env
+  // prep pins it before the run params are built — so an absent one here means
+  // the router is not wired at all (a test, local mode), where the pre-feature
+  // spawn is the right answer. A mode that accepts ONLY strings has no such
+  // ambiguity and shapes regardless, which is what makes a custom service work
+  // on a session that has never pinned a route.
+  if (
+    !route
+    && modeCredentialFor(selection.serviceId, selection.billingMode, "account") !== undefined
+  ) {
+    return undefined;
+  }
+  const shaping = resolveSpawnShaping(harnessId, selection);
+  if (!shaping?.credential) return undefined;
+  const service = getService(selection.serviceId);
+  return {
+    serviceId: shaping.serviceId,
+    serviceName: service?.name ?? shaping.serviceId,
+    billingMode: shaping.billingMode,
+    style: shaping.style,
+    baseUrl: shaping.endpoint.url,
+    // docs/252 phase 5 — read the PINNED credential's own variable when the turn
+    // is pinned to a stored one. The catalogue's `storageEnv` names the group,
+    // and delivery puts the group's first credential there; once req 12's
+    // failover can move a session onto the second, sourcing from the group name
+    // would authenticate with the credential ShipIt had just benched while
+    // attributing the turn to the one it moved to. A credential that exists
+    // ONLY as a deployment variable has no row, so it keeps the group name —
+    // which is the only name it has ever had, and the name the deployment set.
+    //
+    // req 20 — asked of the STORE, not of the id's shape. `collectServiceCredentialEnv`
+    // writes a per-route variable for every stored `via: "string"` row, whatever
+    // its id, so "has a row" is exactly "has a variable of its own".
+    credentialSourceEnv:
+      route?.kind === "reserved" && credentialStore.getCredentialRoute(route.id)
+        ? credentialRouteEnvName(route.id)
+        : shaping.credential.sourceEnv,
+    credentialTarget: shaping.credential.target,
+  };
+}
+
+/**
+ * The secret behind the credential a run **authenticates with**.
+ *
+ * Keyed off the resolved `route`, not off the mode's credential list. A mode can
+ * hold several string credentials and the walks above pick among them in the
+ * user's own priority order, so re-deriving the secret by walking storage order
+ * could hand the CLI a *different* credential from the one the usage row
+ * attributes the run to. Cross-backend review found exactly that on the non-turn
+ * path (docs/252 phase 7); it lives here rather than there because docs/261's
+ * reviewer resolution is its second caller, and two derivations of "which secret"
+ * is how the two would come to disagree.
+ *
+ * Falls back to the deployment's environment for an env-delivered route, which
+ * is the other source {@link selectRouteForSelection} resolves from.
+ *
+ * `undefined` for an account-delivered credential — that is the CLI's own login
+ * and carries no secret to place.
+ */
+export function credentialSecretForRoute(
+  deps: {
+    credentialStore: Pick<CredentialStore, "getCredentialSecret">;
+    env?: NodeJS.ProcessEnv | undefined;
+  },
+  selection: ModelSelection,
+  sourceEnv: string,
+  route: ProviderRoute | null | undefined,
+): string | undefined {
+  // An account-delivered credential IS the CLI's own login: there is no secret
+  // to place, and the mode's environment variable — which may well be set for
+  // this same service's *other* credential — is not it. Stated in the contract
+  // above and enforced here rather than left to every caller having checked
+  // first, which is what the extraction of this helper made a real risk.
+  if (route?.kind === "account") return undefined;
+  if (route?.kind === "reserved") {
+    const stored = deps.credentialStore.getCredentialSecret(route.id);
+    if (stored) return stored;
+  }
+  const storageEnv = storageEnvFor(selection.serviceId, selection.billingMode);
+  if (storageEnv !== sourceEnv) return undefined;
+  const fromEnv = (deps.env ?? process.env)[sourceEnv];
+  return typeof fromEnv === "string" && fromEnv.trim().length > 0 ? fromEnv : undefined;
+}
+
+// ---- Spawn identity (the resident-process boundary) ------------------------
+
+/**
+ * Everything about a session that decides what a CLI process was spawned AS.
+ *
+ * The resident-process guard used to compare two model *strings*, which is
+ * sound only while a model id identifies a service. It does not (req 5): the
+ * same `deepseek-v4-flash` is reachable direct and through a gateway, so a
+ * switch between them left the strings equal, fired no kill, and ran the next
+ * turn on the old process — old endpoint, old credential, wrong account billed
+ * (req 11). Phase 3 is the phase that first makes that switch reachable, so it
+ * is the phase that has to widen this.
+ *
+ * Derived from the SESSION ROW at both ends — the guard's question and the
+ * stamp taken at spawn — rather than from the built run params at one end and
+ * the session at the other. Two derivations of "the same" tuple is how a
+ * spurious respawn on every turn gets built.
+ */
+/**
+ * The identity the NEXT spawn of this session would have — what the resident
+ * guard compares against `runner.appliedSpawnIdentity`.
+ *
+ * `undefined` for a session the manager does not know, which the guard reads as
+ * "no opinion" and leaves the resident process alone. That is the same answer a
+ * missing model gave before, and the safe one: a spurious kill costs a respawn
+ * on every turn.
+ */
+export function desiredSpawnIdentity(
+  sessionManager: { get(id: string): SessionInfo | undefined },
+  sessionId: string,
+  harnessId: AgentId,
+): string | undefined {
+  const session = sessionManager.get(sessionId);
+  return session ? sessionSpawnIdentity(session, harnessId) : undefined;
+}
+
+export function sessionSpawnIdentity(
+  session: Pick<SessionInfo, "model" | "serviceId" | "billingMode">,
+  harnessId: AgentId,
+): string {
+  const selection =
+    session.serviceId && session.billingMode && session.model
+      ? { serviceId: session.serviceId, billingMode: session.billingMode, modelId: session.model }
+      : undefined;
+  const shaping = selection ? resolveSpawnShaping(harnessId, selection) : undefined;
+  // docs/260 — the credential ROUTE is deliberately no longer part of this
+  // tuple: it is decided per turn, not persisted on the row, and the resident
+  // process's account is compared separately against the turn's selection via
+  // `runner.residentRoute`. Keeping a dead row column here would pin every
+  // spawn identity to "-" anyway.
+  return [
+    harnessId,
+    session.serviceId ?? "-",
+    session.billingMode ?? "-",
+    session.model ?? "-",
+    shaping?.style ?? "-",
+    shaping?.endpoint.url ?? "-",
+  ].join("|");
+}
+
+/**
+ * docs/261 — read back the harness and model a resident CLI was actually
+ * spawned with, from `runner.appliedSpawnIdentity`.
+ *
+ * The inverse of {@link sessionSpawnIdentity}, and the only capture of "what is
+ * producing this work" the orchestrator keeps outside a turn's own local
+ * variables. The reviewer ranking needs it: it compares against the
+ * *implementer*, and the session ROW is mutable under a running turn
+ * (`set_model`), so ranking against the row can name the very model that wrote
+ * the code as the distant one. The stamp moves only when a process is spawned,
+ * which is exactly when what is running changes.
+ *
+ * Returns `undefined` for an unparseable or absent stamp, and omits `selection`
+ * when the stamped session had no model — both of which the caller reads as
+ * "fall back to the row", never as an answer.
+ */
+export function parseSpawnIdentity(
+  identity: string | undefined,
+): { harnessId: AgentId; selection?: ModelSelection } | undefined {
+  if (!identity) return undefined;
+  const [harnessId, serviceId, billingMode, modelId] = identity.split("|");
+  if (!harnessId) return undefined;
+  const complete =
+    serviceId && serviceId !== "-"
+    && (billingMode === "sub" || billingMode === "key")
+    && modelId && modelId !== "-";
+  return complete
+    ? { harnessId: harnessId as AgentId, selection: { serviceId, billingMode, modelId } }
+    : { harnessId: harnessId as AgentId };
+}

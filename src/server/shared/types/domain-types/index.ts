@@ -1,4 +1,5 @@
 export * from "./provider.js";
+export * from "./credential-route.js";
 export * from "./egress.js";
 export * from "./session.js";
 export * from "./issue.js";

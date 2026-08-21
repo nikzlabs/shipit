@@ -2,7 +2,7 @@
  * Deterministic per-label color for the Issues tab label chips.
  *
  * Neither tracker hands us a label color on the list path — `TrackerIssue.labels`
- * is just display names (SHI-92). Rather than render every chip in the same flat
+ * is just display names (planning#94). Rather than render every chip in the same flat
  * gray, we derive a stable hue from the label name so "bug", "design",
  * "infra" each get their own consistent dot color across rows and sessions.
  *

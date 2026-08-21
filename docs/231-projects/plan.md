@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-233
+issue: planning#235
 description: Multiple isolated Projects per deployment — each with its own repos, sessions, Linear, GitHub identity, agent credentials, MCP servers, and settings; soft separation as a step toward trusted multi-user.
 ---
 

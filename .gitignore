@@ -76,3 +76,8 @@ android-overlay-test/local.properties
 android-overlay-test/.idea/
 *.keystore
 *.jks
+
+# docs/262 test-plugin fixture — install writes its stamp into the live tree
+# under `repo: self`; the write probe cleans up after itself but belt+braces.
+test-plugin/.install-stamp.json
+test-plugin/.probe-write-test

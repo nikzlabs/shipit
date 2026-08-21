@@ -1,19 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { LimitsRegistry } from "./limits-registry.js";
 import type { LimitsProvider } from "./agents/types.js";
-import type { AgentId, SubscriptionLimits } from "../shared/types.js";
+import type { SubscriptionLimits } from "../shared/types.js";
 
 /** The single route id these registry-level tests drive through. */
 const STUB_ROUTE = "acct-stub";
 
+/**
+ * docs/252 req 10 — the registry is keyed by `(service, billing mode)` now, so
+ * the stubs are named by the mode they report for. `anthropic:sub` is what the
+ * Claude provider declares; `openai:sub` is Codex's.
+ */
+const ANTHROPIC = "anthropic:sub";
+const OPENAI = "openai:sub";
+
 class StubLimitsProvider implements LimitsProvider {
-  readonly agentId: AgentId;
+  readonly serviceId: string;
+  readonly billingMode = "sub" as const;
   /** Sequence of snapshots returned by consecutive `fetch()` calls. */
   snapshots: (SubscriptionLimits | null)[] = [];
   fetchCallCount = 0;
 
-  constructor(agentId: AgentId) {
-    this.agentId = agentId;
+  constructor(serviceId: string) {
+    this.serviceId = serviceId;
   }
 
   /**
@@ -59,9 +68,11 @@ class StubLimitsProvider implements LimitsProvider {
 }
 
 function makeSnapshot(
-  overrides: Partial<SubscriptionLimits> & { agentId: AgentId },
+  overrides: Partial<SubscriptionLimits> = {},
 ): SubscriptionLimits {
   return {
+    serviceId: "anthropic",
+    billingMode: "sub",
     routeId: STUB_ROUTE,
     plan: "Pro",
     session: { usedPct: 30, resetAt: "2026-05-19T18:00:00Z" },
@@ -89,39 +100,39 @@ function makeBroadcastSpy(): {
 
 describe("LimitsRegistry", () => {
   it("markAuthRefreshed pulls the latest snapshot and broadcasts", async () => {
-    const claude = new StubLimitsProvider("claude").enqueue(
-      makeSnapshot({ agentId: "claude", plan: "Max 20x" }),
+    const claude = new StubLimitsProvider("anthropic").enqueue(
+      makeSnapshot({ plan: "Max 20x" }),
     );
     const spy = makeBroadcastSpy();
 
     const registry = new LimitsRegistry({
-      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      providers: new Map<string, LimitsProvider>([[ANTHROPIC, claude]]),
       sseBroadcast: spy.broadcast,
     });
 
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(claude.fetchCallCount).toBe(1);
     expect(spy.calls).toHaveLength(1);
     expect(spy.calls[0].event).toBe("subscription_limits");
     const payload = spy.calls[0].data as { limits: Record<string, Record<string, SubscriptionLimits>> };
-    expect(payload.limits.claude[STUB_ROUTE].plan).toBe("Max 20x");
+    expect(payload.limits[ANTHROPIC][STUB_ROUTE].plan).toBe("Max 20x");
   });
 
   it("does not rebroadcast when the snapshot is unchanged", async () => {
-    const snap = makeSnapshot({ agentId: "claude" });
-    const claude = new StubLimitsProvider("claude").enqueue(snap).enqueue(snap);
+    const snap = makeSnapshot();
+    const claude = new StubLimitsProvider("anthropic").enqueue(snap).enqueue(snap);
     const spy = makeBroadcastSpy();
 
     const registry = new LimitsRegistry({
-      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      providers: new Map<string, LimitsProvider>([[ANTHROPIC, claude]]),
       sseBroadcast: spy.broadcast,
     });
 
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(claude.fetchCallCount).toBe(2);
@@ -134,137 +145,134 @@ describe("LimitsRegistry", () => {
     // (anthropics/claude-code#50518) and only fills it in once a warning
     // threshold trips. The registry must broadcast on each side of that
     // transition so the badge upgrades from countdown-only to a full meter.
-    const claude = new StubLimitsProvider("claude")
+    const claude = new StubLimitsProvider("anthropic")
       .enqueue(
         makeSnapshot({
-          agentId: "claude",
-          session: { usedPct: null, resetAt: "2026-05-19T18:00:00Z" },
+                    session: { usedPct: null, resetAt: "2026-05-19T18:00:00Z" },
         }),
       )
       .enqueue(
         makeSnapshot({
-          agentId: "claude",
-          session: { usedPct: 42, resetAt: "2026-05-19T18:00:00Z" },
+                    session: { usedPct: 42, resetAt: "2026-05-19T18:00:00Z" },
         }),
       );
     const spy = makeBroadcastSpy();
 
     const registry = new LimitsRegistry({
-      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      providers: new Map<string, LimitsProvider>([[ANTHROPIC, claude]]),
       sseBroadcast: spy.broadcast,
     });
 
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(spy.calls).toHaveLength(2);
     const first = spy.calls[0].data as { limits: Record<string, Record<string, SubscriptionLimits>> };
     const second = spy.calls[1].data as { limits: Record<string, Record<string, SubscriptionLimits>> };
-    expect(first.limits.claude[STUB_ROUTE].session?.usedPct).toBeNull();
-    expect(second.limits.claude[STUB_ROUTE].session?.usedPct).toBe(42);
+    expect(first.limits[ANTHROPIC][STUB_ROUTE].session?.usedPct).toBeNull();
+    expect(second.limits[ANTHROPIC][STUB_ROUTE].session?.usedPct).toBe(42);
   });
 
   it("rebroadcasts when a window's usedPct changes", async () => {
-    const claude = new StubLimitsProvider("claude")
-      .enqueue(makeSnapshot({ agentId: "claude" }))
+    const claude = new StubLimitsProvider("anthropic")
+      .enqueue(makeSnapshot())
       .enqueue(
         makeSnapshot({
-          agentId: "claude",
-          session: { usedPct: 65, resetAt: "2026-05-19T18:00:00Z" },
+                    session: { usedPct: 65, resetAt: "2026-05-19T18:00:00Z" },
         }),
       );
     const spy = makeBroadcastSpy();
 
     const registry = new LimitsRegistry({
-      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      providers: new Map<string, LimitsProvider>([[ANTHROPIC, claude]]),
       sseBroadcast: spy.broadcast,
     });
 
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(spy.calls).toHaveLength(2);
     const second = spy.calls[1].data as { limits: Record<string, Record<string, SubscriptionLimits>> };
-    expect(second.limits.claude[STUB_ROUTE].session?.usedPct).toBe(65);
+    expect(second.limits[ANTHROPIC][STUB_ROUTE].session?.usedPct).toBe(65);
   });
 
   it("getSnapshot returns the cached map and omits unfetchable providers", async () => {
-    const claude = new StubLimitsProvider("claude").enqueue(makeSnapshot({ agentId: "claude" }));
-    const codex = new StubLimitsProvider("codex"); // never received an event
+    const claude = new StubLimitsProvider("anthropic").enqueue(makeSnapshot());
+    const codex = new StubLimitsProvider("openai"); // never received an event
     const spy = makeBroadcastSpy();
 
     const registry = new LimitsRegistry({
-      providers: new Map<AgentId, LimitsProvider>([["claude", claude], ["codex", codex]]),
+      providers: new Map<string, LimitsProvider>([[ANTHROPIC, claude], [OPENAI, codex]]),
       sseBroadcast: spy.broadcast,
     });
 
-    registry.markAuthRefreshed("claude");
-    registry.markAuthRefreshed("codex");
+    registry.markAuthRefreshed(ANTHROPIC);
+    registry.markAuthRefreshed(OPENAI);
     await new Promise((resolve) => setImmediate(resolve));
 
     const snap = registry.getSnapshot();
-    expect(snap.claude).toBeTruthy();
-    expect(snap.codex).toBeUndefined();
+    expect(snap[ANTHROPIC]).toBeTruthy();
+    expect(snap[OPENAI]).toBeUndefined();
   });
 
   it("markSignedOut drops the cached entry and broadcasts", async () => {
-    const claude = new StubLimitsProvider("claude").enqueue(makeSnapshot({ agentId: "claude" }));
+    const claude = new StubLimitsProvider("anthropic").enqueue(makeSnapshot());
     const spy = makeBroadcastSpy();
 
     const registry = new LimitsRegistry({
-      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      providers: new Map<string, LimitsProvider>([[ANTHROPIC, claude]]),
       sseBroadcast: spy.broadcast,
     });
 
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
-    expect(registry.getSnapshot().claude).toBeTruthy();
+    expect(registry.getSnapshot()[ANTHROPIC]).toBeTruthy();
 
-    registry.markSignedOut("claude");
-    expect(registry.getSnapshot().claude).toBeUndefined();
+    registry.markSignedOut(ANTHROPIC);
+    expect(registry.getSnapshot()[ANTHROPIC]).toBeUndefined();
     // Second broadcast carries the empty map so the client drops the pill.
     expect(spy.calls).toHaveLength(2);
     expect(
-      (spy.calls[1].data as { limits: Record<string, unknown> }).limits.claude,
+      (spy.calls[1].data as { limits: Record<string, unknown> }).limits[ANTHROPIC],
     ).toBeUndefined();
   });
 
   it("markSignedOut is a no-op (no broadcast) when the entry was already absent", () => {
-    const claude = new StubLimitsProvider("claude");
+    const claude = new StubLimitsProvider("anthropic");
     const spy = makeBroadcastSpy();
     const registry = new LimitsRegistry({
-      providers: new Map<AgentId, LimitsProvider>([["claude", claude]]),
+      providers: new Map<string, LimitsProvider>([[ANTHROPIC, claude]]),
       sseBroadcast: spy.broadcast,
     });
 
-    registry.markSignedOut("claude");
+    registry.markSignedOut(ANTHROPIC);
     expect(spy.calls).toHaveLength(0);
   });
 
-  it("keeps two accounts of one provider independent (docs/150 req 10)", async () => {
+  it("keeps two accounts of one provider independent (docs/150-multiple-provider-subscriptions req 10)", async () => {
     // The defect this shape exists to prevent: with a provider-keyed cache,
     // whichever account reported last overwrote the other, so the badge showed
     // one number that silently jumped between subscriptions.
-    const provider = new StubLimitsProvider("claude");
+    const provider = new StubLimitsProvider("anthropic");
     provider.liveRoutes = new Set(["acct-a", "acct-b"]);
-    provider.byRoute.set("acct-a", makeSnapshot({ agentId: "claude", routeId: "acct-a", session: { usedPct: 90, resetAt: "2026-05-19T18:00:00Z" } }));
-    provider.byRoute.set("acct-b", makeSnapshot({ agentId: "claude", routeId: "acct-b", session: { usedPct: 10, resetAt: "2026-05-19T20:00:00Z" } }));
+    provider.byRoute.set("acct-a", makeSnapshot({ routeId: "acct-a", session: { usedPct: 90, resetAt: "2026-05-19T18:00:00Z" } }));
+    provider.byRoute.set("acct-b", makeSnapshot({ routeId: "acct-b", session: { usedPct: 10, resetAt: "2026-05-19T20:00:00Z" } }));
     const spy = makeBroadcastSpy();
     const registry = new LimitsRegistry({
-      providers: new Map([["claude", provider]]),
+      providers: new Map([[ANTHROPIC, provider]]),
       sseBroadcast: spy.broadcast,
     });
 
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
 
     const snap = registry.getSnapshot();
-    expect(snap.claude?.["acct-a"]?.session?.usedPct).toBe(90);
-    expect(snap.claude?.["acct-b"]?.session?.usedPct).toBe(10);
+    expect(snap[ANTHROPIC]?.["acct-a"]?.session?.usedPct).toBe(90);
+    expect(snap[ANTHROPIC]?.["acct-b"]?.session?.usedPct).toBe(10);
   });
 
   it("refreshes only the named route, and fans out only without one", async () => {
@@ -272,57 +280,57 @@ describe("LimitsRegistry", () => {
     // `/api/oauth/usage` call against a budget of a handful per ~30 min, so a
     // fan-out press spends every other subscription's share. The sign-in seed
     // passes no route and still covers everything.
-    const provider = new StubLimitsProvider("claude");
+    const provider = new StubLimitsProvider("anthropic");
     provider.liveRoutes = new Set(["acct-a", "acct-b"]);
-    provider.byRoute.set("acct-a", makeSnapshot({ agentId: "claude", routeId: "acct-a" }));
-    provider.byRoute.set("acct-b", makeSnapshot({ agentId: "claude", routeId: "acct-b" }));
+    provider.byRoute.set("acct-a", makeSnapshot({ routeId: "acct-a" }));
+    provider.byRoute.set("acct-b", makeSnapshot({ routeId: "acct-b" }));
     const refreshed: string[] = [];
     (provider as LimitsProvider).refreshNow = async (_reason, routeId) => {
       refreshed.push(routeId);
       return { routeId, outcome: "updated" as const };
     };
     const registry = new LimitsRegistry({
-      providers: new Map([["claude", provider]]),
+      providers: new Map([[ANTHROPIC, provider]]),
       sseBroadcast: makeBroadcastSpy().broadcast,
     });
 
-    const scoped = await registry.refreshNow("claude", "manual", "acct-a");
+    const scoped = await registry.refreshNow(ANTHROPIC, "manual", "acct-a");
     expect(refreshed).toEqual(["acct-a"]);
     expect(scoped).toEqual([{ routeId: "acct-a", outcome: "updated" }]);
 
     refreshed.length = 0;
-    await registry.refreshNow("claude", "seed");
+    await registry.refreshNow(ANTHROPIC, "seed");
     expect(refreshed.sort()).toEqual(["acct-a", "acct-b"]);
   });
 
   it("reports a route whose provider has no on-demand refresh", async () => {
     const registry = new LimitsRegistry({
-      providers: new Map([["codex", new StubLimitsProvider("codex")]]),
+      providers: new Map([[OPENAI, new StubLimitsProvider("openai")]]),
       sseBroadcast: makeBroadcastSpy().broadcast,
     });
-    expect(await registry.refreshNow("codex", "manual", "acct-x")).toEqual([
+    expect(await registry.refreshNow(OPENAI, "manual", "acct-x")).toEqual([
       { routeId: "acct-x", outcome: "unavailable" },
     ]);
   });
 
   it("drops only the disconnected account's pill", async () => {
-    const provider = new StubLimitsProvider("claude");
+    const provider = new StubLimitsProvider("anthropic");
     provider.liveRoutes = new Set(["acct-a", "acct-b"]);
-    provider.byRoute.set("acct-a", makeSnapshot({ agentId: "claude", routeId: "acct-a" }));
-    provider.byRoute.set("acct-b", makeSnapshot({ agentId: "claude", routeId: "acct-b" }));
+    provider.byRoute.set("acct-a", makeSnapshot({ routeId: "acct-a" }));
+    provider.byRoute.set("acct-b", makeSnapshot({ routeId: "acct-b" }));
     const spy = makeBroadcastSpy();
     const registry = new LimitsRegistry({
-      providers: new Map([["claude", provider]]),
+      providers: new Map([[ANTHROPIC, provider]]),
       sseBroadcast: spy.broadcast,
     });
-    registry.markAuthRefreshed("claude");
+    registry.markAuthRefreshed(ANTHROPIC);
     await new Promise((resolve) => setImmediate(resolve));
 
-    registry.markSignedOut("claude", "acct-a");
+    registry.markSignedOut(ANTHROPIC, "acct-a");
 
     const snap = registry.getSnapshot();
-    expect(snap.claude?.["acct-a"]).toBeUndefined();
-    expect(snap.claude?.["acct-b"]).toBeDefined();
+    expect(snap[ANTHROPIC]?.["acct-a"]).toBeUndefined();
+    expect(snap[ANTHROPIC]?.["acct-b"]).toBeDefined();
     // The provider was told too, so a later refresh can't resurrect it.
     expect(provider.routeIds()).toEqual(["acct-b"]);
   });

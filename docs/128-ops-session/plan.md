@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-280
+issue: planning#282
 description: Special session type letting operators debug the production ShipIt host (stuck containers, OOM, Docker state) without leaving the ShipIt UI.
 ---
 
@@ -429,17 +429,74 @@ independently.)
       narrowed to the case it was written for: an origin that is still a local
       filesystem path (the `git clone --local` bare-cache artifact), which was
       never a push target.
-    - **Ops sessions commit but never auto-push.** `postTurnCommit`
-      (`ws-handlers/post-turn.ts`) gates both `scheduleAutoPush` call sites on
-      `kind === "ops"`, alongside the existing sandbox gate. An ops session's
-      history is part of the incident log so the commit stays; pushing was never
-      part of the design (a ShipIt fix goes out through a spawned
-      `--shipit-source` session or a filed issue). Only the debounced post-turn
-      push is gated — an explicit agent-driven `gh pr create` is unaffected.
+    - **Ops sessions never auto-push.** Pushing was never part of the design (a
+      ShipIt fix goes out through a spawned `--shipit-source` session or a filed
+      issue), and only ShipIt's own debounced push is gated — an explicit
+      agent-driven `gh pr create` is unaffected.
+
+      This originally gated the PUSH only and deliberately kept the COMMIT,
+      on the reasoning that "an ops session's history is part of the incident
+      log". **That half was later reversed** — see *Ops sessions are not
+      auto-committed* below.
 
     Tests: `services/github-remote-resolution.test.ts`,
     `ws-handlers/post-turn.test.ts`. The client half — never rendering a
     "Branch is behind" nudge on a session with no base branch — is in docs/239.
+
+4b. **Ops sessions are not auto-committed** — reverses the commit half of 4a at
+    the operator's request. ShipIt performs **no automatic commit** for
+    `kind === "ops"` (or `kind === "sandbox"`): not at turn end, not on an
+    interrupt, not when a sub-agent consult lands late, not on a UI file edit,
+    not before a disk eviction. The rule lives in ONE place —
+    `services/auto-commit-gate.ts`, which also records why each path is or isn't
+    gated — because nine `git.autoCommit()` call sites share no runtime
+    chokepoint (a `GitManager` is built from a directory and knows nothing about
+    sessions, and the deliberate template commit goes through the same method).
+
+    **Consequence, stated plainly:** an ops workspace's git history is no longer
+    an incident log. Anything an investigation wants to keep must be committed by
+    the agent, filed as an issue / `report_shipit_bug`, or carried into the
+    `--shipit-source` fix session. The ops agent is told so: it renders
+    `prompts/git-workflow-ops.md` ("you own git, ShipIt does not commit") instead
+    of the standard auto-commit fragment, which was not merely stale after this
+    change but actively harmful — it told the agent not to commit work nothing
+    else would commit. Ops gets its own fragment rather than reusing the sandbox
+    one, because the sandbox text assumes no root repo and free branch creation;
+    an ops workspace is a repo, on a branch it may not leave.
+
+    Deliberately **left** committing — all three are commits made on behalf of an
+    explicit human or agent action, path-scoped or creation-time, never sweeping
+    up the workspace: template application (`services/templates.ts` — session
+    creation, not a turn; without it the workspace is dirty from its first
+    second), the `gh pr create` flush in `services/github.ts` (the agent's own
+    explicit action), and plugin install (`services/marketplace.ts`, which commits
+    via `git.commitPaths()` and so does not appear in a `grep` for `autoCommit` —
+    a census of that one method is incomplete).
+
+    **`tier-escalation.ts` refuses the whole eviction, not just the commit.** The
+    first draft gated only the commit, reasoning that these kinds "have no remote
+    so they were never evictable". That inherited guarantee does not hold: the
+    durability gate reads the CHECKOUT's `refs/remotes/origin/<branch>`, not
+    `session.remoteUrl`, so a sandbox that ran `git clone <url> .` or an ops agent
+    that added an origin by hand satisfies it while the session row still records
+    no remote — the wipe then succeeds and `restoreSessionWorkspace` throws 410,
+    because restore re-clones from session *metadata*. `reclaimToEvicted` now
+    refuses by kind before any git work, returning `blocked-by-push` (the honest
+    outcome: not durably recoverable). Regenerable dep caches are still reclaimed;
+    no notice is posted, since there is nothing the user can act on. Found by the
+    Codex cross-review.
+
+    **Known limit, deliberately not gated:** `services/rebase-driver.ts` stages
+    and runs `git rebase --continue` under the PR poller's automatic conflict
+    resolution, reaching neither `autoCommit` nor the gate. It needs an open PR
+    *and* a `session.remoteUrl`, which these kinds acquire only when a human adds
+    an `origin` through the UI or the agent runs `gh pr create` — deliberate acts
+    that opt the session into the PR lifecycle. Recorded in the gate module.
+
+    Tests: `services/auto-commit-gate.test.ts`,
+    `ws-handlers/post-turn.test.ts`, `turn-crash-commit.test.ts`,
+    `services/sub-agent-commit.test.ts`, `disk-tier-escalation.test.ts`,
+    `integration_tests/file-content.test.ts`, `agent-instructions.test.ts`.
 
 5. **Session `kind` + sidebar group** — add a `kind?: "ops"` field to
    `SessionInfo` (`src/server/shared/types/domain-types.ts`); there is

@@ -9,7 +9,10 @@
  *   - Standby containers survive idle cleanup
  *   - No standby when at container cap
  *   - Standby destroyed on repo delete
- *   - Rediscover restores standby state
+ *   - Restart kills the unclaimed standby and re-warms the pool
+ *   - Restart SPARES a claimed standby's container (the label outlives the
+ *     claim, so only the session row can tell the two apart) and does not
+ *     re-mark it as a standby
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -150,6 +153,8 @@ describe("standby container pre-warming", () => {
   let origGitTerminalPrompt: string | undefined;
   let origGitConfigGlobal: string | undefined;
   let dbManager: DatabaseManager;
+  /** Kept so the restart test can boot a second app with the same wiring. */
+  let credentialStore: ReturnType<typeof createTestCredentialStore>;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -175,7 +180,7 @@ describe("standby container pre-warming", () => {
     // Set up credential store (and GIT_CONFIG_GLOBAL) BEFORE seeding the repo
     // — git commit needs a valid identity config and `seedRepoCacheWithLocalBare`
     // writes an `insteadOf` redirect into GIT_CONFIG_GLOBAL.
-    const credentialStore = createTestCredentialStore(tmpDir);
+    credentialStore = createTestCredentialStore(tmpDir);
 
     // Seed the bare cache + matching local bare repo so warm-pool + claim
     // fetches never block on real network traffic. See helper docstring.
@@ -447,7 +452,67 @@ describe("standby container pre-warming", () => {
     expect(containerManager.isStandby(standbySessionId)).toBe(false);
   }, 25000);
 
-  it("rediscover restores standby state after restart", async () => {
+  // The restart guarantee, end to end. A standby holds no work and runs the
+  // previous process's worker image, and nothing else would ever reap one: the
+  // idle enforcer skips standbys and rediscovery re-adopts them. So the boot
+  // must kill it, drop the warm row, and re-warm the pool from scratch.
+  it("kills the previous process's standby container on restart and re-warms", async () => {
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10000, "warm session");
+    const oldWarmId = repoStore.get(REPO_URL)!.warmSessionId!;
+    await waitFor(() => containerManager.isStandby(oldWarmId), 10000, "standby at first boot");
+    const oldContainerId = containerManager.get(oldWarmId)!.id;
+    expect(fakeDocker._containers.has(oldContainerId)).toBe(true);
+
+    // Restart: same Docker daemon and same DB, a fresh process — so a fresh
+    // container manager with an empty tracking map, exactly like production.
+    await app.close();
+    const restartedManager = new SessionContainerManager({
+      docker: fakeDocker as any,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      workerPort: await allocateDeadLoopbackPort(),
+      skipHealthCheck: true,
+      stackName: "shipit-test",
+    });
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      repoStore,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      credentialStore,
+      agentFactory: () => new FakeClaudeProcess() as any,
+      workspaceDir: tmpDir,
+      credentialsDir: tmpDir,
+      serveStatic: false,
+      sessionContainerManager: restartedManager,
+    });
+
+    // The old standby is gone from the daemon, not merely untracked.
+    expect(fakeDocker._containers.has(oldContainerId)).toBe(false);
+    expect(restartedManager.isStandby(oldWarmId)).toBe(false);
+    // And its session is retired, so nothing hands the stale clone to a user.
+    expect(sessionManager.get(oldWarmId)).toBeUndefined();
+
+    // The pool does not stay cold: a fresh warm session boots a fresh standby.
+    await waitFor(
+      () => {
+        const id = repoStore.get(REPO_URL)?.warmSessionId;
+        return !!id && id !== oldWarmId && restartedManager.isStandby(id);
+      },
+      10000,
+      "re-warmed session with a new standby",
+    );
+  }, 30000);
+
+  // Rediscovery adopts a labelled container as an ORDINARY one. A session id
+  // reaching `rediscover` is by construction a live, non-warm session — warm
+  // rows are retired earlier in boot — so a surviving `shipit-standby=true`
+  // label means "was claimed", not "is a standby". Restoring the flag from it
+  // marked live sessions standby, which silently skips them in
+  // `restart-turn-reattach.ts` (their in-flight turn is never reattached) and
+  // in the idle enforcer (their container is never disposed).
+  it("rediscover adopts a claimed standby as an ordinary container", async () => {
     // Create a standby container directly
     const standbyId = "standby-rediscover-test";
     const standbyDir = path.join(tmpDir, "sessions", standbyId);
@@ -483,10 +548,59 @@ describe("standby container pre-warming", () => {
       dockerAccess: false,
     }));
     expect(count).toBe(1);
-    expect(newManager.isStandby(standbyId)).toBe(true);
+    expect(newManager.isStandby(standbyId)).toBe(false);
     expect(newManager.get(standbyId)).toBeDefined();
     expect(newManager.get(standbyId)!.status).toBe("running");
   });
+
+  // The regression the standby reap could most easily cause: a session the user
+  // claimed and graduated still runs a container labelled `shipit-standby=true`
+  // (the label is set at create time and Docker cannot change one afterwards),
+  // so a label-only sweep would destroy live sessions on every restart. docs/113.
+  it("a claimed standby's container survives the restart", async () => {
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10000, "warm session");
+    const claimedId = repoStore.get(REPO_URL)!.warmSessionId!;
+    await waitFor(() => containerManager.isStandby(claimedId), 10000, "standby");
+    const claimedContainerId = containerManager.get(claimedId)!.id;
+
+    // Claim it, then graduate it into an ordinary session the way the first
+    // message does — the row stops being warm, the Docker label does not change.
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/repos/${encodeURIComponent(REPO_URL)}/claim-session`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().sessionId).toBe(claimedId);
+    sessionManager.setWarm(claimedId, false);
+
+    await app.close();
+    const restartedManager = new SessionContainerManager({
+      docker: fakeDocker as any,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      workerPort: await allocateDeadLoopbackPort(),
+      skipHealthCheck: true,
+      stackName: "shipit-test",
+    });
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      repoStore,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      credentialStore,
+      agentFactory: () => new FakeClaudeProcess() as any,
+      workspaceDir: tmpDir,
+      credentialsDir: tmpDir,
+      serveStatic: false,
+      sessionContainerManager: restartedManager,
+    });
+
+    // Still there, and not mistaken for a standby by the new process.
+    expect(fakeDocker._containers.has(claimedContainerId)).toBe(true);
+    expect(sessionManager.get(claimedId)).toBeDefined();
+    expect(restartedManager.isStandby(claimedId)).toBe(false);
+  }, 30000);
 
   it("no standby when at container cap", async () => {
     const warmId = await (async () => {

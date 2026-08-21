@@ -1,6 +1,6 @@
 /**
  * Commit the work a sub-agent consult left in the workspace after its parent
- * turn had already ended (SHI-299, docs/144).
+ * turn had already ended (planning#301, docs/144).
  *
  * ## The hole this closes
  *
@@ -63,6 +63,7 @@ import type { SessionRunnerRegistry } from "../session-runner.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { withWorkspaceLock } from "./marketplace.js";
 import { flushPendingTurnCommit } from "./github.js";
+import { autoCommitAllowed } from "./auto-commit-gate.js";
 import { getErrorMessage } from "../validation.js";
 
 export interface SubAgentCommitDeps {
@@ -71,7 +72,7 @@ export interface SubAgentCommitDeps {
   /**
    * Optional so the extreme-minimal test setups that exercise the spawn gates
    * (and any runtime without a git-backed workspace) keep working. Absent ⇒ the
-   * commit is skipped, which is exactly the pre-SHI-299 behavior.
+   * commit is skipped, which is exactly the pre-planning#301 behavior.
    */
   createGitManager?: (dir: string) => GitManager;
   /** Only `append` is used — the post-turn notice path. */
@@ -105,10 +106,13 @@ export async function commitSubAgentWork(
     if (!deps.createGitManager) return null;
 
     const session = deps.sessionManager.get(sessionId);
-    // docs/211 — a sandbox session has NO root git repo (the agent clones into
-    // subdirs), so `autoCommit` would error on the non-repo root. Skipped by
-    // KIND, exactly as `postTurnCommit` does, not inferred from `remoteUrl`.
-    if (!session || session.kind === "sandbox") return null;
+    // docs/128 / docs/211 — ShipIt does not auto-commit an ops or sandbox
+    // session's workspace, and a consult landing after the turn is exactly such
+    // an automatic commit. One shared gate (`auto-commit-gate.ts`), the same one
+    // `postTurnCommit` consults — by KIND, never inferred from `remoteUrl`.
+    // A sandbox additionally has no root repo at all, so `autoCommit` would
+    // error here; an ops agent owns its own git (see `git-workflow-ops.md`).
+    if (!session || !autoCommitAllowed(session)) return null;
 
     // Re-resolve the runner at completion time rather than reusing the one the
     // spawn started with: a restart / idle dispose replaces it, and the stale
@@ -144,15 +148,15 @@ export async function commitSubAgentWork(
 
     if (!commitHash) return null;
 
-    // docs/128 — an ops session's workspace is a throwaway cockpit with no
-    // remote and no branch lifecycle; it COMMITS (the history is part of the
-    // incident log) but must never auto-push. Same gate `postTurnCommit` applies
-    // to the post-turn push.
-    if (session.kind !== "ops") runner.schedulePostTurnPush();
+    // Unconditional: the ops/sandbox kinds returned above, so anything reaching
+    // here is an ordinary session whose branch is meant to be pushed. (The
+    // merged-PR gate still applies — `schedulePostTurnPush` delegates to the
+    // same `SystemTurnDeps.scheduleAutoPush` closure the post-turn path uses.)
+    runner.schedulePostTurnPush();
 
     console.log(
       `[sub-agent] post-turn-commit session=${sessionId} spawn=${run.spawnId} `
-      + `agent=${run.subAgentId} commit=${commitHash.slice(0, 8)} pushed=${session.kind !== "ops"}`,
+      + `agent=${run.subAgentId} commit=${commitHash.slice(0, 8)}`,
     );
 
     // This incident is fundamentally about an invisible state change: work

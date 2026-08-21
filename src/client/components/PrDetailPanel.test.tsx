@@ -5,7 +5,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 
 beforeEach(() => {
-  usePrStore.setState({ statusBySession: {}, cardBySession: {} });
+  usePrStore.setState({ statusBySession: {}, cardBySession: {}, autoMergeBySession: {} });
 });
 
 afterEach(() => {
@@ -87,6 +87,22 @@ describe("PrDetailPanel", () => {
     render(<PrDetailPanel sessionId="s1" />);
     expect(screen.getByText("Squash and merge")).toBeInTheDocument();
     expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+  });
+
+  // docs/077 — an arming dies with its pull request, so a merged PR's panel
+  // shows neither the toggle nor the "will merge" promise, even while the store
+  // still holds the arming (the terminal `pr_status` update can be missed).
+  it("shows no auto-merge state on a merged PR", () => {
+    setCard("s1", {
+      ...openPrCard,
+      phase: "merged",
+      checks: { state: "pending", total: 3, passed: 2, failed: 0, pending: 1 },
+    });
+    usePrStore.setState({ autoMergeBySession: { s1: { enabled: true, mergeMethod: "squash" } } });
+    render(<PrDetailPanel sessionId="s1" />);
+
+    expect(screen.queryByText("Auto-merge")).toBeNull();
+    expect(screen.queryByText("Will merge when CI passes.")).toBeNull();
   });
 
   it("lists failed checks when CI is failing", () => {

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-251
+issue: planning#253
 title: Agent-driven Compose service control (`shipit service`)
 description: Give the agent a first-class CLI to start, stop, restart, inspect, and tail the Docker Compose services declared in the project — including manual debug services.
 ---

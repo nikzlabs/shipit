@@ -12,15 +12,16 @@
  * fails new starts → the kick never fires → nothing reclaims).
  */
 
-import { stat } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import type { SessionManager } from "./sessions.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
-import type { GitManager } from "../shared/git.js";
+import type { GitManager, UnreadableWorkspace } from "../shared/git.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
-import { DEFAULT_DISK_LADDER, type DiskLadderThresholds } from "./sessions.js";
+import { DEFAULT_DISK_LADDER, holdsActiveReservation, type DiskLadderThresholds } from "./sessions.js";
 import {
   getMessage,
   sleep,
@@ -29,6 +30,7 @@ import {
 } from "./disk-utils.js";
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import { formatEvictBlockedNotice, type EvictBlockReason } from "./services/evict-blocked-notice.js";
+import { autoCommitAllowed } from "./services/auto-commit-gate.js";
 
 /**
  * docs/161 — dependencies for the disk-tier escalation pass. Distinct from the
@@ -52,26 +54,43 @@ export interface TierEscalationDeps {
    */
   createGitManager?: (dir: string) => GitManager;
   /**
-   * docs/161 / SHI-197 — the disk-idle ladder thresholds as one ordered config
+   * docs/161 / planning#199 — the disk-idle ladder thresholds as one ordered config
    * (`lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`). Defaults to
    * `DEFAULT_DISK_LADDER`. The orchestrator validates the ordering once at
    * startup (`assertDiskLadderOrdering`) before passing it here.
    */
   ladder?: DiskLadderThresholds;
   /**
-   * SHI-294 — chat-history sink for the persisted warning emitted when an
+   * planning#296 — chat-history sink for the persisted warning emitted when an
    * eviction is blocked by uncommittable work. Omit in tests that don't assert
    * the notice; the block itself never depends on it.
    */
   chatHistory?: { append(sessionId: string, message: PersistedMessage): unknown };
   /**
-   * SHI-294 — session ids already warned about a blocked eviction. Owned by the
+   * planning#296 — session ids already warned about a blocked eviction. Owned by the
    * caller (one Set per orchestrator process) so the hourly pass warns once per
    * stuck session instead of appending a row to its transcript every hour. A
    * restart re-warns, which is the right trade: the notice is cheap and the
    * condition is still true.
    */
   notifiedEvictBlocked?: Set<string>;
+  /**
+   * Sessions whose eviction is stuck for a reason that CANNOT change between
+   * passes, mapped to the signature of what was last reported for them. Owned by
+   * the caller (one Map per orchestrator process), same shape and lifetime as
+   * `notifiedEvictBlocked`.
+   *
+   * The pass runs hourly and on every session start, and these outcomes repeat
+   * identically forever — one production session logged the same "git check
+   * failed" pair 117 times in an hour, for eight days, drowning real events in
+   * the orchestrator log. The entry is cleared whenever the outcome changes, so
+   * a session that gets stuck for a NEW reason is reported again; a stuck
+   * session stays visible, just not once per pass.
+   *
+   * Omit in tests that don't assert the throttle: without it every occurrence
+   * logs, which is the old behavior and harmless in a single-pass test.
+   */
+  evictStuckLog?: Map<string, string>;
   /**
    * Disk-pressure water marks (bytes free). When `getFreeDiskBytes` reports
    * below `diskFreeLow`, the pass escalates LRU-eligible sessions — ignoring the
@@ -104,7 +123,7 @@ export interface TierEscalationResult {
   /** Eviction skipped because a dirty checkout's push failed (kept at light). */
   evictBlockedByPush: number;
   /**
-   * SHI-294 — eviction skipped because the pre-eviction auto-commit refused
+   * planning#296 — eviction skipped because the pre-eviction auto-commit refused
    * (secret finding / unresolved merge state), leaving uncommittable work in
    * the tree. Kept at light, with its regenerable overlay reclaimed.
    */
@@ -135,6 +154,20 @@ function canAutoDescend(s: SessionInfo, runnerRegistry: SessionRunnerRegistry): 
   // its workspace is never dropped or wiped. (Explicit user archive still evicts,
   // but archive clears the pin first — see SessionManager.archive.)
   if (s.pinnedAt) return false;
+  // docs/241 / docs/256 — an always-on preview reservation is a user-facing
+  // guarantee that the container and its `x-shipit-preview: auto` services stay
+  // up "across viewer disconnects, idle cleanup, memory-pressure eviction, and
+  // orchestrator restarts". `idle-enforcer.ts` honors it; this ladder did not,
+  // so a reserved preview nobody happened to view for 24h was demoted by the
+  // `hot → light` rung — which disposes the runner and destroys the container,
+  // exactly what the reservation promises won't happen. It also thrashed: the
+  // container exit reaches the keep-preview restart supervisor
+  // (`startup-monitors.ts`), which recreates what this pass just tore down.
+  // The reservation is capacity-capped on admission (default 1), so honoring it
+  // here cannot strand more than the deployment already agreed to hold.
+  // The predicate, not the raw flag: a stale flag on an archived row must not
+  // shield that row's disk from reclaim (see `holdsActiveReservation`).
+  if (holdsActiveReservation(s)) return false;
   const runner = runnerRegistry.get(s.id);
   // docs/235 — `agentBusy` covers both an orchestrator-started turn and a
   // self-woken one (background task finished → the CLI started its own turn),
@@ -166,6 +199,28 @@ async function reclaimToLight(
     (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = true;
   }
   runnerRegistry.dispose(session.id);
+  // planning#298's rule, which this ladder did not follow: a DECLINED dispose means
+  // "leave this container alone". `canAutoDescend` ran before `sleep(paceMs)`
+  // and before the git work above, so the runner can have picked up live work in
+  // between — and the destroy below is unconditional, so the work died anyway
+  // and the surviving runner was left pointed at a dead container. The window
+  // widened when a turn's post-turn sequence became a decline reason of its own
+  // (a turn that ends during the pace delay now holds the runner through its
+  // commit), which is what made this worth closing rather than noting.
+  if (runner && !runner.disposed) {
+    // Un-arm the volume drop as well. It is a demotion instruction, not a
+    // property of the runner: left set, the next ORDINARY dispose (idle
+    // cleanup) would silently wipe the session's node_modules volume without
+    // anything having decided to demote it.
+    if ("removeVolumesOnDispose" in runner) {
+      (runner as { removeVolumesOnDispose: boolean }).removeVolumesOnDispose = false;
+    }
+    console.log(
+      `[disk-janitor] light: skipping container destroy for ${session.id}`
+      + " — runner declined disposal (still holds live work)",
+    );
+    return false;
+  }
 
   if (deps.containerManager) {
     try {
@@ -194,7 +249,7 @@ async function reclaimToLight(
 }
 
 /**
- * SHI-294 — attribute a refused auto-commit to one of `GitManager.autoCommit`'s
+ * planning#296 — attribute a refused auto-commit to one of `GitManager.autoCommit`'s
  * refusal branches, for the user-facing notice only. Nothing branches on the
  * result: the wipe is already gated on the tree being clean.
  */
@@ -202,16 +257,22 @@ function describeBlock(r: {
   secretFindings: SecretFinding[];
   conflictedFiles: string[];
   rebaseInProgress: boolean;
+  unreadable?: UnreadableWorkspace | null;
 }): EvictBlockReason {
   if (r.secretFindings.length > 0) return { kind: "secret", findings: r.secretFindings };
   if (r.conflictedFiles.length > 0 || r.rebaseInProgress) {
     return { kind: "conflict", conflictedFiles: r.conflictedFiles, rebaseInProgress: r.rebaseInProgress };
   }
+  // docs/266 / planning#407 — ranked below the two refusals above and above
+  // `unknown`: a secret or a conflict is both more actionable and the reason
+  // NOTHING was committed, while an unreadable path can accompany a commit that
+  // otherwise succeeded.
+  if (r.unreadable) return { kind: "unreadable", unreadable: r.unreadable };
   return { kind: "unknown" };
 }
 
 /**
- * SHI-294 — the blocked-eviction outcome: the checkout is the only copy of some
+ * planning#296 — the blocked-eviction outcome: the checkout is the only copy of some
  * work, so the session keeps it and stays at `light`. The ladder still does the
  * two things it safely can.
  *
@@ -242,10 +303,16 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
   outcome: T,
   reason?: EvictBlockReason,
 ): Promise<T> {
+  // A block is a different outcome than "stuck on an unchanging failure", and it
+  // has its own once-per-session notice. Drop any throttled signature so a
+  // later failure is reported again.
+  clearStuck(session, deps);
   if (reason) {
+    // Not always an auto-commit refusal: `no-repository` is the ladder's own,
+    // for a workspace with no repository for a commit to have been refused in.
     console.warn(
-      `[disk-janitor] evict blocked for ${session.id} — auto-commit refused (${reason.kind}), `
-      + "keeping the checkout at light",
+      `[disk-janitor] evict blocked for ${session.id} — the checkout can't be made durable `
+      + `(${reason.kind}), keeping it at light`,
     );
   }
   // Same freshness re-check the wipe path makes: the git/network work that led
@@ -288,7 +355,7 @@ async function blockedEvict<T extends "blocked-by-push" | "blocked-by-dirty">(
 }
 
 /**
- * SHI-294 — is the branch tip already recoverable from `origin`? "Tip present
+ * planning#296 — is the branch tip already recoverable from `origin`? "Tip present
  * in the bare cache" is the wrong question (a fresh push isn't in the cache
  * until its next fetch), and so is "the working tree is clean" (a committed but
  * unpushed tip is clean and still exists nowhere else). This asks the only
@@ -318,6 +385,65 @@ async function tipIsOnOrigin(git: GitManager, branch: string): Promise<boolean> 
 }
 
 /**
+ * Does a path exist? Deliberately three-valued, and deliberately `lstat`.
+ *
+ * Both callers below feed a DESTRUCTIVE decision, so "the stat failed" must not
+ * collapse into "it isn't there": an `EACCES` on a mount being remounted, or an
+ * `EIO` on a failing disk, would otherwise read as an absent workspace and
+ * authorize the wipe. Only the two errors that genuinely mean "no such path"
+ * (`ENOENT`, and `ENOTDIR` for a component that isn't a directory) answer
+ * `absent`; anything else answers `unknown`, which every caller treats as
+ * `present` — the careful path. `lstat` because a `.git` SYMLINK is still a
+ * repository pointer worth protecting even when its target is gone.
+ */
+async function pathState(p: string): Promise<"present" | "absent" | "unknown"> {
+  try {
+    await lstat(p);
+    return "present";
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "unknown";
+  }
+}
+
+/** True only when `dir` is readable AND holds nothing. An unreadable directory
+ * answers false — the callers use this to authorize a wipe, so "I couldn't
+ * tell" must mean "assume there is something in there". */
+async function isEmptyDir(dir: string): Promise<boolean> {
+  const entries = await readdir(dir).catch(() => null);
+  return entries !== null && entries.length === 0;
+}
+
+/**
+ * Report a repeating eviction failure ONCE per session per distinct cause,
+ * instead of once per pass. `signature` identifies the cause (kind + the
+ * underlying message, when there is one): a DIFFERENT signature is a different
+ * outcome and logs again, so the throttle can never hide a new problem behind an
+ * old one. See {@link TierEscalationDeps.evictStuckLog}.
+ */
+function warnStuck(
+  session: SessionInfo,
+  deps: TierEscalationDeps,
+  signature: string,
+  message: string,
+): void {
+  const log = deps.evictStuckLog;
+  if (log?.get(session.id) === signature) return;
+  log?.set(session.id, signature);
+  console.warn(message);
+}
+
+/**
+ * Forget a session's last reported stuck-signature, so the next occurrence of
+ * anything — including the same cause — is logged again. Called from every path
+ * that reaches a DIFFERENT outcome than "stuck": the throttle is scoped to an
+ * unchanging outcome, not to the session.
+ */
+function clearStuck(session: SessionInfo, deps: TierEscalationDeps): void {
+  deps.evictStuckLog?.delete(session.id);
+}
+
+/**
  * `light → evicted`: the destructive rung. Everything it wipes must be
  * recoverable from `origin` first, so it remediates the checkout and refuses to
  * proceed unless three things hold: the tree is clean, no merge/rebase is
@@ -331,7 +457,7 @@ async function reclaimToEvicted(
 ): Promise<"evicted" | "blocked-by-push" | "blocked-by-dirty" | "skipped"> {
   const { sessionManager, createGitManager } = deps;
 
-  // SHI-294 — a checkout that is already gone has nothing to protect, and every
+  // planning#296 — a checkout that is already gone has nothing to protect, and every
   // git question below would throw on it and return "skipped" forever. That
   // left a `light` row whose workspace is missing pinned in a broken state:
   // activation's `light → hot` shortcut skips `restoreSessionWorkspace`
@@ -339,20 +465,94 @@ async function reclaimToEvicted(
   // the truth — it IS evicted — routes the next activation through restore.
   // Only when a remote can supply the re-clone; without one it is unrecoverable
   // either way, so leave the row alone rather than assert a lie.
-  const workspaceGone = session.workspaceDir !== undefined
-    && !(await stat(session.workspaceDir).catch(() => null));
-  if (workspaceGone && !session.remoteUrl) {
-    console.warn(`[disk-janitor] evict skipped for ${session.id} — workspace missing and no remote to restore from`);
+  //
+  // "Already gone" is not only a MISSING DIRECTORY. A directory that survives
+  // with NO git repository inside it can never satisfy the durability gate
+  // below either — every git question throws on it — and that case was not
+  // covered: a production session sat at `light` for eight days logging "git
+  // check failed: fatal: not a git repository" on every pass, because
+  // `workspaceGone` was false (the dir exists), the first git call threw, and
+  // the catch returned "skipped" — no state change, no backoff, so the next pass
+  // repeated the identical work and failed identically, forever.
+  //
+  // It splits in two, and the split is the whole point. "No repository" does NOT
+  // mean "no work": loose files in such a directory are recoverable from nowhere
+  // (no commits, no branch, nothing that could ever be pushed), so wiping them
+  // would be the one place this rung destroys something origin can't give back —
+  // exactly what every other refusal here (no remote, detached HEAD, refused
+  // commit) declines to do. So only an EMPTY remnant joins the missing-workspace
+  // case; a non-empty one is a BLOCK (below), which still reclaims the
+  // regenerable overlay — the expensive half of the disk — and tells the user.
+  // `.git` present in ANY form (a directory, or the file a worktree/submodule
+  // uses) keeps the old, careful path: a corrupt-but-real checkout is still
+  // never wiped.
+  const wsDir = session.workspaceDir;
+  const workspaceMissing = wsDir !== undefined && (await pathState(wsDir)) === "absent";
+  const repoMissing = wsDir !== undefined && !workspaceMissing
+    && (await pathState(join(wsDir, ".git"))) === "absent";
+  const emptyRemnant = repoMissing && await isEmptyDir(wsDir);
+  const nothingToProtect = workspaceMissing || emptyRemnant;
+  if (nothingToProtect && !session.remoteUrl) {
+    warnStuck(
+      session, deps,
+      `no-remote:${workspaceMissing ? "missing" : "empty-remnant"}`,
+      `[disk-janitor] evict skipped for ${session.id} — workspace `
+      + `${workspaceMissing ? "missing" : "is an empty non-repository directory"} and no remote to `
+      + "restore from (this cannot change on its own; further passes stay quiet)",
+    );
     return "skipped";
+  }
+
+  // docs/128 / docs/211 — an `ops` or `sandbox` session is never evicted, and
+  // therefore never auto-committed on the way out (this function holds the only
+  // `git.autoCommit` call the disk janitor makes). Two independent reasons:
+  //
+  //  - **Eviction of these kinds is unrecoverable.** Step 3 below reads the
+  //    CHECKOUT's `refs/remotes/origin/<branch>`, not `session.remoteUrl` — so a
+  //    sandbox that ran `git clone <url> .` at the root, or an ops agent that
+  //    added an origin by hand mid-investigation, satisfies the durability gate
+  //    with a session row that still has NO `remoteUrl`. The wipe then succeeds
+  //    and `restoreSessionWorkspace` (`services/session.ts`) throws 410, because
+  //    restore re-clones from session METADATA. Refusing here closes that; do
+  //    NOT "fix" it by inferring the remote from the checkout, since neither kind
+  //    has a tracked branch lifecycle for restore to land on.
+  //  - **The remediation commit is itself forbidden.** ShipIt does not
+  //    auto-commit these kinds (`services/auto-commit-gate.ts`), and an idle ops
+  //    session whose investigation left scratch files is the common case, not a
+  //    corner — so the old path wrote `Auto-commit before disk eviction` commits
+  //    into exactly the history the gate exists to keep ShipIt out of.
+  //
+  // `blocked-by-push` is the honest outcome: the checkout is not durably
+  // recoverable. It still reclaims the regenerable dep caches (the expensive
+  // half) and, being reason-less, posts no user-facing notice — there is nothing
+  // the user can act on, and no commit was attempted to have been "refused".
+  if (!autoCommitAllowed(session)) {
+    console.warn(
+      `[disk-janitor] evict refused for ${session.id} — kind=${session.kind} sessions are never `
+      + "evicted: restore re-clones from session metadata they don't have, so the wipe would be "
+      + "unrecoverable; keeping the checkout at light",
+    );
+    return await blockedEvict(session, deps, "blocked-by-push");
+  }
+
+  // A workspace with no repository but with FILES in it. Nothing here can ever
+  // make those files durable — there is no branch to push and no commit to
+  // contain them — so this is a terminal block, not a retry: the outcome is
+  // recorded once and the ladder does the two things it safely can (reclaim the
+  // regenerable overlay, tell the user), exactly as for a refused commit. The
+  // user is the only one who can resolve it, by rescuing what matters and
+  // archiving the session.
+  if (repoMissing && !emptyRemnant) {
+    return await blockedEvict(session, deps, "blocked-by-push", { kind: "no-repository" });
   }
 
   // Durability guard: a `light` session keeps its checkout on disk, and the
   // container is stopped — so we operate git directly on the host checkout.
-  if (createGitManager && session.workspaceDir && !workspaceGone) {
+  if (createGitManager && session.workspaceDir && !nothingToProtect) {
     try {
       const git = createGitManager(session.workspaceDir);
 
-      // 1. Remediate a dirty tree, then re-check it. SHI-294 — `autoCommit`
+      // 1. Remediate a dirty tree, then re-check it. planning#296 — `autoCommit`
       //    returns a null hash from THREE paths and only one of them is safe to
       //    wipe: "nothing to commit". The other two — an unresolved merge/rebase
       //    state, and a secret-scanner refusal (docs/213) — are normal returns,
@@ -369,15 +569,39 @@ async function reclaimToEvicted(
       //    covers any future refusal path (or a commit hook that leaves the tree
       //    dirty behind a successful commit) by construction. The returned
       //    fields only explain the block.
-      if (!(await git.isClean())) {
-        const { secretFindings, conflictedFiles, rebaseInProgress } =
+      //    docs/266 / planning#407 — and the question is `inspectWorkingTree()`,
+      //    NOT `isClean()`. `isClean()` is TRUE for content git cannot read,
+      //    because git cannot see it. Root-side git read everything, so the
+      //    re-check was correct by accident; once orchestrator git runs as the
+      //    tree's own uid it is not, and the gap is a DATA-LOSS path the uid
+      //    drop created: a subtree the session uid cannot open answers "clean",
+      //    the commit is never even attempted, and the wipe below destroys work
+      //    that root-side git used to commit. An unreadable path is therefore a
+      //    block in its own right, before and after the commit.
+      const before = await git.inspectWorkingTree();
+      if (!before.clean) {
+        const { secretFindings, conflictedFiles, rebaseInProgress, unreadable } =
           await git.autoCommit("Auto-commit before disk eviction (docs/161)");
-        if (!(await git.isClean())) {
+        const after = await git.inspectWorkingTree();
+        if (!after.clean || after.unreadable || unreadable) {
           return await blockedEvict(
             session, deps, "blocked-by-dirty",
-            describeBlock({ secretFindings, conflictedFiles, rebaseInProgress }),
+            describeBlock({
+              secretFindings, conflictedFiles, rebaseInProgress,
+              unreadable: unreadable ?? after.unreadable,
+            }),
           );
         }
+      } else if (before.unreadable) {
+        // The sharp case, and the one no re-check could have caught: the
+        // unreadable subtree holds the ONLY uncommitted content, so git reports
+        // a clean tree and there is nothing for `autoCommit` to stage. Nothing
+        // will ever make this durable at this uid — block, and tell the user,
+        // exactly as for a workspace with no repository.
+        return await blockedEvict(
+          session, deps, "blocked-by-dirty",
+          { kind: "unreadable", unreadable: before.unreadable },
+        );
       }
 
       // 2. A clean tree is not a quiet repo. An interactive rebase stopped at an
@@ -431,13 +655,25 @@ async function reclaimToEvicted(
       }
     } catch (err) {
       // A git failure here (corrupt checkout, etc.) must not wipe unrecoverable
-      // work — bail out and leave the session at light.
-      console.warn(`[disk-janitor] evict skipped for ${session.id} — git check failed:`, getMessage(err));
+      // work — bail out and leave the session at light. Reported once per
+      // distinct failure: nothing here changes the session's state, so an
+      // unchanged failure means the next pass will fail identically. A session
+      // stuck this way is still visible in the log; it just doesn't repeat
+      // hourly (and, above, one whole class of it no longer reaches here).
+      const message = getMessage(err);
+      warnStuck(
+        session, deps, `git-check:${message}`,
+        `[disk-janitor] evict skipped for ${session.id} — git check failed`
+        + ` (repeats of this same failure stay quiet): ${message}`,
+      );
       return "skipped";
     }
+    // The git block completed, so whatever was stuck before isn't now. Forget
+    // it, so a later failure — even the same one — is reported again.
+    clearStuck(session, deps);
   }
 
-  // SHI-294 — the guards were evaluated before the pacing delay and the git /
+  // planning#296 — the guards were evaluated before the pacing delay and the git /
   // network work above, which take seconds. Re-read the row and re-run them
   // immediately before the destructive step so a session the user opened in the
   // meantime isn't wiped out from under them.
@@ -449,6 +685,17 @@ async function reclaimToEvicted(
 
   // Tear down container (no runner should exist at light, but be defensive).
   deps.runnerRegistry.dispose(session.id);
+  // Same planning#298 rule as the `hot → light` rung, and it matters more here: the
+  // step after the destroy WIPES THE WORKSPACE. A declined dispose is the runner
+  // saying it still holds live work, so this must not be the path that deletes
+  // that work's checkout.
+  const evictRunner = deps.runnerRegistry.get(session.id);
+  if (evictRunner && !evictRunner.disposed) {
+    console.warn(
+      `[disk-janitor] evict skipped for ${session.id} — runner declined disposal (still holds live work)`,
+    );
+    return "skipped";
+  }
   if (deps.containerManager) {
     try {
       await deps.containerManager.destroy(session.id);
@@ -458,7 +705,7 @@ async function reclaimToEvicted(
   }
 
   if (session.workspaceDir) {
-    // SHI-192 — reclaim BOTH the checkout and the regenerable overlay/ upper
+    // planning#194 — reclaim BOTH the checkout and the regenerable overlay/ upper
     // sibling, preserving durable siblings (uploads/). Removing only the
     // checkout orphaned the overlay upper (the bulk of the disk).
     const { failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
@@ -468,6 +715,10 @@ async function reclaimToEvicted(
   }
 
   sessionManager.setDiskTier(session.id, "evicted");
+  // After the tier write, not before: a throwing `setDiskTier` leaves the
+  // session stuck exactly as it was, and forgetting its signature first would
+  // make the next pass re-log a failure whose outcome never changed.
+  clearStuck(session, deps);
   console.log(`[disk-janitor] ${session.id}: light → evicted (workspace + overlay wiped)`);
   return "evicted";
 }
@@ -543,6 +794,22 @@ export async function escalateDiskTiers(
 
   // --- Disk-pressure LRU descent ---
   await applyDiskPressure(deps, now, excludeSessionId, result);
+
+  // Prune the stuck-log to sessions that could still be stuck the same way.
+  // `clearStuck` covers the outcomes this function decides; a session can also
+  // stop being stuck for reasons the ladder never sees — it was opened (back to
+  // `hot`, its checkout repaired by the agent), archived, or deleted. Keeping
+  // the map to the current `light` rows both bounds it and honors the contract:
+  // an entry only suppresses a repeat of an outcome that is still the truth.
+  const stuck = deps.evictStuckLog;
+  if (stuck && stuck.size > 0) {
+    const stillLight = new Set(
+      deps.sessionManager.listAll().filter((s) => (s.diskTier ?? "hot") === "light").map((s) => s.id),
+    );
+    for (const id of [...stuck.keys()]) {
+      if (!stillLight.has(id)) stuck.delete(id);
+    }
+  }
 
   if (result.toLight || result.toEvicted || result.evictBlockedByPush || result.evictBlockedByDirty) {
     console.log(

@@ -1,5 +1,5 @@
 /**
- * permission-store — inline permission-request card state (docs/193 / SHI-112).
+ * permission-store — inline permission-request card state (docs/193 / planning#114).
  *
  * Keyed by the stable `requestId` (the worker broker's id) so a
  * `permission_resolved` update can swap a card to its terminal state in place.
@@ -18,6 +18,12 @@ export interface PermissionCardState {
   toolName: string;
   path?: string;
   summary?: string;
+  /**
+   * The gated call in full (raw command / pretty-printed input), rendered behind
+   * the card's collapsed disclosure. `summary` is a clipped one-liner; this is
+   * what the user expands to see what they are actually approving.
+   */
+  details?: string;
   agentId?: string;
   createdAt?: string;
   /** True when approved with "remember this file for the session". */

@@ -46,8 +46,10 @@ import { getErrorMessage } from "../shared/utils.js";
 import { ClaudeProcess } from "./agents/claude/process.js";
 import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
+import { OpencodeAdapter } from "./agents/opencode/adapter.js";
+import { GrokAdapter } from "./agents/grok/adapter.js";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
-import { registerWorkerAuthGuard } from "./worker-auth-guard.js";
+import { registerWorkerAuthGuard, requireWorkerToken } from "./worker-auth-guard.js";
 import { normalizeAskQuestions } from "./ask-question.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
@@ -64,6 +66,8 @@ import { AgentController, type WorkerAgentFactory } from "./agent-controller.js"
 import { TerminalController } from "./terminal-controller.js";
 import { FileWatcherController } from "./file-watcher-controller.js";
 import { InstallController } from "./install-controller.js";
+import { preparePlugins, type PluginPrepareResult } from "./plugin-runtime.js";
+import { ensurePluginBinOnPath } from "./plugin-cli.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 export type { WorkerAgentFactory } from "./agent-controller.js";
@@ -94,9 +98,11 @@ export interface SessionWorkerDeps {
   /** Factory for the worker→orchestrator client. Injectable so tests can stub the orchestrator. */
   createOrchestratorClient?: () => OrchestratorClient;
   /**
-   * SHI-311 — the per-session token the orchestrator presents on its calls.
-   * Defaults to `SHIPIT_WORKER_TOKEN` from the container env; injectable so the
-   * guard's remote-caller behavior is testable in-process.
+   * planning#313 — the per-session token the orchestrator presents on its calls.
+   * The container entry point resolves it from `SHIPIT_WORKER_TOKEN` and passes
+   * it here (planning#421 — it refuses to start without one, and the guard reads no
+   * environment of its own). Omitted only by in-process test workers, which are
+   * then reachable from loopback alone.
    */
   workerToken?: string;
 }
@@ -116,6 +122,9 @@ export class SessionWorker extends EventEmitter {
   private port: number;
   private host: string;
   private workspaceDir: string;
+  /** docs/262 — in-flight plugin prepare, and at most one queued follow-up. */
+  private _pluginPrepare: Promise<PluginPrepareResult> | null = null;
+  private _pluginPrepareQueued: Promise<PluginPrepareResult> | null = null;
   private stateDir: string;
   private _createOrchestratorClient?: () => OrchestratorClient;
   private readonly _workerToken: string | undefined;
@@ -143,7 +152,7 @@ export class SessionWorker extends EventEmitter {
   // read from disk lazily on each serve, never retained (see PresentRegistry).
   private readonly presentRegistry = new PresentRegistry();
 
-  // SHI-112 / docs/193 — agent-agnostic approval broker. Holds pending
+  // planning#114 / docs/193 — agent-agnostic approval broker. Holds pending
   // sensitive-action requests (Claude via the `--permission-prompt-tool`
   // bridge; Codex via its app-server approval channel), broadcasts the
   // canonical request/resolved events, and tracks the per-session remember-set.
@@ -159,6 +168,14 @@ export class SessionWorker extends EventEmitter {
       ?? CONTAINER_SESSION_STATE_DIR;
     this._createOrchestratorClient = deps.createOrchestratorClient;
     this._workerToken = deps.workerToken;
+
+    // docs/262 req 17 — the companion-CLI wrapper directory goes on PATH here,
+    // not only when a prepare round writes into it. Everything this worker
+    // spawns inherits `process.env.PATH` at spawn time, and nothing orders the
+    // first prepare before the first agent process; asserting it once at
+    // construction makes the ordering irrelevant. Appending an empty (or
+    // absent) directory costs nothing.
+    ensurePluginBinOnPath();
 
     const broadcast = (event: WorkerSSEEvent): void => this.sse.broadcast(event);
 
@@ -206,7 +223,7 @@ export class SessionWorker extends EventEmitter {
   private buildApp(): FastifyInstance {
     const app = Fastify({ logger: false });
 
-    // SHI-311 — registered FIRST so its `onRequest` hook runs ahead of every
+    // planning#313 — registered FIRST so its `onRequest` hook runs ahead of every
     // handler below. The worker listens on 0.0.0.0 (the orchestrator dials it
     // by bridge IP), which also puts it in reach of every other session's
     // container; this is what keeps those callers out.
@@ -226,6 +243,7 @@ export class SessionWorker extends EventEmitter {
     this.installController.registerRoutes(app);
 
     // Worker-level endpoints (state lives on the worker itself).
+    this.registerPluginEndpoint(app);
     this.registerServiceEndpoints(app);
     this.registerSecretsEndpoint(app);
     this.registerSSEEndpoint(app);
@@ -319,6 +337,47 @@ export class SessionWorker extends EventEmitter {
   // updated process.env (the worker passes its own env into the child
   // via the agent factory). An already-running agent does NOT see the
   // change — secret updates take effect on the next agent turn.
+  /**
+   * docs/262 — make the session's live plugin checkouts reachable: link them
+   * under `/plugins`, and drop links the declaration no longer names. Runs NO
+   * plugin-authored code — install happens in its own container. The orchestrator calls
+   * this when an activation round settles and after a refresh; it carries no
+   * payload because everything needed is already on disk in this container
+   * (the declaration in `/workspace/shipit.yaml`, each manifest in its own
+   * checkout).
+   *
+   * Serialized, and deliberately NOT by joining the in-flight promise: a run
+   * reads the declaration and the live generations once, at its start, so a
+   * caller arriving later may be asking about state that run never saw. Joining
+   * would answer them with a stale result and skip the work — the same mistake
+   * the orchestrator's per-repo queue exists to avoid. So a request during a
+   * run queues exactly one follow-up, and every further request coalesces into
+   * that one.
+   */
+  private registerPluginEndpoint(app: FastifyInstance): void {
+    app.post("/plugins/prepare", async () => await this.enqueuePluginPrepare());
+  }
+
+  private enqueuePluginPrepare(): Promise<PluginPrepareResult> {
+    if (!this._pluginPrepare) {
+      this._pluginPrepare = Promise.resolve(preparePlugins({ workspaceDir: this.workspaceDir })).finally(() => {
+        this._pluginPrepare = null;
+      });
+      return this._pluginPrepare;
+    }
+    this._pluginPrepareQueued ??= (async () => {
+      // The in-flight run's OUTCOME is irrelevant here — this follow-up exists
+      // because that run may have read state older than this caller's, so it
+      // must start either way.
+      await this._pluginPrepare?.catch(() => undefined);
+      // Cleared before starting the follow-up so requests arriving from here on
+      // queue behind the NEW run rather than this finished slot.
+      this._pluginPrepareQueued = null;
+      return await this.enqueuePluginPrepare();
+    })();
+    return this._pluginPrepareQueued;
+  }
+
   private registerSecretsEndpoint(app: FastifyInstance): void {
     app.put<{ Body: { secrets: Record<string, string> } }>("/secrets", async (request, reply) => {
       const { secrets } = request.body ?? {};
@@ -410,7 +469,7 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * docs/193 — the permission round-trip, as a long poll (Thread B / SHI-112).
+   * docs/193 — the permission round-trip, as a long poll (Thread B / planning#114).
    *
    * The Claude `--permission-prompt-tool` bridge drives it in two steps so a
    * long wait rides over a transient worker blip instead of dying on one
@@ -753,15 +812,37 @@ export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
   // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: see comment above
   agentId === "codex"
     ? new CodexAdapter()
-    : new ClaudeAdapter(new ClaudeProcess());
+    : // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: same construction switch
+      agentId === "opencode"
+      ? new OpencodeAdapter()
+      : // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 11: same construction switch
+        agentId === "grok"
+        ? new GrokAdapter()
+        : new ClaudeAdapter(new ClaudeProcess());
 
 // Only auto-start when run directly (not when imported for testing)
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const workspaceDir = process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR;
+
+  // planning#421 — resolved HERE, before anything is built, because this block is
+  // the one place that knows this process is a real session-worker container:
+  // an in-process test worker never runs it and so is never subject to the
+  // requirement. A container with no token cannot authenticate its orchestrator,
+  // so it exits instead of serving (the exit is the whole fix; the guard's
+  // remote-caller denial is the second layer).
+  let workerToken: string;
+  try {
+    workerToken = requireWorkerToken(process.env);
+  } catch (err) {
+    console.error(`[session-worker] refusing to start: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
   const worker = new SessionWorker({
     agentFactory: createWorkerAgent,
     port: Number(process.env.WORKER_PORT) || 9100,
     workspaceDir,
+    workerToken,
   });
 
   // docs/248 — honor the repo's `.nvmrc` / `engines.node`. Started here rather

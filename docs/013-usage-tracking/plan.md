@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-201
+issue: planning#203
 description: Per-turn API cost/duration/token tracking; stores the per-turn delta of the CLI's cumulative total_cost_usd.
 ---
 

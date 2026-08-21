@@ -41,10 +41,6 @@ export function CommentCard({
     [comment.id],
   );
 
-  const isAi = comment.source === "ai";
-  const borderColor = isAi ? "border-l-purple-400" : "border-l-blue-400";
-  const bgColor = isAi ? "bg-purple-950/30" : "bg-blue-950/30";
-
   if (editing) {
     return (
       <CommentInput
@@ -60,14 +56,9 @@ export function CommentCard({
   }
 
   return (
-    <div className={`mt-2 mb-3 ml-4 border-l-2 ${borderColor} ${bgColor} rounded-r-lg p-3 group/comment`}>
+    <div className="mt-2 mb-3 ml-4 border-l-2 border-l-blue-400 bg-blue-950/30 rounded-r-lg p-3 group/comment">
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
-          {isAi && (
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1 block">
-              AI
-            </span>
-          )}
           {showQuote && comment.quotedText && (
             <blockquote className="mb-2 border-l-2 border-(--color-border-secondary) pl-2 text-xs text-(--color-text-secondary) italic line-clamp-3">
               {comment.quotedText}

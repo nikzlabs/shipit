@@ -50,7 +50,7 @@ export interface InFlightTurnInfo {
   /** The run token the worker recorded for this spawn (absent on a legacy worker). */
   runToken?: string;
   /**
-   * SHI-264 — the durable DELIVERY id the worker recorded for this turn, when it
+   * planning#266 — the durable DELIVERY id the worker recorded for this turn, when it
    * was dispatched on behalf of a server-side delivery (a notify-on-merge wake).
    * Absent for an ordinary user turn and on a legacy worker.
    */
@@ -75,22 +75,42 @@ export async function adoptInFlightTurn(
 ): Promise<void> {
   const sessionId = runner.sessionId;
 
+  // docs/260 §5 — recover the surviving process's credential identity before
+  // any of its events arrive: the adopted turn skips env-prep entirely, so
+  // without this its refusals, rate-limit events, and token write-back would
+  // have no account to attribute to. The session's credential-subtree marker
+  // is authoritative for a live process (an account change retires the
+  // process before reprovisioning, so they cannot diverge).
+  if (runner.residentRoute === undefined) {
+    const recovered = deps.recoverResidentRoute?.(sessionId, info.agentId);
+    if (recovered) {
+      runner.residentRoute = recovered;
+      console.log(
+        `[turn-adoption:${sessionId}] recovered resident route ${recovered.kind}:${recovered.id} from the account marker`,
+      );
+    }
+  }
+
   // Queue drain re-entry. The in-memory queue died with the previous process,
   // so this is normally a no-op — but a message enqueued WHILE the adopted turn
   // runs must still drain when it ends, exactly as it would on any other turn.
   // `tryDrain` has already cleared `running` by the time this fires, so it
   // starts a real turn.
   //
-  // SHI-259 — this used to rebuild `AgentDispatchOptions` by hand (text +
+  // planning#261 — this used to rebuild `AgentDispatchOptions` by hand (text +
   // activity + images + files + uploads + permissionMode), dropping `execution`,
   // `systemTurn`, `postTurn`, and `onTurnComplete`. A notify-on-merge wake-turn
   // queued behind an ADOPTED turn therefore ran as an ordinary turn and never
-  // signalled completion — the exact failure SHI-255 had just fixed for the
+  // signalled completion — the exact failure planning#257 had just fixed for the
   // other three drains, reachable again through this path. It now routes through
   // the shared `startQueuedMessage`, and (docs/240) `dispatch` /
   // `runDispatchedTurn` take a branded `PreparedDispatch`, so the hand-rolled
   // version does not compile any more.
   const drainNext = async (): Promise<void> => {
+    // planning#338 — a rebase flow holds the session; starting a queued turn would
+    // displace its agent slot mid-rebase. The flow's `finally` releases the
+    // queue when it settles. (An adopted turn itself never sets the flag.)
+    if (runner.systemTurnInProgress) return;
     const next = runner.dequeue();
     if (!next) return;
     runner.emitMessage({ type: "queue_updated", queue: runner.getQueueSnapshot() });
@@ -104,7 +124,7 @@ export async function adoptInFlightTurn(
     });
   };
 
-  // SHI-264 — re-acquire the completion settlement for the delivery this turn
+  // planning#266 — re-acquire the completion settlement for the delivery this turn
   // was dispatched on behalf of.
   //
   // Adoption rebuilds a live turn, but the settlement it started with died with

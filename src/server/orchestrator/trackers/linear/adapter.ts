@@ -33,6 +33,7 @@ import type {
 } from "../../../shared/types.js";
 import { formatIssueReference } from "../../../shared/issue-ref.js";
 import { linearTrackerId } from "../../../shared/tracker-id.js";
+import { parseRetryAfterSeconds, waitPhrase } from "../throttle.js";
 import {
   TrackerPermissionError,
   TrackerResolutionError,
@@ -80,7 +81,7 @@ export function stripLinearUrlSlug(url: string): string {
 export interface LinearTrackerConfig {
   token: string | null;
   /**
-   * docs/248 req 5 — the declared team key (`SHI`), which is also the prefix its
+   * docs/248-declared-issue-trackers req 5 — the declared team key (`SHI`), which is also the prefix its
    * issue keys carry. Null when the declaration was unusable; the tracker then
    * reports unconfigured rather than guessing a team.
    */
@@ -144,7 +145,7 @@ interface LinearIssueNode {
 
 /**
  * `formatRef` renders a Linear issue key in the destination's reference form
- * (docs/248 req 15): `roadmap#SHI-304` when the tracker was declared under a
+ * (docs/248-declared-issue-trackers req 15): `planning#306` when the tracker was declared under a
  * name, the bare `SHI-304` otherwise. Threaded in rather than applied at the
  * call sites so every identifier this adapter produces — including a sub-issue's
  * `parentIdentifier` — goes through the one formatter.
@@ -238,6 +239,35 @@ const ISSUE_FIELDS_WITH_STATES = `
   team { key states(first: 100) { nodes { id name type position color } } }
 `;
 
+/** A GraphQL error entry, with the `extensions.code` Linear puts its kind in. */
+interface LinearGraphqlError {
+  message: string;
+  extensions?: { code?: string | null } | null;
+}
+
+/** Linear's throttle marker — `RATELIMITED` in a GraphQL error's `extensions`. */
+function isRateLimitedError(err: LinearGraphqlError): boolean {
+  return (err.extensions?.code ?? "").toUpperCase() === "RATELIMITED";
+}
+
+/** The same check against an unparsed error body (a non-2xx GraphQL response). */
+function isLinearRateLimited(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text) as { errors?: LinearGraphqlError[] };
+    return (parsed.errors ?? []).some(isRateLimitedError);
+  } catch {
+    return false;
+  }
+}
+
+/** docs/247 — a throttle named as a throttle, with the wait when Linear said. */
+function rateLimitMessage(status: number, retryAfterSeconds: number | null): string {
+  return (
+    `Linear is rate-limiting requests (${status}) — not an auth or access failure, so re-connecting the ` +
+    `API key or checking the declared team will not help. Wait ${waitPhrase(retryAfterSeconds)} and retry.`
+  );
+}
+
 /** Run a GraphQL query against Linear and return the typed `data` payload. */
 async function linearGraphql<T>(
   token: string,
@@ -258,14 +288,38 @@ async function linearGraphql<T>(
   } catch (err) {
     throw new Error(`Linear request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
+  // Throttle before auth, for the same reason GitHub's adapter does (docs/247):
+  // a rate limit is not an auth failure, and telling someone to re-connect a
+  // working credential sends them to fix something that isn't broken. Linear
+  // does NOT share GitHub's ambiguity — nothing here turns a throttle into the
+  // access message below — so this only replaces a bare "Linear API returned
+  // <status>" with something the caller can act on.
+  if (res.status === 429) {
+    throw new Error(rateLimitMessage(res.status, parseRetryAfterSeconds(res)));
+  }
   if (res.status === 401 || res.status === 403) {
     throw new Error("Linear rejected the API token (401/403). Re-connect Linear with a valid API key.");
   }
+  // A throttle does not necessarily arrive as a 429: Linear's GraphQL API also
+  // reports one in the ERROR BODY of a 400, as `errors[].extensions.code ===
+  // "RATELIMITED"`. So a failed status has to be read before it is turned into
+  // a bare status message. Both shapes are handled because we could not reach
+  // linear.app to confirm which one a given deployment sees.
   if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    if (isLinearRateLimited(text)) {
+      throw new Error(rateLimitMessage(res.status, parseRetryAfterSeconds(res)));
+    }
     throw new Error(`Linear API returned ${res.status}`);
   }
-  const body = (await res.json()) as { data?: T; errors?: { message: string }[] };
+  const body = (await res.json()) as { data?: T; errors?: LinearGraphqlError[] };
   if (body.errors && body.errors.length > 0) {
+    // Same code can ride on a 200 — GraphQL is free to report an error with an
+    // OK status — so the throttle check applies here too, ahead of the generic
+    // error text.
+    if (body.errors.some(isRateLimitedError)) {
+      throw new Error(rateLimitMessage(res.status, parseRetryAfterSeconds(res)));
+    }
     throw new Error(`Linear GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
   }
   if (!body.data) {
@@ -297,7 +351,7 @@ export class LinearTracker implements Tracker {
   readonly label: string;
 
   private token: string | null;
-  /** The declared team key (docs/248 req 5), upper-cased. */
+  /** The declared team key (docs/248-declared-issue-trackers req 5), upper-cased. */
   private teamKey: string | null;
   /** The declared `name` this tracker is addressed by, when it has one. */
   private refName: string | undefined;
@@ -348,7 +402,7 @@ export class LinearTracker implements Tracker {
    * Resolve the declared team **key** to Linear's internal team id.
    *
    * The declaration carries the key because that is what a human writes and what
-   * a `SHI-304` reference is matched against (req 5); Linear's own queries want
+   * a `planning#306` reference is matched against (req 5); Linear's own queries want
    * the UUID. A key the credential's workspace doesn't expose fails closed with
    * a message naming both possibilities, the same way GitHub's access error does
    * — the workspace comes from the credential (req 23), so "no such team" and
@@ -483,7 +537,7 @@ export class LinearTracker implements Tracker {
   /**
    * Resolve a key (`SHI-28`) or UUID to the issue's UUID — mutations want it.
    *
-   * docs/248 reqs 11/17 — Linear's `issue(id:)` lookup is **workspace-global**,
+   * docs/248-declared-issue-trackers reqs 11/17 — Linear's `issue(id:)` lookup is **workspace-global**,
    * not team-scoped, so an id belonging to another team resolves happily. That
    * would let an operation which named *this* tracker act on a destination the
    * repository may not declare at all: exactly the wrong-target substitution this
@@ -534,7 +588,7 @@ export class LinearTracker implements Tracker {
     };
     // Resolve label names → ids and the priority value → Linear's numeric field
     // BEFORE the mutation, so an unknown label/priority fails cleanly with the
-    // candidate list and never half-creates the issue (SHI-92).
+    // candidate list and never half-creates the issue (planning#94).
     if (input.labels && input.labels.length > 0) {
       createInput.labelIds = await this.resolveLabelIds(input.labels);
     }
@@ -542,7 +596,7 @@ export class LinearTracker implements Tracker {
       createInput.priority = resolveLinearPriority(input.priority);
     }
     // Resolve the parent pointer (key/UUID) → the parent's UUID, which Linear's
-    // `parentId` wants (SHI-206). A bad pointer throws before the create runs.
+    // `parentId` wants (planning#208). A bad pointer throws before the create runs.
     if (input.parent !== undefined) {
       createInput.parentId = await this.resolveUuid(input.parent);
     }
@@ -585,6 +639,82 @@ export class LinearTracker implements Tracker {
       throw new Error("Linear rejected the label create");
     }
     return { id: label.id, name: label.name, ...(label.color ? { color: label.color } : {}) };
+  }
+
+  async findLabel(name: string): Promise<(IssueLabel & { id: string; description?: string }) | null> {
+    if (!this.token) {
+      throw new Error("Linear is not configured (missing token)");
+    }
+    // The same workspace-wide `issueLabels` set `listLabels`/`resolveLabelIds`
+    // read, filtered here in JS so "already exists" means the same thing in all
+    // three (planning#88). Workspace-wide means a same-named label can exist in
+    // another team, so prefer this tracker's own team, then a workspace-level
+    // label (no team), and leave anything else to `updateLabel`'s team guard.
+    const data = await this.gql<{
+      issueLabels: {
+        nodes: { id: string; name: string; color?: string | null; description?: string | null; team?: { key?: string | null } | null }[];
+      };
+    }>(`query FindIssueLabels { issueLabels(first: 250) { nodes { id name color description team { key } } } }`, {});
+    const needle = name.trim().toLowerCase();
+    const matches = data.issueLabels.nodes.filter((l) => l.name?.toLowerCase() === needle);
+    if (matches.length === 0) return null;
+    const found =
+      matches.find((l) => l.team?.key?.toUpperCase() === this.teamKey) ??
+      matches.find((l) => !l.team) ??
+      matches[0];
+    return {
+      id: found.id,
+      name: found.name,
+      ...(found.color ? { color: found.color } : {}),
+      ...(found.description ? { description: found.description } : {}),
+    };
+  }
+
+  async updateLabel(
+    id: string,
+    patch: { name?: string; color?: string; description?: string },
+  ): Promise<IssueLabel & { id: string; description?: string }> {
+    // Same workspace-global reach as `deleteUnusedLabel`: a label id resolves
+    // across teams, so re-read the label's team and refuse another team's —
+    // here, server-side, where a direct relay POST can't skip it. A
+    // workspace-level label has no team and is left alone (it is reachable by
+    // every team, including the declared one).
+    const owner = await this.gql<{ issueLabel: { team: { key: string } | null } | null }>(
+      `query LabelOwner($id: String!) { issueLabel(id: $id) { team { key } } }`,
+      { id },
+    );
+    if (!owner.issueLabel) throw new Error(`Linear label not found: ${id}`);
+    if (owner.issueLabel.team) this.assertOwnTeam(id, owner.issueLabel.team.key);
+    const input: Record<string, unknown> = {};
+    // Linear wants a `#rrggbb` color; tolerate a bare hex from the caller, the
+    // same normalization `createLabel` applies.
+    if (patch.name !== undefined) input.name = patch.name;
+    if (patch.color !== undefined) input.color = patch.color.startsWith("#") ? patch.color : `#${patch.color}`;
+    if (patch.description !== undefined) input.description = patch.description;
+    const data = await this.gql<{
+      issueLabelUpdate: {
+        success: boolean;
+        issueLabel: { id: string; name: string; color?: string | null; description?: string | null } | null;
+      };
+    }>(
+      `mutation LabelUpdate($id: String!, $input: IssueLabelUpdateInput!) {
+        issueLabelUpdate(id: $id, input: $input) {
+          success
+          issueLabel { id name color description }
+        }
+      }`,
+      { id, input },
+    );
+    const label = data.issueLabelUpdate.issueLabel;
+    if (!data.issueLabelUpdate.success || !label) {
+      throw new Error("Linear rejected the label update");
+    }
+    return {
+      id: label.id,
+      name: label.name,
+      ...(label.color ? { color: label.color } : {}),
+      ...(label.description ? { description: label.description } : {}),
+    };
   }
 
   async deleteUnusedLabel(id: string, name: string): Promise<void> {
@@ -638,7 +768,7 @@ export class LinearTracker implements Tracker {
   }
 
   async deleteComment(commentId: string): Promise<void> {
-    // docs/248 req 17 — a comment id is workspace-global, so this mutation can
+    // docs/248-declared-issue-trackers req 17 — a comment id is workspace-global, so this mutation can
     // reach a comment on ANY team's issue. That matters on the undo path: a
     // recorded write re-resolves through its declared NAME first (req 16), so a
     // `roadmap` re-pointed from SHI to OPS hands the undo an OPS-bound adapter
@@ -738,11 +868,11 @@ export class LinearTracker implements Tracker {
     if (patch.title !== undefined) input.title = patch.title;
     if (patch.description !== undefined) input.description = patch.description;
     // `labelIds` replaces Linear's label set wholesale — the service hands us the
-    // already-merged set (SHI-92). Resolve names → ids first so a bad name aborts
+    // already-merged set (planning#94). Resolve names → ids first so a bad name aborts
     // before the mutation runs.
     if (patch.labels !== undefined) input.labelIds = await this.resolveLabelIds(patch.labels);
     if (patch.priority !== undefined) input.priority = resolveLinearPriority(patch.priority);
-    // Reparent (SHI-206): `null` detaches into a top-level issue; a pointer/key
+    // Reparent (planning#208): `null` detaches into a top-level issue; a pointer/key
     // resolves to the parent's UUID. Resolve before the mutation so a bad pointer
     // aborts cleanly.
     if (patch.parent !== undefined) {
@@ -803,7 +933,7 @@ export class LinearTracker implements Tracker {
    * ambiguous name throws {@link TrackerResolutionError} (`kind: "label"`) with
    * the available label names, mirroring assignee resolution. We deliberately do
    * NOT create a missing label on demand — that would let a typo spawn a stray
-   * label (SHI-92).
+   * label (planning#94).
    */
   private async resolveLabelIds(names: string[]): Promise<string[]> {
     const data = await this.gql<{ issueLabels: { nodes: { id: string; name: string }[] } }>(
@@ -898,7 +1028,7 @@ export function resolveLinearStateId(status: string, states: LinearStateNode[]):
 }
 
 /**
- * Resolve a `--priority` argument to Linear's numeric priority field (SHI-92).
+ * Resolve a `--priority` argument to Linear's numeric priority field (planning#94).
  * Accepts a normalized level (`urgent|high|medium|low|none`) OR a native Linear
  * priority name (`Urgent`/`High`/`Medium`/`Low`/`None`/`No priority`), both
  * case-insensitively. An unmatched value throws {@link TrackerResolutionError}

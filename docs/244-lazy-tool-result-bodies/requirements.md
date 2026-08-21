@@ -16,7 +16,7 @@
    images.
 6. The bound applies to live turns and reconnects as well as history loads and
    session switches.
-7. This complements paging (SHI-266) rather than replacing it: paging avoids
+7. This complements paging (planning#268) rather than replacing it: paging avoids
    transferring untouched history, this reduces the weight of the pages that do
    load.
 8. The transcript itself must look exactly as it does today and must not
@@ -26,7 +26,7 @@
    stored and served at whatever resolution they arrived at. Inline they render
    at reduced *display* size only, and their bytes transfer with the transcript
    rather than waiting for a click, so requirement 1 does not apply to them.
-   This is the accepted position for now, not a permanent one: SHI-300 revisits
+   This is the accepted position for now, not a permanent one: planning#302 revisits
    image handling end to end.
 
 ## Open questions
@@ -39,7 +39,7 @@ None.
   the *transferred* pixels, or describe the inline *render* size? Answer:
   neither — drop the bound. We do not resize images at ingest or when serving,
   at the moment. Recorded in requirement 9, superseding the same-day receipt
-  below, and SHI-300 opened to revisit image handling as a whole. The 256×256
+  below, and planning#302 opened to revisit image handling as a whole. The 256×256
   wording was written on the assumption that downsampling happened somewhere;
   it does not — there is no image processing anywhere in the repo, so no bound
   on transferred pixels was ever achievable without new machinery.
@@ -48,7 +48,7 @@ None.
   with the transcript acceptable? Answer: acceptable — accept the gap, they are
   infrequent anyway. (Raised by the independent requirements review, which found
   that the 96×96 thumbnail loads full-resolution bytes on viewport entry rather
-  than on click, making requirement 9's second clause unreachable. SHI-292.) The
+  than on click, making requirement 9's second clause unreachable. planning#294.) The
   "up to 256×256" qualifier this originally carried is superseded by the
   receipt above.
 - 2026-08-01 — Should the byte bound apply to the live WebSocket path or only

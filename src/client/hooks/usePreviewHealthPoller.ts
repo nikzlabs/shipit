@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: poll external preview server URL until ready with cancellation (external system sync)
 import { useEffect } from "react";
+import { usePreviewStore } from "../stores/preview-store.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
 import type { IframeSlot } from "./useIframePool.js";
 
@@ -52,6 +53,14 @@ function buildSubdomainUrl(
  * path-based fallback (it can't render real apps: absolute asset paths 404
  * without the `/preview/{id}/{port}` prefix). When no subdomain can be built
  * (raw-IP host), returns `null` so PreviewFrame shows the empty-state.
+ *
+ * `path` is the slot's remembered location (`previewPaths` in the preview
+ * store). Creating a slot is what happens after every event that drops an
+ * iframe — LRU eviction, a `PreviewFrame` unmount, a page reload — and
+ * entering at the origin root would silently send the user back to the app's
+ * front page each time. It is sanitized at the store boundary, and resolved
+ * against the origin here so a value that somehow isn't same-origin cannot
+ * point the iframe at another host.
  */
 function computePreviewUrl(
   sessionId: string,
@@ -59,15 +68,39 @@ function computePreviewUrl(
   preview: PreviewStatus,
   apiHost: string,
   apiProtocol: string = window.location.protocol,
+  path?: string | null,
 ): { url: string; containerMode: boolean } | null {
   if (!preview.running || !port) return null;
   const isContainer = preview.url?.startsWith("/preview/") ?? false;
-  if (isContainer) {
-    const subdomain = buildSubdomainUrl(sessionId, port, apiHost, apiProtocol);
-    if (!subdomain) return null;
-    return { url: subdomain, containerMode: true };
+  const base = isContainer
+    ? buildSubdomainUrl(sessionId, port, apiHost, apiProtocol)
+    : `http://localhost:${port}`;
+  if (!base) return null;
+  return { url: withPath(base, path), containerMode: isContainer };
+}
+
+/** Resolve `path` against `base`, keeping the result on `base`'s origin. */
+function withPath(base: string, path?: string | null): string {
+  if (!path) return base;
+  try {
+    const resolved = new URL(path, base);
+    if (resolved.origin !== new URL(base).origin) return base;
+    return resolved.href;
+  } catch {
+    return base;
   }
-  return { url: `http://localhost:${port}`, containerMode: false };
+}
+
+/**
+ * Where a freshly created slot should enter: a live agent-authored destination
+ * for this slot if there is one, otherwise the path the page last reported about
+ * itself. Read from the store at slot-creation time, never through a dep.
+ */
+export function desiredPathFor(slotKey: string, sessionId: string | undefined): string | undefined {
+  const state = usePreviewStore.getState();
+  const intent = state.previewLinkIntent;
+  if (intent?.slotKey === slotKey && intent.sessionId === sessionId) return intent.targetPath;
+  return state.previewPaths[slotKey];
 }
 
 export interface UsePreviewHealthPollerParams {
@@ -88,13 +121,28 @@ export interface UsePreviewHealthPollerParams {
   promoteSlot: (key: string) => void;
   /** Add/update a slot in the iframe pool. */
   setSlot: (key: string, slot: IframeSlot) => void;
+  /** Read a slot from the pool (stable identity — not the reactive `slots`). */
+  getSlot: (key: string) => IframeSlot | undefined;
+  /** Drop a slot whose port changed owner (the pool's one non-LRU drop). */
+  dropSlot: (key: string) => void;
+  /**
+   * The Compose service that currently owns `activePort`, or `undefined`
+   * when none is known. Compared with the owner recorded on a retained slot
+   * (planning#394): a port that moved to a different service must not keep
+   * serving the previous owner's already-loaded document.
+   */
+  activeService: string | undefined;
 }
 
 /**
  * Poll the preview server's health endpoint (container mode) or root URL
  * (local mode) and create an iframe slot once it responds. The hook is the
  * sole driver of new slot creation — if a slot already exists for the active
- * key, it's promoted in the LRU and no polling happens.
+ * key, it's promoted in the LRU and no polling happens. The one exception:
+ * a slot whose port has been taken over by a different service (both owners
+ * known, differing) is dropped and re-polled, so the recreated iframe loads
+ * the new owner's app instead of showing the previous owner's document
+ * (planning#394).
  *
  * Cancellation invariant: only the effect that "owns" a `pollingRef` entry
  * (the one that added it on mount) may remove it. The cleanup function is
@@ -122,14 +170,36 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     pollingRef,
     promoteSlot,
     setSlot,
+    getSlot,
+    dropSlot,
+    activeService,
   } = params;
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // The ref-in-cleanup warning does not apply: `pollingRef` holds a Map owned
+  // by the hook, not a DOM node, so deleting this key at cleanup is correct.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; hook-owned Map, see above
   useEffect(() => {
     if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
 
-    // If slot already exists (previously visited), just promote it
-    if (createdSlotsRef.current.has(activeSlotKey)) {
+    // If slot already exists (previously visited), just promote it — unless
+    // the port has been taken over by a different service since the slot was
+    // created. The key is `${sessionId}:${port}`, so a port that moves to a
+    // new owner reuses the key, and the retained iframe would keep serving
+    // the previous owner's document under the new owner's row (planning#394).
+    // Dropping falls through to the poll below, which re-probes and recreates
+    // the slot with the new owner's app.
+    //
+    // Both owners must be known: `undefined` on either side is a transient
+    // service-list state (or a preview with no service rows at all), and
+    // evicting on it would drop slots during ordinary list updates.
+    const existing = getSlot(activeSlotKey);
+    if (
+      existing?.service !== undefined &&
+      activeService !== undefined &&
+      existing.service !== activeService
+    ) {
+      dropSlot(activeSlotKey);
+    } else if (createdSlotsRef.current.has(activeSlotKey)) {
       promoteSlot(activeSlotKey);
       return;
     }
@@ -180,20 +250,40 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       // fires on cancellation/unmount).
       pollingRef.current.delete(key);
 
-      // Compute the URL and add the slot
-      const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost, apiProtocol);
+      // Compute the URL and add the slot. Read the remembered path here rather
+      // than through a dep so a path reported while we were polling still
+      // counts, and so this effect doesn't re-run on every navigation inside
+      // an already-created slot.
+      //
+      // An agent-authored pointer waiting on this slot wins over the remembered
+      // path (docs/258): it is where the user just asked to go, and the
+      // remembered path is only where the previous page happened to be. Entering
+      // at the destination is also what makes a pointer to a stopped service
+      // work — the slot is created after the boot, already at the right place.
+      const result = computePreviewUrl(
+        sessionId ?? "_",
+        activePort,
+        preview,
+        apiHost,
+        apiProtocol,
+        desiredPathFor(key, sessionId),
+      );
       if (result) {
         createdSlotsRef.current.add(key);
-        setSlot(key, { url: result.url, containerMode: result.containerMode });
+        // The owner recorded at creation is this effect's `activeService`: if
+        // it changes, the effect re-runs and the promote branch above decides
+        // whether a retained slot's recorded owner still matches the port's.
+        setSlot(key, { url: result.url, containerMode: result.containerMode, service: activeService });
         promoteSlot(key);
       }
     };
     void poll();
     return () => {
       state.cancelled = true;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- `pollingRef` holds a hook-owned Map, not a DOM node, so deleting this key at cleanup is correct
       pollingRef.current.delete(key);
     };
-  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, preview, createdSlotsRef, pollingRef]);
+  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, getSlot, dropSlot, activeService, preview, createdSlotsRef, pollingRef]);
 }
 
 // Re-export internal helpers for the consuming component, which also needs

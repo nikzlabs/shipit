@@ -1,6 +1,6 @@
 # Preview System
 
-HTML served through an active Preview receives the [Agent Interface SDK](./agent-interface-sdk.md). It exposes `window.shipit.agent.sendMessage()` plus cooperative visibility state. Use visibility to suspend audio, animation, polling, and timers when hidden; background iframe slots remain mounted.
+HTML served through an active Preview receives the [Agent Interface SDK](./agent-interface-sdk.md). It exposes `window.shipit.agent.sendMessage()` plus cooperative visibility state. Use visibility to suspend audio, animation, polling, and timers when hidden. A preview that is not on screen — a background port, or the whole pane sitting behind another tab — stays **mounted**, so its document, DOM and scroll position survive and returning to it is instant, but it is hidden with `display: none` and the browser stops giving it animation frames. Timers and **audio** keep running, which is what the visibility signal is for.
 
 The preview pane shows a live view of the running application. It updates
 automatically as you edit files.
@@ -164,10 +164,25 @@ install reads — re-runs `agent.install`. This fires for **git operations**
 (`git reset`/`checkout`/`rebase` that pull in a different dependency tree) just
 as it does for direct edits, so resetting the branch to a commit that added a
 dependency recovers the preview automatically instead of leaving it 500'ing on
-an unresolved import. Gated services are torn down while install re-runs and
+an unresolved import. The same applies to the tree rewrites **ShipIt** performs
+on an idle session — a sync/rebase onto the base, a rollback, a post-merge reset
+— which are reported directly instead of through the in-container file watcher.
+Gated services are torn down while install re-runs and
 restarted once it completes — so expect a brief preview blink. That's
 intentional: the dependency tree changed, so the service relaunches against the
 fresh `node_modules`. Reinstalls are throttled to one per 30s.
+
+**When the re-install cannot run, or fails.** An `agent.install` that is not
+content-keyable (a codegen step or a shell script, with no declared
+`install-inputs`) is not re-run after a ShipIt-performed rewrite, and a re-install
+that fails obviously leaves the tree uninstalled. Neither is silent: both post a
+notice in chat, add a `Dependencies:` line to `shipit service list`, and prefix
+your next turn with a `[System]` instruction naming the commands to run — which
+repeats every turn until an install clears it. **Run the install before debugging
+a `Failed to resolve import` as a code fault** — the
+service still reports `running`, and restarting it does not help, because the
+usual compose guard is `[ -d node_modules ] || npm ci` and the directory exists.
+Re-run the install instead.
 
 ## Multi-service
 
@@ -207,6 +222,7 @@ out of the box.
 | `shipit.yaml` or compose file edit | Stack reconciliation (restart services) |
 | `shipit.yaml`/compose file changed by a sync/rebase or rollback | Same reconciliation — services added by the incoming config appear without a session restart |
 | Lockfile/manifest change (edit **or** git reset/checkout/rebase) | Install + restart (30s cooldown) |
+| A ShipIt-performed rewrite where the install can't be re-checked, or its re-run failed | No restart — a `[System]` note and a `Dependencies:` line on `shipit service list` |
 
 ## Browser tools
 

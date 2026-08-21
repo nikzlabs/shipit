@@ -71,7 +71,7 @@ const MAX_FILES_PER_MESSAGE = 10;
  * content so a malicious attached file can't fake a tag and break out of its
  * `<file>` element. Only the literal delimiter token is rewritten; everything
  * else is left byte-for-byte intact. Pairs with the envelope-marker defang in
- * `wrapUntrustedContent` (SHI-98) for the same breakout class one level up.
+ * `wrapUntrustedContent` (planning#100) for the same breakout class one level up.
  */
 function neutralizeFileTag(content: string): string {
   return content.replace(/<(\/?\s*file)\b/gi, "&lt;$1");
@@ -80,7 +80,7 @@ function neutralizeFileTag(content: string): string {
 /**
  * Format file attachments for the agent's prompt context. Each file is a
  * `<file path="…">` element carrying its path/line metadata, and the whole
- * block is wrapped in the untrusted-input provenance envelope (SHI-98 — Gap 4
+ * block is wrapped in the untrusted-input provenance envelope (planning#100 — Gap 4
  * of docs/172) so the agent treats attached file content (uploads and
  * cloned-repo files alike) as DATA, not instructions. See
  * `untrusted-input.ts` for the lens and its (deliberate) limits.

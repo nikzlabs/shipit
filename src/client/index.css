@@ -8,16 +8,37 @@
 @import "./themes/rose.css";
 @import "./themes/claude.css";
 @import "./themes/codex.css";
+@import "./themes/opencode.css";
+@import "./themes/grok.css";
 @import "./themes/warm-light.css";
 @import "./themes/cool-light.css";
 @import "./themes/solarized.css";
 @import "./themes/solarized-light.css";
 @import "./themes/claude-light.css";
 @import "./themes/codex-light.css";
+@import "./themes/opencode-light.css";
+@import "./themes/grok-light.css";
 @import "./themes/high-contrast.css";
 
 /* Class-based dark mode for Tailwind v4 — includes all dark-like themes */
-@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .solarized, .solarized *, .high-contrast, .high-contrast *));
+@custom-variant dark (&:where(.dark, .dark *, .midnight, .midnight *, .forest, .forest *, .rose, .rose *, .claude, .claude *, .codex, .codex *, .opencode, .opencode *, .grok, .grok *, .solarized, .solarized *, .high-contrast, .high-contrast *));
+
+/* App-shell height. The default is the CSS dynamic viewport; `useAppViewportHeight`
+   overwrites it with a measured pixel value on every resize/resume, because an
+   installed PWA returning from an externally-opened window can keep a stale
+   `dvh` — which strands the mobile tab bar below the fold with `overflow: hidden`
+   and no way to scroll back to it. See that hook for the full reasoning. */
+:root {
+  /* `100vh` first so a browser without `dvh` still gets a viewport-sized shell
+     rather than an invalid `height` (which computes to `auto` and lets the
+     document grow past the fold — the very failure this variable exists for). */
+  --app-height: 100vh;
+}
+@supports (height: 100dvh) {
+  :root {
+    --app-height: 100dvh;
+  }
+}
 
 /* ── Shared motion tokens (theme-independent) ── */
 :root {
@@ -45,7 +66,7 @@
    theme's darker override — the chip stayed pale teal-400 on light surfaces.
    Keeping the bright value scoped to the dark-theme classes (which only match a
    dark <html>) makes it win for dark themes and stay out of the light ones. */
-.dark, .midnight, .forest, .rose, .claude, .codex, .solarized, .high-contrast {
+.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .solarized, .high-contrast {
   --color-sandbox: #2dd4bf;
 }
 
@@ -94,7 +115,7 @@
      a near-black base separates less than a dark hue over a near-white one. */
   --repo-band-mix: 7%;
 }
-.dark, .midnight, .forest, .rose, .claude, .codex, .solarized, .high-contrast {
+.dark, .midnight, .forest, .rose, .claude, .codex, .opencode, .grok, .solarized, .high-contrast {
   --repo-band-mix: 10%;
   --repo-color-0: #e09a6a;
   --repo-color-1: #dcb980;
@@ -369,6 +390,85 @@ html, body {
   animation: spin-slow 1s linear infinite;
 }
 
+/* ── Preview empty-state illustration (PreviewSetupInvite.tsx) ──
+   Decorative only: the dashed outlines march slowly to read as "waiting to be
+   filled", and the chat bubble's dots blink to read as a live conversation.
+   Nothing here carries meaning the copy doesn't also state, so the whole set
+   is switched off under `prefers-reduced-motion` at the bottom of this block. */
+@keyframes preview-art-march {
+  to {
+    stroke-dashoffset: -160;
+  }
+}
+
+@keyframes preview-art-drift {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes preview-art-pulse {
+  0%, 60%, 100% {
+    opacity: 0.25;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+@keyframes preview-art-shine {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.preview-art-dash {
+  animation: preview-art-march 24s linear infinite;
+}
+
+.preview-art-float {
+  transform-origin: 80px 60px;
+  animation: preview-art-drift 6s ease-in-out infinite;
+}
+
+.preview-art-blink {
+  animation: preview-art-pulse 2.4s ease-in-out infinite;
+}
+
+.preview-art-blink-2 {
+  animation-delay: 0.25s;
+}
+
+.preview-art-blink-3 {
+  animation-delay: 0.5s;
+}
+
+.preview-art-sparkle {
+  transform-origin: center;
+  animation: preview-art-shine 3.6s ease-in-out infinite;
+}
+
+.preview-art-sparkle-late {
+  animation-delay: 1.2s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-art-dash,
+  .preview-art-float,
+  .preview-art-blink,
+  .preview-art-sparkle {
+    animation: none;
+  }
+}
+
 /* Monaco line highlight when the preview is opened at a specific line
    (e.g. from a `path:line` link in chat). Fades on its own after the
    decoration is cleared. */
@@ -384,6 +484,68 @@ html, body {
 .shipit-preview-line-highlight {
   background-color: rgb(250 204 21 / 0.12);
   animation: preview-line-flash 0.6s ease-out;
+}
+
+/* ── Monaco comment gutter (MonacoCommentWidgets.ts) ──
+   Monaco stamps these classes onto its glyph-margin overlays, which live
+   outside the React tree, so they cannot be styled with Tailwind utilities.
+   `monaco-comment-add-glyph` is the hover affordance that makes the
+   add-a-comment click discoverable; `monaco-comment-glyph` marks a line that
+   already carries a comment. */
+.monaco-comment-add-glyph,
+.monaco-comment-glyph {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+/* readOnly surfaces (agent-review snapshots) suppress the click. */
+.monaco-comment-glyph--static {
+  cursor: default;
+}
+
+.monaco-comment-add-glyph::before {
+  content: "+";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background-color: var(--color-accent);
+  color: var(--color-accent-text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  transition: background-color var(--duration-fast) var(--ease-default);
+}
+
+.monaco-comment-add-glyph:hover::before {
+  background-color: var(--color-accent-hover);
+}
+
+/* Same badge as the `+`, with a dot instead. The badge carries its own
+   contrast pair (accent fill, accent-text dot) rather than relying on the
+   fill reading against the editor background — both surfaces pin Monaco to
+   `vs-dark` regardless of the app theme, so a theme with a dark accent
+   (cool-light) would leave a bare accent-colored dot barely visible. */
+.monaco-comment-glyph::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background-color: var(--color-accent);
+}
+
+.monaco-comment-glyph::after {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background-color: var(--color-accent-text);
 }
 
 /* Resize handle — vertical divider between panels */

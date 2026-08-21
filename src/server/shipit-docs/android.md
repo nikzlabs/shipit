@@ -136,7 +136,7 @@ too slow — fall back to a cloud device farm (below).
 services:
   emulator:
     image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
-    user: androidusr               # REQUIRED — see "images that ship their own user" below
+    user: "1300:1301"              # REQUIRED — androidusr, numeric; see compose.md
     environment:
       - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI on 6080
       - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile

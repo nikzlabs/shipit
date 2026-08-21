@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-269
+issue: planning#271
 description: Updates replace only the orchestrator; running sessions and mid-turn work survive via boot-time re-adoption, guarded by an additive-only wire-contract CI check.
 ---
 
@@ -18,6 +18,49 @@ docs/240 and is kept as the option analysis of record):
   (`cleanupOrphanContainers()` / `cleanupOrphanComposeResources()`), which
   already existed. (Paths in the plan below say `deployment/hetzner/` — the
   deployment dir has since moved to `deployment/vps/`.)
+- **Follow-up (2026-08-10): the orchestrator was still killing the containers
+  itself.** §1 removed the `docker rm -f` sweep from `deploy.sh` but not the
+  *second* kill path, inside the orchestrator process:
+  `shutdown-manager.ts`'s `onClose` hook → `containerManager.dispose()` →
+  `destroyAll()` (wired that way by docs/051, before this feature existed). So
+  every update destroyed every session container ~9 s *before* Compose even
+  killed the orchestrator, and the boot-time re-adoption below had nothing left
+  to adopt — it looked healthy because `rediscoverContainers()` and
+  `reattachInFlightTurns()` both ran and both found zero survivors. Two live
+  turns died mid-flight on the 2026-08-10 update, one mid-tool-call.
+  `destroyAll()` is deleted (`dispose()` now only stops the health monitor and
+  drops listeners), and `deploy.sh` no longer runs the blind
+  `docker network prune -f` that deleted 18 live session networks in the same
+  window.
+
+  **The surviving container was only half of it.** A cross-backend review of the
+  first fix caught the rest: `runnerRegistry.disposeAll()` force-disposes every
+  runner, and `ContainerSessionRunner.dispose()` posts `/agent/kill` to the
+  worker — which clears its `turnActive` (`agent-controller.ts` → `endTurn()`).
+  `reattachInFlightTurns()` adopts a turn ONLY while `turnActive === true`, so
+  the CLI died inside a perfectly healthy container, unadoptable, with its
+  transcript tail unpersisted and its post-turn commit unrun (CLAUDE.md's
+  "every terminal path runs the commit" invariant, defeated from outside the
+  turn executor). The claim in this doc that docs/240 makes mid-flight turns
+  survive the swap was therefore true only for a *crash* — docs/240's own
+  incident — and never for the graceful path an `Update Now` actually takes.
+  Shutdown now passes `disposeAll({ preserveAgent: true })`, which spares the
+  `/agent/kill` post and the sub-agent aborts; everything else about disposal is
+  unchanged, and full reset deliberately does not pass it.
+
+  The session's *Compose stack* is deliberately still torn down by the
+  runner's `disposed` handler: `ServiceManager.start()` opens with
+  `killStaleContainers()`, which force-removes every `shipit-parent-session`
+  container before `compose up`, so the next orchestrator rebuilds the stack
+  whether or not it survived — only the agent container is adopted. Guards:
+  `integration_tests/container-lifecycle.test.ts` → *leaves containers running
+  when the app shuts down* (which asserted the exact opposite until this fix,
+  and is why the bug had a green build for a year),
+  `container-session-runner.test.ts` → *dispose({ preserveAgent })*,
+  `shutdown-manager.test.ts`,
+  `session-container.test.ts` → *dispose*. docs/212 asserted the correct
+  behavior as fact and was never checked against the code — that wrong
+  paragraph is corrected in place.
 - **§2 (drain mode) is unnecessary and was not built.** The plan assumed a
   mid-turn agent would lose work across the swap, so updates had to wait for
   turns to finish. docs/240 removed that premise: session containers keep
@@ -62,6 +105,17 @@ docs/240 and is kept as the option analysis of record):
   sidebar's PR / CI indicators. Hence: chat live, every session's status frozen,
   full reload the only cure. The SSE now listens for the same four signals,
   coalesced within 1s so one resume opens one stream rather than three.
+
+  **Later correction — the four signals are not equal.** Window `focus` also
+  fires when focus returns from an iframe to the top-level document, which the
+  preview iframe does on every load, so wiring it straight to "reconnect" gave
+  both channels one forced reconnect per second beside a live preview (the
+  coalesce window set the rate). Both hooks now share `useForegroundSignal`,
+  which suppresses only the *provably* internal case — the preceding `blur` had
+  `document.hasFocus() === true` — and still reconnects on every other `focus`,
+  including the browser window regaining system focus. Sharing one hook is the
+  point: the asymmetry described above is exactly what two hand-rolled listener
+  sets drift back into.
 
   Still open, deliberately: an EventSource that stays `OPEN` over a socket the OS
   killed silently emits no `error`, and there is no SSE heartbeat to detect it —

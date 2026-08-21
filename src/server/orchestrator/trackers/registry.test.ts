@@ -230,3 +230,74 @@ describe("buildTrackerRegistry — destinations() is the resolution context", ()
     expect(registry.destinations().map((d) => d.id)).toEqual(["github", "github:acme/app"]);
   });
 });
+
+/**
+ * docs/262 req 25 — a declared plugin repository is a feedback destination in
+ * this same registry. Declaring the plugin is what grants the channel; what
+ * distinguishes it from a tracker is that it renders no tab and carries
+ * `origin: "plugin"`.
+ */
+describe("buildTrackerRegistry — declared plugin repositories (docs/262 req 25)", () => {
+  const tools = { name: "tools", owner: "acme", repo: "dev-tools", ref: "branch main", commit: "abc123" };
+
+  const withPlugins = (args: {
+    declared?: DeclaredTracker[];
+    pluginRepos: { name: string; owner: string; repo: string; ref?: string; commit?: string }[];
+  }) =>
+    buildTrackerRegistry(store(null), undefined, {
+      token: "gh-token",
+      repo: { owner: "acme", repo: "app" },
+      ...(args.declared ? { declared: args.declared } : {}),
+      pluginRepos: args.pluginRepos,
+    });
+
+  it("is reachable by its declared name but renders no Issues tab", () => {
+    const registry = withPlugins({ declared: [gh("acme/planning", "planning")], pluginRepos: [tools] });
+    // A plugin repository is a dependency, not one of the project's trackers.
+    expect(registry.list().map((t) => t.id)).toEqual(["github", "github:acme/planning"]);
+    expect(registry.destinations().map((d) => d.id)).toEqual([
+      "github",
+      "github:acme/planning",
+      "github:acme/dev-tools",
+    ]);
+    expect(registry.get("github:acme/dev-tools")).toBeDefined();
+    expect(registry.destinationFor("github:acme/dev-tools")).toMatchObject({
+      name: "tools",
+      origin: "plugin",
+      key: "acme/dev-tools",
+    });
+  });
+
+  // The load-bearing case: a repository declared BOTH ways must stay ONE
+  // destination, or `acme/planning#42` becomes ambiguous and the tracker that
+  // already worked stops resolving.
+  it("aliases onto a tracker declaration of the same repository instead of adding a second destination", () => {
+    const registry = withPlugins({
+      declared: [gh("acme/planning", "planning")],
+      pluginRepos: [{ name: "tools", owner: "acme", repo: "planning" }],
+    });
+    expect(registry.destinations().map((d) => d.id)).toEqual(["github", "github:acme/planning"]);
+    const dest = registry.destinationFor("github:acme/planning");
+    expect(dest).toMatchObject({ name: "planning", pluginNames: ["tools"] });
+    // It stays a tracker: it keeps its tab and is not stamped as plugin-origin.
+    expect(dest?.origin).toBeUndefined();
+    expect(registry.list().map((t) => t.id)).toEqual(["github", "github:acme/planning"]);
+  });
+
+  it("aliases across a casing difference between the two declarations", () => {
+    const registry = withPlugins({
+      declared: [gh("Acme/Planning", "planning")],
+      pluginRepos: [{ name: "tools", owner: "acme", repo: "planning" }],
+    });
+    expect(registry.destinations()).toHaveLength(2);
+    expect(registry.destinationFor("github:Acme/Planning")?.pluginNames).toEqual(["tools"]);
+  });
+
+  it("registers each declared plugin repository once, in declaration order", () => {
+    const registry = withPlugins({
+      pluginRepos: [tools, { name: "design", owner: "acme", repo: "design" }],
+    });
+    expect(registry.destinations().map((d) => d.name)).toEqual([undefined, "tools", "design"]);
+    expect(registry.list().map((t) => t.id)).toEqual(["github"]);
+  });
+});

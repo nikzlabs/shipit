@@ -1,5 +1,5 @@
 /**
- * SHI-179 — `restoreSessionWorkspace` re-materializes a LIVE (non-user-archived)
+ * planning#181 — `restoreSessionWorkspace` re-materializes a LIVE (non-user-archived)
  * session's missing workspace from the bare cache, PRESERVING its committed
  * branch, so activating a disk-evicted session boots a container instead of
  * 404-looping on a missing bind-mount source.
@@ -74,7 +74,7 @@ function pushBranch(branch: string, content: string): string {
   return head;
 }
 
-describe("restoreSessionWorkspace (SHI-179)", () => {
+describe("restoreSessionWorkspace (planning#181)", () => {
   it("re-clones a missing evicted workspace and checks out the COMMITTED branch", async () => {
     const branch = "shipit/feature-abc";
     const branchHead = pushBranch(branch, "# committed feature work\n");

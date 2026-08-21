@@ -1,5 +1,5 @@
 /**
- * A dispatched SYSTEM turn must survive a busy session (SHI-254 + SHI-255).
+ * A dispatched SYSTEM turn must survive a busy session (planning#256 + planning#257).
  *
  * Both regressions below are about the same promise, made by docs/196's
  * notify-on-merge and relied on by every other `dispatch({ systemTurn: true,
@@ -12,14 +12,14 @@
  * in the real turn machinery. So these drive a REAL turn through the WS path,
  * with a real runner, a real queue, and the real drain.
  *
- *   • SHI-254 — with live steering on, `trySteerDispatch` consulted only whether
+ *   • planning#256 — with live steering on, `trySteerDispatch` consulted only whether
  *     the RUNNING turn was a system turn, never whether the INCOMING dispatch
  *     was. A wake-turn arriving during an ordinary streaming user turn was
  *     therefore injected into that turn via `sendUserMessage`, and since the
  *     steer path returns before any enqueue, `onTurnComplete` was dropped
  *     entirely — the merge watch could never reach `delivered`.
  *
- *   • SHI-255 — the WS drain re-entered `runAgentWithMessage` with only text,
+ *   • planning#257 — the WS drain re-entered `runAgentWithMessage` with only text,
  *     images, files, and the agent session id, so a queued system turn lost both
  *     `systemTurn` and `onTurnComplete` and ran as an ordinary interactive turn.
  */
@@ -52,7 +52,7 @@ type AnyMsg = any;
 
 const WAKE_TEXT = "Child PR #42 merged: child (child-id).";
 
-describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-255)", () => {
+describe("Integration: a dispatched system turn behind a real turn (planning#256/planning#257)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -115,7 +115,7 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
     return (app as any).runnerRegistry.get(sessionId) as SessionRunnerInterface;
   }
 
-  it("SHI-254: live steering on + a real streaming user turn — a systemTurn dispatch is QUEUED, not steered, and its onTurnComplete survives to fire", async () => {
+  it("planning#256: live steering on + a real streaming user turn — a systemTurn dispatch is QUEUED, not steered, and its onTurnComplete survives to fire", async () => {
     credentialStore.setLiveSteering(true);
 
     const client = await TestClient.connect(port);
@@ -164,7 +164,7 @@ describe("Integration: a dispatched system turn behind a real turn (SHI-254/SHI-
     client.close();
   });
 
-  it("SHI-255: a wake-turn queued behind a real INTERACTIVE turn runs as a system turn and fires onTurnComplete (no restart)", async () => {
+  it("planning#257: a wake-turn queued behind a real INTERACTIVE turn runs as a system turn and fires onTurnComplete (no restart)", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 

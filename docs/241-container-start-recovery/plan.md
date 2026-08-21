@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-271
+issue: planning#273
 title: Container-start recovery — a session that fails to start recovers itself
 description: Retry container creation before tearing down the turn, stop the missing-container reconciler from killing in-flight creations, and never dial the placeholder worker URL.
 ---
@@ -68,7 +68,7 @@ user experiences a slightly slower start, not a failure.
 A retry destroys leftovers first, so the next attempt starts clean. Deterministic
 causes are not retried — retrying only delays an error the user must act on:
 
-- `Session workspace is missing` (SHI-179): the clone could not be restored.
+- `Session workspace is missing` (planning#181): the clone could not be restored.
 - `SESSION_EGRESS_SIDECAR_IMAGE is not set`: deployment misconfiguration.
 
 The loop also bails if the runner was disposed mid-attempt (archive, full reset,

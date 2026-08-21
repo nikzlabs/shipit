@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-307
+issue: planning#309
 title: A sub-agent consult survives an orchestrator restart
 description: Boot reconcile that finishes consult cards stranded `pending` when the orchestrator died mid-run, so the card stops claiming to be in flight.
 ---
@@ -106,15 +106,41 @@ it — but do not mistake the ordering for the guarantee.
 
 Pinned by three tests that fail in different directions:
 `consult-card-reconcile.test.ts` → "survives an adopted turn's
-replaceInProgress"; `chat-history.test.ts` → "without finalize, an in-progress
-card is still deleted", which documents what `finalize` is for by showing the
-loss; and the integration test's "boot leaves the card able to survive an adopted
-turn's row rebuild", which asserts it through a real `buildApp`.
+replaceInProgress"; `chat-history.test.ts` → "survives the next
+replaceInProgress even when the patch omits finalize"; and the integration
+test's "boot leaves the card able to survive an adopted turn's row rebuild",
+which asserts it through a real `buildApp`.
+
+#### Superseded by planning#402 — the delete is gone, `finalize` is not
+
+Everything above described the mechanism correctly **as of this doc**, and the
+premise it rests on — `replaceInProgress` deleting every `in_progress=1` row,
+card included — is no longer true. planning#402 moved that guarantee into the
+storage layer after a live incident unrelated to restart: a foreground consult
+finished successfully mid-turn, an auto-fix turn preempted that turn 330 ms
+later, and the delete took the 16,529-character result with it. `finalize` only
+ever covered the restart path, so nothing protected this one.
+
+`replaceInProgress` now finalizes in place — rather than deleting — any
+`in_progress=1` consult row the incoming rebuild does not carry. The invariant
+it enforces: **no delete of turn scratch takes a row carrying a sub-agent
+consult card**. So a reconciled card survives the adoption whether or not
+`finalize` was passed, and the second-order claim above ("that is the
+protection") is now historical.
+
+What does **not** change, and is the reason this section stays rather than being
+rewritten away: the sweep is still **boot-only**, for the reason requirement 6
+gives — a periodic timer or per-activation hook would put genuinely in-flight
+consults in scope and cancel them out from under their callers. The chokepoint
+makes the live path durable so the sweep has less to clean up; it does not give
+the sweep a new place to run. `finalize` is still what the reconcile should
+pass, and ordering it before `reattachInFlightTurns` is still right — a
+reconciled card should not spend a turn's worth of rebuilds looking pending.
 
 ### Where the explanation lives: `statusDetail`, not `outputMarkdown`
 
 `outputMarkdown` is the sub-agent's verbatim words. It is what
-`shipit agent result` prints on **stdout**, and SHI-245 guarantees it is the same
+`shipit agent result` prints on **stdout**, and planning#247 guarantees it is the same
 artifact the user reads. Writing ShipIt's apology there would hand a calling
 agent our prose in the consultant's voice — the guarantee runs the other way.
 
@@ -159,5 +185,5 @@ so it is covered explicitly in `shipit.test.ts` from both the one-shot and the
 Recover the lost output. Doing so would mean a durable worker-side record of
 each run plus an orchestrator re-attach after restart — and would still need
 this sweep underneath it, for the cases where the container died too. Scoped out
-deliberately; SHI-307's other harm ("the work was done and thrown away") remains
+deliberately; planning#309's other harm ("the work was done and thrown away") remains
 true, and re-running the consult is the answer.

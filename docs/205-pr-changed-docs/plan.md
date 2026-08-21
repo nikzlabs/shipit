@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-140
+issue: planning#142
 description: A collapsible chip strip on the PR card listing the docs and config files changed across the whole PR, each opening the file inline — no Docs-page detour.
 ---
 

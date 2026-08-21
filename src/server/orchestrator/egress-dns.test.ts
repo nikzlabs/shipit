@@ -1,5 +1,5 @@
 /**
- * Tests for the Tier B controlled-resolver config (docs/172 Gap 1, SHI-90).
+ * Tests for the Tier B controlled-resolver config (docs/172 Gap 1, planning#92).
  */
 
 import { describe, it, expect } from "vitest";
@@ -47,6 +47,16 @@ describe("buildDnsmasqConfig", () => {
     expect(cfg).toContain("server=/orch.internal/127.0.0.11");
     // internal domain must not be pinned to the firewall set
     expect(cfg).not.toContain("ipset=/orch.internal/");
+  });
+
+  it("routes repository service discovery as unqualified names without domain injection", () => {
+    const cfg = buildDnsmasqConfig({
+      ...base,
+      internalDomains: ["orch.internal"],
+      unqualifiedInternalNames: true,
+    });
+    expect(cfg).toContain("server=//127.0.0.11");
+    expect(cfg).not.toContain("server=/com/");
   });
 
   it("supports multiple upstreams per domain", () => {

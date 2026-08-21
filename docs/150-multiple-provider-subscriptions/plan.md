@@ -1,9 +1,58 @@
 ---
 description: Allow multiple subscription accounts for the same agent provider and automatically fail over when the active subscription is exhausted.
-issue: https://linear.app/shipit-ai/issue/SHI-56
+issue: planning#58
 ---
 
 # 150 — Multiple provider subscriptions and quota failover
+
+> **The type this document is written in no longer exists.** docs/252 replaced
+> `ProviderAccount` with `CredentialRoute` — keyed by `(serviceId, billingMode)`
+> rather than by `provider: AgentId` — and planning#342 deleted the projection
+> that had kept both shapes alive. Read every `ProviderAccount` below as the
+> `via: "account"` rows of a service's `sub` mode, and every `provider: AgentId`
+> key on the router as a `serviceId` (`claude` → `anthropic`, `codex` →
+> `openai`). The **behaviour** this document describes — the fallback order,
+> the cutoffs, benching, failover, req 12's refusal to cross into metered
+> billing — is unchanged and still lives in `provider-account-manager.ts`.
+> `docs/252-custom-models/plan.md` → *Retiring the `ProviderAccount` projection*
+> has the mapping.
+
+## Reauthentication replaces credential-owned quota state (2026-08-10)
+
+A successful account-scoped sign-in keeps the stable route row, its label,
+priority, selection settings, and session pins. It does not keep state learned
+from the credential that the sign-in replaced. Before the row returns to
+`ready`, the auth-completion path clears its persisted hard-exhaustion stamp
+and invalidates its event snapshot, usage-API snapshot, refresh lockout, and
+in-flight quota generation. The post-auth seed then targets that account only.
+This ordering prevents a healthy replacement credential from inheriting the
+old credential's bench or 100% cached quota while preserving normal hard
+exhaustion during turns.
+
+## Fresh quota supersedes an older hard-exhaustion bench (2026-08-10)
+
+A hard-exhaustion observation persists both its reset deadline and its
+observation time. Account selection and pinned-session preflight reconcile that
+stamp against the same live `SubscriptionLimits` snapshot that supplies the
+quota pill. A snapshot clears the persisted bench only when its `fetchedAt` is
+strictly newer than the hard observation and both the five-hour and weekly
+windows have numeric utilization below 100%. An absent window, a null
+percentage, a snapshot older than the hard observation, or either window still
+at 100% preserves the bench. Existing rows created before the observation time
+field use their persisted `updatedAt` as the migration clock, so they converge
+on the next newer healthy snapshot without reauthentication or database work.
+
+Every hard failure refreshes the observation clock even when its reset estimate
+does not extend the existing deadline. Thus a quota event that was current
+before a same-turn failure cannot undo that failure during retry.
+
+Session route pinning remains unchanged in this incident fix. It is still used
+as turn attribution and as the resident-process credential identity, and the
+preflight already moves a pin when that route is no longer eligible. Selecting
+the best account on every turn would change strict-priority and peer-balancing
+behavior for healthy pinned sessions and would cause more resident CLI restarts;
+that is a separate product decision, not required to make quota display and
+routing agree.
 
 ## Every provider-authenticated run (requirement 20)
 
@@ -73,7 +122,7 @@ The product shape should be:
 The human-stated requirements for this feature live in
 [`requirements.md`](./requirements.md) and are the source of truth; this doc is
 design. Open questions in that file block implementation until the user answers
-them (see `/shipit-docs/spec-discipline.md`).
+them (see CLAUDE.md › *Every new feature is under requirements discipline*).
 
 The original requirement was automatic failover among multiple authenticated
 subscriptions. A follow-up user requirement made the policy explicit:
@@ -296,7 +345,7 @@ failure (`routeFromSelection`), so no preflight turns that into a clean refusal
 for an already-pinned session.
 
 **The same removal on the sign-out path
-([SHI-283](https://linear.app/shipit-ai/issue/SHI-283)):** provider-wide sign-out
+(planning#285):** provider-wide sign-out
 (`DELETE /api/auth/api-key`, `DELETE /api/codex-auth`) had the same defect at a
 different entry point — `ProviderAccountManager.signOutProvider` erased every
 account's *source* credentials and rows but never the per-session copies, so
@@ -3065,6 +3114,30 @@ rather than `...process.env` — was not adopted: the CLI inherits PATH, proxy
 config, `PLAYWRIGHT_BROWSERS_PATH` and the ShipIt gates from the parent, and
 enumerating that allowlist is a much larger change than the leak it would close.
 
+**`undefined` from the resolver means "no ACCOUNT-scoped home" — never "leave
+HOME alone" (planning#390).** Both adapters read the same resolver, and they
+read it differently: `claude/process.ts` always sets `HOME:
+resolveAgentHome(scopedHome)`, so `undefined` falls through to `agentHome()`,
+while `codex/adapter.ts` set `HOME`/`CODEX_HOME` inside an `if (scopedHome)` and
+otherwise set neither. That reading was wrong, and docs/252 made it load-bearing:
+a redirected service resolves to a reserved/string route, for which
+`resolveLocalAgentHome` answers `undefined` by design — so *every* Codex turn on
+a custom-URL service inherited whatever ambient `HOME` the host process had. In
+the dogfood container that is the image's `ENV HOME=/root`, mode 700 and
+root-owned against a uid-1000 process, and Codex reads its config root from
+`$HOME`: the turn died with `Failed to read config file
+/root/.codex/config.toml: Permission denied` before the model was reached. A
+subscription turn (an `account` route, so a scoped home) worked, and that
+asymmetry is what took the diagnosis a day. Claude was untouched because a
+redirected Claude turn authenticates purely through environment variables and
+never needs a writable config root. The adapter now sets both variables on every
+spawn, which is a no-op in a session container (`HOME == AGENT_HOME ==
+/home/shipit`) and the writable state-dir home in local mode. **The rule this
+leaves behind: a spawn must not depend on an ambient `HOME` it did not set** —
+`orchestrator/agents/codex/home-init.ts` already followed it for its warm-up
+handshake, and the two paths have to agree about the root or the warm-up
+initializes a directory the turn will not read.
+
 **Two local-mode-only consequences, accepted and recorded:**
 
 - Sessions sharing an account share its `.claude` tree. Conversation state is
@@ -3218,4 +3291,14 @@ carries it on `PinnedAccountFailover`, and `failoverNotice` maps it to one of
 three sentences. Selection is untouched — it only ever needed the boolean, and
 the classification is derived from the same live snapshot rather than stored
 anywhere.
+### Landed: temporary reviewer cleanup preserves conversation state (reqs 9, 20)
 
+Temporary reviewer and non-turn credential windows now close through the same
+state-preserving subtree replacement boundary as account switches. Cleanup
+removes OAuth tokens and agent config for both Claude and Codex, but keeps the
+allowlisted `projects`, `sessions`, `archived_sessions`, and `history.jsonl`
+state. This is required when a same-harness reviewer uses another service/model
+route: its cleanup must not delete the parent Codex rollout or Claude project
+conversation that the next primary turn resumes. The helper boundary also
+covers quota failover, sign-out sweeps, failures, and cancellations, so those
+paths cannot reintroduce a whole-subtree deletion.

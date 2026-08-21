@@ -1,8 +1,10 @@
 import type { WsServiceStatus } from "../../../server/shared/types.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { isForeignSession } from "./session-scope.js";
 import type { Handler } from "./types.js";
 
 export const handleServiceStatus: Handler<WsServiceStatus> = (_ctx, data) => {
+  if (isForeignSession(data.sessionId)) return;
   const preview = usePreviewStore.getState();
   preview.updateService({
     name: data.name,
@@ -10,6 +12,7 @@ export const handleServiceStatus: Handler<WsServiceStatus> = (_ctx, data) => {
     port: data.port,
     preview: data.preview,
     error: data.error,
+    ...(data.origin ? { origin: data.origin } : {}),
   });
   // Drive the dev_server startup step from real service state. This is
   // what un-sticks the "Installing dependencies..." overlay for compose-
@@ -26,7 +29,14 @@ export const handleServiceStatus: Handler<WsServiceStatus> = (_ctx, data) => {
       // Clear startup steps shortly after the dev server is up so the
       // overlay yields the surface to the live preview / services panel
       // instead of camping out with a row of green checks.
+      //
+      // Re-checked when it FIRES, not only when it was scheduled: 800ms is long
+      // enough to switch sessions, and this would then clear the incoming
+      // session's install overlay on the strength of the outgoing session's dev
+      // server (review finding). The dispatch-time guard cannot cover a delayed
+      // callback — only the callback can.
       setTimeout(() => {
+        if (isForeignSession(data.sessionId)) return;
         usePreviewStore.getState().clearStartupSteps();
       }, 800);
     } else if (data.status === "error" && devStep.status === "running") {

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-306
+issue: planning#308
 title: Waiting on a sub-agent run
 description: A caller that backgrounded `shipit agent run` can learn when it finished without scripting a sleep/grep loop.
 ---

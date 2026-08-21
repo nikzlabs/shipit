@@ -4,9 +4,15 @@ import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
 import { AgentRegistry, isAllowedAgentEnvKey } from "../shared/agent-registry.js";
-import { RepoGit } from "./repo-git.js";
+import { readInstalledHarnesses } from "../shared/installed-harnesses.js";
+import { listConfiguredCredentials } from "./service-routing.js";
+import { collectServiceCredentialEnv } from "./secret-resolver.js";
+import { RepoGit, type GitRemoteCredential } from "./repo-git.js";
+import type { GitRemoteCredentialResolver } from "../shared/git-remote-credential.js";
+import { gitRemoteCredentialResolver } from "./services/github.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
+import { XaiAuthManager } from "./agents/grok/auth-manager.js";
 import { GitHubAuthManager } from "./github-auth.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
@@ -17,15 +23,19 @@ import { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import { FileReviewStore } from "./review-store.js";
 import { PresentStore } from "./present-store.js";
 import { CredentialStore } from "./credential-store.js";
+import { adoptEnvCredentials } from "./adopt-env-credentials.js";
 import { resolveSecretCipher, type SecretCipher } from "./secret-cipher.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
-import { initGlobalGitConfig } from "./git-config.js";
+import { initGlobalGitConfig, pinGitMessageLocale } from "./git-config.js";
+import { configureLfsRemoteCredentialResolver } from "./git-lfs.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import type { AgentId, AgentEvent, AgentProcess, RuntimeMode } from "../shared/types.js";
 import type { AgentHomeResolver } from "../shared/agent-home.js";
 import type { LocalAgentFactory } from "./local-agent-home.js";
+import type { GenerateText } from "./non-turn-model.js";
+import { recordNonTurnUsage, type NonTurnTelemetry } from "./services/non-turn-work.js";
 
 /**
  * Runtime mode for the orchestrator. Selected via the `RUNTIME_MODE` env var.
@@ -112,8 +122,14 @@ export interface AppDeps {
   /**
    * Factory for creating RepoGit instances (bare cache and clone ops).
    * Defaults to `(dir) => new RepoGit(dir)`.
+   *
+   * The optional `credential` overrides the orchestrator's global git
+   * credential helper for this instance only — a plugin repository needs its
+   * OWN credential, not the host PAT the global helper echoes (docs/262 req 10,
+   * `plugin-fetch.ts`). A fake may ignore it; only the plugin fetch path passes
+   * one.
    */
-  createRepoGit?: (repoDir: string) => RepoGit;
+  createRepoGit?: (repoDir: string, credential?: GitRemoteCredential) => RepoGit;
   /** Session manager instance. Defaults to `new SessionManager()`. */
   sessionManager?: SessionManager;
   /** Auth manager instance. Defaults to `new AuthManager()`. */
@@ -124,6 +140,12 @@ export interface AppDeps {
    * `codex login --device-auth`. See feature 119.
    */
   codexAuthManager?: CodexAuthManager;
+  /**
+   * xAI (SuperGrok subscription) auth manager. Defaults to
+   * `new XaiAuthManager()`. Tests can inject a stub that doesn't spawn
+   * `grok login --device-auth`. See planning#435.
+   */
+  xaiAuthManager?: XaiAuthManager;
   /** GitHub auth manager instance. Defaults to `new GitHubAuthManager()`. */
   githubAuthManager?: GitHubAuthManager;
   /** Chat history manager instance. Defaults to `new ChatHistoryManager()`. */
@@ -163,7 +185,7 @@ export interface AppDeps {
    * Spawns a short-lived Claude process, collects text output, and returns it.
    * Inject a stub in tests.
    */
-  generateText?: (prompt: string, cwd: string) => Promise<string>;
+  generateText?: GenerateText;
   /**
    * Unified credential store for git identity, GitHub token, agent API keys.
    * Defaults to `new CredentialStore(credentialsDir)`.
@@ -247,7 +269,7 @@ export interface ManagerSet {
    */
   localAgentFactory: LocalAgentFactory | undefined;
   createGitManager: (dir: string) => GitManager;
-  createRepoGit: (dir: string) => RepoGit;
+  createRepoGit: (dir: string, credential?: GitRemoteCredential) => RepoGit;
   databaseManager: DatabaseManager;
   sessionManager: SessionManager;
   repoStore: RepoStore;
@@ -255,11 +277,12 @@ export interface ManagerSet {
   usageManager: UsageManager;
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;
+  xaiAuthManager: XaiAuthManager;
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
   githubAuthManager: GitHubAuthManager;
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: GenerateText;
   isTestMode: boolean;
   /** Resolved runtime mode (containerized vs local). See {@link RuntimeMode}. */
   runtimeMode: RuntimeMode;
@@ -267,6 +290,91 @@ export interface ManagerSet {
   reviewStore: FileReviewStore;
   egressAllowlistStore: EgressAllowlistStore;
   presentStore: PresentStore;
+}
+
+/**
+ * The pre-feature text generator: spawn the install's default harness in
+ * process and return what it said.
+ *
+ * Reachable only where an in-process agent exists — `RUNTIME_MODE=local`. In
+ * container production agents live inside session containers, so `agentFactory`
+ * is undefined and this degrades to the empty string, which is the behaviour
+ * every caller has always normalized into its own fallback text.
+ *
+ * **docs/252 phase 7 (planning#343) — it records its own usage row.** This is
+ * also `makeNonTurnGenerateText`'s `fallback`: the path non-turn work takes when
+ * it resolves no model at all. Under local mode that spawns a real CLI, so it is
+ * the second producer of the unattributable volume req 16 sends to the legacy
+ * group, and dropping its telemetry would be the same silent loss the naming
+ * path had. The recording has to live here rather than in the caller, which sees
+ * only a returned string and cannot tell whether a CLI ran.
+ *
+ * Unattributed and **unpriced** by construction: `recordNonTurnUsage` is handed
+ * no target because there is none, so the harness's own dollar figure is
+ * discarded rather than written as a price. Recorded only when the caller named
+ * a session — the post-interrupt commit message names none and has nothing to
+ * attribute to.
+ */
+export function makeInProcessGenerateText(deps: {
+  agentFactory: ((agentId: AgentId) => AgentProcess) | undefined;
+  defaultAgentId: AgentId;
+  usageManager: UsageManager;
+}): GenerateText {
+  const { agentFactory, defaultAgentId, usageManager } = deps;
+  return (prompt, cwd, opts) => {
+    if (!agentFactory) {
+      // No in-process agent available — return empty to degrade gracefully.
+      return Promise.resolve("");
+    }
+    return new Promise<string>((resolve, reject) => {
+      const agent = agentFactory(defaultAgentId);
+      let text = "";
+      let telemetry: NonTurnTelemetry | undefined;
+      agent.on("event", (event: AgentEvent) => {
+        if (event.type === "agent_assistant") {
+          for (const block of event.content) {
+            if (block.type === "text") text += block.text;
+          }
+        }
+        if (event.type === "agent_result") {
+          telemetry = {
+            durationMs: event.durationMs ?? 0,
+            ...(event.cost ? { costUsd: event.cost.totalUsd } : {}),
+            ...(event.tokens
+              ? {
+                  inputTokens: event.tokens.input,
+                  outputTokens: event.tokens.output,
+                  ...(event.tokens.cacheRead !== undefined ? { cacheReadTokens: event.tokens.cacheRead } : {}),
+                  ...(event.tokens.cacheWrite !== undefined ? { cacheCreateTokens: event.tokens.cacheWrite } : {}),
+                }
+              : {}),
+          };
+        }
+      });
+      agent.on("done", (exitCode: number) => {
+        // Ahead of the resolve/reject branch: the tokens were spent either way,
+        // and a run that produced no usable text still consumed them.
+        if (opts?.sessionId && telemetry) {
+          recordNonTurnUsage(
+            { usageManager },
+            {
+              sessionId: opts.sessionId,
+              harnessId: defaultAgentId,
+              purpose: opts.purpose ?? "pr-description",
+              telemetry,
+            },
+          );
+        }
+        if (exitCode === 0 || text.length > 0) {
+          resolve(text);
+        } else {
+          reject(new Error(`Agent process exited with code ${  exitCode}`));
+        }
+      });
+      agent.on("error", (err: Error) => reject(err));
+      agent.run({ prompt, cwd, permissionMode: "auto" });
+    });
+  };
 }
 
 /**
@@ -337,8 +445,24 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const sessionsRoot = path.join(workspaceDir, "sessions");
 
   // ---- Per-session GitManager factory ----
-  const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
-  const createRepoGit = deps.createRepoGit ?? ((dir: string) => new RepoGit(dir));
+  // docs/266-orchestrator-git-trust-boundary E3 (planning#404) — every GitManager this factory builds can mint
+  // its own credential for a REMOTE op, so a git that has dropped to the
+  // session's uid never needs to read the orchestrator's PAT.
+  //
+  // A one-field box rather than a direct reference because `githubAuthManager`
+  // is constructed several hundred lines below this factory, and moving either
+  // one past the other would reorder unrelated boot steps. The box is filled in
+  // the same function, before `buildApp` returns and therefore before any route
+  // or turn can call a GitManager; a remote op that somehow ran first sees
+  // `undefined` and behaves exactly as it did before this existed.
+  const remoteCredentialResolver: { resolve?: GitRemoteCredentialResolver } = {};
+  const createGitManager = deps.createGitManager
+    ?? ((dir: string) => new GitManager(dir, {
+      resolveRemoteCredential: async (remote) =>
+        (await remoteCredentialResolver.resolve?.(remote)) ?? null,
+    }));
+  const createRepoGit = deps.createRepoGit
+    ?? ((dir: string, credential?: GitRemoteCredential) => new RepoGit(dir, credential));
 
   // ---- Database manager (SQLite) ----
   const databaseManager = deps.databaseManager ?? new DatabaseManager(
@@ -388,12 +512,34 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const credentialStore =
     deps.credentialStore ?? new CredentialStore(credentialsDir, secretCipher ?? undefined);
 
+  /**
+   * docs/252 req 20 — turn the deployment's credential variables into ordinary
+   * stored rows, and take a removed one back out of `process.env`.
+   *
+   * Runs here, immediately after the store is built and **before** anything
+   * reads a credential: the agent registry's eligibility, the env seeding
+   * below, and every routing decision all ask either the store or
+   * `process.env`, and both answers change here. Running it later would give
+   * the first readers of this boot a different picture from the rest.
+   */
+  const envAdoption = adoptEnvCredentials(credentialStore);
+  for (const what of ["adopted", "rotated", "suppressed", "alreadyStored"] as const) {
+    const names = envAdoption[what];
+    if (names.length > 0) console.log(`[credentials] environment credentials ${what}: ${names.join(", ")}`);
+  }
+
   // ---- Provider accounts (docs/150 Phase 1) ----
   const providerAccountManager = deps.providerAccountManager ?? new ProviderAccountManager({
     credentialsDir,
     credentialStore,
   });
   providerAccountManager.migrateDefaultAccounts();
+  const duplicateClaudeCredentials = providerAccountManager.quarantineDuplicateClaudeCredentials();
+  for (const ids of duplicateClaudeCredentials) {
+    console.error(
+      `[provider-accounts] quarantined Claude accounts with duplicated OAuth credentials: ${ids.join(", ")}; reconnect each account`,
+    );
+  }
 
   // ---- Auth manager ----
   const authManager = deps.authManager ?? new AuthManager();
@@ -411,14 +557,33 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const codexAuthManager = deps.codexAuthManager ?? new CodexAuthManager();
   console.log("[server] Codex ChatGPT credentials found:", providerAccountManager.hasAnyAuthForProvider("codex"));
 
+  // ---- xAI auth manager (SuperGrok subscription) ----
+  // Wraps `grok login --device-auth` so a user can sign in with their SuperGrok
+  // / X Premium+ plan instead of an XAI_API_KEY. See planning#435 / docs/274.
+  const xaiAuthManager = deps.xaiAuthManager ?? new XaiAuthManager();
+  console.log("[server] xAI subscription credentials found:", providerAccountManager.hasAnyAuthForProvider("grok"));
+
   // ---- Global git config (single source of truth for identity) ----
   // Only initialize if not already configured (tests set this up via createTestCredentialStore).
   if (!process.env.GIT_CONFIG_GLOBAL) {
     initGlobalGitConfig(credentialsDir);
   }
+  // docs/266 / planning#407 — OUTSIDE that gate on purpose. The locale pin is what
+  // keeps `shared/git.ts`'s stderr classifiers matchable, and it is unrelated to
+  // whether an identity config already exists; leaving it inside meant a
+  // deployment that pre-sets `GIT_CONFIG_GLOBAL` got no pin at all (review
+  // finding). Idempotent.
+  pinGitMessageLocale();
 
-  // Load persisted agent env vars into process.env before agent detection
-  const storedEnv = credentialStore.getAllAgentEnv();
+  // Load persisted agent env vars into process.env before agent detection.
+  //
+  // docs/252 phase 2 — the stored service credentials go in the same way, under
+  // their catalogue `storageEnv` names. That is what keeps the existing env
+  // probes (`AgentRegistry.deriveHasRunnableModels`, `reservedRouteFor`) answering the
+  // same way once a key lives in the credential-route store instead of in
+  // `agentEnv`: those read `process.env`, and this is where `process.env` is
+  // seeded. Nothing here overwrites a value the deployment set itself.
+  const storedEnv = { ...credentialStore.getAllAgentEnv(), ...collectServiceCredentialEnv(credentialStore) };
   for (const [key, value] of Object.entries(storedEnv)) {
     if (isAllowedAgentEnvKey(key) && !process.env[key]) {
       process.env[key] = value;
@@ -427,21 +592,43 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Agent registry ----
   const agentRegistry = deps.agentRegistry ?? new AgentRegistry({
+    // docs/252 phase 3 (req 8) — the credential question is now asked per MODEL,
+    // over the credentials this install actually holds. Supplying this is what
+    // switches the registry off the two per-`AgentId` probes below; they survive
+    // as the fallback for a registry with no credential source (a session
+    // worker, a unit test), which is the pre-feature behaviour.
+    listCredentials: () => listConfiguredCredentials(credentialStore),
+    // docs/252 phase 3 — these probes are now translated into an ACCOUNT
+    // credential of the harness's own vendor (`probedCredentialsFor`), so they
+    // must report only account-shaped evidence. `hasAnyAuthForProvider` is the
+    // wrong question here: it also answers true for a bare `ANTHROPIC_API_KEY`
+    // or `OPENAI_API_KEY`, which would translate a metered key into a
+    // subscription that does not exist — offering a "Subscription" row on a
+    // key-only install and failing `auth_required` when it is chosen.
+    //
+    // Nothing is lost by narrowing: an env-delivered key is already a
+    // credential of its own mode through `listConfiguredCredentials`, which
+    // reads the same variables. What is left here is the residue that store
+    // cannot see — a connected account, and the injected auth manager tests and
+    // custom runtimes rely on.
     checkClaudeAuth: () =>
-      providerAccountManager.hasAnyAuthForProvider("claude")
-      // Explicit dependency injection is itself an auth source for tests and
-      // custom runtimes that do not persist provider-account rows. Production
-      // never takes this branch: its AuthManager is built below rather than
-      // supplied through AppDeps. Keeping the fallback at the DI boundary
-      // preserves those fixtures without reintroducing the legacy singleton
-      // gate in either turn-ingress path.
+      providerAccountManager.list("anthropic").some((a) => a.status === "ready")
       || (deps.authManager?.authenticated ?? false),
-    checkCodexAuth: () => providerAccountManager.hasAnyAuthForProvider("codex"),
+    checkCodexAuth: () => providerAccountManager.list("openai").some((a) => a.status === "ready"),
   });
   await agentRegistry.detect();
   const detectedAgents = agentRegistry.list();
+  // docs/252 phase 9 \u2014 say which question was answered. "codex \u2717" means something
+  // different depending on whether this deployment chose not to install it or the
+  // binary is simply absent from a dev checkout's $PATH.
+  const declaredHarnesses = readInstalledHarnesses();
+  console.log(
+    declaredHarnesses
+      ? `[server] Harnesses installed by this deployment: ${declaredHarnesses.join(", ") || "(none)"}`
+      : "[server] No harness install report; falling back to $PATH detection",
+  );
   const installedStr = detectedAgents.map((a) => `${a.binary} ${a.installed ? "\u2713" : "\u2717"}`).join(", ");
-  const authStr = detectedAgents.map((a) => `${a.binary} ${a.authConfigured ? "\u2713" : "\u2717"}`).join(", ");
+  const authStr = detectedAgents.map((a) => `${a.binary} ${a.hasRunnableModels ? "\u2713" : "\u2717"}`).join(", ");
   console.log(`[server] Agent CLIs detected: ${installedStr}`);
   console.log(`[server] Agent auth status: ${authStr}`);
 
@@ -452,12 +639,28 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // children inherit the parent's `agentId`. This value only matters for
   // the seconds between runner construction and the first turn pinning the
   // session \u2014 and for the dogfood-only `generateText` helper.
-  const defaultAgentId: AgentId = deps.defaultAgentId ?? "claude";
+  //
+  // docs/252 phase 9 (req 14) \u2014 still prefer Claude Code, but never name a harness
+  // this deployment did not install: on a Codex-only install the literal "claude"
+  // would seed every fresh runner (and `generateText`) with a CLI that is not
+  // there. The final literal is unreachable in practice \u2014 the installer refuses an
+  // empty selection \u2014 and is kept so the type is satisfied without a throw here.
+  const defaultAgentId: AgentId = deps.defaultAgentId
+    ?? detectedAgents.find((a) => a.id === "claude" && a.installed)?.id
+    ?? detectedAgents.find((a) => a.installed)?.id
+    ?? "claude";
 
   // ---- GitHub auth manager ----
   const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir, credentialStore);
   const hasGitHubToken = githubAuthManager.checkCredentials();
   console.log("[server] GitHub credentials found:", hasGitHubToken);
+  // docs/266-orchestrator-git-trust-boundary E3 — close the loop on the box declared with `createGitManager`.
+  remoteCredentialResolver.resolve = gitRemoteCredentialResolver(githubAuthManager);
+  // planning#426 — the same resolver, for the one remote op that cannot go through
+  // a `GitManager`: `git lfs pull`, which is a raw spawn in `git-lfs.ts`. Without
+  // it a dropped-uid pull on a PRIVATE repo authenticates with nothing and the
+  // session silently keeps its pointer stubs.
+  configureLfsRemoteCredentialResolver(gitRemoteCredentialResolver(githubAuthManager));
   if (hasGitHubToken && !deps.githubAuthManager) {
     // Load user info and configure git credentials in the background
     githubAuthManager.loadUserInfo().catch((err: unknown) => {
@@ -471,7 +674,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- File review store ----
   const reviewStore = new FileReviewStore(databaseManager);
 
-  // ---- Egress allowlist store (docs/172, SHI-90) ----
+  // ---- Egress allowlist store (docs/172, planning#92) ----
   // Durable user allowlist + containment toggle, fed into the resolver/proxy
   // composition and the per-session containment gate at container start.
   const egressAllowlistStore = new EgressAllowlistStore(databaseManager);
@@ -484,34 +687,9 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Text generation (AI-powered features) ----
   // Tests inject a stub. In production, agentFactory is unavailable (agents
-  // live inside session containers), so the default uses agentFactory only
-  // when provided, otherwise returns empty string (feature gracefully degrades).
-  const generateText = deps.generateText ?? ((prompt: string, cwd: string): Promise<string> => {
-    if (!agentFactory) {
-      // No in-process agent available — return empty to degrade gracefully.
-      return Promise.resolve("");
-    }
-    return new Promise((resolve, reject) => {
-      const agent = agentFactory(defaultAgentId);
-      let text = "";
-      agent.on("event", (event: AgentEvent) => {
-        if (event.type === "agent_assistant") {
-          for (const block of event.content) {
-            if (block.type === "text") text += block.text;
-          }
-        }
-      });
-      agent.on("done", (exitCode: number) => {
-        if (exitCode === 0 || text.length > 0) {
-          resolve(text);
-        } else {
-          reject(new Error(`Agent process exited with code ${  exitCode}`));
-        }
-      });
-      agent.on("error", (err: Error) => reject(err));
-      agent.run({ prompt, cwd, permissionMode: "auto" });
-    });
-  });
+  // live inside session containers), so the default degrades to empty string.
+  const generateText: GenerateText = deps.generateText
+    ?? makeInProcessGenerateText({ agentFactory, defaultAgentId, usageManager });
 
   return {
     defaultAgentId,
@@ -532,6 +710,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     usageManager,
     authManager,
     codexAuthManager,
+    xaiAuthManager,
     credentialStore,
     providerAccountManager,
     agentRegistry,
@@ -567,9 +746,11 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
  * session context) ⇒ the process-global `agentHome()`, i.e. today's behavior.
  */
 async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
-  const [{ ClaudeAdapter }, { CodexAdapter }] = await Promise.all([
+  const [{ ClaudeAdapter }, { CodexAdapter }, { OpencodeAdapter }, { GrokAdapter }] = await Promise.all([
     import("../session/agents/claude/adapter.js"),
     import("../session/agents/codex/adapter.js"),
+    import("../session/agents/opencode/adapter.js"),
+    import("../session/agents/grok/adapter.js"),
   ]);
   return (agentId: AgentId, resolveHome?: AgentHomeResolver): AgentProcess => {
     const opts = resolveHome ? { resolveHome } : undefined;
@@ -578,6 +759,10 @@ async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
         return new ClaudeAdapter(undefined, opts);
       case "codex":
         return new CodexAdapter(undefined, opts);
+      case "opencode":
+        return new OpencodeAdapter(opts);
+      case "grok":
+        return new GrokAdapter(opts);
       default: {
         const _exhaustive: never = agentId;
         throw new Error(`No local agent adapter for agentId: ${_exhaustive as string}`);

@@ -460,8 +460,9 @@ describe("metadata-only projection", () => {
   it("fails closed on every remote-URL shape that can carry a credential", () => {
     // `git-utils.ts:stripUrlCredentials` handles ONLY well-formed http(s), by
     // design — these four all survive it untouched, and git accepts every one
-    // as a remote, so `setGitRemote` can persist them. Crossing to another
-    // session is where req 8 binds, so this must be stricter than the helper.
+    // as a remote, so `setGitRemote` can still persist them even now that it
+    // strips the http(s) shape. Crossing to another session is where req 8
+    // binds, so this must be stricter than the helper.
     for (const [raw, expected] of [
       ["https://u:pw@github.com/o/r.git", "https://github.com/o/r.git"],
       ["ssh://git:pw@example.com/o/r.git", "ssh://example.com/o/r.git"],
@@ -491,10 +492,13 @@ describe("metadata-only projection", () => {
   });
 
   it("strips credentials out of a repo URL before showing it to another session", () => {
-    // `setGitRemote` (services/git.ts) persists a user-supplied origin verbatim,
-    // so a session row CAN hold userinfo. Every other reader shows `remoteUrl`
-    // back to that session's OWN user; this one shows it to a DIFFERENT session,
-    // which is the boundary req 8 draws around tokens.
+    // Defense in depth for the http(s) shape: since docs/262 req 19 the write
+    // path strips it (`SessionManager.setRemoteUrl`), so a row written today
+    // never holds userinfo — but a row written by an EARLIER build can until the
+    // boot scrub runs, and the non-http shapes above are stripped by neither.
+    // Every other reader shows `remoteUrl` back to that session's OWN user; this
+    // one shows it to a DIFFERENT session, which is the boundary req 8 draws
+    // around tokens.
     //
     // The fixture deliberately uses generic `u:pw@` rather than a realistic
     // `x-access-token:<pat>@` shape: `stripUrlCredentials` strips ANY http(s)

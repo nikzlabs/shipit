@@ -50,8 +50,10 @@ import { allocateDeadLoopbackPort } from "./container-test-helpers.js";
 
 // generateSessionName forks a real CLI; stub to a no-op (mirrors
 // agent-spawned-session.test.ts).
+// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
+// `{ name: null }` is "naming produced no title", which is what these tests want.
 vi.mock("../session-namer.js", () => ({
-  generateSessionName: vi.fn().mockResolvedValue(null),
+  generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
 
 // ---------------------------------------------------------------------------

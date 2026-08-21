@@ -20,7 +20,7 @@ describe("collectPrCardIssueRefs", () => {
   });
 
   it("lets the strongest intent win when an issue appears in several sources", () => {
-    // SHI-90 is the session origin AND the PR's Closes target → reads as Closes.
+    // planning#92 is the session origin AND the PR's Closes target → reads as Closes.
     const result = collectPrCardIssueRefs({
       prBody: "Closes SHI-90",
       firstUserMessage: "You are working on issue SHI-90: durable allowlist",

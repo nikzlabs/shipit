@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-138
+issue: planning#140
 title: Intercept tracker issue URLs in markdown → open the in-app issue viewer
 description: Linear/GitHub issue links in rendered markdown open ShipIt's inline Issues viewer instead of navigating out, gated on the tracker being connected.
 ---

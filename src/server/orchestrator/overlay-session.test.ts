@@ -18,6 +18,7 @@ import simpleGit from "simple-git";
 import {
   buildOverlaySpecs,
   depDirsForSession,
+  supersededSessionOverlayLayers,
   isPnpmRepo,
   preStampInstallMarker,
   pnpmStoreHash,
@@ -26,6 +27,8 @@ import {
   isOverlayEligible,
   isOverlayEnabled,
   liveOverlayScopeHashes,
+  sortOverlayDepDirs,
+  overlayDepDirsFromMounts,
   overlayPinSegment,
   overlayRuntimeKey,
   resolveOverlayScope,
@@ -36,7 +39,7 @@ import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import type { SessionInfo } from "../shared/types.js";
 
 const ON = { OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv;
-// Default-on (SHI-127): an unset env var is ON; the kill switch is the explicit
+// Default-on (planning#129): an unset env var is ON; the kill switch is the explicit
 // `OVERLAY_DEP_STORE=0`/`false`.
 const OFF = { OVERLAY_DEP_STORE: "0" } as NodeJS.ProcessEnv;
 
@@ -52,7 +55,7 @@ function session(over: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 describe("overlay feature gate + eligibility", () => {
-  it("is on by default; only OVERLAY_DEP_STORE=0/false kills it (SHI-127)", () => {
+  it("is on by default; only OVERLAY_DEP_STORE=0/false kills it (planning#129)", () => {
     // Default-on: an unset flag enables the store.
     expect(isOverlayEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv)).toBe(true);
@@ -82,7 +85,7 @@ describe("overlay feature gate + eligibility", () => {
   });
 });
 
-describe("overlayRuntimeKey (SHI-194 — pinned base digest, not the full image id)", () => {
+describe("overlayRuntimeKey (planning#196 — pinned base digest, not the full image id)", () => {
   it("uses base digest + arch", () => {
     expect(overlayRuntimeKey({ BASE_IMAGE_DIGEST: "sha256:base" } as NodeJS.ProcessEnv))
       .toBe(`sha256:base|${process.arch}`);
@@ -251,8 +254,8 @@ describe("buildOverlaySpecs", () => {
     expect(nm.mountPath).toBe("/workspace/node_modules");
     // No generation resolver → generation 0, the empty cold-start lowerdir.
     expect(nm.lowerdir).toBe(`${MP}/overlay-base/${hash}/g0`);
-    expect(nm.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/upper`);
-    expect(nm.workdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/work`);
+    expect(nm.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g0/upper`);
+    expect(nm.workdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g0/work`);
     expect(nm.volumeName).toBe(overlayVolumeName(sessionId, "node_modules"));
 
     expect(specs[1].mountPath).toBe("/workspace/packages/app/node_modules");
@@ -282,8 +285,9 @@ describe("buildOverlaySpecs", () => {
     });
     expect(withRoot.orchDirs).toEqual({
       lowerdir: `/workspace/overlay-base/${hash}/g0`,
-      upperdir: `/workspace/sessions/${sessionId}/overlay/${hash}/upper`,
-      workdir: `/workspace/sessions/${sessionId}/overlay/${hash}/work`,
+      upperdir: `/workspace/sessions/${sessionId}/overlay/${hash}/g0/upper`,
+      workdir: `/workspace/sessions/${sessionId}/overlay/${hash}/g0/work`,
+      sessionScopeDir: `/workspace/sessions/${sessionId}/overlay/${hash}`,
     });
     const [withoutRoot] = buildOverlaySpecs({
       sessionId, scope, depDirs: ["node_modules"], volumeMountpoint: MP,
@@ -306,6 +310,189 @@ describe("buildOverlaySpecs", () => {
     expect(nm.orchDirs?.lowerdir).toBe(`/workspace/overlay-base/${nmHash}/g4`);
     // The other dep dir's scope has no base yet — cold-start g0.
     expect(vendor.lowerdir).toBe(`${MP}/overlay-base/${vendor.scopeHash}/g0`);
+  });
+
+  // The ops finding of 2026-08-17: the lowerdir was generation-pinned while the
+  // upper/work dirs were keyed on the scope hash alone, so a publish that rotated
+  // the base remounted the OLD upper over a DIFFERENT lower.
+  it("keys the per-session upper/work on the SAME generation the lowerdir pins", () => {
+    const sessionId = "11112222333344445555";
+    const build = (generation: number) => buildOverlaySpecs({
+      sessionId,
+      scope,
+      depDirs: ["node_modules"],
+      volumeMountpoint: MP,
+      stateRoot: "/workspace",
+      generationForScope: () => generation,
+    })[0];
+    const before = build(262);
+    const after = build(265);
+
+    const hash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, "node_modules");
+    expect(before.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g262/upper`);
+    expect(after.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g265/upper`);
+    // The lower moved, so every per-session dir moved with it.
+    expect(after.lowerdir).not.toBe(before.lowerdir);
+    expect(after.upperdir).not.toBe(before.upperdir);
+    expect(after.workdir).not.toBe(before.workdir);
+    expect(after.orchDirs?.upperdir).not.toBe(before.orchDirs?.upperdir);
+    // …but the scope dir is stable, so the reset can find what it supersedes.
+    expect(after.orchDirs?.sessionScopeDir).toBe(before.orchDirs?.sessionScopeDir);
+  });
+});
+
+describe("overlayDepDirsFromMounts (#2426 — adopted containers)", () => {
+  const SID = "f0d898c7-1db5-4914-af35-78911563838b";
+
+  /** The workspace + state mounts every session container carries. */
+  const BASE_MOUNTS = [
+    { Type: "volume", Name: "shipit_workspace", Destination: "/workspace" },
+    { Type: "bind", Source: "/host/uploads", Destination: "/uploads" },
+  ];
+
+  it("reads back exactly what buildOverlaySpecs put on the container", () => {
+    const specs = buildOverlaySpecs({
+      sessionId: SID,
+      scope: { repoUrl: "https://github.com/acme/repo.git", runtimeKey: "img|x64" },
+      depDirs: ["node_modules", "packages/app/node_modules"],
+      volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
+    });
+    // The mount table Docker reports for a container created from those specs —
+    // `container-lifecycle.ts` pushes `{Type: volume, Source: volumeName, Target: mountPath}`.
+    const mounts = [
+      ...BASE_MOUNTS,
+      ...specs.map((s) => ({ Type: "volume", Name: s.volumeName, Destination: s.mountPath })),
+    ];
+
+    expect(overlayDepDirsFromMounts(SID, mounts)).toEqual(
+      specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })),
+    );
+  });
+
+  it("orders the pairs independently of the mount table's order", () => {
+    // The override is generated FROM this list, so its order is part of the
+    // override's bytes and compose recreates a service whenever they change.
+    // Nothing documents `docker inspect`'s `Mounts` as ordered, so two inspects
+    // that merely disagreed would rewrite the override — and recreate every
+    // compose service in the fleet — on each orchestrator restart.
+    const vols = {
+      nm: overlayVolumeName(SID, "node_modules"),
+      dist: overlayVolumeName(SID, "dist"),
+      app: overlayVolumeName(SID, "packages/app/node_modules"),
+    };
+    const mount = (name: string, dest: string) => ({ Type: "volume", Name: name, Destination: dest });
+    const one = [
+      mount(vols.nm, "/workspace/node_modules"),
+      mount(vols.dist, "/workspace/dist"),
+      mount(vols.app, "/workspace/packages/app/node_modules"),
+    ];
+    const other = [one[2], one[0], one[1]];
+
+    expect(overlayDepDirsFromMounts(SID, one)).toEqual(overlayDepDirsFromMounts(SID, other));
+    expect(overlayDepDirsFromMounts(SID, one).map((p) => p.depDir))
+      .toEqual(["dist", "node_modules", "packages/app/node_modules"]);
+  });
+
+  it("agrees with the order the create path records, for the same set", () => {
+    // The two recording sites must agree, or a session alternating between
+    // created and rediscovered rewrites the override on every transition.
+    const specs = buildOverlaySpecs({
+      sessionId: SID,
+      scope: { repoUrl: "https://github.com/acme/repo.git", runtimeKey: "img|x64" },
+      // Declared in an order that is NOT sorted, as a shipit.yaml may well be.
+      depDirs: ["packages/app/node_modules", "node_modules"],
+      volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
+    });
+    const fromCreate = sortOverlayDepDirs(
+      specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })),
+    );
+    const fromMounts = overlayDepDirsFromMounts(
+      SID,
+      specs.map((s) => ({ Type: "volume", Name: s.volumeName, Destination: s.mountPath })),
+    );
+    expect(fromMounts).toEqual(fromCreate);
+  });
+
+  it("returns [] for a container that genuinely has no dep-dir overlay", () => {
+    // Authoritative, not "unknown": the mount table IS what the agent has, so a
+    // pnpm repo / pre-feature container correctly reports no overlay.
+    expect(overlayDepDirsFromMounts(SID, BASE_MOUNTS)).toEqual([]);
+    expect(overlayDepDirsFromMounts(SID, undefined)).toEqual([]);
+  });
+
+  it("ignores the workspace volume, the pnpm store, and another session's volumes", () => {
+    const mounts = [
+      ...BASE_MOUNTS,
+      // The pnpm store lives UNDER /workspace but is not an overlay volume
+      // (`PNPM_STORE_CONTAINER_PATH`); mounting it as a dep dir would hand
+      // compose a bogus `.pnpm-store` overlay.
+      { Type: "bind", Source: "/state/pnpm-store/abc", Destination: "/workspace/.pnpm-store" },
+      // A volume whose name matches another session's overlay set.
+      {
+        Type: "volume",
+        Name: overlayVolumeName("99998888777766665555", "node_modules"),
+        Destination: "/workspace/node_modules",
+      },
+    ];
+    expect(overlayDepDirsFromMounts(SID, mounts)).toEqual([]);
+  });
+
+  it("ignores an overlay volume mounted outside the workspace", () => {
+    // Not a dep dir under the workspace mount, so there is no `<service-target>/<dep-dir>`
+    // for a compose service to nest — the pair would be meaningless.
+    const mounts = [
+      { Type: "volume", Name: overlayVolumeName(SID, "node_modules"), Destination: "/workspace" },
+      { Type: "volume", Name: overlayVolumeName(SID, "vendor"), Destination: "/elsewhere/vendor" },
+    ];
+    expect(overlayDepDirsFromMounts(SID, mounts)).toEqual([]);
+  });
+});
+
+describe("supersededSessionOverlayLayers", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+  function scopeDir(names: string[]): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-gen-"));
+    tmpDirs.push(dir);
+    for (const n of names) fs.mkdirSync(path.join(dir, n), { recursive: true });
+    return dir;
+  }
+
+  it("returns every generation dir except the one about to be mounted", () => {
+    const dir = scopeDir(["g262", "g263", "g265"]);
+    expect(supersededSessionOverlayLayers(dir, 265).sort()).toEqual([
+      path.join(dir, "g262"),
+      path.join(dir, "g263"),
+    ]);
+  });
+
+  it("returns [] when the only generation present is the current one", () => {
+    const dir = scopeDir(["g265"]);
+    expect(supersededSessionOverlayLayers(dir, 265)).toEqual([]);
+  });
+
+  it("returns [] for an absent scope dir (a cold session)", () => {
+    expect(supersededSessionOverlayLayers("/nope/does/not/exist", 0)).toEqual([]);
+  });
+
+  it("ignores anything that is neither a generation dir nor the legacy layout", () => {
+    const dir = scopeDir(["g1", "gfoo", "index"]);
+    fs.writeFileSync(path.join(dir, "g9"), "a file, not a generation dir");
+    expect(supersededSessionOverlayLayers(dir, 2)).toEqual([path.join(dir, "g1")]);
+  });
+
+  // The upgrade case: every session on disk when this ships has the bare
+  // pre-`g<N>` layout. Counting it is what makes the first post-deploy container
+  // create drop the install marker — otherwise the session silently moves to an
+  // empty `g<N>/upper` while the marker still claims its deps are installed.
+  it("counts the legacy generation-agnostic upper/work as superseded", () => {
+    const dir = scopeDir(["upper", "work"]);
+    expect(supersededSessionOverlayLayers(dir, 3).sort()).toEqual([
+      path.join(dir, "upper"),
+      path.join(dir, "work"),
+    ]);
   });
 });
 
@@ -431,7 +618,7 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
   /**
    * A real session layout — the clone at `<sessionDir>/workspace`. docs/246 puts
    * the install marker in the `state/` sibling, resolved from the clone path, and
-   * SHI-286 made a clone that isn't `workspace/` an error rather than a fallback
+   * planning#288 made a clone that isn't `workspace/` an error rather than a fallback
    * into `<clone>/.shipit/`.
    */
   async function gitWorkspace(installCmd = "npm install"): Promise<{ dir: string; head: string }> {

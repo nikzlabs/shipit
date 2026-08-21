@@ -7,7 +7,9 @@ import { getSavedDraftMessage, saveDraftMessage } from "../../../utils/local-sto
  * Per-session draft persistence: remember what the user has typed when they
  * switch to a different session, and recover it when they switch back. Keyed
  * off `focusKey`, which is the session identity from the composer's POV
- * ("new" for the new-session view, or the real session ID otherwise). We detect
+ * (`new:{repo-slug}` for the new-session view — docs/259 req 4 scopes it per
+ * repo so a draft doesn't follow the user across a repo switch — or the real
+ * session ID otherwise). We detect
  * focusKey changes during render — same pattern as the focus logic in the
  * component — so the swap is synchronous and doesn't flicker the previous text
  * into view for one frame. Saves on every keystroke as well (via the effect

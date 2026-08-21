@@ -199,6 +199,41 @@ describe("Integration: mid-turn reattach snapshot", () => {
     back.close();
   });
 
+  /**
+   * planning#246 — the attach's own `GET /history` carries the runner's CURRENT
+   * `backgroundTasks`, read live at request time, so a buffered `background_tasks`
+   * can only ever be older. It matters because the marker is also cleared by
+   * paths that emit no `background_tasks` of their own (a crashed process, a
+   * disposed runner — those announce over SSE instead), which leaves the last
+   * buffered copy still saying "outstanding". Replaying it resurrected a green
+   * sidebar dot on a session with nothing running, and which value won came
+   * down to whether the replay landed before or after the HTTP history it
+   * contradicts.
+   */
+  it("does not replay a background-task message on reattach", async () => {
+    const client = await startTurnWithOneGroup();
+    const sessionId = client.sessionId;
+
+    lastClaude.emit("event", {
+      type: "agent_background_tasks",
+      tasks: [{ id: "bg-1", description: "shipit agent run --agent codex" }],
+    });
+    await settle();
+    // The live viewer does get it — that half is the chat status line.
+    expect(
+      (await drainAll(client)).some((m) => m.type === "background_tasks"),
+    ).toBe(true);
+
+    client.close();
+    await settle();
+
+    const back = await TestClient.connect(port, sessionId);
+    const replayed = await drainAll(back);
+
+    expect(replayed.filter((m) => m.type === "background_tasks")).toEqual([]);
+    back.close();
+  });
+
   it("sends no snapshot when no turn is running", async () => {
     const client = await startTurnWithOneGroup();
     const sessionId = client.sessionId;

@@ -8,7 +8,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { formatBlockquote } from "../utils/format-blockquote.js";
 
 /**
- * SHI-10 — floating "Reply" button shown when the user highlights text inside a
+ * planning#12 — floating "Reply" button shown when the user highlights text inside a
  * chat message bubble. Clicking it appends the selected passage as a markdown
  * blockquote into the chat composer (via `session-store.quoteReplyText`, which
  * MessageInput consumes), so the user can quote-reply to a specific passage

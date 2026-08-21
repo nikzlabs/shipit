@@ -1,3 +1,10 @@
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
+import {
+  credentialHarnessForLogin,
+  loginIntegrationForService,
+  nativeServiceForHarness,
+  serviceForLoginIntegration,
+} from "../shared/catalogue/index.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { Server as HttpServer } from "node:http";
@@ -8,6 +15,8 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { PresentStore } from "./present-store.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
+import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
+import { workerGet } from "./worker-http.js";
 import { isOverlayEnabled } from "./overlay-session.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
@@ -20,15 +29,17 @@ import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
-import { emitResetEligibleSignal } from "./services/pre-turn-reset.js";
+import { announceResetStateOnMerge } from "./services/pre-turn-reset.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
 import type { AutoResolveResult, RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
-import type { AutoFixResult } from "./auto-fix-manager.js";
+import { autoFixResultForOutcome, type AutoFixResult } from "./auto-fix-manager.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { UsageManager } from "./usage.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
-import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
+import { repushAgentToken, repushProviderAccountToken,
+  readSessionAccountMarker,
+} from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
 import type { GitManager } from "../shared/git.js";
 import type { AgentAuthManager, AgentAuthFailedPayload } from "./agent-auth-manager.js";
@@ -39,6 +50,7 @@ import type {
 } from "./agents/claude/auth-diagnostics.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
+import { accountServiceForHarness } from "./provider-account-manager.js";
 import type { LocalAgentFactory } from "./local-agent-home.js";
 import { resolveLocalAgentHome } from "./local-agent-home.js";
 import type { LocalAgentMcpDeps } from "./local-agent-mcp.js";
@@ -50,8 +62,10 @@ import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/t
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
-import { listAgents } from "./services/settings.js";
+import { buildAgentListPayload } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
+import { setEgressDecisionTokenRecovery } from "./egress-decision-auth.js";
+import { dockerEgressDecisionTokenRecovery } from "./egress-proxy-install.js";
 
 // ---- Re-exports for extracted modules ----
 //
@@ -81,6 +95,8 @@ export {
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
+  bareCacheRoot,
+  depCacheRoot,
 } from "./session-dir-factory.js";
 export type { SessionDirDeps } from "./session-dir-factory.js";
 
@@ -89,7 +105,9 @@ export type { WarmPoolDeps } from "./warm-pool-manager.js";
 
 export {
   runRepoMigration,
+  runRemoteCredentialScrub,
   runMcpOAuthStartupRefresh,
+  retireWarmSessions,
   scheduleStartupTasks,
   handleContainerExited,
   setupContainerHealthMonitoring,
@@ -121,7 +139,7 @@ export interface ContainerSetupDeps {
    */
   runtimeMode: RuntimeMode;
   /**
-   * docs/172 (SHI-90) — per-session egress containment + composed allowlist
+   * docs/172 (planning#92) — per-session egress containment + composed allowlist
    * resolver, passed straight into the production `SessionContainerManager`.
    * Optional: a custom-injected container manager (tests) supplies its own.
    */
@@ -184,13 +202,13 @@ export async function setupContainerManager(
           console.log(`[server] Overlay runtime scope pinned to worker image ${workerImageId}`);
         }
       }
-      // SHI-194 — the overlay scope keys on the worker's pinned base-image digest
+      // planning#196 — the overlay scope keys on the worker's pinned base-image digest
       // (`BASE_IMAGE_DIGEST`), not its full image id, so an app-code-only deploy
       // no longer rotates the scope (no churn, post-deploy installs stay warm).
       // Resolve it from the worker image's baked env and publish into the channel
       // both `overlayRuntimeKey()` (orchestrator scope) and `buildEnv` (forwarded
       // to the worker's install-runtime marker) read. Same gating as above: flag
-      // on, operator-set value always wins. A pre-SHI-194 image (no baked digest)
+      // on, operator-set value always wins. A pre-planning#196 image (no baked digest)
       // resolves to nothing → the `SESSION_WORKER_IMAGE_ID` fallback stands.
       if (isOverlayEnabled() && !process.env.BASE_IMAGE_DIGEST) {
         const baseDigest = await containerManager.resolveWorkerBaseDigest();
@@ -234,11 +252,38 @@ export async function setupContainerManager(
         };
       });
       if (rediscovered > 0) console.log(`[server] Rediscovered ${rediscovered} container(s) from previous run`);
+      // planning#371 — this process did not mint the decision-query tokens of the
+      // sidecars that survived the previous one, and a container-facing control
+      // that only works until the orchestrator restarts is the failure this area
+      // has shipped before. The sidecar's own env is the source of truth
+      // (`worker-auth.ts`'s precedent); this seam re-reads it on a miss.
+      setEgressDecisionTokenRecovery(
+        dockerEgressDecisionTokenRecovery(containerManager.getDockerClient()),
+      );
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
     } else {
       throw new Error("Docker is not available (is /var/run/docker.sock mounted?)");
     }
+  }
+
+  // A standby container never survives the process that made it. `bootstrapManagers`
+  // has already retired the warm session rows (`retireWarmSessions`), so on the
+  // production path above the orphan sweep has usually removed these already —
+  // this is what makes the guarantee independent of that. It runs OUTSIDE the
+  // branch on purpose: an injected container manager (tests, and any future
+  // caller supplying its own) skips every sweep in that branch, and "warm
+  // containers die on restart" must not be a property only the production
+  // wiring has. Reaping by label also catches the standby that rediscovery
+  // could not adopt — no IP, no resolvable workspace — which the row-driven
+  // sweeps cannot see at all.
+  //
+  // The session set is passed because the label is create-time and immutable: a
+  // CLAIMED standby's container still carries it, and only the row says the
+  // session is someone's now. Re-read here rather than reusing `activeIds`
+  // above, which the injected-manager path never computes.
+  if (containerManager) {
+    await containerManager.reapStandbyContainers(new Set(sessionManager.allIds()));
   }
 
   // ---- Docker API proxy (optional, for Docker-enabled sessions) ----
@@ -331,10 +376,10 @@ export interface RunnerFactoryDeps {
   /** docs/150 — resolves a cross-provider sub-agent spawn's account. */
   providerAccountManager?: ProviderAccountManager;
   /**
-   * SHI-298 — local mode only. Source of the MCP env a local spawn carries
+   * planning#300 — local mode only. Source of the MCP env a local spawn carries
    * (`applyLocalMcp`), standing in for the worker `PUT /secrets` push that
    * `prepareSessionAgentEnvironment` skips outside container mode. Absent ⇒ the
-   * local runner spawns with no MCP at all, which is the pre-SHI-298 behavior.
+   * local runner spawns with no MCP at all, which is the pre-planning#300 behavior.
    */
   credentialStore?: LocalAgentMcpDeps["credentialStore"];
 }
@@ -498,7 +543,7 @@ async function attemptContainerCreate(
   const { mgr, runner, sessionId } = opts;
   try {
     if (opts.destroyFirst) await mgr.destroy(sessionId);
-    // SHI-179 — fail fast with a clear, terminal message if the workspace clone
+    // planning#181 — fail fast with a clear, terminal message if the workspace clone
     // is missing. The activation path (route-registry `activateSession`)
     // re-materializes an evicted/missing workspace from the bare cache before
     // reaching here, so this only trips when recovery was impossible (no remote,
@@ -599,6 +644,9 @@ export function buildRunnerFactory(
         const homeDeps = {
           sessionManager,
           credentialsDir,
+          // docs/260 — env-prep stamps the turn's selected route on THIS
+          // runner before the spawn resolves its HOME.
+          getTurnRoute: () => runner.residentRoute,
           ...(providerAccountManager ? { providerAccountManager } : {}),
         };
         runner.createAgent = (agentId: AgentId): AgentProcess => {
@@ -607,7 +655,7 @@ export function buildRunnerFactory(
           // failover repoints an already-pinned session under this same runner.
           const agent = localAgentFactory(agentId, () =>
             resolveLocalAgentHome(o.sessionId, agentId, homeDeps));
-          // SHI-298 — and the same reasoning carries MCP. The worker performs
+          // planning#300 — and the same reasoning carries MCP. The worker performs
           // two writes before a spawn (the adapter's `writeMcpConfig`, and the
           // agent-env push that its `$secret:` resolution and the MCP children
           // read); local mode runs neither, so the CLI spawned with no MCP at
@@ -755,12 +803,69 @@ export function buildRunnerFactory(
 
 // ---- Missing-container reconciler ----
 
+/**
+ * How long the worker `/events` stream must have been down before the
+ * reconciler stops trusting the container map and checks reality.
+ *
+ * 90s is comfortably past a container restart, an orchestrator-side blip and
+ * the 45s SSE idle timeout, and short enough that a genuinely dead session is
+ * reported inside a couple of minutes rather than never. It does not bound a
+ * slow image build: a build happens before the runner has a worker URL at all
+ * (`awaitingContainer`), and a healthy worker holds its stream open regardless
+ * of what its container is busy doing.
+ */
+export const WORKER_UNREACHABLE_MS = 90_000;
+
+/** Timeout for the confirming worker `/health` probe. A wedged worker fails fast. */
+const WORKER_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * The container itself is gone — the ordinary case, and the one the old
+ * pre-gap-E loop already handled when the map agreed.
+ */
+const VANISHED_NOTICE =
+  "This session's container is gone — no Docker exit event was received, and Docker reports it is no longer running. "
+  + "The agent's progress up to this point has been preserved. Send a message to start a fresh container.";
+
+/**
+ * The container is up but its worker never answers. Different fact, different
+ * remedy: a fresh message reconnects to the SAME wedged worker, so point the
+ * user at the restart action instead.
+ */
+const WEDGED_NOTICE =
+  "This session's agent container is running but its worker has stopped responding, so the session is not live. "
+  + "The agent's progress up to this point has been preserved. Restart the agent container to recover it.";
+
+/** Does the worker answer `/health` right now? */
+async function probeWorkerHealth(workerUrl: string): Promise<boolean> {
+  try {
+    await workerGet(workerUrl, "/health", { timeoutMs: WORKER_PROBE_TIMEOUT_MS });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Dependencies for the missing-container reconciler. */
 export interface MissingContainerReconcilerDeps {
   containerManager: SessionContainerManager | null;
   runnerRegistry: SessionRunnerRegistry;
   /** Per-session log ring writer. Required — the whole point is to leave a breadcrumb. */
   broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
+  /**
+   * Optional — when present, a runner disposed on the vanished path gets its
+   * in-flight turn flushed to chat history and a visible notice appended,
+   * exactly as `handleContainerExited` does for a Docker `die`. Without it
+   * this path leaves nothing in the transcript and the next turn's
+   * `replaceInProgress` deletes the orphaned rows.
+   */
+  chatHistoryManager?: ChatHistoryManager;
+  /**
+   * Does the worker answer right now? Defaults to a short `/health` GET.
+   * Injectable so tests can exercise the live-container branch without a
+   * socket, and so the probe stays a named seam rather than a hidden call.
+   */
+  workerResponds?: (workerUrl: string) => Promise<boolean>;
   /**
    * Resolves a session's workspace dir + Docker limits, used to re-adopt a
    * live-but-untracked container before force-disposing its runner. Same
@@ -792,6 +897,23 @@ export interface MissingContainerReconcilerDeps {
  * — writing a log-ring entry first so the diagnostic snapshot preserves
  * the reason.
  *
+ * A map entry is NOT proof of life (docs/121 gap E). The map is mutated only
+ * by the Docker event stream and by explicit destroys, so a `die` delivered
+ * while that stream was down leaves an entry claiming `running` forever, and
+ * the pre-gap-E version of this loop skipped exactly those sessions. The
+ * runner's `/events` stream then reconnects on a 10s-capped backoff for the
+ * life of the process while the session renders as alive and any parked turn
+ * never resolves. So a runner whose stream has failed
+ * {@link WORKER_UNREACHABLE_RECONNECT_ATTEMPTS} times in a row gets its
+ * container checked against Docker, and a container Docker says is not
+ * running is treated as the `die` we missed.
+ *
+ * The probe is gated on that attempt count rather than run unconditionally
+ * for two reasons: it costs a Docker inspect per session per tick, and a
+ * healthy session's stream never accumulates attempts at all, so the gate
+ * makes a false positive structurally impossible for any session whose worker
+ * is actually answering.
+ *
  * Skipped runners:
  *  - Already disposed (registry lazily cleans these up).
  *  - Standby (warm-pool containers don't get registered runners until
@@ -800,14 +922,16 @@ export interface MissingContainerReconcilerDeps {
 export function createMissingContainerReconciler(
   deps: MissingContainerReconcilerDeps,
 ): () => Promise<void> {
-  const { containerManager, runnerRegistry, broadcastLog, sessionInfoResolver } = deps;
+  const {
+    containerManager, runnerRegistry, broadcastLog, sessionInfoResolver, chatHistoryManager,
+    workerResponds = probeWorkerHealth,
+  } = deps;
   return async () => {
     if (!containerManager) return;
     for (const sid of runnerRegistry.ids()) {
       const runner = runnerRegistry.get(sid);
       if (!runner) continue;
       if (containerManager.isStandby(sid)) continue;
-      if (containerManager.get(sid)) continue;
       // Creation in flight — NOT orphaned. `getOrCreate` registers the runner
       // synchronously and kicks `createContainerForRunner` off fire-and-forget,
       // but the manager's map entry is only written partway into
@@ -817,13 +941,52 @@ export function createMissingContainerReconciler(
       // Force-disposing it there resolved the runner's worker-ready gate while
       // the URL was still the `0.0.0.0:0` placeholder, and the parked turn then
       // dialed it — surfacing as `Error: connect ECONNREFUSED 0.0.0.0` in chat.
+      // Checked ahead of the liveness probe below so a half-created session is
+      // never a candidate for it, even transiently.
       if (runner.awaitingContainer) continue;
+      // Tracked container: believe it unless the runner's own transport says
+      // the worker has stopped answering AND reality agrees. `containerGone`
+      // also suppresses the adoption attempt below — there is nothing running
+      // to adopt.
+      let containerGone = false;
+      let notice = VANISHED_NOTICE;
+      const tracked = containerManager.get(sid);
+      if (tracked) {
+        const downSince = runner.workerStreamDownSince ?? 0;
+        if (downSince === 0 || Date.now() - downSince < WORKER_UNREACHABLE_MS) continue;
+        const downSeconds = Math.round((Date.now() - downSince) / 1000);
+        // Capture the id BEFORE awaiting — `markContainerGone` refuses to act
+        // on a different incarnation, so a rescue that swaps the container
+        // underneath this probe cannot have its replacement deleted.
+        const probedId = tracked.id;
+        const alive = await containerManager.isTrackedContainerRunning(sid);
+        // `undefined` = Docker could not answer. Never read that as death:
+        // during a daemon outage every session would look dead at once.
+        if (alive === undefined) continue;
+        if (alive) {
+          // The container is up but the stream is not. Requirement 6 is about
+          // an unreachable WORKER, not only a missing container, so confirm
+          // with a direct probe rather than assuming the container implies a
+          // live worker — and rather than assuming it doesn't.
+          if (await workerResponds(tracked.workerUrl)) continue;
+          console.error(
+            `[orphan-runner] Session ${sid} worker has not answered for ${downSeconds}s (container still running) — reporting it unreachable`,
+          );
+          notice = WEDGED_NOTICE;
+        } else {
+          console.error(
+            `[orphan-runner] Session ${sid} worker unreachable for ${downSeconds}s and Docker reports its container not running — applying the missed exit`,
+          );
+          if (!await containerManager.markContainerGone(sid, probedId)) continue;
+          containerGone = true;
+        }
+      }
       // Inverse-leak backstop (C3): the runner has no container entry, but
       // a live Docker container may still exist — orphaned because a
       // `die`/`oom` event deleted a healthy container's map entry. Try to
       // re-adopt it before force-disposing; a successful adoption heals
       // the session in place instead of churning another container.
-      if (sessionInfoResolver) {
+      if (sessionInfoResolver && !containerGone && !tracked) {
         try {
           const adopted = await containerManager.adoptRunningContainer(sid, sessionInfoResolver);
           if (adopted) {
@@ -842,18 +1005,24 @@ export function createMissingContainerReconciler(
         }
       }
       console.error(
-        `[orphan-runner] Session ${sid} has runner but container is missing — force-disposing`,
+        `[orphan-runner] Session ${sid} has runner but no reachable worker — force-disposing`,
       );
-      broadcastLog(
-        sid,
-        "server",
-        "Session container vanished (no Docker exit event received). Send a message to start a fresh container.",
-      );
+      broadcastLog(sid, "server", notice);
+      // Say it where the user is actually looking. The log ring feeds the
+      // diagnostics panel and `session_status.error` is not rendered at all,
+      // so without this the only visible effect of this path is a spinner that
+      // stops for no stated reason — and a turn that was mid-flight loses its
+      // in-progress rows to the next turn's `replaceInProgress`. Runs BEFORE
+      // dispose: dispose discards the turn-event buffer and tears the channel
+      // down, so a notice emitted afterwards reaches nobody.
+      if (chatHistoryManager) {
+        preservePartialTurnOnWorkerLoss(sid, runner, chatHistoryManager, notice);
+      }
       runner.emitMessage({
         type: "session_status",
         sessionId: sid,
         running: false,
-        error: "Session container vanished — no Docker exit event received.",
+        error: notice,
       });
       runner.dispose({ force: true });
     }
@@ -979,6 +1148,12 @@ export function createPrStatusPoller(
   // forwards into the manager). The closure resolves the per-session runner
   // and git manager per-call. Skipped in degraded test setups that omit any
   // of the deps — the auto-resolve feature stays inactive.
+  // The closure below runs long after this function returns, but the poller it
+  // needs is constructed a few lines further down — and the poller constructor
+  // is what the closure is being built for. A late-read holder breaks the cycle
+  // without a forward reference to a `const` that is still in its TDZ here.
+  const pollerHolder: { current: PrStatusPoller | null } = { current: null };
+
   let rebaseAndResolveCb: RebaseAndResolveCb | undefined;
   if (createGitManager && chatHistoryManager && usageManager) {
     rebaseAndResolveCb = async (sessionId, baseBranch): Promise<AutoResolveResult> => {
@@ -998,6 +1173,10 @@ export function createPrStatusPoller(
           chatHistoryManager,
           usageManager,
           sseBroadcast,
+          // planning#369 — the auto path force-pushes too, so it needs the same
+          // "the conflict just cleared, go look" notification the user-driven
+          // route gets. Read at call time; see `pollerHolder` above.
+          prStatusPoller: pollerHolder.current,
           // Container runners supply `createAgent` themselves so this is
           // unused in production; in-process runners (tests, local mode)
           // need the fallback factory.
@@ -1042,13 +1221,25 @@ export function createPrStatusPoller(
     // re-arm accounting. Returns "noop" (don't burn budget) when there is
     // nothing to fix; "fixed" when a fix turn actually ran.
     fetchAndFixCb: async (sessionId, owner, repo, failedChecks): Promise<AutoFixResult> => {
+      // This path emitted NOTHING until the check-run logs were already on their
+      // way to the agent, which is why confirming the 2026-08-10 duplicate
+      // dispatch from the host needed inference from turn timing rather than a
+      // record of what was sent. One line per attempt, naming the exact
+      // check-run ids — those ids ARE the docs/121 dedup key, so a repeat send
+      // is visible by reading two log lines instead of reconstructing it.
+      const checkLabel = failedChecks.map((c) => `${c.name}#${c.databaseId}`).join(", ") || "(none)";
+      const noop = (lastError: string): AutoFixResult => {
+        console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — no attempt sent (${lastError}); checks: ${checkLabel}`);
+        return { outcome: "noop", lastError };
+      };
       const runner = runnerRegistry.get(sessionId);
-      if (!runner) return { outcome: "noop", lastError: "no_runner" };
-      if (failedChecks.length === 0) return { outcome: "noop", lastError: "no_failed_checks" };
+      if (!runner) return noop("no_runner");
+      if (failedChecks.length === 0) return noop("no_failed_checks");
 
       const logs = await fetchCIFailureLogs(githubAuthManager, owner, repo, failedChecks, runner.sessionDir);
-      if (logs.length === 0) return { outcome: "noop", lastError: "no_logs" };
+      if (logs.length === 0) return noop("no_logs");
       const prompt = buildCIFixPrompt(logs);
+      console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — dispatching a fix turn for ${checkLabel}`);
 
       // docs/240 — await the OWNED settlement the dispatch hands back rather
       // than a hand-rolled `new Promise(resolve => onTurnComplete: resolve)`.
@@ -1074,18 +1265,12 @@ export function createPrStatusPoller(
         deliveryId: undefined,
         dictated: undefined,
       })).settled;
-      // A turn that NEVER RAN doesn't burn budget: `dropped` (runner disposed
-      // mid-turn, queue cleared) and `steered` (unreachable for a system turn,
-      // mapped for completeness) are "noop", so the loop re-arms on the shorter
-      // deferred cooldown with the budget intact. `errored` / `no-result` DID
-      // consume an attempt — they are counted, exactly as before this call site
-      // learned to tell the outcomes apart, so a session whose fix turns keep
-      // dying still exhausts after MAX_AUTO_FIX_ATTEMPTS instead of retrying
-      // forever.
-      if (outcome.status === "dropped" || outcome.status === "steered") {
-        return { outcome: "noop", lastError: `fix turn ${outcome.status}` };
-      }
-      return { outcome: "fixed" };
+      const detail = outcome.detail ? ` (${outcome.detail})` : "";
+      console.log(`[auto-fix] ${sessionId} ${owner}/${repo} — fix turn settled as ${outcome.status}${detail}`);
+      // A turn that NEVER RAN doesn't burn budget, and only `dropped` / `steered`
+      // mean that — see `autoFixResultForOutcome` for why `interrupted` is on the
+      // other side of the line.
+      return autoFixResultForOutcome(outcome);
     },
     // docs/194 — drive the issue-lifecycle "→ completed" transition off the
     // merged PR body. Wired only when the tracker plumbing is present (the
@@ -1126,18 +1311,27 @@ export function createPrStatusPoller(
         // and never re-activates it, neither the activation nor the post-turn
         // recompute fires, so the "start from latest base" composer control would
         // stay hidden until they switch away and back. Push the freshly-recomputed
-        // signal to the attached viewers now; skipped when no live runner (the
-        // activation path covers the reattach case).
+        // signal to the attached viewers now.
+        //
+        // docs/266 — and when the safety gate REFUSES, write the refusal into the
+        // transcript here rather than leaving it to the user's next message. A
+        // hidden composer control says nothing, so the refused case used to reach
+        // no user-readable surface at merge time at all. Runs whether or not a
+        // runner is live: the transcript is durable, the `reset_eligible` signal
+        // is not, so `sessionManager`'s workspace dir is the fallback source for
+        // the session dir. Never throws — the notice is best-effort inside this
+        // already-guarded block.
         const mergedRunner = runnerRegistry.get(sessionId);
-        if (mergedRunner) {
-          await emitResetEligibleSignal(
+        const mergedSessionDir = mergedRunner?.sessionDir ?? sessionManager.get(sessionId)?.workspaceDir;
+        if (mergedSessionDir) {
+          await announceResetStateOnMerge(
             {
               getSession: (id) => sessionManager.get(id),
               getPrStatus: (id) => sessionManager.getPrStatus(id),
               createGitManager,
+              chatHistory: chatHistoryManager,
             },
-            mergedRunner,
-            sessionId,
+            { sessionId, sessionDir: mergedSessionDir, runner: mergedRunner ?? null },
           );
         }
         // docs/145: a merge moved `main`, so the bare cache is now stale.
@@ -1172,6 +1366,10 @@ export function createPrStatusPoller(
       }
     },
   });
+
+  // Close the cycle: the auto-resolve closure reads this at call time so its
+  // force-push can refresh the PR status it just changed (planning#369).
+  pollerHolder.current = prStatusPoller;
 
   // Seed in-memory `lastKnown` from persisted PR snapshots so archived
   // sessions show their PR badge / link on the All Sessions dialog after a
@@ -1253,13 +1451,14 @@ export function createLogBuffer(logStore?: LogStore): {
 /** Dependencies for event handler wiring. */
 export interface EventWiringDeps {
   /**
-   * Every per-agent auth manager, keyed by agent id. Drives the per-agent
-   * auth wiring loop — pending/complete/failed SSE rebroadcasts plus the
-   * common post-completion bookkeeping (registry refresh, provider-account
-   * migration, token re-push, agent_list broadcast). Adding a new backend
-   * is one entry here. (docs/155 Phase 2 + 2b)
+   * Every login flow, keyed by `LoginIntegrationId`. Drives the auth wiring
+   * loop — pending/complete/failed SSE rebroadcasts plus the common
+   * post-completion bookkeeping (duplicate refusal, account status and
+   * exhaustion, login-wide registry refresh, token re-push, agent_list
+   * broadcast). Adding a new login flow is one entry here.
+   * (docs/155 Phase 2 + 2b)
    */
-  authManagers: Map<AgentId, AgentAuthManager>;
+  authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   githubAuthManager: GitHubAuthManager;
   agentRegistry: AgentRegistry;
   /** Used to re-register the default provider-account row after a fresh sign-in. */
@@ -1280,6 +1479,31 @@ export interface EventWiringDeps {
    * disturb.
    */
   hasLiveAgent?: (sessionId: string) => boolean;
+  /**
+   * docs/257 — the `agent_list` broadcasts below carry the harness-onboarding
+   * stamp as well as `canRunTurns`, and `buildAgentListPayload` reads it from
+   * here. Declared as `CredentialStore | undefined` rather than optional on
+   * purpose: an omission must be a compiler error at the call site, not a
+   * silently stamp-less payload emitted from the very handlers that make an
+   * install runnable for the first time.
+   */
+  credentialStore: CredentialStore | undefined;
+  /** Drop state owned by the credential that a scoped sign-in replaced. */
+  onCredentialReplaced?: (agentId: AgentId, accountId: string) => void;
+}
+
+/**
+ * Refresh every harness affected by a credential change that a HARNESS noticed.
+ *
+ * The background refreshers are per-CLI, so they hold an `AgentId` — but the
+ * account status they flip belongs to the shared route, so the refresh has to
+ * widen to the login's whole harness set. Falls back to the single harness when
+ * the service declares no login flow, which keeps a key-only service working.
+ */
+function refreshAuthForAccountHarness(agentRegistry: AgentRegistry, agentId: AgentId): void {
+  const loginId = loginIntegrationForService(nativeServiceForHarness(agentId));
+  if (loginId) agentRegistry.refreshAuthForLogin(loginId);
+  else agentRegistry.refreshAuth(agentId);
 }
 
 export function markProviderAccountUnauthenticated(opts: {
@@ -1288,23 +1512,29 @@ export function markProviderAccountUnauthenticated(opts: {
   providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
   sseBroadcast: (event: string, data: unknown) => void;
+  /** docs/257 — see {@link EventWiringDeps.credentialStore}. */
+  credentialStore: CredentialStore | undefined;
 }): void {
-  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast } = opts;
+  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast, credentialStore } = opts;
   try {
-    providerAccountManager.setAccountStatus(agentId, accountId, "auth_failed");
+    providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "auth_failed");
   } catch (err) {
     console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
   }
-  agentRegistry.refreshAuth(agentId);
+  // Fan out. `agentId` names the harness whose refresher rotated the token, but
+  // what changed is the SHARED account route's status — so eligibility must be
+  // recomputed for every harness that login serves, not just the one that
+  // noticed. (Cross-backend review of the login re-key.)
+  refreshAuthForAccountHarness(agentRegistry, agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
+  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
 
 /**
  * Recovery counterpart to {@link markProviderAccountUnauthenticated}. When the
  * OAuth refresher rotates a previously-revoked account's token back to a
  * healthy state, the account is genuinely usable again — flip its persisted
- * status back to `ready`, recompute the agent's cached `authConfigured`, and
+ * status back to `ready`, recompute the agent's cached `hasRunnableModels`, and
  * re-broadcast so the model selector clears its stale "needs auth" state.
  *
  * Without this, an account that was marked `auth_failed` (by the refresher's
@@ -1324,24 +1554,30 @@ export function markProviderAccountReauthenticated(opts: {
   providerAccountManager: ProviderAccountManager;
   agentRegistry: AgentRegistry;
   sseBroadcast: (event: string, data: unknown) => void;
+  /** docs/257 — see {@link EventWiringDeps.credentialStore}. */
+  credentialStore: CredentialStore | undefined;
 }): void {
-  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast } = opts;
-  const current = providerAccountManager.get(agentId, accountId);
+  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast, credentialStore } = opts;
+  const current = providerAccountManager.get(accountServiceForHarness(agentId), accountId);
   if (!current || current.status === "ready") return;
   try {
-    providerAccountManager.setAccountStatus(agentId, accountId, "ready");
+    providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "ready");
   } catch (err) {
     console.error(`[auth] failed to mark account ${accountId} ready:`, err);
     return;
   }
-  agentRegistry.refreshAuth(agentId);
+  // Fan out. `agentId` names the harness whose refresher rotated the token, but
+  // what changed is the SHARED account route's status — so eligibility must be
+  // recomputed for every harness that login serves, not just the one that
+  // noticed. (Cross-backend review of the login re-key.)
+  refreshAuthForAccountHarness(agentRegistry, agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
-  sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
+  sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
 
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
-  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager, hasLiveAgent } = eventDeps;
+  const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager, hasLiveAgent, credentialStore } = eventDeps;
 
   /**
    * A3 (docs/142): after a Claude/Codex re-auth, force the fresh source token
@@ -1351,19 +1587,41 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
    * user just re-authed. Best-effort and self-limiting: `repushAgentToken` only
    * overwrites sessions that already hold the agent's token (no cross-agent
    * leak, no-op in local mode where there are no per-session dirs).
+   *
+   * `accountId` is required, and that is load-bearing rather than tidiness: an
+   * unscoped call skipped the marker check below AND fell to the flat repush
+   * for every session, so it copied `<credentialsRoot>/.claude/…` — a root that
+   * nothing account-scoped ever refreshes — over the per-session copy of every
+   * pinned session, including sessions whose marker names some other account.
+   * That both undid the scoped push that had just delivered the fresh token and
+   * left sessions running on a foreign, ageing bearer. The only caller that
+   * could reach it was the duplicate `complete` fixed in the Claude auth
+   * manager; making the parameter required is what stops a future one.
    */
-  const repushTokenToPinnedSessions = (agentId: AgentId, accountId?: string): void => {
+  const repushTokenToPinnedSessions = (agentId: AgentId, accountId: string): void => {
     let healed = 0;
     for (const session of sessionManager.list()) {
       if (!session.agentPinned || session.agentId !== agentId) continue;
-      if (accountId && (session.providerRouteKind !== "account" || session.providerRouteId !== accountId)) continue;
+      // docs/260 — whose token a session's subtree holds is the subtree's own
+      // recorded identity (the account marker), never a session row. A pre-260
+      // subtree with no marker keeps the legacy flat repush below, which only
+      // overwrites a token file the session already has.
+      const marked = readSessionAccountMarker(credentialsDir, session.id)[agentId];
+      if (marked !== undefined && marked !== accountId) continue;
       try {
         // docs/179 §4 — a sign-in can complete at any moment, including while
         // a streaming CLI is resident. Deliver the fresh token, but leave
         // credential topology alone under a live process: the leak repair's
         // unlink→copy window makes that process report itself unauthenticated.
         const opts = { repairLeakedSubtrees: !hasLiveAgent?.(session.id) };
-        const wrote = accountId
+        // An UNMARKED subtree's identity is unknown — it may hold a different
+        // account's copy, and a marker only appears when account provisioning
+        // writes one. Pushing the re-authed account's token there would poison
+        // a session that is spending another account (the 2026-08-10 incident
+        // class), so an unmarked session only ever gets the legacy flat repush,
+        // which overwrites nothing but a flat token file it already has. Its
+        // next turn's env-prep provisions and marks it properly.
+        const wrote = marked !== undefined
           ? repushProviderAccountToken(credentialsDir, session.id, agentId, accountId, undefined, undefined, opts)
           : repushAgentToken(credentialsDir, session.id, agentId, undefined, undefined, opts);
         if (wrote) healed++;
@@ -1374,17 +1632,10 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
     if (healed > 0) console.log(`[auth] re-pushed refreshed ${agentId} token into ${healed} pinned session(s)`);
   };
 
-  /** Snapshot the current agent list in the SSE-friendly shape. */
-  const agentListPayload = () => ({
-    agents: agentRegistry.list().map((a) => ({
-      id: a.id, name: a.name, installed: a.installed,
-      authConfigured: a.authConfigured, models: a.capabilities.models,
-      supportsReview: a.capabilities.supportsReview,
-      supportsSteering: a.capabilities.supportsSteering,
-      supportedPermissionModes: a.capabilities.supportedPermissionModes,
-      skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
-    })),
-  });
+  // The agent-list snapshot used to be hand-rolled here. It is
+  // `buildAgentListPayload` now — docs/257 needs `canRunTurns` on every
+  // producer of the event, and the hand-rolled copy had already drifted
+  // (`reasoning` and `supportsCompaction` were missing from it).
 
   // docs/144 — sign-out sweep. When an agent's auth drops to not-configured,
   // wipe any in-flight cross-agent credential subtree provisioned for a spawn
@@ -1406,7 +1657,11 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   // per-agent events (`auth_url`, `codex_auth_pending`, …) keep firing on
   // the concrete classes for back-compat with the unit tests and any
   // remaining direct listeners, but no SSE wiring depends on them.
-  for (const [agentId, mgr] of authManagers) {
+  for (const [loginId, mgr] of authManagers) {
+    // Three different questions, three different keys — see `AgentAuthManager`.
+    const serviceId = serviceForLoginIntegration(loginId);
+    // The CLI that runs this flow and owns the credential files it writes.
+    const credentialHarness = credentialHarnessForLogin(loginId);
     mgr.on("progress", (payload: AgentAuthProgressPayload) => {
       sseBroadcast("agent_auth_progress", payload);
     });
@@ -1420,11 +1675,11 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       // (read synchronously here, while the flow is still active) so the
       // matching Settings row surfaces the pending URL/code.
       const accountId = mgr.getActiveAccountId() ?? undefined;
-      sseBroadcast("agent_auth_pending", { agentId, ...(accountId ? { accountId } : {}), details });
+      sseBroadcast("agent_auth_pending", { loginId, ...(accountId ? { accountId } : {}), details });
     });
 
     mgr.on("complete", () => {
-      // docs/150 req 19 — every flow is account-scoped (`start` requires the
+      // docs/150-multiple-provider-subscriptions req 19 — every flow is account-scoped (`start` requires the
       // scope), so a completion always names its account. The old `else` here
       // re-ran `migrateDefaultAccounts()` to re-register a default row after a
       // singleton sign-in; there is no singleton sign-in any more, and a user
@@ -1434,62 +1689,74 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       // than papering over with a migration.
       const accountId = mgr.getActiveAccountId() ?? undefined;
       if (accountId) {
-        // docs/150 req 22 — the CLI has written credentials; find out WHOSE
+        // docs/150-multiple-provider-subscriptions req 22 — the CLI has written credentials; find out WHOSE
         // before anything treats the row as connected. A refusal must happen
         // here rather than on the next turn: once the row goes `ready` it is
         // selectable, and a duplicate account is worst precisely when it gets
         // picked as a failover target for the account it duplicates.
-        const refusal = refuseIfAlreadyConnected(agentId, accountId, providerAccountManager);
+        const refusal = credentialHarness
+          ? refuseIfAlreadyConnected(credentialHarness, accountId, providerAccountManager)
+          : null;
         if (refusal) {
-          agentRegistry.refreshAuth(agentId);
+          agentRegistry.refreshAuthForLogin(loginId);
           sseBroadcast("agent_auth_failed", {
-            agentId,
+            loginId,
             accountId,
             reason: "duplicate",
             message: refusal,
           });
-          sseBroadcast("agent_list", agentListPayload());
+          sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
           sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
           return;
         }
-        // A scoped login finished: flip the row to `ready` and re-push the
-        // fresh token only into sessions pinned to this account.
+        // Invalidate the old credential's bench and quota state before the
+        // stable account row becomes selectable again. This ordering is
+        // load-bearing: `ready` with a stale exhaustion stamp can make routing
+        // report that every account is exhausted after a healthy re-login.
         try {
-          providerAccountManager.setAccountStatus(agentId, accountId, "ready");
+          providerAccountManager.clearAccountExhaustion(serviceId!, accountId);
+          if (credentialHarness) eventDeps.onCredentialReplaced?.(credentialHarness, accountId);
+          providerAccountManager.setAccountStatus(serviceId!, accountId, "ready");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} ready:`, err);
+          return;
         }
       } else {
-        console.warn(`[auth] ${agentId} reported a completed sign-in with no account scope; nothing to mark ready`);
+        // Nothing here is safe to act on: with no account we cannot say whose
+        // credentials just landed, so marking a row ready and pushing tokens
+        // are both guesses. The re-push in particular is destructive — see
+        // `repushTokenToPinnedSessions` — so an unscoped completion stays a
+        // logged anomaly and touches no session's credentials.
+        console.warn(`[auth] ${loginId} reported a completed sign-in with no account scope; nothing to mark ready, and no token re-push`);
       }
-      agentRegistry.refreshAuth(agentId);
-      repushTokenToPinnedSessions(agentId, accountId);
-      sseBroadcast("agent_auth_complete", { agentId, ...(accountId ? { accountId } : {}) });
-      sseBroadcast("agent_list", agentListPayload());
+      agentRegistry.refreshAuthForLogin(loginId);
+      if (credentialHarness && accountId) repushTokenToPinnedSessions(credentialHarness, accountId);
+      sseBroadcast("agent_auth_complete", { loginId, ...(accountId ? { accountId } : {}) });
+      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
     mgr.on("failed", (payload?: AgentAuthFailedPayload) => {
       const accountId = mgr.getActiveAccountId() ?? undefined;
-      console.log(`[${agentId}-auth] flow failed:`, payload?.reason ?? "", payload?.message ?? "");
+      console.log(`[${loginId}] flow failed:`, payload?.reason ?? "", payload?.message ?? "");
       if (accountId) {
         // docs/150 — record the scoped failure on the row so Settings shows
         // "auth failed" instead of a stuck "authenticating" spinner.
         try {
-          providerAccountManager.setAccountStatus(agentId, accountId, "auth_failed");
+          providerAccountManager.setAccountStatus(serviceId!, accountId, "auth_failed");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
         }
         sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
       }
       sseBroadcast("agent_auth_failed", {
-        agentId,
+        loginId,
         ...(accountId ? { accountId } : {}),
         ...(payload?.reason ? { reason: payload.reason } : {}),
         ...(payload?.message ? { message: payload.message } : {}),
       });
-      agentRegistry.refreshAuth(agentId);
-      sseBroadcast("agent_list", agentListPayload());
+      agentRegistry.refreshAuthForLogin(loginId);
+      sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
     });
   }
 

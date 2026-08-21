@@ -156,7 +156,7 @@ export function IssuesPanel({
   // startable, even before any repo has become "active".
   const handleStartSession = (issue: TrackerIssue, targetRepoUrl?: string) => {
     if (!targetRepoUrl && !effectiveRepoUrl) return;
-    // SHI-320 — the tracker the issue was read from travels with it, so the new
+    // planning#322 — the tracker the issue was read from travels with it, so the new
     // session can carry a resolvable `IssueRef` (branch pin + `→ started`).
     // `selected` wins because the detail view can outlive a tab switch.
     onStartSession(issue, selected?.tracker ?? activeTracker, targetRepoUrl);

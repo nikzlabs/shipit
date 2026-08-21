@@ -1,5 +1,5 @@
 /**
- * Tests for the egress allowlist (docs/172 Gap 1, SHI-90).
+ * Tests for the egress allowlist (docs/172 Gap 1, planning#92).
  */
 
 import { describe, it, expect } from "vitest";
@@ -20,6 +20,8 @@ import {
   sandboxLifelineBase,
   sandboxLifelineEgressConfig,
 } from "./egress-allowlist.js";
+import { EGRESS_TIER_A_RESOLVE_HOSTS } from "./egress-firewall.js";
+import { SERVICES } from "../shared/catalogue/services.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -144,6 +146,8 @@ describe("buildEgressAllowlist", () => {
   it("allows the core agent / git / registry hosts by default", () => {
     const al = buildEgressAllowlist();
     expect(al.isAllowed("api.anthropic.com")).toBe(true);
+    expect(al.isAllowed("platform.claude.com")).toBe(true);
+    expect(al.isAllowed("other.claude.com")).toBe(false);
     expect(al.isAllowed("github.com")).toBe(true);
     expect(al.isAllowed("api.github.com")).toBe(true);
     expect(al.isAllowed("codeload.github.com")).toBe(true);
@@ -215,6 +219,22 @@ describe("buildEgressAllowlist", () => {
     expect(EGRESS_DEFAULT_ALLOWLIST.length).toBeGreaterThan(0);
     for (const e of EGRESS_DEFAULT_ALLOWLIST) {
       expect(normalizeHost(e)).toBe(e); // already normalized in source
+    }
+  });
+
+  it("keeps every catalogue API endpoint reachable through the LLM lifeline and Tier A", () => {
+    const endpointHosts = new Set(
+      SERVICES.flatMap((service) =>
+        service.modes.flatMap((mode) =>
+          Object.values(mode.endpoints).map((endpoint) => new URL(endpoint).hostname),
+        ),
+      ),
+    );
+    const lifeline = makeAllowlist(EGRESS_LIFELINE_ALLOWLIST);
+
+    for (const host of endpointHosts) {
+      expect(lifeline.isAllowed(host), `${host} is missing from the LLM lifeline`).toBe(true);
+      expect(EGRESS_TIER_A_RESOLVE_HOSTS, `${host} is missing from Tier-A DNS resolution`).toContain(host);
     }
   });
 });
@@ -362,6 +382,7 @@ describe("sandboxLifelineBase", () => {
     expect(base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
     // The agent's own API is reachable…
     expect(base).toContain(".anthropic.com");
+    expect(base).toContain("platform.claude.com");
     // …but the package registries and git host of the FULL default base are not.
     expect(base).not.toContain(".npmjs.org");
     expect(base).not.toContain(".github.com");
@@ -397,6 +418,16 @@ describe("sandboxLifelineEgressConfig", () => {
     expect(cfg!.contained).toBe(true);
     expect(cfg!.extraHosts).toEqual([]);
     expect(cfg!.base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
+  });
+
+  it("network OFF states that it admits no user hosts, rather than leaving it inferred", () => {
+    // planning#380 — an empty `extraHosts` cannot be told apart from "this user
+    // added no hosts", and every reader that guessed got it wrong in the same
+    // direction. The flag is what the decision route and the Plugins card ask.
+    expect(sandboxLifelineEgressConfig(sandbox({ network: false }), "")!.userHostsExcluded).toBe(true);
+    // Never set on the paths that DO carry user hosts — a normal session's config
+    // comes from `index.ts`, which does not set it at all.
+    expect(sandboxLifelineEgressConfig(sandbox({ network: true }), "")).toBeNull();
   });
 
   it("network OFF + git ON → github.com spliced into the lifeline base", () => {

@@ -25,7 +25,7 @@ import {
   ClaimAbortedError,
   refreshRepoDefaultBranch,
 } from "./services/index.js";
-import { canonicalRepoKey } from "./git-utils.js";
+import { canonicalRepoKey, hasUrlCredentials } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerSessionReposRoutes(
@@ -68,6 +68,13 @@ export async function registerSessionReposRoutes(
 
       if (body.url) {
         try {
+          // docs/262 req 19 — a credential typed into the URL is dropped, never
+          // stored, so this add may be the first time this repository is fetched
+          // WITHOUT it. Remembered here (before `addRepo` strips it) so that if
+          // the clone then fails, the user is told why in ShipIt rather than
+          // being left with git's generic auth error while the explanation sits
+          // in the orchestrator's stdout, which is not a ShipIt surface (§1/§2).
+          const submittedCredential = hasUrlCredentials(body.url);
           const repo = addRepo(deps.repoStore, body.url);
           if (repo.status === "ready") {
             return { repo };
@@ -116,7 +123,13 @@ export async function registerSessionReposRoutes(
                   console.error("[repos] Could not remove failed cache:", getErrorMessage(rmErr));
                 });
               }
-              deps.sseBroadcast("error", { message: `Failed to clone repository: ${getErrorMessage(err)}` });
+              const credentialNote = submittedCredential
+                ? " — the credential in the URL you entered is not stored, so this clone ran without it."
+                  + " Connect the GitHub account (or App installation) that can read this repository and add it again."
+                : "";
+              deps.sseBroadcast("error", {
+                message: `Failed to clone repository: ${getErrorMessage(err)}${credentialNote}`,
+              });
             }
           })();
           return { repo };

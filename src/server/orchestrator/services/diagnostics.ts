@@ -33,6 +33,10 @@ import {
   type ComposeConfig,
 } from "../../shared/shipit-config.js";
 import type { SessionOomCircuitBreaker, OomBreakerState } from "../oom-circuit-breaker.js";
+import {
+  installContentKeyDiagnostic,
+  type InstallContentKeyOff,
+} from "../install-content-key.js";
 
 /** Tail of the per-service compose log buffer included in diagnostics. */
 const SERVICE_LOG_TAIL_LINES = 20;
@@ -53,7 +57,7 @@ export interface ServiceDiagnostic {
 }
 
 /**
- * docs/150 req 11 — which provider account this session is running on, right
+ * docs/150-multiple-provider-subscriptions req 11 — which provider account this session is running on, right
  * now.
  *
  * The chat-visible failover notice covers the *moment* a session changes
@@ -108,18 +112,17 @@ export function describeProviderRoute(
   const kind = session.providerRouteKind ?? null;
   const routeId = session.providerRouteId ?? null;
 
-  // A session that has never taken a turn has no route: it picks one at its
-  // first turn, under whatever the selection mode says then (req 21). Saying
-  // "none" would read as an error rather than as "nothing has happened yet".
+  // docs/260 — no live process means no current route: every turn selects
+  // its account fresh, so between turns this is the honest steady state, not
+  // an error.
   if (!kind || !routeId) {
-    return { agentId, kind: null, routeId: null, label: "not pinned yet — the next turn selects an account" };
+    return { agentId, kind: null, routeId: null, label: "selected per turn — the next turn picks an account" };
   }
   if (kind === "reserved") {
     return { agentId, kind, routeId, label: RESERVED_ROUTE_LABEL[routeId] ?? routeId };
   }
   const label = agentId ? getAccountLabel(agentId, routeId) : undefined;
-  // A pinned account can be disconnected while the session is idle — the row
-  // goes, the pin stays, and the next turn's preflight re-routes it. Worth
+  // The account can be disconnected while the process lives on — worth
   // naming, since it explains a session that is about to change account.
   return { agentId, kind, routeId, label: label ?? "account no longer connected" };
 }
@@ -200,7 +203,7 @@ export interface SessionDiagnostics {
    */
   oomBreaker: OomBreakerState | null;
   /**
-   * docs/150 req 11 — the provider account this session runs on. `null` when
+   * docs/150-multiple-provider-subscriptions req 11 — the provider account this session runs on. `null` when
    * the build has no session/account wiring (test mode).
    */
   providerRoute: ProviderRouteDiagnostic | null;
@@ -212,6 +215,18 @@ export interface SessionDiagnostics {
    * actually running". `null` when there's no reachable container worker.
    */
   nodeRuntime: NodeRuntimeStatus | null;
+  /**
+   * Set when this session's `agent.install` resolves no dependency-input set,
+   * so the content-keyed install skip and the post-rewrite dependency re-check
+   * are both off (`install-content-key.ts`). `null` in the ordinary case.
+   *
+   * This is the same class of fact as the ignored `agent.memory` / `cpu` /
+   * `pids` fields above — "your `shipit.yaml` says something ShipIt could not
+   * honour" — and it is deliberately reported *here* rather than pushed at the
+   * agent: the failure case already has its own transcript notice and prompt
+   * prefix (`dependency-staleness.ts`), and this one has not failed yet.
+   */
+  installContentKeyOff: InstallContentKeyOff | null;
 }
 
 export interface DiagnosticsDeps {
@@ -231,7 +246,7 @@ export interface DiagnosticsDeps {
    */
   oomBreaker?: SessionOomCircuitBreaker;
   /**
-   * docs/150 req 11 — the session's stored provider route, and a way to turn an
+   * docs/150-multiple-provider-subscriptions req 11 — the session's stored provider route, and a way to turn an
    * account id into the name the user gave it. Two narrow accessors rather than
    * the session manager and account manager themselves, matching how
    * `getWorkspaceDir` is injected here: the service stays free of both.
@@ -301,9 +316,17 @@ export async function getSessionDiagnostics(
   const workspaceDir = getWorkspaceDir(sessionId);
   const parsedConfig = workspaceDir ? readParsedConfig(workspaceDir) : null;
 
+  // docs/260 — the displayed route is the RESIDENT process's (typed runner
+  // state), because that is the only thing that has one between selections;
+  // an idle session's account is chosen fresh at its next turn.
+  const resident = runner?.residentRoute;
+  const routeSession = deps.getSessionRoute?.(sessionId);
   const providerRoute = deps.getSessionRoute
     ? describeProviderRoute(
-        deps.getSessionRoute(sessionId),
+        {
+          agentId: routeSession?.agentId ?? null,
+          ...(resident ? { providerRouteKind: resident.kind, providerRouteId: resident.id } : {}),
+        },
         deps.getAccountLabel ?? (() => undefined),
       )
     : null;
@@ -322,6 +345,10 @@ export async function getSessionDiagnostics(
     oomBreaker: oomBreaker ? oomBreaker.getState(sessionId) : null,
     providerRoute,
     nodeRuntime,
+    // Read from the record `setupServiceManager` wrote, not re-derived here:
+    // the condition is detected once, where the input set is resolved, and this
+    // endpoint reports it.
+    installContentKeyOff: workspaceDir ? installContentKeyDiagnostic(workspaceDir) : null,
   };
 }
 

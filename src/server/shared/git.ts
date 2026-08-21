@@ -1,10 +1,40 @@
-import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
+import { type SimpleGit, type LogResult } from "simple-git";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
+import { safeSimpleGit, gitArgsWithHooksDisabled } from "./git-hooks-guard.js";
+import {
+  type GitRemoteCredentialResolver,
+  credentialledGit,
+  resolveTreeRemoteCredential,
+} from "./git-remote-credential.js";
+import { type GitTreeUidDeps, gitSpawnOverridesForTree } from "./git-tree-uid.js";
+import { pushLfsObjects } from "./git-lfs-push.js";
+
+/** Construction-time wiring for {@link GitManager}. */
+export interface GitManagerOptions {
+  /**
+   * docs/266-orchestrator-git-trust-boundary E3 (planning#404) — mints the credential a **dropped-uid** remote
+   * op authenticates with. Wired at `createGitManager` (`app-di.ts`); omitted
+   * everywhere else, and then every remote op behaves exactly as it did before
+   * this existed.
+   */
+  resolveRemoteCredential?: GitRemoteCredentialResolver;
+  /**
+   * Injection seam for the uid-drop decision, so a test can exercise the
+   * dropped-uid branch. `resolveGitTreeUid` answers "no drop" for any process
+   * that is not root, and a session container has no root and refuses
+   * `unshare -r` — so without this the branch this whole feature exists for is
+   * unreachable from a test.
+   */
+  gitTreeUidDeps?: GitTreeUidDeps;
+}
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
+
+/** Bound on {@link GitManager}'s stderr capture — enough for git's warnings, not a leak. */
+const STDERR_TAIL_LIMIT = 8192;
 
 /**
  * docs/198 — keep pnpm's relocated store out of git WITHOUT mutating any tracked
@@ -27,7 +57,26 @@ const DEFAULT_WORKSPACE_DIR = "/workspace";
  * read-only fs in tests) must never block clone prep or a commit.
  */
 export function ensurePnpmStoreGitExcluded(repoDir: string): void {
-  const PNPM_STORE_EXCLUDE_ENTRY = ".pnpm-store/";
+  ensureGitExcluded(repoDir, [".pnpm-store/"]);
+}
+
+/**
+ * Append patterns to a clone's `.git/info/exclude`, once each.
+ *
+ * Generalized from the pnpm case above because docs/262 needs the same
+ * property for a second reason: a plugin repository's skills are materialized
+ * into the workspace's skill roots so the agent can find them (req 22), and
+ * "projects never keep copies" means the post-turn `git add -A` must never see
+ * them. Same constraint, same answer — a per-clone, non-tracked ignore list
+ * leaves the committed tree and every tracked file untouched.
+ *
+ * Idempotent, and never throws: a missing or non-writable `.git` (a worktree
+ * pointer file, a read-only fs in tests) must not block clone prep or a
+ * commit. It DOES report whether the entries are in force, because a caller
+ * that is about to write files it promised would stay out of git needs to know
+ * that the promise held — see `plugin-skills.ts`.
+ */
+export function ensureGitExcluded(repoDir: string, entries: readonly string[]): boolean {
   const excludePath = path.join(repoDir, ".git", "info", "exclude");
   try {
     let contents = "";
@@ -36,18 +85,93 @@ export function ensurePnpmStoreGitExcluded(repoDir: string): void {
     } catch {
       // info/exclude may not exist yet — fall through to create it.
     }
-    if (contents.split("\n").some((line) => line.trim() === PNPM_STORE_EXCLUDE_ENTRY)) {
-      return;
-    }
+    const present = new Set(contents.split("\n").map((line) => line.trim()));
+    const missing = entries.filter((entry) => !present.has(entry));
+    if (missing.length === 0) return true;
     fs.mkdirSync(path.dirname(excludePath), { recursive: true });
     const sep = contents.length > 0 && !contents.endsWith("\n") ? "\n" : "";
-    fs.appendFileSync(excludePath, `${sep}${PNPM_STORE_EXCLUDE_ENTRY}\n`);
+    fs.appendFileSync(excludePath, `${sep}${missing.join("\n")}\n`);
+    return true;
   } catch (err) {
     console.warn(
-      `[git] failed to write .pnpm-store exclude to ${excludePath}:`,
+      `[git] failed to write exclude entries to ${excludePath}:`,
       err instanceof Error ? err.message : String(err),
     );
+    return false;
   }
+}
+
+/**
+ * Replace a delimited, ShipIt-owned block inside `.git/info/exclude`.
+ *
+ * {@link ensureGitExcluded} appends and never removes, which is right for a
+ * fixed pattern like `.pnpm-store/`. docs/262's plugin skills need the
+ * opposite: the entries are the EXACT directories materialized right now, so
+ * they change as a declaration changes and stale ones must go.
+ *
+ * Exact names rather than a wildcard is the point. A pattern broad enough to
+ * cover "whatever ShipIt might write" also hides whatever the USER happens to
+ * name that way — an untracked directory of theirs, or a marketplace plugin
+ * whose own path-scoped `git add` would then fail as an ignored path. Listing
+ * what was actually written can hide nothing else.
+ *
+ * Returns whether the block is in force. Never throws. Last writer wins: this
+ * is a read-modify-write with no lock, which is sound here because the only
+ * writers are ShipIt's own prepare pass (serialized per session) and clone
+ * prep, which runs before a container exists.
+ */
+export function ensureGitExcludedBlock(
+  repoDir: string,
+  blockName: string,
+  entries: readonly string[],
+): boolean {
+  const begin = `# BEGIN ${blockName} (managed by ShipIt — do not edit)`;
+  const end = `# END ${blockName}`;
+  const excludePath = path.join(repoDir, ".git", "info", "exclude");
+  try {
+    let contents = "";
+    try {
+      contents = fs.readFileSync(excludePath, "utf-8");
+    } catch {
+      // info/exclude may not exist yet — fall through to create it.
+    }
+    const lines = contents.split("\n");
+    const from = lines.indexOf(begin);
+    // The END must come AFTER the BEGIN we found. Searching the whole file for
+    // it lets a truncated block (a BEGIN with no END, from an interrupted
+    // write) swallow everything up to the NEXT run's END — including the
+    // user's own ignore rules, which is how someone loses a rule that was
+    // keeping a secret out of a commit (review finding). With no matching END,
+    // drop the orphan BEGIN line alone and leave every other line where it is.
+    const to = from === -1 ? -1 : lines.indexOf(end, from + 1);
+    const kept = from === -1
+      ? lines
+      : [...lines.slice(0, from), ...lines.slice(to === -1 ? from + 1 : to + 1)];
+    const block = entries.length > 0 ? [begin, ...entries, end] : [];
+    const next = [...trimTrailingBlanks(kept), ...block].join("\n");
+    const normalized = next.endsWith("\n") || next === "" ? next : `${next}\n`;
+    if (normalized === contents) return true;
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    // Written via a temp file and renamed: a partial write here is not a
+    // cosmetic problem — a truncated exclude file silently stops ignoring
+    // whatever its lost lines covered.
+    const tmp = `${excludePath}.shipit-tmp-${process.pid}`;
+    fs.writeFileSync(tmp, normalized);
+    fs.renameSync(tmp, excludePath);
+    return true;
+  } catch (err) {
+    console.warn(
+      `[git] failed to write the ${blockName} exclude block to ${excludePath}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
+
+function trimTrailingBlanks(lines: readonly string[]): string[] {
+  const out = [...lines];
+  while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+  return out;
 }
 
 export interface GitCommitInfo {
@@ -98,19 +222,144 @@ export interface AutoCommitResult {
    * refusal above.
    */
   secretFindings: SecretFinding[];
+  /**
+   * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — the workspace held content this git could not read.
+   *
+   * Only reachable once orchestrator git runs as the session's uid rather than
+   * as root (`git-tree-uid.ts`): root reads everything, so before that change
+   * neither state could occur. Both were measured against git 2.39.5; the table
+   * is in `docs/266-orchestrator-git-trust-boundary/plan.md` §2.
+   *
+   *   - `omitted` — an unreadable **directory**. `status` and `add -A` both exit
+   *     **0**, emitting only `warning: could not open directory` on stderr,
+   *     and the subtree is silently missing from the commit. The commit still
+   *     lands. This is the one the exit codes cannot tell apart from a turn that
+   *     genuinely changed nothing, which is why it is detected from stderr.
+   *   - `blocked` — an unreadable **file**. `add -A` exits **128** and stages
+   *     NOTHING, including every unrelated file the turn changed, so the whole
+   *     turn stays uncommitted.
+   *
+   * `null` on every ordinary commit. The caller MUST surface both, and must say
+   * different things about them: `omitted` is "this commit is short", `blocked`
+   * is "this commit did not happen".
+   */
+  unreadable: UnreadableWorkspace | null;
+}
+
+/** See {@link AutoCommitResult.unreadable}. */
+export type UnreadableWorkspace =
+  | { kind: "omitted"; detail: string }
+  | { kind: "blocked"; detail: string };
+
+/**
+ * git's own words for the two states, matched on MESSAGE TEXT and never on an
+ * exit code.
+ *
+ * That is not a stylistic choice. `errorDetectionPlugin`
+ * (`simple-git/dist/cjs/index.js:1364-1374`) receives `exitCode` in its context
+ * and builds `new GitError(void 0, stderr)` without carrying it onto the thrown
+ * error — verified by running it — so `err.exitCode` is `undefined` by
+ * construction. A detector keyed on the exit code would look correct in review
+ * and never fire.
+ *
+ * ## Matching English is a dependency, and it is bounded on purpose
+ *
+ * Message text is translated when git runs under a non-C locale, so the
+ * orchestrator pins `LC_ALL=C` on the process every orchestrator-side git
+ * inherits (`git-config.ts`, which explains why simple-git's own options cannot
+ * carry it). That makes the wording git's *source* wording rather than a
+ * property of the deployment's locale.
+ *
+ * What still drifts is git's own wording across versions, and the two states
+ * pay differently for it:
+ *
+ *   - **`blocked` does not depend on this regex to be reported.** `add -A`
+ *     REJECTS, and the rejection alone proves the turn committed nothing —
+ *     `autoCommit` rethrows what it cannot classify and `post-turn.ts` reports
+ *     every uncommitted turn from the throw itself (req 15). The regex only
+ *     buys the tailored "fix that path's permissions" advice and the path.
+ *   - **`omitted` does.** git exits 0 and the warning on stderr is the only
+ *     trace there is, so a wording change here means silence again. That is the
+ *     residual, recorded rather than papered over; `git-unreadable.test.ts`
+ *     fails on it for the git binary the tests run against.
+ *
+ * The file regex is deliberately keyed on the PERMISSION cause and not on
+ * `unable to index file`, which git also emits for an EIO or a file deleted
+ * between `status` and `add`. Matching that cause-agnostically told the user to
+ * "fix that path's permissions" for failures that had nothing to do with
+ * permissions (review finding, planning#407).
+ */
+const UNREADABLE_DIR_RE = /could not open directory\s+'([^']+)'/;
+const UNREADABLE_FILE_RE = /open\("([^"]+)"\): Permission denied/;
+
+/**
+ * Is a rejected `git add -A` the measured unreadable-FILE case, and for which
+ * path? `null` for every other cause.
+ *
+ * Exported for its test. A real-git test proves the LIVE message still matches
+ * this; only a unit test can prove the messages that must NOT match — an EIO, a
+ * file deleted between `status` and `add` — since neither can be staged on
+ * demand in a container. Both halves are needed: the first fails when git's
+ * wording drifts, the second fails if the match ever widens back to
+ * `unable to index file` (planning#407).
+ */
+export function classifyUnreadableAddFailure(message: string): UnreadableWorkspace | null {
+  const blocked = UNREADABLE_FILE_RE.exec(message);
+  return blocked ? { kind: "blocked", detail: blocked[1] } : null;
 }
 
 export class GitManager {
   private git: SimpleGit;
   private workspaceDir: string;
+  /**
+   * Rolling capture of the last git invocation's stderr, for docs/266's
+   * `omitted` detection.
+   *
+   * simple-git resolves a zero-exit task as success and does NOT surface
+   * stderr, so `warning: could not open directory` reaches nobody by default —
+   * a turn commits short and every exit code says it went fine. An
+   * `outputHandler` is the only hook that sees that stream on the success path.
+   * Bounded: only the tail matters, and a runaway git must not grow the heap.
+   */
+  private stderrTail = "";
+
+  /**
+   * docs/266-orchestrator-git-trust-boundary E3 (planning#404) — mints the credential a **dropped-uid** remote
+   * op authenticates with. Undefined outside the orchestrator (the session
+   * worker constructs a `GitManager` too) and in tests, where every remote op
+   * behaves exactly as it did before this existed.
+   */
+  private readonly resolveRemoteCredential: GitRemoteCredentialResolver | undefined;
+
+  /** Test seam — see {@link GitManagerOptions.gitTreeUidDeps}. */
+  private readonly gitTreeUidDeps: GitTreeUidDeps | undefined;
 
   /**
    * @param workspaceDir - Git working directory. Defaults to `/workspace`.
    *   Override in tests to use a temp directory.
+   * @param options.resolveRemoteCredential - see
+   *   {@link GitManager.remoteGit}. Wired at `createGitManager` (`app-di.ts`).
    */
-  constructor(workspaceDir?: string) {
+  constructor(workspaceDir?: string, options?: GitManagerOptions) {
+    this.resolveRemoteCredential = options?.resolveRemoteCredential;
+    this.gitTreeUidDeps = options?.gitTreeUidDeps;
     this.workspaceDir = workspaceDir ?? DEFAULT_WORKSPACE_DIR;
-    this.git = simpleGit(this.workspaceDir);
+    // planning#384 — `safeSimpleGit`, never bare `simpleGit`: this class drives
+    // commit/merge/rebase/checkout/push against a tree that untrusted plugin
+    // code can write `.git/hooks/*` into, from a process that is root in the
+    // orchestrator container. See `git-hooks-guard.ts`.
+    this.git = safeSimpleGit(this.workspaceDir).outputHandler(
+      (_command, _stdout, stderr) => {
+        stderr.on("data", (chunk: Buffer | string) => {
+          this.stderrTail = (this.stderrTail + String(chunk)).slice(-STDERR_TAIL_LIMIT);
+        });
+      },
+    );
+  }
+
+  /** Start a fresh stderr capture window around a group of git calls. */
+  private resetStderr(): void {
+    this.stderrTail = "";
   }
 
   /**
@@ -121,6 +370,51 @@ export class GitManager {
    */
   get dir(): string {
     return this.workspaceDir;
+  }
+
+  /**
+   * The git instance a **remote** operation on `remote` should run through
+   * (docs/266-orchestrator-git-trust-boundary E3, planning#404).
+   *
+   * Everything below the first two guards is the dropped-uid path and nothing
+   * else. A root-side git — the bare cache, `/opt/shipit`, local mode, the
+   * session worker, every test — gets `this.git` back and is byte-for-byte
+   * unchanged: it reads the orchestrator's global helper, which reads the
+   * root-only PAT file (`git-config.ts`).
+   *
+   * A dropped-uid git cannot read that file. It is handed its own credential
+   * here instead — a short-lived, single-repo installation token when a GitHub
+   * App is configured, and the PAT when one is not, which is precisely what the
+   * session container's own broker would give the agent
+   * (`getRepoScopedGitCredential`, docs/172 Gap 2-R). So a payload that
+   * executes during a git op and steals it gains nothing the session did not
+   * already have — requirement 11's argument, now true of the credential and
+   * not only of the uid.
+   *
+   * **Availability is the constraint that shapes the fallbacks** (req 6, and
+   * `CLAUDE.md` invariant 2: the post-turn auto-push is not optional). Every
+   * step that can fail to produce a credential falls back to `this.git` rather
+   * than throwing, so the worst case is the authentication behaviour that
+   * shipped with E1, never a push that cannot run. The resolver itself is
+   * deadline-bounded and PAT-backed on its own side (`services/github.ts`).
+   *
+   * Note the *commit* path never reaches here at all — `autoCommit` is purely
+   * local, so it acquires no network dependency from this change.
+   */
+  private async remoteGit(remote: string): Promise<SimpleGit> {
+    const credential = await resolveTreeRemoteCredential(
+      this.workspaceDir,
+      remote,
+      this.resolveRemoteCredential,
+      async () => {
+        const remotes = await this.git.getRemotes(true);
+        const match = remotes.find((r) => r.name === remote);
+        return match?.refs.push || match?.refs.fetch || undefined;
+      },
+      this.gitTreeUidDeps,
+    );
+    if (!credential) return this.git;
+    return credentialledGit(this.workspaceDir, credential);
   }
 
   /** Get the current HEAD commit hash. Returns null if no commits exist. */
@@ -180,7 +474,31 @@ export class GitManager {
     // non-clone workspace — heal here on their next turn, so the store can never
     // leak into a commit. Idempotent + best-effort, so it never blocks the commit.
     ensurePnpmStoreGitExcluded(this.workspaceDir);
+    // docs/266 — capture window for the two permission states. Opened before the
+    // first git call so `status`'s own warning is caught: `status` is where the
+    // unreadable-directory warning first appears, and it exits 0.
+    this.resetStderr();
     const status = await this.git.status();
+    // docs/266-orchestrator-git-trust-boundary req 14 — classify the unreadable-DIRECTORY warning HERE, off
+    // `status`, not after the staging step.
+    //
+    // `status` is where git first emits it, and every return below this point
+    // is a path where the warning would otherwise be dropped. The clean-tree
+    // return is the one that matters: when the ONLY changes are inside the
+    // unreadable directory, git reports "nothing to commit, working tree clean"
+    // and exits 0 while warning on stderr — measured — so `autoCommit` would
+    // report a clean tree, make no commit, and say nothing, which is precisely
+    // the silent case req 14 exists for. Detecting after `add -A` missed it.
+    const omittedMatch = UNREADABLE_DIR_RE.exec(this.stderrTail);
+    const omitted: UnreadableWorkspace | null = omittedMatch
+      ? { kind: "omitted", detail: omittedMatch[1] }
+      : null;
+    if (omitted) {
+      console.warn(
+        `[git] autoCommit could not read ${omitted.detail} — its contents are `
+        + "omitted from this commit. The commit itself still lands.",
+      );
+    }
     const rebaseInProgress = await this.isRebaseInProgress();
     const conflictedFiles = [...status.conflicted];
 
@@ -190,14 +508,52 @@ export class GitManager {
         rebaseInProgress ? "rebase in progress;" : "",
         conflictedFiles.length > 0 ? `unmerged paths: ${conflictedFiles.join(", ")}` : "",
       );
-      return { commitHash: null, conflictedFiles, rebaseInProgress, secretFindings: [] };
+      return { commitHash: null, conflictedFiles, rebaseInProgress, secretFindings: [], unreadable: omitted };
     }
 
     if (status.isClean()) {
-      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+      // Not necessarily clean — see the classification above. `omitted` here means
+      // git could not SEE the changes, not that there were none.
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: omitted };
     }
 
-    await this.git.add("-A");
+    // docs/266-orchestrator-git-trust-boundary req 15 — an unreadable FILE makes `add -A` exit 128 and stage
+    // NOTHING, including every unrelated file this turn changed. simple-git
+    // rejects with a GitError carrying git's stderr (verified by running it);
+    // `err.exitCode` is undefined by construction, so classify on the message.
+    // Caught rather than thrown on: a throw here reaches `postTurnStep`, which
+    // logs and continues — correct for a step that was not the commit, and this
+    // IS the commit. Returning lets the caller tell the user their turn produced
+    // nothing, which a log line does not.
+    try {
+      await this.git.add("-A");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const blocked = classifyUnreadableAddFailure(message);
+      // Anything else — an EIO, a file deleted between `status` and `add`, a
+      // full disk — is NOT the measured permission case and must not be dressed
+      // up as one. It is still a turn that committed nothing, so it is still
+      // req 15's subject: the caller reports it from the throw (`post-turn.ts`
+      // catches, tells the user the turn was not committed, and rethrows).
+      if (!blocked) throw err;
+      console.error(
+        `[git] autoCommit staged NOTHING — cannot read ${blocked.detail}. `
+        + "The whole turn is uncommitted and still in the working tree.",
+      );
+      return {
+        commitHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+        unreadable: blocked,
+      };
+    }
+
+    // `add -A` can surface the same warning for a directory `status` already
+    // flagged; re-read so a path only visible at staging time is still caught.
+    const stagedOmitted = UNREADABLE_DIR_RE.exec(this.stderrTail);
+    const unreadable: UnreadableWorkspace | null = omitted
+      ?? (stagedOmitted ? { kind: "omitted", detail: stagedOmitted[1] } : null);
 
     // docs/213 — secret-scan guard. Scan the STAGED diff (which now includes
     // new untracked files, since we just `git add -A`'d) for high-signal
@@ -219,7 +575,7 @@ export class GitManager {
       } catch {
         // no HEAD / nothing staged — safe to ignore.
       }
-      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings };
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings, unreadable };
     }
 
     // docs/213 — the commit MESSAGE is derived from agent-authored turn text,
@@ -230,7 +586,7 @@ export class GitManager {
     const result = await this.git.commit(message);
     const hash = result.commit || "";
     console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
-    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable };
   }
 
   /**
@@ -329,10 +685,44 @@ export class GitManager {
     console.log("[git] Renamed branch:", oldName, "→", newName);
   }
 
+  /**
+   * Upload the Git LFS objects `branch` references, immediately before the ref
+   * push that would otherwise reference them without sending them.
+   *
+   * Orchestrator-side git disables every hook (planning#384), and the git-lfs
+   * `pre-push` hook is the only thing an ordinary `git push` uses to transfer
+   * LFS objects — so without this the push sends pointers whose objects never
+   * left the machine and GitHub rejects it with `GH008`. See
+   * `git-lfs-push.ts` for the incident and for why the fix is an explicit
+   * subcommand rather than re-enabling hooks.
+   *
+   * Best-effort by construction: a failure here is logged and the ref push runs
+   * anyway (`CLAUDE.md` post-turn invariant 2 — the auto-push may not gain a new
+   * way to fail). Whatever the server then says is classified by
+   * `classifyPushFailure`, which knows GH008 is not a divergence.
+   *
+   * Deliberately NOT applied to {@link createAndPushTag}: a tag push publishes a
+   * ref to commits the branch push already delivered, so it references no object
+   * the remote lacks.
+   */
+  private async uploadLfsObjects(git: SimpleGit, remote: string, branch: string): Promise<void> {
+    const outcome = await pushLfsObjects(git, remote, branch);
+    if (outcome.status === "pushed") {
+      console.log(`[git] Uploaded Git LFS objects for ${remote}/${branch}`);
+    } else if (outcome.status === "failed") {
+      console.warn(
+        `[git] git lfs push ${remote} ${branch} failed — the ref push may be rejected `
+        + `with GH008 (unknown Git LFS object): ${outcome.detail}`,
+      );
+    }
+  }
+
   /** Push to a remote. Returns a summary string. */
   async push(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
-    await this.git.push(remote, currentBranch, ["--set-upstream"]);
+    const git = await this.remoteGit(remote);
+    await this.uploadLfsObjects(git, remote, currentBranch);
+    await git.push(remote, currentBranch, ["--set-upstream"]);
     const msg = `Pushed to ${remote}/${currentBranch}`;
     console.log("[git]", msg);
     return msg;
@@ -341,7 +731,7 @@ export class GitManager {
   /** Pull from a remote. Returns a summary string. */
   async pull(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
-    await this.git.pull(remote, currentBranch);
+    await (await this.remoteGit(remote)).pull(remote, currentBranch);
     const msg = `Pulled from ${remote}/${currentBranch}`;
     console.log("[git]", msg);
     return msg;
@@ -716,6 +1106,10 @@ export class GitManager {
    *
    * Uses `git show` over `execFile` with a Buffer encoding because simple-git's
    * `.show()`/`.raw()` always decode stdout to a string.
+   *
+   * docs/266-orchestrator-git-trust-boundary E2 — the uid drop has to be spelled out here because this is a raw
+   * `execFile`, not the `safeSimpleGit` instance the rest of the class uses.
+   * Without it this one method kept running as root in a session workspace.
    */
   async getFileBufferAtCommit(
     commitHash: string,
@@ -725,8 +1119,13 @@ export class GitManager {
     return new Promise((resolve) => {
       execFile(
         "git",
-        ["show", `${commitHash}:${filePath}`],
-        { cwd: this.workspaceDir, encoding: "buffer", maxBuffer: maxBytes },
+        gitArgsWithHooksDisabled(["show", `${commitHash}:${filePath}`]),
+        {
+          cwd: this.workspaceDir,
+          encoding: "buffer",
+          maxBuffer: maxBytes,
+          ...gitSpawnOverridesForTree(this.workspaceDir),
+        },
         (err, stdout) => {
           if (err || !stdout || stdout.length === 0) resolve(null);
           else resolve(stdout);
@@ -758,7 +1157,7 @@ export class GitManager {
 
   /** Fetch from a remote. */
   async fetch(remote = "origin"): Promise<void> {
-    await this.git.fetch(remote);
+    await (await this.remoteGit(remote)).fetch(remote);
     console.log("[git] Fetched from", remote);
   }
 
@@ -846,6 +1245,36 @@ export class GitManager {
   }
 
   /**
+   * docs/266 / planning#407 — {@link isClean}, plus the question `isClean` cannot
+   * answer: **could git read the whole tree?**
+   *
+   * `isClean()` is `true` for content git cannot see, because git cannot see
+   * it. Before the uid drop that was a distinction without a difference — root
+   * read everything — so every caller that gates a DESTRUCTIVE action on a
+   * clean tree was correct by accident. It no longer is: `tier-escalation`'s
+   * pre-eviction commit asks "is the work still only in the working tree?" and
+   * gets "no" for a subtree the session uid cannot open, then wipes the
+   * checkout. That is uncommitted work with no reflog entry and no recovery —
+   * the exact loss `CLAUDE.md` invariant 2 names, newly reachable because of
+   * the drop. So a caller whose next step destroys the tree must ask THIS
+   * question, not `isClean()`.
+   *
+   * Only the unreadable-DIRECTORY state can hide here. An unreadable FILE is
+   * listed by `status` as modified (measured — see {@link AutoCommitResult}),
+   * so it already answers `clean: false`; it is `add -A` that then fails, which
+   * is `autoCommit`'s half of the same problem.
+   */
+  async inspectWorkingTree(): Promise<{ clean: boolean; unreadable: UnreadableWorkspace | null }> {
+    this.resetStderr();
+    const status = await this.git.status();
+    const match = UNREADABLE_DIR_RE.exec(this.stderrTail);
+    return {
+      clean: status.isClean(),
+      unreadable: match ? { kind: "omitted", detail: match[1] } : null,
+    };
+  }
+
+  /**
    * Paths with uncommitted changes in the working tree — staged, unstaged,
    * and untracked. Includes both sides of a rename. Used to flag docs the
    * agent touched in the current turn before auto-commit has run.
@@ -886,7 +1315,7 @@ export class GitManager {
   async remoteBranchSha(remote = "origin", branch?: string): Promise<string | null> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
     try {
-      const out = await this.git.listRemote(["--heads", remote, currentBranch]);
+      const out = await (await this.remoteGit(remote)).listRemote(["--heads", remote, currentBranch]);
       // `<sha>\trefs/heads/<branch>` per matching ref; empty when absent.
       const line = out
         .split("\n")
@@ -942,7 +1371,12 @@ export class GitManager {
     const args = expectedRemoteSha
       ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
       : ["--set-upstream"];
-    await this.git.push(remote, branch, args);
+    const git = await this.remoteGit(remote);
+    // Same duty as the plain push: rewritten history can reference LFS objects
+    // the remote has never seen (a rebase onto a base that added assets, a
+    // reset onto a fresh base), and no hook will send them.
+    await this.uploadLfsObjects(git, remote, branch);
+    await git.push(remote, branch, args);
     const msg = `Force pushed to ${remote}/${branch}`;
     console.log("[git]", msg);
     return msg;
@@ -1105,7 +1539,7 @@ export class GitManager {
   async createAndPushTag(tag: string, message: string, remote = "origin", ref?: string): Promise<void> {
     const args = ["tag", "-a", tag, "-m", message, ...(ref ? [ref] : [])];
     await this.git.raw(args);
-    await this.git.push(remote, tag);
+    await (await this.remoteGit(remote)).push(remote, tag);
     console.log("[git] created + pushed tag", tag);
   }
 

@@ -13,6 +13,10 @@ import {
   getSavedQuickSessionRepo,
   saveQuickSessionRepo,
   LAST_QUICK_SESSION_REPO_KEY,
+  getSavedModelId,
+  getSavedModelSelection,
+  saveModelId,
+  saveModelSelection,
 } from "./local-storage.js";
 
 beforeEach(() => {
@@ -211,5 +215,82 @@ describe("getSavedKeybindings (docs/180)", () => {
   it("ignores non-string blob values", () => {
     localStorage.setItem("shipit-keybindings", JSON.stringify({ "new-session": 42, "quick-capture": "mod+alt+n" }));
     expect(getSavedKeybindings()).toEqual({ "quick-capture": "mod+alt+n" });
+  });
+});
+
+
+/**
+ * docs/252 — `vibe-model-id` is the seed for every NEW session's model, so a
+ * bare id there silently decides what a fresh session bills to the moment one id
+ * belongs to two services. The slot holds the serialized triple, and a value
+ * written by an older build migrates in place on first read.
+ */
+describe("model selection seed (docs/252)", () => {
+  const KEY = "vibe-model-id";
+
+  it("stores a picked model as the full triple", () => {
+    saveModelId("claude-opus-5");
+    expect(localStorage.getItem(KEY)).toBe("anthropic:sub:claude-opus-5");
+    expect(getSavedModelSelection()).toEqual({
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-opus-5",
+    });
+  });
+
+  it("still reports a BARE model id, which is what the picker and `?model=` take", () => {
+    saveModelId("claude-opus-5");
+    expect(getSavedModelId()).toBe("claude-opus-5");
+  });
+
+  it("migrates a legacy bare id in place on first read", () => {
+    localStorage.setItem(KEY, "gpt-5.6-sol");
+    expect(getSavedModelSelection()).toEqual({
+      serviceId: "openai",
+      billingMode: "sub",
+      modelId: "gpt-5.6-sol",
+    });
+    // Written back, so the migration happens once rather than on every read.
+    expect(localStorage.getItem(KEY)).toBe("openai:sub:gpt-5.6-sol");
+  });
+
+  it("leaves a legacy id the catalogue cannot place readable and unmigrated", () => {
+    // A versioned slug the picker never surfaced. The seed must still work —
+    // degrading to today's behaviour — rather than being dropped.
+    localStorage.setItem(KEY, "claude-sonnet-4-20250514");
+    expect(getSavedModelSelection()).toBeUndefined();
+    expect(getSavedModelId()).toBe("claude-sonnet-4-20250514");
+    expect(localStorage.getItem(KEY)).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("round-trips a selection the picker could not have expressed as an id", () => {
+    // The whole point of the triple: same model id, different service.
+    saveModelSelection({
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "anthropic/claude-opus-5",
+    });
+    expect(getSavedModelSelection()?.serviceId).toBe("openrouter");
+    expect(getSavedModelId()).toBe("anthropic/claude-opus-5");
+  });
+
+  it("refuses a triple naming no catalogue row, on read and on write", () => {
+    // Syntax is not existence. A value written by a build whose catalogue carried
+    // a service this one has dropped still parses; returning it would seed a new
+    // session with a row nothing can resolve an endpoint from.
+    localStorage.setItem(KEY, "obsolete:key:gpt-5.6-sol");
+    expect(getSavedModelSelection()).toBeUndefined();
+
+    localStorage.clear();
+    saveModelSelection({ serviceId: "obsolete", billingMode: "key", modelId: "gpt-5.6-sol" });
+    expect(localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it("clears the slot", () => {
+    saveModelId("claude-opus-5");
+    saveModelId(undefined);
+    expect(localStorage.getItem(KEY)).toBeNull();
+    expect(getSavedModelSelection()).toBeUndefined();
+    expect(getSavedModelId()).toBeUndefined();
   });
 });

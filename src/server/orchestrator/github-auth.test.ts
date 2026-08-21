@@ -343,7 +343,7 @@ describe("GitHubAuthManager", () => {
   });
 });
 
-describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / SHI-72)", () => {
+describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / planning#74)", () => {
   let tmpDir: string;
   let workspaceDir: string;
   let credentialStore: CredentialStore;

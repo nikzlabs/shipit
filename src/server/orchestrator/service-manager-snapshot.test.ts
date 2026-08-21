@@ -43,8 +43,6 @@ vi.mock("node:child_process", () => ({
 const { ServiceManager } = await import("./service-manager.js");
 const { LogStore } = await import("./log-store.js");
 
-const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
-
 describe("ServiceManager.snapshotLogs", () => {
   let tmpDir: string;
 
@@ -70,7 +68,7 @@ describe("ServiceManager.snapshotLogs", () => {
       sessionId: "test-session",
       workspaceDir,
       // Sibling of the clone — ServiceManager requires a service-env root
-      // outside it (SHI-290).
+      // outside it (planning#292).
       serviceEnvDir: path.join(tmpDir, "service-env"),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: () => Promise.resolve(),
@@ -109,7 +107,13 @@ describe("ServiceManager.snapshotLogs", () => {
       // Stale Docker output must be ignored when the store has content.
       snapshotStdout = "DOCKER STALE\n";
       logStore.append("test-session", "service:web", "durable line one\ndurable line two\n");
-      await flush();
+      // `drain()`, not a sleep: `append` is fire-and-forget, so a fixed delay
+      // is a guess. Under CI load the write had not landed, the read fell
+      // through to the docker fallback, and the test failed reporting
+      // "DOCKER STALE" — a load failure wearing the costume of a logic failure.
+      // `log-store.test.ts` replaced its own 20 ms sleep with this for the same
+      // reason; this file kept the sleep and inherited the flake.
+      await logStore.drain();
 
       const out = await mgr.snapshotLogs("web");
       expect(out).toBe("durable line one\ndurable line two\n");

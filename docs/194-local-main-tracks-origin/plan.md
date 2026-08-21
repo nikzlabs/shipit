@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-115
+issue: planning#117
 description: Session clones left local `main` frozen at the stale bare-cache snapshot even though the session branch was cut from the fresh origin/main, so an agent reviewing its own PR via `main..HEAD` reported already-merged commits as part of the branch. Fixed by realigning local `main` to `origin/main` at session hand-out.
 ---
 

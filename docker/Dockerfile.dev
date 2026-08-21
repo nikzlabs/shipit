@@ -17,16 +17,16 @@ RUN git lfs install --system --skip-repo --skip-smudge
 # integrity-verified install shared with the worker images (docs/141);
 # canonical comment in Dockerfile.session-worker.prod. Now includes
 # @playwright/mcp via the shared manifest, reconciling the prior prod/dev
-# omission. `--ignore-scripts` blocks the dependency tree's postinstalls;
-# `npm rebuild @anthropic-ai/claude-code` runs the install script for only that
-# trusted package (native binary linker).
+# omission. docs/252 phase 9 — the install itself is the shared
+# docker/agent-cli/install-agent-clis.sh, whose SHIPIT_HARNESSES build arg selects
+# which harnesses land in the image and which get pruned (req 14).
+# Empty = install-agent-clis' DEFAULT_HARNESSES (docs/271). Set to override.
+ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
-RUN --mount=type=cache,target=/root/.npm \
-    (cd /opt/agent-cli && npm ci --ignore-scripts && npm rebuild @anthropic-ai/claude-code)
+COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
+RUN chmod 0755 /usr/local/bin/install-agent-clis
+RUN --mount=type=cache,target=/root/.npm install-agent-clis
 ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
-RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
- && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
- && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
 
 # No-op git credential helper. Session workspaces carry a local
 # `credential.helper = /usr/local/bin/shipit-git-credential` (the brokering
@@ -49,10 +49,11 @@ RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline --loglevel=verb
 # Symlink Claude + Codex credential directories into /credentials so OAuth
 # logins (Claude) and ChatGPT subscription logins (Codex) survive container
 # restarts and idle cleanup. See docs/119-codex-subscription-auth/plan.md.
-RUN mkdir -p /workspace /credentials \
+RUN mkdir -p /workspace /credentials /root/.local/share \
  && ln -s /credentials/.claude /root/.claude \
  && ln -sf /credentials/.claude.json /root/.claude.json \
- && ln -s /credentials/.codex /root/.codex
+ && ln -s /credentials/.codex /root/.codex \
+ && ln -s /credentials/.local/share/opencode /root/.local/share/opencode
 VOLUME /workspace
 VOLUME /credentials
 

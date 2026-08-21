@@ -5,7 +5,7 @@ description: Keep compose-service secrets out of the agent-readable workspace wh
 
 # 183 — Compose Service Secret Isolation
 
-> **Superseded in part (SHI-290 / docs/246).** Everything below that describes an
+> **Superseded in part (planning#292 / docs/246).** Everything below that describes an
 > in-workspace `.shipit/.env.<service-name>` fallback — kept here as the "tests and
 > legacy/local paths" escape hatch — is **gone**. `serviceEnvDir` is required,
 > `writePerServiceEnvFiles()` and `sweepWorkspaceServiceEnvFiles()` are deleted, and the
@@ -142,7 +142,7 @@ The exact root is configurable:
 - `SHIPIT_SERVICE_ENV_DIR` if set.
 - Otherwise `<stateDir>/service-env` in containerized runtime.
 - ~~Tests and legacy/local paths can still inject no root and fall back to the old
-  workspace `.shipit/.env.<service-name>` behavior where needed.~~ **Removed by SHI-290** —
+  workspace `.shipit/.env.<service-name>` behavior where needed.~~ **Removed by planning#292** —
   the root is required and there is no fallback; tests supply a root like everyone else.
 
 **Why `<stateDir>/service-env` is agent-invisible in production — and not by accident.**
@@ -203,7 +203,7 @@ The important invariant becomes:
 ### 3. Extend compose override generation with service env-file paths
 
 `generateComposeOverride()` assumed each service env file lived at
-`.shipit/.env.<service-name>`. Add an optional service env-file map (SHI-290 later
+`.shipit/.env.<service-name>`. Add an optional service env-file map (planning#292 later
 deleted that in-clone assumption entirely, so the map is the only source of an
 `env_file:` path):
 
@@ -307,19 +307,19 @@ x-shipit-secrets[agent: true]
   service-name → absolute-path map, and fails closed via
   `assertServiceEnvRootOutsideWorkspace()` if the root resolves inside the agent workspace.
   (`sweepWorkspaceServiceEnvFiles()`, which removed a pre-183 in-workspace `.env.<svc>` leak,
-  is gone — SHI-290 retired it along with the writer that created such files.)
+  is gone — planning#292 retired it along with the writer that created such files.)
   `removeSessionServiceEnvDir()` (env-file mode) and
   `removeSessionSecretsDir()` (Docker-secrets `<internalDir>/<sessionId>/`) both delegate to a
   shared `removeSessionSecretDir()` best-effort remover — recursive, force, no-op on empty
   `sessionId`.
 - `src/server/orchestrator/service-secrets-resolver.ts` — `serviceEnvDir` (**required** since
-  SHI-290) is the out-of-workspace write root; `getServiceEnvFiles()` carries the env-file map
+  planning#292) is the out-of-workspace write root; `getServiceEnvFiles()` carries the env-file map
   from secret sync to compose override generation. Delivery is two modes, not three:
   Docker-secrets mode → out-of-workspace env files (`serviceEnvDir`). The legacy in-workspace
   `.shipit/.env.<svc>` tier is deleted.
 - `src/server/orchestrator/compose-generator.ts` — `ComposeOverrideOptions.serviceEnvFiles`
   emits absolute `env_file:` paths per service; a service absent from the map gets NO
-  `env_file:` entry (SHI-290 removed the `.shipit/.env.<svc>` fallback, which after the
+  `env_file:` entry (planning#292 removed the `.shipit/.env.<svc>` fallback, which after the
   writer's deletion would have named a file nothing creates).
 - `src/server/orchestrator/service-manager.ts` — `serviceEnvDir` option threaded to the
   resolver; `start()` reads `getServiceEnvFiles()` into the override opts. In env-file mode
@@ -346,10 +346,10 @@ x-shipit-secrets[agent: true]
 Add focused coverage for the boundary:
 
 - `secret-resolver.test.ts`: writing service env files to an external root returns paths
-  under that root and does not create `.shipit/.env.<service-name>`. (Since SHI-290 the
+  under that root and does not create `.shipit/.env.<service-name>`. (Since planning#292 the
   external root is the only mode, so this is the whole behaviour rather than one branch.)
 - `compose-generator.test.ts`: override uses supplied absolute env-file paths. (The
-  fallback-when-none-supplied case was removed by SHI-290; the test now asserts no
+  fallback-when-none-supplied case was removed by planning#292; the test now asserts no
   `env_file:` is emitted for a service absent from the map.)
 - `service-manager.test.ts`: service-only secrets are written outside the workspace and
   the generated override references the external env file.

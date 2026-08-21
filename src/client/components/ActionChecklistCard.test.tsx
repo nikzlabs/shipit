@@ -5,7 +5,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import type { ActionChecklistCard as ActionChecklistCardData } from "../../server/shared/types.js";
 
 /**
- * Tests for the interactive `ActionChecklistCard` (docs/207 / SHI-153). The card
+ * Tests for the interactive `ActionChecklistCard` (docs/207 / planning#155). The card
  * renders straight from its props (no store, no lifecycle). Submit produces ONE
  * message from the selected payloads; Add comment seeds the main composer with a
  * snapshot of the SELECTED actions only. The post-submit ack is transient

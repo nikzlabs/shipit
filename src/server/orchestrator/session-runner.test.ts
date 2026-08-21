@@ -173,7 +173,7 @@ describe("SessionRunner", () => {
       autoCommit: vi.fn(),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: opts.replaceInProgress ?? vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -241,7 +241,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("SHI-254: a systemTurn dispatch is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
+  it("planning#256: a systemTurn dispatch is NEVER steered into a running user turn — it enqueues, keeping its onTurnComplete", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
@@ -280,7 +280,7 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("SHI-254: a dispatch carrying only onTurnComplete is also unsteerable (the callback can't survive a steer)", () => {
+  it("planning#256: a dispatch carrying only onTurnComplete is also unsteerable (the callback can't survive a steer)", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
@@ -400,7 +400,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -449,7 +449,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -480,6 +480,9 @@ describe("SessionRunner", () => {
       defaultAgentId: "claude" as AgentId,
     });
     const outgoing = {
+      // A real `AgentProcess` is an `EventEmitter<AgentProcessEvents>`; the
+      // retirement settles its turn with `emit("superseded")` before killing.
+      emit: vi.fn(),
       kill: vi.fn(),
       removeAllListeners: vi.fn(),
     } as any;
@@ -502,7 +505,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -560,7 +563,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -617,6 +620,9 @@ describe("SessionRunner", () => {
     const resident = {
       on: vi.fn(),
       run: vi.fn(),
+      // See the failover test above — the retirement settles the outgoing
+      // turn through this before killing.
+      emit: vi.fn(),
       kill: vi.fn(() => { order.push("kill-resident"); }),
       removeAllListeners: vi.fn(),
       sendUserMessage: vi.fn(),
@@ -640,7 +646,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -721,7 +727,7 @@ describe("SessionRunner", () => {
       }),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: { replaceInProgress: vi.fn(), finalizeInProgress: vi.fn(), append: vi.fn() } as any,
         usageManager: { record: vi.fn(), getSessionUsage: vi.fn(), getSessionTokenTotals: vi.fn() } as any,
         sseBroadcast: vi.fn(),
@@ -730,13 +736,12 @@ describe("SessionRunner", () => {
       },
       // Wire the REAL env-prep over the hanging container runner so the test
       // exercises the actual fail-open timeout, not a stub.
-      prepareAgentEnv: async (sessionId, agentId) => {
-        await prepareSessionAgentEnvironment(envRunner as any, {
+      prepareAgentEnv: async (sessionId, agentId) =>
+        prepareSessionAgentEnvironment(envRunner as any, {
           sessionId,
           agentId,
           deps: { credentialsDir: "/tmp/shipit-env-prep-hang-test", credentialStore, sessionManager },
-        });
-      },
+        }),
       buildRunParams: vi.fn().mockResolvedValue({ prompt: "fix ci", cwd: "/tmp/s1" }),
     });
 
@@ -771,7 +776,7 @@ describe("SessionRunner", () => {
       autoCommit: vi.fn(),
       scheduleAutoPush: vi.fn(),
       listenerDeps: {
-        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
+        sessionManager: { setAgentSessionId: vi.fn(), get: vi.fn(), track: vi.fn(), setMuted: vi.fn(), list: vi.fn(), setLastTurnErrored: vi.fn() } as any,
         chatHistoryManager: {
           replaceInProgress: vi.fn(),
           finalizeInProgress: vi.fn(),

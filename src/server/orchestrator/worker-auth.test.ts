@@ -1,5 +1,5 @@
 /**
- * SHI-311 — the orchestrator's token registry and the container-env read-back
+ * planning#313 — the orchestrator's token registry and the container-env read-back
  * that lets a restarted orchestrator keep talking to containers it adopted.
  */
 
@@ -32,7 +32,7 @@ describe("worker token registry", () => {
   });
 
   it("sends no header for an unregistered worker rather than a wrong one", () => {
-    // An adopted pre-SHI-311 container: its worker ignores the header, and
+    // An adopted pre-planning#313 container: its worker ignores the header, and
     // sending a stale one would be worse than sending none.
     expect(workerAuthHeaders("http://172.18.0.99:9100")).toEqual({});
   });

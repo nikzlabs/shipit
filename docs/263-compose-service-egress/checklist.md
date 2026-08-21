@@ -1,0 +1,30 @@
+- [x] Generate an internal-only Compose network for contained sessions.
+- [x] Install the Tier A/B/C egress stack in each service network namespace before internet access is enabled.
+- [x] Re-apply containment when Compose recreates a service container.
+- [x] Add regression tests for override generation and fail-closed orchestration.
+- [x] Update the egress design reference and agent-facing Compose documentation.
+- [x] Run targeted and affected tests, lint, and typecheck.
+- [x] Independent review completed; all nine findings were addressed (restart persistence, Tier C sysctl, intra-session subnet, reconnect idempotency, allowlist reload, Tier A-only mode, network replacement, paused recovery, and orphan cleanup).
+- [x] Second independent review completed; all ten follow-up findings were addressed, including correct Compose `!override` semantics, service-only orphan cleanup, stop/start reinstallation, legacy reload compatibility, serialized passes, and non-destructive refresh failure.
+- [x] Third independent review completed; security hardening, paused recovery, refresh diagnostics, current-sidecar detection, deployment capacity notes, Compose minimum version, and the BuildKit scope boundary were addressed.
+- [x] Fourth fresh review completed; installer idempotency, older-engine compatibility, adopted policy refresh, safe refresh failure, evolving service DNS, legacy cleanup scope, reserved labels, and intra-session HTTPS were addressed.
+- [x] Fifth fresh review completed; stale-network detection and transition reset, restart-policy and external-model rejection, volume-preserving failure, surfaced refresh errors, policy-hash reconciliation, Open-mode validation parity, and janitor/version preflights were addressed.
+- [x] Sixth fresh review completed; trusted-UID isolation, DNS replacement, stale network repair, serialized adoption transitions, subnet failure handling, and Tier A idempotency were addressed.
+- [x] Seventh fresh review completed; stopped-container restart escape, contained force-recreation, narrow trusted-UID validation, health-gated DNS deadlock, stable refresh domains, and non-destructive widening refresh were addressed.
+- [x] Eighth fresh review completed; targeted pre-start NAT detachment replaced dependency recreation, repository image users can no longer assume trusted UIDs, common health-gated dependencies remain supported, refresh failure is explicit, and both local bridge subnets bypass Tier C.
+- [x] Ninth fresh review completed; Compose API-socket and lifecycle-hook escapes are rejected, Docker Engine API 1.48 is required for deterministic gateway priority, and unrelated network-connect authorization errors now fail closed.
+- [x] Tenth fresh review completed; raw Docker socket access is limited to the trusted proxy service and local/VPS installers enforce Docker Engine API 1.48.
+- [x] Eleventh fresh review completed; the Docker socket proxy exception now requires the server-authoritative ops flag, and stopped-service preparation invalidates same-second namespace state.
+- [x] Twelfth fresh review completed; policy transitions stop the prior stack before worker readiness, with regression coverage for the ordering.
+- [x] Thirteenth fresh review completed; contained services now reject incompatible root-init or ambiguous image-user configurations instead of silently overriding their runtime user.
+- [x] Fourteenth fresh review completed; proxy trust now depends on the complete server-authoritative service shape instead of its service name.
+- [x] Fifteenth fresh review completed; Contained mode now rejects the raw-socket ops proxy, removing its root and mutable-image trust from the containment boundary.
+- [x] Sixteenth fresh review completed with no important findings.
+- [x] ShipIt API review completed; dependency restart preparation, ops policy, cross-session cache isolation, fail-closed removal, HTTP refresh errors, and Open proxy startup compatibility were addressed.
+- [x] Two ShipIt API follow-up reviews completed; ops-agent containment, paused NAT cleanup, API-socket rejection, trusted-proxy DNS/startup, and visible refresh failures were addressed.
+- [x] Three additional Opus review rounds completed; trusted-label exclusion, deterministic bootstrap DNS, safe internal-name routing, dotted orchestrator resolution, and stale-network remediation were addressed.
+- [x] Three convergence Opus rounds completed; Compose-service API authorization and its race-safe, bounded container-origin index were addressed.
+- [x] Two substantive Opus rounds addressed interpolation/tag/socket inheritance, preview authorization, exact network-origin classification, and durable diagnostics; the third broker run returned an empty result.
+- [x] Three compact Opus reviews addressed exact trusted-proxy code provenance, fail-closed network setup, bounded restart-safe origin fallback, proxy command-injection fields, and preservation of last-known-good network ranges.
+- [x] Three further compact Opus reviews addressed proxy environment inheritance, reserved-network driver/IPAM control, YAML tag and merge-key validator divergence, and unnecessary engine gating without Compose services.
+- [ ] Redesign Compose startup so the effective allowlist is active before the service entrypoint or command executes, including startup package installation.

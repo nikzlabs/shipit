@@ -1,0 +1,17 @@
+{
+  "claudeAiOauth": {
+    "accessToken": "sk-ant-oat01-REDACTED-FIXTURE-ACCESS-TOKEN gitleaks:allow",
+    "refreshToken": "sk-ant-ort01-REDACTED-FIXTURE-REFRESH-TOKEN gitleaks:allow",
+    "expiresAt": 1787238459185,
+    "refreshTokenExpiresAt": 1789667227185,
+    "scopes": [
+      "user:file_upload",
+      "user:inference",
+      "user:mcp_servers",
+      "user:profile",
+      "user:sessions:claude_code"
+    ],
+    "subscriptionType": "max",
+    "rateLimitTier": "default_claude_max_20x"
+  }
+}

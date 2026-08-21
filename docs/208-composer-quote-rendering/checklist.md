@@ -9,7 +9,7 @@ rendering). Outcome is **no code change**, so there is no build work.
       quote-as-chip; defer the decoration-only left rail.
 - [x] Decoration-only left rail (D1): **declined** for now — no feasibility
       spike scheduled. Kept on file as possible future polish only.
-- [x] Confirm action-cards (SHI-153) build on plain editable text — documented
+- [x] Confirm action-cards (planning#155) build on plain editable text — documented
       as the assumption; no dependency on this doc.
 
 Deferred / explicitly out of scope (separate enhancement if ever wanted, not

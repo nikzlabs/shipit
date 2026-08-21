@@ -93,7 +93,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
   }
 
   describe("GET /api/sessions/:id/history", () => {
-    it("returns messages, commits, and fileTree", async () => {
+    it("returns messages and commits, but not the file tree", async () => {
       const dir = await createSession("s1", "Session 1");
       // Add some chat history
       chatHistoryManager.append("s1", {
@@ -115,7 +115,89 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(body.messages[0]).toMatchObject({ role: "user", text: "Hello" });
       expect(body.commits.length).toBeGreaterThanOrEqual(1);
       expect(body.commits.some((c: any) => c.message === "initial commit")).toBe(true);
-      expect(body.fileTree.length).toBeGreaterThan(0);
+      // planning#375 — the workspace file tree was 325 KB of this payload on a
+      // real repo and changes on a different cadence from the transcript, so it
+      // moved to `GET /api/sessions/:id/files`.
+      expect(body.fileTree).toBeUndefined();
+      const filesRes = await app.inject({ method: "GET", url: "/api/sessions/s1/files" });
+      expect(filesRes.json().tree.length).toBeGreaterThan(0);
+    });
+
+    /**
+     * planning#375 — a session switch used to re-download the whole
+     * conversation (2.67 MB on the traced session). The response now carries an
+     * ETag so the client can revalidate.
+     */
+    it("answers 304 when the client already holds the current transcript", async () => {
+      await createSession("etag-s", "ETag session");
+      chatHistoryManager.append("etag-s", { role: "user", text: "Hello" });
+
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-s/history" });
+      expect(first.statusCode).toBe(200);
+      const etag = first.headers.etag!;
+      expect(etag).toBeTruthy();
+      // Never served blind from the browser cache — a stale transcript is worse
+      // than a round trip.
+      expect(first.headers["cache-control"]).toBe("no-cache");
+
+      const revalidated = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s/history",
+        headers: { "if-none-match": etag },
+      });
+      expect(revalidated.statusCode).toBe(304);
+      expect(revalidated.body).toBe("");
+
+      // The form that actually arrives in production. Cloudflare re-compresses
+      // (zstd) and hands the browser `W/"…"`, which is what the browser echoes
+      // back — so an exact-match comparison meant the 304 never once fired
+      // through the CDN, and every attach re-downloaded the transcript.
+      const viaCdn = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s/history",
+        headers: { "if-none-match": `W/${etag}` },
+      });
+      expect(viaCdn.statusCode).toBe(304);
+    });
+
+    it("issues a fresh tag once the transcript changes", async () => {
+      await createSession("etag-s2", "ETag session 2");
+      chatHistoryManager.append("etag-s2", { role: "user", text: "One" });
+      const first = await app.inject({ method: "GET", url: "/api/sessions/etag-s2/history" });
+      const etag = first.headers.etag!;
+
+      chatHistoryManager.append("etag-s2", { role: "assistant", text: "Two" });
+      const second = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s2/history",
+        headers: { "if-none-match": etag },
+      });
+      expect(second.statusCode).toBe(200);
+      expect(second.headers.etag).not.toBe(etag);
+      expect(second.json().messages).toHaveLength(2);
+    });
+
+    /** planning#375 — the tree left `/history`, so it needs its own validator. */
+    it("answers 304 for an unchanged file tree", async () => {
+      await createSession("tree-s", "Tree session");
+      const first = await app.inject({ method: "GET", url: "/api/sessions/tree-s/files" });
+      expect(first.statusCode).toBe(200);
+      const etag = first.headers.etag!;
+      expect(etag).toBeTruthy();
+
+      const again = await app.inject({
+        method: "GET",
+        url: "/api/sessions/tree-s/files",
+        headers: { "if-none-match": etag },
+      });
+      expect(again.statusCode).toBe(304);
+
+      const viaCdn = await app.inject({
+        method: "GET",
+        url: "/api/sessions/tree-s/files",
+        headers: { "if-none-match": `W/${etag}` },
+      });
+      expect(viaCdn.statusCode).toBe(304);
     });
 
     it("returns 404 for non-existent session", async () => {
@@ -330,7 +412,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     });
   });
 
-  // ---- Retired singleton subscription sign-in (docs/150 reqs 16, 19) ----
+  // ---- Retired singleton subscription sign-in (docs/150-multiple-provider-subscriptions reqs 16, 19) ----
   //
   // These were the "connect your first account" endpoints. They took no
   // account id, so whatever they authenticated could not afterwards be

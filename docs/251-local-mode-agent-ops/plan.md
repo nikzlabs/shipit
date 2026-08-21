@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-317
+issue: planning#319
 title: The gh shim works in the dogfood inner ShipIt
 description: A session-bound /agent-ops host for RUNTIME_MODE=local, so dogfood turns can open PRs and read CI instead of hitting "gh: not found".
 ---
@@ -20,9 +20,9 @@ that POSTs to a worker's `/agent-ops/*` broker, and local mode has no worker —
 so it would have traded `gh: not found` for a connection error, which is why the
 Dockerfile change and the host land together.
 
-## Why this is smaller than SHI-303 implies
+## Why this is smaller than planning#305 implies
 
-SHI-303 scopes "an `/agent-ops` host for local mode" as one job covering the
+planning#305 scopes "an `/agent-ops` host for local mode" as one job covering the
 `shipit` MCP bridge (`present`, `voice_note`, `propose_actions`,
 `report_shipit_bug`, `permission_prompt`) *and* the two shims. That bundling is
 what made it look expensive, and it is why `gh` sat in the backlog.
@@ -56,7 +56,7 @@ Four properties are deliberate:
 
 - **The session is a property of the listener, not the request** (req 5). This
   is what the worker's broker gets from its `SESSION_ID` env, and what
-  SHI-303's own sketch — mount `/agent-ops` on the orchestrator keyed by a path
+  planning#305's own sketch — mount `/agent-ops` on the orchestrator keyed by a path
   segment — would have given up.
 - **The allowlist is the security boundary.** `mapAgentOpsPath` returns `null`
   for anything the `gh` shim cannot emit, and `null` is a deny rather than a
@@ -105,7 +105,7 @@ the host.
 **not** installed: it shares the plumbing but only works in part here
 (`shipit service` needs a ServiceManager and local mode runs no Compose stacks;
 `shipit agent run` spawns a sub-agent). It stays with the worker-served tools in
-SHI-303, whose remaining scope this narrows.
+planning#305, whose remaining scope this narrows.
 
 ## Honest limits
 

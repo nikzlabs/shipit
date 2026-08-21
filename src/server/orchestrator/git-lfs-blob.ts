@@ -3,6 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { isGitLfsAvailable } from "./git-lfs.js";
 import { killChild } from "../shared/kill-child.js";
+import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
+import {
+  type GitRemoteCredential,
+  type GitRemoteCredentialResolver,
+  gitCredentialSpawnOverrides,
+  resolveTreeRemoteCredential,
+} from "../shared/git-remote-credential.js";
 
 /**
  * Resolve a Git LFS pointer blob to the bytes it stands for, for *rendering*
@@ -143,14 +151,34 @@ function readLocalLfsObject(workspaceDir: string, pointer: LfsPointer): Buffer |
  * output as well as a bad exit code — returning it would re-embed the checksum
  * as image bytes, which is the exact bug this module exists to fix.
  */
-function smudgeLfsObject(workspaceDir: string, pointerText: string, filePath: string): Promise<Buffer | null> {
+function smudgeLfsObject(
+  workspaceDir: string,
+  pointerText: string,
+  filePath: string,
+  credential: GitRemoteCredential | null,
+): Promise<Buffer | null> {
   return new Promise((resolve) => {
     let proc;
     try {
-      proc = spawn("git", ["lfs", "smudge", "--", filePath], {
+      // docs/266 — `git lfs smudge` resolves `filter.lfs.smudge` from the
+      // repository's own config, which is the executable-config route this
+      // feature exists to close, and this tree is one untrusted code can write.
+      // Drop to the tree's owner so the filter runs at its author's authority.
+      //
+      // docs/266-orchestrator-git-trust-boundary E3 — git-lfs authenticates its transfer through `git credential
+      // fill`, so a dropped-uid smudge needs a credential of its own for exactly
+      // the same reason a push does: it can no longer read the orchestrator's
+      // PAT. Without this an LFS asset in a PRIVATE repo silently renders as its
+      // pointer text in the diff viewer. Empty when no drop applies.
+      const cred = gitCredentialSpawnOverrides(credential);
+      proc = spawn("git", gitArgsWithHooksDisabled([...cred.args, "lfs", "smudge", "--", filePath]), {
         cwd: workspaceDir,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        env: { ...process.env, ...cred.env, GIT_TERMINAL_PROMPT: "0" },
         stdio: ["pipe", "pipe", "ignore"],
+        // Spread inline, not via a local: `git-hooks-guard-coverage.test.ts`
+        // reads the call site itself, and a name it cannot follow reads to it
+        // exactly like a site that forgot.
+        ...gitSpawnOverridesForTree(workspaceDir),
       });
     } catch {
       resolve(null);
@@ -198,8 +226,17 @@ export type LfsBlobResolver = (
 
 export function createLfsBlobResolver(
   workspaceDir: string,
-  /** Test seam — `isAvailable` overrides the memoized `git lfs version` probe. */
-  opts?: { isAvailable?: () => Promise<boolean>; networkBudget?: number },
+  opts?: {
+    /** Test seam — overrides the memoized `git lfs version` probe. */
+    isAvailable?: () => Promise<boolean>;
+    networkBudget?: number;
+    /**
+     * docs/266-orchestrator-git-trust-boundary E3 — mints the credential the dropped-uid `git lfs smudge`
+     * transfers with. Omitted, and a private repo's LFS assets stop resolving
+     * once the orchestrator's git can no longer read the PAT.
+     */
+    resolveRemoteCredential?: GitRemoteCredentialResolver;
+  },
 ): LfsBlobResolver {
   let remainingFetches = opts?.networkBudget ?? networkFetchBudget();
   let available: Promise<boolean> | null = null;
@@ -219,7 +256,10 @@ export function createLfsBlobResolver(
     // pre-fetch budget and collectively blow through it.
     remainingFetches--;
     const text = typeof pointerText === "string" ? pointerText : pointerText.toString("utf-8");
-    const fetched = await smudgeLfsObject(workspaceDir, text, filePath);
+    const credential = await resolveTreeRemoteCredential(
+      workspaceDir, "origin", opts?.resolveRemoteCredential,
+    );
+    const fetched = await smudgeLfsObject(workspaceDir, text, filePath, credential);
     if (!fetched) {
       console.warn(`[git-lfs-blob] Could not fetch LFS content for ${filePath} (oid ${pointer.oid.slice(0, 12)})`);
       return null;

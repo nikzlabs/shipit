@@ -1,6 +1,6 @@
 ---
 description: Remaining security hardening deferred from containerization: non-root worker runtime, network egress allowlist, read-only credential mounts, and cross-platform validation.
-issue: https://linear.app/shipit-ai/issue/SHI-45
+issue: planning#47
 ---
 
 # 067 — Container Hardening & Cross-Platform Validation
@@ -33,15 +33,15 @@ macOS (Docker Desktop, Apple Silicon, virtiofs) is fully validated. Linux and WS
 
 ## Security Hardening
 
-### Read-only data mounts (Gap 6 — SHI-45)
+### Read-only data mounts (Gap 6 — planning#47)
 
-- [x] Switch `/uploads` to read-only (SHI-45). The agent only reads uploads; they're
+- [x] Switch `/uploads` to read-only (planning#47). The agent only reads uploads; they're
   written orchestrator-side on the host. `buildMounts` (`container-lifecycle.ts`) emits a
   `:ro` bind / `ReadOnly: true` volume; tested in `container-lifecycle.test.ts`. See
   `docs/172-agent-containment/` Gap 6.
 - [ ] Switch `/credentials` to read-only once the agent CLI's in-place OAuth token-refresh
   write is relocated out of the mount (docs/142). Blocked; prerequisite tracked as
-  **SHI-164** and scoped in `docs/172-agent-containment/` Gap 6.
+  **planning#166** and scoped in `docs/172-agent-containment/` Gap 6.
 
 ### Non-root worker
 

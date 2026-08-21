@@ -127,7 +127,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     runner.dispose({ force: true });
   });
 
-  it("attaches exactly one stack_error listener", () => {
+  it("attaches one stack_error listener per concern, and no duplicates", () => {
     const runner = makeRunner("s1");
     const mgr = makeStubServiceManager();
     const cm = buildContainerManager();
@@ -139,7 +139,13 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       installPromise: null,
     });
 
-    expect(mgr._stackErrorListenerCount).toBe(1);
+    // Two, and each is a different job on the same event: the adoption path's
+    // own listener reports the failure (banner + Logs), and the runner's
+    // `setServiceManager` re-sends the service list, because a start that failed
+    // rebuilt the map just as much as one that succeeded (#2325). What this
+    // guards is that adoption does not STACK them — a third would mean the same
+    // failure reported twice, which is the docs/127 regression.
+    expect(mgr._stackErrorListenerCount).toBe(2);
 
     runner.dispose({ force: true });
   });
@@ -175,6 +181,31 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       network: "shipit-session-s1",
     });
 
+    runner.dispose({ force: true });
+  });
+
+  it("stops the old-policy stack before waiting for worker readiness", async () => {
+    const runner = makeRunner("s1");
+    const mgr = makeStubServiceManager() as StubServiceManager & {
+      updateEgressContainment: () => boolean;
+      reconcile: () => Promise<void>;
+    };
+    mgr.updateEgressContainment = () => true;
+    mgr.reconcile = async () => undefined;
+    const cm = buildContainerManager();
+
+    adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+      serviceManagers: new Map(),
+      composeStopPromises: new Map(),
+      containerManager: cm,
+      installPromise: null,
+      containServicesFn: async () => undefined,
+      resetSessionNetwork: async () => undefined,
+    });
+
+    await Promise.resolve();
+    expect(mgr._stopCalls).toBe(1);
+    expect(cm._connectCalls).toHaveLength(0);
     runner.dispose({ force: true });
   });
 
@@ -307,6 +338,79 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     expect(mgr._setInstallRunningOpts[1]).toEqual({ failed: false });
 
     runner.dispose({ force: true });
+  });
+
+  /**
+   * #2426 — the compose override is written by `start()`/`reconcile()` and by
+   * nothing else, so re-pointing an adopted manager at a different overlay set
+   * has to be followed by a reconcile. Without it the stale override on disk
+   * keeps feeding every later `compose up`, and a service container — whose
+   * mount set is frozen at CREATE time — is merely `start`ed with the wrong
+   * mounts, indefinitely.
+   */
+  describe("dep-dir overlay re-point (#2426)", () => {
+    const SESSION = { remoteUrl: "https://github.com/acme/repo.git", kind: "repo" };
+    const PAIRS = [{ depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" }];
+
+    function buildOverlayContainerManager() {
+      return {
+        connectToNetwork: async () => undefined,
+        provisionedOverlayDepDirs: () => PAIRS,
+        dockerClient: { getVolume: () => ({ inspect: async () => ({}) }) },
+        // This container's creation did not have to recreate a rotated overlay
+        // volume, so the set is the only thing that can ask for a reconcile.
+        consumeOverlayVolumesRecreated: () => false,
+      } as unknown as SessionContainerManager;
+    }
+
+    async function driveAdoption(
+      setOverlayChanged: boolean,
+    ): Promise<{ reconciles: number; applied: unknown[][] }> {
+      const runner = makeRunner("s1");
+      let reconciles = 0;
+      const applied: unknown[][] = [];
+      const mgr = makeStubServiceManager() as StubServiceManager & {
+        setOverlayDepDirs: (v: unknown[]) => boolean;
+        reconcile: () => Promise<void>;
+      };
+      mgr.setOverlayDepDirs = (v: unknown[]) => { applied.push(v); return setOverlayChanged; };
+      mgr.reconcile = async () => { reconciles += 1; };
+
+      adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+        serviceManagers: new Map(),
+        composeStopPromises: new Map(),
+        containerManager: buildOverlayContainerManager(),
+        installPromise: null,
+        // Containment deliberately UNCHANGED — the overlay set is the only
+        // reason a reconcile could be owed here.
+        session: SESSION as never,
+        workspaceDir: "/ws/s1",
+      });
+
+      runner.setWorkerUrl("http://10.0.0.42:4000");
+      // The chain is whenWorkerReady → applyOverlayDepDirs (two Docker awaits)
+      // → reconcile → connectToNetwork; drain generously rather than counting.
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      runner.dispose({ force: true });
+      return { reconciles, applied };
+    }
+
+    it("reconciles when the new container's overlay set differs", async () => {
+      const { reconciles, applied } = await driveAdoption(true);
+      expect(applied).toEqual([PAIRS]);
+      expect(reconciles).toBe(1);
+    });
+
+    it("does not reconcile when the set is identical", async () => {
+      // The common case: volume names are session-stable, so a recreate mints
+      // the same names and the override on disk is still correct. Reconciling
+      // anyway would restart the stack on every agent restart.
+      const { reconciles, applied } = await driveAdoption(false);
+      // Asserted so the negative can't pass vacuously: the re-point DID run,
+      // it just had nothing to change.
+      expect(applied).toEqual([PAIRS]);
+      expect(reconciles).toBe(0);
+    });
   });
 
   it("propagates install failure to the gate (failed: true)", async () => {

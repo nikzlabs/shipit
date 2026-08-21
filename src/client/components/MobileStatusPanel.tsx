@@ -1,9 +1,8 @@
 import type { ReactNode } from "react";
 import type { DockerMemoryStats, SubscriptionLimitsMap } from "../../server/shared/types.js";
 import { DockerMemoryBadge } from "./DockerMemoryBadge.js";
-import { SubscriptionLimitsBadge } from "./SubscriptionLimitsBadge.js";
+import { SubscriptionLimitsBadge, useSubscriptionPillCount } from "./SubscriptionLimitsBadge.js";
 import { UptimeBadge } from "./UptimeBadge.js";
-import { useSettingsStore } from "../stores/settings-store.js";
 
 interface MobileStatusPanelProps {
   subscriptionLimits: SubscriptionLimitsMap;
@@ -25,8 +24,12 @@ interface MobileStatusPanelProps {
  * making them tap the refresh glyph as a second step.
  */
 export function MobileStatusPanel({ subscriptionLimits, dockerMemory, processStartedAt }: MobileStatusPanelProps) {
-  const hasProviderAccounts = useSettingsStore((s) => s.providerAccounts.length > 0);
-  const hasSubscription = hasProviderAccounts || Object.values(subscriptionLimits).some((s) => s);
+  // Ask the badge what it would render rather than re-deriving it. This read
+  // "any connected account, or any snapshot", which was the same answer until
+  // docs/274 req 16: an xAI subscription reports no quota ShipIt can read, so
+  // it has an account and no pill — and the two conditions disagreeing puts a
+  // "Subscription" heading above an empty box.
+  const hasSubscription = useSubscriptionPillCount(subscriptionLimits) > 0;
   const hasMemoryLimit = dockerMemory && dockerMemory.totalBytes > 0;
 
   return (

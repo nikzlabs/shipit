@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-187
+issue: planning#189
 ---
 
 # 129 — Stop-hook enforcement of agent-driven PR creation

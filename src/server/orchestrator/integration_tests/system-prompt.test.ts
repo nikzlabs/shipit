@@ -92,7 +92,7 @@ describe("Integration: System prompt", () => {
   });
 
   /**
-   * SHI-290 — the WS turn and the server-dispatched (system) turn read the
+   * planning#292 — the WS turn and the server-dispatched (system) turn read the
    * global prompt through *different* closures: `route-registry.ts`'s
    * per-connection `readSystemPrompt` and `bootstrap-managers.ts`'s app-scope
    * `readSystemPromptApp`. Both now call `readGlobalSystemPrompt`, but only the

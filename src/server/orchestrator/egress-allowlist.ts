@@ -2,7 +2,7 @@
  * Egress allowlist — the set of hostnames a session container is permitted to
  * reach through the orchestrator-controlled forward proxy (`egress-proxy.ts`).
  *
- * docs/172-agent-containment Gap 1 (SHI-90). Session containers hold real
+ * docs/172-agent-containment Gap 1 (planning#92). Session containers hold real
  * credentials (the pinned agent's OAuth/subscription token, MCP tokens, the
  * brokered GitHub PAT) and, by product design, run with minimal human-in-the-
  * loop friction. The load-bearing backstop against credential exfiltration via
@@ -45,9 +45,41 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   // --- Agent API endpoints (Claude / Anthropic) ---
   ".anthropic.com", // api.anthropic.com (inference), console.anthropic.com (OAuth), statsig.anthropic.com
   ".claude.ai", // claude.ai OAuth / subscription endpoints
+  "platform.claude.com", // Claude Code subscription authentication; exact host keeps other claude.com services closed
   // --- Agent API endpoints (Codex / OpenAI) ---
   ".openai.com", // api.openai.com, auth.openai.com
   ".chatgpt.com", // chatgpt.com (Codex subscription auth)
+  // --- Catalogue provider API endpoints ---
+  // Exact hosts preserve the default-deny boundary: these services need their
+  // inference endpoint, not arbitrary sibling subdomains.
+  "api.deepseek.com",
+  "api.z.ai",
+  "openrouter.ai",
+  "ai-gateway.vercel.sh",
+  // docs/272 — OpenCode Zen and OpenCode Go both serve from this one host
+  // (`/zen/v1`, `/zen/go/v1`), so one exact entry covers the service's two
+  // billing modes. NOT ".opencode.ai": the suffix would also open the console,
+  // and inference is what a session needs.
+  "opencode.ai",
+  // docs/274 — xAI's inference endpoint, the `grok` harness's KEY-billed mode.
+  // EXACT host, never ".x.ai": the suffix would open the marketing site and
+  // every other x.ai service, and inference is what a session needs.
+  "api.x.ai",
+  // planning#435 — the two hosts Grok's SUBSCRIPTION mode needs, each its own
+  // exact host for the same reason. Both are here because they were observed
+  // in use, not because the binary mentions them:
+  //   - `auth.x.ai` serves the OIDC device-code flow (`grok login
+  //     --device-auth` POSTs `/oauth2/device/code`) AND the refresh — the
+  //     token is short-lived (6h observed), so a long session re-reaches this
+  //     host mid-turn, which is why it cannot be a login-time-only grant.
+  //   - `cli-chat-proxy.grok.com` is where subscription turns actually go:
+  //     `GET /v1/models` returns a catalogue disjoint from the key mode's, and
+  //     every recorded turn POSTs `/v1/responses` there.
+  // Note `accounts.x.ai` is deliberately ABSENT: it serves the page the user
+  // approves the device code on, which their own browser loads. The container
+  // never fetches it.
+  "auth.x.ai",
+  "cli-chat-proxy.grok.com",
 
   // --- Git host ---
   // ShipIt only authenticates against GitHub today (see docs/172 Gap 2). The
@@ -107,9 +139,25 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   // --- Agent API endpoints (Claude / Anthropic) ---
   ".anthropic.com",
   ".claude.ai",
+  "platform.claude.com",
   // --- Agent API endpoints (Codex / OpenAI) ---
   ".openai.com",
   ".chatgpt.com",
+  // --- Catalogue provider API endpoints ---
+  "api.deepseek.com",
+  "api.z.ai",
+  "openrouter.ai",
+  "ai-gateway.vercel.sh",
+  "opencode.ai",
+  "api.x.ai",
+  // planning#435 — Grok's subscription mode. `cli-chat-proxy.grok.com` is an
+  // inference endpoint, so it belongs in the lifeline on the same footing as
+  // `api.x.ai`. `auth.x.ai` is here for a different reason: the subscription
+  // token expires in ~6h and refreshes against it, so a Network-off session
+  // that could reach inference but not the refresh would die partway through
+  // rather than at the start — the failure mode a lifeline exists to prevent.
+  "auth.x.ai",
+  "cli-chat-proxy.grok.com",
 ];
 
 /**
@@ -467,6 +515,21 @@ export interface ResolvedEgressConfig {
    * "" / unset → no identity scoping (the host allowlist still applies).
    */
   identityRules?: string;
+  /**
+   * This session's policy admits **no user hosts at all** — today only docs/211's
+   * Network-off sandbox, whose `network` capability "only ever tightens, never
+   * loosens" and whose reach is the lifeline, full stop.
+   *
+   * A session-level fact, deliberately not a per-host one, because the two are
+   * opposite answers to the same shape (planning#380). "This host is not in the
+   * config" describes an ORDINARY session's brand-new host — precisely when the
+   * Tier C card should appear and a user grant will work. Here no grant can ever
+   * work: `sandboxLifelineEgressConfig` ignores the allowlist store, so a durable
+   * add is inert and an allow-once decision would widen a session the user sealed.
+   * A reader must ask *this*, not diff the host against the entries, or it will
+   * suppress the allow-once flow for every normal session.
+   */
+  userHostsExcluded?: boolean;
 }
 
 /**
@@ -492,6 +555,10 @@ export function sandboxLifelineEgressConfig(
     extraHosts: [],
     base: sandboxLifelineBase({ git: session.capabilities.git }),
     ...(identityRules ? { identityRules } : {}),
+    // Stated rather than left to be inferred from the empty extras: a reader
+    // cannot tell "this session drops user hosts" from "this user has added
+    // none", and planning#380 is what guessing cost.
+    userHostsExcluded: true,
   };
 }
 

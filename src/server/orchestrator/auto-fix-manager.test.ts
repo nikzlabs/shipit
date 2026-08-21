@@ -2,12 +2,14 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
 import {
   AutoFixManager,
+  autoFixResultForOutcome,
   AUTO_FIX_COOLDOWN_MS,
   AUTO_FIX_DEFERRED_COOLDOWN_MS,
   MAX_AUTO_FIX_ATTEMPTS,
   type AutoFixResult,
   type FetchAndFixCb,
 } from "./auto-fix-manager.js";
+import { turnDropped, turnInterrupted, TURN_STEERED } from "./turn-settlement.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { GraphQLPrNode } from "./pr-status-parser.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
@@ -60,7 +62,7 @@ function makeNode(oid: string): GraphQLPrNode {
  * `headRefOid` defaults to `oid` (the steady state — the rollup commit IS the
  * branch tip). Pass a distinct value to model the post-retrigger-push window
  * where `commits(last: 1)` (the failing rollup commit) lags behind the ref's
- * already-advanced tip (defect A — SHI-62).
+ * already-advanced tip (defect A — planning#64).
  */
 function makeNodeWithChecks(oid: string, checkIds: number[], headRefOid = oid): GraphQLPrNode {
   return {
@@ -409,7 +411,7 @@ describe("AutoFixManager", () => {
     expect(fx.cb.lastIds()).toEqual([102]);
   });
 
-  it("does NOT fire a failure on a superseded run once the ref tip advances (defect A — SHI-62)", async () => {
+  it("does NOT fire a failure on a superseded run once the ref tip advances (defect A — planning#64)", async () => {
     // The current PR head has already advanced (headRefOid = sha2, e.g. an empty
     // retrigger commit whose run is queued/passing), but GitHub's commits(last:1)
     // still lags on the OLD failing commit (rollup oid = sha1) with its failed
@@ -440,6 +442,49 @@ describe("AutoFixManager", () => {
     await fx.failChecks([101]);
     await tick();
     expect(fx.cb.count()).toBe(2);
+  });
+
+  // The 2026-08-10 duplicate-CI-fix incident (session 1cfb9c2c, PR #2127), at
+  // this layer: the fix turn RAN and committed, its runner was then disposed
+  // inside the post-turn window, and the settlement nets reported the finished
+  // turn as `dropped`. `dropped` maps to "noop" — "couldn't even start" — so the
+  // check run was never recorded as dispatched and the identical prompt with the
+  // identical logs went out again on the next poll.
+  //
+  // `autoFixResultForOutcome` is the mapping that decides it; these pin both
+  // sides of the line it draws.
+  describe("settlement → accounting (autoFixResultForOutcome)", () => {
+    it("a turn that RAN counts, whatever it settled as", () => {
+      for (const status of ["completed", "errored", "no-result", "interrupted"] as const) {
+        expect(autoFixResultForOutcome({ status, errored: status === "errored" }).outcome).toBe("fixed");
+      }
+    });
+
+    it("only a turn that never ran is a noop", () => {
+      expect(autoFixResultForOutcome(turnDropped("runner disposed mid-turn")).outcome).toBe("noop");
+      expect(autoFixResultForOutcome(TURN_STEERED).outcome).toBe("noop");
+    });
+  });
+
+  it("a fix turn cut short AFTER it ran never re-dispatches the same check run", async () => {
+    // What the production settlement now reports for a completed turn whose
+    // runner was disposed mid-teardown.
+    fx = makeFixture({
+      cb: recordingCb(() => autoFixResultForOutcome(
+        turnInterrupted("runner disposed mid-turn — after the turn produced its result"),
+      )),
+    });
+    await fx.failChecks([93522532864]);
+    await tick();
+    expect(fx.cb.count()).toBe(1);
+
+    // The poll a minute later sees the identical still-red rollup: same head,
+    // same check-run id, so the superseded guard (defect A) cannot help. The
+    // dedup record is the only thing standing between it and a second send.
+    fx.advance(AUTO_FIX_COOLDOWN_MS + 1);
+    await fx.failChecks([93522532864]);
+    await tick();
+    expect(fx.cb.count()).toBe(1);
   });
 
   it("CI green forgets dispatched runs so a later identical-ID failure can fire", async () => {

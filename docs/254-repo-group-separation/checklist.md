@@ -3,7 +3,7 @@
 - [x] Palette: 16 entries, light values + dark overrides, scoped per the `--color-sandbox` cascade rule
 - [x] `RepoInfo.colorIndex` + `color_index` column
 - [x] Backfill migration for existing repos, in sidebar display order
-- [x] Assignment on add: lowest free index, counting hidden repos, stable across re-add
+- [x] Assignment on add: first free index in assignment order, counting hidden repos, stable across re-add
 - [x] `PATCH /api/repos/:url` accepts `colorIndex`, validated server-side
 - [x] Optimistic client store action with revert on failure
 - [x] Group edge as `border-left` on the group element (survives the sticky header)
@@ -24,3 +24,7 @@
 - [x] Header band retuned: the neutral fill made light-theme headers the heaviest surface in the rail
 - [x] Band-weight guard across all fourteen themes, verified to fail both too-heavy and too-faint
 - [x] Independent review of the band retune (Codex, 2026-08-06) — two test overclaims fixed, no production defect
+- [x] Colors handed out in a farthest-point order — palette order gave the first repos three adjacent ochres
+- [x] Re-spread migration gated on `fromVersion`, so it only ever rewrites colors the backfill just assigned
+- [x] Independent review of the assignment change (Codex, 2026-08-07) — caught a value-shape guard that would have overwritten a manual colour swap; replaced with the version gate at Nik's call
+- [x] Guard test stating the property as the user meets it: distance to the nearest color already in use

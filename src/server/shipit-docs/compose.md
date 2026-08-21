@@ -73,10 +73,42 @@ so files a dev server writes into the shared workspace — build caches like
 is what lets you run a one-off `npm run build` or typecheck from the terminal while
 the dev server is running, without hitting `EACCES` on a cache the server created.
 
-You don't need to configure anything for this. **Avoid setting `user:` (especially
-`user: root`) on a service that writes into the mounted workspace** — an explicit
-`user:` is honored as-is, which can re-introduce root-owned caches the terminal
-user can't delete or rebuild.
+You don't need to configure anything for this, **in an Open session and in a
+contained one alike**. **Avoid setting `user:` (especially `user: root`) on a
+service that writes into the mounted workspace** — an explicit `user:` is honored
+as-is, which can re-introduce root-owned caches the terminal user can't delete or
+rebuild.
+
+One range is not yours to use: **UIDs 2000000–2999999 are reserved by ShipIt**
+for per-session identities, and a `user:` inside it is rejected during
+validation. Nothing real falls in that range — system accounts stop at 999, the
+account your image ships is almost always in the low thousands, and `nobody` is
+65534 — so this only ever affects a number picked arbitrarily. Pick a lower one.
+
+That reservation is why declaring nothing is the right answer rather than merely
+the convenient one: the UID your service wants is the session's own, and naming
+it is exactly what the range refuses. Leave `user:` out and ShipIt supplies it.
+
+**If your compose file declares a `user:` only because a contained session used to
+refuse it, delete that line.** That rule is gone. A `user:` kept out of habit is
+now actively harmful, in two ways that look nothing alike:
+
+- **git refuses to work.** `safe.directory` checks who *owns* a repository, not
+  whether the process can write it. A service running as a foreign UID fails with
+  `fatal: detected dubious ownership in repository at …` on any git command,
+  including ones your tooling runs for you. Group-writability cannot fix this, and
+  adding a `safe.directory` exception papers over a real ownership mismatch.
+- **Caches under `node_modules` break.** A cache directory created by one UID and
+  written by another gives `EACCES … mkdir '…/node_modules/.vite/deps_temp_…'`.
+  ShipIt repairs a leaked cache tree at container start, but the cheap fix is to
+  stop creating the mismatch.
+
+**If your image genuinely needs its own user** — it keeps startup scripts in that
+account's home, or drops privileges itself — declare it, and the service still
+runs: ShipIt adds the session's group to it, and the workspace is group-writable,
+so it can write the tree the agent shares with it. Accept the two costs above in
+exchange, and keep such a service away from git and from the workspace's
+dependency directories.
 
 ## Hot reload (HMR) needs polling
 
@@ -367,6 +399,39 @@ inside your container. It is populated only while the service is running.
 
 Add `--json` to any subcommand for a machine-readable object.
 
+### An empty list has two different meanings
+
+`list` prints "No services defined" only when the project genuinely declares
+none. If ShipIt read the compose file and **declined** it — a rule on this page
+the file does not satisfy — the list says so instead, and quotes the rule and the
+fix:
+
+```
+ShipIt refused this project's compose file, so none of its services are defined:
+
+  Service `web`: `user: 2000145` is inside 2000000-2999999, the UID range ShipIt
+  reserves for per-session identities …
+
+Edit the compose file `shipit.yaml` declares to satisfy that rule — see /shipit-docs/compose.md.
+```
+
+Read the quoted rule rather than assuming which one fired. A refusal naming
+`user:` is about a `user:` the file **declares** — root, a reserved egress UID, or
+one in the per-session range. **An absent `user:` is not a refusal**, in a
+contained session or an open one; ShipIt fills the session's own identity in, and
+that is the arrangement the section above tells you to prefer. If you are looking
+at a compose file that declares a `user:` only to satisfy a refusal, deleting the
+line is the fix, not editing the number.
+
+Do not add a second compose file in response — the one that exists needs the
+named line changed, and it is whatever path `compose.file` in `shipit.yaml`
+points at, not necessarily `docker-compose.yml`. A file ShipIt could not parse
+at all is reported the same way, without a fix instruction, because there is
+none to give.
+
+`--json` and `GET /api/sessions/:id/services` carry the same thing as
+`failure: { kind: "refused" | "malformed", message }` beside `services`.
+
 ### Starts can take minutes
 
 A service is `manual` precisely because it's heavy. The first `start` runs
@@ -451,7 +516,7 @@ general device passthrough.
 services:
   emulator:
     image: budtmo/docker-android:emulator_14.0   # or an AOSP emulator-webrtc image
-    user: androidusr               # REQUIRED — the image's own user (see below)
+    user: "1300:1301"              # REQUIRED — the image's own user, numeric (see below)
     environment:
       - WEB_VNC=true                       # REQUIRED — enables the noVNC web UI on 6080
       - EMULATOR_DEVICE=Samsung Galaxy S10 # device profile
@@ -461,16 +526,23 @@ services:
     x-shipit-preview: auto         # show the web UI as the interactive preview
 ```
 
-- **`user: androidusr` is required — images that ship their own user need an
-  explicit `user:`.** By default ShipIt runs compose services as the session-worker
-  UID so files a dev server writes into the *shared workspace* stay agent-owned.
-  Images that run as their own baked-in user and keep startup scripts in that
-  user's home break under a foreign UID — the emulator fails with
+- **This image is one that needs an explicit `user:`, written numerically.** By
+  default ShipIt runs compose services as the session's own UID so files a dev
+  server writes into the *shared workspace* stay agent-owned, and most images want
+  exactly that. Images that run as their own baked-in user and keep startup
+  scripts in that user's home break under a foreign UID — the emulator fails with
   `sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied`.
   An explicit `user:` is always honored verbatim (ShipIt never overrides a
   deliberate choice), so declaring the image's own user fixes it. Safe here
   because the emulator writes nothing to the shared workspace. Apply the same rule
-  to any image with this shape.
+  to any image with this shape. Write the UID as a **number**, not a name:
+  `1300:1301` IS `androidusr` in this image, and a contained session rejects a
+  name it cannot check — a rejection that fails the whole file, so one named user
+  stops every other service too. Find the number with
+  `docker run --rm --entrypoint id <image>`.
+  A numeric `user:` makes the file valid; it does not by itself make a
+  multi-process, root-init image work under containment. Use an Open session for
+  the Android emulator preview.
 - **`WEB_VNC=true` is required for the user-facing preview.** Without it the
   `budtmo` image boots the emulator (adb works for the agent) but never starts the
   noVNC web server, so the preview pane stays blank. The agent's adb debug/drive
@@ -495,6 +567,19 @@ services:
   setup, run commands in the `command` field or use multi-step entrypoints.
 - **Don't use absolute volume paths** — all paths must be relative to the
   workspace root.
+- **Keep top-level `volumes:` and `networks:` plain.** A named volume must be an
+  ordinary Compose-managed one (`pgdata:` with nothing under it, or just
+  `labels:`), and a network an ordinary `bridge`. ShipIt rejects the whole file
+  when either block carries options under `driver_opts:`, a true `external:`, a
+  `name:` override, a non-`local` volume driver, a non-`bridge` network driver,
+  or (networks) an `ipam:` config. An empty `driver_opts: {}` or `ipam: {}` is
+  fine — it asks for nothing. Those attach storage or networking the session did not create:
+  `driver_opts: {type: none, device: /…, o: bind}` is a host bind mount written
+  as a volume, and `driver: macvlan` puts the container on the host's own
+  network segment. For scratch space use a service's `tmpfs:` instead.
+- **Don't use `include:`** — ShipIt validates the compose file you name and
+  nothing an included file brings in, so it rejects the key outright. Declare
+  your services in one file.
 - **Don't run `npm install` (or pnpm/yarn/bun install) in a service's
   `command`** when the same install lives in `agent.install`. Two
   containers writing to the same bind-mounted `node_modules` race each
@@ -520,3 +605,45 @@ compose: docker-compose.yml
 ```
 
 See [shipit-yaml.md](shipit-yaml.md) for the full shipit.yaml reference.
+
+## Network egress
+
+Compose services follow the owning session's Network setting. In a contained
+session, ShipIt starts services on an internal-only session network, installs
+the standard egress allowlist in each service network namespace, and then gives
+the service its controlled internet route. An unlisted destination is blocked
+from a service in the same way that it is blocked from the agent container.
+Add required package or API hosts through Settings → Network. An Open session,
+or a deployment with containment explicitly disabled, keeps normal Docker
+egress.
+
+This protection applies to running Compose services, not Dockerfile build
+steps. BuildKit runs build commands in daemon-managed containers before the
+service exists. ShipIt requires Docker Compose 2.24.4 or newer for contained
+service network replacement.
+
+Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
+request `use_api_socket`, add lifecycle hooks, or declare labels in ShipIt's
+reserved `shipit-egress-*` namespace. Service `extends` is also rejected in
+contained sessions because ShipIt cannot safely validate and override
+definitions from a second file. Compose `include:` is rejected in **every**
+session for the same reason — the effective model would be the root file plus
+files ShipIt never validated.
+ShipIt replaces `dns:` and removes `SETUID` and `SETGID` for contained services.
+Every contained service runs as a numeric, non-root UID that is neither of the
+reserved UIDs 911 and 912. **You do not have to declare it** — a service with no
+`user:` is given the session's own identity, which satisfies that rule by
+construction. (On a deployment old enough to have no per-session identity to give,
+the declaration is still required, and ShipIt says so by name when it refuses the
+file. If you see that refusal, declare a numeric non-root UID.) If you *do* declare one it must meet the rule itself: numeric,
+non-root, not 911 or 912, and outside ShipIt's per-session range 2000000–2999999
+(which is refused for every service, contained or not), and the image must run
+directly as that user. Use an Open session for images that require root
+initialization or an entrypoint privilege drop.
+
+A contained service first starts on an internal network with no public route.
+ShipIt pauses it, installs the allowlist controls, and then resumes it. Do not
+make the entrypoint depend on public network access before setup completes. Put
+dependency installation in `agent.install` or bake it into the image.
+Contained Compose services require Docker Engine 28 or newer (API 1.48) so
+ShipIt can select the controlled egress bridge as the default route.

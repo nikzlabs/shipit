@@ -1,17 +1,32 @@
 import type { FastifyInstance } from "fastify";
-import { getAuthEnvKey } from "../shared/agent-registry.js";
+import { nativeServiceForHarness, selectionExists, selectionHonoursEffort } from "../shared/catalogue/index.js";
+import { applyModelRetirement } from "./model-retirement.js";
+import { buildAgentRerouteNotice } from "./agent-reroute-notice.js";
+import {
+  conformSelectionToAgent,
+  describeSelectionMove,
+  modelSelectionFrom,
+  selectionFrom,
+  verifyExplicitSelection,
+} from "./model-switch.js";
+import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import type { AgentId } from "../shared/types.js";
 import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from "../shared/types.js";
 import { agentLogAppend } from "./log-emit.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
 import { readGlobalSystemPrompt } from "./global-system-prompt.js";
-import { pushToOrigin, isGitAuthError } from "./git-utils.js";
-import { isNonFastForwardError } from "./services/git.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
-import { isResetEligible } from "./services/pre-turn-reset.js";
+import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
+import {
+  corsHeadersFor,
+  isWebSocketOriginAllowed,
+  markPreviewProxyRegistered,
+  readOriginPolicyFromEnv,
+} from "./api-origin-guard.js";
+import { frameGuardHeaders, framePolicyFromEnv } from "../shared/frame-policy.js";
 import { projectTurnSnapshotForWire } from "./transcript-projection.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
@@ -21,6 +36,7 @@ import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
 import * as egressHandlers from "./ws-handlers/egress-handlers.js";
 import { egressEnforcementActive } from "./egress-firewall-install.js";
+import { egressDnsEnabled } from "./egress-dns-install.js";
 import * as permissionHandlers from "./ws-handlers/permission-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
@@ -31,13 +47,15 @@ import { readDockerMemoryStats } from "./docker-memory.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
 import { finishRestore, materializeRunnerSync } from "./services/materialize-runner.js";
-import { listAgents } from "./services/settings.js";
+import { buildAgentListPayload } from "./services/settings.js";
 import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
 import { getContainerFreshness } from "./container-freshness.js";
 import { buildComposeAttachReplay } from "./compose-attach-replay.js";
 import { startSseKeepalive, startWebSocketKeepalive } from "./keepalive.js";
+import { applyRoleToSession, resolveUserRole } from "./services/session-role.js";
+import { ServiceError } from "./services/types.js";
 
 /**
  * Register the long-lived `/api/events` SSE endpoint. Kept as its own step so
@@ -51,23 +69,30 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
   const {
     sseClients, sessionManager, runnerRegistry, prStatusPoller,
     githubAuthManager, repoStore, agentRegistry, providerAccountManager, authManagers,
+    credentialStore,
     dockerForStats, limitsRegistry,
     processStartedAt, buildId, version, updateMode,
   } = rt;
+  const originPolicy = readOriginPolicyFromEnv();
 
   // SSE endpoint — long-lived HTTP response with text/event-stream
   app.get("/api/events", (request, reply) => {
-    const origin = request.headers.origin;
     const headers: Record<string, string> = {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      // planning#370 — the allowlist, not a reflection of whatever arrived. This
+      // route writes its headers onto the RAW response, so the origin hook's
+      // work on `reply` never reaches the wire; it has to apply the same policy
+      // itself. (The hook still decides whether the request gets this far.)
+      ...corsHeadersFor(request.headers.origin, request.headers, originPolicy),
+      // planning#379 — same story for the anti-framing headers: `frame-guard.ts`
+      // sets them on `reply`, which this route never sends. An SSE stream is not
+      // framable UI, so this is contract rather than exposure — but "every
+      // response the orchestrator owns" has to be literally true, or the next
+      // raw-response route inherits an untested exception.
+      ...frameGuardHeaders(framePolicyFromEnv()),
     };
-    // Allow cross-origin requests in dev (client on different port)
-    if (origin) {
-      headers["Access-Control-Allow-Origin"] = origin;
-      headers["Access-Control-Allow-Credentials"] = "true";
-    }
     reply.raw.writeHead(200, headers);
 
     const client = {
@@ -117,7 +142,12 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
       const runner = runnerRegistry.get(session.id);
       if (runner?.running) activeRunnerSessions.push(session.id);
       if (runner && runner.awaitingPermissionIds.size > 0) awaitingPermissionSessions.push(session.id);
-      if (runner && runner.backgroundTaskCount > 0) backgroundTaskSessions.push(session.id);
+      // planning#246 — the UNION (`backgroundWorkDescriptions`), not the
+      // CLI-reported task list alone: a brokered `shipit agent run` consult
+      // needs no resident streaming process and Codex reports no background
+      // tasks at all, so a session waiting on a live review would otherwise be
+      // snapshotted as idle.
+      if (runner && runner.backgroundWorkDescriptions.length > 0) backgroundTaskSessions.push(session.id);
     }
     client.write(`event: active_runners\ndata: ${JSON.stringify({ sessionIds: activeRunnerSessions })}\n\n`);
     client.write(`event: session_attention\ndata: ${JSON.stringify({ awaitingPermissionSessionIds: awaitingPermissionSessions, backgroundTaskSessionIds: backgroundTaskSessions })}\n\n`);
@@ -152,15 +182,18 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     const repos = repoStore.list();
     client.write(`event: repo_list\ndata: ${JSON.stringify({ repos })}\n\n`);
 
-    // Use the canonical `listAgents()` serializer (the same one every
-    // `agent_list` *broadcast* uses) rather than hand-rolling the payload here.
+    // Use the canonical `buildAgentListPayload()` serializer (the same one
+    // every `agent_list` *broadcast* uses) rather than hand-rolling it here.
     // A drifted inline copy previously omitted `reasoning`, so the connect/
     // reconnect snapshot shipped a reasoning-less list that clobbered the good
     // one in the store — the composer's reasoning control would vanish on SSE
     // reconnect (e.g. session switch / tab refocus) and only reappear once an
     // auth-event broadcast happened to re-send the full list. (docs/217)
-    const agents = listAgents(agentRegistry);
-    client.write(`event: agent_list\ndata: ${JSON.stringify({ agents })}\n\n`);
+    // docs/257 — and the same argument applies to `canRunTurns`, which is why
+    // this snapshot builds the payload with `buildAgentListPayload` rather than
+    // wrapping `listAgents` by hand: a reconnecting tab would otherwise clobber
+    // a good value with `undefined`.
+    client.write(`event: agent_list\ndata: ${JSON.stringify(buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager))}\n\n`);
     client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
 
     // In-flight per-agent auth flows — replay each backend's pending payload
@@ -175,14 +208,14 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     //
     // The replay must carry `accountId` for the same reason the live broadcast
     // does (app-lifecycle.ts): the client files a challenge under the account
-    // row that started it (docs/150 req 16), and there is no provider-wide slot
+    // row that started it (docs/150-multiple-provider-subscriptions req 16), and there is no provider-wide slot
     // to fall back to. Omitting it here — as this did before — meant a reload
     // mid-sign-in replayed a challenge the UI had nowhere to put.
-    for (const [agentId, mgr] of authManagers) {
+    for (const [loginId, mgr] of authManagers) {
       const details = mgr.getPendingPayload();
       if (details) {
         const accountId = mgr.getActiveAccountId() ?? undefined;
-        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ agentId, ...(accountId ? { accountId } : {}), details })}\n\n`);
+        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ loginId, ...(accountId ? { accountId } : {}), details })}\n\n`);
       }
     }
 
@@ -243,7 +276,7 @@ export async function registerRoutes(
   const {
     deps,
     defaultAgentId, workspaceDir, stateDir, credentialsDir, shouldServeStatic,
-    autoPushDebounceMs, sessionsRoot, agentFactory,
+    autoPushScheduler, sessionsRoot, agentFactory,
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
@@ -256,15 +289,18 @@ export async function registerRoutes(
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh,
     authManagers, runParamsPreps,
     runnerRegistry, repoPrefetcher, mergeWatchManager,
+    refreshPluginReposForSession, runPluginCommandForSession,
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
+  const wsOriginPolicy = readOriginPolicyFromEnv();
 
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
     sessionManager,
+    cancelAutoPush: (sessionId: string) => autoPushScheduler.cancel(sessionId),
     repoStore,
     createGitManager,
     createRepoGit,
@@ -290,8 +326,12 @@ export async function registerRoutes(
     sseBroadcast,
     ...(limitsRegistry
       ? {
-          refreshSubscriptionLimits: (agentId: AgentId, reason: "manual" | "seed", routeId?: string) =>
-            limitsRegistry.refreshNow(agentId, reason, routeId),
+          refreshSubscriptionLimits: (modeKey: string, reason: "manual" | "seed", routeId?: string) =>
+            limitsRegistry.refreshNow(modeKey, reason, routeId),
+          // planning#339 — drop a removed credential's cached reading, so its
+          // pill goes with it instead of outliving the credential it describes.
+          forgetSubscriptionLimits: (modeKey: string, routeId: string) =>
+            limitsRegistry.markSignedOut(modeKey, routeId),
           // docs/144 — let the sub-agent spawn route forward a consult's
           // rate-limit snapshot into the matching provider.
           recordAgentRateLimits,
@@ -313,12 +353,23 @@ export async function registerRoutes(
     secretStore,
     reviewStore,
     egressAllowlistStore,
-    // docs/172 (SHI-90) — honest enforcement signal for the browser: policy vs
+    // docs/172 (planning#92) — honest enforcement signal for the browser: policy vs
     // actual enforcement. Fixed function of the process env.
     egressEnforcementActive: egressEnforcementActive(),
+    // planning#383 — the other honest deployment signal: with Tier B off there
+    // is no resolver to pin an allowed name's IPs and no proxy to permit its
+    // SNI, so every host surface must stop offering grants that cannot work.
+    egressDnsControlDeployed: egressDnsEnabled(),
     presentStore,
     serviceManagers,
     composeStopPromises,
+    // docs/262 reqs 12, 17 — the agent's two plugin verbs. `bootstrapManagers`
+    // has produced both since they landed; nothing forwarded them here, so both
+    // routes answered 501 everywhere (found by dogfooding, 2026-08-14). The
+    // ApiDeps keys are now required-but-nullable so a future omission is a
+    // build error rather than a runtime "this runtime cannot…".
+    refreshPluginReposForSession,
+    runPluginCommandForSession,
     // Skip the volume-prune fallback in test mode so unit / integration
     // tests don't shell out to a real Docker daemon. Production always
     // wires this; the function itself is defensive (catches its own
@@ -330,6 +381,9 @@ export async function registerRoutes(
     ...(isTestMode ? { bugReportModelRunner: async () => null } : {}),
     getLogBuffer,
     removeSessionLogs,
+    // docs/264 — the Ops log-read route reads the DURABLE store, not the
+    // in-memory ring, so it answers for a session whose container is gone.
+    logStore,
     agentFactory,
     oomBreaker,
     loopDetector,
@@ -362,6 +416,12 @@ export async function registerRoutes(
   // ---- Preview reverse proxy (container mode) ----
   if (containerManager) {
     registerPreviewProxy(app, { containerManager, serviceManagers, runnerRegistry });
+    // planning#370 — from here on, a `{uuid}--{port}.…` Host is hijacked by the
+    // proxy above and cannot reach an API route, so the origin guard steps
+    // aside for it. Told to the guard at the registration site (rather than
+    // read from a module flag) so a runtime WITHOUT the proxy — local mode —
+    // keeps checking those hosts instead of being bypassed by a forged Host.
+    markPreviewProxyRegistered(app);
   }
 
   // ---- Test-only session creation endpoint ----
@@ -431,7 +491,12 @@ export async function registerRoutes(
     // Test-only: ensure a runner exists and force its `running` flag. Lets
     // tests assert guards that depend on agent-in-progress state (e.g. the
     // merge endpoint's 409) without driving a full WS turn.
-    app.post<{ Params: { sessionId: string }; Body: { running?: unknown } }>(
+    //
+    // `postTurnWork` drives the OTHER half of `agentBusy` (docs/266): the
+    // terminal sequence and the debounced auto-push it arms, which run once
+    // `running` is already false. A guard that must cover the whole window the
+    // agent can still produce commits in has to be assertable there too.
+    app.post<{ Params: { sessionId: string }; Body: { running?: unknown; postTurnWork?: unknown } }>(
       "/api/_test/runner/:sessionId/running",
       async (request, reply) => {
         const { sessionId } = request.params;
@@ -441,8 +506,20 @@ export async function registerRoutes(
           return { error: "Session not found or has no workspaceDir" };
         }
         const runner = runnerRegistry.getOrCreate(sessionId, session.workspaceDir, defaultAgentId);
-        runner.running = request.body?.running === true;
-        return { ok: true, running: runner.running };
+        if (request.body?.running !== undefined) runner.running = request.body.running === true;
+        if (request.body?.postTurnWork !== undefined) {
+          const want = request.body.postTurnWork === true;
+          if (want !== runner.postTurnWorkInFlight) {
+            if (want) runner.beginPostTurnWork();
+            else runner.endPostTurnWork();
+          }
+        }
+        return {
+          ok: true,
+          running: runner.running,
+          postTurnWorkInFlight: runner.postTurnWorkInFlight,
+          agentBusy: runner.agentBusy,
+        };
       },
     );
   }
@@ -453,11 +530,30 @@ export async function registerRoutes(
   // ---- Per-session WebSocket route ----
   // Session-scoped WS: auto-activates the session on connect, no activate_session needed.
   // The session ID is in the URL path. Agent preference via ?agent= query param.
-  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string } }>(
+  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string; service?: string; billingMode?: string; role?: string } }>(
     "/ws/sessions/:sessionId",
     { websocket: true },
     (socket, request) => {
       const { sessionId } = request.params;
+      // planning#370 — CORS does not apply to WebSockets: the browser sends
+      // `Origin` on the handshake and then does whatever the server allows, so
+      // a CORS-only fix would leave the whole session channel open to any page
+      // the user loads. A handshake with no `Origin` is a non-browser client
+      // and passes.
+      //
+      // Today the global hook (`api-origin-guard.ts`) already refuses such an
+      // upgrade with a 403 — `onRequest` hooks run for the upgrade request too
+      // — so this is a backstop, not the only check. It is here because that is
+      // a property of how @fastify/websocket routes upgrades, not of anything
+      // this code states, and the cost of being wrong about it is the whole
+      // session channel.
+      if (!isWebSocketOriginAllowed(request.headers, wsOriginPolicy, {
+        requestIsSecure: (request.headers["x-forwarded-proto"] ?? "").toString().startsWith("https"),
+      })) {
+        console.warn(`[ws] refused upgrade from origin ${String(request.headers.origin)}`);
+        socket.close(4403, "Cross-origin connection refused");
+        return;
+      }
       const session = sessionManager.get(sessionId);
       if (!session) {
         socket.close(4004, "Session not found");
@@ -500,10 +596,27 @@ export async function registerRoutes(
       // carries none (docs/142 Problem C; quick-session regression).
       let perConnectionAgentId: AgentId;
       let selectedModel: string | undefined;
+      // planning#389 — set when the reconciliation below moves an unpinned session
+      // off the harness the browser explicitly asked for. Delivered on the first
+      // turn (see the persist block), never emitted from here, so it costs nothing
+      // on the overwhelmingly common connect where nothing is rerouted.
+      let agentRerouteNotice: string | undefined;
+      // docs/252 phase 8 (req 13) — resolve a retired model to its successor
+      // BEFORE anything else reads the row. Without this the self-heals below
+      // see an id no harness lists and drop the session onto `models[0]`, which
+      // is a model the user never chose and possibly a different price class;
+      // the retirement record is what says where it should actually go. The
+      // harness is the session's own when it has one, since the successor must
+      // be one that harness can run.
+      const sessionModel = applyModelRetirement(
+        sessionManager,
+        session,
+        session.agentId ?? (request.query.agent as AgentId | undefined) ?? defaultAgentId,
+      );
       if (session.agentPinned) {
         perConnectionAgentId = session.agentId ?? defaultAgentId;
         const agentInfo = agentRegistry.get(perConnectionAgentId);
-        selectedModel = session.model ?? agentInfo?.capabilities.models[0];
+        selectedModel = sessionModel ?? agentInfo?.capabilities.models[0];
         // Self-heal an incoherent legacy row whose model the pinned agent can't run.
         if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
           selectedModel = agentInfo.capabilities.models[0];
@@ -512,19 +625,106 @@ export async function registerRoutes(
         const requestedAgent = request.query.agent as AgentId | undefined;
         const requestedModel = request.query.model;
         perConnectionAgentId = session.agentId ?? requestedAgent ?? defaultAgentId;
-        selectedModel = session.model ?? requestedModel;
+        selectedModel = sessionModel ?? requestedModel;
         // Reconcile agent ↔ model for an as-yet-unpinned (warm) session. They
         // come from INDEPENDENT sources, so they can diverge — most often a
         // stale `agent=codex` riding in alongside the user's real `model=opus`
         // pick. The product rule (docs/142 C): the model is the user's only real
         // control, so the **model is authoritative** — derive the agent that
         // owns it. This is the server-side guard against the Opus→gpt-5.5 switch.
+        //
+        // …and it applies only where the two genuinely CONFLICT. docs/252 made a
+        // harness pick a real control of its own for any model more than one
+        // harness can speak, so "authoritative" cannot mean "the model re-decides
+        // the harness every connect" any more; it means the model wins the cases
+        // where the pair cannot both be honoured. See the membership guard below.
         const model = selectedModel;
-        const modelOwner = model
+        // docs/272-user-selectable-roles reqs 8, 13 — **a role's harness is never re-derived**,
+        // and this is the one place that would have done it behind the user's
+        // back. The derivation below answers "which harness owns this model" with
+        // whichever the registry lists first, and docs/252 made that ambiguous:
+        // a dual-harness model (DeepSeek V4) belongs to both. So a session
+        // running the role `triage` on Codex would, on its next RECONNECT, be
+        // moved to Claude and persisted there (the write two blocks down) while
+        // the composer went on naming `triage` — the session running something
+        // other than what the role says, with nothing on screen to tell.
+        //
+        // A role in force means the row is not two independent sources that need
+        // reconciling: all three fields were written together, from one tuple the
+        // user chose. Nothing to derive, so nothing is derived — which is
+        // docs/264 req 6's rule reaching the one path that predates it.
+        const roleDecidesHarness = !!session.roleName;
+        // planning#389 / docs/252 — MEMBERSHIP, not the single "owner" the
+        // registry-order lookup above answers with. That ambiguity is not only the
+        // role's problem: `deepseek-v4-flash` carries three API styles, so ALL
+        // three harnesses list it and the derived owner is always Claude Code. A
+        // harness that was actually NAMED and can actually run the model is not
+        // the stale-key case this guard is for — deriving there discarded the
+        // user's own pick, persisted it two blocks down, and pinned it write-once
+        // on the first turn while the composer went on displaying the harness they
+        // chose (the client applies this same tie-break in `newSessionAgentId`, so
+        // screen and session disagreed with nothing to tell). Reproduced
+        // 2026-08-18: a session created on OpenCode with `deepseek-v4-flash` ran
+        // its whole life on Claude Code.
+        //
+        // The candidates are the harnesses somebody actually NAMED, in the same
+        // precedence `perConnectionAgentId` is built with above — the session's own
+        // row first, the query param second — since both are choices and only
+        // `defaultAgentId` is a fallback. Ordered rather than "the first one only",
+        // because the row and the param disagree exactly when the user has just
+        // moved the model: a session row still naming Claude Code, a browser asking
+        // for OpenCode, and a model only OpenCode can run is a pick to honour, not
+        // a pair to derive an unrelated third harness from.
+        //
+        // "Can run it" includes the install, exactly as `newSessionAgentId` has it:
+        // a browser key outlives a deployment that dropped the harness, and
+        // honouring one of those would pin a session whose first turn cannot start.
+        //
+        // The two sibling copies of this rule were already corrected — the client's
+        // `newSessionAgentId` (docs/166) and `createHeadlessSession`'s
+        // `explicitAgentRunsModel` (planning#304/#389). This connect handler was
+        // the third and the one that never got the fix.
+        const namedAgents = [session.agentId, requestedAgent].filter(
+          (id): id is AgentId => !!id,
+        );
+        // Gated on the role too: under a role NOTHING is reconciled, so this must
+        // not become a second way to move the harness. The role's own harness is
+        // already `session.agentId`, so honouring it would be a no-op in the case
+        // that matters — but a role whose model its harness cannot run would fall
+        // through to the query param and move the session, which is precisely what
+        // docs/272 reqs 8, 13 forbid.
+        const honouredAgent = model && !roleDecidesHarness
+          ? namedAgents.find((id) => {
+              const info = agentRegistry.get(id);
+              return info?.installed && info.capabilities.models.includes(model);
+            })
+          : undefined;
+        const modelOwner = model && !roleDecidesHarness && !honouredAgent
           ? agentRegistry.list().find((a) => a.capabilities.models.includes(model))
           : undefined;
+        if (honouredAgent) {
+          perConnectionAgentId = honouredAgent;
+        }
         if (modelOwner) {
           perConnectionAgentId = modelOwner.id;
+          // planning#389 — what is left for the derivation is the case docs/142
+          // Problem C is really about: a named harness that shares NO API style
+          // with the model. Rerouting is still the answer here (a WS upgrade
+          // cannot refuse with a 400 the way `createHeadlessSession` does without
+          // taking the session's whole channel down, and the stale `vibe-agent-id`
+          // it was written for is the majority of this input) — but it must not be
+          // SILENT. planning#389 measured the cost of silence on the headless path:
+          // a user asked for Codex, got Claude, and was billed $0.14 with
+          // `pending_agent_notice` left NULL. So the reroute now leaves the
+          // sentence for the first turn to deliver.
+          //
+          // Only when it contradicts a harness the BROWSER explicitly asked for.
+          // A reroute that lands on the requested harness is the client's own rule
+          // agreeing with the server's, which is the ordinary "user changed the
+          // model, so the harness followed" path and has nothing to announce.
+          if (model && requestedAgent && requestedAgent !== modelOwner.id) {
+            agentRerouteNotice = buildAgentRerouteNotice(requestedAgent, modelOwner.id, model);
+          }
         } else {
           const agentInfo = agentRegistry.get(perConnectionAgentId);
           if (selectedModel && agentInfo && !agentInfo.capabilities.models.includes(selectedModel)) {
@@ -541,9 +741,70 @@ export async function registerRoutes(
       // `session.agentId` is immutable.
       if (!session.agentPinned && perConnectionAgentId !== session.agentId) {
         try { sessionManager.setAgentId(sessionId, perConnectionAgentId); } catch { /* ignore */ }
+        // planning#389 — gated on the same condition as the write, so the sentence
+        // is recorded exactly when the persisted harness actually CHANGES. On the
+        // next connect the session's own row names the new harness, which can run
+        // the model, so nothing is derived and nothing is re-recorded: one notice
+        // per reroute, not one per reconnect.
+        //
+        // APPENDS rather than sets — docs/221's slot is last-write-wins because
+        // every writer described the same fact (where the branch now points), and
+        // "your harness changed" is a different fact; overwriting a branch-movement
+        // or LFS notice with it would lose one of the two.
+        if (agentRerouteNotice) {
+          try {
+            sessionManager.appendPendingAgentNotice(sessionId, agentRerouteNotice);
+          } catch { /* ignore */ }
+        }
       }
-      if (selectedModel && selectedModel !== session.model) {
-        try { sessionManager.setModel(sessionId, selectedModel); } catch { /* ignore */ }
+      if (selectedModel && selectedModel !== sessionModel) {
+        // docs/252 — persist the SELECTION. The browser's seed carries the
+        // service and billing mode alongside `?model=` (its `vibe-model-id` slot
+        // holds the full triple), and it is honoured only when it names a row
+        // the catalogue actually contains AND the model being persisted is the
+        // seeded one — a reconciled fallback model is a different choice and
+        // must not inherit the seed's service. Otherwise resolution is biased
+        // toward the harness's own vendor, which is the frozen fact for any
+        // legacy id: before this feature a harness could reach nothing else.
+        const seededMode: BillingMode | undefined =
+          request.query.billingMode === "sub" || request.query.billingMode === "key"
+            ? request.query.billingMode
+            : undefined;
+        const seeded: ModelSelection | undefined =
+          request.query.service && seededMode && selectedModel === request.query.model
+            ? {
+                serviceId: request.query.service,
+                billingMode: seededMode,
+                modelId: selectedModel,
+              }
+            : undefined;
+        try {
+          // docs/252 phase 3 — the seed must be ELIGIBLE, not merely present in
+          // the catalogue. The browser slot outlives a credential change, so a
+          // triple written while a subscription was connected still names a real
+          // row after it goes away; accepting it pins the session to a mode with
+          // no credential and fails its first turn. Falling through to the
+          // bare-id resolution lands on a mode that does have one. The client
+          // drops such a seed too (`isSelectionEligibleForAgent`); this is the
+          // server refusing to trust it either.
+          const seedEligible =
+            seeded
+            && (agentRegistry.get(perConnectionAgentId)?.eligibleModels ?? []).some(
+              (m) =>
+                m.serviceId === seeded.serviceId
+                && m.billingMode === seeded.billingMode
+                && m.modelId === seeded.modelId,
+            );
+          if (seeded && selectionExists(seeded) && seedEligible) {
+            sessionManager.setModelSelection(sessionId, seeded);
+          } else {
+            sessionManager.setModel(
+              sessionId,
+              selectedModel,
+              nativeServiceForHarness(perConnectionAgentId),
+            );
+          }
+        } catch { /* ignore */ }
       }
       // docs/217 — per-session reasoning effort (Control B). Prefer the persisted
       // row; for an as-yet-unpinned (new/warm) session with none, fall back to the
@@ -557,14 +818,107 @@ export async function registerRoutes(
           : undefined;
       let selectedReasoning: string | undefined = session.reasoningEffort ?? requestedReasoning;
       {
-        const reasoningOpts = agentRegistry.get(perConnectionAgentId)?.capabilities.reasoning?.options;
-        if (selectedReasoning && !reasoningOpts?.some((o) => o.value === selectedReasoning)) {
+        // docs/274 req 14 — asked of the SELECTION, not of the harness's raw
+        // vocabulary. A harness can declare a level and honour none on a given
+        // row (grok, key-billed), so a vocabulary check would rehydrate a
+        // session with a level its every turn silently discards — and persist
+        // it, since the branch below writes the reconciled value back.
+        const reasoningSelection =
+          session.serviceId && session.billingMode && session.model
+            ? { serviceId: session.serviceId, billingMode: session.billingMode, modelId: session.model }
+            : undefined;
+        if (
+          selectedReasoning
+          && !selectionHonoursEffort(perConnectionAgentId, reasoningSelection, selectedReasoning)
+        ) {
           selectedReasoning = undefined;
         }
         if (selectedReasoning !== (session.reasoningEffort ?? undefined)) {
           try { sessionManager.setReasoning(sessionId, selectedReasoning ?? null); } catch { /* ignore */ }
         }
       }
+      // docs/272-user-selectable-roles reqs 3, 13 — **if the reconciliation above moved the
+      // session off what the role set, the name stops being shown**, because it
+      // has stopped being true.
+      //
+      // Everything above answers "what should this session run", and two of its
+      // answers can move a session nobody touched: a **retired** model resolves
+      // to its successor (`applyModelRetirement`), and a model the session's
+      // harness no longer lists is replaced with that harness's first. Neither
+      // goes through `set_model`, so neither reaches
+      // `leaveRoleOnParameterChange` — and a role whose model has been swapped
+      // out from under it would go on naming a session running something else,
+      // which is the one screen state req 13 exists to rule out.
+      //
+      // Compared against `session`, the row as it was read at the top of this
+      // handler, so this sees the whole of what the block decided rather than any
+      // single write inside it.
+      if (
+        session.roleName
+        && (perConnectionAgentId !== session.agentId
+          || selectedModel !== session.model
+          || (selectedReasoning ?? undefined) !== (session.reasoningEffort ?? undefined))
+      ) {
+        try { sessionManager.setRoleName(sessionId, null); } catch { /* ignore */ }
+      }
+
+      // docs/272-user-selectable-roles req 12 — the role the user last selected, seeding a
+      // BRAND-NEW session exactly as `?agent=` / `?model=` / `?reasoning=` above
+      // seed the three controls it replaces.
+      //
+      // **It overrides all three**, and that precedence is the whole point: a
+      // role IS the harness, model and level, so the seeds reconciled just above
+      // describe controls the user has handed over to it. Applying the role last
+      // is what makes "the composer shows a role" and "the session runs the
+      // role's parameters" the same fact on the very first turn.
+      //
+      // Guarded three ways, each of which is a case where the seed must NOT win:
+      // a session that has taken its first turn (req 4 — nothing applies a role
+      // after that), one that already carries a role (its own choice outranks a
+      // browser slot), and one whose harness is pinned. A role that no longer
+      // resolves — deleted, stranded, disconnected — is skipped in silence
+      // rather than refused: this is a page load, not an action, and the user is
+      // told by the composer showing today's ordinary controls instead of a name
+      // that would be a lie (req 8: nothing is ever substituted).
+      const requestedRole =
+        typeof request.query.role === "string" && request.query.role.length > 0
+          ? request.query.role
+          : undefined;
+      //
+      // **The clear just above needs no guard of its own**: the seed outlives it,
+      // so a later connect does reach here with the role's name — and
+      // `resolveUserRole` refuses it, because the only two things that clear a
+      // role there (a retired model, a model the harness no longer lists) are
+      // both things that make the ROLE unrunnable too. A retired id lives in its
+      // mode's `retired[]` and not in its model list, so `selectionExists` is
+      // already false for it. Pinned by a test in `services/session-role.test.ts`,
+      // since it is a property of the catalogue rather than of this block.
+      //
+      // **req 18's clear is the case that argument does not cover, and it needs
+      // the fourth guard.** A role the USER cleared is perfectly runnable, so
+      // nothing downstream would refuse it — and the browser's seed sits inside
+      // a per-session memoized WebSocket URL, so a reconnect between the clear
+      // and the first message arrives here still naming it. Without
+      // `roleExplicitlyCleared` the clear would silently undo itself, standing
+      // instructions and all. It reads the row directly because "chose none" and
+      // "never chose" are one value in `SessionInfo` on purpose.
+      if (
+        requestedRole
+        && !session.agentPinned
+        && !session.roleName
+        && !sessionManager.roleExplicitlyCleared(sessionId)
+      ) {
+        try {
+          const seededRole = resolveUserRole(requestedRole, { credentialStore });
+          applyRoleToSession(sessionId, seededRole, { sessionManager });
+          perConnectionAgentId = seededRole.params.harnessId;
+          selectedModel = seededRole.params.modelId;
+          selectedReasoning = seededRole.params.reasoningEffort;
+        } catch {
+          // Skipped, deliberately — see above.
+        }
+      }
+
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
       let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
@@ -584,7 +938,7 @@ export async function registerRoutes(
         });
       };
 
-      // SHI-315 — rehydrate the "commits are blocked by a secret" banner. This is
+      // planning#317 — rehydrate the "commits are blocked by a secret" banner. This is
       // the half that makes the warning genuinely sticky: the block lives in the
       // working tree, which outlives both the runner and the container, so a
       // reload or a session switch has to be able to re-derive it from the
@@ -595,6 +949,82 @@ export async function registerRoutes(
           sessionId: sid,
           block: sessionManager.getSecretBlock(sid) ?? null,
         });
+      };
+
+      /**
+       * docs/252 phase 4 (req 4) — confirm the session's authoritative selection
+       * after a `set_model` / `set_agent`, with `notice` set only when the
+       * server moved something the user did not pick.
+       *
+       * Read back from the session row rather than echoed from the request: the
+       * row is what the next turn's spawn identity and usage attribution are
+       * derived from, so echoing the request would let the composer show a
+       * selection the turn will not use.
+       *
+       * Per-connection, like the sibling `error`: it is feedback on a control
+       * THIS connection just operated. Deliberately not `runner.emitMessage` —
+       * that buffers into the turn-event log, and replaying a stale selection to
+       * a reconnecting viewer would clobber a newer one. Other viewers converge
+       * on their next session-list refresh, unchanged from before.
+       */
+      const sendSelectionChanged = (agentId: AgentId, notice?: string): void => {
+        const session = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+        // No session row to report on — nothing was persisted, so there is no
+        // authoritative selection to converge the picker onto. A notice still
+        // has to reach the user rather than being swallowed, so it degrades to
+        // the plain error path.
+        if (!activeAppSessionId || !session) {
+          if (notice) send({ type: "error", message: notice });
+          return;
+        }
+        const selection = selectionFrom(session);
+        send({
+          type: "model_selection_changed",
+          sessionId: activeAppSessionId,
+          agentId,
+          selection: selection ?? null,
+          modelId: session.model ?? null,
+          reasoningEffort: session.reasoningEffort ?? null,
+          // docs/272 req 15 — read from the row rather than passed in, so the
+          // one place that clears a role (the three handlers below) and the one
+          // that sets it cannot disagree with what this reports.
+          roleName: session.roleName ?? null,
+          ...(notice ? { notice } : {}),
+        });
+      };
+
+      /**
+       * docs/272-user-selectable-roles req 15 — **changing a parameter is the whole of leaving a
+       * role.**
+       *
+       * Called by `set_agent`, `set_model` and `set_reasoning`, because those
+       * three are exactly the controls a role replaced. Nothing is confirmed,
+       * warned about or put back: the session goes on running whatever the user
+       * just chose, and only the *name* stops being shown — because it stopped
+       * being true.
+       *
+       * Not called by `set_role` itself, which writes the same three fields:
+       * that write is the role being applied, not the user leaving it.
+       *
+       * **A pick that changes nothing is not a change**, which is why this takes
+       * a `before` snapshot rather than firing on every message. Re-selecting the
+       * harness a role already named — easy to do, since "Adjust parameters…"
+       * opens those very controls with the role's own values in them — would
+       * otherwise un-name the role while leaving the session identical. The
+       * snapshot is also what makes the refusal paths safe: those `return` before
+       * reaching here, so a rejected `set_model` cannot cost the user their role.
+       */
+      const roleRelevantSnapshot = (): string => {
+        const s = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+        return [s?.agentId, s?.serviceId, s?.billingMode, s?.model, s?.reasoningEffort]
+          .map((v) => v ?? "")
+          .join("|");
+      };
+      const leaveRoleOnParameterChange = (before: string): void => {
+        if (!activeAppSessionId) return;
+        if (!sessionManager.get(activeAppSessionId)?.roleName) return;
+        if (roleRelevantSnapshot() === before) return;
+        try { sessionManager.setRoleName(activeAppSessionId, null); } catch { /* ignore */ }
       };
 
       const onContainerStarted = (sid: string) => {
@@ -647,7 +1077,7 @@ export async function registerRoutes(
             // without this a mid-turn reconnect re-sent every heavy body the
             // history path had just stripped.
             //
-            // SHI-297 — `committedBodyIds` says which half of the in-flight turn
+            // planning#299 — `committedBodyIds` says which half of the in-flight turn
             // a boundary has already written, so the already-committed prefix is
             // stripped too and only the genuinely in-memory tail ships whole.
             messages: projectTurnSnapshotForWire(
@@ -693,11 +1123,39 @@ export async function registerRoutes(
           if (buffered.type === "terminal_output") continue;
           if (buffered.type === "terminal_exit") continue;
           if (buffered.type === "terminal_reconnecting") continue;
+          // planning#246 — `background_tasks` is deliberately skipped: this attach's
+          // own `GET /history` carries the runner's CURRENT `backgroundTasks`,
+          // read live at request time, so the replay can only ever be older.
+          // That mattered because the marker is also cleared by paths that emit
+          // no `background_tasks` of their own (a crashed process, a disposed
+          // runner — they announce over SSE instead), which leaves the last
+          // buffered copy saying "outstanding" after the truth became "none".
+          // Replaying it resurrected a green dot on a session with nothing
+          // running, and whether it won came down to whether the replay landed
+          // before or after the HTTP history it contradicts. Dropping it makes
+          // history the single attach-time source, with no race to lose.
+          if (buffered.type === "background_tasks") continue;
           send(buffered);
         }
-        if (runner.getQueueSnapshot().length > 0) {
-          send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
-        }
+        // UNCONDITIONAL, empty queue included: an empty snapshot is exactly the
+        // correction a re-attaching viewer needs. The client clears
+        // `queuedMessages` only on a live `queue_updated`, an interrupt, or a
+        // switch to another session — a plain reconnect on the SAME session
+        // clears nothing. So a queue that drained while nobody was attached left
+        // the queued bubble on screen forever: the drain's live `queue_updated`
+        // reached no one, and `resetRunnerTurnState` clears the turn-event
+        // buffer when the drained turn starts, so the replay above can't carry
+        // it either. Same reasoning as the `active_runners` SSE snapshot.
+        send({ type: "queue_updated", queue: runner.getQueueSnapshot() });
+        // Still conditional, deliberately: unlike the queue, neither half of a
+        // stale running state can survive. The chat status line is corrected by
+        // the re-attach itself — the client reloads HTTP history on every WS
+        // open and sets `isLoading` from the authoritative `agentRunning`
+        // there. The sidebar's `activeRunnerSessions` is corrected on a
+        // different channel rather than by this attach: live SSE
+        // `session_agent_finished` transitions, and the unconditional
+        // `active_runners` snapshot that replaces the set wholesale on every
+        // SSE (re)connect. Sending this unconditionally would add nothing.
         if (runner.running || runner.queueLength > 0) {
           send({ type: "session_status", sessionId: runner.sessionId, running: runner.running, queueLength: runner.queueLength });
         }
@@ -774,61 +1232,19 @@ export async function registerRoutes(
       };
 
       const scheduleAutoPush = (git: GitManager, sessionId?: string) => {
-        // Look up the runner from the registry by session ID instead of using
-        // the connection-scoped attachedRunner. If the WS reconnects during an
-        // agent turn, attachedRunner on the old connection becomes null and the
-        // push would be silently skipped.
-        const runner = (sessionId ? runnerRegistry.get(sessionId) : null) ?? attachedRunner;
-        if (!runner) return;
-        runner.clearPushTimer();
-        runner.setPushTimer(setTimeout(async () => {
-          runner.setPushTimer(null);
-          try {
-            if (!githubAuthManager.authenticated) return;
-            const branch = await pushToOrigin(git);
-            if (branch) {
-              runner.emitMessage({ type: "github_push_result", success: true, message: `Auto-pushed to origin/${branch}`, branch });
-              // A push just landed → CI is about to register. Bump this
-              // session's repo to fast cadence for the post-push window so
-              // the first non-none check is observed quickly. The poller
-              // re-arms the supervisor if the gate was already open
-              // (a closed tab keeps the supervisor paused; the user will
-              // see fresh data on their next visit via forceRefreshSession).
-              prStatusPoller.notifyAutoPush(runner.sessionId);
-            }
-          } catch (err) {
-            if (isNonFastForwardError(err)) {
-              // Branch has diverged — emit event so client can offer rebase
-              runner.emitMessage({
-                type: "git_push_rejected",
-                reason: "non_fast_forward",
-                message: "Branch has diverged from remote. Rebase needed to update.",
-              });
-              return;
-            }
-            const errMsg = getErrorMessage(err);
-            // Token expired/revoked — mark the stored credential invalid so
-            // the SSE broadcast clears the GitHub auth state on every
-            // connected client and surfaces a toast pointing back to
-            // Settings → GitHub. Without this the failure would only be
-            // visible as a "log_entry" in the session's Logs panel — the
-            // same swallow-in-the-logs path the user complained about.
-            if (isGitAuthError(err)) {
-              const invalidated = await githubAuthManager.markTokenInvalid(`auto-push failed: ${errMsg}`);
-              const text = invalidated
-                ? "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub."
-                : `Auto-push failed: ${errMsg}`;
-              broadcastLog(runner.sessionId, "server", text);
-              runner.emitMessage(agentLogAppend("server", text));
-              return;
-            }
-            const text = errMsg.includes("workflow")
-              ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
-              : `Auto-push failed: ${errMsg}`;
-            broadcastLog(runner.sessionId, "server", text);
-            runner.emitMessage(agentLogAppend("server", text));
-          }
-        }, autoPushDebounceMs));
+        // Session-keyed, through the app-lived scheduler — never a timer on a
+        // runner. This used to resolve a runner (registry, else the
+        // per-connection `attachedRunner`) and return silently when both were
+        // empty, which dropped the whole push for a session whose runner was
+        // reclaimed between the post-turn commit and the debounce. The scheduler
+        // takes the runner's post-turn hold while the push is armed, so the
+        // reclaim protection `post-turn-hold.ts` added is unchanged; what it no
+        // longer depends on is the timer living on the object being reclaimed.
+        // See `services/auto-push-scheduler.ts`.
+        //
+        // `attachedRunner` survives only as the id fallback for the call sites
+        // that pass no session id; it no longer decides anything.
+        autoPushScheduler.schedule(git, sessionId ?? attachedRunner?.sessionId);
       };
 
       const getActiveDir = (): string => activeSessionDir ?? workspaceDir;
@@ -932,16 +1348,14 @@ export async function registerRoutes(
             const eligibleDir = dir;
             void (async () => {
               try {
-                const eligible = await isResetEligible(
+                await emitResetEligible(
                   {
                     getSession: (id) => sessionManager.get(id),
                     getPrStatus: (id) => sessionManager.getPrStatus(id),
                     createGitManager,
                   },
-                  sid,
-                  eligibleDir,
+                  { sessionId: sid, sessionDir: eligibleDir, origin: "activation", emit: send },
                 );
-                send({ type: "reset_eligible", sessionId: sid, eligible });
               } catch (err) {
                 console.error(`[pre-turn-reset] eligibility signal failed for ${sid}:`, getErrorMessage(err));
               }
@@ -1144,6 +1558,8 @@ export async function registerRoutes(
           case "log_clear": { serviceHandlers.handleLogClear(ctx, msg); return; }
           case "set_agent": {
             const agentId = msg.agentId;
+            // docs/272 req 15 — see `leaveRoleOnParameterChange`.
+            const roleBefore = roleRelevantSnapshot();
             // docs/138 — once the session has taken its first turn the agent is
             // pinned for life: its credentials were provisioned into the
             // per-session credentials dir and the other agent's creds are
@@ -1164,31 +1580,51 @@ export async function registerRoutes(
             const info = agentRegistry.get(agentId);
             if (!info) { send({ type: "error", message: `Unknown agent: ${agentId}` }); return; }
             if (!info.installed) { send({ type: "error", message: `${info.name} CLI is not installed` }); return; }
-            if (!info.authConfigured) {
-              const envKey = getAuthEnvKey(agentId);
-              send({ type: "error", message: `${envKey ?? "API key"} is not set. Add it in Settings → Agents.` });
+            // docs/252 phase 3 — see `setAgent` in `services/settings.ts`: the
+            // gate is now "has at least one eligible model" (req 8), so the
+            // message names that rather than a vendor's env var.
+            if (!info.hasRunnableModels) {
+              send({
+                type: "error",
+                message: `${info.name} has no models available. Add a credential for a service it can reach in Settings → Services.`,
+              });
               return;
             }
             ctx.setActiveAgentId(agentId);
-            // Conform the model to the new agent. The AgentPicker switches the
-            // agent without touching the model, so without this a Codex →
-            // Claude switch would leave a "gpt-5.5" model selected and the next
-            // turn would spawn `claude --model gpt-5.5` and fail. Fall back to
-            // the new agent's default model when the current one isn't in its
-            // lineup.
-            const currentModel = ctx.getSelectedModel();
-            if (currentModel && !info.capabilities.models.includes(currentModel)) {
-              const fallbackModel = info.capabilities.models[0];
-              ctx.setSelectedModel(fallbackModel);
+            // Conform the model and the reasoning effort to the new agent. The
+            // harness picker switches the harness without touching either, so
+            // without this a Codex → Claude switch would leave a "gpt-5.5"
+            // model selected and the next turn would spawn
+            // `claude --model gpt-5.5` and fail.
+            //
+            // docs/252 phase 4 — the test is the whole TRIPLE against the new
+            // harness's ELIGIBLE set, not a bare id against its catalogue join.
+            // The join says nothing about credentials and nothing about which
+            // service the session is on, so an id-only test kept a
+            // `(service, mode)` the new harness cannot authenticate with — a
+            // selection the picker will not even show. `model-switch.ts` holds
+            // the rule and the sentence that reports it.
+            const currentReasoning = ctx.getSelectedReasoning();
+            const move = conformSelectionToAgent({
+              agent: info,
+              current: selectionFrom(
+                activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined,
+              ),
+              currentModelId: ctx.getSelectedModel(),
+              currentReasoning,
+            });
+            if (move.selection) {
+              ctx.setSelectedModel(move.selection.modelId);
               if (activeAppSessionId) {
-                sessionManager.setModel(activeAppSessionId, fallbackModel);
+                sessionManager.setModelSelection(activeAppSessionId, move.selection);
               }
             }
             // docs/217 — reasoning is per-agent; a stale value from the previous
             // agent can't apply to the new one. Drop it (back to default) when it
-            // isn't in the new agent's option set.
-            const currentReasoning = ctx.getSelectedReasoning();
-            if (currentReasoning && !info.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+            // isn't in the new agent's option set — reset rather than mapped to
+            // a neighbouring level, because a shared level NAME is not a promise
+            // of shared semantics and omitting the flag is always valid.
+            if (move.reasoningCleared) {
               ctx.setSelectedReasoning(undefined);
               if (activeAppSessionId) {
                 sessionManager.setReasoning(activeAppSessionId, null);
@@ -1199,70 +1635,157 @@ export async function registerRoutes(
             if (activeAppSessionId) {
               sessionManager.setAgentId(activeAppSessionId, agentId);
             }
+            const movedTo = move.selection
+              ? info.eligibleModels.find(
+                  (m) =>
+                    m.serviceId === move.selection!.serviceId
+                    && m.billingMode === move.selection!.billingMode
+                    && m.modelId === move.selection!.modelId,
+                )
+              : undefined;
+            leaveRoleOnParameterChange(roleBefore);
+            sendSelectionChanged(
+              agentId,
+              describeSelectionMove({
+                agentName: info.name,
+                move,
+                ...(movedTo
+                  ? {
+                      movedTo: {
+                        label: movedTo.label,
+                        serviceName: movedTo.serviceName,
+                        billingMode: movedTo.billingMode,
+                      },
+                    }
+                  : {}),
+              }),
+            );
             return;
           }
           case "set_model": {
+            // docs/272 req 15 — see `leaveRoleOnParameterChange`. Captured before
+            // the handler's own "decide everything before mutating" pass, so a
+            // refused triple leaves the role exactly where it was.
+            const roleBefore = roleRelevantSnapshot();
             const currentAgentId = ctx.getActiveAgentId();
             const activeAgent = agentRegistry.get(currentAgentId);
-            if (activeAgent && !activeAgent.capabilities.models.includes(msg.model)) {
-              // The model isn't in the current agent's lineup. The grouped
-              // model picker switches agent + model together by firing
-              // `set_agent` then `set_model`, so this fires whenever the user
-              // crosses an agent boundary (e.g. Codex → Opus). Rather than
-              // depend on `set_agent` having already landed — which it may not
-              // have, if its auth/install guard bailed or the two messages
-              // raced — make `set_model` self-healing: if an installed+authed
-              // agent owns this model, switch to it here. Only error when no
-              // available agent can run the model.
-              const owner = agentRegistry.available().find(
-                (a) => a.capabilities.models.includes(msg.model),
-              );
-              if (!owner) {
-                send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
-                return;
+            // docs/252 phase 4 — **decide everything before mutating anything.**
+            // This handler can self-switch the harness (below), and cross-backend
+            // review found the refusal downstream of that: a request refused for
+            // its triple had already moved the session to the other harness and
+            // reset its reasoning, so "refused" left the session changed in two
+            // ways the user did not ask for. Resolve the harness that WOULD run
+            // this model first, verify against it, and only then write.
+            const modelOwner =
+              activeAgent && !activeAgent.capabilities.models.includes(msg.model)
+                ? agentRegistry.available().find((a) => a.capabilities.models.includes(msg.model))
+                : activeAgent;
+            if (activeAgent && !modelOwner) {
+              send({ type: "error", message: `Model "${msg.model}" is not available for ${activeAgent.name}` });
+              return;
+            }
+            // docs/252 — persist the SELECTION, not just the model id: a bare id
+            // cannot say which service is billing the turn (req 11), because the
+            // same id is reachable through a vendor directly, through a gateway,
+            // and through two modes of one service.
+            //
+            // docs/252 phase 4 — an explicit triple is honoured or REFUSED, never
+            // re-resolved. Phase 3 fell through to bare-id resolution when the
+            // triple was not eligible, which silently landed the session on
+            // whichever *other* service offers the same id — the user picks
+            // Vercel, has no Vercel key, and gets billed to OpenRouter. The
+            // fall-through survives only for a client that sent NEITHER field (an
+            // older browser, Quick Capture), where a bare id is all there is;
+            // exactly one field is an incoherent request, not a legacy one, and
+            // `modelSelectionFrom` refuses it rather than dropping the half it
+            // was given. See `model-switch.ts`.
+            const verdict = verifyExplicitSelection(
+              modelOwner,
+              modelSelectionFrom(msg.model, msg.serviceId, msg.billingMode),
+            );
+            if (verdict && !verdict.ok) {
+              // Reported as a notice on the authoritative selection, not as an
+              // `error`: the session did not change, so the picker has to be told
+              // to drop its optimistic pick — and an `error` renders an assistant
+              // bubble that is never persisted, which is transcript content that
+              // vanishes on reload.
+              sendSelectionChanged(ctx.getActiveAgentId(), verdict.message);
+              return;
+            }
+            if (activeAgent && modelOwner && modelOwner.id !== currentAgentId) {
+              // The model isn't in the current agent's lineup. The picker
+              // switches harness + model together by firing `set_agent` then
+              // `set_model`, so this fires whenever the user crosses a harness
+              // boundary (e.g. Codex → Opus). Rather than depend on `set_agent`
+              // having already landed — which it may not have, if its
+              // auth/install guard bailed or the two messages raced — make
+              // `set_model` self-healing and switch to the owner here.
+              //
+              // docs/138 — after the session has taken its first turn the agent
+              // is pinned for life (per-agent credential isolation). The model
+              // can still move freely within the pinned agent's lineup, but a
+              // cross-agent model is rejected here rather than triggering the
+              // silent auto-switch the unpinned flow uses. The UI mirrors this
+              // by hiding cross-harness rows; this branch is the authoritative
+              // guard.
+              if (activeAppSessionId) {
+                const pinnedSession = sessionManager.get(activeAppSessionId);
+                if (pinnedSession?.agentPinned) {
+                  send({
+                    type: "error",
+                    message: `This session is locked to ${activeAgent.name}. Model "${msg.model}" requires ${modelOwner.name}, which can't be selected after the first message. Switch models within ${activeAgent.name} instead.`,
+                  });
+                  return;
+                }
               }
-              if (owner.id !== currentAgentId) {
-                // docs/138 — after the session has taken its first turn the
-                // agent is pinned for life (per-agent credential isolation).
-                // The model can still move freely within the pinned agent's
-                // lineup, but a cross-agent model is rejected here rather
-                // than triggering the silent auto-switch the unpinned flow
-                // uses. The UI mirrors this by greying out cross-agent rows
-                // in the picker; this branch is the authoritative guard.
+              ctx.setActiveAgentId(modelOwner.id);
+              if (activeAppSessionId) {
+                sessionManager.setAgentId(activeAppSessionId, modelOwner.id);
+              }
+              // docs/217 — `set_model` can cross an agent boundary on its own
+              // (the picker fires set_agent + set_model, but they can race or
+              // set_agent's guard can bail, and QuickCapture sends set_model
+              // alone). Reasoning is per-agent, so self-heal it here too —
+              // otherwise a stale Claude `max` could ride a Codex spawn as
+              // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
+              // docs/274 req 14 — against what the model being MOVED TO honours,
+              // not the new harness's vocabulary. The two differ for grok, so a
+              // `high` carried over from another harness would survive onto a
+              // key-billed grok row and be dropped before the wire every turn.
+              const currentReasoning = ctx.getSelectedReasoning();
+              if (
+                currentReasoning
+                && !selectionHonoursEffort(modelOwner.id, verdict?.selection, currentReasoning)
+              ) {
+                ctx.setSelectedReasoning(undefined);
                 if (activeAppSessionId) {
-                  const pinnedSession = sessionManager.get(activeAppSessionId);
-                  if (pinnedSession?.agentPinned) {
-                    send({
-                      type: "error",
-                      message: `This session is locked to ${activeAgent.name}. Model "${msg.model}" requires ${owner.name}, which can't be selected after the first message. Switch models within ${activeAgent.name} instead.`,
-                    });
-                    return;
-                  }
-                }
-                ctx.setActiveAgentId(owner.id);
-                if (activeAppSessionId) {
-                  sessionManager.setAgentId(activeAppSessionId, owner.id);
-                }
-                // docs/217 — `set_model` can cross an agent boundary on its own
-                // (the picker fires set_agent + set_model, but they can race or
-                // set_agent's guard can bail, and QuickCapture sends set_model
-                // alone). Reasoning is per-agent, so self-heal it here too —
-                // otherwise a stale Claude `max` could ride a Codex spawn as
-                // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
-                const currentReasoning = ctx.getSelectedReasoning();
-                if (currentReasoning && !owner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
-                  ctx.setSelectedReasoning(undefined);
-                  if (activeAppSessionId) {
-                    sessionManager.setReasoning(activeAppSessionId, null);
-                  }
+                  sessionManager.setReasoning(activeAppSessionId, null);
                 }
               }
             }
             ctx.setSelectedModel(msg.model);
-            // Persist to session metadata so it survives reconnects and warm pool
+            // Persist to session metadata so it survives reconnects and warm pool.
             if (activeAppSessionId) {
-              sessionManager.setModel(activeAppSessionId, msg.model);
+              if (verdict?.ok) {
+                sessionManager.setModelSelection(activeAppSessionId, verdict.selection);
+              } else {
+                // No triple sent. Resolve the id from the catalogue, biased
+                // toward the harness's own vendor so a first-party id cannot
+                // land on a gateway that happens to list the same string.
+                sessionManager.setModel(
+                  activeAppSessionId,
+                  msg.model,
+                  nativeServiceForHarness(ctx.getActiveAgentId()),
+                );
+              }
             }
+            // Confirm what the session now actually holds. The client picks
+            // optimistically by triple and the server may have resolved a bare
+            // id to a different `(service, mode)` than the picker highlighted —
+            // invisible when the two share a model id, which is exactly the case
+            // this feature creates. No notice: the user asked for this one.
+            leaveRoleOnParameterChange(roleBefore);
+            sendSelectionChanged(ctx.getActiveAgentId());
             return;
           }
           case "set_reasoning": {
@@ -1273,16 +1796,97 @@ export async function registerRoutes(
             const reasoningAgent = agentRegistry.get(ctx.getActiveAgentId());
             const effort = msg.effort;
             if (effort !== null) {
-              const allowed = reasoningAgent?.capabilities.reasoning?.options.some((o) => o.value === effort);
-              if (!allowed) {
+              // docs/274 req 14 — validated against this session's SELECTION.
+              // The vocabulary is what the CLI understands; whether this row
+              // puts it on the wire is a different question, and accepting a
+              // level the row discards stores a preference that silently does
+              // nothing (the picker no longer offers one, so this is the
+              // defence for a stale client or a direct WS caller).
+              const active = activeAppSessionId ? sessionManager.get(activeAppSessionId) : undefined;
+              const reasoningSelection =
+                active?.serviceId && active.billingMode && active.model
+                  ? { serviceId: active.serviceId, billingMode: active.billingMode, modelId: active.model }
+                  : undefined;
+              if (!selectionHonoursEffort(ctx.getActiveAgentId(), reasoningSelection, effort)) {
                 send({ type: "error", message: `Invalid reasoning effort "${effort}" for ${reasoningAgent?.name ?? "this agent"}` });
                 return;
               }
             }
+            const roleBefore = roleRelevantSnapshot();
             ctx.setSelectedReasoning(effort ?? undefined);
             if (activeAppSessionId) {
               sessionManager.setReasoning(activeAppSessionId, effort);
             }
+            // docs/272 req 15 — the reasoning level is one of the three a role
+            // set, so moving it leaves the role. `sendSelectionChanged` then
+            // carries the cleared name; without it the composer would keep
+            // showing a role whose level the user has just overridden.
+            leaveRoleOnParameterChange(roleBefore);
+            sendSelectionChanged(ctx.getActiveAgentId());
+            return;
+          }
+          case "set_role": {
+            // docs/272-user-selectable-roles reqs 1, 2, 4, 8, 9, 10, 18 — start this session on a
+            // configured role, or take the role off it.
+            //
+            // **Decide everything before mutating anything**, the rule
+            // `set_model` above states: `resolveUserRole` refuses an unknown
+            // name, the reserved reviewer, and a role this install cannot run —
+            // and a refusal must leave the session exactly as it was, because
+            // "your role could not start" plus a session silently moved onto
+            // half of it is the worst of both.
+            if (!activeAppSessionId) {
+              send({ type: "error", message: "No session to apply a role to." });
+              return;
+            }
+            const roleSession = sessionManager.get(activeAppSessionId);
+            // req 4 — selectable until the first turn STARTS, and not after.
+            // `agentPinned` is that moment: it is set when the first turn
+            // provisions per-agent credentials, which is also what makes the
+            // harness irreversible. Starting from an issue or forking does not
+            // begin a turn, so both land here with the role still selectable —
+            // which is exactly the receipt req 4 records.
+            if (roleSession?.agentPinned) {
+              send({
+                type: "error",
+                message: "A role can only be chosen before the session's first message.",
+              });
+              return;
+            }
+            // req 18 — **"No role" is a choice of role, and it is the whole of
+            // this branch.** The three parameters are deliberately left where
+            // they are: the role's values are the last thing the user chose, so
+            // putting ShipIt's defaults back would undo a choice they did not
+            // ask to undo. What clearing takes away is the name and, with it,
+            // the standing instructions the first turn would otherwise carry —
+            // the one thing no parameter can express.
+            if (msg.roleName === null) {
+              // `clearRoleName`, not `setRoleName(…, null)`: the row records that
+              // the user chose none, so the `?role=` seed cannot put it back on
+              // the next reconnect. See that method for why the two clears
+              // differ.
+              sessionManager.clearRoleName(activeAppSessionId);
+              sendSelectionChanged(ctx.getActiveAgentId());
+              return;
+            }
+            let resolvedRole;
+            try {
+              resolvedRole = resolveUserRole(msg.roleName, { credentialStore });
+            } catch (err) {
+              send({
+                type: "error",
+                message: err instanceof ServiceError ? err.message : `Could not start the "${msg.roleName}" role.`,
+              });
+              return;
+            }
+            applyRoleToSession(activeAppSessionId, resolvedRole, { sessionManager });
+            // The per-connection state has to follow the row, or this turn spawns
+            // on whatever the connection was holding: these three are read at
+            // spawn time, and the row alone does not reach them.
+            ctx.setActiveAgentId(resolvedRole.params.harnessId);
+            ctx.setSelectedModel(resolvedRole.params.modelId);
+            ctx.setSelectedReasoning(resolvedRole.params.reasoningEffort);
+            sendSelectionChanged(resolvedRole.params.harnessId);
             return;
           }
           // new_session and activate_session are NOT handled — session is implicit from URL
@@ -1350,6 +1954,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
             return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
           }
           case "submit_bug_report": return bugReportHandlers.handleSubmitBugReport(ctx, msg);
+          case "dismiss_bug_report": { bugReportHandlers.handleDismissBugReport(ctx, msg); return; }
           case "egress_decision": { egressHandlers.handleEgressDecision(ctx, msg); return; }
           case "resolve_permission": { permissionHandlers.handleResolvePermission(ctx, msg); return; }
           case "undo_issue_write": return issueWriteHandlers.handleUndoIssueWrite(ctx, msg);

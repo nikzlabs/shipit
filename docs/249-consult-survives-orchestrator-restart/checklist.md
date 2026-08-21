@@ -1,6 +1,6 @@
 # Checklist — consult survives an orchestrator restart
 
-- [x] Verify every claim in SHI-307 at the source (sole writer, no worker record, no boot reconcile)
+- [x] Verify every claim in planning#309 at the source (sole writer, no worker record, no boot reconcile)
 - [x] `requirements.md` first; open questions asked and answered with dated receipts
 - [x] `SubAgentConsultCard.statusDetail` — ShipIt's commentary, distinct from the sub-agent's words
 - [x] `ChatHistoryManager.listPendingSubAgentConsultCards()` — cross-session read

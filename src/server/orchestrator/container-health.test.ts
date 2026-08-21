@@ -139,7 +139,7 @@ describe("container-health: stale-incarnation guard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// SHI-222 — egress sidecar reap on the crash path
+// planning#224 — egress sidecar reap on the crash path
 // ---------------------------------------------------------------------------
 
 /**
@@ -149,7 +149,7 @@ describe("container-health: stale-incarnation guard", () => {
  * `destroyContainer(sessionId)` early-returns on `if (!sc) return`. So the reap
  * has to happen here, at the crash site, or it never happens at all.
  */
-describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
+describe("container-health: egress sidecar reap on die/oom (planning#224)", () => {
   let containers: Map<string, SessionContainer>;
   let emitter: EventEmitter<SessionContainerManagerEvents>;
   let eventStream: EventEmitter;
@@ -318,7 +318,7 @@ describe("container-health: egress sidecar reap on die/oom (SHI-222)", () => {
   });
 
   it("reaps on the `die` that FOLLOWS an `oom` — by then the map entry is already gone", async () => {
-    // THE canonical OOM crash, and the one SHI-222 is named for. A PID-1 OOM emits
+    // THE canonical OOM crash, and the one planning#224 is named for. A PID-1 OOM emits
     // TWO events: `oom` first, then `die` a few ms later, once the daemon has
     // processed the exit.
     //

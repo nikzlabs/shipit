@@ -1,7 +1,7 @@
 /**
  * EgressAllowlistStore — durable egress allowlist + containment toggle (SQLite).
  *
- * docs/172-agent-containment Gap 1 (SHI-90). The Tier A/B/C egress enforcement
+ * docs/172-agent-containment Gap 1 (planning#92). The Tier A/B/C egress enforcement
  * (egress-firewall / egress-dns / egress-proxy) reads its allowlist from the
  * built-in base list + `SESSION_EGRESS_ALLOWLIST` + the live MCP credential
  * store, and its allow-once decisions were per-session **in-memory** (see

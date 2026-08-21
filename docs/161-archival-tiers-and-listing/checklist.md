@@ -59,7 +59,7 @@
 - [x] Integration: `evicted` restore branch tip equals current `origin/main` tip — `session-restore-freshness.test.ts` runs `unarchiveSession` end-to-end against a real file:// remote + bare cache: the remote advances after the cache is built, and the restored workspace's branch tip and `origin/main` both equal the advanced head (proves `fetchCache(0)` ran before clone and the branch is cut from fresh main)
 - [x] Migration semantics covered by archive/unarchive unit tests; disk-janitor tests insert `disk_tier='evicted'` rows directly
 
-## SHI-294 — blocked eviction (durability of the destructive rung)
+## planning#296 — blocked eviction (durability of the destructive rung)
 - [x] Gate the wipe on a clean tree *after* the remediation attempt, not on `autoCommit`'s returned hash (three null paths, only "nothing to commit" is safe to wipe)
 - [x] Also block on a CLEAN checkout with a merge/rebase mid-flight — `autoCommit`'s conflict branch never runs when the tree is clean
 - [x] Run the `origin` durability check unconditionally (`tipIsOnOrigin` + push), not only when this pass created a commit — a commit whose push failed leaves a clean tree the next pass would have wiped

@@ -5,7 +5,7 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { computeAttentionReason } from "./useAttentionInfo.js";
-import { isRecentlyResolved } from "../components/SessionSidebar/useSessionGrouping.js";
+import { isTerminalPrResolved } from "../../server/shared/session-resolution.js";
 import type { NotifyContext } from "./useNotification.js";
 
 /**
@@ -87,7 +87,8 @@ export function useAttentionNotifications(
         hasBackgroundTasks: backgroundTaskSessions.has(session.id),
         autoFixEnabled,
         autoResolveEnabled,
-        resolved: isRecentlyResolved(session),
+        resolved: isTerminalPrResolved(session),
+        muted: !!session.mutedAt,
       });
       next.set(session.id, reason);
 

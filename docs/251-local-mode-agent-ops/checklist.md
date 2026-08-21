@@ -30,7 +30,7 @@
       `pr status`, `workflow list` and `run list` through the host to the live
       local-mode orchestrator and returned real GitHub data.
 - [x] Update `docs/118-shipit-ui-local` where it records this as unsupported.
-- [x] Narrow SHI-303 to the worker-served tools.
+- [x] Narrow planning#305 to the worker-served tools.
 - [ ] Confirm in a real dogfood **turn** that the agent picks `gh` up from
       `PATH` and that `SHIPIT_AGENT_OPS_URL` reaches the CLI's env. The image
       now installs the shim and the spawn env is unit-tested, but this has not

@@ -23,8 +23,36 @@ import { spawn } from "node:child_process";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
-/** Runs a docker compose command. Resolves on exit 0, rejects otherwise. */
-export type ComposeRunner = (args: string[], cwd: string) => Promise<void>;
+/**
+ * Receives a compose command's own output (stdout + stderr) as it arrives.
+ *
+ * This is how the image build / pull phase becomes visible. See
+ * {@link ComposeRunner} and `ServiceManager.composeLogSink`.
+ */
+export interface ComposeOutputSink {
+  (chunk: string): void;
+  /**
+   * Emit whatever the sink still holds — a trailing record the command never
+   * terminated with a newline. Called once per PROCESS, not once per call:
+   * the conflict-recovery retry is a second `docker` process, and a partial
+   * line from the failed attempt must not be glued onto the retry's first.
+   */
+  flush?(): void;
+}
+
+/**
+ * Runs a docker compose command. Resolves on exit 0, rejects otherwise.
+ *
+ * `onOutput`, when supplied, is called with each chunk of the command's output
+ * as it is produced — NOT buffered until exit. `up` is the caller that needs
+ * this: with `--build` it can run for minutes with nothing else to show for
+ * itself, and until this existed that whole window was silent.
+ */
+export type ComposeRunner = (
+  args: string[],
+  cwd: string,
+  onOutput?: ComposeOutputSink,
+) => Promise<void>;
 
 /** Runs a docker compose command and returns stdout. */
 export type ComposeQuery = (args: string[], cwd: string) => Promise<string>;
@@ -39,7 +67,7 @@ export interface ComposeCliOptions {
   /**
    * docs/246 — absolute path to the generated compose override, which lives in
    * the session's state dir, never in `<clone>/.shipit/`. Required: there is no
-   * safe default, and the in-clone one this replaced (SHI-286) put a generated
+   * safe default, and the in-clone one this replaced (planning#288) put a generated
    * file where the post-turn `git add -A` stages it into the user's repository.
    *
    * Passing an absolute path is safe: compose anchors the **project directory**
@@ -48,6 +76,20 @@ export interface ComposeCliOptions {
    * before, and the generated override contains only absolute paths anyway.
    */
   overrideFile: string;
+  /**
+   * docs/262 — this project declares NO compose file of its own, so the stack is
+   * its plugins' services alone (req 5: wiring a plugin in costs one
+   * declaration, not a declaration plus an empty compose file to hang it on).
+   * The project file is then left off the argument vector entirely and the
+   * generated override is the only source.
+   *
+   * Deliberately "absent", not "optional": keying it on whether a conventional
+   * `docker-compose.yml` happens to EXIST would start a stack the project never
+   * declared — ShipIt runs a compose file because `shipit.yaml` names it, and a
+   * repository that adds a plugin has not asked for that to change (review
+   * finding).
+   */
+  noProjectFile?: boolean;
   /** Optional override for running compose commands (useful for testing). */
   composeRunner?: ComposeRunner;
   /** Optional override for querying compose commands (useful for testing). */
@@ -59,6 +101,7 @@ export class ComposeCli {
   private readonly workspaceDir: string;
   private composeFile: string;
   private readonly overrideFile: string;
+  private noProjectFile: boolean;
   private readonly runner: ComposeRunner;
   /** Exposed so the poller / direct-spawn callers can run their own queries. */
   readonly query: ComposeQuery;
@@ -68,6 +111,7 @@ export class ComposeCli {
     this.workspaceDir = opts.workspaceDir;
     this.composeFile = opts.composeFile;
     this.overrideFile = opts.overrideFile;
+    this.noProjectFile = opts.noProjectFile ?? false;
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
   }
@@ -77,15 +121,16 @@ export class ComposeCli {
    * session's `shipit.yaml` changes its `compose:` path mid-session (a git
    * sync/rebase can rewrite it) — see `ServiceManager.updateComposeConfig`.
    */
-  setComposeFile(file: string): void {
+  setComposeFile(file: string, noProjectFile = false): void {
     this.composeFile = file;
+    this.noProjectFile = noProjectFile;
   }
 
   /** Build common compose CLI args with the user file and override. */
   args(...extra: string[]): string[] {
     return [
       "compose",
-      "-f", this.composeFile,
+      ...(this.noProjectFile ? [] : ["-f", this.composeFile]),
       "-f", this.overrideFile,
       "-p", `shipit-${this.sessionId.slice(0, 12)}`,
       ...extra,
@@ -104,26 +149,32 @@ export class ComposeCli {
    * the no-change case cheap (all cache hits). For services that only declare
    * `image:` (the common case — most user repos pull a prebuilt image), there
    * is nothing to build and `--build` is a harmless no-op.
+   *
+   * `onOutput` receives the command's own progress as it runs — the build /
+   * pull output that otherwise reaches no one.
    */
-  up(serviceNames?: string[]): Promise<void> {
-    return this.upWithConflictRecovery("up", "-d", "--build", "--remove-orphans", ...(serviceNames ?? []));
+  up(serviceNames?: string[], onOutput?: ComposeOutputSink): Promise<void> {
+    return this.upWithConflictRecovery(
+      onOutput,
+      "up", "-d", "--build", "--remove-orphans", ...(serviceNames ?? []),
+    );
   }
 
   /** Run `docker compose up -d --build` for a specific manual service. */
-  upService(name: string): Promise<void> {
-    return this.upWithConflictRecovery("up", "-d", "--build", name);
+  upService(name: string, onOutput?: ComposeOutputSink): Promise<void> {
+    return this.upWithConflictRecovery(onOutput, "up", "-d", "--build", name);
   }
 
   /** Run `docker compose stop <service>`. */
   stop(name: string): Promise<void> {
-    return this.run("stop", name);
+    return this.run(undefined, "stop", name);
   }
 
   /** Run `docker compose down --remove-orphans`, optionally dropping volumes. */
   down(opts: { removeVolumes: boolean }): Promise<void> {
     const args = ["down", "--remove-orphans"];
     if (opts.removeVolumes) args.push("--volumes");
-    return this.run(...args);
+    return this.run(undefined, ...args);
   }
 
   /**
@@ -137,14 +188,14 @@ export class ComposeCli {
     );
     let ids = stdout.split("\n").map(s => s.trim()).filter(Boolean);
     if (ids.length === 0) return;
-    // The Tier B resolver and Tier C SNI proxy (docs/172, SHI-90) share the agent's
+    // The Tier B resolver and Tier C SNI proxy (docs/172, planning#92) share the agent's
     // netns and are LONG-LIVED sidecars, not stale compose containers — they carry
     // shipit-parent-session only so destroy-time cleanup reaps them. Exclude them
     // from this pre-start sweep, or we'd SIGKILL them ~1s after the agent launches
     // and leave the session with no resolver / no HTTPS. Docker `--filter` has no
     // label negation, so subtract a query per keep-label and union the results.
     //
-    // SHI-222: the keep-list must be INCARNATION-aware. Both labels are keyed on
+    // planning#224: the keep-list must be INCARNATION-aware. Both labels are keyed on
     // the session id, which is stable across container recreations — so a naive
     // label match also spares the sidecars of a PREVIOUS, dead agent container
     // (the session OOM'd and was recreated). Those share a torn-down namespace
@@ -182,7 +233,7 @@ export class ComposeCli {
   /**
    * Is `id`'s netns parent (`HostConfig.NetworkMode: container:<parentId>`) still
    * a running container? — the incarnation test for {@link killStaleContainers}'s
-   * egress-sidecar keep-list (SHI-222).
+   * egress-sidecar keep-list (planning#224).
    *
    * The agent container carries no `RestartPolicy`, so it never legitimately goes
    * running → stopped → running underneath a live sidecar: "parent not running"
@@ -205,7 +256,7 @@ export class ComposeCli {
       parentId = mode.slice("container:".length).trim();
       if (!parentId) return true;
     } catch {
-      return true; // can't tell → keep (preserves the pre-SHI-222 behavior)
+      return true; // can't tell → keep (preserves the pre-planning#224 behavior)
     }
     try {
       // `ps --filter` rather than `inspect`, deliberately. `docker inspect` exits
@@ -256,9 +307,12 @@ export class ComposeCli {
    * disturbed. The conflicting container can't be useful anyway — its name
    * is blocking the create we're about to issue.
    */
-  private async upWithConflictRecovery(...subArgs: string[]): Promise<void> {
+  private async upWithConflictRecovery(
+    onOutput: ComposeOutputSink | undefined,
+    ...subArgs: string[]
+  ): Promise<void> {
     try {
-      await this.run(...subArgs);
+      await this.run(onOutput, ...subArgs);
     } catch (err) {
       const conflictId = extractConflictContainerId((err as Error).message);
       if (!conflictId) throw err;
@@ -272,31 +326,156 @@ export class ComposeCli {
         // is clear, rather than masking it with the removal failure.
         throw err;
       }
-      await this.run(...subArgs);
+      await this.run(onOutput, ...subArgs);
     }
   }
 
   /** Run a docker compose command and resolve/reject based on exit code. */
-  private run(...subArgs: string[]): Promise<void> {
+  private async run(
+    onOutput: ComposeOutputSink | undefined,
+    ...subArgs: string[]
+  ): Promise<void> {
     const args = this.args(...subArgs);
-    return this.runner(args, this.workspaceDir);
+    try {
+      await this.runner(args, this.workspaceDir, onOutput);
+    } finally {
+      // The process is over either way, so its last unterminated line is now
+      // complete. In the `finally` so a FAILED attempt flushes too — see the
+      // per-process note on `ComposeOutputSink.flush`.
+      onOutput?.flush?.();
+    }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Spawn environment
+// ---------------------------------------------------------------------------
+
+/**
+ * The only variables a `docker` / `docker compose` child inherits (planning#371).
+ *
+ * **Compose interpolates `${VAR}` in the compose file from the environment of
+ * the process that runs it**, and that process is the ORCHESTRATOR — whose
+ * environment holds its GitHub credentials, its provider keys, and everything
+ * else a deployment sets. A `LEAK: ${GITHUB_TOKEN}` in a repository's own
+ * compose file resolved against it and arrived inside a container. This is
+ * exactly what `plugin-compose.ts` escapes every `$` in a plugin fragment to
+ * prevent; the project file was the way around that escaping, and it is worth
+ * closing on its own merits well beyond plugins — the file is repository content
+ * either way, and no repository has a reason to read the orchestrator's env.
+ *
+ * Interpolation itself still works, from the sources Compose documents for it:
+ * a `.env` file in the project directory, `env_file:`, and `environment:`. Only
+ * the accidental inheritance is gone.
+ *
+ * **This alone does not put the orchestrator's environment out of reach, and
+ * saying so would be the overstatement this area keeps shipping** (review
+ * finding). A scrubbed `env` does not unmount `/proc`: the child runs as the
+ * same uid as its parent, so `/proc/1/environ` — mode 0400, owned by the
+ * orchestrator process — is readable to it. What closes that is the companion
+ * rule in `compose-generator.ts`'s `validateTopLevelFileRefs`, which keeps a
+ * repository's `secrets:` sources inside the workspace: a BUILD secret is the
+ * one compose-file field that makes the CLI read an arbitrary path in ITS own
+ * filesystem and hand the contents to a container. The two are one fix; neither
+ * half is sufficient.
+ *
+ * **The list below is load-bearing in a second place** (planning#386): a
+ * `secrets:`/`configs:` entry may say `environment: VAR` instead of `file:`,
+ * which resolves against exactly this environment and mounts the result in a
+ * container. That is allowed precisely because nothing here is sensitive — so
+ * adding a name that is would open that path without any edit to the validator.
+ *
+ * The list is what the CLI needs to find the daemon and its own config, and
+ * nothing else:
+ *  - `PATH` — Node resolves the executable through the env it is handed, so
+ *    omitting this makes the spawn fail with ENOENT rather than run unconfigured.
+ *  - `HOME` / `DOCKER_CONFIG` — where the CLI reads `config.json` (registry
+ *    auth for a `build:`/`image:` pull, buildx state).
+ *  - `DOCKER_HOST` + the TLS/context vars — which daemon, and how to reach it.
+ *  - `DOCKER_BUILDKIT` / `BUILDKIT_PROGRESS` / `COMPOSE_DOCKER_CLI_BUILD` —
+ *    builder selection and output format, which deployments do set.
+ *  - `TMPDIR` — buildx and compose write temporary files.
+ *
+ * Deliberately NOT forwarded: `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`,
+ * `COMPOSE_PROFILES` and friends. ShipIt passes `-f` and `-p` explicitly, and a
+ * deployment-level value for them would silently redefine which stack a session
+ * is operating on.
+ */
+const COMPOSE_ENV_PASSTHROUGH = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "DOCKER_HOST",
+  "DOCKER_CONFIG",
+  "DOCKER_CONTEXT",
+  "DOCKER_CERT_PATH",
+  "DOCKER_TLS_VERIFY",
+  "DOCKER_API_VERSION",
+  "DOCKER_BUILDKIT",
+  "BUILDKIT_PROGRESS",
+  "COMPOSE_DOCKER_CLI_BUILD",
+] as const;
+
+/**
+ * Build the environment for a `docker` spawn — see {@link COMPOSE_ENV_PASSTHROUGH}.
+ *
+ * Exported because every `docker` invocation that names a compose FILE must use
+ * it, not just the two in this module: `ServiceManager`'s log snapshot and log
+ * follower spawn `docker compose … logs` with the same `-f <project file>`, so
+ * Compose parses and interpolates that file for them too.
+ */
+export function composeSpawnEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of COMPOSE_ENV_PASSTHROUGH) {
+    const value = source[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
 }
 
 // ---------------------------------------------------------------------------
 // Default compose runner / query
 // ---------------------------------------------------------------------------
 
-function defaultComposeRunner(args: string[], cwd: string): Promise<void> {
+/**
+ * How much of a failed command's stderr survives into the rejection message.
+ *
+ * Unbounded before: a failing `up --build` can emit megabytes of build output,
+ * and the whole string ends up in `ManagedService.error` — which is rendered in
+ * the services drawer and returned by `shipit service list`. The TAIL is kept
+ * because that is where the actual failure is; the preceding cache hits are
+ * noise, and they now stream live anyway.
+ */
+const MAX_ERROR_STDERR = 8_000;
+
+function defaultComposeRunner(
+  args: string[],
+  cwd: string,
+  onOutput?: ComposeOutputSink,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn("docker", args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      env: composeSpawnEnv(),
     });
 
     let stderr = "";
+    // Both streams are drained unconditionally, sink or no sink. stdout used to
+    // be piped and never read, so a command that wrote more than the pipe's
+    // buffer (~64 KiB) would block on write and never reach `close` — the
+    // promise would never settle. Compose keeps progress on stderr today, which
+    // is the only reason that never fired.
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      onOutput?.(chunk.toString());
+    });
     proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      if (stderr.length > MAX_ERROR_STDERR) stderr = stderr.slice(-MAX_ERROR_STDERR);
+      onOutput?.(text);
     });
 
     proc.on("close", (code) => {
@@ -316,6 +495,7 @@ function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
     const proc = spawn("docker", args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      env: composeSpawnEnv(),
     });
 
     let stdout = "";

@@ -37,7 +37,7 @@
  * with zero writes to the read-only store. We don't need a persistent profile:
  * the MCP server is per-session and the browser only drives the live preview, so
  * there is no cross-session cookie/login state worth keeping. This regressed
- * when SHI-145 moved the worker to uid 1000; before that the worker ran as root
+ * when planning#147 moved the worker to uid 1000; before that the worker ran as root
  * and the profile `mkdir` into the root-owned store silently succeeded.
  */
 
@@ -82,6 +82,15 @@
  * (Upstream's `checkFile` then allows the write because the workspace is one of
  * the two allowed roots, which is also why a bare `/tmp/foo.png` — outside both
  * the output dir and the workspace — is rejected with "File access denied".)
+ *
+ * ## The auto-named file is also the SHARP copy
+ *
+ * The image block upstream registers is capped at ~1.15 megapixels
+ * (`scaleImageToFitMessage`), which leaves a viewport shot untouched but reduces
+ * a full-page one to a fraction of its width. The file written to
+ * {@link PLAYWRIGHT_OUTPUT_DIR} is the full-size original, so ShipIt substitutes
+ * it into the transcript — see `session/playwright-screenshot.ts`, which depends
+ * on auto-named captures landing in this exact directory.
  */
 
 /** Directory the Playwright MCP server writes screenshots/output into. */

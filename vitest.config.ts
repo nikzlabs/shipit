@@ -34,6 +34,25 @@ export default defineConfig({
           include: ["src/server/**/*.test.ts"],
           environment: "node",
           setupFiles: ["./server-test-setup.ts", "./server-debug-setup.ts"],
+          // Reproduce, in CI, the one thing CI does not have: a machine with
+          // the user's real credentials in the environment. A ShipIt session
+          // container exports them into the agent's `process.env`, so service
+          // and credential discovery answered a different question there than
+          // on a CI runner, and four tests passed in CI while failing in a
+          // container. `server-test-setup.ts` strips them; injecting a sentinel
+          // of each shape is what makes that strip OBSERVABLE here — without it
+          // the suite is green whether or not the strip runs at all, which is
+          // the CI-invisibility that let the divergence exist.
+          //
+          // Deliberately a real catalogue `storageEnv` and a real
+          // `SHIPIT_CREDENTIAL_*` name. The marker is not a credential and is
+          // therefore NOT stripped: it is how the pin tells "the strip worked"
+          // apart from "this block was deleted".
+          env: {
+            DEEPSEEK_API_KEY: "sk-sentinel-ambient-credential",
+            SHIPIT_CREDENTIAL_CRED_SENTINEL: "sk-sentinel-ambient-credential",
+            SHIPIT_TEST_AMBIENT_ENV_MARKER: "1",
+          },
         },
       },
       {

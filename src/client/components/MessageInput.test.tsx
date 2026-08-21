@@ -5,6 +5,7 @@ import type { PermissionMode } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { INSET_FOCUS_RING } from "../design-tokens.js";
 
 afterEach(cleanup);
 
@@ -189,7 +190,7 @@ describe("MessageInput", () => {
 
   describe("permission mode selector", () => {
     const claudeWithModes = [{
-      id: "claude", name: "Claude Code", installed: true, authConfigured: true,
+      id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true,
       models: ["claude-sonnet-4"], supportsReview: true,
       supportedPermissionModes: ["auto", "plan", "guarded"] as PermissionMode[],
     }];
@@ -218,7 +219,7 @@ describe("MessageInput", () => {
           onSend={vi.fn()}
           disabled={false}
           onPermissionModeChange={vi.fn()}
-          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] }]}
+          agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, supportedPermissionModes: [] }]}
           activeAgentId="codex"
         />,
       );
@@ -226,18 +227,20 @@ describe("MessageInput", () => {
     });
   });
 
-  describe("model agent selector", () => {
-    it("renders model selector when onAgentChange is provided", () => {
+  describe("harness and model selectors", () => {
+    // docs/252 phase 3 — two controls, not one grouped dropdown.
+    it("renders both when onAgentChange is provided", () => {
       render(
         <MessageInput
           onSend={vi.fn()}
           disabled={false}
           onAgentChange={vi.fn()}
-          agents={[{ id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-opus-4-8"], supportsReview: true }]}
+          agents={[{ id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true }]}
           modelInfo={{ model: "claude-opus-4-8", contextWindowTokens: 200000 }}
         />,
       );
-      expect(screen.getByTestId("model-agent-selector")).toBeInTheDocument();
+      expect(screen.getByTestId("harness-selector")).toBeInTheDocument();
+      expect(screen.getByTestId("model-selector")).toBeInTheDocument();
       expect(screen.getByText("Opus 4.8")).toBeInTheDocument();
     });
   });
@@ -528,6 +531,29 @@ describe("MessageInput", () => {
       expect(textarea.value).toBe("hello world");
     });
 
+    it("keeps each repo's new-session draft separate (docs/259 req 4)", () => {
+      // App.tsx keys the new-session view on `new:{slug}` rather than a single
+      // "new", so switching repos from the new-session repo bar swaps the
+      // composer text instead of carrying one repo's draft into another.
+      const { rerender } = render(
+        <MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/alpha" />,
+      );
+      const textarea = screen.getByPlaceholderText(
+        "Describe what to build... (type @ to attach files)",
+      ) as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "fix the alpha crash" } });
+
+      // Switch to another repo's new-session view: alpha's text must not follow.
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/beta" />);
+      expect(textarea.value).toBe("");
+      fireEvent.change(textarea, { target: { value: "beta readme" } });
+
+      // Switch back: alpha's own draft is restored, not beta's.
+      rerender(<MessageInput onSend={vi.fn()} disabled={false} focusKey="new:owner/alpha" />);
+      expect(textarea.value).toBe("fix the alpha crash");
+      expect(localStorage.getItem("shipit-draft-message:new:owner/beta")).toBe("beta readme");
+    });
+
     it("does not load or save drafts on the overlay surface", () => {
       // Pre-seed a draft under the overlay's historical key — if the overlay
       // ever ran the persistence path it would pick this up and prefill the
@@ -646,7 +672,7 @@ describe("MessageInput", () => {
       render(
         <MessageInput
           onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex"
-          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
+          agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
         />,
       );
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
@@ -660,7 +686,7 @@ describe("MessageInput", () => {
       render(
         <MessageInput
           onSend={vi.fn()} disabled={false} skills={skills} activeAgentId="codex"
-          agents={[{ id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
+          agents={[{ id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5"], supportsReview: false, skillInvocationPrefix: "$" }]}
         />,
       );
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
@@ -736,6 +762,283 @@ describe("MessageInput", () => {
       // No reset will run, so the signal must not be optimistically cleared —
       // the server's post-turn recompute keeps it eligible.
       expect(usePrStore.getState().resetEligibleBySession.s1).toBe(true);
+    });
+  });
+
+  /**
+   * docs/260 — the narrow composer row. `useNarrowContainer` reports `false`
+   * where `ResizeObserver` is missing, which is jsdom, so every test above sees
+   * the WIDE row unchanged and only these opt in by stubbing the observer and
+   * faking the composer's measured width.
+   */
+  describe("narrow composer row (docs/260)", () => {
+    class ResizeObserverStub {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+
+    /** Force every measured element to report `width`, so the hook sees it. */
+    function stubComposerWidth(width: number) {
+      vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+        configurable: true,
+        get: () => width,
+      });
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      // @ts-expect-error -- restoring the jsdom default (always 0)
+      delete HTMLElement.prototype.clientWidth;
+    });
+
+    const agents = [
+      {
+        id: "claude",
+        name: "Claude Code",
+        installed: true,
+        hasRunnableModels: true,
+        models: ["claude-opus-5"],
+        eligibleModels: [
+          {
+            serviceId: "anthropic",
+            serviceName: "Anthropic",
+            billingMode: "sub" as const,
+            modelId: "claude-opus-5",
+            label: "Opus 5",
+            canonicalModelKey: "claude-opus-5",
+          },
+        ],
+        supportsReview: true,
+        supportedPermissionModes: ["plan", "guarded", "auto"] as PermissionMode[],
+      },
+    ];
+
+    function renderComposer(width: number, props: Record<string, unknown> = {}) {
+      stubComposerWidth(width);
+      return render(
+        <MessageInput
+          onSend={vi.fn()}
+          disabled={false}
+          agents={agents}
+          activeAgentId="claude"
+          onAgentChange={vi.fn()}
+          onModelChange={vi.fn()}
+          onReasoningChange={vi.fn()}
+          onPermissionModeChange={vi.fn()}
+          modelInfo={{ model: "claude-opus-5", contextWindowTokens: 200000 }}
+          contextTokens={24000}
+          hasActiveSession
+          {...props}
+        />,
+      );
+    }
+
+    it("collapses the settings into one control below 700px (req 3)", () => {
+      renderComposer(520);
+      expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
+      // The four controls it replaces are gone from the row, not merely hidden.
+      expect(screen.queryByTestId("harness-trigger")).toBeNull();
+      expect(screen.queryByTestId("model-trigger")).toBeNull();
+      expect(screen.queryByTestId("reasoning-trigger")).toBeNull();
+      expect(screen.queryByTestId("permission-mode-selector")).toBeNull();
+    });
+
+    it("leaves the row exactly as it was at 700px and above (req 3)", () => {
+      renderComposer(760);
+      expect(screen.queryByTestId("composer-settings-trigger")).toBeNull();
+      expect(screen.getByTestId("harness-trigger")).toBeInTheDocument();
+      expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+    });
+
+    it("keys off the COMPOSER's width, not the window's (req 2)", () => {
+      // The reported bug: a desktop window with the chat panel dragged narrow.
+      // `isMobile` is false here, so a viewport-keyed rule would render the wide
+      // row and clip Send — which is what shipped before this feature.
+      mockMatchMedia(false);
+      renderComposer(520);
+      expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
+    });
+
+    it("puts Send outside the clipping group so nothing can displace it (req 1)", () => {
+      renderComposer(320);
+      const send = screen.getByTestId("send-button");
+      const group = document.querySelector(".overflow-hidden.min-w-0");
+      expect(group).not.toBeNull();
+      // Send is a SIBLING of the group, never inside it — that, and `shrink-0`,
+      // is the whole overflow guarantee. It is not an arithmetic argument.
+      expect(group!.contains(send)).toBe(false);
+      expect(send.className).toContain("shrink-0");
+    });
+
+    it("keeps Stop and Send both reachable while a turn runs with live steering", () => {
+      renderComposer(320, { isLoading: true, onInterrupt: vi.fn(), liveSteeringActive: true });
+      const group = document.querySelector(".overflow-hidden.min-w-0");
+      for (const id of ["stop-button", "send-button"]) {
+        const el = screen.getByTestId(id);
+        expect(group!.contains(el)).toBe(false);
+        expect(el.className).toContain("shrink-0");
+      }
+    });
+
+    it("shows the context ring without its figures (req 15)", () => {
+      renderComposer(520);
+      expect(screen.getByTestId("context-dial")).toBeInTheDocument();
+      expect(screen.queryByTestId("context-dial-label")).toBeNull();
+      expect(screen.queryByTestId("context-dial-cost")).toBeNull();
+    });
+
+    it("keeps the attach button in the row rather than in the menu (req 16)", () => {
+      renderComposer(320);
+      expect(screen.getByLabelText("Add files")).toBeInTheDocument();
+    });
+
+    it("pins the wide row's actions too, clipping its labels instead (req 1, req 8)", () => {
+      // The wide row can still need up to 808px, so between 700 and 808 it used
+      // to push Send off the edge — the original bug in a narrower band. Both
+      // ends are now pinned and the four labelled controls in the middle give
+      // way, rather than the left, because in THIS row the mic is on the left
+      // and req 1 protects it too.
+      // The mic only renders with voice input on, and it is the point of this
+      // test: in the WIDE row it sits on the left, so clipping the left would
+      // eat it.
+      useSettingsStore.setState({ voiceInputEnabled: true });
+      renderComposer(760, { isLoading: true, onInterrupt: vi.fn(), liveSteeringActive: true });
+      const group = screen.getByTestId("wide-row-clip-group");
+      expect(group.className).toContain("min-w-0");
+      expect(group.className).toContain("overflow-hidden");
+      for (const id of ["stop-button", "send-button"]) {
+        expect(group.contains(screen.getByTestId(id))).toBe(false);
+      }
+      // The mic is pinned as well — it sits outside the group in this layout.
+      expect(group.contains(screen.getByTestId("mic-button"))).toBe(false);
+      // ...and the labelled controls are the ones inside it.
+      expect(group.contains(screen.getByTestId("model-trigger"))).toBe(true);
+      expect(group.contains(screen.getByTestId("harness-trigger"))).toBe(true);
+    });
+
+    /**
+     * docs/260 req 19 — quick capture on desktop keeps the mode in the row.
+     *
+     * Its panel is `max-w-2xl` (672px) at every window size, so it is ALWAYS
+     * under the 700px breakpoint: the measurement that means "space is scarce"
+     * in a dragged chat panel means nothing here, and folding the mode took the
+     * one control this surface most needs before its first message.
+     */
+    describe("the quick-capture overlay's mode control (req 19)", () => {
+      beforeEach(() => {
+        // A neighbouring test leaves `voiceInputEnabled` on in the shared store,
+        // and on a mobile viewport that puts the recording surface in front of
+        // this row — the settings menu then never opens. These three are about
+        // the mode alone, so they start from the default.
+        useSettingsStore.setState({ voiceInputEnabled: false });
+      });
+
+      /**
+       * Open the anchor and WAIT for the menu, on a deadline of its own.
+       *
+       * **`fireEvent.pointerDown`, not `userEvent.click`**, and that is the
+       * whole reason this helper exists. Radix binds the trigger on
+       * `pointerdown`; `userEvent.click` synthesises a whole pointer sequence
+       * with its own waits, and on the mobile overlay path — where the surface
+       * also moves focus into the textarea on mount — that sequence did not
+       * settle within the 5s test timeout under a parallel run. It failed as
+       * "the mode row is missing", which is also what a real regression looks
+       * like, so the flake was indistinguishable from the bug.
+       *
+       * Then wait for the menu ITSELF before asserting on its rows: a row's
+       * absence is also true of a menu that never opened.
+       */
+      async function openSettingsMenu() {
+        fireEvent.pointerDown(screen.getByTestId("composer-settings-trigger"), {
+          button: 0,
+          ctrlKey: false,
+          pointerType: "mouse",
+        });
+        await screen.findByTestId("composer-settings-menu", {}, { timeout: 2000 });
+      }
+
+      it("stands in the row on a desktop viewport, and leaves the menu", async () => {
+        renderComposer(520, { surface: "overlay" });
+        expect(screen.getByTestId("permission-mode-selector")).toBeInTheDocument();
+        // Still the compact layout — only the mode came back out of it.
+        expect(screen.getByTestId("composer-settings-trigger")).toBeInTheDocument();
+        expect(screen.queryByTestId("harness-trigger")).toBeNull();
+        // One setting, one control: the menu must not offer the mode as well.
+        await openSettingsMenu();
+        // Waited for a row that IS there first — "the mode row is absent" is
+        // also true of a menu that never opened, which is exactly the flake the
+        // deadline below exists for.
+        expect(screen.getByTestId("composer-settings-row-model")).toBeInTheDocument();
+        expect(screen.queryByTestId("composer-settings-row-mode")).toBeNull();
+      });
+
+      it("folds it away on a mobile viewport, where the panel really is narrow", async () => {
+        mockMatchMedia(true);
+        renderComposer(390, { surface: "overlay" });
+        expect(screen.queryByTestId("permission-mode-selector")).toBeNull();
+        await openSettingsMenu();
+        expect(screen.getByTestId("composer-settings-row-mode")).toBeInTheDocument();
+      });
+
+      it("changes nothing for the chat composer at the same width", async () => {
+        renderComposer(520);
+        expect(screen.queryByTestId("permission-mode-selector")).toBeNull();
+        await openSettingsMenu();
+        expect(screen.getByTestId("composer-settings-row-mode")).toBeInTheDocument();
+      });
+    });
+
+    it("names a non-default permission mode by the mode alone (req 17)", () => {
+      renderComposer(760, { permissionMode: "guarded" });
+      const mode = screen.getByTestId("permission-mode-selector");
+      expect(mode).toHaveTextContent("Guarded");
+      expect(mode).not.toHaveTextContent("Guarded mode");
+    });
+
+    /**
+     * The clipping groups above are what makes this a guard rather than a style
+     * preference: their content box hugs the buttons, so ANY focus indicator
+     * painted outside a control's border box — the UA's own outline, or a
+     * non-inset Tailwind `ring-*` — is shaved off on all four sides, and the
+     * control reads as having a broken selected state. It is silent to every
+     * other test here, because the markup is correct and only the paint is wrong.
+     *
+     * Asserted on the whole row, not only on the controls the group currently
+     * contains: which of them sit inside it is a layout detail that has already
+     * changed once (req 3 moved four of them into one anchor), and a row where
+     * one button's ring is a different shape from its neighbours' is its own
+     * defect.
+     */
+    it("draws every toolbar control's focus ring inside its border box", () => {
+      const inset = INSET_FOCUS_RING.split(" ");
+
+      // Reasoning is absent from this list because the fixture's agent has no
+      // reasoning knob, so its trigger self-hides. It costs nothing: it renders
+      // the same `PICKER_TRIGGER_CLASS` as harness and model, and
+      // `picker-consistency.test.tsx` asserts that string on all eight pickers.
+      renderComposer(760, { permissionMode: "guarded" });
+      for (const id of [
+        "context-dial",
+        "harness-trigger",
+        "model-trigger",
+        "permission-mode-selector",
+      ]) {
+        const control = screen.getByTestId(id);
+        for (const cls of inset) {
+          expect(`${id}: ${control.className}`).toContain(cls);
+        }
+      }
+      cleanup();
+
+      renderComposer(520);
+      for (const id of ["composer-settings-trigger", "context-dial"]) {
+        const control = screen.getByTestId(id);
+        for (const cls of inset) {
+          expect(`${id}: ${control.className}`).toContain(cls);
+        }
+      }
     });
   });
 

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-175
+issue: planning#177
 title: Onboarding starter prompts (empty-session launchpad)
 description: Clickable chips on every empty session that seed the composer with ShipIt-specific capability prompts, surfacing integrated features new users wouldn't discover.
 ---

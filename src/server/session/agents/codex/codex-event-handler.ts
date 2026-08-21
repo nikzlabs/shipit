@@ -24,6 +24,7 @@ import type {
   PermissionRequester,
 } from "../agent-process.js";
 import type { CodexRateLimits, CodexTokenUsage } from "./codex-rate-limits.js";
+import { codexTurnTokens } from "../../../shared/codex-token-usage.js";
 import {
   buildCodexPermissionInput,
   contentToAddedDiff,
@@ -36,7 +37,6 @@ import {
   unwrapShellCommand,
   type CodexItem,
 } from "./codex-tool-normalizer.js";
-import { normalizeCodexModelId } from "../../../shared/agent-registry.js";
 
 /** Inbound request (app-server → client) — has BOTH an id and a method. */
 interface JsonRpcServerRequest {
@@ -122,6 +122,18 @@ export class CodexEventHandler {
   private emittedToolUseIds = new Set<string>();
 
   /**
+   * Codex app-server streams child-thread items on the same connection as the
+   * parent turn. Relate each child thread to the `spawn_agent` item that made
+   * it so those events use ShipIt's existing nested-subagent transcript path.
+   */
+  private childThreadParents = new Map<string, string>();
+
+  /** Spawn calls for which the child has already produced its final answer. */
+  private completedSubagentReports = new Set<string>();
+  private openSubagentSpawns = new Set<string>();
+  private latestSubagentMessages = new Map<string, string>();
+
+  /**
    * docs/178 — true once ShipIt has asked this app-server to compact (via
    * `compact()` or a `compact`-flagged run). Codex emits no manual/auto field on
    * its `contextCompaction` items, so the adapter labels the normalized event by
@@ -176,6 +188,10 @@ export class CodexEventHandler {
     this.turnStartTime = Date.now();
     this.cwd = cwd;
     this.emittedToolUseIds.clear();
+    this.childThreadParents.clear();
+    this.completedSubagentReports.clear();
+    this.openSubagentSpawns.clear();
+    this.latestSubagentMessages.clear();
   }
 
   // ---- Server→client request handling ----
@@ -200,7 +216,7 @@ export class CodexEventHandler {
    * isn't being asked.
    *
    * Decision enums come from the generated v2 schema (`codex app-server
-   * generate-json-schema`, confirmed SHI-112): v2 CommandExecution/FileChange
+   * generate-json-schema`, confirmed planning#114): v2 CommandExecution/FileChange
    * ApprovalDecision allow is `"accept"`; deny is `"decline"` (deny + continue
    * the turn) — NOT `"reject"`, which the schema does not define (the only other
    * deny variant, `"cancel"`, denies AND interrupts the turn, which is not our
@@ -267,7 +283,10 @@ export class CodexEventHandler {
         // CLI 0.132.x nests the id under `thread.id`; older shape had a
         // top-level `threadId`. Accept both.
         const thread = params.thread as { id?: string } | undefined;
-        this.threadId = thread?.id ?? (params.threadId as string) ?? this.threadId;
+        // The response to thread/start or thread/resume already establishes
+        // the parent id. Child agents also announce thread/started on this
+        // connection, so never replace a known parent resume key here.
+        this.threadId ??= thread?.id ?? (params.threadId as string) ?? null;
         break;
       }
 
@@ -275,6 +294,7 @@ export class CodexEventHandler {
         // Turn has begun — capture its id so live steering can pass it as
         // `expectedTurnId` on `turn/steer`. The v2 shape nests it under
         // `turn.id`; accept a top-level `turnId` defensively.
+        if (!this.isParentThread(params)) break;
         const turn = params.turn as { id?: string } | undefined;
         this.currentTurnId = turn?.id ?? (params.turnId as string) ?? this.currentTurnId;
         break;
@@ -294,7 +314,14 @@ export class CodexEventHandler {
       }
 
       case "thread/tokenUsage/updated": {
-        this.rateLimits.recordTokenUsage(params.tokenUsage as CodexTokenUsage | undefined);
+        if (!this.isParentThread(params)) break;
+        // planning#367 — the `turnId` is what separates this turn's rollup from
+        // the one `thread/resume` replays from the previous turn. See
+        // `CodexRateLimits.recordTokenUsage`.
+        this.rateLimits.recordTokenUsage(
+          params.tokenUsage as CodexTokenUsage | undefined,
+          params.turnId as string | undefined,
+        );
         break;
       }
 
@@ -305,22 +332,40 @@ export class CodexEventHandler {
       }
 
       case "item/started": {
-        this.handleItem(params, "started");
+        this.handleItem(params, "started", this.parentToolUseIdFor(params));
         break;
       }
 
       case "item/completed": {
-        this.handleItem(params, "completed");
+        this.handleItem(params, "completed", this.parentToolUseIdFor(params));
         break;
       }
 
       case "item/agentMessage/delta": {
         // Incremental text delta for streaming
-        this.handleMessageDelta(params);
+        this.handleMessageDelta(params, this.parentToolUseIdFor(params));
         break;
       }
 
       case "turn/completed": {
+        // Child turns finish on the parent's app-server stream too. Their
+        // terminal state belongs to the spawn card; it must not terminate the
+        // parent ShipIt turn.
+        const parentToolUseId = this.parentToolUseIdFor(params);
+        if (parentToolUseId) {
+          if (!this.completedSubagentReports.has(parentToolUseId)) {
+            const turn = params.turn as { status?: string } | undefined;
+            const status = turn?.status ?? (params.status as string) ?? "completed";
+            const answer = this.latestSubagentMessages.get(parentToolUseId);
+            this.emitSubagentReport(parentToolUseId, answer ?? (
+              status === "completed"
+                ? "Subagent completed without a final response."
+                : `Subagent ended with status: ${status}`
+            ), status !== "completed");
+          }
+          break;
+        }
+        this.finishUnclosedSubagents();
         this.handleTurnCompleted(params);
         break;
       }
@@ -345,7 +390,11 @@ export class CodexEventHandler {
    * pre-0.132 `role:"assistant"`/`function_call`/`function_call_output` shapes
    * this adapter used to parse no longer appear on the wire. See CodexItem.
    */
-  private handleItem(params: Record<string, unknown>, phase: "started" | "completed"): void {
+  private handleItem(
+    params: Record<string, unknown>,
+    phase: "started" | "completed",
+    parentToolUseId?: string,
+  ): void {
     const item = (params.item ?? params) as CodexItem;
     const id = item.id ?? `codex-${Date.now()}`;
 
@@ -363,15 +412,22 @@ export class CodexEventHandler {
           // completion so the orchestrator can replace turnSummary without
           // double-counting accumulatedText / message groups.
           if (item.text) {
-            this.ctx.emitEvent({
-              type: "agent_assistant",
-              content: [{ type: "text", text: item.text }],
-              isStreamCompletion: true,
-            });
+            if (parentToolUseId) {
+              this.latestSubagentMessages.set(parentToolUseId, item.text);
+            } else {
+              this.ctx.emitEvent({
+                type: "agent_assistant",
+                content: [{ type: "text", text: item.text }],
+                isStreamCompletion: true,
+              });
+            }
           }
           return;
         }
-        if (item.text) this.emitAssistant([{ type: "text", text: item.text }]);
+        if (item.text) {
+          this.emitAssistant([{ type: "text", text: item.text }], parentToolUseId);
+          if (parentToolUseId) this.latestSubagentMessages.set(parentToolUseId, item.text);
+        }
         return;
       }
 
@@ -397,11 +453,24 @@ export class CodexEventHandler {
           // down. Guard so a stray `turn/completed` can't double-emit.
           if (this.compactSpawnMode && !this.compactionTerminated) {
             this.compactionTerminated = true;
+            // planning#367 — a compact-only run makes a model request of its own
+            // and raises the thread's rollup (measured: 1000 → 2000 against
+            // codex-cli 0.146.0), and the app-server gives it a `turn/started`
+            // with its own id like any other turn. Before the per-turn
+            // subtraction those tokens were swept up — wrongly, along with
+            // everything else — by the next turn's cumulative total; now the
+            // next turn's baseline excludes them, so a result without them
+            // would drop them for good.
+            const compactUsage = this.rateLimits.turnTokenUsage(this.currentTurnId);
             this.ctx.emitEvent({
               type: "agent_result",
               status: "success",
               sessionId: this.threadId ?? "unknown",
               durationMs: Date.now() - this.turnStartTime,
+              tokens: codexTurnTokens(compactUsage?.usage.total, compactUsage?.baselineTotal),
+              // The post-compaction occupancy — the whole point of the run.
+              contextTokens: compactUsage?.usage.last?.totalTokens,
+              contextWindow: this.rateLimits.lastTokenUsage?.modelContextWindow,
             });
             this.ctx.kill();
           }
@@ -411,14 +480,14 @@ export class CodexEventHandler {
 
       case "commandExecution": {
         if (phase === "started") {
-          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd });
+          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd }, parentToolUseId);
         } else {
-          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd });
+          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd }, parentToolUseId);
           const out = item.aggregatedOutput ?? "";
           const exit = item.exitCode;
           const content =
             exit !== null && exit !== undefined && exit !== 0 ? `${out}\n[exit code: ${exit}]` : out;
-          this.emitToolResult(id, content);
+          this.emitToolResult(id, content, parentToolUseId);
         }
         return;
       }
@@ -444,10 +513,10 @@ export class CodexEventHandler {
             // `files` kept for back-compat; `changes` carries per-file diffs.
             input: { files: changes.map((c) => c.path), changes },
           },
-        ]);
+        ], parentToolUseId);
         this.emittedToolUseIds.add(id);
         const summary = changes.map((c) => `${c.kind} ${c.path}`).join("\n");
-        this.emitToolResult(id, summary || "applied");
+        this.emitToolResult(id, summary || "applied", parentToolUseId);
         return;
       }
 
@@ -476,11 +545,11 @@ export class CodexEventHandler {
           ? normalizeMcpToolName(item.server, item.tool)
           : item.tool ?? "tool";
         if (phase === "started") {
-          this.emitToolUseOnce(id, toolName, input);
+          this.emitToolUseOnce(id, toolName, input, parentToolUseId);
         } else {
-          this.emitToolUseOnce(id, toolName, input);
+          this.emitToolUseOnce(id, toolName, input, parentToolUseId);
           const payload = item.result ?? item.error ?? "";
-          this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload));
+          this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload), parentToolUseId);
         }
         break;
       }
@@ -488,20 +557,22 @@ export class CodexEventHandler {
       case "webSearch": {
         const normalized = normalizeWebSearchItem(item);
         if (phase === "started") {
-          this.emitToolUseOnce(id, normalized.name, normalized.input);
+          this.emitToolUseOnce(id, normalized.name, normalized.input, parentToolUseId);
         } else {
-          this.emitToolUseOnce(id, normalized.name, normalized.input);
+          this.emitToolUseOnce(id, normalized.name, normalized.input, parentToolUseId);
           const payload = item.result ?? item.error;
           this.emitToolResult(
             id,
             typeof payload === "string" && payload.length > 0
               ? payload
               : normalized.summary,
+            parentToolUseId,
           );
         }
         break;
       }
 
+      case "collabAgentToolCall":
       case "collabToolCall": {
         // docs/125 — subagent orchestration (`spawn_agent`, `send_input`,
         // `wait`, `close_agent`, …). Surface it as a tool call so the review
@@ -509,9 +580,12 @@ export class CodexEventHandler {
         // `Task` tool renders. The review output is the subagent's final text,
         // which the parent surfaces in chat (docs/220) — no write-back tool.
         if (phase === "started") {
-          if (item.tool === "spawn_agent") {
+          if (item.tool === "spawnAgent" || item.tool === "spawn_agent") {
+            const childThreadIds = item.receiverThreadIds ?? [item.receiverThreadId ?? item.newThreadId].filter((v): v is string => !!v);
+            for (const childThreadId of childThreadIds) this.childThreadParents.set(childThreadId, id);
+            this.openSubagentSpawns.add(id);
             this.emitToolUseOnce(id, "Agent", {
-              agent: item.receiverThreadId ?? item.newThreadId,
+              agent: childThreadIds[0],
               subagent_type: "Codex",
               description: summarizeCodexSubagentPrompt(item.prompt),
               prompt: item.prompt,
@@ -520,9 +594,12 @@ export class CodexEventHandler {
           }
           this.emitToolUseOnce(id, item.tool ?? "collab", { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt });
         } else {
-          if (item.tool === "spawn_agent") {
+          if (item.tool === "spawnAgent" || item.tool === "spawn_agent") {
+            const childThreadIds = item.receiverThreadIds ?? [item.receiverThreadId ?? item.newThreadId].filter((v): v is string => !!v);
+            for (const childThreadId of childThreadIds) this.childThreadParents.set(childThreadId, id);
+            this.openSubagentSpawns.add(id);
             this.emitToolUseOnce(id, "Agent", {
-              agent: item.receiverThreadId ?? item.newThreadId,
+              agent: childThreadIds[0],
               subagent_type: "Codex",
               description: summarizeCodexSubagentPrompt(item.prompt),
               prompt: item.prompt,
@@ -530,8 +607,34 @@ export class CodexEventHandler {
           } else {
             this.emitToolUseOnce(id, item.tool ?? "collab", { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt });
           }
-          this.emitToolResult(id, item.agentStatus ?? item.status ?? "done");
+          // `spawn_agent` completes when the child is accepted, not when its
+          // work is done. The child's terminal agentMessage/turn supplies the
+          // real result later; rendering this status would mark the card done
+          // while the child still runs.
+          if (item.tool !== "spawnAgent" && item.tool !== "spawn_agent") {
+            this.emitToolResult(id, item.agentStatus ?? item.status ?? "done");
+          }
+          this.captureCollabAgentResults(item);
         }
+        break;
+      }
+
+      case "subAgentActivity": {
+        // Verified against a live 0.146.0 app-server run: a successful
+        // `spawn_agent` does NOT emit the schema's `spawnAgent` collab item.
+        // Its observable parent-side invocation is `subAgentActivity/started`,
+        // followed by the child thread's own item and turn notifications.
+        // The activity id is therefore the stable tool-use id for ShipIt's
+        // card, and agentThreadId is the correlation key for child progress.
+        if (phase !== "started" || !item.agentThreadId || item.kind !== "started") return;
+        this.childThreadParents.set(item.agentThreadId, id);
+        this.openSubagentSpawns.add(id);
+        const agentName = item.agentPath?.split("/").filter(Boolean).at(-1);
+        this.emitToolUseOnce(id, "Agent", {
+          agent: item.agentThreadId,
+          subagent_type: "Codex",
+          description: agentName ? `Run ${agentName} subagent` : "Run Codex subagent",
+        });
         break;
       }
 
@@ -563,22 +666,30 @@ export class CodexEventHandler {
   }
 
   /** Emit an assistant event with the given content blocks. */
-  private emitAssistant(content: AgentContentBlock[]): void {
-    this.ctx.emitEvent({ type: "agent_assistant", content });
+  private emitAssistant(content: AgentContentBlock[], parentToolUseId?: string): void {
+    this.ctx.emitEvent({ type: "agent_assistant", content, parentToolUseId });
   }
 
   /** Emit one tool_use block for a Codex item id, synthesizing starts as needed. */
-  private emitToolUseOnce(id: string, name: string, input: Record<string, unknown>): void {
+  private emitToolUseOnce(
+    id: string,
+    name: string,
+    input: Record<string, unknown>,
+    parentToolUseId?: string,
+  ): void {
     if (this.emittedToolUseIds.has(id)) return;
     this.emittedToolUseIds.add(id);
-    this.emitAssistant([{ type: "tool_use", id, name, input }]);
+    this.emitAssistant([{ type: "tool_use", id, name, input }], parentToolUseId);
   }
 
   /** Emit a tool-result event for the given tool_use id. */
-  private emitToolResult(toolUseId: string, content: string): void {
+  private emitToolResult(toolUseId: string, content: string, parentToolUseId?: string, isError = false): void {
+    const block: Record<string, unknown> = { type: "tool_result", tool_use_id: toolUseId, content };
+    if (isError) block.is_error = true;
     this.ctx.emitEvent({
       type: "agent_tool_result",
-      content: [{ type: "tool_result", tool_use_id: toolUseId, content }],
+      content: [block],
+      ...(parentToolUseId ? { parentToolUseId } : {}),
     });
   }
 
@@ -587,12 +698,47 @@ export class CodexEventHandler {
    * delivers `delta` as a plain string with the item's `itemId`; we record the
    * id so the matching `item/completed` agentMessage isn't re-emitted.
    */
-  private handleMessageDelta(params: Record<string, unknown>): void {
+  private handleMessageDelta(params: Record<string, unknown>, parentToolUseId?: string): void {
     const delta = params.delta;
     if (typeof delta !== "string" || delta.length === 0) return;
     const itemId = params.itemId as string | undefined;
     if (itemId) this.streamedAgentItems.add(itemId);
-    this.emitAssistant([{ type: "text", text: delta }]);
+    this.emitAssistant([{ type: "text", text: delta }], parentToolUseId);
+  }
+
+  /** Resolve the child thread carried by a v2 notification to its spawn call. */
+  private parentToolUseIdFor(params: Record<string, unknown>): string | undefined {
+    const thread = params.thread as { id?: string } | undefined;
+    const threadId = (params.threadId as string | undefined) ?? thread?.id;
+    return threadId ? this.childThreadParents.get(threadId) : undefined;
+  }
+
+  private isParentThread(params: Record<string, unknown>): boolean {
+    const notificationThreadId = params.threadId as string | undefined;
+    return !notificationThreadId || !this.threadId || notificationThreadId === this.threadId;
+  }
+
+  /** Put a child's terminal assistant message in the spawn card's report slot. */
+  private emitSubagentReport(parentToolUseId: string, text: string, isError = false): void {
+    if (this.completedSubagentReports.has(parentToolUseId)) return;
+    this.completedSubagentReports.add(parentToolUseId);
+    this.openSubagentSpawns.delete(parentToolUseId);
+    this.emitToolResult(parentToolUseId, text, undefined, isError);
+  }
+
+  private captureCollabAgentResults(item: CodexItem): void {
+    for (const [threadId, state] of Object.entries(item.agentsStates ?? {})) {
+      const parentId = this.childThreadParents.get(threadId);
+      if (!parentId || !state.message || !["completed", "errored", "interrupted", "shutdown"].includes(state.status ?? "")) continue;
+      this.emitSubagentReport(parentId, state.message, state.status === "errored");
+    }
+  }
+
+  private finishUnclosedSubagents(): void {
+    for (const parentId of this.openSubagentSpawns) {
+      const answer = this.latestSubagentMessages.get(parentId);
+      this.emitSubagentReport(parentId, answer ?? "Subagent ended without a final response.");
+    }
   }
 
   /** Handle turn completion — emit agent_result. */
@@ -603,26 +749,35 @@ export class CodexEventHandler {
     // `agent_result`.
     if (this.compactionTerminated) return;
     // v2 nests status under `turn`; older shape had a top-level `status`.
-    const turn = params.turn as { status?: string } | undefined;
+    const turn = params.turn as { id?: string; status?: string } | undefined;
     const status = turn?.status ?? (params.status as string) ?? "completed";
-    const usage = this.rateLimits.lastTokenUsage;
+    const completedTurnId = turn?.id ?? (params.turnId as string | undefined) ?? this.currentTurnId;
+    // planning#367 — the rollup THIS turn produced, or null when the only one
+    // held is the previous turn's, replayed by `thread/resume`.
+    const turnUsage = this.rateLimits.turnTokenUsage(completedTurnId);
     const durationMs = Date.now() - this.turnStartTime;
 
     this.ctx.emitEvent({
       type: "agent_result",
       status: status === "completed" ? "success" : "error",
       sessionId: this.threadId ?? "unknown",
-      // `total` is the cumulative turn rollup (billing); `last.totalTokens` is
-      // the real context-window occupancy (input + cache from the final call).
-      tokens: usage?.total
-        ? {
-            input: usage.total.inputTokens ?? 0,
-            output: usage.total.outputTokens ?? 0,
-            cacheRead: usage.total.cachedInputTokens,
-          }
-        : undefined,
-      contextTokens: usage?.last?.totalTokens,
-      contextWindow: usage?.modelContextWindow,
+      // `total` is the cumulative rollup for the whole THREAD (billing);
+      // `last.totalTokens` is the real context-window occupancy (input + cache
+      // from the final call), which is per-call and needs no conversion.
+      // docs/252 phase 3 — normalized to the DISJOINT convention at the adapter
+      // boundary, because Codex's `inputTokens` INCLUDES `cachedInputTokens`
+      // and ShipIt's pricing code assumes the classes never overlap. The rule
+      // and the measurement behind it are in `shared/codex-token-usage.ts`;
+      // planning#341 moved them there once the orchestrator's own `codex exec
+      // --json` shell-out became a second reader of the same overlapping
+      // figures under different key names, and planning#367 added the
+      // cumulative→per-turn subtraction that the "rollup" in the first line
+      // has always needed.
+      tokens: codexTurnTokens(turnUsage?.usage.total, turnUsage?.baselineTotal),
+      contextTokens: turnUsage?.usage.last?.totalTokens,
+      // Not turn-scoped — it is the model's window, so the latest snapshot
+      // answers for it even on a turn that reported no usage of its own.
+      contextWindow: this.rateLimits.lastTokenUsage?.modelContextWindow,
       durationMs,
       error: status !== "completed" ? `Turn ended with status: ${status}` : undefined,
     });
@@ -722,7 +877,15 @@ export class CodexEventHandler {
       this.threadId = resolvedThreadId;
     }
 
-    const model = normalizeCodexModelId(params.model) ?? "gpt-5.6-sol";
+    // docs/252 phase 8 — this used to re-map a retired model id
+    // (`normalizeCodexModelId`). It no longer does, and must not: retirement is
+    // declared per `(service, billing mode)` and two services may offer the same
+    // model id (req 5), so a boundary holding only an id cannot tell whose
+    // retirement applies — it would rewrite a model the session's own service
+    // still serves. The orchestrator resolves and persists the successor before
+    // the turn is built (`applyModelRetirement`), so what arrives here is
+    // already the model the session should run. Forward it verbatim.
+    const model = params.model ?? "gpt-5.6-sol";
 
     // Emit agent_init so the server can track the session
     this.ctx.emitEvent({

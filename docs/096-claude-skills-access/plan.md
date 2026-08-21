@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-109
+issue: planning#111
 description: Show .claude/skills in the file tree and grant Edit/Write permission; fix the allow-rule glob that was anchored relative and never matched the absolute path.
 ---
 

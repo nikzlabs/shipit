@@ -22,13 +22,26 @@ import {
   type DeclaredSecret,
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
+import {
+  pluginClaimantsOf,
+  pluginCredentialNames,
+  resolvePluginCredentials,
+  satisfiedCredentialNames,
+  type PluginCredentialDeclaration,
+  type PluginCredentialGroup,
+} from "../shared/plugin-credentials.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface SecretsStatusSnapshot {
-  /** All declared secrets across all services, de-duplicated by name. */
+  /**
+   * All declared secrets, de-duplicated by name: every `x-shipit-secrets`
+   * entry across all services, plus every credential name an activated plugin
+   * declares (docs/262 req 23). A name claimed by both is ONE entry carrying
+   * both claimant lists — it is one stored secret.
+   */
   declared: DeclaredSecret[];
   /** Service-name → list of declared secrets that have no value (required + optional). */
   missingByService: Record<string, string[]>;
@@ -42,6 +55,19 @@ export interface SecretsStatusSnapshot {
    * secret values into telemetry / logs.
    */
   agentNames: string[];
+  /**
+   * docs/262 req 23 — plugin-declared credential needs, GROUPED per activated
+   * plugin rather than flattened into `declared`. The grouping is the
+   * requirement: a missing key has to read as "the `artk` plugin needs
+   * `FAL_KEY`", which a flat name list cannot say.
+   *
+   * Deliberately NOT folded into `missingRequired`: that list drives the
+   * preview's "configure secrets to run this project" banner, which is about
+   * the project's own services failing to start. A plugin's gap is reported
+   * where the plugin is — on its card in the Plugins tab, and as a claimant on
+   * the settings row — and does not block the project's preview.
+   */
+  plugins: PluginCredentialGroup[];
 }
 
 /**
@@ -67,7 +93,7 @@ export interface DockerSecretsBuild {
   perService: Record<string, string[]>;
   filePathFor: (name: string) => string;
   /**
-   * SHI-285 — compose-side (daemon-visible) absolute path of the staged
+   * planning#287 — compose-side (daemon-visible) absolute path of the staged
    * entrypoint wrapper, or `undefined` when staging failed. The override
    * bind-mounts it into each secret-consuming service container; a service is
    * left without the wrapper (and therefore without its env vars) rather than
@@ -86,7 +112,7 @@ export interface ServiceSecretsResolverOptions {
   sessionId: string;
   workspaceDir: string;
   secretsLoader?: () => Promise<Record<string, string>>;
-  mcpAgentEnvLoader?: () => Record<string, string>;
+  accountAgentEnvLoader?: () => Record<string, string>;
   dockerSecretsConfig?: DockerSecretsConfig;
   /**
    * docs/183 — orchestrator-private root for per-service env files, OUTSIDE the
@@ -94,9 +120,9 @@ export interface ServiceSecretsResolverOptions {
    * are written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the compose
    * override references those absolute paths via `env_file:`.
    *
-   * **Required** (SHI-290). It used to be optional, and omitting it fell back to
+   * **Required** (planning#292). It used to be optional, and omitting it fell back to
    * writing `.shipit/.env.<svc>` into the agent-readable git clone — the last
-   * in-clone writer in the codebase (docs/246 req 7). Production never took that
+   * in-clone writer in the codebase (docs/246-shipit-state-out-of-clone req 7). Production never took that
    * branch (`bootstrap-managers.ts` always computes a root, defaulting to
    * `<stateDir>/service-env`), so only tests reached it; requiring the option
    * makes "service secrets never land in the clone" a property of the type
@@ -117,6 +143,33 @@ export interface ServiceSecretsResolverOptions {
    * reconciles don't spam the log.
    */
   onPlatformSourceWarning?: (serviceName: string, text: string) => void;
+  /**
+   * docs/262 req 23 — what the session's activated plugins declare they need,
+   * read fresh on each sync (a `shipit.yaml` edit or a plugin refresh changes
+   * the answer, and there is nothing to invalidate).
+   *
+   * Only the NAMES arrive here. Satisfaction is decided inside {@link sync}
+   * against the very same `userSecrets` map the compose services resolve
+   * from — the consuming project's own secret store — so a plugin credential
+   * can never resolve from a source a project credential could not. That is
+   * req 23's platform-credential boundary, held by sharing one input rather
+   * than by a second lookup that could drift.
+   */
+  pluginCredentialsLoader?: () => PluginCredentialDeclaration[];
+}
+
+/**
+ * docs/262 req 23 — one surfaced plugin service, as the secrets pass needs it:
+ * the name it is addressed by, and the credential names its plugin declared in
+ * the LIVE manifest the fragment itself came from.
+ *
+ * Structurally satisfied by `PluginComposeService`, so `ServiceManager` hands
+ * over what it already holds and no second resolution of "which plugin, which
+ * generation" happens here.
+ */
+export interface PluginServiceCredentialNeed {
+  name: string;
+  credentials: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -127,11 +180,12 @@ export class ServiceSecretsResolver {
   private readonly sessionId: string;
   private readonly workspaceDir: string;
   private secretsLoader?: () => Promise<Record<string, string>>;
-  private readonly mcpAgentEnvLoader?: () => Record<string, string>;
+  private readonly accountAgentEnvLoader?: () => Record<string, string>;
   private readonly dockerSecretsConfig?: DockerSecretsConfig;
   private readonly serviceEnvDir: string;
   private readonly onSnapshot?: (snapshot: SecretsStatusInternalSnapshot) => void;
   private readonly onPlatformSourceWarning?: (serviceName: string, text: string) => void;
+  private readonly pluginCredentialsLoader?: () => PluginCredentialDeclaration[];
   /** (service, name, source) tuples already warned about — see onPlatformSourceWarning. */
   private readonly warnedPlatformSources = new Set<string>();
 
@@ -142,6 +196,7 @@ export class ServiceSecretsResolver {
     missingByService: {},
     missingRequired: [],
     agentNames: [],
+    plugins: [],
     agentValues: {},
   };
   /**
@@ -162,16 +217,22 @@ export class ServiceSecretsResolver {
    * (which delivers via `secrets:` instead).
    */
   private serviceEnvFiles?: Record<string, string>;
+  /**
+   * docs/262 req 23 — plugin service name → the credential values that service
+   * is to receive, from the most recent `sync()`.
+   */
+  private pluginServiceEnv?: Record<string, Record<string, string>>;
 
   constructor(opts: ServiceSecretsResolverOptions) {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.secretsLoader = opts.secretsLoader;
-    this.mcpAgentEnvLoader = opts.mcpAgentEnvLoader;
+    this.accountAgentEnvLoader = opts.accountAgentEnvLoader;
     this.dockerSecretsConfig = opts.dockerSecretsConfig;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.onSnapshot = opts.onSnapshot;
     this.onPlatformSourceWarning = opts.onPlatformSourceWarning;
+    this.pluginCredentialsLoader = opts.pluginCredentialsLoader;
   }
 
   /**
@@ -226,6 +287,22 @@ export class ServiceSecretsResolver {
     return this.serviceEnvFiles ? { ...this.serviceEnvFiles } : undefined;
   }
 
+  /**
+   * docs/262 req 23 — plugin service name → the declared credentials that
+   * service's plugin actually gets, resolved from the consuming project's own
+   * store. The override generator emits them as that service's `environment:`.
+   *
+   * `undefined` before the first `sync()`. A service whose plugin declares no
+   * credential, or none this project has a value for, gets an empty map rather
+   * than no entry — "nothing to deliver" is an answer, not a gap in the data.
+   */
+  getPluginServiceEnv(): Record<string, Record<string, string>> | undefined {
+    if (!this.pluginServiceEnv) return undefined;
+    return Object.fromEntries(
+      Object.entries(this.pluginServiceEnv).map(([svc, values]) => [svc, { ...values }]),
+    );
+  }
+
   /** Whether Docker-secrets isolation mode is configured. */
   get dockerSecretsModeEnabled(): boolean {
     return !!this.dockerSecretsConfig;
@@ -241,7 +318,10 @@ export class ServiceSecretsResolver {
    * snapshot changed — listeners are cheap, debouncing is the consumer's
    * concern.
    */
-  async sync(parsedServices: ComposeService[]): Promise<void> {
+  async sync(
+    parsedServices: ComposeService[],
+    pluginServices: readonly PluginServiceCredentialNeed[] = [],
+  ): Promise<void> {
     let userSecrets: Record<string, string> = {};
     if (this.secretsLoader) {
       try {
@@ -262,20 +342,22 @@ export class ServiceSecretsResolver {
     // user must set a user secret of the same name if the service needs it.
     this.warnPlatformSources(resolution.platformSourceWarnings);
 
-    // docs/088: merge account-level MCP secrets (`mcp__*` keys) into the
-    // resolved agent-env set. This runs AFTER `resolveSecrets()` — MCP
-    // secrets are account-level and never declared in compose, so they take
-    // a separate path. Compose-declared entries win on key collision (they
-    // are explicit per-repo overrides).
+    // docs/088 + docs/252: merge the ACCOUNT-LEVEL set — MCP secrets (`mcp__*`),
+    // MCP OAuth tokens, and the user's stored service credentials — into the
+    // resolved agent-env set. This runs AFTER `resolveSecrets()`: account-level
+    // secrets are never declared in compose, so they take a separate path.
+    // Compose-declared entries win on key collision (they are explicit per-repo
+    // overrides), which is the pre-existing precedence and applies unchanged to
+    // service credentials.
     let mergedAgentValues = resolution.agentValues;
-    if (this.mcpAgentEnvLoader) {
-      let mcpEnv: Record<string, string> = {};
+    if (this.accountAgentEnvLoader) {
+      let accountEnv: Record<string, string> = {};
       try {
-        mcpEnv = this.mcpAgentEnvLoader();
+        accountEnv = this.accountAgentEnvLoader();
       } catch (err) {
-        console.warn(`[compose:${this.sessionId}] mcpAgentEnvLoader failed:`, (err as Error).message);
+        console.warn(`[compose:${this.sessionId}] accountAgentEnvLoader failed:`, (err as Error).message);
       }
-      mergedAgentValues = { ...mcpEnv, ...resolution.agentValues };
+      mergedAgentValues = { ...accountEnv, ...resolution.agentValues };
     }
 
     // De-duplicate required-and-missing across services. Same secret name
@@ -284,11 +366,30 @@ export class ServiceSecretsResolver {
     const missingRequired = [
       ...new Set(Object.values(resolution.missingRequiredByService).flat()),
     ].sort();
+
+    // docs/262 req 23 — plugin-declared credential names, resolved against
+    // `userSecrets`: the consuming project's own secret store, the SAME map
+    // the compose services just resolved from. `mergedAgentValues` — which
+    // carries ShipIt's account-level credentials (provider tokens, MCP OAuth)
+    // — is deliberately not consulted here and must never be: a plugin's
+    // store can never resolve ShipIt's own platform credentials (req 23).
+    const pluginDeclarations = this.loadPluginCredentials();
+    const satisfied = satisfiedCredentialNames(userSecrets);
+
+    // The same set, one expression later, decides what each plugin SERVICE
+    // container receives. That adjacency is the point: the card's "satisfied"
+    // and the container's environment are one computation over one map, so they
+    // cannot disagree — which they did, when the delivery half did not exist at
+    // all and every declared name read as satisfied while the service got
+    // nothing.
+    this.pluginServiceEnv = resolvePluginServiceEnv(pluginServices, userSecrets, satisfied);
+
     this.snapshot = {
-      declared: resolution.declared,
+      declared: mergePluginClaimants(resolution.declared, pluginDeclarations),
       missingByService: resolution.missingByService,
       missingRequired,
       agentNames: Object.keys(mergedAgentValues).sort(),
+      plugins: resolvePluginCredentials(pluginDeclarations, satisfied),
       agentValues: mergedAgentValues,
     };
     this.synced = true;
@@ -296,7 +397,7 @@ export class ServiceSecretsResolver {
 
     // Two delivery modes, both writing outside the session's git clone. There is
     // no third: the in-workspace `.shipit/.env.<svc>` fallback was deleted with
-    // SHI-290, and `serviceEnvDir` is required so there is nothing to fall back
+    // planning#292, and `serviceEnvDir` is required so there is nothing to fall back
     // from.
     if (this.dockerSecretsConfig) {
       // Phase 1 follow-up: Docker-secrets mode. Write per-secret files to
@@ -329,6 +430,20 @@ export class ServiceSecretsResolver {
     });
   }
 
+  /** Never let a plugin declaration failure break the compose secrets pass. */
+  private loadPluginCredentials(): PluginCredentialDeclaration[] {
+    if (!this.pluginCredentialsLoader) return [];
+    try {
+      return this.pluginCredentialsLoader();
+    } catch (err) {
+      console.warn(
+        `[compose:${this.sessionId}] pluginCredentialsLoader failed:`,
+        (err as Error).message,
+      );
+      return [];
+    }
+  }
+
   /**
    * docs/184 — emit a service-log notice for each compose entry that still
    * declares a now-unhonored `source: platform:*` field. De-duplicated per
@@ -359,7 +474,7 @@ export class ServiceSecretsResolver {
    *   2. Write to `dockerSecretsConfig.internalDir/<sessionId>/<NAME>`.
    *   3. Build per-service references (each service only references the
    *      secrets it declared — scoping is preserved at the compose layer).
-   *   4. Stage the entrypoint wrapper beside those files (SHI-285), so compose
+   *   4. Stage the entrypoint wrapper beside those files (planning#287), so compose
    *      can bind-mount it into service containers by absolute path.
    */
   private applyDockerSecretsMode(resolution: ReturnType<typeof resolveSecrets>): void {
@@ -389,11 +504,11 @@ export class ServiceSecretsResolver {
       if (names.length > 0) perService[svcName] = names;
     }
 
-    // SHI-285 — stage the entrypoint wrapper in the Docker-secrets root, NOT in
+    // planning#287 — stage the entrypoint wrapper in the Docker-secrets root, NOT in
     // the session clone. The old placement (`<clone>/.shipit/`) was chosen so
     // the wrapper could ride the workspace volume that service containers
     // already mount, but it put a ShipIt-generated file where the post-turn
-    // `git add -A` commits it into the user's repository (docs/246 req 1). The
+    // `git add -A` commits it into the user's repository (docs/246-shipit-state-out-of-clone req 1). The
     // secrets root is the one directory this mode already has a daemon-side
     // mapping for, so the override can bind-mount the wrapper by absolute path
     // and stop depending on the workspace mount entirely. Refreshed on every
@@ -423,14 +538,104 @@ export class ServiceSecretsResolver {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * docs/262 req 23 — what each plugin service is to receive: exactly the
+ * credential names its plugin declared, and only those the consuming project
+ * has a value for.
+ *
+ * Four properties, each load-bearing:
+ *
+ *  - **Only declared names.** The set is the intersection of the plugin's
+ *    manifest declaration with what this project has stored. A fragment cannot
+ *    widen it: `x-shipit-secrets`, `secrets` and `env_file` are all refused by
+ *    the fragment allowlist (`plugin-compose.ts`), and these values are merged
+ *    into the emitted service's `environment` by ShipIt, over anything the
+ *    fragment put there. So delivering a value never became a way for a plugin
+ *    to name something it did not declare, nor to shadow what it did.
+ *  - **Only the consuming project's store.** `userSecrets` is `secretsLoader`'s
+ *    map: `SecretStore.loadSecrets(<this session's remoteUrl>)`.
+ *    `CredentialStore` — ShipIt's GitHub identity, tracker and agent tokens —
+ *    is reachable in this class only through `accountAgentEnvLoader`, whose map
+ *    is deliberately not an argument here.
+ *  - **A declared plugin credential is not a FETCH credential** (req 19), and
+ *    the two live in different worlds rather than being told apart here. A
+ *    fetch credential is minted per fetch by `resolvePluginFetchCredential`
+ *    (`plugin-fetch.ts`) and handed to git as a `GitRemoteCredential`
+ *    (`repo-git.ts`) for the life of one command; it is written to no store, so
+ *    there is no name in `userSecrets` it could arrive under. What this
+ *    delivers is the other kind entirely: a name the plugin's manifest asked
+ *    for, for the plugin's own job, whose value the user typed into this
+ *    project's Settings → Secrets.
+ *  - **A missing key is omitted, never sent empty**, and the service still
+ *    STARTS. Req 23 wants a named gap on the plugin's card; an empty-string
+ *    credential turns that into a third-party authentication error instead. The
+ *    manifest declares names with no required/optional distinction, so refusing
+ *    to start would make every optional key fatal and — under the
+ *    all-or-nothing service rule — would take out a whole repository over one
+ *    unset name. The companion CLI already omits-and-runs; two surfaces
+ *    disagreeing about one declared name is the worse failure.
+ */
+function resolvePluginServiceEnv(
+  pluginServices: readonly PluginServiceCredentialNeed[],
+  userSecrets: Record<string, string>,
+  satisfied: ReadonlySet<string>,
+): Record<string, Record<string, string>> {
+  const perService: Record<string, Record<string, string>> = {};
+  for (const svc of pluginServices) {
+    const values: Record<string, string> = {};
+    for (const name of svc.credentials) {
+      if (satisfied.has(name)) values[name] = userSecrets[name];
+    }
+    perService[svc.name] = values;
+  }
+  return perService;
+}
+
+/**
+ * docs/262 req 23 — fold plugin-declared credential names into the flat
+ * declared list the Secrets settings panel renders.
+ *
+ * Two rules, both from plan §3:
+ *   - A name a compose service ALREADY declares gains plugin claimants; it
+ *     stays one row, because it is one stored secret. The compose metadata
+ *     (`required`, `agent`, description) is authoritative and untouched — a
+ *     plugin never gets to mark a project's secret required.
+ *   - A name only a plugin declares becomes a new row with no consuming
+ *     service, so the user can set it from the same panel instead of hunting
+ *     for where a plugin's key is supposed to go.
+ */
+function mergePluginClaimants(
+  declared: readonly DeclaredSecret[],
+  pluginDeclarations: readonly PluginCredentialDeclaration[],
+): DeclaredSecret[] {
+  if (pluginDeclarations.length === 0) return [...declared];
+
+  const merged = new Map(declared.map((d) => [d.name, { ...d, services: [...d.services] }]));
+  for (const name of pluginCredentialNames(pluginDeclarations)) {
+    const claimants = pluginClaimantsOf(pluginDeclarations, name);
+    const existing = merged.get(name);
+    if (existing) {
+      existing.plugins = claimants;
+    } else {
+      merged.set(name, { name, services: [], plugins: claimants });
+    }
+  }
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function cloneSnapshot(snapshot: SecretsStatusInternalSnapshot): SecretsStatusInternalSnapshot {
   return {
-    declared: snapshot.declared.map((d) => ({ ...d, services: [...d.services] })),
+    declared: snapshot.declared.map((d) => ({
+      ...d,
+      services: [...d.services],
+      ...(d.plugins ? { plugins: [...d.plugins] } : {}),
+    })),
     missingByService: Object.fromEntries(
       Object.entries(snapshot.missingByService).map(([k, v]) => [k, [...v]]),
     ),
     missingRequired: [...snapshot.missingRequired],
     agentNames: [...snapshot.agentNames],
+    plugins: snapshot.plugins.map((g) => ({ ...g, credentials: g.credentials.map((c) => ({ ...c })) })),
     agentValues: { ...snapshot.agentValues },
   };
 }

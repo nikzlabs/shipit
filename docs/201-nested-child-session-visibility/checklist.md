@@ -20,4 +20,4 @@ and verified (`npm run typecheck`, `npm run lint:dev`, affected tests green).
 ## Deferred (tracked, not in this work)
 
 - [ ] D3 — provenance hint ("via &lt;middle child&gt;") on grandchild rows (pure presentation, no data change)
-- [ ] D4 — root-wide active cap over `findBrood(rootId)`, gated on telemetry (SHI-132 follow-up)
+- [ ] D4 — root-wide active cap over `findBrood(rootId)`, gated on telemetry (planning#134 follow-up)

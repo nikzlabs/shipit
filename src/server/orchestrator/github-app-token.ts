@@ -1,12 +1,12 @@
 /**
- * GitHub App installation-token minter (docs/172 Gap 2-R / SHI-79).
+ * GitHub App installation-token minter (docs/172 Gap 2-R / planning#81).
  *
  * WHY THIS EXISTS
  * ---------------
  * The git credential broker (`shipit-git-credential` → worker →
  * `getGitCredential`) is *caller-blind*: anything that can run `git` inside a
  * session container can ask the broker for the credential and gets the full,
- * long-lived GitHub PAT back. SHI-72 closed plaintext-at-rest and host-blindness,
+ * long-lived GitHub PAT back. planning#74 closed plaintext-at-rest and host-blindness,
  * but the on-demand extraction path remains (an injected agent, a malicious
  * `agent.install`, or a compromised dependency can read the token and exfiltrate
  * it via some other channel — Gap 1 egress, still open).
@@ -41,6 +41,16 @@
  *                                 survives single-line env/secret stores).
  *
  * No new dependency: the App JWT is signed with `node:crypto` (RS256).
+ *
+ * SECOND CONSUMER (docs/262 req 10)
+ * ---------------------------------
+ * Plugin repositories fetch through here too, and for a different reason than
+ * blast radius: a plugin repository is a *different* repository from the
+ * session's own, so under App mode the project's installation token does not
+ * cover it and the orchestrator must mint per plugin repository. That path asks
+ * for the `read` scope — a declaration grants a fetch, never a push — and reads
+ * the failure reason rather than a null, so "the App is not installed on
+ * owner/repo" can be said by name. See `plugin-fetch.ts`.
  */
 
 import { createSign } from "node:crypto";
@@ -67,17 +77,52 @@ interface CachedToken {
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 /**
- * The narrowest permission set that still lets the agent do its job over git +
- * the brokered `gh` shim: read/write repo contents (push/pull/fetch), read/write
- * pull requests (the PR lifecycle), and read metadata (required by GitHub for
- * almost any installation token). Deliberately omits `administration`,
- * `actions`, `secrets`, `members`, etc. — an extracted token cannot touch them.
+ * What a minted token is allowed to do.
+ *
+ * - `"write"` — the session's own repository: git push/pull plus the PR
+ *   lifecycle.
+ * - `"read"` — a repository this ShipIt only *reads*, today a plugin
+ *   repository (docs/262 reqs 7, 10). A plugin declaration is a standing grant
+ *   to **fetch**, never to push, so the credential ShipIt mints for it cannot
+ *   push — by construction rather than by nobody calling `git push`.
  */
-const INSTALLATION_TOKEN_PERMISSIONS: Record<string, string> = {
-  contents: "write",
-  pull_requests: "write",
-  metadata: "read",
+export type AppTokenScope = "write" | "read";
+
+/**
+ * The narrowest permission set per scope that still does the job.
+ *
+ * `write` is what the agent needs over git + the brokered `gh` shim: read/write
+ * repo contents (push/pull/fetch), read/write pull requests (the PR lifecycle),
+ * and read metadata (required by GitHub for almost any installation token).
+ * `read` drops both write permissions and the PR surface entirely.
+ *
+ * Both deliberately omit `administration`, `actions`, `secrets`, `members`,
+ * etc. — an extracted token cannot touch them.
+ */
+const INSTALLATION_TOKEN_PERMISSIONS: Record<AppTokenScope, Record<string, string>> = {
+  write: {
+    contents: "write",
+    pull_requests: "write",
+    metadata: "read",
+  },
+  read: {
+    contents: "read",
+    metadata: "read",
+  },
 };
+
+/**
+ * Why a mint did not produce a token. The distinction is the point: only
+ * `not_installed` is something a *user* can fix, and docs/262 req 13 wants that
+ * said by name ("the App is not installed on owner/repo") rather than delivered
+ * as an opaque git failure.
+ */
+export type AppTokenMintFailure = "not_configured" | "not_installed" | "mint_failed";
+
+/** A mint attempt's outcome. */
+export type AppTokenMintResult =
+  | { ok: true; token: string }
+  | { ok: false; reason: AppTokenMintFailure };
 
 function base64url(input: string | Buffer): string {
   return Buffer.from(input).toString("base64url");
@@ -170,8 +215,14 @@ export class GitHubAppTokenMinter {
     return this.config !== null;
   }
 
-  private cacheKey(owner: string, repo: string): string {
-    return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+  /**
+   * The scope is part of the key. A read-only token and a write token for the
+   * same repository are different credentials, and serving one where the other
+   * was asked for would either break a push or hand a plugin fetch a token that
+   * can push (docs/262 req 7).
+   */
+  private cacheKey(owner: string, repo: string, scope: AppTokenScope): string {
+    return `${owner.toLowerCase()}/${repo.toLowerCase()}#${scope}`;
   }
 
   /**
@@ -182,38 +233,62 @@ export class GitHubAppTokenMinter {
    * availability. Never throws.
    */
   async getRepoToken(owner: string, repo: string): Promise<string | null> {
-    if (!this.config) return null;
-    if (!owner || !repo) return null;
+    const result = await this.getRepoTokenResult(owner, repo, "write");
+    return result.ok ? result.token : null;
+  }
 
-    const key = this.cacheKey(owner, repo);
+  /**
+   * {@link getRepoToken} with the failure kept (docs/262 req 13). Same caching
+   * and the same never-throws contract; the caller decides whether a reason it
+   * can name is worth showing before it falls back.
+   */
+  async getRepoTokenResult(
+    owner: string,
+    repo: string,
+    scope: AppTokenScope = "write",
+  ): Promise<AppTokenMintResult> {
+    if (!this.config) return { ok: false, reason: "not_configured" };
+    if (!owner || !repo) return { ok: false, reason: "mint_failed" };
+
+    const key = this.cacheKey(owner, repo, scope);
     const cached = this.cache.get(key);
     if (cached && cached.expiresAtMs - this.now() > REFRESH_MARGIN_MS) {
-      return cached.token;
+      return { ok: true, token: cached.token };
     }
 
     try {
-      const minted = await this.mint(owner, repo);
-      if (!minted) return null;
-      this.cache.set(key, minted);
-      return minted.token;
+      const minted = await this.mint(owner, repo, scope);
+      if (!minted.ok) return minted;
+      this.cache.set(key, minted.value);
+      return { ok: true, token: minted.value.token };
     } catch (err) {
       console.warn(`[github-app-token] failed to mint installation token for ${owner}/${repo}: ${getErrorMessage(err)}`);
-      return null;
+      return { ok: false, reason: "mint_failed" };
     }
   }
 
-  /** Drop any cached token for `owner/repo` (e.g. after a 401 on use). */
+  /**
+   * Drop any cached token for `owner/repo` (e.g. after a 401 on use). Every
+   * scope: a revoked installation invalidates the read token as much as the
+   * write one, and the caller does not know which one it just used.
+   */
   invalidate(owner: string, repo: string): void {
-    this.cache.delete(this.cacheKey(owner, repo));
+    for (const scope of ["write", "read"] as const) {
+      this.cache.delete(this.cacheKey(owner, repo, scope));
+    }
   }
 
   /**
    * Discover the installation for `owner/repo` and exchange the App JWT for a
    * repo-scoped, permission-narrowed installation access token.
    */
-  private async mint(owner: string, repo: string): Promise<CachedToken | null> {
+  private async mint(
+    owner: string,
+    repo: string,
+    scope: AppTokenScope,
+  ): Promise<{ ok: true; value: CachedToken } | { ok: false; reason: AppTokenMintFailure }> {
     const config = this.config;
-    if (!config) return null;
+    if (!config) return { ok: false, reason: "not_configured" };
     const jwt = buildAppJwt(config, Math.floor(this.now() / 1000));
     const headers = {
       Authorization: `Bearer ${jwt}`,
@@ -229,13 +304,18 @@ export class GitHubAppTokenMinter {
     );
     if (!instRes.ok) {
       console.warn(`[github-app-token] installation lookup for ${owner}/${repo} returned HTTP ${instRes.status}`);
-      return null;
+      // 404 is GitHub's answer for both "the App is not installed here" and
+      // "no such repository" — it will not distinguish them for an App that
+      // cannot see the repository either way. Reported as `not_installed`
+      // because that is the actionable half, and the message the user sees
+      // says both (docs/262 req 13).
+      return { ok: false, reason: instRes.status === 404 ? "not_installed" : "mint_failed" };
     }
     const instBody = (await instRes.json().catch(() => null)) as { id?: number } | null;
     const installationId = instBody?.id;
     if (typeof installationId !== "number") {
       console.warn(`[github-app-token] installation lookup for ${owner}/${repo} returned no id`);
-      return null;
+      return { ok: false, reason: "mint_failed" };
     }
 
     // 2. Mint a token scoped to just this repo with the minimal permission set.
@@ -246,13 +326,13 @@ export class GitHubAppTokenMinter {
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({
           repositories: [repo],
-          permissions: INSTALLATION_TOKEN_PERMISSIONS,
+          permissions: INSTALLATION_TOKEN_PERMISSIONS[scope],
         }),
       },
     );
     if (!tokenRes.ok) {
       console.warn(`[github-app-token] access-token mint for ${owner}/${repo} returned HTTP ${tokenRes.status}`);
-      return null;
+      return { ok: false, reason: "mint_failed" };
     }
     const tokenBody = (await tokenRes.json().catch(() => null)) as
       | { token?: string; expires_at?: string }
@@ -261,13 +341,13 @@ export class GitHubAppTokenMinter {
     const expiresAt = tokenBody?.expires_at;
     if (typeof token !== "string" || typeof expiresAt !== "string") {
       console.warn(`[github-app-token] access-token mint for ${owner}/${repo} returned an unexpected body`);
-      return null;
+      return { ok: false, reason: "mint_failed" };
     }
     const expiresAtMs = Date.parse(expiresAt);
     if (!Number.isFinite(expiresAtMs)) {
       console.warn(`[github-app-token] access-token mint for ${owner}/${repo} returned unparseable expires_at: ${expiresAt}`);
-      return null;
+      return { ok: false, reason: "mint_failed" };
     }
-    return { token, expiresAtMs };
+    return { ok: true, value: { token, expiresAtMs } };
   }
 }

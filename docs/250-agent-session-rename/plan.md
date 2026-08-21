@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-309
+issue: planning#311
 title: Agent session rename
 description: Let the agent keep a session's title current as it does more work, unless the user has renamed it.
 ---

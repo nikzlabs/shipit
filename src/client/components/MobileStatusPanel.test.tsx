@@ -20,10 +20,11 @@ const FUTURE_SESSION_RESET = new Date(Date.now() + 60 * 60_000).toISOString();
 const FUTURE_WEEKLY_RESET = new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString();
 
 function makeSnap(overrides: Partial<SubscriptionLimits> = {}): SubscriptionLimits {
-  const agentId = overrides.agentId ?? "claude";
+  const serviceId = overrides.serviceId ?? "anthropic";
   return {
-    agentId,
-    routeId: `acct-${agentId}`,
+    serviceId,
+    billingMode: "sub",
+    routeId: `acct-${serviceId}`,
     plan: "Pro",
     session: { usedPct: 30, resetAt: FUTURE_SESSION_RESET },
     weekly: { usedPct: 50, resetAt: FUTURE_WEEKLY_RESET },
@@ -68,15 +69,16 @@ describe("MobileStatusPanel", () => {
     // — the user shouldn't need a second tap on the refresh glyph.
     render(
       <MobileStatusPanel
-        subscriptionLimits={{ claude: routed(makeSnap()) }}
+        subscriptionLimits={{ "anthropic:sub": routed(makeSnap()) }}
         dockerMemory={null}
         processStartedAt={null}
       />,
     );
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
     expect(JSON.parse((refreshCalls()[0][1] as RequestInit).body as string)).toEqual({
-      agentId: "claude",
-      routeId: "acct-claude",
+      serviceId: "anthropic",
+      billingMode: "sub",
+      routeId: "acct-anthropic",
     });
   });
 
@@ -95,7 +97,7 @@ describe("MobileStatusPanel", () => {
   it("shows and refreshes a connected account that has no usage snapshot yet", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-quiet", provider: "claude", label: "Quiet account", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-quiet", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Quiet account", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
 
     render(
@@ -109,5 +111,50 @@ describe("MobileStatusPanel", () => {
     expect(screen.getByText("Subscription")).toBeInTheDocument();
     expect(screen.getByText("Quiet account")).toBeInTheDocument();
     await waitFor(() => expect(refreshCalls()).toHaveLength(1));
+  });
+});
+
+/**
+ * docs/274 req 16 — the heading has to follow the pill, not the account list.
+ *
+ * A subscription ShipIt can read no quota for renders no pill (xAI publishes no
+ * usage API), so a panel that asked "any connected account?" put a
+ * "Subscription" heading above an empty box — the same empty-affordance failure
+ * as the blank pill, one level up.
+ */
+describe("MobileStatusPanel with a no-quota subscription", () => {
+  const now = Date.now();
+
+  it("drops the Subscription section when the only account reports no quota", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-go", serviceId: "opencode", billingMode: "sub", via: "account", label: "nik@go", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    render(
+      <MobileStatusPanel
+        subscriptionLimits={{}}
+        dockerMemory={null}
+        processStartedAt={Date.parse("2026-05-19T12:00:00Z")}
+      />,
+    );
+    expect(screen.queryByText("Subscription")).toBeNull();
+    // The panel is not empty — it still has the section it does have data for.
+    expect(screen.getByText("Uptime")).toBeInTheDocument();
+  });
+
+  it("keeps the section when an account beside it does report one", () => {
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct-go", serviceId: "opencode", billingMode: "sub", via: "account", label: "nik@go", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+    ]);
+    render(
+      <MobileStatusPanel
+        subscriptionLimits={{ "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) }}
+        dockerMemory={null}
+        processStartedAt={null}
+      />,
+    );
+    expect(screen.getByText("Subscription")).toBeInTheDocument();
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.queryByText("nik@go")).toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 /**
- * SHI-311 — the orchestrator half of the worker trust boundary.
+ * planning#313 — the orchestrator half of the worker trust boundary.
  *
  * The worker requires {@link WORKER_AUTH_HEADER} on every non-loopback request
  * (`session/worker-auth-guard.ts`). The orchestrator is the only such caller, so
@@ -27,10 +27,10 @@
  *
  * Note the token is readable by the agent inside its own container (it is in the
  * worker's env, which the agent process inherits). It is per-session, so it
- * opens no OTHER worker — cross-session access, the SHI-311 hole, stays closed
+ * opens no OTHER worker — cross-session access, the planning#313 hole, stays closed
  * either way.
  *
- * Since SHI-239 that inheritance is no longer entirely free, though: loopback
+ * Since planning#241 that inheritance is no longer entirely free, though: loopback
  * alone no longer reaches the lifecycle routes (`shared/worker-auth.ts`
  * {@link LIFECYCLE_PATHS}), so a process that deliberately forwards the env var
  * as a header can still start or kill its own session's agent. That group

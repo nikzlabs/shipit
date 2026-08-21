@@ -1,5 +1,5 @@
 /**
- * docs/213 / SHI-315 — the single owner of "auto-commit is blocked by a likely
+ * docs/213 / planning#317 — the single owner of "auto-commit is blocked by a likely
  * secret" as a piece of *session state*, rather than as a one-off chat line.
  *
  * ## Why this module exists

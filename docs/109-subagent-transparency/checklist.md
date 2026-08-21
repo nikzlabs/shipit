@@ -80,6 +80,9 @@
 - [ ] Verify the retired card in a live browser render (same gap as the original
       report work — needs a real backgrounded subagent turn in the dogfood instance)
 
+- [x] Codex `spawn_agent` invocation, child-thread progress, and terminal output
+      use the shared persisted subagent card.
+
 ## Not done
 
 - [ ] A **nested** report (a subagent's subagent) still renders through the generic

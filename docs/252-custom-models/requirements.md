@@ -2,6 +2,12 @@
 
 The design that implements these requirements is in [`plan.md`](./plan.md).
 
+**These are the things this feature changes. Everything ShipIt already does is a requirement
+too, and is not restated here** — existing behaviour must keep working at least as well as it
+does today. So a requirement below is silent about an existing capability when this feature
+does not change it, and that silence is not permission to drop it. Where a requirement *does*
+describe something that already works, it is because this feature changes it in some way.
+
 No open questions remain.
 
 ## Requirements
@@ -24,15 +30,40 @@ No open questions remain.
 4. A user can switch models within a session while keeping the same harness, as far
    as that harness supports it.
 
-5. A service is authenticated by an API key or by a subscription. Supporting a
-   subscription takes per-service work on ShipIt's side — its own login, refresh, and
-   account handling — so this feature adds **key-authenticated** services;
-   subscription-backed services remain the ones ShipIt already implements.
+5. A service offers its models under one or more **billing modes**: an API key, or a
+   subscription. A service may have **both**, and they are not interchangeable — the same
+   model can cost nothing extra under a subscription and be metered under a key, and a
+   subscription may offer fewer models than the key does. So the billing mode is part of
+   what a user picks, not something resolved out of sight (reqs 6, 11).
 
-6. A service may speak more than one API style, and a harness speaks one. A model is
-   offered on a harness when the service speaks that harness's style **and** the
-   catalogue declares that model works there — a service can speak a style without every
-   one of its models being usable under it.
+   Several *subscriptions* to one service are a different matter: **the user does not choose
+   among them.** ShipIt routes between them (req 12), so what a user picks is the mode, never
+   the individual credential.
+
+   That is deliberately not a claim that the accounts are equivalent. Plans come in tiers,
+   and a cheaper account may not offer everything a dearer one does — so a turn routed to
+   another account can meet a model that account cannot run. ShipIt already routes between
+   subscription accounts without comparing what they are entitled to, and this feature does
+   not change that; treating tiers properly is a separate feature, not something this one
+   silently promises by calling the accounts interchangeable.
+
+   **The mechanism for subscription modes is in scope for this feature**: a catalogue
+   service can declare one, and everything built on billing modes — the picker, Settings,
+   eligibility, usage, failover — handles it without knowing which vendor it belongs to.
+   What is *not* blanket in scope is any particular vendor's subscription: each needs its
+   own login, refresh and account handling, which is per-service work decided per service.
+   So this requirement says a service *may* have a subscription mode; which services
+   actually ship one is req 15's question, not this one.
+
+6. A service may speak more than one API style. A model is offered on a harness when the
+   service and the harness **share a style** **and** the catalogue declares that model
+   works under that style **under the billing mode in use** — a service can speak a style
+   without every one of its models being usable under it, and a subscription can include
+   fewer models than the same service's API key.
+
+   The rule is stated as an overlap deliberately: it holds whether a harness speaks one
+   API style or several, so discovering that some harness speaks more than one is a
+   design problem and not a change to this requirement.
 
    The catalogue does not mirror everything a service offers. ShipIt lists a
    **maintained subset** — at any moment only a handful of models are worth using for
@@ -50,10 +81,11 @@ No open questions remain.
    (req 6). So a service or model ShipIt does not yet know about does require a ShipIt
    change. This is a deliberate narrowing of an earlier answer; see the receipts.
 
-8. A model is selectable only when its service has a credential configured. One rule
-   applies uniformly to every service, with none treated as a default or built-in: so
-   "Claude with no account connected" and "DeepSeek with no key" are the same
-   condition, and neither is offered.
+8. A model is selectable only when the billing mode offering it has a credential
+   configured. One rule applies uniformly to every service, with none treated as a
+   default or built-in: so "Claude with no account connected" and "DeepSeek with no key"
+   are the same condition, and neither is offered. A service with a key but no
+   subscription offers exactly what the key offers.
 
    This is about credentials, and nothing else. Whether a selectable model then works
    *well* is req 1's best-effort territory — ShipIt does not guarantee that every
@@ -63,13 +95,19 @@ No open questions remain.
 9. The work ShipIt does outside a turn — naming a session, writing a pull-request
    description — runs on a model the user chooses for it, independently of whatever
    model a session is using. It is a model like any other, chosen the same way (req 3),
-   so it names both a service and a model rather than a service alone.
+   so it names a service, a billing mode and a model (req 5) rather than a service alone.
+   Which harness runs it is **derived** from what the install has, not chosen — a model
+   offered on more than one installed harness does not become a second decision for the
+   user to make here.
 
-   That choice is **visible in the UI as its own setting**, and ShipIt supplies a
-   reasonable default so nobody has to configure it before ShipIt works. A default is
-   acceptable where a hidden dependency is not: the user can see what non-turn work
-   runs on and change it. It must not silently depend on a credential the user has
-   stopped having.
+   That choice is **visible in the UI as its own setting**, and nobody has to configure it
+   before ShipIt works: **when the first service is configured, ShipIt fills the setting
+   in** with a model that install can run — so it is never a model whose mode has no
+   credential (req 8) or whose harness was not installed (req 14). From that moment it is
+   an ordinary setting that **only the user changes**. ShipIt does not re-point it when
+   services are added or removed, there is no state in which it is empty while a service
+   exists, and the screen therefore has no "default" to name or explain. A model that stops
+   being runnable is **reported**, not replaced.
 
    When that service fails, the surrounding operation still completes with a fallback
    — a session keeps its placeholder title, and a pull request gets a generic
@@ -82,19 +120,20 @@ No open questions remain.
    for a thrown error. The notice must also still be findable after a reload or a
    session switch — a message that vanishes with the tab is silent in practice.
 
-10. Usage is reported per **service**, not per model. A service may expose its own
-    quota or subscription, and the indicator reflects whatever the service in use
-    reports. A service with no quota to report — an ordinary API key, which has no
-    allowance and nothing that resets — shows no indicator at all, rather than an
-    empty or placeholder one.
+10. Usage is reported per **billing mode of a service**, not per model. A subscription
+    exposes a quota, and the indicator reflects whatever the mode in use reports. A mode
+    with no quota to report — an ordinary API key, which has no allowance and nothing
+    that resets — shows no indicator at all, rather than an empty or placeholder one. So
+    a service holding both shows a quota when the subscription is in use and nothing when
+    the key is.
 
 11. ShipIt is honest about what a session is running on. The user can tell which model
-    and which service are in use, and whether that service bills a key or a
-    subscription.
+    and which service are in use, and whether it is billed to a key or a subscription —
+    which is knowable exactly because the billing mode is part of the selection (req 5)
+    rather than resolved out of sight.
 
-12. When a service's credential stops working mid-session — revoked, expired, rate
-    limited — what ShipIt does depends on **how that service is authenticated**, not on
-    what the error says:
+12. When a credential stops working mid-session — revoked, expired, rate limited — what
+    ShipIt does depends on **the billing mode in use**, not on what the error says:
 
     - **Subscriptions fail over.** If the user has more than one subscription to that
       same service, ShipIt moves the turn to another of them, as it does today.
@@ -104,15 +143,31 @@ No open questions remain.
     - **API keys do not fail over.** ShipIt stops and says so. Recovering from a bad
       key is the harness's job; ShipIt runs no recovery or re-prompt flow of its own.
 
+    Failover never crosses **billing modes** either, for the same reason it never crosses
+    services: a spent subscription does not silently start charging a key. Moving to the
+    key is a selection the user makes (req 5), and one they now *can* make.
+
     When no subscription is left to fail over to, ShipIt stops and says so, exactly as
     it does for a key.
 
 13. Models leave the catalogue as ShipIt revises which ones are worth carrying (req 6).
     A session already pinned to a removed model keeps working: each service maps its own
     retired models to their successors, and the session moves onto the successor. A
-    successor is always another model **of the same service** — a retirement never moves
-    a session to a different service, which would change the credential it needs, the
-    price it pays, and who provides it. The session then reports what it is actually
+    successor is always another model **of the same service and the same billing mode, and
+    one the session's harness can run** — a retirement never moves a session to a different
+    service, which would change the credential it needs and who provides it; it never moves
+    a session across billing modes, which is the same silent shift onto metered billing that
+    req 12 refuses to make on failover; and it never lands on a model the pinned harness
+    cannot speak to (req 6), which would strand the session as surely as having no successor
+    at all. If any of those has no successor to offer, that is a catalogue mistake to fix
+    rather than a case to fall back from.
+
+    What a retirement does **not** preserve is the price. Two models under one service's key
+    are priced differently, so a metered session's turns can get cheaper or dearer across a
+    remap. Holding the billing mode fixed is what keeps *included* work from becoming
+    *billed* work, which is the discontinuity worth preventing; the rate is not promised, and
+    the change is visible rather than silent because the session reports the model it moved
+    to. The session then reports what it is actually
     running (req 11) — a remap is never invisible, and never leaves a session unable to
     take a turn.
 
@@ -130,11 +185,532 @@ No open questions remain.
     the deployment's configuration and redeploying. Adding a harness to a running install
     without a redeploy is deliberately not offered.
 
+15. **The catalogue ships with the services that make the feature usable, not merely with
+    the ability to hold services.** "ShipIt supports gateways" has to be a statement about
+    what a user finds in Settings, not about what the data model permits — so what ships is
+    itself a requirement. At minimum:
+
+    - **first-party providers** — Anthropic and OpenAI, as ordinary rows (req 7);
+    - **at least one direct key-authenticated provider** — DeepSeek is the founding case;
+    - **common gateways** — OpenRouter and Vercel AI Gateway;
+    - **at least one custom service carrying a subscription** — GLM, whose coding plan sits
+      alongside an ordinary API key, so a single non-first-party service exercises both
+      billing modes (req 5).
+
+    Which API styles each of these speaks, and which of its models are declared under each,
+    follows req 6 and is authored per service; this requirement is about the services being
+    present, not about what they turn out to offer.
+
+    **Beyond those, which services ship a subscription mode is left open.** Req 5 puts the
+    *mechanism* in scope, but each vendor's subscription is its own integration, so
+    coverage past the minimum above is decided per service rather than promised here.
+    Anthropic and OpenAI already have theirs; GLM is named so the mechanism ships
+    exercised on a custom service rather than only on the two that predate it. What GLM
+    actually speaks, offers and limits is research for when its row is authored — naming it
+    fixes the launch commitment, not its contents.
+
+    A gateway is not a new kind of thing. It is a service with a key that reaches many
+    upstream vendors, so it needs no mechanism of its own — which is why this is a statement
+    about catalogue contents rather than about capability. One consequence is worth naming
+    because it looks like a bug and is not: a gateway key can make a vendor's own models
+    available to someone with no account at that vendor, and — since a gateway typically
+    speaks the OpenAI style — can offer them under a harness that vendor did not write.
+    That is reqs 2 and 6 behaving as specified.
+
+    **Letting a user point ShipIt at a gateway or endpoint it does not carry is deferred,
+    not rejected.** Reqs 5 and 7 stand: for now every service is ShipIt's. Adding
+    user-supplied endpoints later would extend this requirement rather than contradict it.
+
+16. Usage and cost are reported **split by service and billing mode**, so it is clear where
+    money was actually spent and where a subscription was used. Reporting usage is not new;
+    the split is. Once a session's turns can span both, a single combined total stops being
+    meaningful — money that left the user's account and usage covered by a plan they already
+    pay for are different things, and are not added together into one figure.
+
+    For subscription usage the user can also see **what it would have cost at that service's
+    API rates**, which is what says whether the subscription is worth keeping. It is shown as
+    a comparison and never as money spent.
+
+    When a vendor offers a model with no published API rate, ShipIt uses the closest
+    same-vendor model's published rate as a **documented provisional estimate**. The
+    catalogue names the proxy and its basis, and replaces it when the vendor publishes the
+    model's own rate. Under a subscription the proxy is only the at-API-rates comparison.
+    Under an API key it also supplies the explicitly estimated metered-spend figure; ShipIt
+    never claims that a proxy is the vendor's exact billed rate.
+
+    Volume is reported in **tokens**, not turns. A turn is not a unit of anything — one can be
+    a one-line question and the next a full refactor — so a turn count says little about what
+    was consumed, and it is not the unit either price or quota is computed in. Tokens are.
+
+    Wherever ShipIt shows a **running figure for the session in progress**, a session on a
+    subscription shows its at-API-rates estimate, labelled as such, rather than a blank or a
+    zero. The estimate is still never presented as money spent, and it is never added to a
+    metered total — but the user keeps a live sense of what the session is consuming
+    regardless of how it is paid for, which is what those surfaces are for. When a session
+    used **both**, the single running figure is the metered one, and it gives way only to a
+    figure that is larger in **both** money and tokens: a session that ran almost entirely on
+    a plan reads as a plan session however small a metered charge it also picked up, while a
+    session that really was billed never has that charge hidden behind cheaper high-volume
+    plan work. The other figures stay one click away, and the two are still never added.
+
+    This holds at session scope and across all sessions, for usage recorded **from this
+    feature onward**. Turns recorded before it carry no service and no billing mode — for
+    sub-agent turns, not even a credential route — so the attribution is not in the data and
+    cannot be reconstructed. Those are shown as their own group rather than split, guessed at,
+    or dropped from the totals.
+
+    **The same group also holds work that is unattributable going forward.** Some work
+    genuinely resolves no model — session naming falling back when nothing is eligible runs on
+    the session's own harness with no service, no billing mode and therefore no rate. Its
+    tokens are real and its attribution does not exist, which is the same condition as a
+    pre-feature turn arrived at from the other direction. It goes in the same group rather
+    than being dropped, and it is never priced: a $0 row would assert the work was free, which
+    is the one thing this requirement exists to stop the totals saying.
+
+    So the group is **not** purely historical and does not empty by itself. It is the honest
+    home for volume whose attribution is unknown, whatever the reason.
+
+17. **There is one way to add a credential, and signing in is part of it.** Every credential
+    is added the same way — a key, a second key, a first subscription account, a second one —
+    and where a billing mode is connected by **signing in**, the sign-in happens inside that
+    one flow. The user is not handed off to a control somewhere else to finish what they
+    started. A configured service shows what is there and lets the user manage it — the
+    credentials, their order, disconnecting one — and offers no second way to add.
+
+    This is a change of the surface, not of what a credential is: it takes a few more clicks
+    to add a second account, which is rare, and in exchange there is one door rather than two
+    permanently on screen.
+
+    **A service the user has not finished connecting does not appear.** Choosing a
+    subscription and then abandoning the sign-in leaves nothing behind. Today it leaves a
+    service listed with no credential and no way to remove it, which is the direct cost of
+    the hand-off this requirement removes.
+
+    **Leaving before it finishes is leaving, however the user leaves.** Cancelling and
+    closing do the same thing: the attempt is called off and nothing is listed. A sign-in
+    that is still in progress is not preserved for later, so there is no state in which a
+    service appears because the user stepped away from connecting it.
+
+18. **A step that can only be answered one way answers itself.** Where the chosen billing
+    mode is connected *only* by signing in, choosing that mode starts the sign-in: the user
+    arrives at the provider's code, not at a screen whose single control repeats the choice
+    they just made. A mode that offers something else as well — a key to paste — still asks,
+    because there the sign-in is one option among several.
+
+19. **A configured service is stated compactly.** A service's card says what the service is
+    and what the user gave it; it does not spend space on prose that would read the same on
+    every install, and it does not say a thing twice in two ways. The models a card can run
+    stay reachable **from** the card without occupying it.
+
+20. **A credential ShipIt takes from the deployment's environment is an ordinary
+    credential.** Where the deployment supplies one in an environment variable, it appears
+    in Settings like any other: it can be seen, renamed, reordered, replaced and removed,
+    and it takes part in exactly the same ordering and failover rules as one the user pasted
+    in. Nothing on the screen presents it as a different class of credential, and nothing
+    about where it came from changes how it is used. Removing it is a removal: a later
+    restart does not bring it back.
+
+21. **The order of a service's credentials is changed by dragging one into place, and that is
+    the only way to change it.** The order is what the rows show, so being first is being at
+    the top; there is no separate command that promotes a credential and no badge naming the
+    one at the top as different in kind.
+
+22. **Choosing a service says which harnesses can run it, in a table beside the list.** While
+    the user is choosing a service to add, the screen shows, per service and per harness this
+    install has, whether that harness can run that service's models. It is a **separate table
+    to the right**: the service rows themselves are unchanged — same content, same width — and
+    the answers are not moved inside them. The answer is the same one the model picker gives
+    once the credential exists, so what the user is told before they pay for a key is what they
+    get after. It is a statement, not a gate: a service no installed harness can run is still
+    selectable.
+
+23. **What each service can run is readable in one place, before any credential exists.**
+    ShipIt states, per service and per billing mode, every model it offers: the model's name,
+    the id it is called by, how much context it holds, what it costs per million tokens, and
+    which harnesses can run it — **all of them that can**, since a model's support is a set and
+    not a single answer: one model can be runnable on several harnesses, and the next model of
+    the same service on only one. The harnesses named are **every harness ShipIt integrates**,
+    not only the ones this deployment installed, and the ones it did not install are marked as
+    such: a harness that could run a model is a true fact about the pairing, and a user who
+    reads it without being told the harness is absent would go looking for a model this
+    deployment cannot offer. The statement covers **every service ShipIt
+    knows**, not only the ones the user configured, so what a service would give is readable
+    while deciding whether to pay for it. The price is the service's own rate — under a
+    subscription that is what the tokens would have cost, not an extra charge — and is
+    labelled as the estimate req 16 says it is. Req 16's documented provisional-rate rule
+    applies when a model has no published API price. It is reachable from the services screen
+    without occupying it (req 19), and it is the **one** place the question is answered: a
+    configured service leads to the same statement rather than carrying a second, shorter
+    answer of its own.
+
+24. **The model list narrows to one harness, by naming that harness.** Selecting a harness in
+    the list of supported models (req 23) hides every model that harness cannot run, across
+    every service at once, and shows which harness is being asked about and how much of the
+    catalogue is left. Selecting the same harness again restores the full list. A service that
+    keeps nothing says so in place rather than disappearing, so narrowing never reads as a
+    catalogue that has become smaller. A harness this deployment did not install can be
+    selected too: "what would this harness give me" is a question worth answering before
+    installing one.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-20 — Which figure does the running surface show for a **mixed** session? Req 16 named
+  the subscription case and the metered case; the implementation resolved the overlap
+  money-first, unconditionally. **Chosen: money first, yielding only to a figure larger in
+  both money and tokens.** Stated directly from a screenshot of the context dial — *"the $
+  numbers should say 131, not 0.004"*: a 39-turn plan session valued at ≈$131.58 was reporting
+  `$0.004` on the dial and in the composer, because one sub-agent consult had run on an API
+  key. Money-first is not wrong as a default; what it cannot do is decide a session's
+  character from a dollar sign when the plan side carried four orders of magnitude more of the
+  work.
+
+  The first implementation ranked on **tokens alone**, and the cross-backend review rejected
+  it the same day: an expensive metered model billing $50 over 10K tokens would lose to cheap
+  plan work valued at $2 over 10M, putting `≈$2.00` — labelled *not billed* — on a session
+  that was billed $50. That inverts the failure rather than fixing it, and under-reporting
+  **money** is the worse direction of the two. Requiring dominance on both axes fires only
+  when the other side is unambiguously the session's story, so no case comes out worse than
+  money-first. Req 16 amended.
+
+- 2026-08-17 — GPT-5.3-Codex-Spark is available through a ChatGPT Pro
+  subscription in the Codex CLI and IDE extension, but OpenAI marks it as
+  unavailable through the API and publishes no API token price. How should
+  ShipIt satisfy reqs 16 and 23? **Chosen: follow the existing GLM-5.3
+  precedent and use the closest published model rate as a documented
+  provisional estimate.** The user first selected “Price unavailable,” then
+  corrected the design assumption: *“we already have a precedent with
+  glm-5.3”*. Spark therefore uses GPT-5.3-Codex's published API rate until
+  OpenAI publishes a Spark rate. Reqs 16 and 23 now state this narrow rule.
+
+- 2026-08-16 — Req 19 moved a card's model ids into a hover list on a `N models` control, which
+  left the question "what can this service run" answerable only for a service already
+  configured, and only as a column of raw ids. Where should the full answer live, and how much
+  should it say? **Chosen: one dialog, the whole catalogue, the full detail, and the card's
+  control opens it.** *"Now we need a place to show all the supported models per service. So
+  some kind of button that the user would click, and we show the dialog with all the supported
+  models per service. Maybe we show this button next to the services with the information
+  icon."* Asked which services it lists, how much each model row says, and what becomes of the
+  existing hover list; answered **every service in the catalogue**, **name, id, context, price
+  and harness support**, and **the card's control opens the dialog at that service** rather
+  than keeping a second, shorter list beside it. Req 23 added. Harness support is in the row
+  because a model is runnable only where a harness speaks its API style (req 6), so a list
+  without it can promise a model this install cannot run.
+
+  Two answers followed on the prototype and are in reqs 23–24. **Which harnesses get a
+  column**: *"we also need to indicate which harnesses are installed in this deployment"* — so
+  the columns are every harness ShipIt integrates, with the ones this deployment lacks marked
+  *not installed* rather than dropped; a tick for an absent harness is a true fact about the
+  pairing, and unmarked it would send the user looking for a model they cannot run.
+  **Narrowing**: *"clicking on the harness name would show it as selected and hide all models
+  from all services that are not supported by that harness"* — req 24. Two prototypes decided
+  the column itself: a row of named harness chips per model lost to aligned tick columns, which
+  read as one glyph per harness per row and match the support table req 22 already ships.
+
+- 2026-08-13 — Background work stated which model it runs on and whether that came from the
+  user or from ShipIt. Every word for the second half — "on the default", "auto-configured",
+  "pinned" — needed explaining: *"I don't understand on the default, auto-configured or
+  pinned. Even I, the developer, so I imagine the user would not understand what this
+  means."* **Chosen: remove the state rather than rename it.** *"Let's make it so ShipIt
+  proposes the default whenever the user configures something as the first service, and
+  that's it. The default becomes the changeable setting, so ShipIt does not update it
+  anymore."* Req 9's second paragraph rewritten: the setting is written once, when the first
+  service is configured, and only the user changes it after that. The consequences are
+  deliberate and were stated when the answer was given — a model that stops being runnable is
+  reported rather than silently replaced, and the model menu loses its "ShipIt's default" row,
+  since there is no unset state to return to. Seeding stays narrow — ShipIt writes a value
+  only when there is none — so it cannot become re-pointing under another name.
+
+- 2026-08-13 — Does a card holding one credential explain that there is nothing to route
+  between yet? **Chosen: no — it says nothing at all.** The mock-up carried the strip ("One
+  account — nothing to route between yet. Add a second to choose an order and a strategy."),
+  the UI audit adopted it as D8, and the human rejected it on sight in the dogfood instance:
+  "this is not needed, shouldn't be shown at all when there is only a single account." No
+  requirement changes — req 19 already refuses prose that reads the same on every install, and
+  the argument for keeping this one (a key card can never route, so explaining *that* absence
+  is noise, while this one names a reachable capability) was a carve-out req 19 does not
+  contain. The routing band now appears only when there is something to route between.
+
+- 2026-08-12 — A service card carries four sentences of explanation, an empty-state box and a
+  row of model-id chips around a single credential row (272 px for 39 px of credential). How
+  compact, and what goes? **Chosen: the compact card, with the model ids moved into a control
+  in the card's top-right corner that names them on hover.** The human picked the compact
+  option over a denser one that also flattened the chips into a truncated line — "A, but the
+  model names should be in a tooltip of a separate control, e.g. 'models' chip or icon, maybe
+  on the right top corner" — which keeps the ids scannable while taking their row out of every
+  card. Req 19 added. The prose cut with it is listed in `plan.md`; the one item that was not
+  merely verbose is the account empty-state box, which printed "No Anthropic subscription
+  connected" directly above a connected Anthropic credential.
+
+- 2026-08-12 — Does an account row keep its **Make primary** command, and how is the fallback
+  order changed? **Chosen: drag a row into place, and drop Make primary entirely.** The human
+  asked what Make primary was for and judged it unnecessary. It is: `isPrimary` is not stored,
+  it is computed as position 0 (`orderCredentialRoutes`), and the server verb behind the button
+  is `reorder([this, …rest])` — so with the order under direct manipulation the command is a
+  second way to do one thing, which req 17 already refuses elsewhere on this screen. The
+  "Primary" badge goes with it: the row at the top *is* the primary one, and the routing band
+  says what being at the top means. Req 21 added.
+
+- 2026-08-12 — A deployment-supplied variable (`ANTHROPIC_AUTH_TOKEN`, `DEEPSEEK_API_KEY`)
+  creates no credential row: it is invisible in Settings and used only when nothing is stored.
+  Keep that, or adopt it as an ordinary credential? **Chosen: adopt it.** The human's words are
+  the requirement — "I want these environment variables applied through ShipIt to behave
+  exactly as if I would add the service manually" — and the reason they arose is worth keeping:
+  a deployment (the dogfood instance) could not be used to judge what a real user sees, because
+  its credentials were a category the product treats differently. Req 20 added. Two consequences
+  the human accepted with it: the value is copied into ShipIt's encrypted credential store, and
+  a removal is remembered so the next boot does not re-import what the user deleted.
+
+- 2026-08-12 — When every connected subscription of a mode is exhausted, should ShipIt move
+  onto a supplied key on the same card? **Chosen: no — it stops and reports when quota
+  resets**, confirming the phase 5 decision behind reqs 12 and 13 rather than changing it. The
+  question was put because the card printed a sentence describing that rule and the human read
+  it as a special case for environment-supplied credentials. It is not one: the rule applies to
+  every supplied key sitting on an account-backed card, and the sentence was wrong only in
+  claiming to know the credential came from the environment. It changes no requirement; the
+  false sentence goes with req 19's compaction and the rule stays as reqs 12 and 13 state it.
+
+- 2026-08-11 — A sign-in is in progress, the provider's code is on screen, and the user
+  dismisses the dialog with Esc / the backdrop / the close button rather than pressing
+  Cancel. Is the attempt kept or discarded? **Chosen: discarded — closing means cancelling.**
+  Raised by the independent review, which found the implementation deliberately keeping a
+  dismissed attempt (visible on the service card as an unfinished account, finishable and
+  removable there) while req 17 said no unconnected service appears at all — a distinction
+  that existed in the design and the code but never in the requirement. The rejected reading
+  was to narrow the requirement around it, on the grounds that the provider may already have
+  authorised the code and losing it costs a restart. The answer keeps the requirement whole
+  instead: "unless you pressed Escape" is not a clause anybody would predict, and one press
+  to start again is cheaper than a service listed that nobody asked for. Req 17 amended to
+  say so.
+
+- 2026-08-11 — Once the sign-in moves inside the add-service flow, does a configured service
+  keep a shortcut for adding another credential? **Chosen: no — the panel's "Add a service" is
+  the only way in**, and the existing "Add another" on key cards goes with it, so the rule is
+  uniform rather than per-card-type. The human's reasoning, recorded because it is the whole
+  trade: adding a second account is a rare occurrence, so a couple of extra clicks is fine,
+  whereas the alternative is supporting two ways to do the same thing and having them in the
+  user's face every time. The question arose from the state that prompted this requirement: an
+  OpenAI subscription chosen in the dialog appears in Services with no credential and cannot be
+  removed. Req 17 added, including that last consequence, because "does not appear until it is
+  connected" is observable and was being treated as an implementation detail.
+
+- 2026-08-09 — Where does non-turn work that resolves **no** model belong — session naming's
+  `nothing_eligible` fallback, whose tokens are real but whose attribution does not exist?
+  **Chosen: req 16's legacy group.** Raised as `planning#343` while closing `planning#341`;
+  the finding is harness-independent and predates both. The group already exists to hold rows
+  whose attribution cannot be reconstructed, and this is that condition arrived at forward in
+  time rather than historically. The rejected alternative was leaving the tokens unrecorded
+  and narrowing the requirement's claim; recording them as unattributable volume keeps the
+  totals complete without pricing them. Pricing them was never an option — a $0 row asserts
+  the work was free, which is the trap this feature has now walked into twice (a metered
+  consult recorded as free in phase 3, and Codex's absent telemetry in phase 6).
+
+  **The consequence is that the group stops being purely historical and no longer drains on
+  its own**, which contradicts the earlier receipt below saying it "empties by itself as old
+  sessions age out". That sentence is superseded rather than merely extended, and req 16 now
+  says so.
+
+- 2026-08-09 — Phase 1's catalogue authoring raised one: **a subscription that includes a
+  model still billed per token has no column in req 16's split.** **Chosen: the case does not
+  exist — no requirement changes.** The question rested entirely on a premise the human
+  corrected: `claude-fable-5` no longer bills "per token (usage-based) rather than against
+  the subscription plan limit", which is what ShipIt's own picker comment (and therefore the
+  question) asserted. With Fable counting against the plan like any other subscription model,
+  `BillingMode` remains the sole thing that decides the column: a `sub` row is included work,
+  a `key` row is money. Req 16's split stands unamended, and the three readings the question
+  offered are all moot.
+
+  Recorded rather than deleted because the *shape* of the question outlives its instance. If a
+  service ever does offer a plan-reachable, per-token-billed model, this is the requirement it
+  contradicts and the fact to check first — the comment in the code, not the vendor's current
+  terms. The stale claim is now corrected at its source; see the phase-1 notes in `plan.md`.
+
+- 2026-08-09 — Should usage volume be reported in turns or tokens? **Chosen: tokens.** Stated
+  directly rather than asked: the prototypes and the design had carried turn counts as the
+  volume measure, inherited from the existing usage view. A turn is not a fixed quantity of
+  anything, so a turn count is a poor proxy for consumption and is not the unit price or quota
+  is computed in. Req 16 amended. Turn counts are not forbidden as session metadata — the
+  requirement is about the volume figure the usage split reports.
+
+- 2026-08-09 — A subscription session's running dollar figure goes to zero under req 16. What
+  should those surfaces show instead? **Chosen: the at-API-rates estimate, labelled as such.**
+  An end-to-end review of the cost story found that req 16 settles the *usage view* but that
+  ShipIt shows a running session cost in several other places — the context dial's trigger and
+  popover, and the usage modal's per-session cost, average per turn, per-turn column and
+  by-spend ranking. Every one reads zero for a subscription session, which today is most
+  sessions. The three options were: show the at-API-rates estimate, drop dollars for turns and
+  tokens, or show metered spend only and leave it blank when nothing was spent. The estimate
+  was chosen because those surfaces exist to give a live sense of what a session is consuming,
+  and that need does not change with how the session is paid for; the alternatives either go
+  quiet for the majority case or remove a running proxy users rely on. The accepted cost is
+  that a dollar figure on the dial no longer means money left the account, so the label carries
+  the distinction in ShipIt's smallest text — the mitigation is that it is never unlabelled and
+  never summed into a metered total. Req 16 amended.
+
+- 2026-08-08 — Does req 16's split cover usage recorded **before** this feature? **Chosen: no
+  — a legacy group, and the requirement applies going forward.** Review found req 16's "across
+  all sessions" unqualified while the data cannot support it: existing turns store a model id,
+  tokens and a cost, with no service or billing mode, and sub-agent turns not even a route. The
+  three options were a legacy group, hiding pre-existing usage from the split view, or
+  backfilling an inference. Backfilling was rejected as producing a confident, wrong split of
+  real money; hiding was rejected as silently removing spend from totals users have already
+  seen. The group is honest about what is unknown and drains on its own. Req 16 amended.
+
+- 2026-08-08 — **Codex's review of this document**, three questions answered together. Run
+  under CLAUDE.md's cross-backend rule (Claude-authored work reviewed by the other backend).
+  It returned five findings and all five held up on checking; two were stale sentences in
+  `plan.md` and one was a missing phase assignment, all fixed there rather than here.
+
+  - **Must a successor still run on the session's harness? Chosen: yes.** Req 13 scoped the
+    successor to the same service and mode and then promised a session is "never left unable
+    to take a turn" — but req 6 makes availability depend on the **API style** as well, so a
+    successor declared only under a style the pinned harness does not speak breaks that
+    promise. This is the *third* time the same defect surfaced on a new axis: the successor
+    was scoped to the service on 2026-08-05, to the billing mode earlier on 2026-08-08, and
+    the harness was missed both times. Req 13 now states the condition it was always
+    promising — the successor must be one the session's harness can run — which closes the
+    axis rather than the instance. `plan.md`'s per-`(service, mode)` map cannot express a
+    per-harness successor and is flagged there.
+  - **Are several subscriptions to one service really interchangeable? Chosen: no — narrow
+    the claim.** Req 5 asserted it, and req 12 routes between them on that basis, but tiered
+    plans make it false: a cheaper account may not offer what a dearer one does, so req 8 can
+    offer a model the routed-to account cannot run. `mockup-services.html` had already
+    contradicted the requirement in its own copy — "a bigger plan first, a smaller one as
+    backup". Req 5 now claims only what it needs, that the user does not choose among them,
+    and says explicitly that this is not an equivalence claim. Not a regression this feature
+    introduces: ShipIt already routes between accounts without comparing entitlements, so
+    handling tiers is a separate feature rather than something to bolt on here.
+  - **May a retirement change what a metered turn costs? Chosen: yes, and no requirement
+    change.** A same-price successor is not generally available; holding the billing mode
+    fixed is what prevents *included* work becoming *billed* work, which is the discontinuity
+    worth preventing, and req 11 makes the moved-to model visible so the change is not
+    silent. Req 13 gained a paragraph saying so, because the absence of the promise was
+    being read as the promise. `plan.md` *had* claimed the price was unchanged — twice, in
+    two different wrong ways — and is corrected.
+
+- 2026-08-08 — Four gaps found by a review pass, answered together. Three are the same
+  failure: the billing-mode decision was applied to reqs 5, 6, 8, 10, 11 and 12 and not to
+  the rest, so the requirements disagreed with each other rather than being incomplete.
+
+  - **Must a retirement successor stay in the same billing mode? Chosen: yes.** Req 13 said
+    "another model of the same service" and stopped, which — once a service's model set
+    became a property of each mode (reqs 5, 6) — allowed a session on a subscription to be
+    remapped onto a model only the key offers. That either fails or starts charging, and
+    req 12 already refuses that exact move on failover. Scoping the map per `(service, mode)`
+    removes the case rather than handling it; a mode with no successor is a catalogue
+    mistake, not a fallback path. Req 13. `plan.md`'s claim that a remap is safe because
+    "the credential, the endpoint, the API style and the price are all unchanged" was
+    untrue under billing modes and is corrected with it.
+  - **Does "a harness speaks one API style" belong in the requirements? Chosen: no — state
+    the overlap instead.** Req 6 asserted it as fact while `plan.md`'s third-harness survey
+    lists it as the assumption most likely wrong and most expensive to fix late (OpenCode is
+    multi-provider). Req 6 now says a model is offered when the service and the harness
+    **share** a style, which is true either way — so if the survey finds a multi-style
+    harness, the design changes and this requirement does not.
+  - **Should the launch catalogue name the subscription-carrying custom service? Chosen:
+    yes — GLM.** Req 15 exists because "ShipIt supports gateways" is unverifiable unless
+    stated as catalogue contents; its own subscription paragraph then wanted "at least one
+    custom service with a real subscription" without naming one, and GLM was named only in
+    `plan.md` and the prototypes. That put a launch-content decision in the design. GLM is
+    now a launch row; what it speaks and offers stays research for when the row is authored.
+  - **What does the non-turn setting name, and which harness runs it? Chosen: the triple,
+    with the harness derived.** Req 9's "a service and a model" predated req 5. The real gap
+    was the harness: running a model means spawning a CLI, and a model can be offered on
+    several installed ones. Deriving it keeps req 9's setting a model choice like any other
+    (req 3) instead of growing a second control that exists nowhere else; the derivation
+    rule is design and lives in `plan.md`.
+
+- 2026-08-08 — Does this feature add subscription modes, or only key modes? **Chosen: the
+  mechanism yes, specific vendors case by case.** Review found req 5's scope limit ("this
+  feature adds key modes") contradicted its own illustrations, which demonstrated the
+  billing-mode split with a *DeepSeek subscription*. The sentence had survived the
+  billing-mode rewrite unedited. Resolved by separating the two things it had bundled:
+  building support for subscription modes is in scope, so the picker, Settings, eligibility,
+  usage and failover all handle one without knowing whose it is; integrating any particular
+  vendor's subscription stays per-service work, decided per service. Req 15 gained the
+  matching note that the launch set's subscription coverage is left open.
+
+  A factual correction came with it: **DeepSeek has no subscription**, so every mock
+  illustrating one was wrong. The prototypes now use **GLM**, which has a coding plan
+  alongside its API — a service that genuinely has both modes, and the intended test case
+  for the mechanism.
+
+- 2026-08-08 — Should the usage/cost split be a requirement? **Chosen: yes, and only the
+  split.** Review found the cost view had no requirement behind it — "cost" and "price"
+  appeared in these requirements only as rationale, never as an obligation — while the design
+  and `plan.md`'s phase 6 both promised one. The human's correction narrowed what to add:
+  **reporting usage and cost is an existing feature, and existing behaviour is already a
+  requirement without being restated.** What is new, and therefore what req 16 states, is the
+  *split* by service and billing mode, plus the API-rate comparison for subscription usage.
+  The general principle went into this document's preamble, because it governs how every
+  requirement here should be read — and it is why several requirements are silent about
+  capabilities this feature does not change.
+
+- 2026-08-08 — Does reasoning effort need to say anything about the model? **Chosen: no —
+  reasoning stays a property of the harness, and this feature adds nothing.** No new
+  requirement: the offered levels are whatever the harness accepts, and a model that ignores
+  them is already covered by req 1's best-effort clause.
+
+  This **overrides the agent's recommendation**, which was to declare per-model support and
+  hide the control when absent. Two arguments defeated it. First, **there is no source for
+  the fact** — it would come from reading around the internet per model, which is exactly
+  the per-model upkeep req 6 kept the catalogue small to avoid. Second and decisive, **the
+  harness is not a transparent pipe**: even a correct per-model claim says nothing about
+  whether *this* harness forwards the setting, so a harness that silently drops it would
+  leave ShipIt asserting support that does nothing. The proposal would have relocated the
+  dishonesty while making it look more precise, not removed it.
+
+  The corollary is that pre-disabling values in the UI is the wrong instinct here: a wrong
+  value is something **the harness can complain about**, and its error is the authoritative
+  answer, where a ShipIt-side guess is not.
+
+- 2026-08-08 — Is a service's billing mode part of what you select, or resolved per turn?
+  **Chosen: part of the selection.** A model is identified by `(service, billing mode,
+  model)`, and the picker shows one group per service *per mode* — so a service holding both
+  a subscription and an API key is two blocks, not one. Three reasons, any one sufficient:
+  a subscription may include **fewer models** than the same service's key, so a merged list
+  would offer a model the resolved route cannot serve; the two **differ in price**, which is
+  already this design's stated reason for listing the same model id separately per service
+  (DeepSeek-direct vs OpenRouter), and included-versus-metered is that same distinction
+  inside one service; and it closes a real gap, since ShipIt never fails over from a spent
+  subscription onto metered billing, so under one merged entry a user holding both had no
+  way to say "charge me, keep working".
+
+  Scoped deliberately to the **mode**, not the credential: several subscriptions to one
+  service stay merged, because req 12 already routes between them and choosing among them
+  would be noise — which also caps the picker at two groups per service rather than one per
+  credential. Reqs 5, 6, 8, 10, 11 and 12 reworded from "a service is authenticated by X" to
+  the billing-mode form. The agent had proposed this from the human's question; the human's
+  "yes, I think it makes sense" is what adopted it. Not hypothetical either: ShipIt already
+  holds subscription accounts and a metered key route together for Anthropic, so the
+  singular wording was already slightly false.
+
+- 2026-08-07 — Gateway support: catalogue *content*, or a capability the catalogue does not
+  have? **Chosen: content — carry the common gateways explicitly; custom URLs later.** The
+  feedback ("gateway support — at least openrouter/vercel/1st party providers") turned out to
+  ask for almost nothing the design lacked: a gateway is a service like any other, which the
+  2026-08-05 receipt had already settled by dropping "should we support gateways?" as the
+  wrong axis. What it did expose is that no requirement said what the shipped catalogue must
+  *contain*, so "ShipIt supports gateways" was true in principle and unverifiable in
+  practice — an install could carry zero gateways and violate nothing. Requirement 15 states
+  the launch set. The second reading — a user supplying a gateway's own base URL — was
+  explicitly **deferred rather than adopted** ("we can always add custom urls later"), so
+  reqs 5 and 7 are untouched and no settled decision was reopened.
+
+- 2026-08-07 — What *is* ShipIt's default for non-turn work? **Chosen: derive it — the
+  first model of the first service.** Re-reading found the default was the one part of
+  req 9 that a fixed value could not satisfy: any named model (the mockup showed
+  `Anthropic · haiku-4.5`) names a service that the very install this feature exists to
+  create — a user whose only credential is a DeepSeek key — has no credential for, so
+  every session title and pull-request description would fail from the first day and fire
+  req 9's own notice. Req 14 sharpened it: an install that did not select the Claude Code
+  harness has no way to run that default at all. A derived default removes the failure
+  by construction rather than reporting it, and it also self-heals the original incident
+  — when a subscription lapses, an unset default moves to whatever the install still has
+  instead of continuing to point at the vendor that went away. Requirement 9.
 
 - 2026-08-06 — Can the installed harness set change after install, without reinstalling?
   **Chosen: no — redeploy.** The harness set is an input to the session-image build, so
@@ -258,13 +834,15 @@ _None._
 
 - 2026-08-05 — At the moment a credential failure arrives, can ShipIt tell a spent
   subscription apart from a bad key? **Chosen: it does not have to.** The rule keys on
-  how the service is authenticated — subscriptions fail over, API keys do not — which
+  how the service is authenticated *(narrowed 2026-08-08 to the billing mode in use, since
+  one service can hold both — see that receipt; the substance below is unchanged)* —
+  subscriptions fail over, API keys do not — which
   ShipIt knows statically from its own configuration, instead of having to classify an
   error whose text is not reliable. Failover is scoped to subscriptions of the *same*
   service, because that is the only case that is lossless: the model and price are
   unchanged and the user need not be consulted. This generalizes an existing rule
   rather than inventing one — ShipIt already excludes metered API-key routes from quota
-  tracking and never fails over onto them (docs/150 req 12). Requirement 12 rewritten.
+  tracking and never fails over onto them (docs/150-multiple-provider-subscriptions req 12). Requirement 12 rewritten.
 
 - 2026-08-05 — What should happen when a configured service's credential stops working
   mid-session? **Chosen: stop, and report it — nothing more.** Recovering from a bad
@@ -396,6 +974,104 @@ human, but most of the mechanism did not. What the human actually said, in order
   Claude being selected by default" → req 14, both halves. The human also identified the
   prior unimplemented sketch (`docs/154-cursor-agent-adapter`) that req 14 now supersedes.
 - "Redeploy" → req 14's closing paragraph: the harness set is a property of the deployment.
+- "I would say we support what the harness supports … the harness that we would use, let's
+  say OpenCode, would not actually pass it through … so it would be on the harness level
+  only" → the decision that reasoning effort adds no requirement, against the agent's
+  recommendation to declare it per model.
+- "if the user chooses the wrong value, the harness may complain … it doesn't necessarily
+  need to be disabled in the UI from the get-go" → the corollary that the harness's own
+  error is the authoritative signal, not a ShipIt-side prediction.
+- "as part of this feature, we should build support for other subscriptions. Whether we
+  actually add actual subscriptions remains to be seen" → req 5's scope rewrite, splitting
+  the mechanism from each vendor's integration, and req 15's open subscription coverage.
+- "there is no DeepSeek subscriptions, but there is a GLM coding plan, and we could use that
+  for testing" → the correction of every mock that illustrated a DeepSeek subscription, and
+  GLM as the intended validation case.
+- "we should probably split it across services, so it's clear for the user where they were
+  paying and where they were using the subscription" → req 16.
+- "Legacy bucket, req 16 applies going forward" → req 16's closing paragraph, chosen from
+  three options after review found the requirement's scope exceeded what the stored data can
+  answer.
+- "I'd like to understand how much tokens it would cost without a subscription" → req 16's
+  API-rate comparison, overruling the agent's decision to withhold it.
+- "it is an existing feature. So whatever is existing is a requirement … we don't need to
+  clarify that everything else that worked before should work at least on the same level or
+  better" → the preamble, and the narrowing of req 16 to the split alone.
+- "if there was also a DeepSeek subscription, it would be a separate block here, right?" and
+  "subscriptions, they may provide more restricted model choice" → the billing-mode split
+  across reqs 5, 6, 8, 10, 11 and 12. The agent had first answered "no, one block" from how
+  the code models routes today; the human rejected that as the wrong basis — "who cares how
+  this is currently modeled in the code? we need to provide the best UX from the user
+  perspective" — which is what produced the rewrite.
+- "yes, I think it makes sense" → adopting the billing-mode selection.
+- "gateway support - at least openrouter/vercel/1st party providers imo" → req 15. Raised as
+  feedback the human relayed without endorsing a reading ("not sure that I fully understand
+  it"), so it was recorded as an open question first and only became a requirement after the
+  answer below.
+- "let's do 1, i.e. explicitly support common gateways. We can always add custom urls later"
+  → req 15's launch set, and its closing paragraph deferring user-supplied endpoints instead
+  of ruling them out.
+- "This is no longer the case for fable, so we can probably ignore this corner case" → the
+  2026-08-09 receipt closing the only open question phase 1 raised. It changed no requirement:
+  it withdrew the premise, which was a stale comment in ShipIt's own picker rather than
+  anything these requirements said.
+- "the default would be 'first model on the first service', something like this" → req 9's
+  derived default, replacing the fixed model an earlier draft assumed. The mechanism is the
+  human's sketch and is stated in `plan.md`; the requirement states only the property it
+  has to have — a default the install can actually run.
+
+- "when I click on the subscription, there are no other controls other than continue signing
+  in … an extra click for the user that doesn't make sense. Make it so when I click to a
+  subscription, it already jumps to the page where the token is shown" → req 18. The carve-out
+  for a mode that also takes a key is the agent's, from the catalogue rather than from
+  anything said: Anthropic's subscription has a field on that step, so the click there is not
+  the empty one being described.
+
+- "I want the service definition panel in the settings to be way more compact" → req 19.
+- "it's hard for me to understand how it would look like for the user, from a DogFood service.
+  So there is some special case for DogFood environment variables, which I don't want. I want
+  these environment variables applied through ShipIt to behave exactly as if I would add the
+  service manually" → req 20. The premise was half wrong — the rows the human was looking at
+  were ordinary stored credentials that a card had *described* as environment-supplied — and
+  the requirement is stated for the real case the complaint uncovered: a deployment variable
+  that produces no row at all.
+- "A, but the model names should be in a tooltip of a separate control, e.g. 'models' chip or
+  icon, maybe on the right top corner" → req 19's closing clause. The corner placement is the
+  human's; the requirement states only that the models stay reachable without occupying the
+  card.
+- "what is 'Make primary'? seems to be not needed. Also, for the order change, let's use drag
+  and drop" → req 21. The judgement is the human's; what the agent contributed is the check
+  that nothing else depends on the command — primary is a computed position, not a stored
+  property — which is why the requirement can say there is no separate promote at all rather
+  than only hiding the button.
+- "on this dialog, show a table on the right with column per harness, and cells indicating
+  support of a particular service per harness" → req 22. The table, the columns and the cells
+  are the human's, stated over the *Add a service* dialog they were looking at. Four things are
+  the agent's and are stated so they can be struck: that the cell must be the same answer
+  eligibility gives later (otherwise the table can promise a pairing the picker refuses); that an
+  unticked row stays selectable, which follows req 1 rather than anything said; that the columns
+  are the **installed** harnesses rather than every harness the catalogue knows; and that no
+  table is drawn at all until the agent list has arrived. The last two narrow "column per
+  harness" as it was asked for, and cross-backend review was right to name them — they are here
+  because a column the install cannot act on, and a table of dashes meaning "not known yet", both
+  say something false.
+- "I meant leaving the panels with the services as is, with the separate table on the right. You
+  extended the panels and included the support inside these panels, which is not what I wanted"
+  → req 22's second sentence. The first cut read "table" as a set of columns *within* each row,
+  which widened every row to carry them; the requirement now says the placement outright,
+  because it was the part the agent was free to get wrong and did. "Same width" is the human's
+  too, from the follow-up: *"these boxes should remain of the same width they were before your
+  changes."*
+
+Reqs 5 and 13 were changed again on 2026-08-08 from **Codex's** review, under CLAUDE.md's
+cross-backend rule. Same shape as the round below: the findings are the reviewer's, the
+choice among the options is the human's, and all three recommendations were taken as offered.
+
+Reqs 6, 9, 13 and 15 were changed on 2026-08-08 from **the agent's** review findings, not
+from anything the human said: the human's contribution was choosing among the options, and
+all four recommendations were taken as offered. They are recorded here rather than in the
+list above because nothing in the transcript prompted them — the trigger was the question
+"any other remaining issues in the requirements?".
 
 Reqs 5, 7 and 9 were corrected on 2026-08-05 after review found they still described
 the *superseded* model in which users authored declarations and added services outright,

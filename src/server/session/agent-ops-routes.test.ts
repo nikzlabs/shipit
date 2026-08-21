@@ -360,6 +360,23 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ prompt: "Port API to TS", branch: "port-api-ts" });
   });
 
+  // docs/264-agent-roles req 20 — the decline crosses this hop intact. It is a
+  // BOOLEAN, and the relay is where that matters: a truthiness-flattening or a
+  // dropped key here would spawn the child under the parent's brief, which is
+  // the one thing the caller said it did not want.
+  it("POST /agent-ops/session/create forwards --no-role", async () => {
+    client.setResponse("POST", "/spawn", {
+      ok: true, status: 200,
+      body: { sessionId: "ses_abc", branch: "b", status: "running" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/session/create",
+      payload: { prompt: "Fix the unrelated bug", title: "Chore", noRole: true },
+    });
+    expect(client.calls[0].body).toMatchObject({ noRole: true });
+  });
+
   it("POST /agent-ops/session/create surfaces a 429 quota error", async () => {
     client.setResponse("POST", "/spawn", {
       ok: false, status: 429,
@@ -551,21 +568,21 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].path).toBe("/issue/list?tracker=linear&state=all");
   });
 
-  it("GET /agent-ops/issue/labels forwards the tracker (SHI-199)", async () => {
+  it("GET /agent-ops/issue/labels forwards the tracker (planning#201)", async () => {
     client.setResponse("GET", "/issue/labels", { ok: true, status: 200, body: { labels: [{ name: "bug" }] } });
     const res = await app.inject({ method: "GET", url: "/agent-ops/issue/labels?tracker=github" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/issue/labels?tracker=github");
   });
 
-  it("GET /agent-ops/issue/statuses forwards the tracker (SHI-199)", async () => {
+  it("GET /agent-ops/issue/statuses forwards the tracker (planning#201)", async () => {
     client.setResponse("GET", "/issue/statuses", { ok: true, status: 200, body: { statuses: [{ name: "Open" }] } });
     const res = await app.inject({ method: "GET", url: "/agent-ops/issue/statuses?tracker=linear" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/issue/statuses?tracker=linear");
   });
 
-  it("POST /agent-ops/issue/comment/edit relays the issue + comment id (SHI-86)", async () => {
+  it("POST /agent-ops/issue/comment/edit relays the issue + comment id (planning#88)", async () => {
     client.setResponse("POST", "/issue/comment/edit", {
       ok: true, status: 200, body: { ok: true, summary: "edited a comment on SHI-1" },
     });
@@ -579,7 +596,7 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ id: "SHI-1", commentId: "c1", body: "corrected" });
   });
 
-  it("POST /agent-ops/issue/comment/edit surfaces a 403 refusal verbatim (SHI-86)", async () => {
+  it("POST /agent-ops/issue/comment/edit surfaces a 403 refusal verbatim (planning#88)", async () => {
     client.setResponse("POST", "/issue/comment/edit", {
       ok: false, status: 403, body: { error: "was written by someone else" },
     });
@@ -698,7 +715,81 @@ describe("agent-ops routes", () => {
     expect(res.json().error).toContain("rate limit reached");
   });
 
-  it("GET /agent-ops/agent/result forwards the run id as ?spawnId (SHI-245)", async () => {
+  /**
+   * docs/261 req 7 — every explicit parameter survives the worker→orchestrator
+   * hop.
+   *
+   * Honest about what this can and cannot catch: the relay forwards
+   * `request.body` verbatim, so it would pass today against a route that named
+   * none of these fields — the drop that actually happened was one hop further
+   * on, at the orchestrator's own route schema (covered in
+   * `integration_tests/agent-spawn-route.test.ts`). What it does catch is the
+   * plausible future edit: someone "tightening" this relay to pick named fields,
+   * and forgetting one.
+   */
+  it("POST /agent-ops/agent/spawn forwards the whole explicit target", async () => {
+    client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
+    const payload = {
+      agentId: "codex",
+      serviceId: "openai",
+      billingMode: "sub",
+      modelId: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      prompt: "review",
+      depth: 0,
+    };
+    const res = await app.inject({ method: "POST", url: "/agent-ops/agent/spawn", payload });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/agent/spawn");
+    expect(client.calls[0].body).toEqual(payload);
+  });
+
+  // docs/261 req 6 — and a role goes over the same hop, alone.
+  it("POST /agent-ops/agent/spawn forwards a role", async () => {
+    client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent-ops/agent/spawn",
+      payload: { role: "reviewer", prompt: "review", depth: 0 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].body).toEqual({ role: "reviewer", prompt: "review", depth: 0 });
+  });
+
+  // docs/264-agent-roles req 10 — and a role WITH overrides goes over the same hop. The
+  // combination used to be refused; it is now the override path, so the relay
+  // has to carry both halves.
+  it("POST /agent-ops/agent/spawn forwards a role together with its overrides", async () => {
+    client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
+    const payload = { role: "deep dive", modelId: "claude-opus-5", reasoningEffort: "high", prompt: "review", depth: 0 };
+    const res = await app.inject({ method: "POST", url: "/agent-ops/agent/spawn", payload });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].body).toEqual(payload);
+  });
+
+  // docs/264-agent-roles req 12 — the two reads. They exist so an agent names a role and an
+  // override that are real on THIS install rather than remembered from another.
+  it("GET /agent-ops/agent/roles relays the install's roles", async () => {
+    client.setResponse("GET", "/agent/roles", {
+      ok: true, status: 200, body: { roles: [{ name: "reviewer" }] },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/agent/roles" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/agent/roles");
+    expect(res.json()).toEqual({ roles: [{ name: "reviewer" }] });
+  });
+
+  it("GET /agent-ops/agent/params relays the install's spawn parameters", async () => {
+    client.setResponse("GET", "/agent/params", {
+      ok: true, status: 200, body: { harnesses: [{ id: "codex", name: "Codex", reasoningLevels: [], models: [] }] },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/agent/params" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/agent/params");
+    expect((res.json() as { harnesses: unknown[] }).harnesses).toHaveLength(1);
+  });
+
+  it("GET /agent-ops/agent/result forwards the run id as ?spawnId (planning#247)", async () => {
     client.setResponse("GET", "/agent/result", {
       ok: true, status: 200,
       body: { cardId: "c1", spawnId: "run-77", subAgentId: "codex", status: "success", outputMarkdown: "findings" },
@@ -714,5 +805,43 @@ describe("agent-ops routes", () => {
     const res = await app.inject({ method: "GET", url: "/agent-ops/agent/result" });
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/agent/result");
+  });
+
+  // docs/266 — the two relays a consumer needs when a plugin version is live
+  // and unusable. `status` is a GET because it activates nothing; `force` is
+  // normalized to a strict boolean because the body is agent-supplied JSON and
+  // it discards a live version's install output.
+  it("GET /agent-ops/plugin/status forwards the repository name", async () => {
+    client.setResponse("GET", "/plugin/status", {
+      ok: true, status: 200, body: { repos: [{ repo: "tools", usable: false }], warnings: [] },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/plugin/status?repo=tools" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ repos: [{ usable: false }] });
+    expect(client.calls[0]).toMatchObject({ method: "GET", path: "/plugin/status?repo=tools" });
+  });
+
+  it("GET /agent-ops/plugin/status without a name asks about every repository", async () => {
+    const res = await app.inject({ method: "GET", url: "/agent-ops/plugin/status" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/plugin/status");
+  });
+
+  it("POST /agent-ops/plugin/refresh forwards force as a strict boolean", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/refresh",
+      payload: { repo: "tools", force: "yes-please" },
+    });
+    expect(client.calls[0]).toMatchObject({ path: "/plugin/refresh", body: { repo: "tools", force: false } });
+
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/refresh",
+      payload: { repo: "tools", force: true },
+    });
+    expect(client.calls[1]).toMatchObject({ body: { repo: "tools", force: true } });
   });
 });

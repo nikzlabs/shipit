@@ -26,6 +26,7 @@ import type {
   WsSubAgentSpawn,
   WsSubagentReportUpdate,
   WsModelInfo,
+  WsModelSelectionChanged,
   WsMessageQueued,
   WsQueueUpdated,
   WsMessageSteered,
@@ -52,6 +53,7 @@ import type {
   WsServiceStatus,
   WsServiceList,
   WsComposeError,
+  WsPluginReposUpdated,
   WsStackError,
   WsComposeNotConfigured,
   WsSecretsStatus,
@@ -102,6 +104,7 @@ import type {
   WsBugReportCard,
   WsBugReportFiled,
   WsBugReportFailed,
+  WsBugReportDismissed,
   WsEgressPromptCard,
   WsEgressPromptResolved,
   WsPermissionRequestCard,
@@ -117,6 +120,8 @@ import type {
   WsBranchAutoResetCard,
   WsBranchSyncedCard,
   WsSessionRenamedCard,
+  WsNonTurnFailureCard,
+  WsNonTurnFailureDismissed,
 } from "./cards.js";
 import type {
   WsError,
@@ -152,9 +157,12 @@ export type WsServerMessage =
   | WsBranchAutoResetCard
   | WsBranchSyncedCard
   | WsSessionRenamedCard
+  | WsNonTurnFailureCard
+  | WsNonTurnFailureDismissed
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed
+  | WsBugReportDismissed
   | WsEgressPromptCard
   | WsEgressPromptResolved
   | WsPermissionRequestCard
@@ -198,6 +206,7 @@ export type WsServerMessage =
   | WsGitHubSearchResults
   | WsPrStatus
   | WsModelInfo
+  | WsModelSelectionChanged
   | WsTerminalOutput
   | WsTerminalExit
   | WsTerminalReconnecting
@@ -241,6 +250,7 @@ export type WsServerMessage =
   | WsSessionMemoryExhausted
   | WsPreviewError
   | WsComposeError
+  | WsPluginReposUpdated
   | WsStackError
   | WsComposeNotConfigured
   | WsSecretsStatus

@@ -1,10 +1,7 @@
 import { create } from "zustand";
 import type { TemplateInfo } from "../utils/template-info.js";
 import type { AgentOption } from "../agent-types.js";
-import type {
-  SessionUsage,
-  UsageStats,
-} from "../components/UsageModal.js";
+import type { SessionUsage, UsageStats } from "../../server/shared/types.js";
 import type { ModelInfo } from "../utils/model-info.js";
 import type { ToastData } from "../components/Toast.js";
 import type { AgentId, DockerMemoryStats, SubscriptionLimitsMap, RuntimeMode, VersionInfo } from "../../server/shared/types.js";
@@ -12,15 +9,20 @@ import {
   getSavedAgentId,
   getSavedSidebarCollapsed,
   saveSidebarCollapsed,
+  getSavedSidebarView,
+  saveSidebarView,
   getSavedRightTab,
   saveRightTab,
 } from "../utils/local-storage.js";
+import type { SidebarView } from "../utils/local-storage.js";
+import { newSessionAgentId } from "../utils/new-session-agent.js";
 
-type RightTab =
+export type RightTab =
   | "preview"
   | "docs"
   | "issues"
   | "files"
+  | "plugins"
   | "terminal"
   | "history"
   | "pr"
@@ -30,8 +32,13 @@ type RightTab =
 type MobilePanel = "chat" | "preview";
 
 type SettingsTab =
-  | "agent-claude"
-  | "agent-codex"
+  // docs/252 — the per-vendor `agent-claude` / `agent-codex` tabs are gone.
+  // Credentials are listed by service, not by the harness that drives them,
+  // so Settings → Services is the one credential surface and the default tab.
+  | "services"
+  // docs/261 — the two configured reviewers. Directly after Services because it
+  // reads entirely off the credentials that tab configures.
+  | "roles"
   | "integrations"
   | "git"
   | "instructions"
@@ -99,6 +106,12 @@ interface UiState {
   /** Which tab the Project Settings dialog opens on. */
   projectSettingsTab: ProjectSettingsTab;
   sidebarCollapsed: boolean;
+  /**
+   * docs/260-attention-sidebar-view req 13 — which of the sidebar's two views is showing: the repo
+   * tree (`"all"`) or the flat needs-attention list (`"attention"`). Persisted
+   * to localStorage so the sidebar reopens in the view the user chose.
+   */
+  sidebarView: SidebarView;
   mobileSidebarOpen: boolean;
   toast: ToastData | null;
   bootstrapLoaded: boolean;
@@ -167,6 +180,9 @@ interface UiState {
    */
   setProjectSettingsRepoUrl: (url: string | null, tab?: ProjectSettingsTab) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
+  setSidebarView: (view: SidebarView) => void;
+  /** Flip between the two sidebar views — the switch and the keyboard chord. */
+  toggleSidebarView: () => void;
   setMobileSidebarOpen: (open: boolean) => void;
   setToast: (toast: ToastData | null) => void;
   setDockerMemory: (stats: DockerMemoryStats | null) => void;
@@ -205,6 +221,7 @@ const initialState = {
   projectSettingsRepoUrl: null as string | null,
   projectSettingsTab: "secrets" as ProjectSettingsTab,
   sidebarCollapsed: getSavedSidebarCollapsed(),
+  sidebarView: getSavedSidebarView(),
   mobileSidebarOpen: false,
   toast: null as ToastData | null,
   bootstrapLoaded: false,
@@ -273,6 +290,18 @@ export const useUiStore = create<UiState>((set) => ({
     set({ sidebarCollapsed: collapsed });
   },
 
+  setSidebarView: (sidebarView) => {
+    saveSidebarView(sidebarView);
+    set({ sidebarView });
+  },
+
+  toggleSidebarView: () =>
+    set((state) => {
+      const sidebarView: SidebarView = state.sidebarView === "attention" ? "all" : "attention";
+      saveSidebarView(sidebarView);
+      return { sidebarView };
+    }),
+
   setMobileSidebarOpen: (mobileSidebarOpen) => set({ mobileSidebarOpen }),
 
   setToast: (toast) => set({ toast }),
@@ -291,7 +320,7 @@ export const useUiStore = create<UiState>((set) => ({
   setTailnetPreviewHost: (tailnetPreviewHost) => set({ tailnetPreviewHost }),
 
   reset: () =>
-    set({
+    set((s) => ({
       settingsOpen: false,
       quickCaptureOpen: false,
       quickCaptureAutoMic: false,
@@ -302,13 +331,26 @@ export const useUiStore = create<UiState>((set) => ({
       contextTokens: 0,
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
+      // docs/252 — back to the seed, because this field is SYNCED TO THE
+      // CONNECTED SESSION by `useConnectionSync` and so goes stale the moment
+      // there is no longer a session behind it. Surviving the reset is what let
+      // the new-session route describe the session the user just left: its warm
+      // session is claimed but excluded from `sessions` (`SessionManager.list`
+      // filters `warm = 0`), so the composer has a bound session it cannot see
+      // and falls back to this value. Resetting it to what the next session will
+      // actually be created on makes that fallback correct instead of stale, and
+      // an explicit pick still overwrites it (`handleAgentChange`).
+      //
+      // localStorage is deliberately NOT written here — see `setActiveAgentId`:
+      // an internal sync must never move the global "new session default".
+      activeAgentId: newSessionAgentId(s.agentList),
       // On a session switch the mobile layout should always land on chat —
       // a new session's first thing to look at is its conversation, never the
       // workspace/preview tab the previous session happened to be parked on.
       // (Unlike rightTab, which is the desktop tab and is intentionally
       // preserved across switches via localStorage.)
       mobilePanel: "chat" as MobilePanel,
-    }),
+    })),
 
   fetchUsageStats: async (sessionId) => {
     const res = await fetch(`/api/sessions/${sessionId}/usage`, {

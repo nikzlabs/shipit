@@ -347,7 +347,7 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
   useEffect(() => {
     abortRecording();
     setCleanupWarning(null);
-  }, [sessionId]);
+  }, [sessionId, abortRecording]);
 
   // Unmount cleanup.
   // eslint-disable-next-line no-restricted-syntax -- release MediaRecorder/timers on unmount

@@ -4,11 +4,12 @@ import { useEventListener } from "../../hooks/useEventListener.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useIsMobile } from "../../hooks/useMediaQuery.js";
+import { useNarrowContainer } from "../../hooks/useNarrowContainer.js";
 import { PlusIcon, StopIcon, ArrowUpIcon, GitBranchIcon, CheckIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore } from "../../stores/pr-store.js";
-import { PermissionModeSelector } from "../PermissionModeSelector.js";
-import { ModelAgentSelector } from "../ModelAgentSelector.js";
+import { PermissionModeSelector, isGuardedModelOk } from "../PermissionModeSelector.js";
+import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
 import { SkillAutoComplete, type SlashCommand } from "../SkillAutoComplete.js";
@@ -23,13 +24,26 @@ import { spliceTranscript } from "../../voice/insert-transcript.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
+import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
+import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
+import { getSavedRoleName } from "../../utils/local-storage.js";
+import { applyRoleSeeds } from "../../utils/role-seed.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../../server/shared/types.js";
 import type { UploadItem } from "../../hooks/useFileUpload.js";
-import type { AgentOption } from "../../agent-types.js";
+import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
+
+/**
+ * docs/260-composer-toolbar-layout req 3 — below this many px of the COMPOSER's own width the toolbar
+ * collapses to `+ · settings · ring ⟶ mic · stop · send`. At or above it the row
+ * is exactly what shipped before. Deliberately a composer width and not a
+ * viewport one: the chat panel is a draggable split, so a wide window with a
+ * narrow panel needs the compact row and a media query cannot tell.
+ */
+const COMPOSER_NARROW_PX = 700;
 
 /** Render a hotkey string like "ctrl+shift+space" as "Ctrl+Shift+Space" for tooltips. */
 function formatHotkeyLabel(hotkey: string): string {
@@ -81,6 +95,7 @@ export interface SendPayload {
 export function MessageInput({
   onSend,
   disabled,
+  disabledReason,
   isLoading = false,
   onInterrupt,
   permissionMode = "auto",
@@ -97,6 +112,9 @@ export function MessageInput({
   onModelChange,
   onReasoningChange,
   sessionReasoning,
+  sessionRoleName,
+  onRoleChange,
+  roleLocked = false,
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
@@ -107,6 +125,20 @@ export function MessageInput({
 }: {
   onSend: (payload: SendPayload) => void;
   disabled: boolean;
+  /**
+   * docs/257 req 3 — when set, the composer is dead **as a whole** and this
+   * string is why, shown as the textarea's placeholder.
+   *
+   * Distinct from `disabled`, which only guards submission: with `disabled` the
+   * user can still type, attach files and dictate, and discovers the rule when
+   * Send does nothing. That is the "block at submit" failure req 3's receipt
+   * rejected. `disabledReason` instead disables the textarea, the attach button,
+   * paste/drag-drop ingestion, the mic and the permission selector — and renders
+   * the textarea EMPTY, so a retained draft or a prefill cannot hide the
+   * explanation behind text that cannot be sent. The draft itself is kept in the
+   * store and comes back when the input is live again.
+   */
+  disabledReason?: string;
   isLoading?: boolean;
   onInterrupt?: () => void;
   permissionMode?: PermissionMode;
@@ -129,11 +161,31 @@ export function MessageInput({
   agents?: AgentOption[];
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
-  onModelChange?: (model: string) => void;
+  onModelChange?: (selection: ModelChoice) => void;
   /** docs/217 — per-session reasoning effort change; `null` clears to default. */
   onReasoningChange?: (effort: string | null) => void;
   /** docs/217 — the active session's persisted reasoning effort, if any. */
   sessionReasoning?: string;
+  /**
+   * docs/272-user-selectable-roles reqs 5, 13 — the role currently IN FORCE, if any.
+   *
+   * The server's answer, never derived here: a session whose harness, model and
+   * level happen to equal a role's is not that role, because selecting one also
+   * puts its standing instructions in force and moving three controls does not.
+   * When set, the three selectors it replaced come out of the row and this name
+   * stands in their place.
+   */
+  sessionRoleName?: string;
+  /**
+   * docs/272 reqs 1, 18 — start this session on the named role, or take the role
+   * off it with `undefined`. Absent ⇒ no role control at all.
+   */
+  onRoleChange?: (roleName: string | undefined) => void;
+  /**
+   * docs/272 req 4 — the session has taken its first turn, so no role applies any
+   * more. The same fact that pins the harness, and shown the same way.
+   */
+  roleLocked?: boolean;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
@@ -150,7 +202,113 @@ export function MessageInput({
   surface?: "chat" | "overlay";
 }) {
   const isMobile = useIsMobile();
+  // docs/260-composer-toolbar-layout req 2/3 — measured on the COMPOSER, not the window. The chat panel
+  // is a draggable split, so a wide window with a narrow panel is exactly the
+  // case a media query cannot see and the reported bug. `useNarrowContainer`
+  // reports `false` until measured and where ResizeObserver is absent (jsdom),
+  // so the first paint and every existing test get the wide row.
+  const composerRef = useRef<HTMLDivElement>(null);
+  const narrowComposer = useNarrowContainer(composerRef, COMPOSER_NARROW_PX);
+  // The same gate `PermissionModeSelector` applies to itself, hoisted so the
+  // narrow row's settings menu offers exactly the modes the wide row would.
+  const guardedModelOk = isGuardedModelOk({ agents, activeAgentId, modelInfo });
+  /**
+   * docs/260 req 19 — the one control the compact layout gives back, and only
+   * in the quick-capture overlay on a desktop viewport.
+   *
+   * Not a width test, deliberately: the overlay's panel is `max-w-2xl` (672px)
+   * at every window size, so it is ALWAYS under the 700px breakpoint and its
+   * measurement never carried req 3's "space is scarce" meaning. The viewport is
+   * what says whether there is room beside it — and below 768px there is not,
+   * which is the ordinary narrow case the fold was designed for.
+   *
+   * Read by the narrow row (which renders the control) and by the settings menu
+   * (which drops its Mode row), so the setting is offered in exactly one place.
+   */
+  const modeInRow = surface === "overlay" && !isMobile;
+  // docs/257 req 3 — "disabled as a whole". Every affordance below reads this
+  // rather than `disabled`, which guards submission only.
+  const inert = !!disabledReason;
   const [text, setText] = useState("");
+  // ── docs/272-user-selectable-roles — the role control's three states ─────────────────────
+  // 1. no roles configured → nothing at all, the row exactly as it is today (req 16)
+  // 2. roles exist, none in force → today's three controls plus the bare mark
+  // 3. a role in force → the role's name INSTEAD of the three controls (req 5)
+  //
+  // `roleParamsRevealed` is the fourth thing that can happen and is not a fourth
+  // state: "Adjust parameters…" brings the three controls back beside the name
+  // (req 15). The role stays in force until one of them actually moves, and the
+  // reveal is deliberately local and unpersisted — it is a look, not a setting.
+  // Keyed off the role name so switching role folds the parameters away again,
+  // which is what stops a revealed row from outliving the decision that opened
+  // it.
+  const { roles, hasRoles } = useRolePickerState();
+  const [revealedFor, setRevealedFor] = useState<string | undefined>(undefined);
+  // **Before a session is active there is no row to read the role from**, and
+  // that is where this was reported broken: on `/{repo}/new` the composer sits
+  // on a WARM session, `SessionManager.list()` filters `warm = 0`, so the
+  // browser's session list has no row for it — the server applied the role and
+  // its answer landed on nothing, leaving the control reading "None" forever.
+  // Quick Capture has no session at all and reaches the same place.
+  //
+  // So before a session is active the seed IS the display, exactly as
+  // `seedFromHistory` makes the seed the display for the harness, model and
+  // reasoning pickers on this same route. Held in state as well as in
+  // localStorage because React cannot subscribe to localStorage, and initialised
+  // from it so a role chosen before a reload is still named after one.
+  const [pendingRole, setPendingRole] = useState<string | undefined>(() => getSavedRoleName());
+  // Once a session IS active its role is the SERVER's answer and nothing else.
+  // The seed may name a role this session never took — it is chosen for the
+  // *next* one — so falling back to it there would name a role the session is
+  // not running, which is the one thing req 13 rules out.
+  const roleInForce = hasActiveSession ? sessionRoleName : (sessionRoleName ?? pendingRole);
+  /**
+   * req 15, for the session-less composer: moving one of the three controls a
+   * role set leaves the role here too.
+   *
+   * A bound session gets this from the server, which answers on the row and only
+   * when something actually moved. With no session there is no server to ask, so
+   * the local rule is the blunter one — any pick from those three menus drops the
+   * pending role. It errs toward *not* naming a role, which is the safe
+   * direction: the alternative is a composer claiming a role the session it
+   * creates will not be started on.
+   */
+  const leavePendingRole = () => setPendingRole(undefined);
+  const roleView = roles.find((r) => r.name === roleInForce);
+  // The seed slots the three pickers DISPLAY have to hold the role's own
+  // parameters, or the composer names a role beside a model that role will not
+  // run — reported as "the model name is incorrect".
+  //
+  // Picking a role writes them (`handleRoleChange`), but a role can also arrive
+  // from the slot on a page load, and then nothing has written them this
+  // session: a seed left over from earlier work stays on screen under the
+  // role's name. So they are reconciled here too. `applyRoleSeeds` reports
+  // whether it moved anything, which is what keeps this from looping, and the
+  // bump is needed because localStorage is not something React can subscribe to.
+  const [, noteSeedWrite] = useState(0);
+  // eslint-disable-next-line no-restricted-syntax -- reconciles an external store (localStorage) the pickers read during render; there is nothing else to subscribe to
+  useEffect(() => {
+    if (!roleInForce || hasActiveSession) return;
+    if (applyRoleSeeds(roleView)) noteSeedWrite((n) => n + 1);
+  }, [roleInForce, hasActiveSession, roleView]);
+  // req 4, second half — **the lock takes the CHOICE of role, and nothing else.**
+  //
+  // Note what is NOT in this condition: `roleLocked`. It was, briefly, and that
+  // was the second of two opposite mistakes. As first shipped a locked role had
+  // no menu at all (a readout does not open) and "Adjust parameters…" lives
+  // inside that menu, so a session started on a role lost its model and reasoning
+  // controls at the first turn and never got them back — while an identical
+  // hand-configured session kept both. Nothing server-side was refusing them; the
+  // composer would not draw them. `|| roleLocked` un-caged that by showing the
+  // three controls unconditionally, which grows the row a role exists to shorten,
+  // at the first turn, without being asked (req 5).
+  //
+  // A cage is fixed by giving it a door, not by removing it: the LOCKED CONTROL
+  // OPENS (see `RoleSelector`), and offers the parameters and no role. So the
+  // reveal stays what it has always been — the user's own act — and req 5 holds
+  // for the whole of a session's life rather than for its first turn.
+  const roleParamsRevealed = !roleInForce || revealedFor === roleInForce;
+  const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
   const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
@@ -204,7 +362,11 @@ export function MessageInput({
   const quickCaptureAutoMic = useUiStore((s) => s.quickCaptureAutoMic);
 
   const voice = useVoiceInput({
-    enabled: voiceInputEnabled,
+    // docs/257 req 3 — `!inert` is what actually turns dictation off. Hiding the
+    // mic button is not enough: the hook registers GLOBAL push-to-talk keydown
+    // listeners off `enabled`, so a hidden mic would still record on the hotkey
+    // and splice the transcript into a draft that cannot be sent.
+    enabled: voiceInputEnabled && !inert,
     hotkey: isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA,
     cleanup: cleanupEnabled,
     language: voiceLanguage || undefined,
@@ -213,6 +375,10 @@ export function MessageInput({
     // is its own short-lived surface and never "switches" underneath itself.
     sessionId: isOverlay ? "overlay" : sessionId,
   });
+  // Destructured so the effects below can depend on the individual callbacks
+  // rather than the whole `voice` object — both are `useCallback`s with stable
+  // identities, so an effect keyed on them wires up exactly once.
+  const { onTranscript, cancelRecording } = voice;
 
   // docs/144 — whether the draft currently in the composer contains dictated
   // text. Set when a transcript is spliced in, cleared on send and whenever the
@@ -229,7 +395,7 @@ export function MessageInput({
   // live textarea so dictation stitches into partially-typed text.
   // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
   useEffect(() => {
-    return voice.onTranscript((transcript) => {
+    return onTranscript((transcript) => {
       const ta = textareaRef.current;
       setDraftDictated(true);
       setText((prev) => {
@@ -249,17 +415,35 @@ export function MessageInput({
         return res.value;
       });
     });
-  }, [voice.onTranscript]);
+  }, [onTranscript]);
+
+  // docs/257 req 3 — the install can lose its last credential mid-recording
+  // (another tab signs out). Dropping the hotkey listeners does not stop a
+  // capture already running, and its transcript would land in a hidden draft.
+  // eslint-disable-next-line no-restricted-syntax -- abort an external capture when the composer dies under it
+  useEffect(() => {
+    if (inert) cancelRecording();
+  }, [inert, cancelRecording]);
 
   // Mode B: when the overlay was opened via the voice hotkey, auto-start mic.
+  // `voice.startRecording` is deliberately not a dependency: unlike the other
+  // voice callbacks its identity changes with the recorder's own `state`, so
+  // depending on it would re-run this arm-the-mic effect on every transition
+  // of the recording it just started. Keyed on the open/eligibility inputs only.
   // eslint-disable-next-line no-restricted-syntax -- one-shot auto-start on overlay open
   useEffect(() => {
     if (!isOverlay) return;
+    // docs/257 req 3 — Quick Capture can be opened by the voice hotkey, which
+    // auto-arms the mic. On an install that cannot run a turn that would start
+    // recording a message with nowhere to go, so the auto-start is skipped
+    // along with the mic itself. The pending flag is cleared either way, so a
+    // later open doesn't inherit an arm the user has forgotten about.
     if (quickCaptureAutoMic && voiceInputEnabled) {
-      voice.startRecording();
+      if (!inert) voice.startRecording();
       useUiStore.getState().setQuickCaptureAutoMic(false);
     }
-  }, [isOverlay, quickCaptureAutoMic, voiceInputEnabled]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `voice.startRecording`'s identity changes with the recorder's own state, so depending on it would re-run this one-shot arm-the-mic effect mid-recording
+  }, [isOverlay, quickCaptureAutoMic, voiceInputEnabled, inert]);
 
   // Per-session draft persistence: remember/restore typed text across session
   // switches and reloads. Skipped for the overlay surface. See `useMessageDraft`.
@@ -283,6 +467,12 @@ export function MessageInput({
     if (surface === "overlay") return undefined;
     const consume = (prefill: string | undefined) => {
       if (!prefill) return;
+      // docs/257 req 3 — DEFER while the composer is dead, don't consume. The
+      // textarea renders empty, so consuming here would silently replace the
+      // user's retained draft with text they can neither see nor send. Leaving
+      // it in the store means this effect (which depends on `inert`) picks it up
+      // the moment the install becomes runnable.
+      if (inert) return;
       setText(prefill);
       // Prefill REPLACES the draft, so whatever was dictated into it is gone.
       setDraftDictated(false);
@@ -301,9 +491,9 @@ export function MessageInput({
     return useSessionStore.subscribe((state) => {
       consume(state.prefillText);
     });
-  }, [surface]);
+  }, [surface, inert]);
 
-  // SHI-10 — consume a quote-reply blockquote from the store and *append* it to
+  // planning#12 — consume a quote-reply blockquote from the store and *append* it to
   // the current draft (unlike prefill, which replaces). This lets the user
   // quote a passage from a chat bubble without losing what they've already
   // typed. We focus the textarea and drop the cursor on the trailing blank line
@@ -313,6 +503,10 @@ export function MessageInput({
     if (surface === "overlay") return undefined;
     const consume = (quote: string | undefined) => {
       if (!quote) return;
+      // docs/257 req 3 — deferred for the same reason as the prefill above: this
+      // one APPENDS to the draft, so consuming it into an invisible textarea
+      // would leave the user with a quote they cannot see, send, or undo.
+      if (inert) return;
       useSessionStore.getState().setQuoteReplyText(undefined);
       setText((prev) => {
         // Separate from existing draft with a blank line; the blockquote needs
@@ -334,13 +528,13 @@ export function MessageInput({
     return useSessionStore.subscribe((state) => {
       consume(state.quoteReplyText);
     });
-  }, [surface]);
+  }, [surface, inert]);
 
   // Auto-focus textarea on mount and on session change (e.g. "New Session" click,
   // session switch). The ref is intentionally seeded with `undefined` (not `focusKey`)
   // so the very first render with a defined focusKey triggers focus — otherwise focus
-  // would be deferred until claimSession() resolves and focusKey transitions from
-  // "new" to the real session ID, which causes a visible delay on "New Session" clicks.
+  // would be deferred until focusKey transitions from the new-session view's key
+  // to the real session ID, which causes a visible delay on "New Session" clicks.
   //
   // Skip on mobile: focusing the textarea pops the on-screen keyboard, which is
   // intrusive when the user is just navigating between sessions. The user can tap
@@ -426,7 +620,10 @@ export function MessageInput({
 
   const handleSubmit = () => {
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
+    // `inert` as well as `disabled`: a retained draft still lives in `text`
+    // while the input is dead (it is simply not rendered), so submission has to
+    // be refused here and not just hidden behind an empty-looking textarea.
+    if (!trimmed || disabled || inert) return;
     const uploadRefs = getUploadRefs();
     const payload: SendPayload = {
       text: trimmed,
@@ -601,6 +798,9 @@ export function MessageInput({
 
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
+      // docs/257 req 3 — attaching to a message that cannot be sent is the same
+      // dead input as typing one.
+      if (inert) return;
       const items = e.clipboardData.items;
       const imageFiles: File[] = [];
       for (const item of items) {
@@ -614,17 +814,19 @@ export function MessageInput({
         addFiles(imageFiles);
       }
     },
-    [addFiles],
+    [addFiles, inert],
   );
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // docs/257 req 3 — no drop-zone affordance over a dead input.
+    if (inert) return;
     dragCountRef.current++;
     if (dragCountRef.current === 1) {
       setIsDragging(true);
     }
-  }, []);
+  }, [inert]);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -646,6 +848,7 @@ export function MessageInput({
       e.stopPropagation();
       dragCountRef.current = 0;
       setIsDragging(false);
+      if (inert) return;
 
       // Check for ShipIt file drag from file tree
       const fileData = e.dataTransfer?.getData("application/x-shipit-file");
@@ -663,7 +866,7 @@ export function MessageInput({
         addFiles(e.dataTransfer.files);
       }
     },
-    [addFiles, onAddFile],
+    [addFiles, onAddFile, inert],
   );
 
   const handleAttachClick = () => {
@@ -680,6 +883,7 @@ export function MessageInput({
 
   return (
     <div
+      ref={composerRef}
       className="px-4 pb-3 relative"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -755,36 +959,227 @@ export function MessageInput({
           )}
 
           {/* Textarea — full width on top */}
+          {/* docs/257 req 3 — while `disabledReason` is set the textarea renders
+              EMPTY and disabled, with the reason as its placeholder. Empty
+              because the value is controlled: a per-session draft or a
+              `setPrefillText` seed would otherwise cover the explanation with
+              text that cannot be sent. The draft survives in the store and
+              returns the moment the install becomes runnable. */}
           <textarea
             ref={textareaRef}
             data-chat-input
-            value={text}
+            value={inert ? "" : text}
+            disabled={inert}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
             onBlur={handleBlur}
             onPaste={handlePaste}
-            placeholder="Describe what to build... (type @ to attach files)"
+            placeholder={disabledReason ?? "Describe what to build... (type @ to attach files)"}
             rows={1}
-            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content max-h-[40vh] overflow-y-auto"
+            className="w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none field-sizing-content max-h-[40vh] overflow-y-auto disabled:cursor-not-allowed"
           />
 
-          {/* Toolbar row — below textarea.
+          {/* ── Narrow toolbar row (docs/260) ──────────────────────────────
+              Below 700px of the COMPOSER's own width — not the window's — the
+              permission mode, harness, model and reasoning controls leave the
+              row and live behind `ComposerSettingsMenu`, whose anchor carries
+              the model name (req 3, 4, 6).
+
+              The overflow guarantee (req 1) is structural, not arithmetic:
+              mic/stop/send sit OUTSIDE the clipping group and are `shrink-0`,
+              so no amount of content on the left can move them. Inside the
+              group the anchor is the only elastic item, so the model name
+              ellipsises first and the ring is only ever cut at the group's
+              edge — which is flush against the mic (no gap), so it reads as
+              clipped by the mic's own square (req 8). Measured: the ring only
+              starts to be cut below ~280px, narrower than any phone. */}
+          {narrowComposer ? (
+            <div className="flex items-center px-2 pb-2">
+              <div className="flex flex-1 min-w-0 items-center gap-1 overflow-hidden">
+                <WithTooltip label="Add files">
+                  <button
+                    onClick={handleAttachClick}
+                    disabled={inert}
+                    className="flex shrink-0 items-center justify-center rounded-lg p-1.5 text-(--color-text-tertiary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-(--color-text-tertiary)"
+                    aria-label="Add files"
+                  >
+                    <PlusIcon size={ICON_SIZE.SM} />
+                  </button>
+                </WithTooltip>
+
+                {/* docs/260 req 19 — **the mode comes back out of the menu in
+                    the quick-capture overlay on desktop.**
+
+                    The overlay's composer is under 700px because its PANEL is a
+                    fixed `max-w-2xl` (672px), and it is that width on a 1400px
+                    window as much as on a 900px one. So the measurement that
+                    means "space is scarce" in the chat panel — where the user
+                    chose the width by dragging the split — means nothing here,
+                    and req 3's fold takes a control the surface needs most: this
+                    overlay starts a session and sends its first message in one
+                    act, and the mode is what decides whether the agent asks
+                    before it acts.
+
+                    Only the mode. Everything else stays folded, and it is
+                    offered here INSTEAD of in the menu (`modeInRow` below), never
+                    in both — one setting, one control.
+
+                    Placed before the settings anchor rather than after it because
+                    the anchor is the group's one elastic item: req 8's clipping
+                    depends on it being last, so it truncates before anything is
+                    cut at the mic's edge. */}
+                {modeInRow && onPermissionModeChange && (
+                  <div className="flex shrink-0 items-center">
+                    <PermissionModeSelector
+                      mode={permissionMode}
+                      onChange={onPermissionModeChange}
+                      agents={agents}
+                      activeAgentId={activeAgentId}
+                      modelInfo={modelInfo}
+                      disabled={inert}
+                    />
+                  </div>
+                )}
+
+                <ComposerSettingsMenu
+                  // Keyed on the session so an optimistic pick can't linger across a switch,
+                  // for the same reason `ReasoningSelector` is keyed in the wide row.
+                  key={sessionId ?? "__new__"}
+                  agents={agents}
+                  activeAgentId={activeAgentId}
+                  onAgentChange={onAgentChange}
+                  onModelChange={onModelChange}
+                  onReasoningChange={onReasoningChange}
+                  sessionReasoning={sessionReasoning}
+                  // docs/272 req 15 — the same fact in docs/260's shape: below
+                  // 700px the role folds into this one menu, alongside the
+                  // controls it sets. The reveal state is shared with the wide
+                  // row so crossing the breakpoint does not re-fold what the
+                  // user just opened.
+                  {...(onRoleChange
+                    ? {
+                        onRoleChange: (name: string | undefined) => {
+                          setPendingRole(name);
+                          onRoleChange(name);
+                        },
+                      }
+                    : {})}
+                  {...(roleInForce ? { sessionRoleName: roleInForce } : {})}
+                  roleParamsRevealed={roleParamsRevealed}
+                  onAdjustRoleParameters={() => { if (roleInForce) setRevealedFor(roleInForce); }}
+                  onRoleSelected={() => setRevealedFor(undefined)}
+                  onLeaveRole={leavePendingRole}
+                  roleLocked={roleLocked}
+                  modelInfo={modelInfo ?? null}
+                  hasActiveSession={hasActiveSession}
+                  // Same split the wide row makes three lines apart: the harness
+                  // and model pickers key off "is a session bound", reasoning off
+                  // "is a session active".
+                  seedFromHistory={!sessionId}
+                  permissionMode={permissionMode}
+                  onPermissionModeChange={onPermissionModeChange}
+                  // docs/260 req 19 — the menu drops its Mode row when the row
+                  // carries the control. The handler still goes in: the menu
+                  // reads the mode for nothing else, and a menu that could not
+                  // be told the mode would have to guess it back.
+                  modeInRow={modeInRow}
+                  guardedModelOk={guardedModelOk}
+                  // Only `inert` closes the anchor. A running turn locks the
+                  // three pickers instead, so the mode stays changeable and the
+                  // settings stay readable — matching the wide row exactly.
+                  disabled={inert}
+                  pickersLocked={disabled || isLoading}
+                />
+
+                {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
+                  <div className="flex shrink-0 items-center">
+                    <ContextDialMount
+                      modelInfo={modelInfo ?? null}
+                      contextTokensFallback={contextTokens}
+                      onOpenUsageDetails={onOpenUsageDetails}
+                      compact
+                    />
+                  </div>
+                )}
+              </div>
+
+              {voiceInputEnabled && !inert && (
+                <div className="flex shrink-0 items-center">
+                  <MicButton
+                    voice={voice}
+                    large={isMobile}
+                    hotkeyLabel={formatHotkeyLabel(isOverlay ? voiceHotkeyModeB : voiceHotkeyModeA)}
+                    onOpenSettings={() => {
+                      const ui = useUiStore.getState();
+                      ui.setSettingsTab("voice");
+                      ui.setSettingsOpen(true);
+                    }}
+                  />
+                </div>
+              )}
+              {voiceInputEnabled && !inert && isMobile && <MobileRecordingOverlay voice={voice} />}
+
+              {isLoading && onInterrupt ? (
+                <>
+                  <WithTooltip label="Stop the agent">
+                    <button
+                      onClick={onInterrupt}
+                      className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-error) text-white transition-colors hover:brightness-110`}
+                      aria-label="Stop the agent"
+                      data-testid="stop-button"
+                    >
+                      <StopIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="fill" />
+                    </button>
+                  </WithTooltip>
+                  {liveSteeringActive && (
+                    <button
+                      onClick={handleSubmit}
+                      disabled={disabled || inert || !text.trim()}
+                      className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
+                      aria-label="Send message"
+                      data-testid="send-button"
+                    >
+                      <ArrowUpIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="bold" />
+                    </button>
+                  )}
+                </>
+              ) : (
+                <button
+                  onClick={handleSubmit}
+                  disabled={disabled || inert || !text.trim()}
+                  className={`ml-1 flex shrink-0 items-center justify-center rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white transition-colors hover:bg-(--color-accent-hover) disabled:cursor-not-allowed disabled:opacity-30`}
+                  aria-label="Send message"
+                  data-testid="send-button"
+                >
+                  <ArrowUpIcon size={isMobile ? ICON_SIZE.MD : ICON_SIZE.SM} weight="bold" />
+                </button>
+              )}
+            </div>
+          ) : (
+          /* Toolbar row — below textarea.
               Desktop keeps the conventional split (add/mic/mode on the left,
               cost/model/send on the right) to match Claude Code and other
               desktop chat UIs. On mobile the order is swapped via CSS `order`
               so the frequently-tapped mic + send sit together as large thumb
               targets on the right, and the rarely-tapped add/mode/cost/model
               pack to the left (docs/144). The numeric `order` values leave gaps
-              so items can be inserted later without renumbering. */}
+              so items can be inserted later without renumbering.
+
+              docs/260 — this is now the WIDE row: it renders only when the
+              composer is at least 700px across. The `isMobile` order swaps stay
+              because a tablet can be both `isMobile` and ≥700px wide. */
           <div className="flex items-center gap-1 px-2 pb-2">
-            {/* Add files button — always enabled. Files attached before a
-                session is ready are buffered by useFileUpload and uploaded
-                once sessionId resolves. */}
+            {/* Add files button. Enabled even before a session is ready —
+                files attached then are buffered by useFileUpload and uploaded
+                once sessionId resolves — but NOT while `disabledReason` is set:
+                attaching to a message that cannot be sent is the same dead
+                input as typing one (docs/257 req 3). */}
             <div className="flex items-center shrink-0" style={{ order: 10 }}>
             <WithTooltip label="Add files">
             <button
               onClick={handleAttachClick}
-              className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+              disabled={inert}
+              className="flex items-center justify-center shrink-0 rounded-lg p-1.5 text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-(--color-text-tertiary)"
               aria-label="Add files"
             >
               <PlusIcon size={ICON_SIZE.SM} />
@@ -796,7 +1191,11 @@ export function MessageInput({
                 enabled in settings, so the endpoint surface stays off for users
                 who don't opt in. On mobile it moves to the right, just left of
                 Send (order 60); on desktop it stays in the left group (20). */}
-            {voiceInputEnabled && (
+            {/* docs/257 req 3 — hidden rather than disabled while the input is
+                inert: MicButton is a state machine (recording / transcribing /
+                error popover) with nothing to disable, and a visible mic that
+                does nothing is the dead control req 10 refuses to show. */}
+            {voiceInputEnabled && !inert && (
               <div className="flex items-center shrink-0" style={{ order: isMobile ? 60 : 20 }}>
                 <MicButton
                   voice={voice}
@@ -815,7 +1214,7 @@ export function MessageInput({
                 central Stop button + Cancel, shown while recording. Desktop
                 keeps the inline icon + push-to-talk hotkey. Out of flow
                 (fixed) and null when idle, so its default order is harmless. */}
-            {voiceInputEnabled && isMobile && <MobileRecordingOverlay voice={voice} />}
+            {voiceInputEnabled && !inert && isMobile && <MobileRecordingOverlay voice={voice} />}
 
             {/* Permission mode selector (3-state, agent-aware — docs/138) */}
             {onPermissionModeChange && (
@@ -826,6 +1225,7 @@ export function MessageInput({
                   agents={agents}
                   activeAgentId={activeAgentId}
                   modelInfo={modelInfo}
+                  disabled={inert}
                 />
               </div>
             )}
@@ -840,8 +1240,29 @@ export function MessageInput({
              * and its popover row opens the usage modal. The standalone cost
              * pill was removed to eliminate a stale-vs-authoritative
              * discrepancy between the two. */}
+            {/* docs/260-composer-toolbar-layout req 1 / req 8 — the wide row's clipping group. The four
+                labelled controls (dial, harness, model, reasoning) sit inside a
+                `min-w-0 overflow-hidden` box so that when the row runs out of
+                width their LABELS are cut, instead of the row overflowing and
+                carrying Send off the right edge — which is what shipped, and
+                what still happened between 700 and ~808px after the compact row
+                was added below 700.
+
+                Note this clips the MIDDLE, not the left, which is the difference
+                from the compact row: in the wide layout the mic sits on the far
+                left, and req 1 protects the mic as well as Stop and Send. So
+                both ends are pinned and the labels in between give way.
+
+                The children keep no `order` of their own — their DOM order is
+                already the order both layouts asked for — and the group takes
+                the order the first of them used to have. */}
+            <div
+              className="flex min-w-0 items-center gap-1 overflow-hidden"
+              style={{ order: isMobile ? 30 : 50 }}
+              data-testid="wide-row-clip-group"
+            >
             {surface === "chat" && (modelInfo ?? contextTokens > 0) && (
-              <div className="flex items-center shrink-0" style={{ order: isMobile ? 30 : 50 }}>
+              <div className="flex items-center shrink-0">
                 <ContextDialMount
                   modelInfo={modelInfo ?? null}
                   contextTokensFallback={contextTokens}
@@ -850,37 +1271,97 @@ export function MessageInput({
               </div>
             )}
 
-            {/* Model / agent selector */}
-            {onAgentChange && (
-              <div className="flex items-center shrink-0" style={{ order: isMobile ? 40 : 60 }}>
-                <ModelAgentSelector
+            {/* docs/272-user-selectable-roles reqs 5, 14, 16 — the role control. It sits at the
+                head of the three selectors it can replace, because when a role
+                is in force it stands exactly where they would have. Inside the
+                clip group with them, and cheap to keep there: a row showing a
+                role is SHORTER than today's, so this can only reduce the width
+                pressure docs/260 manages, never add to it. */}
+            {showRoleControl && (
+              <div className="flex items-center shrink-0">
+                <RoleSelector
+                  roles={roles}
+                  {...(roleInForce ? { selectedRole: roleInForce } : {})}
+                  onSelectRole={(name) => {
+                    // A fresh pick folds the parameters away: they described the
+                    // role the user has just left behind. "No role" (req 18)
+                    // needs no fold — with nothing in force the three controls
+                    // are back on their own (`roleParamsRevealed`).
+                    setRevealedFor(undefined);
+                    setPendingRole(name);
+                    onRoleChange?.(name);
+                  }}
+                  {...(roleInForce && !roleParamsRevealed
+                    ? { onAdjustParameters: () => setRevealedFor(roleInForce) }
+                    : {})}
+                  locked={roleLocked}
+                  disabled={disabled || isLoading || inert}
+                />
+              </div>
+            )}
+
+            {/* docs/252 phase 3 — harness and model are two controls, not one
+                grouped dropdown. The harness is irreversible once the session
+                pins it and the model is not, so the asymmetry is structural
+                rather than a lock badge inside a menu.
+
+                docs/272 req 5 — hidden while a role is in force and its
+                parameters have not been asked for: the role IS these three, so
+                restating them says nothing the user did not just decide. */}
+            {onAgentChange && roleParamsRevealed && (
+              <div className="flex items-center shrink-0">
+                <HarnessSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
-                  onAgentChange={onAgentChange}
-                  onModelChange={onModelChange}
+                  // docs/272 req 15 — see `leavePendingRole`.
+                  onAgentChange={(id) => { leavePendingRole(); onAgentChange(id); }}
+                  hasActiveSession={hasActiveSession}
+                  // No session bound to this composer at all (Quick Capture, or
+                  // the new-session route before its warm session is claimed),
+                  // so the picker previews what the next session inherits rather
+                  // than describing whichever session is active behind it.
+                  seedFromHistory={!sessionId}
+                  // `inert` too — req 3 disables the composer "as a whole", and
+                  // these three were the affordances left live: with no runnable
+                  // service the harness menu opened onto rows that are all
+                  // unselectable and the model menu onto nothing at all. The
+                  // compact row already read `inert` on its anchor, so the two
+                  // layouts disagreed about the same fact.
+                  disabled={disabled || isLoading || inert}
+                />
+              </div>
+            )}
+            {onAgentChange && roleParamsRevealed && (
+              <div className="flex items-center shrink-0">
+                <ModelSelector
+                  agents={agents}
+                  activeAgentId={activeAgentId}
+                  onModelChange={(selection) => { leavePendingRole(); onModelChange?.(selection); }}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
-                  disabled={disabled || isLoading}
+                  seedFromHistory={!sessionId}
+                  disabled={disabled || isLoading || inert}
                 />
               </div>
             )}
 
             {/* docs/217 — Control B: per-session reasoning effort, beside the
                 model selector. Self-hides when the active agent has no knob. */}
-            {onReasoningChange && (
-              <div className="flex items-center shrink-0" style={{ order: isMobile ? 41 : 61 }}>
+            {onReasoningChange && roleParamsRevealed && (
+              <div className="flex items-center shrink-0">
                 <ReasoningSelector
                   // Key on the session so the optimistic pick never lingers across a switch.
                   key={sessionId ?? "__new__"}
                   agent={agents.find((a) => a.id === activeAgentId)}
                   sessionReasoning={sessionReasoning}
-                  onChange={onReasoningChange}
-                  disabled={disabled || isLoading}
-                  compactTrigger={isMobile}
+                  onChange={(effort) => { leavePendingRole(); onReasoningChange(effort); }}
+                  disabled={disabled || isLoading || inert}
                   seedFromHistory={!hasActiveSession}
                 />
               </div>
             )}
+
+            </div>
 
             {/* Send / Stop button — pinned right (order 80) with a small gap
                 from the item before it. On mobile the icon (MD) and hit area
@@ -902,7 +1383,7 @@ export function MessageInput({
                 {liveSteeringActive && (
                   <button
                     onClick={handleSubmit}
-                    disabled={disabled || !text.trim()}
+                    disabled={disabled || inert || !text.trim()}
                     className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                     aria-label="Send message"
                     data-testid="send-button"
@@ -914,7 +1395,7 @@ export function MessageInput({
             ) : (
               <button
                 onClick={handleSubmit}
-                disabled={disabled || !text.trim()}
+                disabled={disabled || inert || !text.trim()}
                 className={`flex items-center justify-center shrink-0 rounded-lg ${isMobile ? "p-3 min-h-11 min-w-11" : "p-2"} bg-(--color-accent) text-white hover:bg-(--color-accent-hover) transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
                 aria-label="Send message"
                 data-testid="send-button"
@@ -924,6 +1405,7 @@ export function MessageInput({
             )}
             </div>
           </div>
+          )}
 
           {/* Cleanup fell through to the raw transcript — non-fatal, dismissed
               on the next successful dictation (docs/144). */}

@@ -106,7 +106,7 @@ describe("sliceSubagentReport", () => {
    * The reason this function exists instead of `sliceBody`. The CLI's normal
    * encoding is a `JSON.stringify`'d block array — a SINGLE line — so a generic
    * line cap never fires and a byte cap cuts mid-array. The client would then
-   * fail to parse it and render raw JSON, which is the SHI-287 bug returning by
+   * fail to parse it and render raw JSON, which is the planning#289 bug returning by
    * a different route.
    */
   it("clamps the text inside a block array and leaves valid JSON", () => {

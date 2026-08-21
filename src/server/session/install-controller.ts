@@ -30,7 +30,14 @@ import {
   type InstallMarkerStamp,
 } from "../shared/install-marker.js";
 import { emptyDepDirsContradictingMarker } from "./overlay-dep-check.js";
-import { formatInstallFailureMessage, INSTALL_STDERR_TAIL_BYTES } from "./install-failure.js";
+import { installSkipOutputWarning } from "./install-skip-warning.js";
+import {
+  formatEmptyDepDirsFailureMessage,
+  formatInstallFailureMessage,
+  formatStaleDepDirsFailureMessage,
+  INSTALL_STDERR_TAIL_BYTES,
+} from "./install-failure.js";
+import { MAX_REPORTED_MISMATCHES, staleDepDirs } from "./dep-tree-staleness.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
@@ -159,6 +166,10 @@ export class InstallController {
         // keep the marker-skip — non-overlay/no-deps sessions stay unchanged.
         const contradicted = emptyDepDirsContradictingMarker(this.workspaceDir);
         if (contradicted.length === 0) {
+          // planning#2315 — the skip is honored, but say so when it is likely to
+          // have dropped output no dep dir covers. Advisory only: never blocks,
+          // never re-runs the install.
+          this.warnOnSkippedInstallOutput(commands);
           return { skipped: true, reason: "marker" };
         }
         console.warn(
@@ -391,6 +402,27 @@ export class InstallController {
   }
 
   /**
+   * Latch a failed install: record the result, clear the running flag, and
+   * broadcast `install_error`. **No marker is written** — that is the whole
+   * point. State is updated BEFORE the broadcast for the same reason
+   * {@link finishInstallOk} does it: an orchestrator racing to
+   * `/install/status` must see a consistent `running: false` snapshot.
+   */
+  private finishInstallFailed(message: string, extra: { command?: string; exitCode?: number } = {}): void {
+    this._lastInstallResult = { ok: false, ...(extra.command ? { command: extra.command } : {}), message };
+    this._installRunning = false;
+    this._installProcess = null;
+    this.broadcastSSE({
+      type: "install_error",
+      data: {
+        ...(extra.command ? { command: extra.command } : {}),
+        ...(extra.exitCode !== undefined ? { exitCode: extra.exitCode } : {}),
+        message,
+      },
+    });
+  }
+
+  /**
    * Run `agent.install`, streaming output via SSE and writing the marker on
    * success. Each command is passed through {@link tuneNpmInstall} so a bare
    * `npm install` lands fast on a warm download cache (`/dep-cache`, docs/075).
@@ -411,31 +443,52 @@ export class InstallController {
         const cmd = tuneNpmInstall(rawCmd);
         const { code: exitCode, stderrTail } = await this.runSingleInstallCommand(cmd);
         if (exitCode !== 0) {
-          const message = formatInstallFailureMessage(cmd, exitCode, stderrTail);
-          this._lastInstallResult = { ok: false, command: cmd, message };
-          // Update terminal state BEFORE broadcasting so an orchestrator that
-          // races to query `/install/status` after the SSE event sees a
-          // consistent `running: false` snapshot.
-          this._installRunning = false;
-          this._installProcess = null;
-          this.broadcastSSE({
-            type: "install_error",
-            data: { command: cmd, exitCode, message },
+          this.finishInstallFailed(formatInstallFailureMessage(cmd, exitCode, stderrTail), {
+            command: cmd,
+            exitCode,
           });
           return;
         }
       }
 
+      // docs/272 — every command exited 0, which is NOT the same as "the deps
+      // are there". `agent.dep-dirs` is the repo's declaration of what the
+      // install produces, so a declared dir that is present-and-EMPTY after the
+      // install contradicts the install exactly as it contradicts a matching
+      // marker at the top of `/install` — same predicate, both sides. Without
+      // this, an install command that launders its own exit status (the field
+      // case: `npm ci … || [ -x node_modules/.bin/vite ]`) writes a marker
+      // claiming success and opens the service gate over a tree that was never
+      // built.
+      //
+      // Absent stays fine, exactly as it does in the skip path: a repo with no
+      // install-managed dep dir is not a failed install.
+      const empty = emptyDepDirsContradictingMarker(this.workspaceDir);
+      if (empty.length > 0) {
+        const message = formatEmptyDepDirsFailureMessage(empty.map((c) => c.depDir));
+        console.warn(`[install] ${message}`);
+        this.finishInstallFailed(message);
+        return;
+      }
+
+      // nikzlabs#2496 — empty is only the emptiest case. A dep dir left holding
+      // the PREVIOUS commit's tree passes the check above, so the same laundered
+      // exit status stamps a marker for the current commit and opens the gate
+      // over dependencies that do not match the code. Where npm reified the dir
+      // it left its own record of what it installed, and that record is checkable
+      // against the lockfile; `staleDepDirs` compares only in the direction that
+      // cannot mistake a legitimately partial tree for a stale one (module doc).
+      const stale = staleDepDirs(this.workspaceDir, commands);
+      if (stale.length > 0) {
+        const message = formatStaleDepDirsFailureMessage(stale, MAX_REPORTED_MISMATCHES);
+        console.warn(`[install] ${message}`);
+        this.finishInstallFailed(message);
+        return;
+      }
+
       this.finishInstallOk(markerDir, markerFile, stamp);
     } catch (err) {
-      const message = getErrorMessage(err);
-      this._lastInstallResult = { ok: false, message };
-      this._installRunning = false;
-      this._installProcess = null;
-      this.broadcastSSE({
-        type: "install_error",
-        data: { message },
-      });
+      this.finishInstallFailed(getErrorMessage(err));
     }
   }
 
@@ -486,6 +539,27 @@ export class InstallController {
       // Unreadable/invalid config — fall back to the command-derived inputs.
     }
     return computeInstallDepsHash(this.workspaceDir, commands, installInputs);
+  }
+
+  /**
+   * planning#2315 — warn when a skipped install probably wrote something no
+   * declared dep dir brings back. `installSkipOutputWarning` owns the whole
+   * decision (and the reasoning); this only resolves `dep-dirs` and picks the
+   * surfaces. Both are used deliberately: an idle-recreate install runs with no
+   * viewer attached, where the `install_log` line has nobody to reach, and the
+   * worker's own stdout is the only place it lands.
+   */
+  private warnOnSkippedInstallOutput(commands: string[]): void {
+    let depDirs: string[];
+    try {
+      depDirs = resolveShipitConfig(this.workspaceDir).agent.depDirs;
+    } catch {
+      return; // Unreadable/invalid config — a skip is not the place to report that.
+    }
+    const warning = installSkipOutputWarning(commands, depDirs);
+    if (!warning) return;
+    console.warn(warning);
+    this.broadcastSSE({ type: "install_log", data: { text: `${warning}\n`, stream: "stderr" } });
   }
 
   /**

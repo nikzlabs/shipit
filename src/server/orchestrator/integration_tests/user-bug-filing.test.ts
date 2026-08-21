@@ -43,12 +43,20 @@ describe("Integration: user bug filing", () => {
   let sessionManager: SessionManager;
   let githubAuthManager: StubGitHubAuthManager;
   let sessionId: string;
+  /**
+   * nikzlabs/shipit#2350 — every agent the app spawned, so a test can read the prompt the
+   * outcome wake-turn actually delivered. The signal is only real if it reaches
+   * the AGENT; asserting on the WS card alone would pass while the agent stayed
+   * uninformed, which is the whole defect.
+   */
+  let agents: FakeClaudeProcess[];
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "user-bug-filing-"));
     sessionManager = new SessionManager(dbManager);
     credentialStore = createTestCredentialStore(tmpDir);
+    agents = [];
     githubAuthManager = new StubGitHubAuthManager();
     await githubAuthManager.setToken("test-token"); // authenticate as test-user
 
@@ -57,7 +65,11 @@ describe("Integration: user bug filing", () => {
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
-      agentFactory: () => new FakeClaudeProcess() as unknown as never,
+      agentFactory: () => {
+        const agent = new FakeClaudeProcess();
+        agents.push(agent);
+        return agent as unknown as never;
+      },
       credentialStore,
       databaseManager: dbManager,
       workspaceDir: tmpDir,
@@ -279,6 +291,381 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
+  /**
+   * nikzlabs/shipit#2350 — the consent gate used to swallow its own result. The user still
+   * decides; the agent is now told what they decided, so it can stop describing
+   * a filed report as pending and can cite the issue it produced.
+   *
+   * Delivery is a PREFIX on the user's next turn, never a turn of its own:
+   * filing a bug is a side errand, and waking the session to announce what the
+   * card on screen already says would interrupt both of them for nothing.
+   */
+  it("tells the agent the report was filed, with the issue number and URL, on the next user turn", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+    await settle();
+
+    // Resolving the card must not start a turn of its own. In this harness a
+    // turn of any kind has to spawn an agent, so an empty list is the strongest
+    // possible statement that nothing woke the session.
+    expect(agents).toHaveLength(0);
+
+    // The user speaks next; the outcome rides in front of their words.
+    const prompt = await sendUserTurn(client, () => agents, "What is left to do?");
+    expect(prompt).toContain("FILED as issue #1234");
+    expect(prompt).toContain("nikzlabs/shipit/issues/1234");
+    expect(prompt).toContain("Preview won't reload");
+    // The user's own message is still there, and still last.
+    expect(prompt.endsWith("What is left to do?")).toBe(true);
+
+    client.close();
+  });
+
+  it("delivers the outcome exactly once — the turn after that is clean", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    const first = await sendUserTurn(client, () => agents, "First");
+    expect(first).toContain("FILED as issue #1234");
+
+    const second = await sendUserTurn(client, () => agents, "Second");
+    expect(second).not.toContain("FILED as issue");
+    expect(second).toBe("Second");
+
+    client.close();
+  });
+
+  it("says nothing when filing failed — the report really is still pending", async () => {
+    githubAuthManager.setCreateIssueResult({
+      success: false,
+      scopeError: true,
+      message: "Your GitHub token can't file issues on the ShipIt repo.",
+    });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_failed");
+
+    // A failed filing leaves the card back at `draft`, so there is no outcome
+    // to report — the next turn carries the user's words and nothing else.
+    const afterFailure = await sendUserTurn(client, () => agents, "Carry on");
+    expect(afterFailure).toBe("Carry on");
+
+    // Liveness: the negative above must not be able to pass merely because the
+    // notice path is broken. The user fixes their token and resubmits, and the
+    // very same harness does deliver.
+    githubAuthManager.setCreateIssueResult(null);
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+    const afterSuccess = await sendUserTurn(client, () => agents, "And now?");
+    expect(afterSuccess).toContain("FILED as issue #1234");
+
+    client.close();
+  });
+
+  it("persists a dismissal and tells the agent the report was declined", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    histMgr.finalizeInProgress(sessionId);
+
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    const dismissed = await client.receiveType("bug_report_dismissed");
+    expect((dismissed as { cardId: string }).cardId).toBe(card.cardId);
+
+    // Nothing was filed — Cancel is not a quiet submit.
+    expect(githubAuthManager.createIssueCalls).toHaveLength(0);
+
+    // The decision is durable: a reload must not resurrect an editable draft.
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    expect(cardsAfter).toHaveLength(1);
+    expect(cardsAfter[0]?.phase).toBe("dismissed");
+
+    await settle();
+    expect(agents).toHaveLength(0); // a decline wakes nobody either
+
+    const prompt = await sendUserTurn(client, () => agents, "Anything else?");
+    expect(prompt).toContain("DECLINED by the user");
+    expect(prompt).toContain("Preview won't reload");
+
+    client.close();
+  });
+
+  /**
+   * The stale-`recordedCards` path, which the plain post-turn test cannot reach:
+   * a card proposed MID-TURN is recorded on the runner, and that snapshot is
+   * cleared only at the next turn start — so once the proposing turn finalizes,
+   * the recorded copy still says `draft` while the DB says `filed`. A Cancel
+   * that trusted the recorded copy would overwrite a real success with a
+   * decline and tell the agent a filed report was declined.
+   */
+  it("ignores a Cancel after filing even when the proposing turn left a stale recorded draft", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    const runner = (app as unknown as {
+      runnerRegistry: { get(id: string): SessionRunnerInterface | undefined };
+    }).runnerRegistry.get(sessionId)!;
+
+    // Propose while a turn is running → the product code records the card on
+    // the runner. Capture that real entry; it is the snapshot the bug hinges on.
+    runner.running = true;
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    const draftSnapshot = runner.recordedCards.find((c) => c.message.bugReport?.cardId === card.cardId);
+    expect(draftSnapshot?.message.bugReport?.phase).toBe("draft");
+    const staleEntry = structuredClone(draftSnapshot!);
+
+    // The proposing turn ends. `recordedCards` is cleared only at the NEXT turn
+    // start, so the draft snapshot outlives the turn and goes stale.
+    runner.running = false;
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    // Reinstate that stale snapshot — a real proposing turn simply leaves it
+    // behind, and only the NEXT turn's start clears it.
+    runner.recordedCards = [staleEntry];
+    expect(runner.recordedCards[0].message.bugReport?.phase).toBe("draft");
+
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    // The success stands: not rewritten to a decline, issue link not dropped.
+    expect(cardsAfter[0]?.phase).toBe("filed");
+    expect(cardsAfter[0]?.issueUrl).toContain("nikzlabs/shipit/issues/1234");
+    // And the agent is never told a filed report was declined.
+    const prompt = await sendUserTurn(client, () => agents, "Status?");
+    expect(prompt).not.toContain("DECLINED");
+    expect(prompt).toContain("FILED as issue #1234");
+
+    client.close();
+  });
+
+  /**
+   * The recorded-patch path: the card is resolved WHILE its proposing turn is
+   * still running, so `persistCardTransition` patches `recordedCards` rather
+   * than the DB row. The outcome must still reach the next turn — this is the
+   * interaction the clobber concern is about, and it was previously untested.
+   */
+  it("delivers an outcome that was resolved mid-turn, after that turn finalizes", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    const runner = (app as unknown as {
+      runnerRegistry: { get(id: string): SessionRunnerInterface | undefined };
+    }).runnerRegistry.get(sessionId)!;
+
+    runner.running = true;
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    // Confirmed mid-turn → the recorded snapshot is patched, not the DB row.
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+    expect(
+      runner.recordedCards.find((c) => c.message.bugReport?.cardId === card.cardId)?.message.bugReport
+        ?.phase,
+    ).toBe("filed");
+
+    // The proposing turn finalizes from that patched snapshot.
+    runner.running = false;
+    histMgr.replaceInProgress(
+      sessionId,
+      buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.recordedCards, {
+        inProgress: false,
+      }),
+    );
+    histMgr.finalizeInProgress(sessionId);
+
+    const prompt = await sendUserTurn(client, () => agents, "Now what?");
+    expect(prompt).toContain("FILED as issue #1234");
+
+    client.close();
+  });
+
+  it("holds the outcome back on /compact, so the next real turn still gets it", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    // A maintenance command must not be handed a status line to react to —
+    // and skipping the consume (rather than consuming and dropping) is what
+    // keeps the outcome available afterwards.
+    const compact = await sendUserTurn(client, () => agents, "/compact");
+    expect(compact).not.toContain("FILED as issue");
+
+    const real = await sendUserTurn(client, () => agents, "Carry on");
+    expect(real).toContain("FILED as issue #1234");
+
+    client.close();
+  });
+
+  /**
+   * Terminal in both directions. A second tab that never saw the dismissal must
+   * not be able to file a report the user declined — the issue is public and
+   * filed under their name, and the agent has already been told it never would
+   * be.
+   */
+  it("refuses a Submit for a card the user already declined", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    histMgr.finalizeInProgress(sessionId);
+
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    await client.receiveType("bug_report_dismissed");
+
+    // The stale tab submits anyway.
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_dismissed"); // re-asserted, not filed
+    expect(githubAuthManager.createIssueCalls).toHaveLength(0);
+
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    expect(cardsAfter[0]?.phase).toBe("dismissed");
+
+    const prompt = await sendUserTurn(client, () => agents, "Status?");
+    expect(prompt).toContain("DECLINED by the user");
+    expect(prompt).not.toContain("FILED as issue");
+
+    client.close();
+  });
+
+  it("does not file twice when a stale tab re-submits an already-filed card", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    histMgr.finalizeInProgress(sessionId);
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    // The stale client is re-told the state it missed, and no second issue exists.
+    const second = (await client.receiveType("bug_report_filed")) as { number: number };
+    expect(second.number).toBe(1234);
+    expect(githubAuthManager.createIssueCalls).toHaveLength(1);
+
+    client.close();
+  });
+
+  it("refuses a dismissal naming an unknown card", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    client.send({ type: "dismiss_bug_report", cardId: "bug-card-does-not-exist" });
+    const err = (await client.receiveType("error")) as { message: string };
+    expect(err.message).toMatch(/unknown bug report card/i);
+    // No phantom collapse, and nothing to tell the agent about a card nobody
+    // proposed.
+    const prompt = await sendUserTurn(client, () => agents, "Carry on");
+    expect(prompt).toBe("Carry on");
+
+    client.close();
+  });
+
+  it("ignores a Cancel that arrives after the report was already filed", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    await new Promise((r) => setTimeout(r, 150));
+
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    expect(cardsAfter[0]?.phase).toBe("filed");
+
+    client.close();
+  });
+
   it("rejects a draft with an empty body", async () => {
     const res = await app.inject({
       method: "POST",
@@ -288,3 +675,38 @@ describe("Integration: user bug filing", () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+/** Let any dispatch that was going to happen happen, so an empty list means something. */
+async function settle(ms = 200): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Send a user message and return the prompt the agent actually received —
+ * which is where the outcome notice has to appear, since the point of the
+ * feature is that the AGENT is told, not that a card changed on screen.
+ */
+async function sendUserTurn(
+  client: TestClient,
+  getAgents: () => FakeClaudeProcess[],
+  text: string,
+  timeoutMs = 5000,
+): Promise<string> {
+  const before = getAgents().length;
+  client.send({ type: "send_message", text });
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const spawned = getAgents()[before];
+    if (spawned?.runCalled) {
+      // End the turn so a following `sendUserTurn` starts a fresh agent instead
+      // of queueing behind this one.
+      spawned.emit("done", 0);
+      await new Promise((r) => setTimeout(r, 50));
+      return spawned.lastPrompt;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`no agent spawned for user turn ${JSON.stringify(text)}`);
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}

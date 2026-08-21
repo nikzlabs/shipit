@@ -42,6 +42,26 @@
 - [x] `shipit-docs/bug-filing.md` agent-facing doc + README index entry
 - [x] Update `docs/023` (redaction engine now exists) cross-ref
 
+## Outcome signal back to the agent (nikzlabs/shipit#2350)
+- [x] Resolving a card **never wakes the session** — filing a bug is a side errand, and a turn announcing what the card on screen already says would distract both the user and the agent
+- [x] The outcome rides as a short `[ShipIt]` prefix on the user's next turn (`consumeUnreportedBugOutcomes` → `buildBugOutcomeNotice` → the `agentPrefix` in `agent-execution.ts`, beside docs/221's `pendingAgentNotice`), carrying the title and the issue **number and URL**
+- [x] Told **once**: read-and-mark in one transaction via a persisted `agentNotified` flag on the card — on the card, not in the single last-write-wins `pendingAgentNotice` slot, which would clobber a branch notice and could not carry two reports resolved between turns
+- [x] Filing **failure** says nothing: the report is still pending, which is the state the agent already believes; silence is therefore meaningful
+- [x] Cancel is a server round-trip (`dismiss_bug_report`), not local component state — persists terminal `phase: "dismissed"` via `persistCardTransition` (clobber-free while the proposing turn is in flight) and echoes `bug_report_dismissed` to every viewer
+- [x] Declined card reports "declined; nothing filed" and that the card is resolved, so an unrelated second report isn't held back
+- [x] A Cancel arriving after a successful filing is ignored, never rewriting a terminal success
+- [x] `ChatHistoryManager.getBugReportCard` — read-side lookup so the dismiss handler can name the card in the wake prompt
+- [x] `findBugCard` picks the authoritative source by `runner.running` (matching `persistCardTransition`'s write discriminator) and treats the card as terminal if **either** source says so — a post-turn `recordedCards` snapshot is inert and stale, so reading it first let a late Cancel overwrite a `filed` card, drop the issue URL, and tell the agent a filed report was declined
+- [x] A dismissal naming an unknown card is refused, not silently collapsed
+- [x] The terminal guard is **symmetric**: Submit re-checks the phase too, so a stale tab can neither file a report the user declined nor file the same report twice — it is re-told the state it missed instead
+- [x] Non-system **dispatched** turns (Agent Interface SDK clicks, `shipit session message`) consume the outcome too, so a programmatically-driven session is told; system turns stay excluded. Delivered via the optional `SystemTurnDeps.consumeBugOutcomes` (the docs/221 `consumePendingAgentNotice` pattern), so a minimal setup that wires no consumer is a no-op rather than a turn that dies during setup
+- [x] `persistCardTransition` gates its in-flight branch on `hasInProgress` rather than `runner.running` — closing a pre-existing turn-startup window where a resolution patched the previous turn's stale snapshot and was then deleted by the new turn's `replaceInProgress` (also fixes the submit path, docs/172 egress and docs/177 issue-write)
+- [x] Robustness: an unparseable `bug_report` row is skipped rather than breaking every user turn; the notice's title is whitespace-flattened and length-capped so it cannot forge lines inside ShipIt's own block; `buildBugOutcomeNotice`'s `phase` is a two-value union so a non-terminal card cannot render as DECLINED
+- [x] Partial index `idx_messages_bug_report ON messages(session_id) WHERE bug_report IS NOT NULL` — the per-turn probe is O(cards), not O(session history)
+- [x] Agent-facing copy states delivery is best-effort: "pending" is the sensible default, not a certainty
+- [x] Agent-facing copy updated so silence is learnable: `prompts/skeleton.md`, `shipit-docs/bug-filing.md`, the `report_shipit_bug` tool description, and the relay's return message
+- [x] Tests assert the prompt the AGENT received, and that resolving a card spawns no turn at all: the filed prefix carries #N + URL and leaves the user's words last, the prefix appears exactly once, a decline is reported, a failure says nothing (with a liveness resubmit), post-filing Cancel ignored including against a stale recorded draft, unknown card refused, an outcome resolved MID-TURN still delivered after that turn finalizes, `/compact` holds it back for the next real turn, Submit-after-dismiss refused, double-Submit files once (`user-bug-filing.test.ts`); `consumeUnreportedBugOutcomes` unit tests (once-only across a manager restart, non-terminal ignored, two cards both reported, session-scoped); the `persistCardTransition` turn-startup window (`chat-card-persistence.test.ts`); store terminal-dismissed guard; card reports Cancel to the server and stays collapsed after a reload
+
 ## Follow-ups (not blockers for the in-product flow)
 - [ ] Maintainer-side GitHub Action on `nikzlabs/shipit` to apply real `user-reported` / `source:*` labels from the `<!-- shipit-report … -->` body marker (lives in the upstream repo, not this codebase)
 - [ ] docs/023 full session export consumes the shared Stage-1 redactor (un-pause that doc when picked up)

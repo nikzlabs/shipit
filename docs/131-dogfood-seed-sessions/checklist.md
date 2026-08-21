@@ -1,7 +1,130 @@
 # 131 — Dogfood seed sessions: checklist
 
 Implemented and smoke-tested end to end on a real dogfood stack (2026-08-04),
-with a real agent turn. Nothing outstanding.
+with a real agent turn. Credential seeding (reqs 11–12) added and smoke-tested
+the same way 2026-08-11. Role seeding added and smoke-tested the same way
+2026-08-19. Nothing outstanding.
+
+## Role seeding (2026-08-19)
+
+- [x] `scripts/seed-inner-roles.ts` — a committed set of role *recipes*
+      ("the primary harness at its highest level"), resolved against
+      `GET /api/bootstrap`'s `settings.agents` rather than hardcoded, so no
+      seeded role is stranded by an install whose secrets differ.
+- [x] `deep-dive` (highest level, description + standing instructions),
+      `quick-look` (lowest level, description only), `second-opinion` (a second
+      harness where the install runs two, at `Default`).
+- [x] One deliberately-unavailable role — decided yes, and **derived**: the
+      first catalogue entry a runnable harness can speak to that this install
+      holds no credential for. `disconnected` is the only unavailable state that
+      is seedable at all (`stranded` is refused on save, `quota_exhausted` is a
+      routing state).
+- [x] `reviewer` never written — its params are ShipIt's to resolve
+      (docs/264-agent-roles req 2), so naming it could only produce a 400.
+      Excluded unconditionally, not merely when the settings read reports it.
+- [x] Same contract as its siblings: skip-what-is-present keyed on the role
+      NAME, exit 0 on any failure, `DOGFOOD_SEED=0`, plus `DOGFOOD_SEED_ROLES=0`.
+- [x] One `PUT /api/settings` per role rather than one batched write —
+      `applyRoleWrites` validates a whole batch before writing any of it, so a
+      batch would let one refused role take the good ones down with it.
+- [x] `scripts/seed-inner.ts` — the three seeders collapsed behind one entry
+      point compose names, which owns the step order and the reason for it. Adds
+      one guarantee: a step that throws does not cancel the ones after it.
+- [x] `scripts/seed-inner-roles.test.ts` + `scripts/seed-inner.test.ts` —
+      resolution, the derived unavailable role, idempotency, the failure
+      contract, the step order, and the guard that compose actually runs the
+      entry point (an unwired seeder is invisible in logs that exit 0).
+- [x] Smoke-tested on the real `dev` service: cleared the roles, recreated the
+      service, confirmed `[seed] roles: … added` at boot and a second boot
+      reporting "every seeded role is already present". Confirmed in the inner
+      UI that all four appear in Settings → Roles with `needs-a-credential`
+      marked "Service disconnected", and that the composer's role menu offers
+      them with that one greyed out.
+- [x] `.claude/skills/dogfooding-shipit/SKILL.md` — the seeding section now
+      names three steps and one entry point, and says what the seeded roles are
+      for and why one of them is deliberately broken.
+- [x] Cross-agent review by Codex (2026-08-19) — no bugs. It checked the
+      install-agnosticism of the resolution (one harness, no credentials, a
+      harness declaring no levels, an oddly-ordered eligible list), and
+      established from the server's own validator that no tuple
+      `planUnavailableRole` can produce is refusable on save (`purpose: "save"`
+      skips the credential check, and every other check is satisfied by
+      construction because the values came from `catalogueEntriesForHarness`).
+- [x] Acted on the one property it named: `needs-a-credential` is **not**
+      re-derived once it exists, so connecting its service later turns it into
+      an ordinary working role. That is the right contract — re-deriving would
+      break req 4 for every role — but its description is written in the past
+      tense ("held no credential for **when it was seeded**") so it stays true
+      when that happens instead of contradicting its own badge.
+- [x] `quick-look`'s description says what the recipe actually varies — the
+      reasoning level, not the model. It said "fast and cheap" first, which was
+      false: the recipe often lands on the same model `deep-dive` uses, and
+      docs/264-agent-roles req 19 makes the description something the agent
+      reads and acts on.
+
+## Credential seeding (reqs 11–12)
+
+- [x] Established from the code, before building, that a declared env key does
+      **not** already materialise as a credential route: `listConfiguredCredentials`
+      (`service-routing.ts`) reads raw env so models are *eligible*, but
+      `listCredentialRoutes` (`services/credential-routes.ts`) reads the store
+      only, `stringSelectionFor` reaches an env credential only as a last resort
+      with no row to bench or order, and `LimitsRegistry` has no route id to
+      attach a reader to. So the missing half had to be built — case B.
+- [x] `scripts/seed-inner-credentials.ts` — catalogue-driven
+      (`credentialStorageEnvNames` + `credentialModeForStorageEnv`), no
+      per-service branch. POSTs `/api/credential-routes` so the store, the SSE
+      and any open inner UI all update.
+- [x] Same contract as the repo seeder: fail-open, always exits 0, skips a mode
+      that already holds a string credential, `DOGFOOD_SEED=0` plus
+      `DOGFOOD_SEED_CREDENTIALS=0`, `[seed]`-prefixed output.
+- [x] `docker-compose.yml` — all eight catalogue credential names declared;
+      both seeders share one backgrounded subshell, credentials first.
+- [x] Guard test: `x-shipit-secrets` is asserted against
+      `credentialStorageEnvNames()` in both directions, so a new service fails
+      the build naming the missing key.
+- [x] Cross-agent review (Codex, 2026-08-11). Four findings folded in: the
+      failed-discovery duplication path (a lost GET now aborts the run instead
+      of POSTing blind), the over-strict reverse compose assertion (dropped),
+      the wrong non-turn billing mechanism, and the overstated quota claim. One
+      finding — "a seeded route is unusable until restart" — was **refuted**;
+      see below.
+- [x] Billing hazards established from the code and surfaced rather than hidden.
+      Two of them: background work follows `firstEligibleNonTurnSelection`, so
+      any metered key can become what it spends on (observed live: with only
+      DeepSeek set, Background work reads "DeepSeek · V4 Flash"); and the three
+      vendor-native names bypass a connected account on an *unshaped* spawn with
+      no account route. The first draft's mechanism — "`spawnSubAgent` passes no
+      `resolveHome`" — was wrong: `systemTurnDeps.agentFactory` prefers
+      `runner.createAgent`, which local mode binds with `resolveLocalAgentHome`.
+      Corrected in `plan.md`, the seed warning, and the skill.
+
+## Manual smoke (2026-08-11, `dev` service in production ShipIt)
+
+- [x] **req 11** — first boot with `DEEPSEEK_API_KEY` set as an outer secret:
+      `[seed] credentials: DEEPSEEK_API_KEY — added as deepseek:key`. Nothing
+      was configured in the inner UI.
+- [x] **req 12** — inner Settings → Services renders a full DeepSeek card:
+      "DeepSeek key (dogfood secret)" with Replace/Remove and its two models,
+      identical to a hand-added credential. `GET /api/credential-routes`
+      returns a real `cred_…` row, `via: "string"`, `status: "ready"`.
+- [x] **req 12, `sub` mode** — seeded a throwaway `ZAI_CODING_PLAN_KEY` against
+      the live inner orch: `zai:sub` renders as a Subscription card with the
+      failover copy. This is the shape `planning#339`'s quota reader attaches
+      to. Removed afterwards.
+- [x] **req 4** — restarting the dev service logged
+      `deepseek:key already has a credential, leaving it alone`, and
+      `/api/credential-routes` still had exactly one row.
+- [x] **A seeded credential authenticates a real turn — no restart needed.**
+      The check the first smoke run missed, and the one the review predicted
+      would fail. A headless inner session pinned to
+      `deepseek:key / deepseek-v4-flash` logged
+      `route=reserved:cred_eccfbb97-…` and
+      `[claude] service routing: deepseek/key -> https://api.deepseek.com/anthropic`,
+      and answered. The delivery path is `applyLocalMcp` → `localMcpSpawnEnv` →
+      `selectAgentEnvForPush`, which applies `SHIPIT_CREDENTIAL_*` to
+      `process.env` around each spawn, read live from the store — so the boot-only
+      `app-di` seeding (which filters that prefix out anyway) is not the path.
 
 ## Manual smoke (2026-08-04, `dev` service in production ShipIt)
 
@@ -68,7 +191,7 @@ with a real agent turn. Nothing outstanding.
       exists and does the rest.
 - [x] Shared with the WS path rather than reimplemented:
       `services/materialize-runner.ts` holds the archived guard, the agent
-      reconciliation and the SHI-179 workspace restore; `activateSession` and
+      reconciliation and the planning#181 workspace restore; `activateSession` and
       the dispatch route both call it.
 - [x] Checked the other `/agent/dispatch` callers before relaxing the 404. The
       only ones are client buttons (`client/utils/dispatch-agent-message.ts` →

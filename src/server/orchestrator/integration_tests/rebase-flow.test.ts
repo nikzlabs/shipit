@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
@@ -275,6 +275,30 @@ describe("rebase flow: API + WS events", () => {
     second.finish("test-session-1");
   });
 
+  // planning#369 — the whole point of the rebase is to clear GitHub's
+  // `CONFLICTING` state, and the PR card renders straight off the poller's
+  // `mergeable`. The route never told the poller anything, so the "Merge
+  // conflicts" chip and the "Resolve conflicts" button outlived the fix by up to
+  // a slow tick (120s) — and forever while the polling gate was closed. This
+  // asserts the ROUTE wires the poller through; the driver's own behaviour
+  // (which calls, in which order, on which paths) is in rebase-driver.test.ts.
+  it("clean rebase — the route makes the poller re-read the PR it just un-conflicted", { timeout: 20_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    setupDivergence(sessionDir, { conflicting: false });
+
+    const poller = app.prStatusPoller;
+    if (!poller) throw new Error("buildApp did not decorate a PR status poller");
+    const notifyAutoPush = vi.spyOn(poller, "notifyAutoPush");
+    const forceRefresh = vi.spyOn(poller, "forceRefreshSession").mockImplementation(async () => {});
+
+    expect((await postRebase(sessionId, "main")).status).toBe(200);
+    await waitForMessage("rebase_complete", 8_000);
+
+    expect(notifyAutoPush).toHaveBeenCalledWith(sessionId);
+    expect(forceRefresh).toHaveBeenCalledWith(sessionId);
+  });
+
   it("up-to-date branch — emits rebase_complete without rebase_started", { timeout: 20_000 }, async () => {
     const { sessionId, sessionDir } = await createSession();
 
@@ -336,31 +360,34 @@ describe("rebase flow: API + WS events", () => {
     expect(finalContent).toContain("merged");
   });
 
-  // docs/150 reqs 13, 20 — the conflict-resolution turn is a system turn on the
-  // shared dispatch path (`runner.dispatch` → `runDispatchedTurn` →
-  // `executeAgentTurn`), so it takes the same provider-account preflight a
-  // user-typed turn does. It hand-rolled its own agent lifecycle before
-  // docs/169; if it ever does again, an exhausted subscription would be
-  // discovered by the provider mid-resolution — with a rebase in progress and
-  // conflict markers in the tree — instead of before the spawn.
-  //
-  // Asserted as "the turn was stopped", not "the flow completed": no CLI
-  // receives the conflict prompt, and the failure names the reset time.
-  it("blocks the conflict-resolution turn when every connected account is out of quota", { timeout: 20_000 }, async () => {
+  // docs/260-turn-level-account-routing reqs 6, 9, 12 — the conflict-resolution turn is a system turn on
+  // the shared dispatch path (`runner.dispatch` → `runDispatchedTurn` →
+  // `executeAgentTurn`), so it takes the same per-turn account selection and
+  // attempt loop a user-typed turn does. Under docs/150 this scenario was a
+  // preflight block ("no CLI ever spawns"); docs/260 inverts it: refusal
+  // memory alone must never stop the turn (req 5) — the optimistic first
+  // selection still returns a refusal-blocked account (req 12) and the turn
+  // runs on it (req 9's try-once). Only after every account has actually
+  // refused THIS turn does the resolution fail — with the provider's own
+  // words (req 6) — and the rebase reports the failure instead of silently
+  // hanging on a resolution turn that will never happen.
+  it("still tries refusal-benched accounts for the conflict-resolution turn, aborting only after every account refuses (docs/260-turn-level-account-routing reqs 6, 9, 12)", { timeout: 20_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
     setupDivergence(sessionDir, { conflicting: true });
 
-    // Both connected Claude subscriptions are spent by the time the rebase
-    // needs an agent (the persisted hard-exhaustion stamp, req 7).
+    // Both connected Claude subscriptions carry refusal memory by the time the
+    // rebase needs an agent (`exhaustedUntil` + `exhaustedAt`, the shape
+    // `refusalBlockedUntil` honours).
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
     const resetAt = Date.now() + 45 * 60 * 1000;
     for (const label of ["Work", "Personal"]) {
-      const acct = accounts.create("claude", label);
-      accounts.setAccountStatus("claude", acct.id, "ready");
-      accounts.markAccountExhausted("claude", acct.id, resetAt);
+      const acct = accounts.create("anthropic", label);
+      accounts.setAccountStatus("anthropic", acct.id, "ready");
+      accounts.markAccountExhausted("anthropic", acct.id, resetAt);
     }
     const spawnedBefore = allClaudes.length;
+    const claudeBeforeRebase = latestClaude;
 
     const res = await postRebase(sessionId, "main");
     expect(res.status).toBe(200);
@@ -368,15 +395,29 @@ describe("rebase flow: API + WS events", () => {
     await waitForMessage("rebase_started");
     await waitForMessage("rebase_conflicts");
 
-    // The blocked turn surfaces req 13's message rather than an agent crash...
+    // reqs 9, 12 — the benched account is still TRIED: a CLI spawns and is
+    // handed the conflict prompt. Blocking here (the docs/150 behavior) is the
+    // regression this test now guards against.
+    const attempt1 = await waitForClaude(() => latestClaude, claudeBeforeRebase);
+    expect(attempt1.lastPrompt.length).toBeGreaterThan(0);
+
+    // The provider itself refuses → the attempt loop re-runs the resolution
+    // turn on the second account, same conflict prompt.
+    const quotaError = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
+    attempt1.emit("event", { type: "agent_result", error: quotaError, sessionId: "test-session-1" });
+    const attempt2 = await waitForClaude(() => latestClaude, attempt1);
+    expect(attempt2.lastPrompt).toBe(attempt1.lastPrompt);
+
+    // The second account refuses too — every candidate is in the turn's
+    // attempt ledger, so the turn fails with the provider's refusals (req 6)...
+    attempt2.emit("event", { type: "agent_result", error: quotaError, sessionId: "test-session-1" });
     const err = await waitForMessage("error", 8_000) as unknown as { message: string };
-    expect(err.message).toContain("out of quota");
-    expect(err.message).toContain(new Date(resetAt).toISOString().slice(0, 16));
-    // ...and the rebase reports the failure instead of silently hanging on a
-    // resolution turn that will never happen.
+    expect(err.message).toContain("Every connected account refused this turn for quota");
+    expect(err.message).toContain("usage limit");
+    // ...and the rebase reports the failure instead of hanging.
     await waitForMessage("rebase_aborted", 8_000);
-    // No CLI was ever handed the conflict prompt.
-    expect(allClaudes.slice(spawnedBefore).some((c) => c.runCalled)).toBe(false);
+    // The ledger bounds the loop: exactly one real attempt per account.
+    expect(allClaudes.slice(spawnedBefore).filter((c) => c.runCalled)).toHaveLength(2);
   });
 
   it("rebase abort endpoint — kills agent, restores tree, emits rebase_aborted", { timeout: 15_000 }, async () => {
@@ -418,5 +459,17 @@ describe("rebase flow: API + WS events", () => {
     // The original feature commit is restored.
     const log = execSync("git log --oneline", { cwd: sessionDir, env, encoding: "utf-8" });
     expect(log).toContain("Feature commit");
+
+    // planning#338 — the abort explicitly settles the resolution turn the flow was
+    // awaiting (the fake CLI's kill, like a container kill whose terminal SSE
+    // is dropped once the slot clears, never reports completion on its own).
+    // Without that settle the flow's session hold is never released and every
+    // later message queues forever. The proof is end-to-end: a new message
+    // must spawn a fresh agent turn, not sit in the queue.
+    const claudeAtAbort = latestClaude;
+    client.send({ type: "send_message", text: "after abort" });
+    const postAbortClaude = await waitForClaude(() => latestClaude, claudeAtAbort);
+    postAbortClaude.emit("event", { type: "system", subtype: "init", session_id: "test-session-post-abort" });
+    postAbortClaude.finish("test-session-post-abort");
   });
 });

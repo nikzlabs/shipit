@@ -4,6 +4,10 @@ import { composeEgressExtraHosts, composeEgressIdentityRules, sandboxLifelineEgr
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
 import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
+import { assertWorkerUidNotReserved, sealLegacySessionDirs, sessionWorkerGid } from "./session-worker-uid.js";
+import { assertSessionUidRange, configureSessionUidLedger } from "./session-uid-allocator.js";
+import { configureSessionIdentityRoots } from "../shared/session-identity.js";
+import { perSessionCredentialsRoot } from "./session-credentials-scaffold.js";
 import { resolveBuildId, resolveVersion } from "./build-id.js";
 import { getUpdateMode } from "./services/updates.js";
 import { readChannel } from "./release-channel.js";
@@ -86,6 +90,30 @@ export type {
  *   6. `route-registry.ts` — register HTTP routes + the WebSocket route
  */
 export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
+  // docs/263 — refuse a SHIPIT_SESSION_WORKER_UID that collides with an egress
+  // sidecar uid (911/912) BEFORE anything else runs. The netns firewall exempts
+  // those uids by owner-match, so a workload holding one runs exempt from the
+  // tier that names it — the agent container and the plugin containers share
+  // that arrangement, which is why the refusal lives at the shared parse site
+  // rather than on either path.
+  //
+  // First statement in the composition root, ahead of `initializeManagers`,
+  // because that step migrates the database, adopts environment credentials and
+  // writes the global gitconfig — a boot we are about to refuse must not mutate
+  // durable state first. It also pre-empts `initGlobalGitConfig`, which parses
+  // the same variable (`git-config.ts:59`) and would otherwise throw the same
+  // error from a call that does not explain itself. Unconditional, unlike the
+  // drift guard below, which needs the containerized state dir.
+  assertWorkerUidNotReserved();
+
+  // docs/270 — the same shape, for the range per-session uids are allocated from.
+  // The range cannot contain 911/912 as written, so this refusal only fires if
+  // the constants are edited into overlap — which is exactly when a silent
+  // failure would matter, since a session allocated one of them would run exempt
+  // from egress containment. Unconditional and next to the check above for the
+  // same reason: the property is of the constants, not of the deployment.
+  assertSessionUidRange();
+
   // Captured once at process startup so the client can render a live
   // uptime badge. This is the user's only signal that "Just Restart"
   // actually bounced the orchestrator — without it, a restart that
@@ -104,9 +132,38 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const mgrs = await initializeManagers(deps);
   const {
     egressAllowlistStore, credentialStore, runtimeMode, isTestMode, stateDir, sessionManager,
+    sessionsRoot, credentialsDir,
   } = mgrs;
 
-  // ---- Egress containment config resolver (docs/172, SHI-90) ----
+  // docs/270 — tell the identity resolver where per-session paths live, then
+  // seal the session directories that predate it.
+  //
+  // Ordering: this must precede anything that chowns inside a session, because
+  // every chown helper now asks this resolver whose the path is. It follows
+  // `initializeManagers` only because that is where the two roots are computed;
+  // nothing in that step writes into a session directory.
+  //
+  // Gated on the non-root runtime by `sealLegacySessionDirs` itself, and on the
+  // roots being configured by the resolver — so local mode, dogfood and every
+  // test keep exactly the behaviour they had.
+  // docs/270 — the allocation ledger, configured once. See the allocator's own
+  // note on why this is configured rather than threaded through the two
+  // functions that create a session directory.
+  configureSessionUidLedger(mgrs.databaseManager.db);
+  const sharedWorkerGid = sessionWorkerGid();
+  configureSessionIdentityRoots({
+    sessionsRoot,
+    credentialsSessionsRoot: perSessionCredentialsRoot(credentialsDir),
+    // What a session path resolves to when its directory carries no record —
+    // the seal did not run, or could not. Never the tree: that is writable from
+    // inside the session, which is the whole reason the record moved off it.
+    ...(sharedWorkerGid === null
+      ? {}
+      : { fallbackIdentity: { uid: sharedWorkerGid, gid: sharedWorkerGid } }),
+  });
+  if (!isTestMode) sealLegacySessionDirs(sessionsRoot);
+
+  // ---- Egress containment config resolver (docs/172, planning#92) ----
   // The single seam that turns the durable allowlist store + the live MCP
   // credential store + operator env extras into a per-session egress decision at
   // container start: whether to contain the session (global toggle / per-session
@@ -154,7 +211,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   }
 
   // ---- Fastify instance + transport middleware ----
-  const app = await createOrchestratorApp();
+  // `runtimeMode` is passed for the anti-framing policy (planning#379): every
+  // real deployment refuses to be framed, and the dogfood inner orchestrator
+  // (`RUNTIME_MODE=local`) does not, because the outer instance frames it.
+  const app = await createOrchestratorApp(undefined, runtimeMode);
 
   // ---- Managers + collaborator wiring (the DI block) ----
   const rt = await bootstrapManagers({

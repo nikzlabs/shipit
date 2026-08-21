@@ -1,0 +1,390 @@
+/**
+ * docs/272-user-selectable-roles — **the composer's role control.**
+ *
+ * A role is a complete unit the user configured once — a harness, a model, a
+ * reasoning level and standing instructions (docs/264). Until now only an agent
+ * could start one. This is the control that lets the user start one themselves.
+ *
+ * **It replaces rather than adds** (req 5). When a role is selected the harness,
+ * model and reasoning selectors come out of the row and the role's name stands
+ * where they were: those three are what the role is *made of*, and restating
+ * them tells the user nothing they did not just decide. So a row showing a role
+ * is SHORTER than today's, which is what keeps this compatible with docs/260's
+ * clipping group rather than adding to the width pressure it manages.
+ *
+ * **The mark appears only once the user has a role** (req 16), and with no label
+ * beside it. That is only legible because the same mark identifies roles in
+ * Settings, where they are created and where it is met with its name — neither
+ * half works without the other. `BaseballCapIcon` is the mark; it was chosen by
+ * rendering it against every neighbour in the row (the permission mode's
+ * `FastForward`, `Robot`, `Sparkle`, `Brain`) rather than in isolation, which is
+ * what killed the six earlier candidates.
+ *
+ * **Clicking the name opens the list of roles** (req 14), because every other
+ * control in this row opens what it chooses between and the role is not the one
+ * exception. The parameters it set are reached from *inside* that list, through
+ * "Adjust parameters…", and changing one of them leaves the role (req 15).
+ *
+ * **"No role" is the first entry in that list** (req 18). Changing a parameter
+ * leaves a role by changing what the session runs on, and that cannot express
+ * the case the user actually has: keep what the role set, drop the brief it
+ * carries. It is also the only way back to a plain session once a role has been
+ * selected, since the selection is remembered for the next one (req 12).
+ *
+ * **The session's first turn locks the choice of role and nothing else** (req 4).
+ * The control keeps opening; what it offers there is "Adjust parameters…" and no
+ * roles. The parameters are never *shown* on the row unasked, before the lock or
+ * after it — a role exists to make the row shorter, and a row that grows back at
+ * the first turn only makes that shortening temporary.
+ */
+
+import { useMemo } from "react";
+import { BaseballCapIcon, CaretDownIcon, LockIcon } from "@phosphor-icons/react";
+import { ICON_SIZE, INSET_FOCUS_RING } from "../../design-tokens.js";
+import { PickerOption } from "../pickers/Picker.js";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "../ui/dropdown-menu.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
+import type { RoleView } from "../../../server/shared/types/agent-types.js";
+
+/** The reserved reviewer, which is never offered to a user (req 10). */
+const RESERVED_ROLE_NAME = "reviewer";
+
+/**
+ * Why the control is locked (req 4) — the one wording, worn by trigger and
+ * wrapper alike.
+ *
+ * **It names what is still changeable, not only what is not**, in the shape
+ * `lockedHarnessReason` already uses ("Models stay switchable"). The first
+ * sentence alone was read as "this session's settings are frozen", which the
+ * menu-less pill of the first cut appeared to confirm. It no longer does: the
+ * locked pill opens, and this line is what the menu behind it leads with. A lock
+ * that states only a prohibition makes the user guess how far it reaches.
+ */
+export const ROLE_LOCKED_REASON =
+  "A role can only be chosen before the session's first message. "
+  + "The model and reasoning level it set stay changeable.";
+
+/**
+ * **The one appearance of "a role is in force"**, worn by both layouts.
+ *
+ * It exists as a constant for the reason `PICKER_TRIGGER_CLASS` does, and it was
+ * added for the same reason that one was: the two had already drifted. The wide
+ * row followed the approved prototype's tinted pill while the narrow anchor
+ * inherited docs/260's plain settings control, so the same state wore two faces
+ * depending on how wide the composer happened to be.
+ *
+ * Deliberately **appearance only** — colour, radius, padding, type. Layout
+ * belongs to each call site, because the two genuinely differ there and must:
+ * the wide row's control is `shrink-0`, while the narrow anchor is the row's one
+ * elastic item and has to truncate before anything else is clipped (docs/260
+ * req 8). Folding that in here would make one of them wrong.
+ *
+ * Guarded by a test asserting both triggers carry this string.
+ */
+const ROLE_PILL_BASE =
+  `items-center gap-1.5 rounded-full bg-(--color-accent-subtle) px-2.5 py-1 text-xs font-medium `
+  + `text-(--color-accent) ${INSET_FOCUS_RING}`;
+
+export const ROLE_PILL_CLASS =
+  `${ROLE_PILL_BASE} transition-colors hover:brightness-95 disabled:cursor-not-allowed `
+  + `disabled:opacity-50`;
+
+/**
+ * The same pill once the session has locked it (req 4) — **at full contrast.**
+ *
+ * A locked role is not a control the user must wait to use; it is the READOUT of
+ * what this session runs on, and it is that for the rest of the session's life.
+ * Wearing `disabled:opacity-50` — which it did, because `locked` was passed
+ * straight to the button's `disabled` — put the one permanent fact on the row at
+ * half the contrast of every transient one, and it was reported as unreadable.
+ *
+ * `disabled:*` is therefore absent rather than overridden: the button still
+ * carries the `disabled` attribute (nothing to press), and the dimming that
+ * attribute normally brings is what does not apply. Dimming stays for the
+ * genuinely transient case — a composer disabled mid-turn — because that state
+ * ends.
+ */
+export const ROLE_PILL_LOCKED_CLASS = `${ROLE_PILL_BASE} cursor-default`;
+
+/**
+ * …and its counterpart when no role is chosen: the mark alone, quiet, in the
+ * same tertiary weight the row's other icons use (req 16).
+ */
+export const ROLE_MARK_CLASS =
+  `items-center gap-1.5 rounded-lg p-1.5 text-xs font-medium text-(--color-text-tertiary) `
+  + `transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) `
+  + `disabled:cursor-not-allowed disabled:opacity-50 ${INSET_FOCUS_RING}`;
+
+/**
+ * One line saying why a role cannot be started, or `undefined` when it can.
+ *
+ * The three reasons are kept apart, exactly as Settings keeps them apart, because
+ * the remedy differs in each and collapsing them sends the user to the wrong
+ * place: only the first is the role's own fault (req 9).
+ */
+export function roleUnavailableDetail(role: RoleView): string | undefined {
+  switch (role.unavailableReason) {
+    case "stranded":
+      return "Needs fixing in Settings";
+    case "disconnected":
+      return "Its service is disconnected";
+    case "quota_exhausted":
+      return "Its quota is spent";
+    default:
+      return undefined;
+  }
+}
+
+/** What a role's row says about itself when it CAN run: its description, else what it runs. */
+function roleDetail(role: RoleView): string | undefined {
+  const unavailable = roleUnavailableDetail(role);
+  if (unavailable) return unavailable;
+  if (role.description) return role.description;
+  if (!role.resolved) return undefined;
+  return `${role.resolved.harnessName} · ${role.resolved.label}`;
+}
+
+/**
+ * The roles a user may pick, and whether there are any at all.
+ *
+ * Shared with the narrow layout's settings menu so the two cannot disagree about
+ * which roles exist or which of them can run — the same reason the harness and
+ * model pickers export their state.
+ *
+ * **The reviewer is filtered out here, once.** It resolves its params per run
+ * against whatever produced the work, so a session the user starts themselves
+ * gives that rule nothing to measure (req 10). It is also why `hasRoles` is not
+ * `roles.length > 0`: the reviewer exists on every install, including one where
+ * nobody has configured anything, so counting it would make req 16's condition
+ * permanently true and the rule dead on arrival.
+ */
+export function useRolePickerState(): {
+  roles: RoleView[];
+  hasRoles: boolean;
+} {
+  const allRoles = useSettingsStore((s) => s.roles);
+  const roles = useMemo(
+    () => allRoles.filter((role) => !role.reserved && role.name !== RESERVED_ROLE_NAME),
+    [allRoles],
+  );
+  return { roles, hasRoles: roles.length > 0 };
+}
+
+export function RoleSelector({
+  roles,
+  selectedRole,
+  onSelectRole,
+  onAdjustParameters,
+  disabled = false,
+  locked = false,
+}: {
+  roles: RoleView[];
+  /** The role in force, or undefined. Never derived from the parameters (req 13). */
+  selectedRole?: string | undefined;
+  /** A role by name, or `undefined` for "No role" (req 18). */
+  onSelectRole: (roleName: string | undefined) => void;
+  /**
+   * "Adjust parameters…" — bring the three controls the role replaced back into
+   * the row (req 15). Absent when no role is selected, because then they are
+   * already there.
+   */
+  onAdjustParameters?: (() => void) | undefined;
+  disabled?: boolean;
+  /**
+   * The session has taken its first turn, so no role can be CHOSEN any more
+   * (req 4) — not "no role applies": the role in force keeps its name, keeps
+   * setting what the session runs on, and keeps offering its parameters through
+   * `onAdjustParameters`.
+   *
+   * Rendered as the same lock the pinned harness uses. The caret beside it is
+   * drawn only while there is something to open, because a caret on a control
+   * that will never open is a lie the user has to click to discover.
+   */
+  locked?: boolean;
+}) {
+  // Nothing to offer and nothing in force: the row is exactly as it is today,
+  // not even an icon (req 16).
+  if (roles.length === 0 && !selectedRole) return null;
+
+  /*
+    req 4 + req 15 — **the lock takes the choice of role, and leaves the route to
+    what that role set.**
+
+    So a locked control still opens, and behind it there is exactly one thing:
+    "Adjust parameters…". No roles are listed, because the server refuses
+    `set_role` on a pinned session and a menu of unchoosable rows is a lie of a
+    second kind. Once the parameters have been asked for, `onAdjustParameters`
+    goes away, the menu would be empty, and the pill goes back to being a plain
+    readout — a caret is drawn where a click opens something and nowhere else.
+
+    That "nowhere else" is not decoration. `Picker.tsx` records the mechanism:
+    Radix binds the trigger on `pointerdown`, so a *disabled* button under a
+    `DropdownMenuTrigger` still opens its menu. A locked control that must not
+    open therefore cannot express it as a state on the trigger — the menu has to
+    be ABSENT, which is what the second branch below does.
+
+    The same mechanism means `disabled` (a turn running) does not stop THIS
+    branch opening either, and that is left alone: what is behind it changes
+    nothing, since revealing the parameters is a look rather than a setting, and
+    the pickers it reveals are themselves inert until the turn ends. The unlocked
+    trigger below has behaved this way since it shipped, so the two agree.
+
+    With no role in force there is nothing to read out either — the mark's whole
+    job is to offer the list (req 16) — so the control goes rather than sitting
+    there inert.
+  */
+  if (locked) {
+    if (!selectedRole) return null;
+    if (onAdjustParameters) {
+      return (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              disabled={disabled}
+              aria-label={`Role: ${selectedRole}`}
+              title={ROLE_LOCKED_REASON}
+              data-testid="role-selector-trigger"
+              className={`flex shrink-0 ${ROLE_PILL_CLASS}`}
+            >
+              <BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />
+              <span className="truncate">{selectedRole}</span>
+              {/* Both marks, and both earn their place: the lock says the role
+                  itself will not change, the caret says something still opens. */}
+              <LockIcon size={ICON_SIZE.XS} className="shrink-0" />
+              <CaretDownIcon size={ICON_SIZE.XS} className="shrink-0" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="top"
+            align="start"
+            className="w-64"
+            data-testid="role-selector-menu"
+          >
+            <DropdownMenuLabel>Role</DropdownMenuLabel>
+            {/* The lock states what it does NOT reach, in the shape
+                `lockedHarnessReason` uses. A lock naming only a prohibition is
+                what made "I cannot adjust the parameters" the natural reading. */}
+            <p className="px-3 pb-1.5 text-xs text-(--color-text-tertiary)">{ROLE_LOCKED_REASON}</p>
+            <DropdownMenuSeparator />
+            <PickerOption
+              label="Adjust parameters…"
+              detail="Show the harness, model and level this role set"
+              onSelect={onAdjustParameters}
+              testId="role-adjust-parameters"
+            />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      );
+    }
+    return (
+      /*
+        The `title` is on the WRAPPER, not only on the button, because Chrome
+        dispatches no mouse events to a disabled control and so shows no tooltip
+        for one — which would leave the lock stating a rule the user cannot read.
+        The button keeps its own copy for the browsers that do.
+      */
+      <span className="flex min-w-0" title={ROLE_LOCKED_REASON}>
+        <button
+          type="button"
+          disabled
+          aria-label={`Role: ${selectedRole}`}
+          title={ROLE_LOCKED_REASON}
+          data-testid="role-selector-trigger"
+          className={`flex shrink-0 ${ROLE_PILL_LOCKED_CLASS}`}
+        >
+          <BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />
+          <span className="truncate">{selectedRole}</span>
+          <LockIcon size={ICON_SIZE.XS} className="shrink-0" />
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={selectedRole ? `Role: ${selectedRole}` : "Choose a role"}
+          title={selectedRole ? `Role: ${selectedRole}` : "Choose a role"}
+          data-testid="role-selector-trigger"
+          /*
+            **Not the shared `PickerTrigger`, and the difference is the point.**
+            The other three controls in this row each report ONE value; this one
+            reports that the session is running a named configuration, and when
+            it does it stands where all three of them were. Rendering it as a
+            fourth identical trigger would say "here is a fourth setting", which
+            is the reading req 5 exists to prevent. So the selected state is a
+            tinted pill and the empty state is the mark alone.
+
+            What IS shared is the menu below it — the same `PickerOption` rows
+            every other picker uses — which is where docs/261 req 13's "learn one,
+            learn all" actually lives: the thing the user operates.
+          */
+          className={`flex shrink-0 ${selectedRole ? ROLE_PILL_CLASS : ROLE_MARK_CLASS}`}
+        >
+          <BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />
+          {/*
+            req 16 — with no role selected the control is the mark and NOTHING
+            else: no label, and no caret either. A caret would be chrome on a
+            9px-wide control, and the empty state is stable (unlike the value
+            triggers, whose caret is kept through every disable so the row does
+            not jump).
+          */}
+          {selectedRole && <span className="truncate">{selectedRole}</span>}
+          {selectedRole && <CaretDownIcon size={ICON_SIZE.XS} className="shrink-0" />}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="top" align="start" className="w-64" data-testid="role-selector-menu">
+        <DropdownMenuLabel>Role</DropdownMenuLabel>
+        {/* req 18 — the way to select none, and what the list shows as chosen
+            while none is in force. First, because it is the state every other
+            row is a departure from. */}
+        <PickerOption
+          label="No role"
+          detail="Run this session without a role's standing instructions"
+          selected={!selectedRole}
+          onSelect={() => onSelectRole(undefined)}
+          testId="role-option-none"
+        />
+        {roles.map((role) => {
+          const unavailable = roleUnavailableDetail(role);
+          const detail = roleDetail(role);
+          return (
+            <PickerOption
+              key={role.name}
+              label={role.name}
+              {...(detail ? { detail } : {})}
+              selected={role.name === selectedRole}
+              // req 9 — shown, not hidden. A role the user configured vanishing
+              // reads as a fault in ShipIt; a role that says why it cannot run
+              // reads as the truth it is.
+              disabled={Boolean(unavailable)}
+              onSelect={() => onSelectRole(role.name)}
+              testId={`role-option-${role.name}`}
+            />
+          );
+        })}
+        {onAdjustParameters && (
+          <>
+            <DropdownMenuSeparator />
+            <PickerOption
+              label="Adjust parameters…"
+              detail="Show the harness, model and level this role set"
+              onSelect={onAdjustParameters}
+              testId="role-adjust-parameters"
+            />
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}

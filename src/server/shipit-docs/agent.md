@@ -1,27 +1,59 @@
 # Sub-agents — `shipit agent run`
 
-`shipit agent run` spawns **another** registered agent for a one-shot sub-task
-and gives you its final text back, synchronously, in the same turn. Use it when
-the user wants a second model's eyes or hands — "review this with Codex", "ask
-Claude to draft the migration" — without you leaving the session or surrendering
-the session's pinned agent.
+`shipit agent run` spawns **another** agent for a one-shot sub-task and gives you
+its final text back, synchronously, in the same turn. Use it when the user wants
+a second model's eyes or hands — "review this", "ask another model to draft the
+migration" — without you leaving the session or surrendering the session's
+pinned agent.
 
-This is a generic delegation primitive, not a review tool: you spawn any
-registered agent with any prompt and read its text back. Review is just the most
-common prompt shape.
+This is a generic delegation primitive with a review path built into it. **What
+a run executes on is named by a ROLE** — a unit the user configured in ShipIt's
+Settings, which already holds the harness, the model and the reasoning level. All
+you supply is the name:
+
+- **`--role reviewer`** asks for a review and lets ShipIt pick the reviewer, from
+  settings the user owns. This is the normal case.
+- **`--role NAME`** starts any other role the user configured. `shipit agent
+  roles` lists what this install has.
+- **A parameter the user asked to change rides alongside** — `--role deep-dive
+  --model X`. The role supplies everything you did not name. **Relay** an
+  override the user asked for; never **decide** one yourself.
+
+If the role you need does not exist, say so — the user creates it in Settings.
+And if repository policy hands you a **complete target** (a command naming every
+parameter it runs on), pass it through **unchanged**: that is a different
+invocation and it stays available. A complete target names the harness, the
+service, the billing mode, the model, and `--effort` exactly where the harness
+declares reasoning levels — a harness that declares none has no `--effort` to
+name, and naming one there is refused. What you may never do is assemble a
+complete target yourself.
 
 ## When to use it
 
 The user says something like:
 
-- "review this with Codex" / "get a second opinion from the other model"
-- "ask Claude to write the test fixtures for this"
-- "have Codex explain how this subsystem works"
+- "review this" / "get a second opinion from another model"
+- "ask another model to write the test fixtures for this"
+- "have a second model explain how this subsystem works"
 
 Recognize the intent and run the command yourself. There is no slash command and
 no button — the natural-language request is the trigger.
 
-**Never reach for the raw `codex` / `claude` CLI to do this.** Per-agent
+**Do not choose the reviewer yourself.** When the user just asks for a review,
+`--role reviewer` alone is the whole answer: which model reviews is a ShipIt
+setting, not a judgement call you make per turn, and it is what keeps the
+reviewer distant from the implementer when the implementer changes. Tell the user
+which reviewer actually ran and that ShipIt's own reviewer settings are where
+they change it.
+
+**When the user names one themselves** — "review this with Codex", "review it
+with Opus at high effort" — that is an override you **relay** onto the role, not
+a reviewer you picked. Relaying it sets the distance guarantee aside (see
+*Overrides*), so the review can land on the model that wrote the code; that is
+the user's call. The line is between a value they said and a value you supplied —
+the second is you choosing a reviewer, whatever it is dressed up as.
+
+**Never reach for the raw `codex` / `claude` / `opencode` / `grok` CLI to do this.** Per-agent
 credential isolation mounts only *your* pinned agent's credentials in this
 container, so invoking the other backend's bare CLI fails with **401
 Unauthorized**. `shipit agent run` is the only authenticated path — it brokers
@@ -41,19 +73,147 @@ is for a *different* agent (or a deliberately fresh-context helper).
 ## The command
 
 ```
-shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
+shipit agent run --role NAME [OVERRIDE…] --prompt-file FILE [--json]
+shipit agent roles [--json]
+shipit agent params [--json]
 shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
 ```
 
-- **`--agent`** (required) — the agent to spawn (`claude` or `codex`). May be the
-  same provider as you (a fresh-context helper) or a different one.
-- **`--prompt-file`** (required) — the prompt, read from a file or from **stdin**
-  with `--prompt-file -`. There is no inline `-p`/`--prompt` flag: a prompt on
-  the command line gets mangled the moment it contains backticks or `$(...)`.
-  Use a single-quoted heredoc, exactly like `gh pr create --body-file -`.
-- **`--model`** (optional) — a model alias/id for the sub-agent.
+- **`--prompt-file`** (required) — the prompt, read from a file or
+  from **stdin** with `--prompt-file -`. There is no inline `-p`/`--prompt` flag:
+  a prompt on the command line gets mangled the moment it contains backticks or
+  `$(...)`. Use a single-quoted heredoc, exactly like `gh pr create --body-file -`.
 - **`--json`** (optional) — print the full result object instead of just the
   text.
+
+### The role — `--role NAME`
+
+Names **what you want done**, not who does it. A role is a complete unit the user
+configured: starting one needs nothing added to it, which is why the whole
+invocation is one word.
+
+`--role reviewer` is the one role ShipIt ships and the one whose target it
+resolves per run: it ranks the two configured reviewers by distance from what
+*you* are running — a different model family first, then a different model, then
+a different harness, degrading to the best difference the install actually
+offers. It is resolved and routed once, when the spawn is admitted, so a retry
+cannot quietly move the review onto a different model. The reviewer always
+exists, even on an install where nobody has configured anything.
+
+An unknown role name is refused, and the refusal lists the roles that do exist —
+so a wrong guess corrects itself rather than falling back to something else.
+
+A role is whatever the user named it, and the name is used **exactly as you pass
+it** — nothing is trimmed, folded or otherwise tidied, because two roles may
+differ by no more than that. Copy it from `shipit agent roles` and quote it where
+it needs quoting: `--role "deep dive"`. A flag passed with an empty value
+(`--role=`, `--model=`) is refused rather than ignored, on both commands.
+
+### Overrides — relay, never decide
+
+Any parameter a role carries may be overridden when you start it, and you name
+only what changes:
+
+```
+shipit agent run --role deep-dive --model claude-opus-5 --prompt-file - <<'EOF'
+…
+EOF
+```
+
+The role supplies the rest. An invalid override is **refused by name**, never
+quietly dropped — a dropped override would run something other than what was
+asked for.
+
+**The rule that matters: an override is the USER's, and you relay it.** You may
+carry "review this with Opus at high effort" because the user said so. You may
+not decide on your own that a run deserves a different model or a deeper
+reasoning level. ShipIt cannot tell a relayed value from an invented one, so this
+rule lives here rather than in anything it can detect. **Default to a bare role**
+— it is shorter, and it keeps what runs anchored to something the user chose.
+
+Overriding `--role reviewer` also sets its distance guarantee aside: once you
+have named what to run, ShipIt does not overrule you, and the review may land on
+the very model that wrote the code. That is the caller's call to make, not yours
+to make for them.
+
+### Seeing what exists — `shipit agent roles` and `shipit agent params`
+
+You can only name what you can see, so both are readable from inside the session:
+
+```
+shipit agent roles     # every role on this install: name, what it is for, what it runs on
+shipit agent params    # every parameter an override may name here, and the flag that names each
+```
+
+`roles` is how you map an intent onto a role ("review the PR" → `reviewer`) and
+how you tell the user what exists. `params` is what makes an override name
+something **real**: it prints this install's harnesses, their reasoning levels,
+and the models each can run with the service and billing mode that serve them —
+so you never name a model from memory that this install does not have. A role
+that cannot run right now is still listed, with the reason.
+
+### The description is for choosing AND for writing
+
+A role's description is what the user wrote about what that role is for, and you
+read it twice:
+
+- **To choose.** When the user did not name a role, the description is what says
+  which one they mean. A request that matches a role's stated job goes to that
+  role; where nothing matches, say so rather than sending the work to the nearest
+  role you can find.
+- **To write.** The description also tells you *how much the prompt has to spell
+  out*. A role described as fast, cheap, or narrow wants an explicit, ordered
+  brief — the exact files, the exact steps, the shape of the answer. A role
+  described as deep, thorough, or exploratory can take an open research brief and
+  will do worse with a checklist that pre-decides the work. One prompt style for
+  every role wastes whichever role it does not fit.
+
+Where a role carries no description, the harness and model line is the only hint
+there is. Use it for the same one thing the description is used for — how much
+the prompt has to spell out — and for nothing beyond that. **Neither signal moves
+the target.** You write the prompt to fit the role — you never override a parameter,
+or reach for a different role, because you judged the work deserves something
+else. That is the same relay-never-decide rule as above, and reading a
+description does not create an exception to it.
+
+A role's reasoning level may read as **`Default`**. That is a level the user
+chose, not a gap: the role runs at whatever level its harness runs at when no
+`--effort` flag is passed. Do not "complete" it with an `--effort` of your own —
+the same rule as every other parameter, and only a level the user asked for is
+yours to relay.
+
+A harness listed with **no reasoning levels** takes no `--effort` at all: it has
+no such parameter, a complete target on it is the other four flags, and naming a
+level there is refused rather than dropped.
+
+Both take `--json`. Neither is an invitation to assemble a target from scratch: a
+role plus an override does the same job in less.
+
+### Not the same as a child session
+
+`shipit agent run` returns its output to you; `shipit session create` starts a
+sibling session with its own branch and pull request. **Both take the same target
+vocabulary** — a role, a role with any subset of its parameters overridden, or a
+complete target — through one parser and one refusal rule, so `--role deep-dive`
+and `--role deep-dive --effort high` mean the same thing on either command.
+
+They differ in exactly one thing, and it is the one thing a child has that a
+one-shot run does not: **a parent to complete a partial call from.**
+
+| Path | What it runs on |
+|---|---|
+| `shipit agent run --role NAME` | the role, with anything you overrode |
+| `shipit agent run` (no role, complete target) | exactly what the call names — reserved for a target the user or repository policy handed you |
+| `shipit agent run` (no role, partial) | **refused**, naming the missing flags — a one-shot run has nothing to complete itself from |
+| `shipit session create --role NAME` | the role, resolved once at creation; the child then routes like any other session |
+| `shipit session create` (no role) | **inherited from you**, with any parameter you named overriding it |
+
+So `shipit session create --model claude-opus-5` is a complete, valid command —
+the parent supplies the rest — while a one-shot run given only that one flag is
+refused for the parameters it did not name. A role hands a child its *starting*
+point, not a binding: the child keeps ordinary routing, account failover and
+model-retirement behaviour for the rest of its life, and editing the role later
+does not reach back into it.
 
 The prompt is the **single context channel**. Put everything the sub-agent needs
 into it: the task, any `git diff`, file references, focus hints. The sub-agent
@@ -62,7 +222,9 @@ starts with a fresh context and sees only what you give it.
 ### Example — second-opinion review
 
 ```
-shipit agent run --agent codex --prompt-file - <<'EOF'
+shipit agent run --role reviewer --prompt-file - <<'EOF'
+Review only — do not edit this workspace.
+
 Review this diff for correctness bugs and security issues. Report each finding
 as `file:line — comment`. Be concise; skip praise.
 
@@ -79,10 +241,10 @@ whose fix needs a decision or authority you don't have; ask about *that* finding
 and act on the rest.
 
 You also do **not** need to paste the output back for the user to see it: ShipIt
-surfaces the sub-agent's verbatim output inline, in the persisted "Consulted
-Codex" card, with attribution (docs/220). So treat stdout as input for *acting*,
-not as something to re-type into chat — re-pasting it just duplicates what the
-card already shows.
+surfaces the sub-agent's verbatim output inline, in the persisted consult card,
+attributed to the agent that ran it (docs/220). So treat stdout as input for
+*acting*, not as something to re-type into chat — re-pasting it just duplicates
+what the card already shows.
 
 **Your copy and the user's copy are the same document.** stdout and the card are
 written from one string, so there is no "the UI has more" — if you and the user
@@ -196,6 +358,25 @@ id or a bad flag, since neither condition can ever clear.
 
 - **Opt-in.** The feature only works when the user has enabled **Settings →
   Multi-agent sessions**. Otherwise the command returns a clear "disabled" error.
+- **Only harnesses this deployment installed.** Which agent CLIs an install has is
+  chosen when ShipIt is deployed, so a harness a role names — or one you named as
+  an override — may simply not be present here, and the command then fails with
+  "<name> is not installed in this deployment". That is not something you or the
+  user can fix from inside a session; report it and carry on without the second
+  opinion. `shipit agent params` lists only harnesses that are actually here, so
+  an override read from it never hits this.
+- **A role can still find nobody, and *why* decides the remedy.** Where the role
+  names its own target, the refusal distinguishes three cases and you should relay
+  it rather than guessing: the role's model, service or harness **no longer
+  exists** (it needs an edit in Settings); the service it names has **no usable
+  credential** (reconnect that service — the role itself is fine, and telling the
+  user to edit it is the wrong advice); or the account is **quota-exhausted**
+  (nothing to fix, it recovers when the quota resets). `shipit agent roles` marks
+  an unavailable role with the same reason. **`--role reviewer` is the exception**:
+  when *neither* configured reviewer can run, the ranking cannot attribute a
+  single cause, so its refusal names both remedies at once — connect a service, or
+  wait for the quota. Pass that on as it stands rather than picking one. In none
+  of these is the run silently downgraded onto something else.
 - **No recursion.** A spawned sub-agent cannot itself spawn a sub-agent.
 - **At most 3 spawns per turn.** Enough for "review with both other models" or a
   couple of delegations. A 4th returns an error without spawning. The budget

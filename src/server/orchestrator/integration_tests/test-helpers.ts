@@ -259,7 +259,9 @@ export class TestClient {
  * checkCredentials() always returns false.
  */
 export class StubAuthManager extends EventEmitter {
-  readonly agentId = "claude" as const;
+  // The auth-manager map is keyed off this (`buildAgentRuntime`), so a stub
+  // without it registers under `undefined` and every lookup 500s.
+  readonly loginId = "anthropic-oauth" as const;
   authenticated = true; // Tests assume auth is already done
   checkCredentials() { return this.authenticated; }
   startOAuthFlow() { /* no-op */ }
@@ -750,8 +752,21 @@ export class FakeClaudeProcess extends EventEmitter {
   /** docs/149 — captures full AgentRunParams the orchestrator handed to `run()`. */
   public lastSettingsPath: string | undefined;
   public lastModel: string | undefined;
+  /**
+   * docs/217 — the reasoning level this spawn was shaped with. Captured
+   * alongside the model because the two are separate halves of one selection:
+   * a child session can inherit the right model at the wrong depth.
+   */
+  public lastReasoningEffort: string | undefined;
   public lastMcpServers: unknown[] | undefined;
   public lastAutoCreatePr: boolean | undefined;
+  /**
+   * docs/252 phase 4 — the `ServiceRouting` this spawn was shaped with: which
+   * service the turn goes to, at which endpoint, on which credential variable.
+   * A mid-session switch across services keeps the model id, so `lastModel`
+   * alone cannot tell a switched spawn from a reused one.
+   */
+  public lastServiceRouting: { serviceId: string; billingMode: string; baseUrl: string } | undefined;
   public killed = false;
   public interrupted = false;
   public stdinData: string[] = [];
@@ -803,9 +818,11 @@ export class FakeClaudeProcess extends EventEmitter {
     useStreaming?: boolean;
     settingsPath?: string;
     model?: string;
+    reasoningEffort?: string;
     mcpServers?: unknown[];
     autoCreatePr?: boolean;
     compact?: boolean;
+    serviceRouting?: { serviceId: string; billingMode: string; baseUrl: string };
   }) {
     this.runCalled = true;
     this.lastCompact = params.compact;
@@ -818,8 +835,10 @@ export class FakeClaudeProcess extends EventEmitter {
     this.lastUseStreaming = params.useStreaming === true;
     this.lastSettingsPath = params.settingsPath;
     this.lastModel = params.model;
+    this.lastReasoningEffort = params.reasoningEffort;
     this.lastMcpServers = params.mcpServers;
     this.lastAutoCreatePr = params.autoCreatePr;
+    this.lastServiceRouting = params.serviceRouting;
   }
 
   kill() {
@@ -958,9 +977,10 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
       };
     case "result": {
       const u = raw.usage;
-      // Mirror ClaudeAdapter: extract real per-turn context from the last
-      // iteration's input + cache, and the authoritative context window from
-      // `modelUsage[<model>].contextWindow`.
+      // Mirror ClaudeAdapter's result-only path: extract real per-turn context
+      // from the last iteration's input + cache. This stateless test mapper
+      // cannot retain the adapter's latest-assistant fallback for providers
+      // that omit iterations.
       let contextTokens: number | undefined;
       const lastIter = u?.iterations?.length ? u.iterations[u.iterations.length - 1] : undefined;
       if (lastIter) {
@@ -1348,7 +1368,7 @@ export function createTemplateRepoGitFactories(): {
           commitHash: null,
           conflictedFiles: [],
           rebaseInProgress: false,
-          secretFindings: [],
+          secretFindings: [], unreadable: null,
         });
       }
       return gm;

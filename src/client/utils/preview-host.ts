@@ -19,7 +19,7 @@
  */
 /**
  * For a host that can't carry preview subdomains, suggest one that can — or
- * `null` when we have nothing concrete to offer (docs/254 req 8).
+ * `null` when we have nothing concrete to offer (docs/254-local-bind-and-tailnet-access req 8).
  *
  * Only raw IPv4 gets a suggestion, and only via sslip.io, a public wildcard
  * resolver that maps any `<dashed-ip>.sslip.io` name back to that IP. That turns

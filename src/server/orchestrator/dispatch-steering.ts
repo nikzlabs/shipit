@@ -71,7 +71,7 @@ export function shouldSteerMessage(i: SteerDecisionInputs): boolean {
 
 /**
  * A dispatch that MUST run as its own turn can never be steered into someone
- * else's, no matter what the running turn looks like (SHI-254).
+ * else's, no matter what the running turn looks like (planning#256).
  *
  * Two markers make a dispatch unsteerable:
  *
@@ -114,7 +114,7 @@ export function trySteerDispatch(
   opts: AgentDispatchOptions,
   deps: SystemTurnDeps,
 ): boolean {
-  // SHI-254 — a system turn / a turn someone is awaiting is never steerable,
+  // planning#256 — a system turn / a turn someone is awaiting is never steerable,
   // regardless of the running turn's shape. Checked FIRST so no steer-policy
   // wiring can talk us out of it.
   if (!isSteerableDispatch(opts)) return false;

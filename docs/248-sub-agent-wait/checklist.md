@@ -14,6 +14,6 @@
 - [x] Review defects fixed: unreadable 2xx never reads as success, shim-side run
       pinning across segments, hot-loop floor, request budget bounded by the
       caller's timeout, `--json` parity, sub-second `--timeout`
-- [x] Restart-strand limitation stated honestly in plan.md and filed (SHI-307)
+- [x] Restart-strand limitation stated honestly in plan.md and filed (planning#309)
 - [x] Docs warn against piping a consult through `tail`/`head`/`grep` — the
       mistake that truncated this feature's own review to its last two findings

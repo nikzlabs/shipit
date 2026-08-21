@@ -1,6 +1,7 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import globals from "globals";
+import reactHooks from "eslint-plugin-react-hooks";
 
 // ── Shared `no-restricted-syntax` entries ──────────────────────────────────
 // Factored out so per-file-scope blocks (client, per-agent folders, tests)
@@ -42,11 +43,11 @@ const RESTRICTED_USEEFFECT = {
 // `eslint-disable-next-line` with a one-line rationale.
 const RESTRICTED_AGENT_ID_LEAK = [
   {
-    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='Identifier'][left.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex)$/]",
+    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='Identifier'][left.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex|opencode|grok)$/]",
     message: "Avoid `agentId === \"claude\" | \"codex\"` comparisons outside `agents/<id>/` folders — they break the agent abstraction (docs/155). Use a capability flag (`AgentCapabilities`), an `AgentRegistry` method, or a `Map<AgentId, …>` runtime table instead. If the branch is a genuine per-CLI-shape exception (marketplace v1 gate, Claude-only `--resume` recovery, runtime input validation), add `eslint-disable-next-line no-restricted-syntax` with a one-line rationale.",
   },
   {
-    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='MemberExpression'][left.property.type='Identifier'][left.property.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex)$/]",
+    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='MemberExpression'][left.property.type='Identifier'][left.property.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex|opencode|grok)$/]",
     message: "Avoid `.agentId === \"claude\" | \"codex\"` comparisons outside `agents/<id>/` folders — they break the agent abstraction (docs/155). Use a capability flag (`AgentCapabilities`), an `AgentRegistry` method, or a `Map<AgentId, …>` runtime table instead. If the branch is a genuine per-CLI-shape exception (marketplace v1 gate, Claude-only `--resume` recovery, runtime input validation), add `eslint-disable-next-line no-restricted-syntax` with a one-line rationale.",
   },
 ];
@@ -197,6 +198,40 @@ export default tseslint.config(
       ],
     },
   },
+  // ── React hooks rules (client code) ────────────────────────────────────
+  // `rules-of-hooks` catches the bug class that is invisible to review and to
+  // TypeScript: a hook behind a condition or an early return changes the hook
+  // count between renders, so React pairs up the wrong state. It has never
+  // been enforced here, and a real instance (`accountId ? useStore(…) : …` in
+  // the Services panel) reached a diff before a human caught it by eye.
+  //
+  // Both rules are `error` on purpose. `npm run lint` has no `--max-warnings`
+  // budget, so a `warn` here would never fail CI — it would read as
+  // enforcement while changing nothing, which is the state this block exists
+  // to end.
+  //
+  // Deliberately NOT the plugin's `recommended` preset: since v6 that preset
+  // also turns on the React Compiler rules (`refs`, `set-state-in-effect`,
+  // `purity`, `immutability`, …). Those enforce readiness for a compiler this
+  // project does not run — there is no `babel-plugin-react-compiler` in the
+  // Vite config — and they flag ~110 sites that are correct as written under
+  // stock React. Adopting the compiler is its own migration; enabling its
+  // rules first would only add suppressions. So the two classic rules are
+  // listed explicitly, and the preset is left alone.
+  {
+    files: ["src/client/**/*.ts", "src/client/**/*.tsx"],
+    plugins: { "react-hooks": reactHooks },
+    rules: {
+      "react-hooks/rules-of-hooks": "error",
+      // The codebase already restricts `useEffect` and requires a written
+      // justification on each one, so most deliberate dep-array narrowing is
+      // documented in prose right above the effect. Where that is the case
+      // the existing disable comment names this rule too — which turns the
+      // prose into a machine-checked assertion, so a NEW effect that drops a
+      // dep by accident fails CI instead of passing silently.
+      "react-hooks/exhaustive-deps": "error",
+    },
+  },
   // ── Layer boundary enforcement ──────────────────────────────────────────
   // orchestrator/ and session/ must not import from each other (even type
   // imports). Shared types belong in shared/types/. Integration tests are
@@ -240,8 +275,12 @@ export default tseslint.config(
     files: [
       "src/server/session/agents/claude/**",
       "src/server/session/agents/codex/**",
+      "src/server/session/agents/opencode/**",
+      "src/server/session/agents/grok/**",
       "src/server/orchestrator/agents/claude/**",
       "src/server/orchestrator/agents/codex/**",
+      "src/server/orchestrator/agents/opencode/**",
+      "src/server/orchestrator/agents/grok/**",
     ],
     rules: {
       "no-restricted-syntax": [
@@ -273,6 +312,57 @@ export default tseslint.config(
         "error",
         ...RESTRICTED_SYNTAX_BASE,
         RESTRICTED_USEEFFECT,
+      ],
+    },
+  },
+  // ── planning#384: orchestrator-side git must not run repository hooks ─────
+  // A session workspace is bind-mounted read-write into containers whose code
+  // is untrusted by design (docs/262 req 19), so `.git/hooks/pre-commit` is a
+  // file that side can write — and the orchestrator, which is root and mounts
+  // the credential store and the Docker socket, then runs `git commit` on that
+  // very tree. `safeSimpleGit` (`shared/git-hooks-guard.ts`) is the same
+  // `simpleGit` with `-c core.hooksPath=/dev/null` on every command; a bare
+  // `import simpleGit from "simple-git"` re-opens the hole silently, so it is
+  // an error rather than a convention.
+  //
+  // Declared as its own late block (not folded into the boundary blocks above)
+  // so it can exempt the guard module and tests without those exemptions also
+  // dropping the orchestrator↔session import boundary — flat config replaces a
+  // rule wholesale per matching block, and an earlier block still applies to
+  // files a later one `ignores`.
+  {
+    files: ["src/server/orchestrator/**/*.ts"],
+    ignores: ["src/server/orchestrator/integration_tests/**", "**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [{
+            group: ["**/session/**"],
+            message: "Orchestrator must not import from session/. Move shared types to shared/types/.",
+          }],
+          paths: [{
+            name: "simple-git",
+            importNames: ["default"],
+            message: "Use `safeSimpleGit` from shared/git-hooks-guard.js — bare `simpleGit` runs repository-controlled git hooks as root in the orchestrator (planning#384). Type-only imports (`import { type SimpleGit }`) are fine.",
+          }],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/server/shared/**/*.ts"],
+    ignores: ["src/server/shared/git-hooks-guard.ts", "**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [{
+            name: "simple-git",
+            importNames: ["default"],
+            message: "Use `safeSimpleGit` from ./git-hooks-guard.js — bare `simpleGit` runs repository-controlled git hooks as root in the orchestrator (planning#384). Type-only imports (`import { type SimpleGit }`) are fine.",
+          }],
+        },
       ],
     },
   },

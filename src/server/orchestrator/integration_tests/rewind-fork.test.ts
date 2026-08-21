@@ -358,7 +358,7 @@ describe("Integration: rewind and fork", () => {
   });
 
   it("forks a session with no code commits from a past gap, basing the clone on HEAD", async () => {
-    // SHI-184: no autoCommit calls, so no message carries a commitHash and
+    // planning#186: no autoCommit calls, so no message carries a commitHash and
     // findCommitBeforeGap returns null. This used to fail with "No code state
     // available to fork."; now it forks at HEAD (the repo's base).
     const { sessionId, workspaceDir } = await createSession();
@@ -387,7 +387,7 @@ describe("Integration: rewind and fork", () => {
   });
 
   it("allows fork while a turn is running but still blocks in-place rewind", async () => {
-    // SHI-182: fork is independent of the running turn (new session off a
+    // planning#184: fork is independent of the running turn (new session off a
     // committed SHA), so it must succeed; chat/code/both still conflict with
     // the agent mutating the workspace and stay gated.
     const { sessionId } = await createSession();

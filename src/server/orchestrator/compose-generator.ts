@@ -12,18 +12,48 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { isScalar, parse as parseYaml, parseDocument, stringify as stringifyYaml, visit } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
-import { sessionWorkerUid } from "./session-worker-uid.js";
+import { identityForSession, sessionWorkerUid } from "./session-worker-uid.js";
+import { isSessionUid, SESSION_UID_MIN, SESSION_UID_MAX } from "./session-uid-allocator.js";
 import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
+import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
+import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
+import { PLUGIN_CONTRACT_ENV_NAMES } from "../shared/plugin-contract.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * docs/262 req 3 — which repository a surfaced service came from. Plugin
+ * services are first-class in every list, control and log path, so the only
+ * thing that distinguishes them is this label.
+ */
+export interface ComposeServiceOrigin {
+  kind: "plugin";
+  /** The declared plugin repository's own spelling — the Plugins card's unit. */
+  repo: string;
+  /** The import's local name (`use.alias`). */
+  alias: string;
+  /** The exported plugin's name in that repository's manifest. */
+  plugin: string;
+  /** The service's name inside the plugin's own fragment, before any `as:`. */
+  sourceName: string;
+  /**
+   * docs/262 req 27 — `repo: self`: the plugin's tree is this session's own
+   * working tree, so its dependency directories are the project's. It is the one
+   * fact the override needs about a plugin's origin beyond identity; see
+   * {@link overlayMountsForPluginService}.
+   */
+  self: boolean;
+}
+
 export interface ComposeService {
   name: string;
+  /** True only for the server-authorized, validated ops Docker proxy shape. */
+  trustedOpsProxy?: boolean;
   /** Ports exposed by the service (host:container or just port). */
   ports?: string[];
   /** x-shipit-preview value from the user's compose file. */
@@ -60,6 +90,35 @@ export interface ComposeService {
    */
   secretRequirements?: SecretRequirement[];
   /**
+   * docs/262 — where this service came from. Absent means the project's own
+   * compose file; a plugin service carries its import's identity so the services
+   * list can say so (req 3) and so the override knows to emit its definition
+   * rather than only an overlay on the user's.
+   */
+  origin?: ComposeServiceOrigin;
+  /**
+   * docs/262 — the complete definition to emit for a PLUGIN service. The
+   * project's own services are described by the user's compose file and only
+   * overlaid here; a plugin's fragment is never handed to `docker compose -f`
+   * (see `plugin-compose.ts`), so ShipIt writes every line of it, mounts and
+   * environment included.
+   */
+  pluginDefinition?: Record<string, unknown>;
+  /**
+   * docs/262 — volumes this service references that the daemon-overlay
+   * subsystem owns (the plugin generation's volume, and the workspace volume
+   * when the project's own services do not already pull it in). Declared
+   * `external: true` in the volumes block, exactly like the dep-dir overlays.
+   */
+  externalVolumes?: string[];
+  /**
+   * docs/262 req 26 — digest of this service's validated settings file. Emitted
+   * as a label so that a settings change, which alters nothing else Compose can
+   * see, still counts as a changed service definition and recreates the
+   * container. See `PluginComposeService.settingsFingerprint`.
+   */
+  settingsFingerprint?: string;
+  /**
    * Explicit `user:` declared by the service in the user's compose file, if any.
    * When set, ShipIt honors it and does NOT inject the session-worker UID
    * (see {@link generateComposeOverride}). Captured as a string so both the
@@ -86,6 +145,16 @@ export interface ComposeOverrideOptions {
   workspaceSubpath?: string;
   /** Docker stack name (e.g. "shipit-dev") — added as a label for cleanup filtering. */
   stackName?: string;
+  /**
+   * Make the session network internal while Compose services are being
+   * contained. A separate private egress bridge is attached only after the
+   * service namespace has received its firewall/resolver/proxy stack.
+   */
+  containEgress?: boolean;
+  /** Point Docker DNS at the Tier B loopback resolver during containment setup. */
+  containDns?: boolean;
+  /** Tier C is active, so redirected HTTPS needs route_localnet. */
+  containProxy?: boolean;
   /**
    * User-declared top-level named volumes (from the user's compose file).
    * When provided, the override emits a labels overlay for each entry so
@@ -114,7 +183,7 @@ export interface ComposeOverrideOptions {
     /** Returns the compose-side `file:` path for a given secret name. */
     filePathFor: (name: string) => string;
     /**
-     * SHI-285 — absolute, DAEMON-SIDE path of the staged entrypoint wrapper
+     * planning#287 — absolute, DAEMON-SIDE path of the staged entrypoint wrapper
      * (`stageSecretsEntrypoint()`), e.g.
      * `/var/lib/shipit/secrets/_entrypoint/secrets-entrypoint.sh`. The override
      * bind-mounts it into each secret-consuming service container at
@@ -138,7 +207,7 @@ export interface ComposeOverrideOptions {
    * always resolves outside the session's git clone.
    *
    * A service missing from the map gets **no** `env_file:` entry rather than a
-   * fallback path (SHI-290 — there is no longer an in-clone file to fall back
+   * fallback path (planning#292 — there is no longer an in-clone file to fall back
    * to). `ServiceSecretsResolver.sync()` populates one entry per
    * secret-declaring service and always runs before the override is generated,
    * so a gap here means secrets haven't been resolved at all.
@@ -147,6 +216,33 @@ export interface ComposeOverrideOptions {
    * `env_file:`).
    */
   serviceEnvFiles?: Record<string, string>;
+  /**
+   * docs/262 req 23 — plugin-service name → the credential values that
+   * service's plugin DECLARED and this project has a value for
+   * (`ServiceSecretsResolver.getPluginServiceEnv()`).
+   *
+   * Merged into the emitted service's `environment`, never `env_file`. That is
+   * the deliberate difference from the map above, and it is what makes the
+   * value ShipIt resolved the value the container gets: Compose gives a
+   * service's own `environment` precedence over any `env_file`, so a plugin
+   * fragment declaring the same name would otherwise shadow its own declared
+   * credential — the card would say satisfied and the container would run on
+   * the fragment's literal. Compose's env-file parser also applies quote,
+   * comment and `${VAR}` handling to the values it reads, so a stored value is
+   * not necessarily delivered byte-for-byte, and `${…}` could resolve from the
+   * environment of the process that runs Compose — the ORCHESTRATOR's. Emitting
+   * here instead puts every value through {@link escapePluginDollars}, the same
+   * escaping the rest of a plugin definition already gets.
+   *
+   * The cost, stated rather than hidden: the generated override is the one
+   * ShipIt-written file that now carries secret values. It lives in the session
+   * STATE dir — never the git clone, and outside the `plugins/` subtree that is
+   * the agent container's only mount of it — and is written 0600.
+   *
+   * Only consulted for a service carrying a plugin `origin`, so nothing here
+   * can inject an environment into one of the project's own services.
+   */
+  pluginServiceEnv?: Record<string, Record<string, string>>;
   /**
    * docs/183 Phase 5 — per-session overlay dep-dir volumes. For an
    * overlay-eligible session, each declared dep dir (e.g. `node_modules`) is a
@@ -174,11 +270,88 @@ export interface OverlayDepDirVolume {
   volumeName: string;
 }
 
+/**
+ * The placeholders {@link generateComposeOverride} substitutes for Compose's
+ * `!reset` / `!override` tags AFTER serialization, because the YAML writer
+ * cannot emit them.
+ *
+ * Exported because that post-serialization `replace` is a text pass over the
+ * whole document, so any value that reaches the override carrying one of these
+ * literals would be rewritten mid-string. For the project's own compose file
+ * that is self-inflicted and harmless; for a plugin fragment it is a
+ * third-party string landing in a file ShipIt authors, so `plugin-compose.ts`
+ * refuses them (docs/262).
+ */
+export const OVERRIDE_SENTINELS: readonly string[] = [
+  "__RESET_PORTS__",
+  "__RESET_NETWORKS__",
+  "__RESET_DNS__",
+];
+
+/**
+ * Compose's name for the workspace volume inside every file ShipIt writes. It
+ * is an ALIAS — the `volumes:` block below declares it `external: true` with
+ * `name:` set to the real volume — so only this module knows what it resolves
+ * to. `plugin-compose.ts` emits its mounts against the same alias.
+ */
+const WORKSPACE_VOLUME_ALIAS = "shipit-workspace";
+
+/**
+ * The two ways a compose file can be unusable, which are not one outcome
+ * (planning#377).
+ *
+ * - `malformed` — ShipIt could not UNDERSTAND the file: unreadable on disk,
+ *   invalid YAML, or not a compose document at all. Nothing about it is known,
+ *   and there is nothing to say beyond where the parse gave up.
+ * - `refused` — ShipIt understood the file perfectly and DECLINED it. The
+ *   message names the rule and the fix, so a caller that can only report one
+ *   sentence should report this one.
+ *
+ * `refused` is the default because every rule below is one: a check added later
+ * without a thought for this field is still a refusal, and reporting it as one
+ * is right. Only the four "could not parse it at all" sites opt out.
+ */
+export type ComposeValidationKind = "malformed" | "refused";
+
 export class ComposeValidationError extends Error {
-  constructor(message: string) {
+  readonly kind: ComposeValidationKind;
+
+  constructor(message: string, kind: ComposeValidationKind = "refused") {
     super(message);
     this.name = "ComposeValidationError";
+    this.kind = kind;
   }
+}
+
+/**
+ * Why a compose file could not be turned into a list of services — the ONE
+ * classified shape every surface that reports that failure carries
+ * (planning#377, planning#382).
+ *
+ * One shape and one classifier, because the failure now reaches several
+ * surfaces that must not disagree about it: the plugin card
+ * (`readProjectServices`), the session's service list (`ServiceManager`), and
+ * everything the list feeds — `GET /api/sessions/:id/services`, the agent
+ * bridge's `list`, `shipit service list`.
+ */
+export interface ComposeFailure {
+  kind: ComposeValidationKind;
+  /** The parser's own message — it names the service, the rule and the fix. */
+  message: string;
+}
+
+/**
+ * Classify a parse throw into a {@link ComposeFailure}.
+ *
+ * A non-`ComposeValidationError` is by definition something ShipIt did not
+ * anticipate, so it reads as `malformed`: only a deliberate refusal can claim
+ * to name a fix.
+ */
+export function classifyComposeFailure(err: unknown): ComposeFailure {
+  return {
+    kind: err instanceof ComposeValidationError ? err.kind : "malformed",
+    message: err instanceof Error ? err.message : String(err),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -202,12 +375,14 @@ export interface UserNamedVolume {
  * user is mid-edit on their compose file; a transient YAML parse error
  * must not propagate up and break the secrets refresh.
  *
- * Note: entries declared `external: true` in the user's volumes block are
- * still returned. The override's labels overlay is silently ignored by
- * compose for external volumes (they're not created or modified by the
- * compose project), so they won't carry the `shipit-managed` label and
- * the disk-janitor's prune-by-label will skip them. That's the right
- * behavior — externals belong to the user's other workloads, not us.
+ * **Names only, and that is not a check.** This function reads no `driver`,
+ * `driver_opts`, `external` or `name` — it exists to label volumes for the disk
+ * janitor's prune, not to admit them. The security rule over this same block is
+ * {@link validateTopLevelVolumes}, which runs inside {@link parseComposeFile}
+ * before every `up`; planning#386 is what happens when the only reader of the
+ * block is this one. An `external: true` entry no longer reaches here at all
+ * (that call refuses the file), so the old note about externals silently
+ * missing the `shipit-managed` label describes a case that can no longer occur.
  */
 export function parseUserNamedVolumes(composePath: string): UserNamedVolume[] {
   let content: string;
@@ -229,39 +404,116 @@ export function parseUserNamedVolumes(composePath: string): UserNamedVolume[] {
 }
 
 /**
+ * The container (target) port a compose `ports:` entry names — the port the
+ * service actually listens on inside the container. ShipIt strips host
+ * bindings from every service it runs and reaches containers by IP on the
+ * session network, so this is the only number in a mapping that means anything
+ * to the preview proxy.
+ *
+ * Supports the common Compose forms:
+ * - "5173" → 5173
+ * - "5173:5173" → 5173
+ * - "8080:80" → 80
+ * - "5173:5173/tcp" → 5173
+ * - "127.0.0.1:8080:80" → 80
+ */
+export function extractContainerPort(portMapping: string): number | undefined {
+  if (!portMapping) return undefined;
+
+  // Strip optional protocol suffix ("/tcp", "/udp")
+  const withoutProtocol = portMapping.split("/")[0].trim();
+  if (!withoutProtocol) return undefined;
+
+  const parts = withoutProtocol.split(":");
+  // Container port is always the last segment
+  const portStr = parts[parts.length - 1];
+
+  const port = parseInt(portStr, 10);
+  return Number.isFinite(port) && port > 0 ? port : undefined;
+}
+
+
+/**
  * Parse a docker-compose.yml file and extract service definitions.
  * Validates security constraints and returns parsed service info.
  */
 export function parseComposeFile(
   composePath: string,
-  opts: { dockerSocket: boolean },
+  opts: { dockerSocket: boolean; containEgress?: boolean; trustedOpsProxy?: boolean },
 ): ComposeService[] {
   let content: string;
   try {
     content = fs.readFileSync(composePath, "utf-8");
   } catch {
-    throw new ComposeValidationError(`Cannot read compose file: ${composePath}`);
+    throw new ComposeValidationError(`Cannot read compose file: ${composePath}`, "malformed");
   }
 
   let doc: Record<string, unknown> | null;
   try {
-    doc = parseYaml(content) as Record<string, unknown> | null;
+    if (opts.containEgress) {
+      const parsedDocument = parseDocument(content);
+      let hasExplicitTag = false;
+      let hasMergeKey = false;
+      visit(parsedDocument, {
+        Node: (_key, node) => {
+          if (node.tag !== undefined) hasExplicitTag = true;
+        },
+        Pair: (_key, pair) => {
+          if (isScalar(pair.key) && pair.key.value === "<<") hasMergeKey = true;
+        },
+      });
+      if (hasExplicitTag || parsedDocument.warnings.some((warning) => /unresolved tag/i.test(warning.message))) {
+        throw new ComposeValidationError("Custom YAML tags are not supported for contained services.");
+      }
+      if (hasMergeKey) {
+        throw new ComposeValidationError("YAML merge keys are not supported for contained services.");
+      }
+    }
+    // Compose resolves YAML merge keys. Resolve them here as well so security
+    // validation sees the same effective fields in Open mode.
+    doc = parseYaml(content, { merge: true }) as Record<string, unknown> | null;
   } catch (err) {
+    // The two containment rules above throw from INSIDE this block, and they
+    // are refusals of a document that parsed perfectly well. Re-thrown as they
+    // are: wrapping them turned "custom YAML tags are not supported" into
+    // "Compose file is not valid YAML: custom YAML tags are not supported",
+    // which is both untrue and — once callers began telling the two apart
+    // (planning#377) — filed under the wrong kind (review finding).
+    if (err instanceof ComposeValidationError) throw err;
     // Surface YAML parse errors as ComposeValidationError so callers (which
     // catch them defensively, e.g. mid-edit / mid-merge reconciles) can log
     // a clean one-liner instead of a full stack trace. Common trigger: the
     // user's compose file is briefly invalid while they're typing or while
     // a merge has left conflict markers in the file.
     const msg = err instanceof Error ? err.message : String(err);
-    throw new ComposeValidationError(`Compose file is not valid YAML: ${msg}`);
+    throw new ComposeValidationError(`Compose file is not valid YAML: ${msg}`, "malformed");
   }
   if (!doc || typeof doc !== "object") {
-    throw new ComposeValidationError("Compose file must be a YAML mapping");
+    throw new ComposeValidationError("Compose file must be a YAML mapping", "malformed");
   }
+  // planning#386 — unconditional, where this was `containEgress`-only. `include:`
+  // does not add a feature to the model, it REPLACES the model this function
+  // reads: the effective document is the root file plus every included one, and
+  // only the root file is here. That voids the per-service rules below in an
+  // Open session, and it voids {@link validateTopLevelVolumes} outright — the
+  // root file declares a service mounting `escape:/host` (an ordinary named
+  // volume, admitted), an included file declares `escape:` with a bind
+  // `driver_opts`, and Compose resolves both. A rule that a second file can
+  // delete is not a rule.
+  if (doc.include !== undefined) {
+    throw new ComposeValidationError(
+      "Compose `include:` is not supported. ShipIt validates the compose file it is given, "
+      + "and an included file would not be checked. Declare the services in this file.",
+    );
+  }
+  validateTopLevelFileRefs("Secret", doc.secrets);
+  validateTopLevelFileRefs("Config", doc.configs);
+  validateTopLevelVolumes(doc.volumes);
+  validateTopLevelNetworks(doc.networks);
 
   const services = doc.services as Record<string, Record<string, unknown>> | undefined;
   if (!services || typeof services !== "object") {
-    throw new ComposeValidationError("Compose file must have a `services` section");
+    throw new ComposeValidationError("Compose file must have a `services` section", "malformed");
   }
 
   const result: ComposeService[] = [];
@@ -270,7 +522,30 @@ export function parseComposeFile(
     if (typeof svc !== "object" || svc === null) continue;
 
     // Security validation
-    validateServiceSecurity(name, svc, opts.dockerSocket);
+    //
+    // `extends:` is the sibling of the `include:` rule above and is deliberately
+    // NOT unconditional (planning#386, review lead). It is the same shape of
+    // problem — the effective service is the local mapping merged with one from
+    // another file, and only the local mapping is validated here, so in an OPEN
+    // session a `privileged: true` or an absolute bind can arrive from the
+    // extended file untouched. Two things make it a separate decision rather
+    // than a line to change here: it cannot reach the top-level `volumes:` block
+    // (Compose requires a named volume an extended service mounts to be declared
+    // in the file doing the extending, which IS this one), so it does not defeat
+    // `validateTopLevelVolumes`; and unlike `include:` it is a widely used
+    // Compose feature, so refusing it in Open sessions is a product call. Stated
+    // rather than left for the next reader to rediscover.
+    if (opts.containEgress && svc.extends !== undefined) {
+      throw new ComposeValidationError(`Service \`${name}\`: \`extends\` is not supported for contained services.`);
+    }
+    validateServiceSecurity(
+      name,
+      svc,
+      opts.dockerSocket,
+      opts.containEgress ?? false,
+      opts.trustedOpsProxy ?? false,
+    );
+    validateServiceEnvFile(name, svc.env_file);
 
     // Extract ports (supports short syntax "8080:80" and long syntax { published, target })
     const rawPorts = Array.isArray(svc.ports) ? svc.ports : undefined;
@@ -331,11 +606,23 @@ export function parseComposeFile(
 
     // Preserve an explicit `user:` so the override doesn't clobber it. Compose
     // accepts string (`node`, `1000:1000`) and bare-number forms.
-    const user =
+    //
+    // An EMPTY or whitespace-only value normalizes to `undefined`, i.e. to "the
+    // project declared nothing" — which is what it means, and what both readers
+    // must agree it means. docs/271 gave the two readers different answers for a
+    // moment: validation trimmed before testing for absence and so admitted
+    // `user: ""` as a fill-in case, while this kept the empty string, so the
+    // fill-in was skipped and the empty value reached the daemon as the image
+    // default — root, on the usual images, in a CONTAINED session. `user: null`
+    // was already normalized here and was safe throughout; only the empty string
+    // could split the two. One normalization, read by both (review finding A1).
+    const rawUser =
       typeof svc.user === "string" || typeof svc.user === "number" ? String(svc.user) : undefined;
+    const user = rawUser?.trim() ? rawUser : undefined;
 
     result.push({
       name,
+      trustedOpsProxy: isTrustedOpsProxyService(name, svc, opts.trustedOpsProxy ?? false),
       ports,
       shipitPreview,
       dependsOnInstall,
@@ -493,13 +780,418 @@ export function validateDevices(
 }
 
 /**
+ * Every file a repository's compose model asks ShipIt to READ must be inside
+ * that repository's workspace (planning#371, review finding).
+ *
+ * The `volumes:` rule below already rejects an absolute bind source, because a
+ * host path is an escape from the workspace. Three other fields are the same
+ * primitive by another name and were unchecked — with a sharper edge the
+ * volumes rule does not have, because two of them are read by the **CLI**, in
+ * the orchestrator's own filesystem, rather than bound by the daemon:
+ *
+ *  - `secrets:` / `configs:` (top level) — a service reference bind-mounts the
+ *    file at `/run/secrets/<name>` or `/<name>`, resolved by the DAEMON, so an
+ *    absolute path is an arbitrary HOST-file read into a contained container.
+ *  - `build.secrets` references that same `secrets:` block, and a BUILD secret
+ *    is read CLIENT-side and streamed to the builder.
+ *  - `env_file:` is read CLIENT-side too — Compose must read it to render the
+ *    model — and its contents become the service's environment.
+ *
+ * The client-side pair is what makes them a way around {@link composeSpawnEnv}:
+ * scrubbing the child's environment does not remove `/proc/1/environ`, which a
+ * same-uid child can read (mode 0400, owned by the orchestrator process). So
+ * `env_file: /proc/1/environ` would hand a container the very environment the
+ * spawn no longer passes.
+ *
+ * A source must therefore be a plain workspace-relative path: no leading `/`,
+ * no `..`, and no `${…}` — an interpolated path would be validated as the
+ * literal here and resolved to something else by Compose
+ * (`${HOME}/.docker/config.json` is the whole attack in one line).
+ *
+ * **What this does NOT close, so the next reader need not re-derive it.** These
+ * are string rules over a declared path, exactly like the `volumes:` rule they
+ * mirror, and a **symlink inside the workspace defeats them** — the workspace
+ * is writable by the agent and by any plugin service holding `/project`. Making
+ * them airtight means resolving each path and proving containment, which is a
+ * TOCTOU race against a writer who can swap the link afterwards; the durable
+ * fix is not a longer deny-list but running the CLI without access to anything
+ * worth reading. That is its own change, tracked as planning#373. This closes the
+ * direct references; it does not make the compose file safe.
+ *
+ * ShipIt's OWN generated override writes absolute `file:` and `env_file:`
+ * paths, and is unaffected: those go into the override, which is never parsed
+ * here. A plugin fragment can declare none of these keys
+ * (`plugin-compose.ts`'s `ALLOWED_SERVICE_KEYS` / `ALLOWED_TOP_LEVEL_KEYS`);
+ * this covers the project file, which is the surface a plugin with `/project`
+ * write access — or the project itself — can author.
+ */
+function validateReadablePath(kind: string, name: string, file: unknown): void {
+  if (typeof file !== "string" || file.length === 0) return;
+  if (file.includes("${")) {
+    throw new ComposeValidationError(
+      `${kind} \`${name}\`: variable interpolation is not allowed in a file path. `
+      + "Use a resolved path inside the workspace.",
+    );
+  }
+  if (file.startsWith("/")) {
+    throw new ComposeValidationError(
+      `${kind} \`${name}\`: absolute path \`${file}\` is not allowed. `
+      + "Use a relative path within the workspace.",
+    );
+  }
+  if (file.includes("..")) {
+    throw new ComposeValidationError(
+      `${kind} \`${name}\`: path traversal \`${file}\` is not allowed. `
+      + "Referenced files must stay within the workspace.",
+    );
+  }
+}
+
+/** A rejected value, rendered for the error message without trusting its shape. */
+function showValue(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
+}
+
+/**
+ * Does an options map (`driver_opts:`, `ipam:`) actually carry an option?
+ *
+ * `driver_opts: {}` and `ipam: {}` are accepted by Compose and reach nothing —
+ * a templating layer emits them for a case that produced no options (review
+ * finding). Refusing them is a false refusal with no safety to show for it. An
+ * absent key and an empty map are the same statement; anything else is not.
+ */
+function hasOptions(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return Object.keys(value).length > 0;
+  }
+  // A scalar or a list where Compose expects a mapping: not empty, not
+  // understood, and not something to wave through.
+  return true;
+}
+
+/**
+ * Is `value` a compose `external:` that means "not external"?
+ *
+ * Only the FALSE spellings are enumerated, and only the ones verified to be
+ * read that way, because the two directions are not symmetric: admitting one
+ * Compose reads as TRUE attaches a foreign volume, while refusing one it reads
+ * as false costs a user a clear error on a spelling nobody uses on purpose. So
+ * `false` and any casing of `"false"` (Compose coerces quoted booleans
+ * case-insensitively — review finding, compose-go `loader/interpolate.go`) are
+ * admitted, and `no` / `off` / `0` are left to be refused rather than added on
+ * the strength of a guess about a second coercion path.
+ */
+function meansNotExternal(value: unknown): boolean {
+  if (value === undefined || value === false) return true;
+  return typeof value === "string" && value.trim().toLowerCase() === "false";
+}
+
+/**
+ * The top-level `volumes:` block (planning#386).
+ *
+ * The `volumes:` rule inside {@link validateServiceSecurity} refuses a host path
+ * a SERVICE declares. It is the whole check, and it is per-service — so the
+ * top-level block, which is not a service, reached the daemon with nothing read
+ * from it but its keys ({@link parseUserNamedVolumes} returns names only). The
+ * local driver's `driver_opts` is a host bind written in another syntax:
+ *
+ *     volumes:
+ *       escape:
+ *         driver_opts: { type: none, device: /, o: bind }
+ *
+ * The service that mounts it writes `- escape:/host`, which every check above
+ * classifies as an ordinary named volume, because that is exactly what it looks
+ * like. No forbidden absolute path appears anywhere in the file.
+ *
+ * **Why this is not "a project may bind its own host".** The project's compose
+ * file is the project's own code and the user is entitled to trust it; the
+ * question is who else can write it. A PLUGIN can — `/project` is read-write in
+ * its containers by design (docs/262 req 29) — and so can an npm `postinstall`
+ * running in the session worker. The watcher then reconciles the rewritten file
+ * and {@link parseComposeFile} re-runs before every `up`
+ * (`ServiceManager.parseProjectCompose`), so the escape needs no user action
+ * beyond the one they already took.
+ *
+ * So a top-level volume must be a plain, Compose-managed, local volume. Four
+ * refusals, deny-the-primitive rather than a safe subset of `driver_opts` (the
+ * `cap_add` rule's reasoning, and `o:` is an opaque pass-through to `mount(8)`):
+ *
+ *  - **`driver_opts`** — the bind above, and `type: nfs`/`cifs` besides, which
+ *    the KERNEL mounts from the host's network namespace and containment
+ *    therefore does not see at all. A service that wants a scratch filesystem
+ *    has `tmpfs:` for it.
+ *  - **a non-`local` `driver`** — a host-installed volume plugin, whose
+ *    semantics ShipIt cannot know and did not choose.
+ *  - **`external: true`** — attaches a volume this session did not create. On a
+ *    shared daemon that includes ShipIt's own, whose names are not secrets
+ *    (`shipit-<stack>_workspace` holds every session's clone AND state dir).
+ *  - **`name:`** — the same reach without the `external` keyword. Compose's own
+ *    project-label check refuses to adopt a foreign volume today, but that is
+ *    an inherited guarantee in someone else's code; there is no use for a
+ *    stable cross-project volume name inside an ephemeral session anyway.
+ *
+ * Unconditional, exactly like the service-level bind rule it mirrors: the two
+ * are one primitive in two syntaxes, and a rule that fires only when contained
+ * would make the Open-session compose file a different language.
+ *
+ * Not closed here, and not close-able by a string rule: `driver_opts` is only
+ * the reach ShipIt can SEE. See `validateTopLevelFileRefs` on the symlink
+ * limit, which applies to this block's neighbours for the same reason.
+ */
+function validateTopLevelVolumes(block: unknown): void {
+  if (!block || typeof block !== "object" || Array.isArray(block)) return;
+  for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
+    // `pgdata:` with no body is the ordinary declaration — nothing to check.
+    if (entry === null || entry === undefined) continue;
+    if (typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: definition must be a mapping.`,
+      );
+    }
+    const vol = entry as Record<string, unknown>;
+    if (hasOptions(vol.driver_opts)) {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: \`driver_opts\` is not allowed. They can attach a host path `
+        + "or a remote filesystem to the session (`type: none` + `device:` is a bind mount). "
+        + "Use an ordinary named volume, or a service `tmpfs:` entry.",
+      );
+    }
+    if (vol.driver !== undefined && vol.driver !== "local") {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: volume driver \`${showValue(vol.driver)}\` is not allowed. `
+        + "Only Docker's built-in `local` driver is supported.",
+      );
+    }
+    // Only a value that does NOT mean false attaches pre-existing storage. The
+    // legacy `external: { name: … }` object form is one such, and is caught by
+    // the same test.
+    if (!meansNotExternal(vol.external)) {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: \`external\` volumes are not allowed. They attach storage this `
+        + "session did not create, including volumes belonging to other sessions.",
+      );
+    }
+    if (vol.name !== undefined) {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: a \`name:\` override is not allowed — it can point at a volume `
+        + "outside this session. Compose names the volume after the project.",
+      );
+    }
+  }
+}
+
+/**
+ * The top-level `networks:` block — the same structural gap as
+ * {@link validateTopLevelVolumes}, one block over (planning#386).
+ *
+ * A CONTAINED service never joins one of these: the override replaces its
+ * `networks:` with `!override [shipit-session]`, which is why the reserved-name
+ * rule in {@link parseComposeFile} was written for contained sessions only. An
+ * OPEN session's override does not — it appends `shipit-session` and Compose
+ * merges the two lists — so there the project's own networks are joined as
+ * declared, and nothing had ever read this block.
+ *
+ * "Open means unrestricted egress" does not cover what that reaches. Egress is
+ * about routed internet access; these are different primitives:
+ *
+ *  - `driver: macvlan` / `ipvlan` with `driver_opts: {parent: <host nic>}` puts
+ *    the container on the HOST's layer-2 segment with its own MAC — not an
+ *    internet route but a peer on the host's LAN.
+ *  - `external: true` (and its `name:`-only twin) joins a network that already
+ *    exists on the daemon. Session isolation is a claim ShipIt makes in Open
+ *    sessions too, and `shipit-session-<id>` / the orchestrator's own compose
+ *    network are named by a scheme, not by a secret.
+ *
+ * So the same shape as the volumes rule: `bridge` (or unstated) driver only, no
+ * `driver_opts`, no `ipam`, no `external`, no `name:`. And the reserved-name
+ * refusal applies to every session rather than contained ones — Compose merges
+ * maps key-by-key, so a key the override does not set survives from the
+ * project's file, and `driver:` under a project-declared `shipit-session:` is
+ * exactly such a key.
+ *
+ * `driver_opts` and `ipam` were the two this nearly kept, on the grounds that
+ * MTU is a real deployment need and that a chosen subnet only collides with
+ * itself. Both are refused instead, because neither reason survived being
+ * written down as a claim: `com.docker.network.bridge.name` names a host
+ * interface, `ipam` picks the address a container presents to everything that
+ * identifies containers by source IP (docs/172), and "assessed and probably
+ * harmless" is the shape of the residue this very block already shipped once. A
+ * refusal is loud and says what to remove; the alternative was a safe-subset
+ * allowlist over an option namespace Docker extends without asking us.
+ */
+function validateTopLevelNetworks(block: unknown): void {
+  if (!block || typeof block !== "object" || Array.isArray(block)) return;
+  for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
+    if (name === "shipit-session") {
+      throw new ComposeValidationError(
+        "The reserved `shipit-session` network cannot be declared by a project's compose file.",
+      );
+    }
+    if (entry === null || entry === undefined) continue;
+    if (typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ComposeValidationError(`Network \`${name}\`: definition must be a mapping.`);
+    }
+    const net = entry as Record<string, unknown>;
+    // The driver first: `macvlan` needs a `driver_opts.parent`, and naming the
+    // driver is the more useful half of that pair to report.
+    if (net.driver !== undefined && net.driver !== "bridge") {
+      throw new ComposeValidationError(
+        `Network \`${name}\`: network driver \`${showValue(net.driver)}\` is not allowed. `
+        + "Only Docker's built-in `bridge` driver is supported — `macvlan`/`ipvlan` attach the "
+        + "container to the host's own network segment.",
+      );
+    }
+    if (hasOptions(net.driver_opts) || hasOptions(net.ipam)) {
+      const key = hasOptions(net.driver_opts) ? "driver_opts" : "ipam";
+      throw new ComposeValidationError(
+        `Network \`${name}\`: \`${key}\` is not allowed. It reaches host networking — a bridge `
+        + "name is a host interface, and an address pool decides what a container presents as "
+        + "its source IP. Declare the network with no options.",
+      );
+    }
+    if (!meansNotExternal(net.external)) {
+      throw new ComposeValidationError(
+        `Network \`${name}\`: \`external\` networks are not allowed. They join a network this `
+        + "session did not create, including networks belonging to other sessions.",
+      );
+    }
+    if (net.name !== undefined) {
+      throw new ComposeValidationError(
+        `Network \`${name}\`: a \`name:\` override is not allowed — it can point at a network `
+        + "outside this session. Compose names the network after the project.",
+      );
+    }
+  }
+}
+
+/**
+ * The top-level `secrets:` / `configs:` blocks — see {@link validateReadablePath}.
+ *
+ * `file:` is the only key checked, and the other three were looked at while
+ * closing the sibling blocks (planning#386) rather than left unexamined:
+ *
+ *  - `content:` (configs) is an inline literal — it reaches nothing.
+ *  - `external: true` / `name:` never become a host-file read. A referenced
+ *    external secret or config is refused by Compose itself as UNSUPPORTED —
+ *    not looked up and not found missing (`docker/compose` `pkg/compose/create.go`,
+ *    review finding; an earlier draft of this comment said it resolved against
+ *    swarm objects a non-swarm daemon lacks, which reached the same verdict by
+ *    a mechanism that does not exist). A bare `name:` fails source validation
+ *    instead. Either way there is no path from these two keys to a file. This
+ *    is the difference from the volumes and networks blocks, where the same
+ *    keys name ordinary daemon objects that DO exist and belong to other
+ *    sessions — which is why they are refused there and left here.
+ *  - `environment: VAR` materializes a value from the environment Compose is
+ *    interpolating with, which is `composeSpawnEnv()`'s allowlist plus the
+ *    project's own `.env`. It is deliberately NOT refused: the allowlist
+ *    carries no credential (that is its whole purpose), a `.env` in the
+ *    workspace is the project's own file, and a project reading its own
+ *    variable into a config is a legitimate pattern. What it does mean is that
+ *    the allowlist is load-bearing HERE too, not only at the spawn — widening
+ *    `COMPOSE_ENV_PASSTHROUGH` with anything sensitive would open this without
+ *    touching this file.
+ */
+function validateTopLevelFileRefs(kind: string, block: unknown): void {
+  if (!block || typeof block !== "object" || Array.isArray(block)) return;
+  for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    validateReadablePath(kind, name, (entry as Record<string, unknown>).file);
+  }
+}
+
+/**
+ * A service's `env_file:`, in each of the three shapes Compose accepts: a bare
+ * string, a list of strings, and a list of `{ path, required }` objects.
+ */
+function validateServiceEnvFile(name: string, envFile: unknown): void {
+  const entries = Array.isArray(envFile) ? envFile : [envFile];
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      validateReadablePath("Service", name, entry);
+    } else if (entry && typeof entry === "object") {
+      validateReadablePath("Service", name, (entry as Record<string, unknown>).path);
+    }
+  }
+}
+
+/**
  * Validate security constraints for a compose service definition.
  */
-function validateServiceSecurity(
+function isTrustedOpsProxyService(
+  name: string,
+  svc: Record<string, unknown>,
+  trustedOpsProxy: boolean,
+): boolean {
+  if (name !== "docker-socket-proxy" || !trustedOpsProxy
+    || svc.image !== "tecnativa/docker-socket-proxy:0.3.0"
+    || svc.build !== undefined || svc.command !== undefined || svc.entrypoint !== undefined
+    || svc.configs !== undefined || svc.secrets !== undefined || svc.env_file !== undefined
+    || svc.tmpfs !== undefined || svc.working_dir !== undefined || svc.healthcheck !== undefined
+    || svc.user !== undefined || svc.pid !== undefined || svc.ipc !== undefined
+    || svc.security_opt !== undefined || svc.cap_add !== undefined
+    || svc.network_mode !== undefined) return false;
+  const environment = svc.environment;
+  const env: Record<string, unknown> = {};
+  // The server-authored template uses map form. List entries without `=` are
+  // resolved from the project environment by Compose, so their effective
+  // values cannot be validated here and must not receive proxy trust.
+  if (Array.isArray(environment)) return false;
+  if (environment && typeof environment === "object") {
+    Object.assign(env, environment);
+  }
+  const allowed = ["CONTAINERS", "EVENTS", "IMAGES", "INFO", "NETWORKS", "VOLUMES", "VERSION", "PING"];
+  const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+    "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+  const expectedKeys = new Set([...allowed, ...denied]);
+  const hasReadOnlySocket = Array.isArray(svc.volumes) && svc.volumes.length === 1 && svc.volumes.some((vol) =>
+    typeof vol === "string"
+      ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
+      : Boolean(vol && typeof vol === "object"
+        && (vol as Record<string, unknown>).source === "/var/run/docker.sock"
+        && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
+        && (vol as Record<string, unknown>).read_only === true));
+  return hasReadOnlySocket
+    && Object.keys(env).length === expectedKeys.size
+    && Object.keys(env).every((key) => expectedKeys.has(key))
+    && allowed.every((key) => String(env[key]) === "1")
+    && denied.every((key) => String(env[key]) === "0");
+}
+
+/**
+ * Exported for docs/262: a plugin's compose fragment is held to exactly the
+ * rules the consuming session applies to the project's own services, so
+ * `plugin-compose.ts` runs THIS function rather than a second copy that could
+ * drift from it.
+ */
+export function validateServiceSecurity(
   name: string,
   svc: Record<string, unknown>,
   dockerSocket: boolean,
+  containEgress: boolean,
+  trustedOpsProxy: boolean,
 ): void {
+  if (containEgress) {
+    const interpolationSensitive = [
+      svc.privileged, svc.volumes, svc.devices, svc.network_mode, svc.user,
+      svc.use_api_socket, svc.deploy, svc.labels, svc.cap_add, svc.post_start,
+      svc.pre_stop, svc.extends,
+      svc.volumes_from,
+    ];
+    const containsInterpolation = (value: unknown): boolean => {
+      if (typeof value === "string") return value.includes("${");
+      if (Array.isArray(value)) return value.some(containsInterpolation);
+      return Boolean(value && typeof value === "object"
+        && Object.entries(value).some(([key, nested]) => key.includes("${") || containsInterpolation(nested)));
+    };
+    if (interpolationSensitive.some(containsInterpolation)) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: Compose variable interpolation is not allowed in security-sensitive fields `
+        + "for contained services. Use resolved literal values.",
+      );
+    }
+  }
+  const trustedProxyShape = isTrustedOpsProxyService(name, svc, trustedOpsProxy);
   // Reject privileged: true
   if (svc.privileged === true) {
     throw new ComposeValidationError(
@@ -514,6 +1206,55 @@ function validateServiceSecurity(
       `Service \`${name}\`: \`network_mode: host\` is not allowed. ` +
       `Use explicit port mappings instead.`,
     );
+  }
+
+
+  // NET_ADMIN would let repository code flush its namespace firewall. Reject
+  // every capability addition rather than maintain a fragile safe subset.
+  if (containEgress && Array.isArray(svc.cap_add) && svc.cap_add.length > 0) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`cap_add\` is not allowed. Remove added Linux capabilities.`,
+    );
+  }
+  if (containEgress && svc.use_api_socket === true) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`use_api_socket: true\` is not allowed for contained services.`,
+    );
+  }
+  if (!dockerSocket && svc.use_api_socket === true) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`use_api_socket: true\` requires \`compose.docker-socket: true\`.`,
+    );
+  }
+  if (containEgress && (svc.post_start !== undefined || svc.pre_stop !== undefined)) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: Compose lifecycle hooks are not allowed for contained services.`,
+    );
+  }
+  if (containEgress && svc.volumes_from !== undefined) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`volumes_from\` is not allowed for contained services.`,
+    );
+  }
+
+  const labels = svc.labels;
+  const labelKeys = Array.isArray(labels)
+    ? labels.map((entry) => typeof entry === "string" ? entry.split("=", 1)[0] : "")
+    : labels && typeof labels === "object" ? Object.keys(labels) : [];
+  const reserved = containEgress ? labelKeys.find((key) => key.startsWith("shipit-egress-")) : undefined;
+  if (reserved) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: label \`${reserved}\` uses ShipIt's reserved egress namespace.`,
+    );
+  }
+  const deploy = svc.deploy;
+  if (containEgress && deploy && typeof deploy === "object") {
+    const restartPolicy = (deploy as Record<string, unknown>).restart_policy;
+    if (restartPolicy !== undefined) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`deploy.restart_policy\` is not allowed for contained services.`,
+      );
+    }
   }
 
   // Reject device passthrough except the exact /dev/kvm mapping (docs/213).
@@ -539,7 +1280,19 @@ function validateServiceSecurity(
       if (!source) continue;
 
       // Docker socket check
-      if (source.includes("/var/run/docker.sock") && !dockerSocket) {
+      const isSocket = source === "/var/run/docker.sock";
+      const socketReadOnly = typeof vol === "string"
+        ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
+        : Boolean(vol && typeof vol === "object"
+          && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
+          && (vol as Record<string, unknown>).read_only === true);
+      if (isSocket && containEgress && !(trustedProxyShape && socketReadOnly)) {
+        throw new ComposeValidationError(
+          `Service \`${name}\`: direct Docker socket access is not allowed with contained egress. `
+          + "Use ShipIt's trusted docker-socket-proxy service.",
+        );
+      }
+      if (isSocket && !dockerSocket) {
         if (name === "docker-socket-proxy") {
           throw new ComposeValidationError(
             `Service \`${name}\`: Docker socket mount is only allowed for ` +
@@ -568,6 +1321,75 @@ function validateServiceSecurity(
       }
     }
   }
+  // docs/270 req 4a — a project may not declare a `user:` inside the range
+  // ShipIt allocates session identities from.
+  //
+  // Checked for EVERY service, contained or not, and before the contained-service
+  // rule below: the hazard is not egress, it is a service running as some other
+  // session's identity. The range is chosen so nothing real falls in it — distro
+  // system accounts stop at 999, every image account a project names is in the
+  // low thousands, `nobody` is 65534, and the `subuid` convention tops out around
+  // 165536 — so this refusal exists to make a collision impossible rather than
+  // merely unlikely, and no project that exists today trips it.
+  const declaredUser = typeof svc.user === "string" || typeof svc.user === "number"
+    ? String(svc.user).trim()
+    : "";
+  const declaredUid = /^\d+(?::\d+)?$/.test(declaredUser)
+    ? Number(declaredUser.split(":", 1)[0])
+    : NaN;
+  if (isSessionUid(declaredUid)) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`user: ${declaredUser}\` is inside ${SESSION_UID_MIN}-${SESSION_UID_MAX}, `
+      + "the UID range ShipIt reserves for per-session identities. A service running as another "
+      + "session's UID is not something ShipIt can allow. Pick a UID below "
+      + `${SESSION_UID_MIN} — the account your image already uses is almost certainly one.`,
+    );
+  }
+  if (containEgress && !trustedProxyShape) {
+    const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
+      ? String(svc.user).trim()
+      : "";
+    // docs/271 — what containment needs is a numeric, non-root, non-reserved
+    // runtime UID (docs/263: so repository code can neither be root nor assume a
+    // UID the namespace firewall exempts). A DECLARATION is one way to have one.
+    // ShipIt's own fill-in is the other, and it is the better one: an allocated
+    // session identity is non-root and outside 911/912 by construction, so it
+    // satisfies the rule without asking the project to be right about it.
+    //
+    // Requiring the declaration anyway is what broke every repository. The
+    // fill-in supplies THIS session's uid, and a project may not declare that uid
+    // — req 4a above refuses the whole session range. So a contained project had
+    // two options and both failed: declare nothing and have its entire compose
+    // file refused, or declare some other uid and get services that cannot write
+    // the workspace they share with the agent. `compose.md` documented the first
+    // half of the trap in the same breath as the rule ("Services share the
+    // agent's user … Avoid setting `user:`"), which is what github#2374 caught.
+    //
+    // The group-write half of the fix (`session-worker-uid.ts`) is what keeps a
+    // DELIBERATE declaration working. This is what stops one being demanded.
+    // `> 0`, not merely "set": `sessionWorkerUid()` rejects a negative value but
+    // returns 0 as a number, and a deployment with `SHIPIT_SESSION_WORKER_UID=0`
+    // would have the fill-in emit `user: "0:0"` — root, under containment, which
+    // is the one thing docs/263's rule exists to prevent. That deployment used to
+    // fail closed here (no declaration, whole file refused) and must keep doing
+    // so. Checked at this gate rather than by tightening `sessionWorkerUid()`,
+    // whose 0 is read as "legacy root runtime" by the drift guard and by every
+    // chown helper (review finding A2).
+    const fillInUid = sessionWorkerUid();
+    const shipitFillsIn = containedUser === "" && fillInUid !== null && fillInUid > 0;
+    const containedUid = /^\d+(?::\d+)?$/.test(containedUser)
+      ? Number(containedUser.split(":", 1)[0])
+      : NaN;
+    if (!shipitFillsIn
+      && (!Number.isInteger(containedUid) || containedUid <= 0
+        || containedUid === EGRESS_RESOLVER_UID || containedUid === EGRESS_PROXY_UID)) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: contained services must declare a numeric, non-root \`user:\` `
+        + `that is not reserved UID ${EGRESS_RESOLVER_UID} or ${EGRESS_PROXY_UID}. `
+        + "Use an image that runs directly as this user, or use an Open session for root-init images.",
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -588,11 +1410,20 @@ function resolvePreviewMode(svc: ComposeService): "auto" | "manual" {
 /**
  * Check if a volume source is a relative workspace path (., ./, ./subdir).
  * Returns the relative subdirectory (empty string for root) or null if not.
+ *
+ * **The trailing slash is stripped** (#2426). `./game/:/app` is an ordinary way
+ * to write a directory bind, and compose reads it exactly like `./game:/app` —
+ * but the raw `"game/"` this used to return is not a path segment, so
+ * {@link depDirWithinMount} matched no dep dir under it (`"game/node_modules"`
+ * neither equals `"game/"` nor starts with `"game//"`) and the service silently
+ * got the plain directory instead of the agent's overlay. That is #2426's
+ * failure mode reached through a punctuation difference. The same normalization
+ * keeps {@link joinSubpath} from handing the daemon a `…/game/` volume subpath.
  */
 function isRelativeWorkspacePath(source: string): string | null {
   if (source === "." || source === "./") return "";
-  if (source.startsWith("./")) return source.slice(2);
-  return null;
+  if (!source.startsWith("./")) return null;
+  return source.slice(2).replace(/\/+$/, "");
 }
 
 /**
@@ -671,8 +1502,24 @@ function rewriteVolumes(
 function volumeSourceTarget(vol: unknown): { source: string | null; target: string | null } {
   if (typeof vol === "string") {
     const parts = vol.split(":");
-    // "src:tgt[:mode]" — a bare "/app/node_modules" anonymous volume has no ":".
-    return parts.length >= 2 ? { source: parts[0], target: parts[1] } : { source: null, target: null };
+    // "src:tgt[:mode]", or a bare "/app/node_modules" anonymous volume with no
+    // ":" — which HAS a target (the path is where it mounts) and no source.
+    //
+    // #2426: that second case used to report `target: null`, and the caller that
+    // needs it is the de-duplication below, whose whole job is that "the daemon
+    // never sees a duplicate target". `[".:/app", "/app/node_modules"]` — the
+    // canonical Node idiom for shielding `node_modules` from the host bind — is
+    // therefore exactly where it failed: the anonymous entry was kept AND the
+    // dep-dir overlay was appended at the same path, so one service declared two
+    // mounts at `/app/node_modules`. Whichever the daemon then honours, an
+    // anonymous volume winning is #2426's divergence restored in full — a second,
+    // private dependency tree the agent cannot reach.
+    //
+    // Reporting the target does not make anything nest under it: the two callers
+    // that resolve a workspace mount require a non-null SOURCE, which an
+    // anonymous volume still has not got.
+    if (parts.length >= 2) return { source: parts[0], target: parts[1] };
+    return { source: null, target: parts[0] ?? null };
   }
   if (vol && typeof vol === "object") {
     const obj = vol as Record<string, unknown>;
@@ -736,6 +1583,139 @@ function overlayMountsForService(
 }
 
 /**
+ * docs/262 req 27 — the same nesting for a **`repo: self`** plugin service.
+ *
+ * A plugin service never reaches {@link overlayMountsForService}: its volumes
+ * are not the user's compose entries but ShipIt's own re-emitted ones
+ * (`plugin-compose.ts`), so a workspace mount is already the workspace VOLUME
+ * with a subpath rather than a `./…` source, and `svc.volumes` — the raw
+ * user-compose list that block reads — is empty for it. So a dep dir was, from a
+ * plugin's side, the empty directory the overlay mounts over everywhere else.
+ * Under `repo: self` that is fatal (nikzlabs/shipit#2298): the plugin's tree IS
+ * the project's tree, there is no generation and no `install` of its own, and
+ * the dependencies its entry points load are exactly the ones `agent.install`
+ * prepared — all of them missing.
+ *
+ * **A tracked generation is deliberately left alone, and the reason is the
+ * install gate.** Its own tree rides its generation volume and already carries
+ * what its own `install` produced, so it needs nothing here; giving it the
+ * project's dep dirs at `/project` as well would look tidier and would create a
+ * race the tracked case has no answer for — it starts with
+ * `dependsOnInstall: false` (rightly: its dependencies are its own), so it would
+ * be reading `node_modules` while `agent.install` writes them, which is the
+ * failure docs/137's gate exists to prevent. Exposing the project's
+ * dependencies to a CONSUMING plugin is a separate decision that has to settle
+ * that gate first; it is not part of fixing self-use.
+ *
+ * So one rule, and the gate follows it exactly: **a plugin sees the project's
+ * dependency directories precisely when the project's tree is its own tree, and
+ * then it waits for the project's install** ({@link toComposeService}).
+ *
+ * `/plugin-state` and `/plugin-settings.json` ride the same volume, under
+ * `sessions/<id>/plugin-data/…`. They are excluded by the very test that
+ * includes `/project`: the subpath must be at or under `workspaceSubpath`, and
+ * `plugin-data/` is a sibling of `workspace/`, not a child.
+ */
+function overlayMountsForPluginService(
+  rawVolumes: unknown[],
+  overlayDepDirs: OverlayDepDirVolume[],
+  workspaceSubpath: string,
+  referenced: Set<string>,
+): Record<string, unknown>[] {
+  const mounts: Record<string, unknown>[] = [];
+  const seenTargets = new Set<string>();
+  for (const vol of rawVolumes) {
+    if (!vol || typeof vol !== "object") continue;
+    const obj = vol as Record<string, unknown>;
+    if (obj.source !== WORKSPACE_VOLUME_ALIAS || typeof obj.target !== "string") continue;
+    const mountSubdir = workspaceSubdirOfMount(workspaceSubpath, obj);
+    if (mountSubdir === null) continue;
+    for (const { depDir, volumeName } of overlayDepDirs) {
+      const rel = depDirWithinMount(mountSubdir, depDir);
+      if (rel === null) continue;
+      const mountTarget = rel ? path.posix.join(obj.target, rel) : obj.target;
+      if (seenTargets.has(mountTarget)) continue;
+      seenTargets.add(mountTarget);
+      referenced.add(volumeName);
+      mounts.push({ type: "volume", source: volumeName, target: mountTarget });
+    }
+  }
+  return mounts;
+}
+
+/**
+ * Where a workspace-volume mount sits INSIDE the session's clone, or null when
+ * it is not inside it at all. "" means the mount is the clone root.
+ */
+function workspaceSubdirOfMount(workspaceSubpath: string, entry: Record<string, unknown>): string | null {
+  const volume = entry.volume;
+  const subpath = volume && typeof volume === "object"
+    ? (volume as Record<string, unknown>).subpath
+    : undefined;
+  if (typeof subpath !== "string") return null;
+  if (subpath === workspaceSubpath) return "";
+  if (subpath.startsWith(`${workspaceSubpath}/`)) return subpath.slice(workspaceSubpath.length + 1);
+  return null;
+}
+
+/**
+ * Compose's own escape: `$$` renders as a literal `$` and interpolates nothing.
+ *
+ * Compose interpolates `${VAR}` and `$VAR` in the files it reads from the
+ * environment of the process that runs it — the ORCHESTRATOR's. Everything
+ * ShipIt writes into a plugin service's definition therefore goes through this:
+ * the fragment's own lines (`plugin-compose.ts`) and the credential values
+ * delivered beside them (req 23). Ordinary shell usage (`sh -c 'echo $HOME'`)
+ * survives untouched, which rejecting `$` would not allow.
+ */
+export function escapeDollars(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/\$/g, "$$$$");
+  if (Array.isArray(value)) return value.map(escapeDollars);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      out[key.replace(/\$/g, "$$$$")] = escapeDollars(nested);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * docs/262 req 23 — merge a plugin's delivered credential values into the
+ * `environment` map ShipIt already emitted for that service.
+ *
+ * Two rules, in this order:
+ *
+ *  - **The delivery wins over the fragment.** A plugin may declare `FAL_KEY` in
+ *    its manifest AND set `FAL_KEY` in its own fragment; Compose would let the
+ *    fragment's literal stand, so the card would report the project's stored
+ *    value satisfied while the container ran on something else.
+ *  - **ShipIt's contract never loses.** A credential named after one of the
+ *    contract variables (`SHIPIT_PROJECT_DIR` and friends) is dropped rather
+ *    than delivered: those name the mounts ShipIt made, and a stored secret is
+ *    not allowed to move a plugin's idea of where the project is. Nothing is
+ *    lost that could have worked — the fragment's own `environment` could never
+ *    override them either, for the same reason.
+ *
+ * Values are escaped exactly as the rest of the definition already was, so
+ * Compose interpolates nothing out of the orchestrator's environment.
+ */
+function mergePluginCredentialEnv(
+  existing: unknown,
+  delivered: Record<string, string>,
+): Record<string, unknown> {
+  const base = (existing && typeof existing === "object" && !Array.isArray(existing)
+    ? { ...(existing as Record<string, unknown>) }
+    : {});
+  for (const [name, value] of Object.entries(delivered)) {
+    if (PLUGIN_CONTRACT_ENV_NAMES.has(name)) continue;
+    base[name] = escapeDollars(value);
+  }
+  return base;
+}
+
+/**
  * Generate the `.shipit/compose.override.yml` content.
  *
  * The override adds:
@@ -755,19 +1735,45 @@ export function generateComposeOverride(
   const referencedOverlayVolumes = new Set<string>();
 
   for (const svc of services) {
+    const applyServiceContainment = Boolean(opts.containEgress && !svc.trustedOpsProxy);
     const mode = resolvePreviewMode(svc);
     const labels: Record<string, string> = {
       "shipit-parent-session": opts.sessionId,
       "shipit-service-name": svc.name,
       "shipit-preview-mode": mode,
+      // Always write the label so a repository-supplied `true` cannot survive
+      // Compose map merging for an ordinary service.
+      "shipit-trusted-ops-proxy": svc.trustedOpsProxy ? "true" : "false",
     };
     if (opts.stackName) {
       labels["shipit-stack"] = opts.stackName;
     }
+    if (svc.settingsFingerprint) {
+      labels["shipit-plugin-settings"] = svc.settingsFingerprint;
+    }
     const entry: Record<string, unknown> = {
+      // docs/262 — a plugin service has no definition in the user's compose
+      // file, so its own (already validated and path-rewritten) definition is
+      // the base everything below overlays. Spread FIRST: every ShipIt-owned
+      // key that follows must win over anything the fragment declared.
+      ...(svc.pluginDefinition ?? {}),
       labels,
-      networks: ["shipit-session"],
-      cap_drop: ["NET_RAW"],
+      // Replace, do not merge, user-declared networks. A second ordinary
+      // bridge would give repository code a NAT route before containment.
+      networks: opts.containEgress ? "__RESET_NETWORKS__" : ["shipit-session"],
+      cap_drop: applyServiceContainment ? ["NET_RAW", "SETUID", "SETGID"] : ["NET_RAW"],
+      // On an internal Docker network, ordinary routed traffic is blocked but
+      // Docker's embedded DNS can still forward queries through the daemon.
+      // Point its upstream at loopback until the controlled resolver is in the
+      // namespace, closing the pre-pause DNS-tunnelling window.
+      ...(opts.containDns ? { dns: "__RESET_DNS__" } : {}),
+      ...(applyServiceContainment ? {
+        restart: "no",
+        security_opt: ["no-new-privileges"],
+      } : {}),
+      ...(opts.containProxy && !svc.trustedOpsProxy
+        ? { sysctls: { "net.ipv4.conf.all.route_localnet": "1" } }
+        : {}),
     };
 
     // docs/150 §7 / #1646 — run compose services as the same UID the session
@@ -783,16 +1789,48 @@ export function generateComposeOverride(
     //   - set (e.g. 1000) → both sides share the UID; one deploy flips both.
     // An explicit `user:` in the user's compose file is honored — we never
     // override a deliberate choice.
-    const workerUid = sessionWorkerUid();
+    // docs/270 — the session's OWN uid, with the shared gid. Falls back to the
+    // single global value for a session that predates per-session identities, so
+    // its services keep running as exactly what they ran as before.
+    const identity = identityForSession(opts.sessionId);
+    const workerUid = identity?.uid ?? sessionWorkerUid();
+    const workerGid = identity?.gid ?? workerUid;
     // docs/128 — the ops docker-socket-proxy image must start as its image
     // default user so its entrypoint can generate
     // /usr/local/etc/haproxy/haproxy.cfg before haproxy drops privileges. The
     // read-only Docker security boundary is enforced by the proxy's env
     // allowlist and the read-only socket mount, not by forcing this service to
     // the session worker UID.
-    const preservesImageStartupUser = svc.name === "docker-socket-proxy";
+    const preservesImageStartupUser = svc.trustedOpsProxy === true
+      || (!opts.containEgress && svc.name === "docker-socket-proxy");
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
-      entry.user = `${workerUid}:${workerUid}`;
+      entry.user = `${workerUid}:${workerGid}`;
+    } else if (workerGid !== null && svc.user !== undefined && !preservesImageStartupUser) {
+      // docs/271 — a DELIBERATE `user:` keeps its uid (req 4 — we never override
+      // that choice) and gains the session group as a supplementary group, which
+      // is the only way it can write the workspace it shares with the agent.
+      //
+      // The workspace is owned by this session's uid and made group-writable by
+      // `chownWorktreeRecursive`, with the shared gid as its group. A declared
+      // user that happens to name that gid already reached it; one that names its
+      // own (`user: "1300:1301"`, an image's baked-in account) did not, and no
+      // amount of group-write on the tree would have helped it. `group_add` is
+      // the piece that makes the group channel available to BOTH shapes rather
+      // than only to the lucky spelling.
+      //
+      // Additive and capability-free — but NOT because that gid owns only this
+      // session's workspace. It does not: the shared gid is exactly what makes
+      // the cross-session surfaces writable to every session (docs/270 req 9 —
+      // the dep cache, the pnpm store, the overlay dependency base). What makes
+      // this safe is that a service container cannot ADDRESS any of them: none is
+      // mounted into one, and a project's own bind mounts are restricted to
+      // relative workspace paths. So the reachable set is this session's tree.
+      //
+      // Stated this way on purpose. Mounting a shared surface into a service
+      // container would turn this line into a cross-session write channel, and a
+      // comment claiming the gid owns nothing else would have hidden that from
+      // whoever adds the mount (review finding B).
+      entry.group_add = [String(workerGid)];
     }
 
     // Strip host port bindings — compose services are accessed through
@@ -815,11 +1853,22 @@ export function generateComposeOverride(
     // present we emit `secrets:` references + an entrypoint hijack. Falls
     // back to per-service env_file otherwise.
     const ds = opts.dockerSecrets;
-    if (ds && svc.secrets && svc.secrets.length > 0) {
+    if (svc.origin?.kind === "plugin") {
+      // docs/262 req 23 — a plugin's declared credentials, resolved from the
+      // consuming project's own store by `ServiceSecretsResolver`. Checked
+      // FIRST and exclusively: a plugin fragment may not declare
+      // `x-shipit-secrets` (the allowlist refuses it), and the Docker-secrets
+      // branch below hijacks `entrypoint`, which for a plugin service is a line
+      // ShipIt re-emitted from the plugin's own fragment.
+      const delivered = opts.pluginServiceEnv?.[svc.name];
+      if (delivered && Object.keys(delivered).length > 0) {
+        entry.environment = mergePluginCredentialEnv(entry.environment, delivered);
+      }
+    } else if (ds && svc.secrets && svc.secrets.length > 0) {
       const consumed = (ds.perService[svc.name] ?? []).filter((n) => ds.secretNames.includes(n));
       if (consumed.length > 0) {
         entry.secrets = consumed.map((n) => `shipit-${n}`);
-        // SHI-285 — bind-mount the wrapper read-only from its staged absolute
+        // planning#287 — bind-mount the wrapper read-only from its staged absolute
         // path. One mount shape for every setup: the wrapper no longer rides
         // the workspace volume (which is what forced it to live inside the
         // user's git clone), and the daemon resolves this source exactly as it
@@ -847,12 +1896,29 @@ export function generateComposeOverride(
       //
       // No entry → no `env_file:`. There used to be a
       // `?? \`.shipit/.env.${svc.name}\`` fallback for the in-workspace write
-      // path; that writer is gone (SHI-290), so the fallback would now name a
+      // path; that writer is gone (planning#292), so the fallback would now name a
       // file nothing creates and fail the whole stack at `up` time. Absence
       // means `sync()` hasn't run, which is also when there is no file to point
       // at.
       const envFilePath = opts.serviceEnvFiles?.[svc.name];
-      if (envFilePath) entry.env_file = [envFilePath];
+      if (envFilePath) {
+        entry.env_file = [envFilePath];
+      } else {
+        // …and SAY SO. `sync()` writes one entry per secret-declaring service
+        // (even when every value is unset — the file is then empty), and it
+        // always runs before this, so a gap here means the caller generated the
+        // override from resolver state it never read. That is exactly how the
+        // dogfood `dev` service silently lost every secret for a whole session:
+        // `refreshSecrets()` regenerated the override without `serviceEnvFiles`
+        // and nothing anywhere reported an absent env var. The delivery is
+        // still omitted rather than guessed — there is no in-clone path to fall
+        // back to (planning#292) — but it is no longer invisible.
+        console.warn(
+          `[compose:${opts.sessionId}] service "${svc.name}" declares ` +
+            `${svc.secrets.length} x-shipit-secrets entr${svc.secrets.length === 1 ? "y" : "ies"} ` +
+            `but no env file was resolved for it — ShipIt will NOT inject those variables`,
+        );
+      }
     }
 
     // docs/183 Phase 5 — append nested overlay dep-dir mounts for services that
@@ -861,8 +1927,26 @@ export function generateComposeOverride(
     // mount(s) above and add one volume mount per reachable dep dir. An overlay
     // mount whose target collides with an existing mount (a service mounting a
     // dep dir directly) replaces it so the daemon never sees a duplicate target.
-    if (opts.overlayDepDirs && opts.overlayDepDirs.length > 0 && svc.volumes && opts.workspaceVolume) {
-      const overlayMounts = overlayMountsForService(svc.volumes, opts.overlayDepDirs, referencedOverlayVolumes);
+    const depDirs = opts.overlayDepDirs ?? [];
+    if (depDirs.length > 0 && opts.workspaceVolume) {
+      // docs/262 — a `repo: self` plugin service's mounts are ShipIt's own,
+      // already rewritten onto the workspace volume, so they take the
+      // subpath-shaped matcher; the project's own service still declares `./…`
+      // and takes the other. A TRACKED plugin gets neither — see
+      // `overlayMountsForPluginService` for why that is the gate's doing.
+      const isPlugin = svc.origin?.kind === "plugin";
+      const overlayMounts = isPlugin
+        ? (!svc.origin?.self || opts.workspaceSubpath === undefined ? [] : overlayMountsForPluginService(
+          (entry.volumes as unknown[] | undefined) ?? [],
+          depDirs,
+          opts.workspaceSubpath,
+          referencedOverlayVolumes,
+        ))
+        : (svc.volumes === undefined ? [] : overlayMountsForService(
+          svc.volumes,
+          depDirs,
+          referencedOverlayVolumes,
+        ));
       if (overlayMounts.length > 0) {
         const overlayTargets = new Set(overlayMounts.map((m) => m.target as string));
         const existing = (entry.volumes as unknown[] | undefined) ?? [];
@@ -879,6 +1963,7 @@ export function generateComposeOverride(
     networks: {
       "shipit-session": {
         name: `shipit-session-${opts.sessionId}`,
+        ...(opts.containEgress ? { internal: true } : {}),
       },
     },
   };
@@ -927,6 +2012,16 @@ export function generateComposeOverride(
   for (const name of referencedOverlayVolumes) {
     volumeOverlay[name] = { name, external: true };
   }
+  // docs/262 — the same treatment for a plugin generation's overlay volume: the
+  // orchestrator creates it (`plugin-overlay.ts`) and compose only references
+  // it. `shipit-workspace` can appear here too when a plugin mounts the project;
+  // it is already declared above whenever it is reachable, and never overwritten
+  // with its alias, which is not the real volume's name.
+  for (const svc of services) {
+    for (const name of svc.externalVolumes ?? []) {
+      if (!volumeOverlay[name]) volumeOverlay[name] = { name, external: true };
+    }
+  }
   if (Object.keys(volumeOverlay).length > 0) {
     override.volumes = volumeOverlay;
   }
@@ -935,6 +2030,8 @@ export function generateComposeOverride(
   // Replace sentinel with !reset tag — Docker Compose's extension to clear
   // inherited array values instead of appending to them.
   yaml = yaml.replace(/ports: __RESET_PORTS__/g, "ports: !reset []");
+  yaml = yaml.replace(/networks: __RESET_NETWORKS__/g, "networks: !override\n      - shipit-session");
+  yaml = yaml.replace(/dns: __RESET_DNS__/g, "dns: !override\n      - 192.0.2.1");
   return `# Generated by ShipIt — do not edit manually.\n# This file is merged with your docker-compose.yml at runtime.\n${yaml}`;
 }
 
@@ -959,6 +2056,12 @@ export function writeComposeOverride(
 ): string {
   fs.mkdirSync(targetDir, { recursive: true });
   const overridePath = path.join(targetDir, COMPOSE_OVERRIDE_FILE);
-  fs.writeFileSync(overridePath, content, "utf-8");
+  // docs/262 req 23 — 0600, because this file now carries secret VALUES: a
+  // plugin service's declared credentials are emitted as its `environment`
+  // (see `pluginServiceEnv`), which is the only delivery Compose cannot let the
+  // fragment shadow or reinterpret. The mode is set explicitly on every write,
+  // not just at creation, so a file that predates this cannot stay readable.
+  fs.writeFileSync(overridePath, content, { encoding: "utf-8", mode: 0o600 });
+  fs.chmodSync(overridePath, 0o600);
   return overridePath;
 }

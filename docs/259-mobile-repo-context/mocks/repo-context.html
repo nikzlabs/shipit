@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mobile new-session — where does the repo go?</title>
+<style>
+  /* Token values copied from src/client/themes/dark.css + the docs/254 repo
+     palette in src/client/index.css, so the mock is honest about contrast. */
+  :root {
+    --bg-primary: #030712;
+    --bg-secondary: #111827;
+    --bg-tertiary: #1f2937;
+    --bg-elevated: #1f2937;
+    --bg-hover: rgba(255, 255, 255, 0.05);
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --text-tertiary: #6b7280;
+    --text-link: #60a5fa;
+    --border-primary: #1f2937;
+    --border-secondary: #374151;
+    --accent: #3b82f6;
+    --accent-subtle: rgba(59, 130, 246, 0.15);
+    --repo-cyan: #63c8dc;   /* --repo-color-6  */
+    --repo-brick: #de8484;  /* --repo-color-12 */
+    --page: #06070d;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 24px 64px;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede { color: var(--text-secondary); max-width: 78ch; margin: 0 0 8px; }
+  .lede code { color: var(--text-primary); background: var(--bg-tertiary); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 28px;
+    margin-top: 28px;
+    align-items: flex-start;
+  }
+
+  .option { width: 344px; }
+  .option > h2 {
+    font-size: 14px;
+    margin: 0 0 2px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .option > h2 .key {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--bg-primary);
+    background: var(--text-secondary);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+  .option.pick > h2 .key { background: var(--accent); color: #fff; }
+  .note { color: var(--text-tertiary); font-size: 12px; margin: 6px 2px 12px; min-height: 54px; }
+  .note b { color: var(--text-secondary); font-weight: 600; }
+
+  /* ── Phone frame ─────────────────────────────────────────────── */
+  .phone {
+    width: 344px;
+    height: 620px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 22px;
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  }
+
+  .app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-primary);
+    flex-shrink: 0;
+  }
+  .wordmark { font-weight: 650; font-size: 15px; letter-spacing: -0.01em; }
+  .wordmark .dot { color: var(--accent); }
+  .hdr-icons { display: flex; gap: 10px; color: var(--text-secondary); }
+
+  .content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    position: relative;
+  }
+  .rocket {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 44px;
+    opacity: 0.32;
+  }
+
+  /* ── Composer ────────────────────────────────────────────────── */
+  .composer { padding: 8px 10px 6px; flex-shrink: 0; }
+  .inputbox {
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .placeholder {
+    padding: 11px 14px 8px;
+    color: var(--text-tertiary);
+    font-size: 13px;
+  }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px 8px;
+    color: var(--text-tertiary);
+  }
+  .toolbar .spacer { flex: 1; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    padding: 3px 7px;
+    border-radius: 7px;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    white-space: nowrap;
+  }
+  .send {
+    width: 34px; height: 34px;
+    border-radius: 9px;
+    background: var(--accent);
+    display: grid; place-items: center;
+    color: #fff;
+  }
+
+  /* ── Tab bar ─────────────────────────────────────────────────── */
+  .tabbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    border-top: 1px solid var(--border-primary);
+    padding: 5px 10px 9px;
+    flex-shrink: 0;
+  }
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; }
+  .tab {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    font-size: 9.5px; color: var(--text-secondary); padding: 4px 0;
+    white-space: nowrap;
+  }
+  .tab.active { color: var(--text-link); }
+  .actions {
+    display: flex; gap: 8px; align-items: center;
+    border-left: 1px solid var(--border-primary);
+    padding-left: 8px;
+    color: var(--text-secondary);
+  }
+
+  /* ── Option-specific bits ────────────────────────────────────── */
+  .swatch {
+    width: 8px; height: 8px; border-radius: 999px;
+    background: var(--repo-cyan);
+    flex-shrink: 0;
+  }
+
+  /* A — header title */
+  .hdr-repo {
+    display: flex; align-items: center; gap: 6px;
+    min-width: 0; font-size: 13px; color: var(--text-primary);
+  }
+  .hdr-repo .owner { color: var(--text-tertiary); }
+
+  /* B — context bar */
+  .ctxbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-primary);
+    border-left: 3px solid var(--repo-cyan);
+    background: color-mix(in srgb, var(--repo-cyan) 8%, var(--bg-primary));
+    flex-shrink: 0;
+    font-size: 13px;
+  }
+  .ctxbar .label { color: var(--text-tertiary); font-size: 12px; }
+  .ctxbar .name { font-weight: 600; }
+  .ctxbar .chev { margin-left: auto; color: var(--text-tertiary); }
+
+  /* C — composer chip */
+  .repo-chip {
+    background: color-mix(in srgb, var(--repo-cyan) 16%, var(--bg-tertiary));
+    color: var(--text-primary);
+  }
+
+  /* D — empty-state headline */
+  .headline {
+    position: absolute;
+    inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 8px;
+    text-align: center;
+    padding: 0 28px;
+  }
+  .headline .eyebrow { font-size: 12px; color: var(--text-tertiary); }
+  .headline .repo {
+    font-size: 19px; font-weight: 650; letter-spacing: -0.01em;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .headline .switch {
+    font-size: 12px; color: var(--text-link);
+    border: 1px solid var(--border-secondary);
+    border-radius: 999px; padding: 4px 12px;
+    margin-top: 4px;
+  }
+
+  /* E — ambient edge */
+  .edge-top { height: 3px; background: var(--repo-cyan); flex-shrink: 0; }
+
+  /* Repo picker sheet (shown over option C) */
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.55); }
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    background: var(--bg-elevated);
+    border-top: 1px solid var(--border-secondary);
+    border-radius: 14px 14px 0 0;
+    padding: 10px 0 14px;
+  }
+  .sheet h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-tertiary); margin: 2px 14px 8px; font-weight: 600;
+  }
+  .sheet-row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 9px 14px; font-size: 13px;
+  }
+  .sheet-row.sel { background: var(--accent-subtle); }
+  .sheet-row .check { margin-left: auto; color: var(--accent); }
+  .sw-brick { background: var(--repo-brick); }
+
+  footer { margin-top: 44px; max-width: 82ch; color: var(--text-secondary); }
+  footer h2 { font-size: 16px; margin: 0 0 8px; color: var(--text-primary); }
+  footer li { margin-bottom: 6px; }
+  footer b { color: var(--text-primary); }
+</style>
+</head>
+<body>
+
+<h1>Mobile new-session screen — where does the repository go?</h1>
+<p class="lede">
+  On mobile, <code>+ New Session</code> navigates to <code>/{owner}/{repo}/new</code> with a repo
+  the app picked implicitly (current session's repo → active repo). The sidebar, which is where the
+  desktop shows the repo group, is a closed drawer. Nothing on the screen names the repository.
+</p>
+<p class="lede">
+  Quick sessions do not have this problem: the overlay carries an explicit
+  <em>“New quick session in ⟨repo⟩”</em> picker. Five options below, all drawn at 344&nbsp;px with the
+  real dark-theme tokens and the docs/254 repo colour (Cyan).
+</p>
+
+<div class="grid">
+
+  <!-- ══════════════ TODAY ══════════════ -->
+  <div class="option">
+    <h2><span class="key">0</span> Today</h2>
+    <div class="note">The screen as it ships now. <b>No repo anywhere</b> — header, empty state, composer and tab bar are all repo-agnostic. The only clue is the URL, which mobile browsers hide.</div>
+    <div class="phone">
+      <div class="app-header">
+        <div class="wordmark">ShipIt<span class="dot">.</span></div>
+        <div class="hdr-icons">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 8l3-2.5"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M6.4 6.2a1.7 1.7 0 113 1.1c-.6.5-1.4.7-1.4 1.6M8 11.3v.1"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.6M8 12.8v1.6M14.4 8h-1.6M3.2 8H1.6M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1M12.5 12.5l-1.1-1.1M4.6 4.6L3.5 3.5"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.4A5.4 5.4 0 016.6 3 5.4 5.4 0 1013 9.4z"/></svg>
+        </div>
+      </div>
+      <div class="content">
+        <div class="rocket">🚀</div>
+      </div>
+      <div class="composer">
+        <div class="inputbox">
+          <div class="placeholder">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span class="pill">Accept edits</span>
+            <span class="pill">◔ 12%</span>
+            <span class="spacer"></span>
+            <span class="pill">Opus 5</span>
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="2" width="4" height="7" rx="2"/><path d="M4 7.5a4 4 0 008 0M8 11.5V14"/></svg>
+            <span class="send"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 13V3.4M4.2 7.2L8 3.4l3.8 3.8"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tabs">
+          <div class="tab active"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 8a5.4 5.4 0 1110.8 0 5.4 5.4 0 01-7.6 4.9L2.6 13.4l.5-2.9A5.3 5.3 0 012.6 8z"/></svg>Chat</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.4" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="9" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="2.4" y="9" width="4.6" height="4.6" rx="1"/><rect x="9" y="9" width="4.6" height="4.6" rx="1"/></svg>Workspace</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 4.5h10.8M2.6 8h10.8M2.6 11.5h10.8"/></svg>Sessions</div>
+        </div>
+        <div class="actions">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10"/></svg>
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 1.8L3.6 9h3.2l-.8 5.2L12.4 7H9.2z"/></svg>
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 1.8L3.6 9h3.2l-.8 5.2L12.4 7H9.2z"/></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ A — HEADER ══════════════ -->
+  <div class="option">
+    <h2><span class="key">A</span> Repo in the app header</h2>
+    <div class="note">The header carries <b>⟨repo⟩</b> beside the wordmark while on the new-session route. Cheapest change, always in view, never steals vertical space — but the header is narrow, so a long <code>owner/repo</code> truncates, and it offers no way to switch.</div>
+    <div class="phone">
+      <div class="app-header">
+        <div class="wordmark" style="font-size:14px">ShipIt<span class="dot">.</span></div>
+        <div class="hdr-repo">
+          <span class="swatch"></span>
+          <span><span class="owner">shipitcorp/</span>shipit</span>
+        </div>
+        <div class="hdr-icons">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.6M8 12.8v1.6M14.4 8h-1.6M3.2 8H1.6"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.4A5.4 5.4 0 016.6 3 5.4 5.4 0 1013 9.4z"/></svg>
+        </div>
+      </div>
+      <div class="content"><div class="rocket">🚀</div></div>
+      <div class="composer">
+        <div class="inputbox">
+          <div class="placeholder">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span class="pill">Accept edits</span>
+            <span class="spacer"></span>
+            <span class="pill">Opus 5</span>
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="2" width="4" height="7" rx="2"/><path d="M4 7.5a4 4 0 008 0M8 11.5V14"/></svg>
+            <span class="send"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 13V3.4M4.2 7.2L8 3.4l3.8 3.8"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tabs">
+          <div class="tab active"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 8a5.4 5.4 0 1110.8 0 5.4 5.4 0 01-7.6 4.9L2.6 13.4l.5-2.9A5.3 5.3 0 012.6 8z"/></svg>Chat</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.4" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="9" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="2.4" y="9" width="4.6" height="4.6" rx="1"/><rect x="9" y="9" width="4.6" height="4.6" rx="1"/></svg>Workspace</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 4.5h10.8M2.6 8h10.8M2.6 11.5h10.8"/></svg>Sessions</div>
+        </div>
+        <div class="actions">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10"/></svg>
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 1.8L3.6 9h3.2l-.8 5.2L12.4 7H9.2z"/></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ B — CONTEXT BAR ══════════════ -->
+  <div class="option pick">
+    <h2><span class="key">B</span> Context bar in the PR-card slot</h2>
+    <div class="note">A strip in the slot the <b>PR lifecycle card</b> occupies once the session graduates — empty on <code>/new</code>, so this costs no new vertical space in the steady state. Carries the docs/254 repo colour edge, the repo name, and a tap target to switch repo.</div>
+    <div class="phone">
+      <div class="app-header">
+        <div class="wordmark">ShipIt<span class="dot">.</span></div>
+        <div class="hdr-icons">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 8l3-2.5"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.6M8 12.8v1.6M14.4 8h-1.6M3.2 8H1.6"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.4A5.4 5.4 0 016.6 3 5.4 5.4 0 1013 9.4z"/></svg>
+        </div>
+      </div>
+      <div class="ctxbar">
+        <span class="label">New session in</span>
+        <span class="name">shipitcorp/shipit</span>
+        <span class="chev"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.5 3.5L10 8l-4.5 4.5"/></svg></span>
+      </div>
+      <div class="content"><div class="rocket">🚀</div></div>
+      <div class="composer">
+        <div class="inputbox">
+          <div class="placeholder">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span class="pill">Accept edits</span>
+            <span class="pill">◔ 12%</span>
+            <span class="spacer"></span>
+            <span class="pill">Opus 5</span>
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="2" width="4" height="7" rx="2"/><path d="M4 7.5a4 4 0 008 0M8 11.5V14"/></svg>
+            <span class="send"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 13V3.4M4.2 7.2L8 3.4l3.8 3.8"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tabs">
+          <div class="tab active"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 8a5.4 5.4 0 1110.8 0 5.4 5.4 0 01-7.6 4.9L2.6 13.4l.5-2.9A5.3 5.3 0 012.6 8z"/></svg>Chat</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.4" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="9" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="2.4" y="9" width="4.6" height="4.6" rx="1"/><rect x="9" y="9" width="4.6" height="4.6" rx="1"/></svg>Workspace</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 4.5h10.8M2.6 8h10.8M2.6 11.5h10.8"/></svg>Sessions</div>
+        </div>
+        <div class="actions">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10"/></svg>
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 1.8L3.6 9h3.2l-.8 5.2L12.4 7H9.2z"/></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ C — COMPOSER CHIP ══════════════ -->
+  <div class="option">
+    <h2><span class="key">C</span> Repo chip in the composer</h2>
+    <div class="note">A repo chip joins the toolbar row; tapping it opens a repo sheet. Closest to the point of action and mirrors quick capture — but the mobile toolbar already holds mode, dial, model, reasoning, mic and send, so this is <b>the most crowded place on the screen</b>.</div>
+    <div class="phone">
+      <div class="app-header">
+        <div class="wordmark">ShipIt<span class="dot">.</span></div>
+        <div class="hdr-icons">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 8l3-2.5"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.6M8 12.8v1.6M14.4 8h-1.6M3.2 8H1.6"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.4A5.4 5.4 0 016.6 3 5.4 5.4 0 1013 9.4z"/></svg>
+        </div>
+      </div>
+      <div class="content">
+        <div class="rocket">🚀</div>
+        <div class="scrim"></div>
+        <div class="sheet">
+          <h3>Start this session in</h3>
+          <div class="sheet-row sel"><span class="swatch"></span> shipitcorp/shipit <span class="check"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3.5 8.4l3 3 6-6.4"/></svg></span></div>
+          <div class="sheet-row"><span class="swatch sw-brick"></span> nikz/orchard</div>
+          <div class="sheet-row"><span class="swatch" style="background:#a8c46a"></span> nikz/telemetry-lab</div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="inputbox">
+          <div class="placeholder">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span class="pill repo-chip"><span class="swatch"></span> shipit</span>
+            <span class="pill">Accept edits</span>
+            <span class="spacer"></span>
+            <span class="pill">Opus 5</span>
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="2" width="4" height="7" rx="2"/><path d="M4 7.5a4 4 0 008 0M8 11.5V14"/></svg>
+            <span class="send"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 13V3.4M4.2 7.2L8 3.4l3.8 3.8"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tabs">
+          <div class="tab active"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 8a5.4 5.4 0 1110.8 0 5.4 5.4 0 01-7.6 4.9L2.6 13.4l.5-2.9A5.3 5.3 0 012.6 8z"/></svg>Chat</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.4" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="9" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="2.4" y="9" width="4.6" height="4.6" rx="1"/><rect x="9" y="9" width="4.6" height="4.6" rx="1"/></svg>Workspace</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 4.5h10.8M2.6 8h10.8M2.6 11.5h10.8"/></svg>Sessions</div>
+        </div>
+        <div class="actions">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10"/></svg>
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 1.8L3.6 9h3.2l-.8 5.2L12.4 7H9.2z"/></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ D — EMPTY-STATE HEADLINE ══════════════ -->
+  <div class="option">
+    <h2><span class="key">D</span> Empty-state headline</h2>
+    <div class="note">The empty state that already holds the rocket says what this session is <em>for</em>. Costs <b>zero permanent chrome</b> — it is gone the moment the first message lands, which is also the moment the answer stops mattering. The “Switch repo” pill makes a wrong default correctable.</div>
+    <div class="phone">
+      <div class="app-header">
+        <div class="wordmark">ShipIt<span class="dot">.</span></div>
+        <div class="hdr-icons">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 8l3-2.5"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.6M8 12.8v1.6M14.4 8h-1.6M3.2 8H1.6"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.4A5.4 5.4 0 016.6 3 5.4 5.4 0 1013 9.4z"/></svg>
+        </div>
+      </div>
+      <div class="content">
+        <div class="rocket" style="opacity:0.14">🚀</div>
+        <div class="headline">
+          <span class="eyebrow">New session in</span>
+          <span class="repo"><span class="swatch" style="width:10px;height:10px"></span> shipitcorp/shipit</span>
+          <span class="switch">Switch repo</span>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="inputbox">
+          <div class="placeholder">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span class="pill">Accept edits</span>
+            <span class="pill">◔ 12%</span>
+            <span class="spacer"></span>
+            <span class="pill">Opus 5</span>
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="2" width="4" height="7" rx="2"/><path d="M4 7.5a4 4 0 008 0M8 11.5V14"/></svg>
+            <span class="send"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 13V3.4M4.2 7.2L8 3.4l3.8 3.8"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tabs">
+          <div class="tab active"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 8a5.4 5.4 0 1110.8 0 5.4 5.4 0 01-7.6 4.9L2.6 13.4l.5-2.9A5.3 5.3 0 012.6 8z"/></svg>Chat</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.4" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="9" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="2.4" y="9" width="4.6" height="4.6" rx="1"/><rect x="9" y="9" width="4.6" height="4.6" rx="1"/></svg>Workspace</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 4.5h10.8M2.6 8h10.8M2.6 11.5h10.8"/></svg>Sessions</div>
+        </div>
+        <div class="actions">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10"/></svg>
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 1.8L3.6 9h3.2l-.8 5.2L12.4 7H9.2z"/></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════ E — AMBIENT ══════════════ -->
+  <div class="option">
+    <h2><span class="key">E</span> Ambient colour + placeholder</h2>
+    <div class="note">The docs/254 repo colour becomes a 3&nbsp;px rail under the header, and the composer placeholder names the repo. <b>No new rows at all.</b> But colour alone is learned, not read, and the placeholder disappears as soon as the user types — exactly when they might want to re-check.</div>
+    <div class="phone">
+      <div class="app-header">
+        <div class="wordmark">ShipIt<span class="dot">.</span></div>
+        <div class="hdr-icons">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 8l3-2.5"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.6M8 12.8v1.6M14.4 8h-1.6M3.2 8H1.6"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.4A5.4 5.4 0 016.6 3 5.4 5.4 0 1013 9.4z"/></svg>
+        </div>
+      </div>
+      <div class="edge-top"></div>
+      <div class="content"><div class="rocket">🚀</div></div>
+      <div class="composer">
+        <div class="inputbox" style="border-left:3px solid var(--repo-cyan)">
+          <div class="placeholder">Describe what to build in <span style="color:var(--text-secondary)">shipitcorp/shipit</span>…</div>
+          <div class="toolbar">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            <span class="pill">Accept edits</span>
+            <span class="pill">◔ 12%</span>
+            <span class="spacer"></span>
+            <span class="pill">Opus 5</span>
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="2" width="4" height="7" rx="2"/><path d="M4 7.5a4 4 0 008 0M8 11.5V14"/></svg>
+            <span class="send"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 13V3.4M4.2 7.2L8 3.4l3.8 3.8"/></svg></span>
+          </div>
+        </div>
+      </div>
+      <div class="tabbar">
+        <div class="tabs">
+          <div class="tab active"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 8a5.4 5.4 0 1110.8 0 5.4 5.4 0 01-7.6 4.9L2.6 13.4l.5-2.9A5.3 5.3 0 012.6 8z"/></svg>Chat</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.4" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="9" y="2.4" width="4.6" height="4.6" rx="1"/><rect x="2.4" y="9" width="4.6" height="4.6" rx="1"/><rect x="9" y="9" width="4.6" height="4.6" rx="1"/></svg>Workspace</div>
+          <div class="tab"><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.6 4.5h10.8M2.6 8h10.8M2.6 11.5h10.8"/></svg>Sessions</div>
+        </div>
+        <div class="actions">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10"/></svg>
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 1.8L3.6 9h3.2l-.8 5.2L12.4 7H9.2z"/></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  <h2>Reading the options</h2>
+  <ul>
+    <li><b>A</b> is the smallest diff and the weakest surface: the header is already the busiest 44&nbsp;px on the phone, and a long <code>owner/repo</code> truncates against the status icons.</li>
+    <li><b>B</b> is the only option that is both persistent and switchable, and it lands in a slot that is <em>already empty on this route</em> — the PR lifecycle card takes it over the moment the session graduates, so the handover is automatic.</li>
+    <li><b>C</b> puts the answer next to the send button but competes with five controls that are already fighting for the same row on a 390&nbsp;px screen.</li>
+    <li><b>D</b> costs nothing permanent and reads at a glance, but only exists before the first message.</li>
+    <li><b>E</b> asks the user to learn a colour. Good as a <em>reinforcement</em> of a named surface, not as the only signal.</li>
+  </ul>
+  <p><b>Recommendation: B, with D as a free complement.</b> B answers “which repo am I in?” for as long as the question is live and makes a wrong implicit default correctable in one tap; D makes the answer unmissable on arrival at no lasting cost. E’s colour rail can ride along on either, since the palette already exists from docs/254.</p>
+  <p>Not prototyped, deliberately: changing the implicit repo <em>choice</em> itself. That is a different question from showing it.</p>
+</footer>
+
+</body>
+</html>

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-148
+issue: planning#150
 description: Quick/warm-standby first turn silently never ran — the dispatch path swallowed a no-result exit-0 instead of retrying or surfacing an error.
 ---
 

@@ -197,11 +197,17 @@ function DiffModal({ filePath, oldString, newString, isWrite, unifiedDiff, verb,
   );
 }
 
-/** Renders a unified diff with per-line coloring (additions, removals, hunks). */
+/**
+ * Renders a unified diff with per-line coloring (additions, removals, hunks).
+ *
+ * Long lines wrap rather than scrolling sideways. The `+`/`-`/`@@` marker is
+ * part of the line text here, so each row gets a hanging indent — the wrapped
+ * remainder lines up with the content, not under the marker.
+ */
 function UnifiedDiff({ diff }: { diff: string }) {
   const lines = diff.split("\n");
   return (
-    <pre className="text-xs font-mono leading-relaxed overflow-x-auto">
+    <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
       {lines.map((line, i) => {
         const isAdd = line.startsWith("+") && !line.startsWith("+++");
         const isDel = line.startsWith("-") && !line.startsWith("---");
@@ -214,7 +220,7 @@ function UnifiedDiff({ diff }: { diff: string }) {
               ? "text-(--color-text-tertiary)"
               : "text-(--color-text-secondary)";
         return (
-          <div key={i} className={cls}>{line || " "}</div>
+          <div key={i} className={`${cls} pl-[1ch] [text-indent:-1ch]`}>{line || " "}</div>
         );
       })}
     </pre>
@@ -225,16 +231,21 @@ function EditDiff({ oldString, newString }: { oldString?: string; newString?: st
   const oldLines = oldString ? oldString.split("\n") : [];
   const newLines = newString ? newString.split("\n") : [];
 
+  // Long lines wrap instead of scrolling sideways. The marker is its own
+  // non-shrinking column so the wrapped remainder stays aligned under the
+  // content rather than sliding beneath the `-`/`+`.
   return (
-    <pre className="text-xs font-mono leading-relaxed overflow-x-auto">
+    <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
       {oldLines.map((line, i) => (
-        <div key={`old-${i}`} className="bg-(--color-error)/10 text-(--color-error)">
-          <span className="select-none opacity-50 mr-2">-</span>{line}
+        <div key={`old-${i}`} className="flex bg-(--color-error)/10 text-(--color-error)">
+          <span className="select-none opacity-50 mr-2 shrink-0">-</span>
+          <span className="min-w-0 flex-1">{line}</span>
         </div>
       ))}
       {newLines.map((line, i) => (
-        <div key={`new-${i}`} className="bg-(--color-success)/10 text-(--color-success)">
-          <span className="select-none opacity-50 mr-2">+</span>{line}
+        <div key={`new-${i}`} className="flex bg-(--color-success)/10 text-(--color-success)">
+          <span className="select-none opacity-50 mr-2 shrink-0">+</span>
+          <span className="min-w-0 flex-1">{line}</span>
         </div>
       ))}
     </pre>
@@ -256,7 +267,7 @@ function WriteContent({ content }: { content: string }) {
   }
 
   return (
-    <pre className="text-xs font-mono leading-relaxed overflow-x-auto">
+    <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
       {highlighted ? (
         <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
       ) : (

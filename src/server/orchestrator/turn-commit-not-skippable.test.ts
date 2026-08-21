@@ -1,5 +1,5 @@
 /**
- * SHI-277 — a turn that ends NORMALLY must still auto-commit, even when a
+ * planning#279 — a turn that ends NORMALLY must still auto-commit, even when a
  * post-turn step that runs BEFORE the commit fails.
  *
  * `7f6aeb85` made `runCommitAndPr` reachable from every terminal path. It did
@@ -76,6 +76,7 @@ function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"
       setLastTurnErrored: vi.fn(),
       get: vi.fn(),
       track: vi.fn(),
+      setMuted: vi.fn(),
       list: vi.fn().mockReturnValue([]),
     } as never,
     chatHistoryManager: {

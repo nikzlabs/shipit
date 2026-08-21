@@ -297,6 +297,14 @@ describe("parseShipitConfig", () => {
     expect(config.warnings).toContainEqual(expect.stringContaining("Unknown top-level key `foobar`"));
   });
 
+  it("does not warn for the reserved plugin-repository keys (docs/262)", () => {
+    // `plugins:` (consumer declaration) and `exports:` (plugin manifest) are
+    // reserved ahead of their slice-2 parser so the live test-plugin fixture in
+    // this repo's own shipit.yaml doesn't trip the migration banner.
+    const config = parseShipitConfig({ agent: {}, plugins: { repos: [] }, exports: { plugins: {} } });
+    expect(config.warnings).toEqual([]);
+  });
+
   it("warns for unknown agent keys", () => {
     const config = parseShipitConfig({ agent: { memory: 1024, unknown_field: true } });
     expect(config.warnings).toContainEqual(expect.stringContaining("Unknown key `agent.unknown_field`"));

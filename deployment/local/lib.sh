@@ -40,7 +40,7 @@ shipit_channel_ref() {
 # Fetch the channel ref and hard-reset the checkout to it. Refuses to clobber
 # uncommitted changes. Safe (effectively a no-op) right after a fresh clone.
 #
-# --untracked-files=no is deliberate (docs/254 req 9). `git reset --hard` only
+# --untracked-files=no is deliberate (docs/254-local-bind-and-tailnet-access req 9). `git reset --hard` only
 # discards changes to TRACKED files; untracked files are left untouched. So
 # refusing on them never protected anything, while it did break updates outright:
 # operator state lives in the checkout (.shipit.env, and before it was ignored,
@@ -73,12 +73,30 @@ shipit_sync_checkout() {
 # (SHIPIT_TAILNET_BIND=1), so both survive re-runs; compose's ${VAR:-}
 # substitution picks them up. Lives in the checkout but is .gitignore'd — it has
 # to be, because shipit_sync_checkout refuses to run when `git status
-# --porcelain` is non-empty and that lists untracked files (docs/254 req 9).
+# --porcelain` is non-empty and that lists untracked files (docs/254-local-bind-and-tailnet-access req 9).
 SHIPIT_ENV_FILE="${SHIPIT_ENV_FILE:-$SHIPIT_HOME/.shipit.env}"
 
 # Generated compose overlay carrying the opt-in tailnet port binding (docs/254).
 # Regenerated on every start and .gitignore'd, for the same reason as above.
 TAILNET_COMPOSE_FILE="${TAILNET_COMPOSE_FILE:-$SHIPIT_HOME/.shipit-tailnet.compose.yml}"
+
+# Write (or replace) one KEY=value line in the operator env file. Used by the
+# installer for the egress opt-out and for the harness answer (docs/276), so both
+# survive re-runs, updates and image rebuilds.
+#
+# `sed -i.bak` + rm, not `sed -i`: BSD sed on macOS requires an argument to -i,
+# and the local install is a macOS path first of all.
+shipit_persist_env() {
+  local key="$1" value="$2"
+  mkdir -p "$(dirname "$SHIPIT_ENV_FILE")"
+  touch "$SHIPIT_ENV_FILE"
+  chmod 600 "$SHIPIT_ENV_FILE"
+  if grep -q "^${key}=" "$SHIPIT_ENV_FILE" 2>/dev/null; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" "$SHIPIT_ENV_FILE" && rm -f "$SHIPIT_ENV_FILE.bak"
+  else
+    echo "${key}=${value}" >> "$SHIPIT_ENV_FILE"
+  fi
+}
 
 # Source the persisted env file (if any) and export its vars so the docker
 # compose invocations below see them for ${VAR:-} substitution.

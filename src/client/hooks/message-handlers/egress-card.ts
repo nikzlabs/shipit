@@ -4,7 +4,7 @@ import { useEgressPromptStore } from "../../stores/egress-prompt-store.js";
 import type { Handler } from "./types.js";
 
 /**
- * docs/172 / SHI-90 — the Tier C egress allow-once card. Seed the host into the
+ * docs/172 / planning#92 — the Tier C egress allow-once card. Seed the host into the
  * egress-prompt store (keyed by cardId so a later resolved update can swap it in
  * place) and append a marker chat message so it renders inline where the proxy
  * blocked the connection.

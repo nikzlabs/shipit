@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-232
+issue: planning#234
 description: Let the agent create tracker labels — `shipit issue label create` plus an opt-in `--create-missing-labels` on create/edit — as do-then-surface writes whose Undo deletes the label while it's still unused.
 ---
 
@@ -8,7 +8,7 @@ description: Let the agent create tracker labels — `shipit issue label create`
 ## Problem
 
 `--label` on `shipit issue create`/`edit` resolves against the tracker's
-**existing** labels and rejects unknown names (SHI-92) — deliberately, so a typo
+**existing** labels and rejects unknown names (planning#94) — deliberately, so a typo
 can't spawn a stray label. But the rejection was a dead end: when the label
 genuinely didn't exist (`shipit issue create --label t3code …` → `No Linear
 label matches "t3code". Valid label options: …`) there was **no way to create
@@ -33,9 +33,11 @@ shipit issue label create --name NAME [--color '#rrggbb'] [--description TEXT] [
 - Tracker-neutral; **defaults to Linear** (no pointer to infer from, same rule
   as `issue create`). `--tracker github` creates a repo label on the session's
   repo.
-- `label` is a verb *group* (future label verbs can slot in) but only `create`
-  exists — there is deliberately no `label delete`/`edit`; listing stays on the
-  existing `shipit issue labels`.
+- `label` is a verb *group* (future label verbs can slot in); at the time of this
+  doc only `create` existed. **planning#88 later added `label edit`** (rename /
+  recolor / describe, undo restores the prior values) — see
+  docs/177 → *Extension — `label edit`*. There is still deliberately no
+  `label delete`; listing stays on the existing `shipit issue labels`.
 - A same-name label already existing (case-insensitive) is a **409** — nothing
   is created, so re-runs can't fork casing variants.
 - The shim validates `--color` (`#?rrggbb`) before the round-trip; adapters
@@ -80,7 +82,7 @@ the docs/187 pattern of extending the card rather than minting a new card type:
   that's the honest answer, not a bug.
 - Persistence, rehydration, WS undo, and idempotent replay are all inherited
   unchanged from docs/177/docs/187 (the card is stored as JSON; no migration).
-  The standalone route shares the SHI-112 content-hash dedup window, so a
+  The standalone route shares the planning#114 content-hash dedup window, so a
   crash/retry replay neither re-creates the label nor mints a second card.
 
 ### Brokering path (same shape as the other writes)
@@ -105,14 +107,17 @@ adapters:
 
 ## Decisions
 
-- **Opt-in, never auto-create.** The SHI-92 typo-protection stands; the flag
+- **Opt-in, never auto-create.** The planning#94 typo-protection stands; the flag
   and the standalone verb are deliberate acts.
 - **Create-only surface.** Deleting/renaming labels is tracker gardening with
   blast radius across other issues; the only delete path is the Undo of a
-  creation, gated on the label being unused.
+  creation, gated on the label being unused. *(planning#88 revisited the renaming
+  half: because both backends rename IN PLACE, a rename re-labels nothing and
+  undoes symmetrically, so `label edit` is now supported. Deleting still isn't.)*
 - **Duplicate name → error, not idempotent success.** A 409 tells the agent the
   label already exists (just use it); silently succeeding would hide casing
-  mismatches.
+  mismatches. Still true after planning#88 — `label edit` is the deliberate verb for
+  changing one, so `create` never has to guess whether a repaint was intended.
 - **Reuse `IssueWriteCard` with a `label` verb** rather than a new card type —
   same call docs/187 made for `create`; persistence and client render are
   inherited with two small client-side additions (verb label/icon, no-open).
@@ -134,6 +139,6 @@ adapters:
 
 ## Related docs
 
-- `docs/177-agent-issue-writes/` — the write stack + provenance card this extends (SHI-92 label resolution).
+- `docs/177-agent-issue-writes/` — the write stack + provenance card this extends (planning#94 label resolution).
 - `docs/187-agent-issue-creation/` — the "extend the card with a new verb" precedent and the do-then-surface rationale for creation-class writes.
 - `docs/197-issue-label-filter-editor/` — the UI label surfaces built on the same `listLabels`.

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-130
+issue: planning#132
 title: Integrations settings tab
 description: Consolidate GitHub, issue trackers (Linear), and MCP servers into one tiered "Integrations" settings tab.
 ---

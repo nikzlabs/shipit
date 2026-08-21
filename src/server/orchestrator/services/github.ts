@@ -9,11 +9,12 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
 import type { PullRequestDetail, PrConversation } from "../github-auth-prs.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
-import type { PrAutoMergeError } from "../../shared/types/github-types.js";
+import type { AutoMergeManagedReason, PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionManager } from "../sessions.js";
 import { parseGitHubRemote } from "../git-utils.js";
+import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 import { resolvePrBaseBranch } from "./git.js";
 import { ServiceError } from "./types.js";
 import { validateNonEmptyString } from "./validation.js";
@@ -21,7 +22,9 @@ import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
-import { emitNoticePostTurn } from "../chat-card-persistence.js";
+import { formatUnreadableWorkspaceNotice } from "./unreadable-workspace-notice.js";
+import { emitNoticePostTurn, persistNoticeUnattached } from "../chat-card-persistence.js";
+import type { GenerateText } from "../non-turn-model.js";
 
 /**
  * Resolve owner/repo from a known remote URL or by reading git remotes.
@@ -229,7 +232,7 @@ export function getGitCredential(
 }
 
 /**
- * Repo-scoped variant of {@link getGitCredential} (docs/172 Gap 2-R / SHI-79).
+ * Repo-scoped variant of {@link getGitCredential} (docs/172 Gap 2-R / planning#81).
  *
  * When the orchestrator has a GitHub App configured, this prefers a short-lived,
  * single-repo-scoped installation token over the long-lived PAT — so the
@@ -261,6 +264,89 @@ export async function getRepoScopedGitCredential(
     );
   }
   return getGitCredential(githubAuthManager, args.host);
+}
+
+/**
+ * How long {@link resolveOrchestratorGitRemoteCredential} waits for a
+ * repo-scoped mint before it stops waiting and uses the PAT.
+ *
+ * The mint is two `api.github.com` round-trips (`GitHubAppTokenMinter.mint`)
+ * with **no timeout of their own**, cached per `owner/repo` for the token's
+ * TTL. Uncapped, a GitHub API that accepts a connection and then stalls would
+ * stall the post-turn auto-push behind it for as long as the socket lives —
+ * and that push is the path `CLAUDE.md` invariant 2 and docs/266-orchestrator-git-trust-boundary req 6 say
+ * cannot acquire a dependency that can be unavailable. Five seconds is well
+ * past a healthy mint and far short of anything a user would read as a hang.
+ */
+export const REMOTE_CREDENTIAL_DEADLINE_MS = 5_000;
+
+/**
+ * The credential a **dropped-uid** orchestrator git authenticates a remote with
+ * (docs/266-orchestrator-git-trust-boundary E3, planning#404). Wired into `createGitManager` at `app-di.ts`.
+ *
+ * This is {@link getRepoScopedGitCredential} with a deadline bolted on, and the
+ * deadline is the only difference. The broker path it was built for is a live
+ * HTTP request the caller is already waiting on, so a slow mint there costs one
+ * request; here the caller is `GitManager.push` on the post-turn path, where
+ * the same slow mint would hold a turn's work uncommitted-to-the-remote behind
+ * a network call ShipIt does not need to make. Both outcomes are the PAT — the
+ * fallback `getRepoScopedGitCredential` already takes when minting *fails* — so
+ * exceeding the deadline costs tightness, never availability.
+ */
+export async function resolveOrchestratorGitRemoteCredential(
+  githubAuthManager: GitHubAuthManager,
+  args: { host: string | undefined; owner?: string; repo?: string },
+  deadlineMs: number = REMOTE_CREDENTIAL_DEADLINE_MS,
+): Promise<{ username: string; password: string } | null> {
+  // Resolved first and unconditionally: it is a pure in-memory read, and it is
+  // what every branch below falls back to.
+  const pat = getGitCredential(githubAuthManager, args.host);
+  // No App configured, or no repo to scope to — `getRepoScopedGitCredential`
+  // would return exactly this without touching the network.
+  if (!args.owner || !args.repo || !githubAuthManager.appTokensEnabled()) return pat;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => { resolve(TIMED_OUT); }, deadlineMs);
+    // Never hold the process open on this timer; the race is already settled
+    // by whichever side finishes first.
+    timer.unref?.();
+  });
+  try {
+    const resolved = await Promise.race([
+      getRepoScopedGitCredential(githubAuthManager, args),
+      deadline,
+    ]);
+    if (resolved === TIMED_OUT) {
+      console.warn(
+        `[github] repo-scoped git credential for ${args.owner}/${args.repo} did not resolve within `
+        + `${deadlineMs}ms — using the PAT so the remote operation is not held up`,
+      );
+      return pat;
+    }
+    return resolved;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Sentinel for the race above — distinguishable from a legitimate `null`. */
+const TIMED_OUT = Symbol("credential-deadline");
+
+/**
+ * {@link resolveOrchestratorGitRemoteCredential} in the shape
+ * `shared/git-remote-credential.ts` consumes, so the raw `safeSimpleGit`
+ * remote sites can carry the same credential a `GitManager` does without each
+ * of them restating the mapping.
+ */
+export function gitRemoteCredentialResolver(
+  githubAuthManager: GitHubAuthManager,
+): GitRemoteCredentialResolver {
+  return (remote) => resolveOrchestratorGitRemoteCredential(githubAuthManager, {
+    host: remote.host,
+    owner: remote.owner,
+    repo: remote.repo,
+  });
 }
 
 // ---- Mutation operations ----
@@ -298,13 +384,22 @@ export async function createPullRequest(
   return { success: result.success, url: result.url, number: result.number, message: result.message };
 }
 
-/** Merge a pull request. */
+/**
+ * Merge a pull request (the UI card's current-branch merge).
+ *
+ * `opts.preferManaged` (docs/266) is the same rule the toggle path applies: when
+ * the merge can't happen now and this would fall back to ARMING auto-merge, a
+ * session with a live runner keeps that arming on ShipIt's managed loop rather
+ * than handing it to GitHub. The caller records the managed state, since this
+ * function has no poller.
+ */
 export async function mergePullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
   method?: string,
   remoteUrl?: string,
-): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean }> {
+  opts: { preferManaged?: boolean } = {},
+): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; managed?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const resolved = await resolveGitHubRemote(git, remoteUrl);
@@ -322,6 +417,14 @@ export async function mergePullRequest(
   // If merge failed because checks are pending, enable auto-merge
   const checks = await githubAuthManager.getCheckStatus(resolved.owner, resolved.repo, head);
   if (checks.state === "pending") {
+    if (opts.preferManaged) {
+      return {
+        success: true,
+        message: "Checks are still running — ShipIt will merge this PR once they pass and this session finishes.",
+        autoMergeEnabled: true,
+        managed: true,
+      };
+    }
     const graphqlMethod = mergeMethod === "merge" ? "MERGE" as const : mergeMethod === "squash" ? "SQUASH" as const : "REBASE" as const;
     const autoResult = await githubAuthManager.enableAutoMerge(resolved.owner, resolved.repo, pr.number, graphqlMethod);
     return { success: autoResult.success, message: autoResult.message, autoMergeEnabled: autoResult.success };
@@ -404,11 +507,18 @@ export async function agentMergePullRequest(
   return { success: false, message: result.message };
 }
 
-/** Generate a PR description using the agent's generateText capability. */
+/**
+ * Generate a PR description using the agent's generateText capability.
+ *
+ * docs/252 phase 7 — `sessionId` is what routes this through req 9's model:
+ * the generator needs a session both to spawn through and to attribute the
+ * spend to. Optional so a caller with no session degrades exactly as before.
+ */
 export async function generatePrDescription(
   git: GitManager,
-  generateText: (prompt: string, cwd: string) => Promise<string>,
+  generateText: GenerateText,
   sessionDir: string,
+  sessionId?: string,
 ): Promise<{ description: string }> {
   const log = await git.log(20);
   const diff = await git.diffSummary();
@@ -432,8 +542,20 @@ export async function generatePrDescription(
       : ["(no file-level diff available)"]),
   ].join("\n");
 
-  const description = await generateText(prompt, sessionDir);
-  return { description: description.trim() };
+  const description = await generateText(prompt, sessionDir, {
+    ...(sessionId ? { sessionId } : {}),
+    purpose: "pr-description",
+  });
+  // docs/252 phase 7 (req 9) — the same normalization the conversation-aware
+  // path applies. Cross-backend review found this endpoint still returning the
+  // empty string, which is the exact behaviour the requirement calls a change:
+  // the user pressed "generate a description" and got nothing, with nothing
+  // saying why. The notice comes from the generator; the generic text comes
+  // from here.
+  const trimmed = description.trim();
+  if (trimmed) return { description: trimmed };
+  console.warn("[pr] Description generation returned nothing; using the generic fallback");
+  return { description: await basicPrDescription(git) };
 }
 
 /** One-click PR creation — push, generate description, create PR. */
@@ -441,7 +563,7 @@ export async function quickCreatePr(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
   chatHistoryManager: ChatHistoryManager,
-  generateText: (prompt: string, cwd: string) => Promise<string>,
+  generateText: GenerateText,
   sessionId: string,
   sessionTitle: string,
   sessionDir: string,
@@ -649,7 +771,7 @@ async function removePrLabels(
  * lands — see `agentCreatePr`. Cancelling here (the previous behavior) dropped
  * the pending push whenever a caller short-circuited before its synchronous
  * push (e.g. `secretBlocked`), leaving the commit local with no retry and no
- * surfaced error (SHI-198).
+ * surfaced error (planning#200).
  *
  * Chat-history linkage is deferred via `runner.pendingCommitLink`: writing
  * `commitHash` onto any row that exists right now would either land on a
@@ -665,6 +787,17 @@ async function removePrLabels(
  * `secretBlocked`: the secret-bearing change was NOT committed, so proceeding
  * would silently push/PR the prior (stale) branch state, hiding the agent's
  * just-made edit. The redacted warning notice is already emitted/persisted here.
+ *
+ * Deliberately carries NO session-kind gate of its own, because its two callers
+ * want opposite answers and the helper cannot tell them apart:
+ *
+ *  - `agentCreatePr` — the agent explicitly ran `gh pr create`. A PR without the
+ *    edits it is meant to contain is meaningless, so this flush is part of the
+ *    agent's own deliberate action, not one of ShipIt's automatic commits. It
+ *    stays available to every kind.
+ *  - `services/sub-agent-commit.ts` — a consult landing after its parent turn IS
+ *    an automatic commit, so that caller consults
+ *    `services/auto-commit-gate.ts` before it gets here.
  */
 export async function flushPendingTurnCommit(
   git: GitManager,
@@ -676,7 +809,7 @@ export async function flushPendingTurnCommit(
      * `append` is used) so non-`ChatHistoryManager` callers can pass a stub. */
     chatHistory?: { append(sessionId: string, message: PersistedMessage): unknown };
     /**
-     * SHI-299 — override the commit subject. The default (`runner.turnSummary`)
+     * planning#301 — override the commit subject. The default (`runner.turnSummary`)
      * is right for the mid-turn `gh pr create` flush, where the work being
      * committed IS the turn's work. It is wrong for a flush that happens outside
      * a turn — a sub-agent consult finishing after its parent turn already
@@ -685,7 +818,7 @@ export async function flushPendingTurnCommit(
      */
     summary?: string;
   },
-): Promise<{ commitHash: string | null; secretBlocked: boolean }> {
+): Promise<{ commitHash: string | null; secretBlocked: boolean; unreadableBlocked: boolean }> {
   const runner = deps.sessionId && deps.runnerRegistry
     ? deps.runnerRegistry.get(deps.sessionId)
     : null;
@@ -695,8 +828,36 @@ export async function flushPendingTurnCommit(
     || runner?.turnSummary?.split("\n")[0]?.slice(0, 120)
     || "Agent turn";
   const parentHash = await git.getHeadHash();
-  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(summary);
+  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+    await git.autoCommit(summary);
   const secretBlocked = secretFindings.length > 0;
+  // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — this flush is the turn's commit for the
+  // work it carries (a mid-turn `gh pr create`, a consult landing after its
+  // parent turn), so the same two states get the same words here as on the
+  // post-turn path. Ignoring the field was the bug: a `blocked` add returns a
+  // null hash exactly like "nothing to commit", and the caller then pushes and
+  // opens a PR that does not contain the work the flush existed to include.
+  if (unreadable) {
+    const message = formatUnreadableWorkspaceNotice(unreadable, {
+      committed: commitHash !== null,
+      what: "This work",
+    });
+    // Deliberately NOT gated on `runner`, unlike the two notices below. A
+    // runner is the live TRANSPORT, not the record: a consult landing after its
+    // parent turn can find none, and "the work is not on the branch" is exactly
+    // the fact that must survive to the transcript the user comes back to
+    // (review finding). Persisted whenever there is a session and a history to
+    // persist into; the emit is the half that has no destination.
+    if (deps.chatHistory && deps.sessionId) {
+      if (runner) {
+        emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, deps.sessionId, message, "warn");
+      } else {
+        persistNoticeUnattached(deps.chatHistory, deps.sessionId, message, "warn");
+      }
+    } else {
+      runner?.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
+    }
+  }
   if (secretBlocked && runner) {
     const message = formatSecretScanNotice(secretFindings);
     if (deps.chatHistory) {
@@ -713,13 +874,20 @@ export async function flushPendingTurnCommit(
       runner.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
     }
   }
-  if (!commitHash) return { commitHash: null, secretBlocked };
+  // docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — `blocked` means `git add -A` exited 128 and
+  // staged NOTHING, so the edits this flush exists to include are not on the
+  // branch. That is reported to the CALLER, not just to the transcript, and it
+  // is deliberately NOT "commitHash is null": a null hash is the ordinary
+  // "nothing to commit" answer, and conflating the two would abort every PR
+  // opened on an already-clean tree.
+  const unreadableBlocked = unreadable?.kind === "blocked";
+  if (!commitHash) return { commitHash: null, secretBlocked, unreadableBlocked };
 
   if (runner && parentHash) {
     runner.pendingCommitLink = { commitHash, parentCommitHash: parentHash };
   }
   runner?.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
-  return { commitHash, secretBlocked: false };
+  return { commitHash, secretBlocked: false, unreadableBlocked: false };
 }
 
 /**
@@ -760,6 +928,14 @@ export async function agentCreatePr(
     sessionId?: string;
     /** Runner registry — when provided alongside sessionId, enables mid-turn commit flush. */
     runnerRegistry?: SessionRunnerRegistry;
+    /**
+     * Drop this session's pending debounced auto-push. Called only AFTER a
+     * synchronous push has actually replaced it (planning#200). Session-keyed
+     * rather than resolved through a runner: the pending push no longer lives on
+     * one (`services/auto-push-scheduler.ts`), so a session whose runner went
+     * away still gets its debounce cancelled.
+     */
+    cancelAutoPush?: (sessionId: string) => void;
     /** When provided, an unresolved-conflict notice from the pre-push flush is
      * persisted (so it survives a reload), not just emitted. */
     chatHistory?: ChatHistoryManager;
@@ -801,18 +977,35 @@ export async function agentCreatePr(
         "Remove the secret (use an env var / ShipIt secret) — or add a `gitleaks:allow` comment to the line if it's a false positive — then try again.",
     );
   }
+  // docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — the same abort, for the same reason, one
+  // cause along. An unreadable FILE makes `git add -A` stage nothing at all, so
+  // the agent's edits are not on the branch either; pushing now publishes the
+  // prior state and hands the agent a PR URL that contradicts the notice the
+  // flush just posted. The secret branch above already names this failure mode
+  // as the thing to prevent — it was only ever wired for one of its two causes
+  // (review finding).
+  if (flush.unreadableBlocked) {
+    throw new ServiceError(
+      422,
+      "Refused to create the PR: ShipIt could not read part of the workspace, so `git add` staged "
+        + "nothing and this turn's changes are not committed. Fix that path's permissions (or "
+        + "gitignore it — a compose service running as its own `user:` is the usual cause), then "
+        + "try again. The chat transcript names the exact path.",
+    );
+  }
 
   const head = await git.getCurrentBranch();
 
-  // Resolve the runner so we can cancel the debounced auto-push *after* a
-  // synchronous push lands below. We deliberately do NOT cancel before pushing:
-  // a pending debounced push is only safe to drop once a synchronous push has
-  // actually replaced it (SHI-198). On branches that don't push synchronously
-  // (e.g. a not-progressed merged PR returns without pushing), the debounce is
-  // left armed so the commit still reaches the remote.
-  const pushRunner = options.sessionId && options.runnerRegistry
-    ? options.runnerRegistry.get(options.sessionId)
-    : null;
+  // Cancel the debounced auto-push *after* a synchronous push lands below. We
+  // deliberately do NOT cancel before pushing: a pending debounced push is only
+  // safe to drop once a synchronous push has actually replaced it
+  // (planning#200). On branches that don't push synchronously (e.g. a
+  // not-progressed merged PR returns without pushing), the debounce is left
+  // armed so the commit still reaches the remote.
+  const { sessionId, cancelAutoPush } = options;
+  const dropPendingAutoPush = (): void => {
+    if (sessionId) cancelAutoPush?.(sessionId);
+  };
 
   // A PR already on this branch short-circuits creation — but only when it can't
   // legitimately host the new work. The rule (matches /shipit-docs/github.md and
@@ -862,7 +1055,7 @@ export async function agentCreatePr(
         throw new ServiceError(500, `Push failed: ${msg}`);
       }
       // Synchronous push landed — now safe to drop any pending debounce.
-      pushRunner?.clearPushTimer();
+      dropPendingAutoPush();
       return await returnExistingPr();
     }
 
@@ -897,7 +1090,7 @@ export async function agentCreatePr(
     throw new ServiceError(500, `Push failed: ${msg}`);
   }
   // Synchronous push landed — now safe to drop any pending debounce.
-  pushRunner?.clearPushTimer();
+  dropPendingAutoPush();
 
   // Resolve base branch. A re-armed branch keeps the prior PR's base unless the
   // caller passed an explicit one.
@@ -1511,7 +1704,7 @@ export async function viewWorkflow(
 async function generatePrDescriptionFromContext(
   git: GitManager,
   chatHistoryManager: ChatHistoryManager,
-  generateText: (prompt: string, cwd: string) => Promise<string>,
+  generateText: GenerateText,
   sessionId: string,
   baseBranch: string,
   sessionDir: string,
@@ -1566,22 +1759,44 @@ async function generatePrDescriptionFromContext(
       "Return ONLY the markdown description, no extra commentary.",
     ].join("\n");
 
-    return await generateText(prompt, sessionDir);
+    const generated = await generateText(prompt, sessionDir, {
+      sessionId,
+      purpose: "pr-description",
+    });
+    // docs/252 phase 7 (req 9) — **a blank generation is a failure, and this is
+    // the line that says so.** The generic prose below used to live only in the
+    // `catch`, so it was reached on a thrown error and not on an empty result —
+    // and in containerized production an empty result was the ONLY outcome,
+    // because the orchestrator had no agent and the default generator returned
+    // `""`. Every pull request ShipIt opened therefore had an empty body and
+    // nothing anywhere said why. Req 9 calls that a change to make, not a
+    // behaviour to preserve.
+    if (generated.trim()) return generated;
+    console.warn("[pr] Description generation returned nothing; using the generic fallback");
+    return await basicPrDescription(git);
   } catch (err) {
     console.warn("[pr] Failed to generate description:", err);
-    // Fallback to basic description
-    try {
-      const log = await git.log(5);
-      return [
-        "## Summary",
-        "Changes from ShipIt session.",
-        "",
-        "## Changes",
-        ...log.map((c) => `- ${c.message}`),
-      ].join("\n");
-    } catch {
-      return "Changes from ShipIt session.";
-    }
+    return await basicPrDescription(git);
+  }
+}
+
+/**
+ * The generic description a failed or blank generation falls back to. Extracted
+ * so the rejection path and the blank-success path cannot drift — they are the
+ * same outcome from the user's side, and only one of them used to reach this.
+ */
+async function basicPrDescription(git: GitManager): Promise<string> {
+  try {
+    const log = await git.log(5);
+    return [
+      "## Summary",
+      "Changes from ShipIt session.",
+      "",
+      "## Changes",
+      ...log.map((c) => `- ${c.message}`),
+    ].join("\n");
+  } catch {
+    return "Changes from ShipIt session.";
   }
 }
 
@@ -1597,6 +1812,31 @@ function parseRepoFromPrUrl(prUrl: string): { owner: string; repo: string } | nu
   const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prUrl);
   if (!urlMatch) return null;
   return { owner: urlMatch[1], repo: urlMatch[2] };
+}
+
+/**
+ * Did the PR we just acted on reach a terminal state while a GitHub call was in
+ * flight? Every write below lands AFTER an awaited GraphQL round-trip, and the
+ * poller can observe the merge inside that window and drop the arming
+ * (`AutoMergeManager.delete()`, docs/077) — after which an unconditional
+ * `setAutoMergeEnabled` RE-CREATES it for a pull request that no longer exists.
+ * That is what strands the toggle ON in the UI, and worse: a lingering `enabled`
+ * is what `activatePendingAutoMergeForPr` reads as a deliberate pre-arm, so the
+ * session's NEXT pull request merges without the user ever asking.
+ *
+ * Compares PR NUMBERS, not just `prState`. The last-known summary can legitimately
+ * be a terminal OLDER PR — right after `gh pr create` on a chained session the
+ * poller still holds the previous, just-merged PR (see `self-merge-watch.test.ts`)
+ * — and refusing to arm there would break the new PR's activation.
+ */
+function prWentTerminalDuringCall(
+  prStatusPoller: PrStatusPoller,
+  sessionId: string,
+  prNumber: number,
+): boolean {
+  const current = prStatusPoller.getStatus(sessionId);
+  if (current?.prNumber !== prNumber) return false;
+  return current.prState === "merged" || current.prState === "closed";
 }
 
 /**
@@ -1616,12 +1856,26 @@ export async function activatePendingAutoMergeForPr(
   const resolved = parseRepoFromPrUrl(prUrl);
   if (!resolved) return;
 
+  // docs/266 — a live session keeps its merge on the ShipIt-managed loop, where
+  // the busy gate can hold it. This is the common case for an agent-opened PR:
+  // arming runs inside the post-turn flow, whose runner is still very much
+  // alive. Nothing is armed on GitHub, so no `enableAutoMerge` round-trip (and
+  // no terminal-window check — there is nothing to await).
+  if (prStatusPoller.hasLiveRunner(sessionId)) {
+    prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
+    return;
+  }
+
   const graphqlMethod = GRAPHQL_MERGE_METHOD[autoMergeState.mergeMethod];
   const result = await githubAuth.enableAutoMerge(resolved.owner, resolved.repo, prNumber, graphqlMethod);
 
+  // The PR merged (or was closed) while GitHub was answering — the poller has
+  // already retired the arming, so writing one back here would resurrect it.
+  if (prWentTerminalDuringCall(prStatusPoller, sessionId, prNumber)) return;
+
   if (!result.success) {
     const branchSettingsUrl = `https://github.com/${resolved.owner}/${resolved.repo}/settings/branches`;
-    prStatusPoller.setAutoMergeManaged(sessionId, true, branchSettingsUrl);
+    prStatusPoller.setAutoMergeManaged(sessionId, true, { settingsUrl: branchSettingsUrl });
     return;
   }
 
@@ -1635,7 +1889,14 @@ export async function toggleAutoMerge(
   prStatusPoller: PrStatusPoller,
   sessionId: string,
   enabled: boolean,
-): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean; reason?: string } | { error: PrAutoMergeError }> {
+): Promise<{
+  enabled: boolean;
+  mergeMethod: "squash" | "merge" | "rebase";
+  managed?: boolean;
+  /** Why it's managed — the client renders the two cases very differently. docs/266. */
+  managedReason?: AutoMergeManagedReason;
+  reason?: string;
+} | { error: PrAutoMergeError }> {
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const prStatus = prStatusPoller.getStatus(sessionId);
@@ -1645,6 +1906,7 @@ export async function toggleAutoMerge(
       enabled: state.enabled,
       mergeMethod: state.mergeMethod,
       managed: state.managed,
+      managedReason: state.managedReason,
     };
   }
 
@@ -1656,8 +1918,28 @@ export async function toggleAutoMerge(
   const mergeMethod = autoMergeState?.mergeMethod ?? "squash";
 
   if (enabled) {
+    // docs/266 — same rule as `activatePendingAutoMergeForPr`: while the session
+    // has a live runner, ShipIt keeps the merge on its own loop rather than
+    // handing the PR to GitHub, which cannot see a ShipIt turn and would merge
+    // over uncommitted work. Reported as managed with the honest reason, so the
+    // card says "merges when this session finishes" instead of showing the
+    // repo-misconfiguration tooltip.
+    if (prStatusPoller.hasLiveRunner(sessionId)) {
+      prStatusPoller.setAutoMergeEnabled(sessionId, true);
+      prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
+      return { enabled: true, mergeMethod, managed: true, managedReason: "session-live" };
+    }
+
     const graphqlMethod = GRAPHQL_MERGE_METHOD[mergeMethod];
     const result = await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
+
+    // The PR reached its terminal state while GitHub was answering (a green PR
+    // can merge inside this very call). The arming is already retired; re-adding
+    // it would strand the toggle ON and pre-arm the session's next PR. Report
+    // OFF — truthfully, nothing is armed — so the client converges too.
+    if (prWentTerminalDuringCall(prStatusPoller, sessionId, prStatus.prNumber)) {
+      return { enabled: false, mergeMethod };
+    }
 
     if (!result.success) {
       // Fallback: ShipIt-managed auto-merge when GitHub native isn't available.
@@ -1670,8 +1952,14 @@ export async function toggleAutoMerge(
       const settingsUrl = `https://github.com/${owner}/${repo}/settings`;
 
       prStatusPoller.setAutoMergeEnabled(sessionId, true);
-      prStatusPoller.setAutoMergeManaged(sessionId, true, settingsUrl, result.message);
-      return { enabled: true, mergeMethod, managed: true, reason: result.message };
+      prStatusPoller.setAutoMergeManaged(sessionId, true, { settingsUrl, reason: result.message });
+      return {
+        enabled: true,
+        mergeMethod,
+        managed: true,
+        managedReason: "native-unavailable",
+        reason: result.message,
+      };
     }
 
     prStatusPoller.setAutoMergeEnabled(sessionId, true);
@@ -1682,7 +1970,11 @@ export async function toggleAutoMerge(
     if (!currentState?.managed) {
       await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
     }
-    prStatusPoller.setAutoMergeEnabled(sessionId, false);
+    // Same window as the enable path: don't re-create a (disabled) entry for a
+    // PR the poller has already retired.
+    if (!prWentTerminalDuringCall(prStatusPoller, sessionId, prStatus.prNumber)) {
+      prStatusPoller.setAutoMergeEnabled(sessionId, false);
+    }
     return { enabled: false, mergeMethod };
   }
 }
@@ -1697,6 +1989,12 @@ export async function updateMergeMethod(
   const autoMergeState = prStatusPoller.getAutoMergeState(sessionId);
   prStatusPoller.setMergeMethod(sessionId, method);
 
+  // docs/266 — a ShipIt-managed arming has nothing on GitHub to re-point: the
+  // method is read from our own state at merge time. Re-arming native here
+  // would hand a live session's PR straight back to GitHub *and* leave our
+  // state marked managed, so both loops would own the same PR.
+  if (autoMergeState?.enabled && autoMergeState.managed) return { mergeMethod: method };
+
   // If auto-merge is active, re-enable with the new method
   if (autoMergeState?.enabled) {
     const prStatus = prStatusPoller.getStatus(sessionId);
@@ -1704,6 +2002,15 @@ export async function updateMergeMethod(
       const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prStatus.prUrl);
       if (urlMatch) {
         const [, owner, repo] = urlMatch;
+        // The arming is native but the session has since come alive (it was
+        // quiet when armed). Take ownership rather than re-arming GitHub: same
+        // rule as `toggleAutoMerge`, applied at the only other moment an arming
+        // is rewritten.
+        if (prStatusPoller.hasLiveRunner(sessionId)) {
+          await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
+          prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
+          return { mergeMethod: method };
+        }
         await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
         const graphqlMethod = method === "merge" ? "MERGE" as const : method === "squash" ? "SQUASH" as const : "REBASE" as const;
         await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);

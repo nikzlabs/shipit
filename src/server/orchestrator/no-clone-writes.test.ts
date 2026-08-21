@@ -1,5 +1,5 @@
 /**
- * docs/246 req 7 — nothing ShipIt generates may be written into a session's git
+ * docs/246-shipit-state-out-of-clone req 7 — nothing ShipIt generates may be written into a session's git
  * clone. This is the mechanical half of that requirement: a future artifact
  * placed under `<clone>/.shipit/` fails here instead of being caught (or
  * missed) in review.
@@ -13,7 +13,7 @@
  * {@link IN_CLONE_SHIPIT_PATH} for why matching the directory join, rather than
  * the artifact names, is the invariant.
  *
- * **There is no allowlist, and that is the point (SHI-290).** The check used to
+ * **There is no allowlist, and that is the point (planning#292).** The check used to
  * carry an exemption map, which meant it asserted "only these files may" rather
  * than "no file does" — and because the granularity was per FILE, a new
  * forbidden writer added to an already-exempt file passed silently. The map is
@@ -53,7 +53,7 @@ const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), "../../../..");
  * directory to the writer on another, so no single expression matched. Matching
  * the DIRECTORY join is the invariant — what gets written into it is irrelevant.
  *
- * SHI-286 closed a third bypass, and it was not hypothetical: the version that
+ * planning#288 closed a third bypass, and it was not hypothetical: the version that
  * recognised only a DOUBLE-quoted `.shipit` never saw `buildEnv`'s
  * `` `${workspaceDir}/.shipit` `` — a live in-clone path that sat green in CI
  * for the whole of docs/246. So `\}/\.shipit` now catches a template
@@ -102,14 +102,14 @@ function filesComposingInCloneArtifacts(): string[] {
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
-describe("no ShipIt-generated writes inside a session clone (docs/246 req 7)", () => {
+describe("no ShipIt-generated writes inside a session clone (docs/246-shipit-state-out-of-clone req 7)", () => {
   it("no source file composes an in-clone artifact path", () => {
     expect(
       filesComposingInCloneArtifacts(),
       "These files put a ShipIt-generated artifact inside the user's git clone, where the "
         + "post-turn `git add -A` will commit it into their repository. Write to the session "
         + "state dir instead (see session-state-dir.ts). This check has no allowlist by design "
-        + "(SHI-290) — if the path you are adding is the orchestrator's OWN workspace root "
+        + "(planning#292) — if the path you are adding is the orchestrator's OWN workspace root "
         + "rather than a session clone, route it through global-system-prompt.ts or give the "
         + "variable a name that says so, rather than re-introducing an exemption.",
     ).toEqual([]);

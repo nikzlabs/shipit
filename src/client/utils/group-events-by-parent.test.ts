@@ -70,7 +70,7 @@ describe("findSubagentFinalReport", () => {
 });
 
 /**
- * SHI-287 — the Claude CLI returns a subagent's `tool_result` as a JSON-encoded
+ * planning#289 — the Claude CLI returns a subagent's `tool_result` as a JSON-encoded
  * block array whenever the reply has more than one block, which is the normal
  * case because the CLI appends its own accounting footer. `SubagentCall` used
  * to hand that string straight to the markdown renderer, so the user read

@@ -26,7 +26,7 @@ Where ShipIt should go further:
 3. **Per-check failure breakdown** visible in the card (not just "CI failed")
 4. **Merge method selection** (squash/merge/rebase, not squash-only)
 5. **Post-merge archive** — session auto-archived, context preserved for future reuse
-6. **Post-merge preview cleanup** — merged-session preview iframes are pruned once they are no longer the active session, so completed PRs do not keep background previews alive
+6. ~~**Post-merge preview cleanup**~~ — removed; see item 6 below
 
 ## Problem
 
@@ -185,9 +185,22 @@ Because it's keyed only on `sessionId`, the *same* component is dropped verbatim
 
 The destructive logic lives in exactly one place across all surfaces: `useClosePr(sessionId)` owns the two-step confirm (first click arms it → "Click again to confirm", so a misclick can't close a PR) plus the in-flight state and the actual `closePr` call. It's rendered through two thin presentational items — `ClosePrMenuItem` (a plain button for the merge button's bespoke dropdown) and `ClosePrDropdownItem` (a Radix `DropdownMenuItem` for the `OverflowMenu`); the menu owner resets the armed confirm from the menu's `onOpenChange` so it never reopens armed. The second click calls `closePr` in `pr-store`, which `POST`s to the existing `/api/sessions/:id/pr/:number/close` route and optimistically flips the card to the `closed` phase. This keeps closing a PR inside ShipIt rather than bouncing the user to GitHub. Closed-but-not-merged PRs get a distinct red badge (`PrStateBadge`) using GitHub's `git-pull-request-closed` Octicon — `GitPullRequestClosedIcon`, a one-off custom SVG since Phosphor has no closed-PR glyph — so a closed PR no longer looks like a plain gray branch.
 
-**6. Merged-session preview iframes are pruned.**
+**6. Merged-session preview iframes are NOT pruned (reverted).**
 
-`PreviewFrame` keeps ordinary session iframes mounted in an iframe pool so switching between active sessions does not reload the app preview. A merged PR is terminal, so `App.tsx` derives merged session IDs from `pr-store` and passes them into `PreviewFrame`; the active merged preview remains visible while the user is on that session, but once the user switches away its background iframe slot is removed from the pool.
+`PreviewFrame` keeps session iframes mounted in an iframe pool so switching
+between sessions does not reload the app preview. This originally made an
+exception for merged PRs — `App.tsx` derived merged session IDs from `pr-store`
+and `PreviewFrame` dropped their background slots on switch-away — on the theory
+that a terminal PR should not keep a preview alive in the background.
+
+That was removed. It bought nothing: container reclamation is driven by attached
+viewers and agent turns (`idle-enforcer.ts`), not by a mounted iframe, so a
+pruned slot freed no session runtime. What it did do was destroy the cached
+preview of the session a user is most likely to return to, and because the
+merged set comes from the poller's global snapshot it applied to *every* merged
+session in the list. The observable bug: a session whose PR had just merged
+reloaded its preview onto the app's front page on every return. LRU eviction past
+`MAX_IFRAME_SLOTS` is now the only thing that drops a slot.
 
 **7. `PrStatusBar` is removed.**
 
@@ -489,7 +502,7 @@ absent or already matches, so the steady-state path is unchanged. Key files:
 `pr-status-parser.ts` (query + `GraphQLResponse.nameWithOwner`),
 `pr-status-poller.ts` (`canonicalApiTarget`).
 
-The same retarget is needed by the **post-merge fast path** (SHI-159). After
+The same retarget is needed by the **post-merge fast path** (planning#161). After
 ShipIt merges a PR, `forceVerifySessionPrState` runs a one-shot REST any-state
 probe — it deliberately bypasses `pollRepo` because the bulk query is
 `states: [OPEN]` and GitHub's GraphQL view can still report a just-merged PR as

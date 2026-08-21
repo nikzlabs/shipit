@@ -1,49 +1,5 @@
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
-import { parseTimestampMs } from "../../../server/shared/utils.js";
-
-/**
- * Client mirror of the server's `resolvedAt` (`sessions.ts`). The instant a
- * session's PR reached a terminal state — merged or closed-without-merge. Both
- * demote the session into the "Recently resolved" group.
- */
-export function resolvedAt(s: SessionInfo): string | undefined {
-  return s.mergedAt ?? s.closedAt;
-}
-
-/**
- * docs/161 — client mirror of the server's `reopenedAfterResolve` predicate
- * (`sessions.ts`). True when a resolved session (merged OR closed) has been
- * *worked in* since it resolved — the user returned to start a follow-up PR.
- * Keys on `lastUsedAt` (bumped only by turn activity), so it flips true the
- * instant the user sends a message in a resolved session.
- *
- * `mergedAt`/`closedAt` (`datetime('now')`, a UTC string with no timezone
- * suffix) and `lastUsedAt` (`toISOString()`, UTC with a trailing `Z`) are
- * format-incompatible. This runs in the BROWSER, so a plain `Date.parse` reads
- * the suffix-less resolve timestamp as *local* time: in a UTC+ timezone that
- * shifts the resolve instant earlier than a `lastUsedAt` recorded just before
- * it, falsely flagging the session as reopened and floating it back into the
- * Active group above genuinely active sessions. `parseTimestampMs` normalizes
- * both to UTC. (CI runs in UTC, so the test suite never reproduced this.)
- */
-export function reopenedAfterResolve(s: SessionInfo): boolean {
-  const resolved = resolvedAt(s);
-  if (!resolved) return false;
-  const resolvedMs = parseTimestampMs(resolved);
-  const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(resolvedMs) || Number.isNaN(used)) return false;
-  return used > resolvedMs;
-}
-
-/**
- * docs/161 — the baseline predicate for the sidebar's demoted "Recently
- * resolved" group: its PR is merged or closed-without-merge and it has not been
- * reopened (worked in) since. Group-local parent/child rules can still keep a
- * resolved parent in Active when it has visible spawned children.
- */
-export function isRecentlyResolved(s: SessionInfo): boolean {
-  return !!resolvedAt(s) && !reopenedAfterResolve(s);
-}
+import { isResolvedForGrouping, resolvedAt } from "../../../server/shared/session-resolution.js";
 
 /**
  * Group sessions by repo URL with a STABLE sort within each group.
@@ -102,7 +58,7 @@ export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
       if (s.parentSessionId) parentsWithChildren.add(s.parentSessionId);
     }
     const isRecentlyResolvedForGroup = (s: SessionInfo): boolean =>
-      isRecentlyResolved(s) && !parentsWithChildren.has(s.id);
+      isResolvedForGrouping(s, { hasVisibleBrood: parentsWithChildren.has(s.id) });
     group.sort((a, b) => {
       const aArchived = a.archived || a.userArchived ? 1 : 0;
       const bArchived = b.archived || b.userArchived ? 1 : 0;

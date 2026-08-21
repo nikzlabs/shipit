@@ -1,7 +1,7 @@
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
-import { isRecentlyResolved } from "../components/SessionSidebar/useSessionGrouping.js";
+import { isTerminalPrResolved } from "../../server/shared/session-resolution.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 
@@ -25,7 +25,7 @@ export interface AttentionInputs {
    * The session's PR has reached a terminal state — merged or
    * closed-without-merge — and hasn't been reopened (worked in) since. This is
    * the SAME signal that demotes the row into the sidebar's "Recently resolved"
-   * group (`isRecentlyResolved`, keyed on `SessionInfo.mergedAt`/`closedAt`). It
+   * group (keyed on `SessionInfo.mergedAt`/`closedAt`). It
    * is passed in — rather than re-derived from the pr-store `status.prState` —
    * so the grouping and the attention marker can never disagree: a just-merged
    * row whose pr-store status still reads `open` (or carries a stale CI
@@ -33,6 +33,13 @@ export interface AttentionInputs {
    * group that means "done".
    */
   resolved: boolean;
+  /**
+   * docs/277 — the user muted this session (`SessionInfo.mutedAt` is set). The
+   * mute is a deliberate "I am not picking this up soon", so it silences every
+   * attention surface at once (req 2) and is cleared server-side at the start of
+   * the session's next turn (req 4).
+   */
+  muted: boolean;
 }
 
 /**
@@ -58,7 +65,16 @@ export function computeAttentionReason({
   autoFixEnabled,
   autoResolveEnabled,
   resolved,
+  muted,
 }: AttentionInputs): string | null {
+  // docs/277 (req 2) — a mute outranks every reason below, including the
+  // permission prompt: it is the user's own statement that this session is not
+  // theirs to look at right now. Placed here, in the one shared derivation,
+  // rather than at each surface — the row marker, the "Needs you" view and its
+  // count, and the notification watcher all go quiet together precisely because
+  // there is nothing else to teach.
+  if (muted) return null;
+
   const checks = card?.checks;
   const autoFix = card?.autoFix;
   const autoResolve = card?.autoResolve;
@@ -88,6 +104,18 @@ export function computeAttentionReason({
   // resolve signal, so a row in "Recently resolved" never wears the bar.
   if (resolved) return null;
 
+  // Same rule, read from the PR's own state rather than the sidebar grouping's
+  // `resolved` signal — the two are computed on different transports and a
+  // merged PR whose row hasn't been regrouped yet must still be silent. This
+  // used to sit BELOW the auto-merge branch, so a merged PR carrying a stale
+  // auto-merge error kept flagging "Auto-merge needs repo configuration".
+  //
+  // Checks BOTH halves, in either order: the optimistic merge path flips the
+  // card to `merged` while the poller still reports the PR open, and the poller
+  // reports terminal before any card update on the other side.
+  if (prState === "merged" || prState === "closed") return null;
+  if (card?.phase === "merged" || card?.phase === "closed") return null;
+
   // CI failure — stay silent while a fix is in flight or queued; speak only
   // when the loop gives up (exhausted) or auto-fix is off entirely.
   if (checks?.state === "failure") {
@@ -112,8 +140,6 @@ export function computeAttentionReason({
 
   if (checks?.state === "pending") return null;
 
-  if (prState === "merged" || prState === "closed") return null;
-
   // Agent idle on an open PR with nothing blocking: if auto-merge owns the
   // merge, the user delegated it and has nothing to do until it merges (→
   // closed, silent) or hits a blocker (→ the autoMerge.error branch above).
@@ -122,8 +148,18 @@ export function computeAttentionReason({
   return "Waiting for your input";
 }
 
-/** Returns the highest-priority attention reason for a session, or null if no attention needed. */
-export function useAttentionInfo(sessionId: string): string | null {
+/**
+ * Returns the highest-priority attention reason for a session, or null if no
+ * attention needed.
+ *
+ * `muted` (docs/277) is passed in rather than looked up here on purpose: the
+ * only caller is a session ROW, which already holds the `SessionInfo` it
+ * renders. A row can come from `allSessions` (the All Sessions dialog) or from a
+ * list the store has not caught up with, so a lookup by id would read `false`
+ * for a session the row itself knows is muted — and the row would wear an amber
+ * marker its own menu says is silenced.
+ */
+export function useAttentionInfo(sessionId: string, muted = false): string | null {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
@@ -133,7 +169,7 @@ export function useAttentionInfo(sessionId: string): string | null {
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
   const resolved = useSessionStore((s) => {
     const session = s.sessions.find((sess) => sess.id === sessionId);
-    return session ? isRecentlyResolved(session) : false;
+    return session ? isTerminalPrResolved(session) : false;
   });
-  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved });
+  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved, muted });
 }

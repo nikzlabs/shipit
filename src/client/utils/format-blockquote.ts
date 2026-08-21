@@ -1,5 +1,5 @@
 /**
- * SHI-10 — turn a selected passage from a chat message into a markdown
+ * planning#12 — turn a selected passage from a chat message into a markdown
  * blockquote suitable for dropping into the composer.
  *
  * Each line is prefixed with `> ` (blank lines become a bare `>` so the quote

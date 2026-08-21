@@ -77,6 +77,8 @@ export class SseConnectionManager {
   private _sseConnected: Promise<void> | null = null;
   private _resolveSseConnected: (() => void) | null = null;
   private _lastActivityAt = 0;
+  /** See {@link streamDownSince}. */
+  private _streamDownSince = 0;
   /**
    * Highest seq number observed on any event from the worker. Passed
    * back as `?since=N` on every (re)connect so the worker's ring buffer
@@ -92,6 +94,24 @@ export class SseConnectionManager {
 
   /** Whether an SSE connection is currently established (handle present). */
   get isConnected(): boolean { return this.sseConnection !== null; }
+
+  /**
+   * `Date.now()` of the moment the stream most recently went down without
+   * coming back; 0 while a stream is open (or before the first disconnect).
+   *
+   * Read by the missing-container reconciler (docs/121 gap E) as the cheap
+   * "this worker has stopped answering" trigger before it pays for a Docker
+   * liveness probe. Deliberately a TIMESTAMP rather than the reconnect
+   * counter: `onDisconnect` may abort the schedule entirely (the runner does
+   * exactly that once the terminal-only reconnect cap is exhausted), which
+   * freezes any attempt count at the cap forever — the reconciler would then
+   * never reach its threshold in precisely the sessions that are most
+   * thoroughly stuck. A latched timestamp keeps climbing whether or not the
+   * schedule is still running.
+   *
+   * Latched BEFORE `onDisconnect` for the same reason.
+   */
+  get streamDownSince(): number { return this._streamDownSince; }
 
   /**
    * Advance the worker event cursor before the first SSE connection. Used when
@@ -165,6 +185,7 @@ export class SseConnectionManager {
         // onOpen — SSE connection established
         // Reset reconnect counter only on successful connection
         this.sseReconnectAttempts = 0;
+        this._streamDownSince = 0;
         if (this._resolveSseConnected) {
           this._resolveSseConnected();
           this._resolveSseConnected = null;
@@ -188,6 +209,9 @@ export class SseConnectionManager {
    * unless the runner explicitly aborts the cycle.
    */
   private handleDisconnect(): void {
+    // Latch first: `onDisconnect` may abort the reconnect schedule, and a
+    // stream nobody is retrying is the *most* down it can be.
+    if (this._streamDownSince === 0) this._streamDownSince = Date.now();
     const attempt = this.sseReconnectAttempts + 1;
     const proceed = this.opts.onDisconnect?.(attempt);
     if (proceed === false) return;

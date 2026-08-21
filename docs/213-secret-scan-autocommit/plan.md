@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-169
+issue: planning#171
 title: Secret-scan guard in post-turn auto-commit
 description: Block agent commits that introduce a credential, at commit time, with a persisted redacted warning.
 ---
@@ -46,7 +46,7 @@ small set of high-signal credential patterns. If any are found:
 Because no commit hash comes back, the downstream auto-push and PR-lifecycle
 flow short-circuit naturally (they only run on a non-null commit).
 
-### The rework: a refusal is state, not an announcement (SHI-315)
+### The rework: a refusal is state, not an announcement (planning#317)
 
 Steps 3 and 4 were added after the guard was found to fail in the field in a way
 the original design did not anticipate. The failure had two halves that compound:
@@ -193,7 +193,7 @@ round-trips beyond a single `git diff --cached`. It does not stall a turn.
 - `src/server/orchestrator/services/secret-scan-notice.ts` —
   `formatSecretScanNotice` builds the redacted, persisted warning text.
 - `src/server/orchestrator/services/secret-block.ts` — **the owner of the block
-  as state** (SHI-315): `recordSecretBlock` / `clearSecretBlock`, the notify
+  as state** (planning#317): `recordSecretBlock` / `clearSecretBlock`, the notify
   budget, and the remediation dispatch. Both post-turn paths call it.
 - `src/server/orchestrator/prompts/secret-block-remediation.md` — the
   agent-facing remediation prompt, including the no-allow-marker clause (req 8).
@@ -261,7 +261,7 @@ the rest:
 
 ## What else is covered (review hardening)
 
-A Codex review (SHI-169) surfaced additional vectors, now closed:
+A Codex review (planning#171) surfaced additional vectors, now closed:
 
 - **Commit messages.** The commit message is derived from agent-authored turn
   text, and the historical leak spread into commit messages too. `autoCommit`
@@ -288,7 +288,7 @@ A Codex review (SHI-169) surfaced additional vectors, now closed:
   `secretBlocked`; `agentCreatePr` aborts with a 422 when the just-made edit was
   refused for a secret, instead of silently opening/updating the PR from the
   prior (stale) commits. The redacted warning is surfaced by the flush.
-  - **Debounce cancellation is coupled to the synchronous push (SHI-198).**
+  - **Debounce cancellation is coupled to the synchronous push (planning#200).**
     `flushPendingTurnCommit` no longer cancels the pending 5s auto-push debounce.
     It used to do so unconditionally at the top, on the assumption the caller
     pushes synchronously right after — but on the `secretBlocked` (and

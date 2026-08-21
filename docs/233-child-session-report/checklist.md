@@ -14,3 +14,16 @@
 - [x] Service unit tests, shim tests, integration tests, client tests, guard-test updates
 - [x] `npm run lint:dev` + `npm run typecheck` clean
 - [x] Design doc + Linear issue comment
+
+## Resolved-child delivery gate
+
+- [x] Human requirements and resolution receipts
+- [x] Implementation design traced against the existing UI/server lifecycle predicate
+- [x] Independent design reviews addressed
+- [x] Single shared resolved-session classifier + client/server consumer migration + tests
+- [x] Every turn start updates `lastUsedAt`, including abnormal-exit coverage
+- [x] Direct parent-message resolved-child guard + service tests
+- [x] Cohort resolved-sibling skip result + service tests
+- [x] Agent-facing docs updated for resolved-child command outcomes and `whoami` visibility
+- [x] Independent implementation review findings addressed
+- [x] `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck` clean

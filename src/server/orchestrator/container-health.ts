@@ -222,7 +222,7 @@ export async function startHealthMonitor(
         if (sessionId) {
           const sc = deps.containers.get(sessionId);
 
-          // SHI-222 — the agent container is the netns PARENT of the Tier B/C
+          // planning#224 — the agent container is the netns PARENT of the Tier B/C
           // egress sidecars (docs/172). When it dies, their shared namespace dies
           // with it and they are dead weight. Reap them HERE, at the crash site:
           // the map-entry delete below LATCHES the leak, because every later
@@ -238,7 +238,7 @@ export async function startHealthMonitor(
           // process, leaving the container very much alive). By the time `die`
           // lands — the event that IS proof — this handler has already dropped the
           // map entry, so a reap placed below `if (!sc) return` would never run at
-          // all. That left the leak wide open in exactly the crash mode SHI-222 is
+          // all. That left the leak wide open in exactly the crash mode planning#224 is
           // named for.
           //
           // Calling it unconditionally is safe because the reap is (a) scoped to

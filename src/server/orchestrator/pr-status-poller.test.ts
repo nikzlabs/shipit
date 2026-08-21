@@ -943,7 +943,7 @@ describe("PrStatusPoller", () => {
     });
 
     it("uses the canonical owner for the post-merge fast-path verify (forceVerifySessionPrState)", async () => {
-      // SHI-159: the post-merge fast path bypasses pollRepo (it must, to avoid
+      // planning#161: the post-merge fast path bypasses pollRepo (it must, to avoid
       // the lagging OPEN bulk view), so it has to resolve the canonical owner
       // itself. Without that, findPullRequestAnyState filters on the OLD owner
       // and the just-merged PR is missed until the next regular poll.
@@ -1528,6 +1528,90 @@ describe("PrStatusPoller", () => {
     );
   });
 
+  // docs/266 — the wiring guard. The gate lives in AutoMergeManager (unit-tested
+  // there); what can silently break is the poller handing it a way to see the
+  // runner. Without the registry callback the manager reads every session as
+  // idle and this test merges PR #42 four minutes into a live turn, exactly as
+  // production did.
+  describe("managed auto-merge and a busy session", () => {
+    async function pollGreenPr(opts: { busy: boolean }) {
+      const githubAuth = makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      });
+      const sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      const registry = makeFakeRegistry();
+      registry.setViewers("s1", 1);
+      // The incident's shape: the turn has ended, the reviewer feedback the
+      // agent applied is not committed yet. `running` false, busy true.
+      registry.setRunning("s1", false);
+      registry.setBusy("s1", opts.busy);
+      const poller = new PrStatusPoller({
+        githubAuth,
+        sessionManager,
+        sseBroadcast: vi.fn(),
+        runnerRegistry: registry,
+      });
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      return { poller, registry, mergePullRequest: githubAuth.mergePullRequest as ReturnType<typeof vi.fn> };
+    }
+
+    // An archived session is filtered out of `SessionManager.list()`, which the
+    // poll loop iterates — so before docs/266 an armed managed PR on an archived
+    // session was never merged by anything, while the polling gate stayed open
+    // for it forever. Under native arming GitHub merged it with no help from us,
+    // so redirecting live sessions to managed made this reachable.
+    it("still merges an armed PR after its session is archived", async () => {
+      vi.useFakeTimers();
+      const githubAuth = makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      });
+      const sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo", archived: true },
+      ]);
+      const registry = makeFakeRegistry();
+      registry.setViewers("s1", 1);
+      const poller = new PrStatusPoller({
+        githubAuth,
+        sessionManager,
+        sseBroadcast: vi.fn(),
+        runnerRegistry: registry,
+      });
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(githubAuth.mergePullRequest).toHaveBeenCalledTimes(1);
+      poller.destroy();
+      vi.useRealTimers();
+    });
+
+    it("does not merge while the session is busy, and merges once it is idle", async () => {
+      vi.useFakeTimers();
+      const { poller, registry, mergePullRequest } = await pollGreenPr({ busy: true });
+
+      expect(mergePullRequest).not.toHaveBeenCalled();
+      // No sticky error, still armed — it is a wait, not a failure.
+      expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
+      expect(poller.getAutoMergeState("s1")?.error).toBeUndefined();
+
+      registry.setBusy("s1", false);
+      await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+      poller.destroy();
+      vi.useRealTimers();
+    });
+  });
+
   // Auto-merge is armed for ONE pull request, not for the session forever. When
   // the PR it was armed for goes terminal the state must be released, or (a) the
   // session's NEXT PR gets silently armed by `activatePendingAutoMergeForPr`
@@ -1548,7 +1632,10 @@ describe("PrStatusPoller", () => {
 
       // Arm auto-merge on the open PR, the way the toggle route does.
       poller.setAutoMergeEnabled("s1", true);
-      poller.setAutoMergeManaged("s1", true, "https://github.com/owner/repo/settings", "Allow auto-merge is off");
+      poller.setAutoMergeManaged("s1", true, {
+        settingsUrl: "https://github.com/owner/repo/settings",
+        reason: "Allow auto-merge is off",
+      });
       expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
 
       // The PR drops out of the OPEN bulk view → REST verify sees it terminal.
@@ -1840,6 +1927,75 @@ describe("PrStatusPoller", () => {
       const all = poller.getAllStatuses();
       expect(all).toHaveLength(1);
       expect(all[0]).toMatchObject({ sessionId: "archived-1", prState: "merged" });
+    });
+
+    // docs/077 — an arming belongs to ONE pull request and is dropped when that
+    // PR goes terminal. This is the belt-and-suspenders half, mirroring the
+    // auto-fix "never attach over a green rollup" guard: should the state ever
+    // outlive its PR, no client may be told a merged PR is still waiting to
+    // auto-merge — that is what strands the toggle ON in the UI.
+    it.each(["merged", "closed"] as const)(
+      "never attaches auto-merge state onto a %s summary",
+      (prState) => {
+        const persisted = [{
+          sessionId: "s1",
+          prNumber: 7,
+          prUrl: "u",
+          prTitle: "t",
+          prState,
+          baseBranch: "main",
+          headBranch: "h",
+          insertions: 0,
+          deletions: 0,
+          checks: { state: "success" as const, total: 1, passed: 1, failed: 0, pending: 0 },
+          mergeable: "unknown" as const,
+          autoMergeEnabled: false,
+        }];
+        githubAuth = makeGitHubAuth();
+        sessionManager = {
+          list: () => [],
+          get: () => undefined,
+          setPrStatus: vi.fn(),
+          getAllPrStatuses: vi.fn().mockReturnValue(persisted),
+        } as unknown as SessionManager;
+
+        poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+        poller.loadPersisted();
+        poller.setAutoMergeEnabled("s1", true);
+
+        expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
+        expect(poller.getAllStatuses()[0].autoMerge).toBeUndefined();
+      },
+    );
+
+    it("attaches auto-merge state onto an open summary", () => {
+      const persisted = [{
+        sessionId: "s1",
+        prNumber: 7,
+        prUrl: "u",
+        prTitle: "t",
+        prState: "open" as const,
+        baseBranch: "main",
+        headBranch: "h",
+        insertions: 0,
+        deletions: 0,
+        checks: { state: "success" as const, total: 1, passed: 1, failed: 0, pending: 0 },
+        mergeable: "unknown" as const,
+        autoMergeEnabled: false,
+      }];
+      githubAuth = makeGitHubAuth();
+      sessionManager = {
+        list: () => [],
+        get: () => undefined,
+        setPrStatus: vi.fn(),
+        getAllPrStatuses: vi.fn().mockReturnValue(persisted),
+      } as unknown as SessionManager;
+
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.loadPersisted();
+      poller.setAutoMergeEnabled("s1", true);
+
+      expect(poller.getAllStatuses()[0].autoMerge?.enabled).toBe(true);
     });
 
     it("loadPersisted strips runtime-only autoFix/autoMerge fields", () => {

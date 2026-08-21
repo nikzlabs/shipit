@@ -144,7 +144,7 @@ function AssigneeLabel({ assignee }: { assignee: NonNullable<TrackerIssue["assig
 }
 
 /**
- * Label chips shown under the issue title (SHI-92). Each chip pairs a colored
+ * Label chips shown under the issue title (planning#94). Each chip pairs a colored
  * dot with the label name in token-driven text, keeping the chip legible in
  * every theme. The dot uses the tracker's own label color when present, falling
  * back to a deterministic hash of the name (`labelDotColor`) when it isn't — so
@@ -539,7 +539,7 @@ export function IssuesViewer({
 }: IssuesViewerProps) {
   const activeInfo = info ?? trackers.find((t) => t.id === activeTracker);
   const configured = activeInfo?.configured ?? false;
-  // SHI-325 — a repo switch drops the declarations until the tracker fetch that
+  // planning#327 — a repo switch drops the declarations until the tracker fetch that
   // follows lands. Neither "not connected" nor the previous repo's trackers is
   // true in that window, so the panel says only what it knows.
   const declarationsPending = trackers.length === 0 && loading;
@@ -570,6 +570,7 @@ export function IssuesViewer({
     if (!el) return;
     el.scrollTop = initialScrollTop;
     return () => onPersistScroll(el.scrollTop);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/unmount pair — the captured `initialScrollTop`/`onPersistScroll` are exactly the intended values (see above)
   }, []);
 
   return (

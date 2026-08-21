@@ -2,11 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // docs/156 — every session-creation surface now ends with `graduateSession`,
 // which fires `generateSessionName` (real CLI child, 15s timeout) for any
-// path without an explicit title+branch. Mock to null so the placeholder
-// title sticks and the branch is unchanged. Without this, the
-// no-explicit-title path would shell out to a real provider CLI.
+// path without an explicit title. Mock to null so the placeholder title sticks
+// and the branch is unchanged. Without this, every test here would shell out to
+// a real provider CLI — since planning#413 the route takes no `branch` either,
+// so nothing on this path can pin a name and skip the namer.
+// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
+// `{ name: null }` is "naming produced no title", which is what these tests want.
 vi.mock("../session-namer.js", () => ({
-  generateSessionName: vi.fn().mockResolvedValue(null),
+  generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
 
 import fs from "node:fs";
@@ -151,7 +154,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Fix the flaky test",
-        branch: "quick/flaky-test",
         agent: "claude",
         model: "claude-sonnet-4-20250514",
       },
@@ -165,16 +167,19 @@ describe("Integration: quick-capture headless sessions", () => {
       session: { id: string; title: string };
     };
     expect(body).toMatchObject({
-      branch: "quick/flaky-test",
       status: "running",
       session: { title: "Fix the flaky test" },
     });
+    // planning#413 — the route takes no `branch`; the name is always generated,
+    // so no two calls can land on one remote branch. `branchRenamed` is
+    // deliberately not asserted here: with neither a branch nor a title pinned,
+    // graduation defers it behind the (mocked) namer.
+    expect(body.branch).toMatch(/^shipit\/[a-z0-9_-]{1,6}$/);
 
     const session = sessionManager.get(body.sessionId);
     expect(session).toMatchObject({
       remoteUrl: REPO_URL,
-      branch: "quick/flaky-test",
-      branchRenamed: true,
+      branch: body.branch,
       model: "claude-sonnet-4-20250514",
       agentId: "claude",
       agentPinned: true,
@@ -186,7 +191,7 @@ describe("Integration: quick-capture headless sessions", () => {
     expect(execSync("git branch --show-current", {
       cwd: session!.workspaceDir!,
       encoding: "utf8",
-    }).trim()).toBe("quick/flaky-test");
+    }).trim()).toBe(body.branch);
   });
 
   it("references an attached image in the dispatched first-turn prompt", { timeout: 15_000 }, async () => {
@@ -206,7 +211,6 @@ describe("Integration: quick-capture headless sessions", () => {
       {
         repoUrl: REPO_URL,
         initialPrompt: "Match this design",
-        branch: "quick/with-image",
         agent: "claude",
       },
       [{ name: "file", filename: "screenshot.png", content: png }],
@@ -279,11 +283,49 @@ describe("Integration: quick-capture headless sessions", () => {
     );
   });
 
-  it("pins the model's agent when agent+model disagree (model is source of truth)", { timeout: 15_000 }, async () => {
-    // docs/166: a caller (e.g. the quick-capture overlay with a stale
-    // `vibe-agent-id`, or a legacy client) sends a Claude model with a
-    // conflicting `agent: "codex"`. The model is authoritative, so the server
-    // must derive and pin "claude", never the mismatched agent it was handed.
+  it("refuses a harness that cannot run the requested model (planning#389)", { timeout: 15_000 }, async () => {
+    // docs/166 made this pair — a Claude model with a conflicting
+    // `agent: "codex"` — resolve to Claude, so a stale `vibe-agent-id` could not
+    // pin a session to a harness the user never chose. It did that by rerouting,
+    // and rerouting is the wrong half of the remedy: the session ran, was pinned
+    // write-once to Claude and BILLED for it, with `pending_agent_notice` NULL,
+    // so a caller who meant "codex" was told nothing at all. Measured on a live
+    // instance 2026-08-15 — four such requests, one of them $0.14.
+    //
+    // A refusal prevents the wrong pin just as well and costs nothing. The pair
+    // is refused, not corrected, because the two readings of it (a stale key vs.
+    // a caller who means it) are the SAME request and no rule can tell them
+    // apart — which is the answer `shipit agent run` and `shipit session create`
+    // already give (docs/261 req 7, planning#304). docs/166's client half, which
+    // stops the pair being sent, is untouched.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const before = sessionManager.list().length;
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "Use the model's agent",
+        agent: "codex",
+        model: "claude-opus-5",
+      },
+    });
+
+    expect(res.statusCode, res.body).toBe(400);
+    expect((res.json() as { error: string }).error).toContain(
+      "Codex cannot run Opus 5 — they share no API style.",
+    );
+    // Nothing was created and nothing ran: no session row, and no agent spawned
+    // on the harness the caller did not ask for.
+    expect(sessionManager.list().length).toBe(before);
+    expect(createdAgents.some((a) => a.runCalled)).toBe(false);
+  });
+
+  it("still derives the agent from the model when none was named (docs/166)", { timeout: 15_000 }, async () => {
+    // The half of docs/166's server guard that survives planning#389: the model
+    // is the source of truth, so a caller who names one and no harness gets the
+    // harness that model belongs to — not the install default.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
     const res = await app.inject({
@@ -292,18 +334,44 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Use the model's agent",
-        branch: "quick/agent-derive",
-        agent: "codex",
         model: "claude-opus-5",
       },
     });
 
     expect(res.statusCode, res.body).toBe(200);
     const body = res.json() as { sessionId: string };
-    const session = sessionManager.get(body.sessionId);
-    expect(session).toMatchObject({
+    expect(sessionManager.get(body.sessionId)).toMatchObject({
       model: "claude-opus-5",
       agentId: "claude",
+      agentPinned: true,
+    });
+  });
+
+  it("honours the requested harness when it can run the model (both can)", { timeout: 15_000 }, async () => {
+    // The other half of the rule above, and the one that made Quick Capture's
+    // harness picker look broken: docs/252 ended "each model belongs to exactly
+    // one harness", so `deepseek-v4-pro` is in BOTH lists and `agentIdForModel`
+    // answers with whichever sorts first (claude). Deriving there is not
+    // defending against a mismatch — there is none — it is discarding a harness
+    // the caller asked for and can actually run, write-once.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "Run this on Codex",
+        agent: "codex",
+        model: "deepseek-v4-pro",
+      },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { sessionId: string };
+    expect(sessionManager.get(body.sessionId)).toMatchObject({
+      model: "deepseek-v4-pro",
+      agentId: "codex",
       agentPinned: true,
     });
   });
@@ -323,7 +391,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Bump the dep and merge it",
-        branch: "quick/arm-merge",
         agent: "claude",
         armAutoMerge: true,
       },
@@ -350,7 +417,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Just a normal session",
-        branch: "quick/no-arm",
         agent: "claude",
       },
     });

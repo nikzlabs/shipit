@@ -1,5 +1,5 @@
 /**
- * Tests for the egress reload seam (docs/172 Gap 1, SHI-90) — relaunching the
+ * Tests for the egress reload seam (docs/172 Gap 1, planning#92) — relaunching the
  * Tier B resolver + Tier C proxy after a durable allowlist add, without a
  * container restart. Pure orchestration; the in-netns swap is verified live.
  */
@@ -64,7 +64,7 @@ describe("reloadEgressSidecars", () => {
     expect(Buffer.from(b64, "base64").toString("utf-8")).toContain("new.example.com");
   });
 
-  it("re-emits the docker-socket-proxy resolver rule for an ops session (SHI-90)", async () => {
+  it("re-emits the docker-socket-proxy resolver rule for an ops session (planning#92)", async () => {
     const { docker, created } = fakeDocker([{ Id: "old-resolver" }]);
     await reloadEgressSidecars({ docker, ...baseOpts, opsSession: true, reloadResolver: true, reloadProxy: false });
     const b64 = (created[0].Env ?? []).find((e) => e.startsWith("EGRESS_DNSMASQ_CONFIG_B64="))?.split("=")[1] ?? "";

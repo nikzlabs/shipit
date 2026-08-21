@@ -9,7 +9,7 @@ import {
 
 /**
  * The input-side counterpart of the `rendersResultContentInline` drift guard
- * (SHI-296). Each case below is pinned to a *call site*, not to a hunch about
+ * (planning#298). Each case below is pinned to a *call site*, not to a hunch about
  * what a tool's input contains — the failure mode this feature has hit twice is
  * an answer that was true of the renderer when it was written and stopped being
  * true when the renderer moved.
@@ -69,6 +69,28 @@ describe("inputKeyTreatment", () => {
       for (const key of ["questions", "todos", "changes", "anything"]) {
         expect(inputKeyTreatment(name, key, empty)).toBe("keep");
       }
+    }
+  });
+
+  it("keeps what the task panel draws from a Task* call and drops the description", () => {
+    // The panel folds these calls and renders with no click behind it, so a
+    // dropped key would blank a row on reload. `description` is the exception:
+    // it is the long one, and the panel never shows it.
+    for (const name of ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]) {
+      for (const key of ["taskId", "subject", "activeForm", "status"]) {
+        expect(inputKeyTreatment(name, key, empty)).toBe("keep");
+      }
+      expect(inputKeyTreatment(name, "description", empty)).toBe("drop");
+      expect(inputKeyTreatment(name, "metadata", empty)).toBe("drop");
+    }
+  });
+
+  it("treats the background-task tools as ordinary tools, not to-do list tools", () => {
+    // TaskStop / TaskOutput act on a running shell or agent. Nothing draws
+    // their input inline, so the default drop applies.
+    for (const name of ["TaskStop", "TaskOutput"]) {
+      expect(inputKeyTreatment(name, "task_id", empty)).toBe("drop");
+      expect(inputKeyTreatment(name, "subject", empty)).toBe("drop");
     }
   });
 

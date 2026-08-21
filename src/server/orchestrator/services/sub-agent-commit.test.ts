@@ -1,5 +1,5 @@
 /**
- * SHI-299 — a sub-agent consult that finishes AFTER its parent turn ended must
+ * planning#301 — a sub-agent consult that finishes AFTER its parent turn ended must
  * still get its work committed (and pushed) to the session branch.
  *
  * The incident these pin: a backgrounded `shipit agent run` ran for 100 minutes
@@ -122,23 +122,20 @@ describe("commitSubAgentWork", () => {
     expect(append).not.toHaveBeenCalled();
   });
 
-  it("commits but never pushes an ops session", async () => {
-    fs.writeFileSync(path.join(tmpDir, "consult.md"), "investigation notes");
-    const { deps, schedulePostTurnPush } = makeDeps({ sessionDir: tmpDir, kind: "ops" });
+  // docs/128 / docs/211 — a late consult IS an automatic commit, so the shared
+  // `auto-commit-gate` refusal applies: the tree is left dirty for the agent to
+  // commit itself (ops) or inside its own clone (sandbox).
+  for (const kind of ["ops", "sandbox"] as const) {
+    it(`skips a ${kind} session entirely — no commit, no push, tree left dirty`, async () => {
+      fs.writeFileSync(path.join(tmpDir, "consult.md"), "investigation notes");
+      const { deps, schedulePostTurnPush, append } = makeDeps({ sessionDir: tmpDir, kind });
 
-    expect(await commitSubAgentWork(deps, "s1", { spawnId: "sp1", subAgentId: "codex" })).toBeTruthy();
-    expect(await git.isClean()).toBe(true);
-    expect(schedulePostTurnPush).not.toHaveBeenCalled();
-  });
-
-  it("skips a sandbox session entirely (no root repo to commit into)", async () => {
-    fs.writeFileSync(path.join(tmpDir, "consult.md"), "codex says hello");
-    const { deps, schedulePostTurnPush } = makeDeps({ sessionDir: tmpDir, kind: "sandbox" });
-
-    expect(await commitSubAgentWork(deps, "s1", { spawnId: "sp1", subAgentId: "codex" })).toBeNull();
-    expect(schedulePostTurnPush).not.toHaveBeenCalled();
-    expect(await git.isClean()).toBe(false);
-  });
+      expect(await commitSubAgentWork(deps, "s1", { spawnId: "sp1", subAgentId: "codex" })).toBeNull();
+      expect(schedulePostTurnPush).not.toHaveBeenCalled();
+      expect(append).not.toHaveBeenCalled();
+      expect(await git.isClean()).toBe(false);
+    });
+  }
 
   it("is a no-op when nothing was written, when no runner is left, and with no git dep", async () => {
     // Nothing to commit — a consult that only read.

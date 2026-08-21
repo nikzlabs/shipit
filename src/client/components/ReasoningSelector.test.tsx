@@ -3,7 +3,9 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReasoningSelector } from "./ReasoningSelector.js";
 import { saveReasoning } from "../utils/local-storage.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { AgentOption } from "../agent-types.js";
+import type { SessionInfo } from "../../server/shared/types.js";
 
 afterEach(() => cleanup());
 beforeEach(() => { try { localStorage.clear(); } catch { /* ignore */ } });
@@ -12,7 +14,7 @@ const claude: AgentOption = {
   id: "claude",
   name: "Claude Code",
   installed: true,
-  authConfigured: true,
+  hasRunnableModels: true,
   models: ["claude-opus-4-8"],
   supportsReview: true,
   reasoning: {
@@ -29,7 +31,7 @@ const noReasoningAgent: AgentOption = {
   id: "other",
   name: "Other",
   installed: true,
-  authConfigured: true,
+  hasRunnableModels: true,
   models: ["m"],
   supportsReview: false,
 };
@@ -59,20 +61,15 @@ describe("ReasoningSelector (docs/217)", () => {
     expect(screen.getByTestId("reasoning-trigger").textContent).toContain("High");
   });
 
-  it("collapses the trigger to icon plus caret in compact mode", () => {
-    render(
-      <ReasoningSelector
-        agent={claude}
-        sessionReasoning="high"
-        onChange={() => {}}
-        compactTrigger
-      />,
-    );
+  // docs/260 — `compactTrigger` is gone for the same reason it is gone from the
+  // harness selector: below 700px of composer width this control is not in the
+  // row at all, so it never has to survive a width too small for its label.
+  it("always shows the current level and names the knob for a screen reader", () => {
+    render(<ReasoningSelector agent={claude} sessionReasoning="high" onChange={() => {}} />);
     const trigger = screen.getByTestId("reasoning-trigger");
-    expect(trigger.textContent).not.toContain("High");
+    expect(trigger.textContent).toContain("High");
     expect(trigger).toHaveAttribute("title", "Reasoning: High");
-    expect(trigger.querySelector("svg")).not.toBeNull();
-    expect(trigger.querySelectorAll("svg")).toHaveLength(2);
+    expect(trigger).toHaveAttribute("aria-label", "Reasoning selector");
   });
 
   it("falls back to the per-agent localStorage seed in the new-session composer", () => {
@@ -116,5 +113,76 @@ describe("ReasoningSelector (docs/217)", () => {
       <ReasoningSelector key="B" agent={claude} sessionReasoning="low" onChange={() => {}} />,
     );
     expect(screen.getByTestId("reasoning-trigger").textContent).toContain("Low");
+  });
+});
+
+/**
+ * docs/274 req 14 — the picker follows the SELECTION, not the harness.
+ *
+ * Grok is the harness that makes this visible: it declares four levels and its
+ * CLI drops `--reasoning-effort` before the wire on a key-billed row, so a
+ * picker reading `capabilities.reasoning.options` would put four controls on
+ * screen that change nothing. The selection is derived from the bound session,
+ * so these drive the session store rather than a prop.
+ */
+describe("ReasoningSelector — levels follow the selection (docs/274 req 14)", () => {
+  const grok: AgentOption = {
+    id: "grok",
+    name: "Grok Build",
+    installed: true,
+    hasRunnableModels: true,
+    models: ["grok-4.6"],
+    supportsReview: false,
+    reasoning: {
+      label: "Reasoning",
+      options: [
+        { value: "xhigh", label: "Extra high" },
+        { value: "high", label: "High" },
+      ],
+    },
+  };
+
+  const bindSession = (billingMode: "sub" | "key", modelId = "grok-4.6") => {
+    const session = {
+      id: "s1",
+      title: "t",
+      createdAt: "2026-08-19T00:00:00.000Z",
+      lastUsedAt: "2026-08-19T00:00:00.000Z",
+      serviceId: "xai",
+      billingMode,
+      model: modelId,
+    } as unknown as SessionInfo;
+    useSessionStore.setState({ sessionId: "s1", sessions: [session] });
+  };
+
+  afterEach(() => useSessionStore.setState({ sessionId: undefined, sessions: [] }));
+
+  it("renders nothing on a key-billed row, whose CLI discards the flag", () => {
+    bindSession("key");
+    const { container } = render(
+      <ReasoningSelector agent={grok} sessionReasoning={undefined} onChange={() => {}} />,
+    );
+    // The harness DOES declare levels — what hides the control is the mode gate.
+    expect(grok.reasoning?.options.length).toBeGreaterThan(0);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders the row's own levels on the subscription", async () => {
+    const user = userEvent.setup();
+    bindSession("sub");
+    render(<ReasoningSelector agent={grok} sessionReasoning={undefined} onChange={() => {}} />);
+    await user.click(screen.getByTestId("reasoning-trigger"));
+    expect(screen.getByText("Extra high")).toBeTruthy();
+  });
+
+  it("drops a level the row does not offer, without dropping the control", async () => {
+    const user = userEvent.setup();
+    // grok-4.5 is subscription-only and has no `xhigh` — the per-ROW narrowing,
+    // which the mode gate alone could not express.
+    bindSession("sub", "grok-4.5");
+    render(<ReasoningSelector agent={grok} sessionReasoning={undefined} onChange={() => {}} />);
+    await user.click(screen.getByTestId("reasoning-trigger"));
+    expect(screen.getByText("High")).toBeTruthy();
+    expect(screen.queryByText("Extra high")).toBeNull();
   });
 });

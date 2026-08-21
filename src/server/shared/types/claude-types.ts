@@ -123,6 +123,39 @@ export interface ClaudeTaskUpdatedEvent {
 }
 
 /**
+ * A per-task liveness ping for a running background task ({usage,
+ * last_tool_name} tick along as it works). Superseded by the authoritative
+ * {@link ClaudeBackgroundTasksChangedEvent} list and the
+ * {@link ClaudeTaskNotificationEvent} completion edge; deliberately dropped by
+ * the adapter. Observed on CLI 2.1.224 (docs/272 Run 1, 2026-08-17).
+ */
+export interface ClaudeTaskProgressEvent {
+  type: "system";
+  subtype: "task_progress";
+  session_id?: string;
+  task_id?: string;
+  tool_use_id?: string;
+  description?: string;
+  subagent_type?: string;
+  usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
+  last_tool_name?: string;
+}
+
+/**
+ * A per-tick thinking-token estimate — the most frequent event in a real
+ * stream (50+ per turn). Authoritative usage arrives once on `result`;
+ * deliberately dropped by the adapter. Observed on CLI 2.1.224 (docs/272
+ * Run 1, 2026-08-17).
+ */
+export interface ClaudeThinkingTokensEvent {
+  type: "system";
+  subtype: "thinking_tokens";
+  session_id?: string;
+  estimated_tokens?: number;
+  estimated_tokens_delta?: number;
+}
+
+/**
  * docs/235 — a background task finished and the CLI is waking itself to react.
  * This is the edge that opens a **self-woken turn**: on the wire it is
  * immediately followed by a fresh `system/init` and, later, a `result`, with no
@@ -181,6 +214,8 @@ export type ClaudeSystemEvent =
   | ClaudeBackgroundTasksChangedEvent
   | ClaudeTaskStartedEvent
   | ClaudeTaskUpdatedEvent
+  | ClaudeTaskProgressEvent
+  | ClaudeThinkingTokensEvent
   | ClaudeTaskNotificationEvent;
 
 export interface ClaudeContentBlockText {
@@ -205,7 +240,7 @@ export interface ClaudeContentBlockToolUse {
   /**
    * Original character length of each shortened or removed *string* key, for the
    * labels the transcript draws from a length it no longer holds — today just
-   * `SubagentCall`'s `Prompt (N chars)` toggle (SHI-296).
+   * `SubagentCall`'s `Prompt (N chars)` toggle (planning#298).
    */
   inputChars?: Record<string, number>;
 }
@@ -216,6 +251,12 @@ export interface ClaudeAssistantEvent {
   type: "assistant";
   message: {
     content: ClaudeContentBlock[];
+    /**
+     * Usage for this single model call. Some Claude-compatible providers do
+     * not populate `result.usage.iterations`, so the final top-level assistant
+     * event is the only non-cumulative context-occupancy reading available.
+     */
+    usage?: ClaudeUsageIteration;
   };
   /**
    * When the Claude CLI emits this event from a subagent (Task tool), this is
@@ -379,9 +420,39 @@ export interface ClaudeRateLimitEvent {
   session_id?: string;
 }
 
+/**
+ * A raw Anthropic SSE frame, re-emitted verbatim by the CLI under
+ * `--include-partial-messages`. ShipIt asks for these ONLY on a
+ * service-routed spawn, and consumes exactly one frame type:
+ * `message_delta`, whose `usage` is the **final** per-call token count.
+ *
+ * Why that frame and not the `assistant` event's `message.usage`: the CLI
+ * snapshots assistant usage from the call's `message_start` frame, and a
+ * provider is free to send zeros there and report the real numbers only in
+ * the closing `message_delta`. Z.ai's GLM endpoint does exactly that — every
+ * assistant event reads `{input_tokens: 0, output_tokens: 0}` — while also
+ * leaving `result.usage.iterations` empty, which left ShipIt with no per-call
+ * reading at all and a dial that summed the turn's billing totals. Measured
+ * against `glm-5.3[1m]` on 2026-08-17: last `message_delta` = 24,986 tokens
+ * where the turn-wide sum was 49,727.
+ *
+ * Only the consumed fields are typed; everything else passes through.
+ */
+export interface ClaudeStreamEvent {
+  type: "stream_event";
+  event?: {
+    type?: string;
+    /** Present on `message_delta`: this single call's final token counts. */
+    usage?: ClaudeUsageIteration;
+  };
+  /** Set when the frame belongs to a subagent (Task) call — see ClaudeAssistantEvent. */
+  parent_tool_use_id?: string | null;
+}
+
 export type ClaudeEvent =
   | ClaudeSystemEvent
   | ClaudeAssistantEvent
   | ClaudeUserEvent
   | ClaudeResultEvent
-  | ClaudeRateLimitEvent;
+  | ClaudeRateLimitEvent
+  | ClaudeStreamEvent;

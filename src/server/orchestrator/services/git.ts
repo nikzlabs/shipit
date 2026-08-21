@@ -10,6 +10,8 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { FileDiff } from "../../shared/types.js";
 import { scanFileTree } from "../../shared/file-tree.js";
 import { createLfsBlobResolver, parseLfsPointer, type LfsBlobResolver } from "../git-lfs-blob.js";
+import { stripRemoteUrlCredentials } from "../git-utils.js";
+import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 import { ServiceError } from "./types.js";
 
 // ---- Image diff support ----
@@ -214,6 +216,10 @@ export async function getTurnDiff(
   git: GitManager,
   fromCommit: string,
   toCommit: string,
+  // docs/266-orchestrator-git-trust-boundary E3 — the LFS smudge below runs on a session workspace, so under E1
+  // it has dropped uid and cannot read the orchestrator's PAT. Without this a
+  // private repo's LFS assets render as pointer text.
+  resolveRemoteCredential?: GitRemoteCredentialResolver,
 ): Promise<{
   fromCommit: string;
   toCommit: string;
@@ -233,7 +239,7 @@ export async function getTurnDiff(
   let totalDeletions = 0;
   // One resolver per diff request: its network-fetch budget is what bounds how
   // long an LFS repo can hold this response open.
-  const resolveLfs = createLfsBlobResolver(git.dir);
+  const resolveLfs = createLfsBlobResolver(git.dir, { resolveRemoteCredential });
 
   for (const entry of changedFiles) {
     const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0, binary: false };
@@ -353,6 +359,8 @@ export async function getSessionChangedPaths(
 export async function getDiffVsBranch(
   git: GitManager,
   baseBranch: string,
+  /** docs/266-orchestrator-git-trust-boundary E3 — see {@link getTurnDiff}. */
+  resolveRemoteCredential?: GitRemoteCredentialResolver,
 ): Promise<{
   fromCommit: string;
   toCommit: string;
@@ -379,7 +387,7 @@ export async function getDiffVsBranch(
   const files: FileDiff[] = [];
   let totalInsertions = 0;
   let totalDeletions = 0;
-  const resolveLfs = createLfsBlobResolver(git.dir);
+  const resolveLfs = createLfsBlobResolver(git.dir, { resolveRemoteCredential });
 
   for (const entry of changedFiles) {
     const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0, binary: false };
@@ -433,7 +441,17 @@ export async function gitRollback(
   return { commitHash };
 }
 
-/** Add or update a git remote. Returns the updated remotes list. */
+/**
+ * Add or update a git remote. Returns the updated remotes list.
+ *
+ * The URL is recorded credential-free (docs/262 req 19). This is the one place
+ * a user hands ShipIt an arbitrary remote string, and it writes it straight
+ * into the session's own `.git/config` — `/project/.git/config` inside the
+ * container, readable by the agent and by every plugin CLI and plugin service.
+ * Only http(s) userinfo is removed; the other shapes git accepts are still
+ * handled at the cross-session display boundary
+ * (`sanitizeRemoteUrlForInventory`).
+ */
 export async function setGitRemote(
   git: GitManager,
   sessionManager: SessionManager,
@@ -442,9 +460,16 @@ export async function setGitRemote(
   url: string,
 ): Promise<{ remotes: { name: string; url: string }[] }> {
   if (!name.trim() || !url.trim()) throw new ServiceError(400, "Remote name and URL are required");
-  await git.addRemote(name.trim(), url.trim());
+  const cleanUrl = stripRemoteUrlCredentials(url);
+  if (cleanUrl !== url.trim()) {
+    console.warn(
+      `[git] Dropped the credential embedded in the remote URL for ${name.trim()} — ShipIt never records `
+      + "one in a git config; access is supplied by the GitHub connection at fetch time.",
+    );
+  }
+  await git.addRemote(name.trim(), cleanUrl);
   if (name.trim() === "origin") {
-    sessionManager.setRemoteUrl(sessionId, url.trim());
+    sessionManager.setRemoteUrl(sessionId, cleanUrl);
   }
   const remotes = await git.getRemotes();
   return { remotes };
@@ -535,14 +560,118 @@ export async function rebaseAbort(git: GitManager): Promise<void> {
 }
 
 /**
- * Check if a git push error is a non-fast-forward rejection (branch has diverged).
+ * Why a `git push` failed, as far as its output says.
+ *
+ * ## Why a *classification* and not a boolean
+ *
+ * {@link isNonFastForwardError} used to match the bare substring
+ * `failed to push some refs`, which git emits on essentially EVERY push failure
+ * — the summary line, not the reason. So an unrelated failure was reported to
+ * the user as "branch has diverged from remote. Rebase needed to update.", and
+ * the remedy that advice names cannot fix a rejection that was never about
+ * ancestry. Every later turn then failed identically, with the raw stderr
+ * recorded nowhere an operator could read it.
+ *
+ * That has now happened twice, in two different shapes:
+ *
+ *  - **2026-08-17, session 590c19aa** — an auto-push fired mid-rebase, when the
+ *    workspace is on a detached HEAD, so it ran `git push origin HEAD` and git
+ *    refused the refspec outright (*"not a full refname"*). Reported as a
+ *    divergence; the branch was fine throughout. See
+ *    `auto-push-scheduler.ts`'s module docstring for the deferral this drove.
+ *  - **2026-08-18, session b77e02fe** — the remote rejected the push with
+ *    `GH008: unknown Git LFS object`, because the orchestrator's hook-less push
+ *    sent LFS pointers without their objects (`shared/git-lfs-push.ts`).
+ *    `git ls-remote` proved the remote tip was ShipIt's own last push and
+ *    `git merge-base --is-ancestor` exited 0 — there was no divergence to
+ *    rebase away, and two turns' commits stayed local across 25 minutes.
+ *
+ * So a class is only assigned on a marker that actually names the failure. The
+ * catch-all is `unknown`, which callers report verbatim rather than
+ * interpreting.
+ */
+export type PushFailureClass =
+  /** The remote ref is not an ancestor of what we pushed — a real divergence. */
+  | "non-fast-forward"
+  /** The refspec never named a pushable ref (detached HEAD, deleted branch). */
+  | "invalid-refspec"
+  /** The credential was missing, refused, or lacks the scope. */
+  | "auth"
+  /** The remote refused the push because LFS objects are missing (`GH008`). */
+  | "lfs"
+  /** A server-side hook or branch protection declined an otherwise valid push. */
+  | "remote-rejected"
+  /** The push never reached a server. */
+  | "network"
+  /** No marker matched — report the message, do not interpret it. */
+  | "unknown";
+
+/**
+ * Ordered most-specific first. Order is load-bearing where the shapes overlap:
+ * a GH008 rejection also prints `[remote rejected] … (pre-receive hook
+ * declined)`, and an auth failure also prints `unable to access '…'`.
+ *
+ * Note what is deliberately absent from every pattern: `failed to push some
+ * refs`. It is git's summary line, present on all of these, so matching it can
+ * only ever produce the misreport above.
+ */
+const PUSH_FAILURE_PATTERNS: readonly (readonly [PushFailureClass, RegExp])[] = [
+  ["lfs", /GH008|unknown Git LFS object|LFS upload|lfs\.locksverify|missing (?:a few |some )?(?:Git )?LFS object/i],
+  [
+    // A bare `\b40[13]\b` was tried and is WRONG: git's own progress output
+    // carries free-standing numbers, and `remote: Resolving deltas: 100%
+    // (403/403), done.` — which a large push prints on its way to a perfectly
+    // ordinary non-fast-forward rejection — has word boundaries on both sides
+    // of that `403`. An HTTP status only counts where something says it is one,
+    // which is the discipline `git-utils.ts`'s `isGitAuthError` already uses.
+    "auth",
+    /Authentication failed|could not read (?:Username|Password)|terminal prompts disabled|Invalid username or (?:password|token)|Bad credentials|Password authentication is not supported|(?:HTTP(?:\/[\d.]+)?\s+|returned error:\s*|status(?:\s+code)?:?\s*)40[13]\b|\b40[13]\b[^\n]{0,30}(?:Forbidden|Unauthorized)|Permission to .+ denied|Repository not found|needs the .*workflow.* scope|refusing to allow (?:a|an) .* to create or update .*workflow/i,
+  ],
+  ["remote-rejected", /\[remote rejected\]|pre-receive hook declined|protected branch|push declined/i],
+  [
+    // `[rejected]` needs no anchor: `[remote rejected]` — the hook/GH008 shape,
+    // already matched above — does not contain that literal, and the two forms
+    // git prints put different things between the `!` and the bracket
+    // (`! [rejected] main -> main` on a terminal, `!\trefs/heads/main:refs/…\t
+    // [rejected]` in the porcelain output simple-git actually gets).
+    "non-fast-forward",
+    /non-fast-forward|\[rejected\]|\(fetch first\)|\(stale info\)|Updates were rejected because/i,
+  ],
+  ["invalid-refspec", /not a full refname|src refspec .+ does not match any|matches more than one/i],
+  [
+    "network",
+    /Could not resolve host|Connection (?:timed out|refused|reset)|The remote end hung up|RPC failed|early EOF|Operation timed out|unable to access '/i,
+  ],
+];
+
+/** What kind of failure a `git push` error describes. Never throws. */
+export function classifyPushFailure(err: unknown): PushFailureClass {
+  const msg = err instanceof Error ? err.message : String(err);
+  for (const [cls, pattern] of PUSH_FAILURE_PATTERNS) {
+    if (pattern.test(msg)) return cls;
+  }
+  return "unknown";
+}
+
+/**
+ * Check if a git push error is a non-fast-forward rejection (branch has
+ * diverged) — i.e. the one case whose remedy really is a rebase.
  */
 export function isNonFastForwardError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return (
-    msg.includes("non-fast-forward") ||
-    msg.includes("[rejected]") ||
-    msg.includes("failed to push some refs") ||
-    msg.includes("Updates were rejected because the tip of your current branch is behind")
-  );
+  return classifyPushFailure(err) === "non-fast-forward";
+}
+
+/**
+ * Whether a push failure of this class is plausibly an artefact of ShipIt's own
+ * in-flight history rewrite, and so worth retrying rather than reporting.
+ *
+ * Exactly the two shapes a push aimed at a mid-rebase workspace produces: the
+ * refspec refusal (detached HEAD — the 2026-08-17 incident) and a genuine
+ * non-fast-forward against history the driver is about to force-push. An auth,
+ * LFS, or network failure is real whatever else is in flight, and delaying its
+ * report across the scheduler's whole deferral budget would hide it.
+ */
+export function isRewriteWindowPushFailure(err: unknown): boolean {
+  const cls = classifyPushFailure(err);
+  return cls === "non-fast-forward" || cls === "invalid-refspec";
 }

@@ -787,49 +787,67 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.close();
   });
-  // docs/150 reqs 13, 20 — an answer is a full turn, so it takes the shared
-  // provider-account preflight. `handleAnswerQuestion` delegates to
-  // `runAgentWithMessage`, which is the wiring under test: if the answer path
-  // ever grew its own `agent.run(...)` again (it hand-rolled one before
-  // docs/169), an exhausted subscription would be discovered by the provider
-  // mid-turn instead of by ShipIt before the spawn.
-  //
-  // The assertion is that the turn was STOPPED, not merely that it "worked":
-  // the error carries the earliest reset time, and no CLI ever received the
-  // answer.
-  it("blocks an answer when every connected account is out of quota", async () => {
+  // docs/260-turn-level-account-routing reqs 6, 9, 12 — an answer is a full turn on the shared routing
+  // path (`handleAnswerQuestion` delegates to `runAgentWithMessage`), so it
+  // takes the same per-turn account selection and attempt loop a user-typed
+  // turn does. Under docs/150 this scenario was a preflight block ("no CLI
+  // ever spawns"); docs/260 inverts it: refusal memory alone must never stop
+  // a turn (req 5), the optimistic first selection still returns a
+  // refusal-blocked account (req 12), and the turn fails only after every
+  // account has actually refused THIS turn — with the failure built from what
+  // the provider said (req 6).
+  it("still tries refusal-benched accounts for an answer, failing only after every account actually refuses (docs/260-turn-level-account-routing reqs 6, 9, 12)", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 
     // A first turn, on an install with no accounts yet, so the session exists
-    // and is pinned to an agent before quota enters the picture.
+    // before quota enters the picture.
     client.send({ type: "send_message", text: "Ask me something" });
     const firstClaude = await waitForClaude(() => lastClaude);
     firstClaude.finish(client.sessionId);
     await new Promise((r) => setTimeout(r, 100));
 
-    // Now both connected Claude subscriptions are spent. `markAccountExhausted`
-    // is the persisted hard-exhaustion stamp (req 7), which is what the router
-    // reads before any fresh quota snapshot exists.
+    // Both connected Claude subscriptions carry refusal memory: a harness
+    // refusal stamp (`exhaustedUntil` + `exhaustedAt`, the shape
+    // `refusalBlockedUntil` honours). This is exactly the state that used to
+    // deadlock routing.
     const accounts = new ProviderAccountManager({ credentialsDir, credentialStore });
     const resetAt = Date.now() + 30 * 60 * 1000;
     for (const label of ["Work", "Personal"]) {
-      const acct = accounts.create("claude", label);
-      accounts.setAccountStatus("claude", acct.id, "ready");
-      accounts.markAccountExhausted("claude", acct.id, resetAt);
+      const acct = accounts.create("anthropic", label);
+      accounts.setAccountStatus("anthropic", acct.id, "ready");
+      accounts.markAccountExhausted("anthropic", acct.id, resetAt);
     }
     const spawnedBefore = allClaudes.length;
 
     client.send({ type: "answer_question", toolUseId: "tool-quota", answers: { "0": "Redis" } });
 
+    // reqs 9, 12 — the benched account is still TRIED: a CLI spawns and the
+    // user's answer is its prompt. Blocking here (the docs/150 behavior) is
+    // the regression this test now guards against.
+    const attempt1 = await waitForClaude(() => lastClaude, firstClaude);
+    expect(attempt1.lastPrompt).toBe("Redis");
+
+    // The provider itself refuses the first attempt → the attempt loop moves
+    // to the second account and re-runs the answer (req 6: the turn keeps
+    // trying with the user's payload).
+    const quotaError = "You've hit Claude's 5h usage limit. It resets at 2099-01-01T00:00:00.000Z.";
+    attempt1.emit("event", { type: "agent_result", error: quotaError, sessionId: "quota-sess" });
+    const attempt2 = await waitForClaude(() => lastClaude, attempt1);
+    expect(attempt2.lastPrompt).toBe("Redis");
+
+    // The second account refuses too. Every candidate is now in the turn's
+    // attempt ledger, so the turn fails terminally — and the message is built
+    // from the provider's own refusals (req 6), inviting the resend that is
+    // the user's forceful retry (req 12).
+    attempt2.emit("event", { type: "agent_result", error: quotaError, sessionId: "quota-sess" });
+
     const err = await client.receiveType("error") as unknown as { message: string };
-    expect(err.message).toContain("out of quota");
-    expect(err.message).toContain(new Date(resetAt).toISOString().slice(0, 16));
-    // req 13 — the prompt is not held for later, so the user is told to resend.
+    expect(err.message).toContain("Every connected account refused this turn for quota");
+    expect(err.message).toContain("usage limit");
     expect(err.message).toContain("Send this message again");
-    // Nothing ran the answer: the preflight stopped the turn before `agent.run`.
-    expect(allClaudes.slice(spawnedBefore).some((c) => c.runCalled)).toBe(false);
-    expect(allClaudes.every((c) => c.lastPrompt !== "Redis")).toBe(true);
+    // The ledger bounds the loop: exactly one real attempt per account.
+    expect(allClaudes.slice(spawnedBefore).filter((c) => c.runCalled)).toHaveLength(2);
 
     client.close();
   });

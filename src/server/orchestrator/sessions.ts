@@ -1,9 +1,43 @@
 import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionTitleSource } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
-import { parseTimestampMs } from "../shared/utils.js";
+import { isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
+import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
+import { resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
+import { stripRemoteUrlCredentials } from "./git-utils.js";
+
+/**
+ * docs/252 — how a credential route is BILLED, derived from the route itself.
+ *
+ * The route's own mode, not the selection in force when it was pinned. Those can
+ * disagree today: route selection does not yet consult the billing mode (that is
+ * phase 3), so a session whose selection says `sub` can still be routed onto
+ * `claude-api-key` when no subscription account is connected. Stamping the
+ * *selection* there would record a metered key route as subscription-owned — a
+ * durable falsehood the later phases read back.
+ *
+ * The rule is the same one the docs/252 migration applies to historical rows,
+ * and the duplication is deliberate: a migration must keep reproducing the same
+ * result forever, so it inlines its copy and cannot follow this one.
+ *
+ * Returns `undefined` for a route this cannot classify, leaving the caller to
+ * fall back to the session's selection rather than guessing.
+ */
+export function billingModeForRoute(
+  kind: ProviderRouteKind,
+  routeId: string,
+): BillingMode | undefined {
+  // A login-flow account is always a subscription.
+  if (kind === "account") return "sub";
+  // `claude-env-oauth` is the counter-example the whole `kind` vs `via` split
+  // exists for: a `reserved` route carrying a quota-bearing SUBSCRIPTION token,
+  // ranked above metered billing. Classifying by `kind` would bill it as a key.
+  if (routeId === "claude-env-oauth") return "sub";
+  if (routeId === "claude-api-key" || routeId === "codex-api-key") return "key";
+  return undefined;
+}
 
 interface SessionRow {
   id: string;
@@ -41,6 +75,12 @@ interface SessionRow {
   agent_pinned: number;
   provider_route_kind: string | null;
   provider_route_id: string | null;
+  /** docs/252 — the rest of the selection triple; `model` holds the model id. */
+  service_id: string | null;
+  billing_mode: string | null;
+  /** docs/252 — the `(service, mode)` the pinned route was pinned FOR. */
+  provider_route_service_id: string | null;
+  provider_route_billing_mode: string | null;
   pr_status: string | null;
   /** docs/117 — set when the session was spawned by another via `shipit session create`. */
   parent_session_id: string | null;
@@ -48,6 +88,14 @@ interface SessionRow {
   spawned_by_turn: string | null;
   /** docs/201 — top-level ancestor of the spawn tree; NULL on a top-level session. */
   root_session_id: string | null;
+  /** docs/264 — the role this session was created from; NULL when none was named. Write-once. */
+  origin_role_name: string | null;
+  /**
+   * docs/272 — the role currently IN FORCE, which the composer names. Cleared
+   * when the harness, model or reasoning moves; NOT the same fact as
+   * `origin_role_name` above, which records what the session STARTED as.
+   */
+  role_name: string | null;
   /** docs/182 — 1 when the session's last completed turn ended in an error. */
   last_turn_errored: number;
   /** docs/186 — 1 when the auto-fix-CI loop is paused for this session. */
@@ -56,6 +104,8 @@ interface SessionRow {
   pinned_at: string | null;
   /** docs/241 — 1 while the session owns an always-on preview reservation. */
   keep_preview_running: number;
+  /** docs/277 — ISO instant the user muted the session; NULL = not muted. */
+  muted_at: string | null;
   /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
   merge_watch: string | null;
   /** docs/213 — JSON `SessionSecretBlock` while auto-commit is refused, or NULL. */
@@ -93,7 +143,7 @@ function safeParseCapabilities(json: string): unknown {
 }
 
 /**
- * docs/161 / SHI-197 — the disk-idle ladder thresholds as ONE ordered,
+ * docs/161 / planning#199 — the disk-idle ladder thresholds as ONE ordered,
  * unit-consistent config (all milliseconds), replacing three free-floating
  * `*_MS` constants. "Idle age" for the ladder is
  * `now - max(Date.parse(lastUsedAt), Date.parse(lastViewedAt))` — turn activity
@@ -118,7 +168,7 @@ export interface DiskLadderThresholds {
 }
 
 /**
- * docs/161 / SHI-197 — the default ladder.
+ * docs/161 / planning#199 — the default ladder.
  *   - 24h `hot → light`: non-destructive (deps reinstall in seconds) → act early.
  *   - 2d  merged `light → evicted`: a merge is a strong "done" signal and the
  *     checkout re-fetches fresh on reopen → reclaim finished work soon.
@@ -131,7 +181,7 @@ export const DEFAULT_DISK_LADDER: DiskLadderThresholds = {
 };
 
 /**
- * SHI-197 — fail-fast guard on the ladder ordering. The ladder is incoherent
+ * planning#199 — fail-fast guard on the ladder ordering. The ladder is incoherent
  * unless `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`; an env
  * override that inverts it (e.g. `DISK_IDLE_EVICT_MERGED_MS < DISK_IDLE_LIGHT_MS`)
  * would make a session jump straight to `evicted` before ever reaching `light`,
@@ -147,42 +197,6 @@ export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
       + `evictUnmergedAfterMs=${t.evictUnmergedAfterMs}ms`,
     );
   }
-}
-
-/**
- * The instant a session's PR reached a terminal state — merged or
- * closed-without-merge. Both sink the session out of the active sidebar into the
- * demoted "Recently resolved" group; `mergedAt` wins if somehow both are set
- * (a merge is the stronger outcome). Returns undefined for a session whose PR is
- * still open (or that never had one).
- */
-export function resolvedAt(s: SessionInfo): string | undefined {
-  return s.mergedAt ?? s.closedAt;
-}
-
-/**
- * docs/161 — true when a *resolved* session (merged or closed) has been
- * *worked in* since it resolved, i.e. the user returned to it to start a
- * follow-up PR. Keys on `lastUsedAt` (bumped only by turn activity, never by
- * merely opening the session), so it becomes true the instant the user sends a
- * message in a resolved session, floating it back into the Active group.
- *
- * Evaluated in JS, not SQL: `merged_at`/`closed_at` are written by
- * `datetime('now')` ("YYYY-MM-DD HH:MM:SS") while `last_used_at` is
- * `toISOString()` ("…THH:MM:SS.sssZ"). A lexical `>` is wrong — 'T' (0x54) >
- * ' ' (0x20), so an ISO timestamp at the same wall-clock second always sorts
- * greater, falsely marking a just-resolved session as reopened.
- * `parseTimestampMs` reconciles the two formats to UTC epoch ms — a plain
- * `Date.parse` would read the suffix-less SQLite form as *local* time and
- * mis-order the two on any non-UTC runtime.
- */
-export function reopenedAfterResolve(s: SessionInfo): boolean {
-  const resolved = resolvedAt(s);
-  if (!resolved) return false;
-  const resolvedMs = parseTimestampMs(resolved);
-  const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(resolvedMs) || Number.isNaN(used)) return false;
-  return used > resolvedMs;
 }
 
 /**
@@ -223,6 +237,23 @@ export function reopenedAfterResolve(s: SessionInfo): boolean {
  * would otherwise drop; user-archived sessions are still excluded, so the manual
  * cascade is unaffected.
  */
+/**
+ * docs/241 — does this session hold a live always-on preview reservation?
+ *
+ * The flag alone is not the answer, and every consumer needs the same one. An
+ * archived row can still carry it (rows archived before `archive()` learned to
+ * clear it), and such a row must not consume the deployment's capped slot, must
+ * not exempt a surviving container from idle eviction or disk reclaim, and must
+ * not paint an "always-on" marker on a session whose workspace is gone. Reading
+ * the raw flag in one place and this predicate in another is what lets the two
+ * disagree: admission ignoring a stale row while the idle enforcer protects its
+ * container is how a deployment ends up holding two reservations' worth of RAM
+ * with one slot on the books.
+ */
+export function holdsActiveReservation(session: SessionInfo | undefined | null): boolean {
+  return !!session?.keepPreviewRunning && !session.userArchived && !session.archived && !session.warm;
+}
+
 export function filterVisibleInSidebar(
   sessions: SessionInfo[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
@@ -233,7 +264,7 @@ export function filterVisibleInSidebar(
   // guard at the end.
   const resolvedByRepo = new Map<string, SessionInfo[]>();
   for (const s of sessions) {
-    if (!resolvedAt(s) || reopenedAfterResolve(s)) continue;
+    if (!isTerminalPrResolved(s)) continue;
     const key = s.remoteUrl ?? "";
     let group = resolvedByRepo.get(key);
     if (!group) {
@@ -273,7 +304,17 @@ export function filterVisibleInSidebar(
       // docs/110 — a pinned (persistent) session is always visible: like the
       // parent/child exemption, a pin overrides the merged top-N view cap so a
       // pinned session never silently drops out of the sidebar.
-      (!!s.pinnedAt || !resolvedAt(s) || reopenedAfterResolve(s) || topResolvedIds.has(s.id) || exemptFromCap(s)),
+      //
+      // docs/241 — an always-on reservation earns the same exemption, and for a
+      // stronger reason than a pin: it consumes the deployment's capped runtime
+      // slot, and the sidebar row is where the user is told which session holds
+      // it. A reserved session demoted by the merged cap would keep the slot
+      // while vanishing from the surface that explains where the slot went.
+      (!!s.pinnedAt
+        || holdsActiveReservation(s)
+        || !isTerminalPrResolved(s)
+        || topResolvedIds.has(s.id)
+        || exemptFromCap(s)),
   );
 }
 
@@ -320,19 +361,35 @@ export class SessionManager {
     if (row.closed_at) info.closedAt = row.closed_at;
     if (row.model) info.model = row.model;
     if (row.reasoning_effort) info.reasoningEffort = row.reasoning_effort;
-    if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
+    if (
+      row.agent_id === "claude" || row.agent_id === "codex"
+      || row.agent_id === "opencode" || row.agent_id === "grok"
+    ) info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
+    // docs/252 — the rest of the selection triple. Read independently of
+    // `model`: a row can legitimately carry a service and mode with no model yet
+    // (the selection was resolved before a pick), and a model with no service
+    // (a versioned id the catalogue has no row for).
+    if (row.service_id) info.serviceId = row.service_id;
+    if (row.billing_mode === "sub" || row.billing_mode === "key") info.billingMode = row.billing_mode;
     if ((row.provider_route_kind === "account" || row.provider_route_kind === "reserved") && row.provider_route_id) {
       info.providerRouteKind = row.provider_route_kind;
       info.providerRouteId = row.provider_route_id;
+      if (row.provider_route_service_id) info.providerRouteServiceId = row.provider_route_service_id;
+      if (row.provider_route_billing_mode === "sub" || row.provider_route_billing_mode === "key") {
+        info.providerRouteBillingMode = row.provider_route_billing_mode;
+      }
     }
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
+    if (row.origin_role_name) info.originRoleName = row.origin_role_name;
+    if (row.role_name) info.roleName = row.role_name;
     if (row.root_session_id) info.rootSessionId = row.root_session_id;
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
     if (row.pinned_at) info.pinnedAt = row.pinned_at;
     if (row.keep_preview_running) info.keepPreviewRunning = true;
+    if (row.muted_at) info.mutedAt = row.muted_at;
     if (row.merge_watch) {
       try {
         info.mergeWatch = JSON.parse(row.merge_watch) as SessionInfo["mergeWatch"];
@@ -475,9 +532,43 @@ export class SessionManager {
    * Last-write-wins by design: every writer is describing the same fact (where
    * this branch now points), so a second sync before the user's next message
    * supersedes the first rather than queueing behind it.
+   *
+   * planning#426 — that rationale is why {@link appendPendingAgentNotice} exists
+   * beside it rather than replacing it. This slot now carries a SECOND fact class
+   * (a fork's LFS content is unresolved), and for two writers describing
+   * *different* facts, last-write-wins is data loss rather than supersession.
+   * Branch-movement notices keep this setter and keep superseding each other.
    */
   setPendingAgentNotice(id: string, notice: string): void {
     this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(notice, id);
+  }
+
+  /**
+   * planning#426 — add a notice describing a DIFFERENT fact from whatever may
+   * already be pending, instead of overwriting it.
+   *
+   * Read-modify-write in one transaction, so two concurrent appends cannot read
+   * the same prior value and each write a version missing the other's line.
+   * Idempotent on exact repeats: re-running a fork-time report must not stack the
+   * same paragraph twice.
+   *
+   * Note the asymmetry this deliberately does NOT fix, because one slot cannot:
+   * a *later* `setPendingAgentNotice` (a manual sync of this branch before its
+   * first turn) still replaces an appended notice wholesale. Widening the slot
+   * into a queue is not worth it for that window — the user-facing toast has
+   * already fired, and docs/221's own contract already accepts losing one notice.
+   * Recorded as a known gap in `docs/231-git-lfs-support/plan.md`.
+   */
+  appendPendingAgentNotice(id: string, notice: string): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare(
+        "SELECT pending_agent_notice FROM sessions WHERE id = ?",
+      ).get(id) as { pending_agent_notice: string | null } | undefined;
+      const existing = row?.pending_agent_notice ?? "";
+      if (existing.includes(notice)) return;
+      const combined = existing ? `${existing}\n\n${notice}` : notice;
+      this.db.prepare("UPDATE sessions SET pending_agent_notice = ? WHERE id = ?").run(combined, id);
+    })();
   }
 
   /**
@@ -505,9 +596,23 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET agent_session_id = NULL WHERE id = ?").run(id);
   }
 
-  /** Cache the origin remote URL for a session. */
+  /**
+   * Cache the origin remote URL for a session.
+   *
+   * Stored credential-free (docs/262 req 19): this column is what
+   * `cloneFromCache` and the fork path write into a session clone's
+   * `remote.origin.url`, i.e. into `/project/.git/config` — a file the agent
+   * and every plugin CLI and plugin service can read. The row is also written
+   * from an existing workspace's own origin (`services/session.ts`), so a
+   * checkout left credentialed by an older build cannot feed one back in here.
+   *
+   * Only http(s) userinfo is removed — see `stripUrlCredentials`. Other shapes
+   * a user can type (`ssh://git:pw@…`, `?access_token=`) are still handled at
+   * the cross-session display boundary by `sanitizeRemoteUrlForInventory`.
+   */
   setRemoteUrl(id: string, remoteUrl: string | undefined): void {
-    this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(remoteUrl ?? null, id);
+    const stored = remoteUrl === undefined ? null : stripRemoteUrlCredentials(remoteUrl);
+    this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(stored, id);
   }
 
   /**
@@ -542,8 +647,17 @@ export class SessionManager {
     // docs/110 — clear any pin on archive: a session can't be both hidden and
     // persistent. This also keeps the disk-janitor's pinned guards sound, since
     // an archived (evicted) session is never simultaneously pinned.
+    //
+    // docs/241 — and release the always-on preview reservation for the same
+    // reason, but with sharper consequences: reservations are capped (default 1
+    // per deployment) and the toggle that releases one is only rendered on a
+    // NON-archived row (`SessionItem.tsx`). A flag surviving archive therefore
+    // consumed the deployment's only slot from a session the user could no
+    // longer see or toggle, and "Always-on preview capacity is full (1/1)" had
+    // no reachable cause. Archiving evicts the workspace anyway, so there is
+    // nothing left to keep previewing.
     const result = this.db.prepare(
-      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted', pinned_at = NULL WHERE id = ?",
+      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted', pinned_at = NULL, keep_preview_running = 0 WHERE id = ?",
     ).run(id);
     return result.changes > 0;
   }
@@ -558,8 +672,15 @@ export class SessionManager {
       "SELECT user_archived, disk_tier FROM sessions WHERE id = ?",
     ).get(id) as { user_archived: number; disk_tier: string } | undefined;
     if (!row || (!row.user_archived && row.disk_tier !== "evicted")) return false;
+    // docs/241 — restore never restores a reservation. For a row archived after
+    // `archive()` learned to clear the flag this is a no-op; for a legacy row
+    // that still carries it, clearing here is what stops the restore from
+    // silently creating a SECOND active reservation. Admission ignores the row
+    // while it is archived, so another session may have taken the slot in the
+    // meantime, and unarchive runs no admission check of its own. The user
+    // re-enables it from the menu if they still want it.
     this.db.prepare(
-      "UPDATE sessions SET user_archived = 0, disk_tier = 'hot' WHERE id = ?",
+      "UPDATE sessions SET user_archived = 0, disk_tier = 'hot', keep_preview_running = 0 WHERE id = ?",
     ).run(id);
     return true;
   }
@@ -610,6 +731,36 @@ export class SessionManager {
       "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL WHERE id = ? AND merged_at IS NOT NULL",
     ).run(json, id);
     return result.changes > 0;
+  }
+
+  /**
+   * Drop every record of a prior pull request, for a session whose branch has
+   * been replaced by a brand-new one cut off the default branch (unarchive —
+   * `unarchiveSession`). Unconditional, and deliberately NOT {@link clearMerged}:
+   *
+   *  - `clearMerged` only fires `WHERE merged_at IS NOT NULL`, so it leaves the
+   *    breadcrumb standing on a session that was re-armed *before* it was
+   *    archived — which feeds `computeResetBlocker`'s `previousMergedPr`
+   *    fallback and makes the fresh branch look like it shipped work.
+   *  - `clearMerged` WRITES a `previousMergedPr` breadcrumb. Here the correct
+   *    breadcrumb is none at all: the breadcrumb exists to name a reset target
+   *    for a branch that still carries the merged PR's work, and this branch
+   *    carries none of it. Retaining the old PR's base would point the docs/218
+   *    gate at a target with no relationship to the new branch.
+   *
+   * Paired with `PrStatusPoller.clearPersisted` (which nulls `pr_status`) inside
+   * `unarchiveSession`: the two express ONE decision — "the old pull request no
+   * longer applies to this session" — and splitting them across two call sites
+   * is how the merged half came to be forgotten, leaving `merged_at` alive next
+   * to a nulled snapshot. That state made the pre-turn auto-reset (docs/218)
+   * refuse every turn with `no-base-branch`, and then propagated: the next PR's
+   * snapshot coexisted with the stale merge record, so the refusal notice
+   * claimed an OPEN pull request had merged.
+   */
+  clearPriorPrRecord(id: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET merged_at = NULL, merged_head_sha = NULL, previous_merged_pr = NULL WHERE id = ?",
+    ).run(id);
   }
 
   /**
@@ -669,9 +820,15 @@ export class SessionManager {
 
   /**
    * docs/255 — literally every session row, warm pool included, most recently
-   * used first. Only the Ops inventory's `--include-warm` uses this: every other
-   * "all sessions" caller means {@link listAll}'s non-warm set, because a warm
-   * row is a pre-provisioned shell rather than someone's work.
+   * used first. Most "all sessions" callers mean {@link listAll}'s non-warm set,
+   * because a warm row is a pre-provisioned shell rather than someone's work.
+   *
+   * Two kinds of caller need this one instead: the Ops inventory's
+   * `--include-warm`, and **disk-reclaim liveness** (planning#439) — a warm
+   * session runs a container that mounts overlay bases and plugin artifacts
+   * exactly like any other, so excluding it from a live-set means deleting a
+   * live mount's backing directory. "Whose work is this" and "what is on disk
+   * right now" are different questions; only the first one skips warm rows.
    */
   listAllIncludingWarm(): SessionInfo[] {
     const rows = this.db.prepare(
@@ -747,6 +904,29 @@ export class SessionManager {
     return this.get(id) ?? null;
   }
 
+  /**
+   * docs/277 — mute or unmute a session. Pass an ISO instant to mute, or null to
+   * unmute. Records nothing but the flag: a mute suppresses the session's
+   * attention signals (req 2) and changes no other property of the session
+   * (req 3), so pin, disk tier and the idle clocks are all left alone.
+   *
+   * Returns the updated session, or null if not found. Also returns null when
+   * nothing changed — the caller uses that to skip the SSE broadcast on the
+   * overwhelmingly common case: an ordinary turn on an unmuted session.
+   */
+  setMuted(id: string, mutedAt: string | null): SessionInfo | null {
+    const current = this.get(id);
+    if (!current) return null;
+    // Compare on PRESENCE, not on the value. Muting is a flag whose timestamp is
+    // incidental, so a second mute of an already-muted session must be a no-op:
+    // gating the UPDATE on the value instead (`muted_at IS NOT ?`) rewrote the
+    // instant every time, which reported a change that nothing had asked for and
+    // made the no-op path depend on two calls landing in the same millisecond.
+    if (!!current.mutedAt === !!mutedAt) return null;
+    this.db.prepare("UPDATE sessions SET muted_at = ? WHERE id = ?").run(mutedAt, id);
+    return this.get(id) ?? null;
+  }
+
   /** Persist the docs/241 runtime reservation without changing pin or idle clocks. */
   setKeepPreviewRunning(id: string, enabled: boolean): SessionInfo | null {
     const result = this.db.prepare(
@@ -810,9 +990,102 @@ export class SessionManager {
       .run(JSON.stringify(capabilities), id);
   }
 
-  /** Store the selected model for a session. */
-  setModel(id: string, model: string): void {
-    this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(model, id);
+  /**
+   * Store the selected model for a session.
+   *
+   * docs/252 — the selection is the triple `(serviceId, billingMode, modelId)`,
+   * so this resolves the bare id through the catalogue and writes all three.
+   * Callers that already know the service and mode should use
+   * {@link setModelSelection} directly; this overload stays because most call
+   * sites (the WS picker, graduation, the authed-selection redirect) still speak
+   * model ids and will keep doing so until the picker groups by service in
+   * phase 3.
+   *
+   * `preferredServiceId` biases resolution so a model id the harness's own
+   * vendor offers stays on that vendor rather than landing on whichever gateway
+   * happens to list the same string.
+   */
+  setModel(id: string, model: string, preferredServiceId?: string): void {
+    const selection = resolveModelSelection(model, preferredServiceId);
+    if (selection) {
+      this.setModelSelection(id, selection);
+      return;
+    }
+    // The catalogue has no row for this id — a versioned slug the picker never
+    // surfaced, or one since retired. **Clear the service and mode rather than
+    // leaving the previous ones in place**: the invariant a stored row must hold
+    // is that its triple either names a real catalogue row or carries no service
+    // and mode at all. Keeping the old pair would leave
+    // `(anthropic, sub, claude-sonnet-4-20250514)` on disk — a triple
+    // `resolveEndpoint` cannot shape a turn from and `selectionExists` reports
+    // false for, which is worse than saying nothing.
+    //
+    // The pinned route goes with them, for the same reason `setModelSelection`
+    // drops it on an owner change: with no service we cannot prove the route
+    // still fits, and re-pinning on the next turn is cheap where mis-billing is
+    // not.
+    this.db
+      .prepare(
+        `UPDATE sessions
+         SET model = ?, service_id = NULL, billing_mode = NULL,
+             provider_route_kind = NULL, provider_route_id = NULL,
+             provider_route_service_id = NULL, provider_route_billing_mode = NULL
+         WHERE id = ?`,
+      )
+      .run(model, id);
+  }
+
+  /**
+   * docs/252 — persist a full `(serviceId, billingMode, modelId)` selection.
+   *
+   * **This is where the pinned credential route is invalidated**, and that is
+   * the whole reason the write goes through one method. A route belongs to a
+   * `(service, billing mode)` and environment preparation reuses it
+   * unconditionally whenever it is present, so a selection that crosses either
+   * axis must drop it — otherwise the next turn respawns against the new
+   * endpoint and authenticates with the previous service's credential, billing
+   * the wrong account. A plain model change *within* one mode keeps the route,
+   * which is what makes mid-session model switching free.
+   *
+   * Inert today: both first-party services are the only ones reachable and a
+   * session cannot yet cross services. It is here rather than in phase 3
+   * because phase 3 is what makes the crossing *reachable*, and a route that
+   * outlives its owner is not a failed turn — it is a silently mis-billed one.
+   *
+   * **Contract: `selection` must name a real catalogue row.** This method writes
+   * what it is given, because the alternative — silently dropping a write, or
+   * throwing on a path that today swallows errors — is worse than a caller
+   * checking. Every caller does: `setModel` only reaches here via
+   * `resolveModelSelection`, and the three that build a triple from untrusted
+   * input (the WS `set_model` message, the session-creation route, the browser
+   * seed) each gate on `selectionExists` first. The invariant a stored row holds
+   * is that its triple resolves or its service and mode are absent.
+   */
+  setModelSelection(id: string, selection: ModelSelection): void {
+    const current = this.get(id);
+    const owner = current?.providerRouteId
+      ? {
+          serviceId: current.providerRouteServiceId ?? current.serviceId ?? "",
+          billingMode: current.providerRouteBillingMode ?? current.billingMode ?? selection.billingMode,
+          modelId: selection.modelId,
+        }
+      : undefined;
+    const keepRoute = owner === undefined || sameCredentialOwner(owner, selection);
+    if (keepRoute) {
+      this.db
+        .prepare("UPDATE sessions SET model = ?, service_id = ?, billing_mode = ? WHERE id = ?")
+        .run(selection.modelId, selection.serviceId, selection.billingMode, id);
+      return;
+    }
+    this.db
+      .prepare(
+        `UPDATE sessions
+         SET model = ?, service_id = ?, billing_mode = ?,
+             provider_route_kind = NULL, provider_route_id = NULL,
+             provider_route_service_id = NULL, provider_route_billing_mode = NULL
+         WHERE id = ?`,
+      )
+      .run(selection.modelId, selection.serviceId, selection.billingMode, id);
   }
 
   /**
@@ -860,10 +1133,28 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
   }
 
+  /**
+   * Pin the credential route a turn resolved.
+   *
+   * docs/252 — the route is stamped with the `(service, billing mode)` it was
+   * pinned FOR, taken from the session's current selection. That owner is what
+   * {@link setModelSelection} compares against to decide whether a later
+   * selection change invalidates the route.
+   */
   setProviderRoute(id: string, kind: ProviderRouteKind, routeId: string): void {
+    const session = this.get(id);
     this.db.prepare(
-      "UPDATE sessions SET provider_route_kind = ?, provider_route_id = ? WHERE id = ?",
-    ).run(kind, routeId, id);
+      `UPDATE sessions
+       SET provider_route_kind = ?, provider_route_id = ?,
+           provider_route_service_id = ?, provider_route_billing_mode = ?
+       WHERE id = ?`,
+    ).run(
+      kind,
+      routeId,
+      session?.serviceId ?? null,
+      billingModeForRoute(kind, routeId) ?? session?.billingMode ?? null,
+      id,
+    );
   }
 
   /**
@@ -896,6 +1187,84 @@ export class SessionManager {
    */
   setSpawnedByTurn(id: string, spawnedByTurn: string): void {
     this.db.prepare("UPDATE sessions SET spawned_by_turn = ? WHERE id = ?").run(spawnedByTurn, id);
+  }
+
+  /**
+   * docs/264-agent-roles req 14 — record WHICH role started this session. Write-once.
+   *
+   * **The `IS NULL` clause is the immutability**, not a comment about it: a
+   * second call cannot change what a first one recorded, so the field means "the
+   * role this session was created from" for as long as the row exists. Provenance
+   * that could be rewritten would answer a different question every time it was
+   * asked, and this one is read long after the fact — by a user asking what a
+   * child in their sidebar came from.
+   *
+   * It is deliberately a **snapshot of the name** and not a reference: renaming
+   * or deleting the role does not reach in here, and the child may over time run
+   * on something other than what the role named (req 11).
+   */
+  setOriginRoleName(id: string, originRoleName: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET origin_role_name = ? WHERE id = ? AND origin_role_name IS NULL",
+    ).run(originRoleName, id);
+  }
+
+  /**
+   * docs/272-user-selectable-roles reqs 13, 15 — the role currently **in force**, which is what
+   * the composer names.
+   *
+   * The deliberate opposite of {@link SessionManager.setOriginRoleName} above,
+   * and the pair is the whole of docs/272's storage: that one is write-once
+   * provenance ("what did this session start as"), this one is mutable truth
+   * ("does the role still describe what it runs on"). Set when the user selects
+   * a role; cleared with `null` the moment the harness, model or reasoning
+   * moves, because changing one of them is the whole of leaving a role (req 15).
+   *
+   * Nothing derives it. A session whose parameters happen to equal a role's is
+   * NOT named after that role (req 13): a role also carries standing
+   * instructions, which no amount of moving three controls puts in force, so the
+   * name reports the user's choice and only that.
+   */
+  setRoleName(id: string, roleName: string | null): void {
+    this.db.prepare("UPDATE sessions SET role_name = ? WHERE id = ?").run(roleName, id);
+  }
+
+  /**
+   * docs/272-user-selectable-roles req 18 — the user chose **"No role"**, which is
+   * not the same fact as never having chosen one.
+   *
+   * Both are "no role in force", and every reader of {@link SessionInfo.roleName}
+   * sees exactly that: the row holds `''`, and `fromRow`'s truthiness test drops
+   * it, so nothing downstream gains a third case to handle. The one place the
+   * difference matters is the `?role=` connect seed, which asks
+   * {@link SessionManager.roleExplicitlyCleared}.
+   *
+   * **Why the distinction has to be stored at all.** The browser's seed slot
+   * (req 12) is baked into the session WebSocket's URL, and that URL is memoized
+   * per session — so a socket that reconnects after the clear still carries the
+   * cleared role's name. The connect handler would then apply it to a session
+   * with no role in force, and the user's clear would silently undo itself
+   * somewhere between the clear and the first message. The handler's own note
+   * used to say no such guard was needed, and it was right at the time: the only
+   * clears that existed were the automatic ones, which happen precisely because
+   * the role became unrunnable, so re-applying it refuses harmlessly. An
+   * explicitly cleared role is perfectly runnable, and that is what breaks the
+   * old argument.
+   *
+   * The automatic clears keep writing `null` (see {@link SessionManager.setRoleName}):
+   * "the role stopped being true" is not the user saying "none", and only the
+   * second should outrank a seed.
+   */
+  clearRoleName(id: string): void {
+    this.db.prepare("UPDATE sessions SET role_name = '' WHERE id = ?").run(id);
+  }
+
+  /** Did the user choose "No role" on this session? See {@link SessionManager.clearRoleName}. */
+  roleExplicitlyCleared(id: string): boolean {
+    const row = this.db
+      .prepare("SELECT role_name FROM sessions WHERE id = ?")
+      .get(id) as { role_name: string | null } | undefined;
+    return row?.role_name === "";
   }
 
   /**
@@ -1107,7 +1476,7 @@ export class SessionManager {
   }
 
   /**
-   * docs/213 / SHI-315 — set (or clear, with `null`) the secret-scan commit
+   * docs/213 / planning#317 — set (or clear, with `null`) the secret-scan commit
    * block. Persisted so the banner survives the runner being disposed on idle:
    * the credential is in the working tree, which outlives the container, so the
    * warning must too.
@@ -1126,7 +1495,7 @@ export class SessionManager {
    * docs/196 — every session that carries a merge-watch in a non-terminal state
    * (`armed` or `merge-observed`). Used by the startup reconcile to re-fire any
    * watch whose child PR already reached a terminal state while the orchestrator
-   * was down, by the retry supervisor to find stalled deliveries (SHI-258), and
+   * was down, by the retry supervisor to find stalled deliveries (planning#260), and
    * by `PollingGlobalGate` to keep the PR poll loop alive for a viewerless child
    * awaiting a human merge. Includes archived rows (a merged child is archived
    * by the post-merge path, but its un-delivered watch must still fire).

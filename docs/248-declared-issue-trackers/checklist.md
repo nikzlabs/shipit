@@ -74,7 +74,7 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 
 ## Closed after this doc's requirements landed
 
-- [x] Req 22 on the **in-app** path (SHI-320). The Issues tab's "Start session"
+- [x] Req 22 on the **in-app** path (planning#322). The Issues tab's "Start session"
   stopped going through `seedFromIssueRef` when docs/236 made it prefill the
   composer, so the branch was AI-named from a prompt beginning with the issue
   title, and no `issueRef` reached `markIssueStartedFromSeed`. Both now ride the
@@ -116,7 +116,7 @@ pointer-derived destinations, `seedFromIssueRef`'s pointer-only branch names
 Filed; the tracker holds its status from here.
 
 - [x] **The browser's declaration view can go stale.**
-  ([SHI-321](https://linear.app/shipit-ai/issue/SHI-321)) `fetchTrackers` ran on
+  (planning#323) `fetchTrackers` ran on
   session change and on Issues-tab activation, so editing `shipit.yaml` with the
   tab already open didn't re-resolve names until one of those happened. The
   server reads the file per request, so only the client was affected. Fixed by
@@ -135,7 +135,7 @@ Filed; the tracker holds its status from here.
   months." This closed a live defect, not just a wording gap — Undo preferred the
   recorded *name*, so a re-pointed `planning` rewrote a **different repository's**
   issue of the same number, with a test asserting that as correct.
-- [x] **An open issue does not survive a repo switch** (SHI-325) — the detail
+- [x] **An open issue does not survive a repo switch** (planning#327) — the detail
   falls back to the list when its destination is no longer reachable from the
   session being switched to (req 11). Reproduced live in the dogfood inner
   ShipIt with two repositories before fixing, and the repro is what corrected the

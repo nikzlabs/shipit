@@ -1,5 +1,5 @@
 /**
- * SHI-262 — the queue must not drain before the finished turn's work is
+ * planning#264 — the queue must not drain before the finished turn's work is
  * committed.
  *
  * `turn-executor.ts` used to end a turn with `tryDrain()` → `broadcastFinished`
@@ -70,6 +70,7 @@ function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"
       setLastTurnErrored: vi.fn(),
       get: vi.fn(),
       track: vi.fn(),
+      setMuted: vi.fn(),
       list: vi.fn().mockReturnValue([]),
     } as never,
     chatHistoryManager: {
@@ -86,7 +87,7 @@ function makeListenerDeps(sseBroadcast = vi.fn()): SystemTurnDeps["listenerDeps"
   };
 }
 
-describe("queue drain vs. post-turn commit ordering (SHI-262)", () => {
+describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
   let repoDir: string;
 
   beforeEach(() => {
@@ -153,7 +154,7 @@ describe("queue drain vs. post-turn commit ordering (SHI-262)", () => {
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "turn 2 started");
 
     // Turn 2 has now run `git reset --hard`. Turn 1's edit survives ONLY if it
-    // was committed before the drain handed control over. With the pre-SHI-262
+    // was committed before the drain handed control over. With the pre-planning#264
     // ordering this reads "base\n" — the work is gone, and gone for good.
     expect(fs.readFileSync(filePath, "utf8")).toBe("turn-1 work\n");
 
@@ -235,7 +236,7 @@ describe("queue drain vs. post-turn commit ordering (SHI-262)", () => {
       autoCommit: async () => {
         order.push("commit");
         // A real edit would produce a hash; return one so the PR flow is reached.
-        return { commitHash: "abc1234", parentHash: "def5678", conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+        return { commitHash: "abc1234", parentHash: "def5678", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null };
       },
       scheduleAutoPush: vi.fn(),
       // Stands in for the GitHub round-trip — and never resolves. If the drain
@@ -262,7 +263,7 @@ describe("queue drain vs. post-turn commit ordering (SHI-262)", () => {
     // Starts while the PR flow is still outstanding — that is the whole point.
     await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "turn 2 started");
 
-    // Only the LOCAL commit gates the drain (that's the SHI-262 fix). The PR
+    // Only the LOCAL commit gates the drain (that's the planning#264 fix). The PR
     // flow is still parked on its unresolved promise, so it demonstrably ran
     // alongside the queued turn rather than in front of it.
     expect(order.indexOf("turn-1-started")).toBe(0);

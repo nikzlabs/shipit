@@ -764,7 +764,7 @@ describe("MessageList", () => {
       expect(screen.queryByLabelText("Fork current state")).not.toBeInTheDocument();
     });
 
-    it("offers fork-only at intermediate gaps while loading (SHI-182)", () => {
+    it("offers fork-only at intermediate gaps while loading (planning#184)", () => {
       // While a turn runs, in-place rewind (chat/code/both) is hidden but fork
       // stays available — it spins off a new session and doesn't mutate this one.
       const onRewindAtGap = vi.fn();
@@ -996,7 +996,7 @@ describe("MessageList", () => {
     });
 
     it("renders a view chip when the bridge payload is a bare JSON object (legacy shipit-present name)", () => {
-      // SHI-128 consolidated the per-tool servers into `shipit`, but pre-SHI-128
+      // planning#130 consolidated the per-tool servers into `shipit`, but pre-planning#130
       // sessions persisted the tool call under `mcp__shipit-present__present`.
       // isPresentTool still recognizes the legacy server name so those cards render.
       usePresentStore.getState().hydrate([
@@ -1349,6 +1349,90 @@ describe("MessageList", () => {
   });
 
 
+  describe("task panel rendering (CLI 2.1.220 Task* tools)", () => {
+    const create = (id: string, subject: string): ToolUseBlock => ({
+      type: "tool_use",
+      id,
+      name: "TaskCreate",
+      input: { subject, description: "Longer detail the panel never draws" },
+    });
+    const createResult = (id: string, taskId: string, subject: string): ToolResultBlock => ({
+      toolUseId: id,
+      content: `Task #${taskId} created successfully: ${subject}`,
+    });
+
+    it("renders the panel from TaskCreate calls instead of a raw tool line", () => {
+      const { container } = render(
+        <MessageList
+          messages={[{
+            role: "assistant",
+            text: "",
+            toolUse: [create("t1", "Read the code"), create("t2", "Write the fix")],
+            toolResults: [
+              createResult("t1", "1", "Read the code"),
+              createResult("t2", "2", "Write the fix"),
+            ],
+          }]}
+          isLoading={false}
+        />
+      );
+      expect(container.querySelector('[data-testid="todo-panel"]')).toBeInTheDocument();
+      expect(screen.getByText("Read the code")).toBeInTheDocument();
+      expect(screen.getByText("Write the fix")).toBeInTheDocument();
+      expect(screen.getByText("0/2 completed")).toBeInTheDocument();
+      // The regression: the call used to fall through to the compact tool line.
+      expect(screen.queryByText("TaskCreate")).not.toBeInTheDocument();
+    });
+
+    it("applies TaskUpdate to the task it names", () => {
+      const messages: ChatMessage[] = [
+        {
+          role: "assistant",
+          text: "",
+          toolUse: [create("t1", "Run tests")],
+          toolResults: [createResult("t1", "1", "Run tests")],
+        },
+        {
+          role: "assistant",
+          text: "",
+          toolUse: [{ type: "tool_use", id: "t2", name: "TaskUpdate", input: { taskId: "1", status: "completed" } }],
+        },
+      ];
+      render(<MessageList messages={messages} isLoading={false} />);
+      expect(screen.getByText("1/1 completed")).toBeInTheDocument();
+      expect(screen.queryByText("TaskUpdate")).not.toBeInTheDocument();
+    });
+
+    it("renders one panel however many task calls the transcript holds", () => {
+      const messages: ChatMessage[] = [
+        { role: "assistant", text: "Step 1", toolUse: [create("t1", "One")], toolResults: [createResult("t1", "1", "One")] },
+        { role: "assistant", text: "Step 2", toolUse: [create("t2", "Two")], toolResults: [createResult("t2", "2", "Two")] },
+        { role: "assistant", text: "Step 3", toolUse: [create("t3", "Three")], toolResults: [createResult("t3", "3", "Three")] },
+      ];
+      const { container } = render(<MessageList messages={messages} isLoading={false} />);
+      expect(container.querySelectorAll('[data-testid="todo-panel"]')).toHaveLength(1);
+      expect(screen.getByText("0/3 completed")).toBeInTheDocument();
+    });
+
+    it("still renders the panel when a task call shares its message with another tool", () => {
+      const { container } = render(
+        <MessageList
+          messages={[{
+            role: "assistant",
+            text: "",
+            toolUse: [
+              { type: "tool_use", id: "b1", name: "Bash", input: { command: "npm test" } },
+              create("t1", "Fix the failure"),
+            ],
+          }]}
+          isLoading={false}
+        />
+      );
+      expect(container.querySelector('[data-testid="todo-panel"]')).toBeInTheDocument();
+      expect(screen.getByText("Fix the failure")).toBeInTheDocument();
+    });
+  });
+
   describe("TodoWrite rendering", () => {
     const todoTools = (id: string): ToolUseBlock[] => [
       {
@@ -1646,6 +1730,28 @@ describe("MessageList", () => {
       expect(screen.getByText("-m 'Fix bug'")).toBeInTheDocument();
     });
 
+    it("renders a plugin skill under its <alias>/<skill> label (docs/262 req 22)", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Skill", input: { skill: "plugins--design-docs--design-docs-5d17d9cba58c" } },
+      ];
+      render(
+        <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
+      );
+      expect(screen.getByText("design-docs/design-docs")).toBeInTheDocument();
+    });
+
+    it("renders Skill name from the OpenCode `name` key (rows persisted before the adapter rename)", () => {
+      const tools: ToolUseBlock[] = [
+        { type: "tool_use", id: "t1", name: "Skill", input: { name: "commit" } },
+      ];
+      render(
+        <MessageList messages={[msg("assistant", "", { toolUse: tools })]} isLoading={false} />
+      );
+      expect(screen.getByTestId("subagent-skill")).toBeInTheDocument();
+      expect(screen.getByText("commit")).toBeInTheDocument();
+      expect(screen.queryByText("unknown")).not.toBeInTheDocument();
+    });
+
     it("Task tool is not grouped with other tools", () => {
       const messages: ChatMessage[] = [
         { role: "assistant", text: "", toolUse: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] },
@@ -1684,6 +1790,53 @@ describe("MessageList", () => {
       ];
       render(<MessageList messages={messages} isLoading={true} />);
       expect(document.querySelector(".tool-spinner")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("compacting indicator placement (docs/178)", () => {
+    afterEach(() => {
+      useSessionStore.setState({ compacting: false, compactingAnchor: null });
+    });
+
+    it("renders above a message the user sent while the compaction was running", () => {
+      // The anchor is the transcript length when the compaction started, so
+      // "/compact" is above the spinner and the message typed after it is below.
+      useSessionStore.setState({ compacting: true, compactingAnchor: 1 });
+
+      render(
+        <MessageList
+          messages={[msg("user", "/compact"), msg("user", "go ahead with phase 1")]}
+          isLoading={true}
+        />,
+      );
+
+      const indicator = screen.getByTestId("compacting-indicator");
+      const compactBubble = screen.getByText("/compact");
+      const laterBubble = screen.getByText("go ahead with phase 1");
+      expect(compactBubble.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(indicator.compareDocumentPosition(laterBubble) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("renders at the end when nothing was appended after the compaction started", () => {
+      useSessionStore.setState({ compacting: true, compactingAnchor: 2 });
+
+      render(
+        <MessageList messages={[msg("user", "/compact"), msg("assistant", "working")]} isLoading={true} />,
+      );
+
+      const indicator = screen.getByTestId("compacting-indicator");
+      const last = screen.getByText("working");
+      expect(last.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("falls back to the end of the list when no anchor was captured", () => {
+      useSessionStore.setState({ compacting: true, compactingAnchor: null });
+
+      render(<MessageList messages={[msg("user", "/compact"), msg("user", "later")]} isLoading={true} />);
+
+      const indicator = screen.getByTestId("compacting-indicator");
+      const last = screen.getByText("later");
+      expect(last.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 
@@ -1775,7 +1928,7 @@ describe("MessageList", () => {
     });
   });
 
-  // SHI-78 — the spawned-session card's "Open" button must route through the
+  // planning#80 — the spawned-session card's "Open" button must route through the
   // router-aware onResumeSession handler (which resets per-session stores and
   // navigates), not the bare setSessionId fallback. The bare fallback left a
   // stale URL and stale messages, which on mobile surfaced as a truncated
@@ -1826,5 +1979,46 @@ describe("MessageList", () => {
       fireEvent.click(screen.getByRole("button", { name: /open/i }));
       expect(onResumeSession).toHaveBeenCalledWith("fork-3");
     });
+  });
+});
+
+/**
+ * docs/258 — agent-authored pointers are live in assistant messages and nowhere
+ * else. Worth guarding here rather than only at `MarkdownContent`: this is the
+ * one call site that turns the capability on, and the messages it renders
+ * include ones ShipIt did not author.
+ */
+describe("MessageList — agent-authored pointers", () => {
+  const POINTER = "[start it](shipit-preview://web/x?shipit-render=button)";
+
+  it("renders a pointer in an assistant message", () => {
+    render(<MessageList messages={[msg("assistant", POINTER)]} isLoading={false} />);
+    expect(screen.getByRole("button", { name: "start it" })).toBeInTheDocument();
+  });
+
+  it("does not render one in a message a preview page composed", () => {
+    // The Agent Interface SDK lets an arbitrary page the user built compose a
+    // message into this transcript. It arrives as `role: "user"`, which renders
+    // as plain text — no markdown, so no pointer and no way to start a service.
+    render(<MessageList messages={[{
+      role: "user",
+      text: POINTER,
+      agentInterface: { source: "agent_interface_sdk", surface: "preview" },
+    }]} isLoading={false} />);
+    expect(screen.queryByRole("button", { name: "start it" })).toBeNull();
+    expect(screen.getByText(POINTER, { exact: false })).toBeInTheDocument();
+  });
+
+  it("does not render one in an error or notice bubble", () => {
+    render(
+      <MessageList
+        messages={[
+          { role: "assistant", text: POINTER, isError: true },
+          { role: "assistant", text: POINTER, notice: true },
+        ]}
+        isLoading={false}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "start it" })).toBeNull();
   });
 });

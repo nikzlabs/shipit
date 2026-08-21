@@ -26,7 +26,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
 import {
@@ -46,13 +46,13 @@ import { readNodePin, parseVersion, satisfies } from "../shared/node-pin.js";
 // ---------------------------------------------------------------------------
 
 /**
- * The overlay dep store is ON by default (SHI-127, canary-complete on the prod
+ * The overlay dep store is ON by default (planning#129, canary-complete on the prod
  * VPS — see docs/183 FINDINGS.md). `OVERLAY_DEP_STORE` is retained for one
  * release as an explicit **kill switch**: setting it to `0` (or `false`) forces
  * the plain `agent.install` path back, so a self-hoster or prod can disable the
  * overlay without a redeploy if a regression surfaces. Any other value (unset,
  * `1`, `true`, anything else) keeps the default-on behavior. The knob is slated
- * for removal once default-on has soaked (SHI-127 step 3).
+ * for removal once default-on has soaked (planning#129 step 3).
  */
 export function isOverlayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env.OVERLAY_DEP_STORE;
@@ -84,7 +84,7 @@ export function isOverlayEligible(
  * exists, because the base scope picks the overlay `lowerdir` at create time.
  *
  * Keyed on the **pinned base-image digest** (`BASE_IMAGE_DIGEST`), not the full
- * worker-image id (SHI-194). The worker is `FROM node:24-slim@sha256:…`, a
+ * worker-image id (planning#196). The worker is `FROM node:24-slim@sha256:…`, a
  * digest-pinned base, so the base digest captures the libc + Node ABI exactly
  * while staying constant across app-code-only rebuilds — the scope rolls only on
  * a deliberate base bump, instead of minting a fresh ~500 MB base every deploy.
@@ -178,6 +178,12 @@ export interface DepDirOverlaySpec extends OverlaySpec {
    * mounted — a publish racing container creation moves the pointer's
    * generation, and stamping from the newer pointer would claim deps the
    * pinned (older) lowerdir doesn't hold.
+   *
+   * That same racing publish also leaves this generation invisible to the disk
+   * janitor's liveness check until the container is RUNNING, so the creation
+   * path additionally CLAIMS it for the duration (planning#440,
+   * `overlay-base-claims.ts`). The claim is taken in `prepareOverlaySpecs`, not
+   * here — this builder stays pure.
    */
   generation: number;
   /**
@@ -190,8 +196,14 @@ export interface DepDirOverlaySpec extends OverlaySpec {
    * here. Container creation mkdirs these right before creating the volume.
    * Absent when the populator has no orchestrator state dir (unit-test/mock
    * configurations).
+   *
+   * `sessionScopeDir` is the PARENT of the generation-scoped `upper`/`work` —
+   * `sessions/<id>/overlay/<scopeHash>/`, holding one `g<N>/` per generation this
+   * session has mounted. It is carried explicitly (rather than re-derived by
+   * path arithmetic) so `prepareOverlayDirs` can reap the superseded generations
+   * from it; see {@link supersededSessionOverlayLayers}.
    */
-  orchDirs?: { lowerdir: string; upperdir: string; workdir: string };
+  orchDirs?: { lowerdir: string; upperdir: string; workdir: string; sessionScopeDir: string };
 }
 
 /**
@@ -200,9 +212,118 @@ export interface DepDirOverlaySpec extends OverlaySpec {
  * (the kernel forbids an upperdir inside its own lowerdir). Pure cache: the
  * upper holds install deltas that rebuild on the next install after unarchive,
  * so disk reclaim (eviction / archived sweep) deletes it alongside `workspace/`
- * while preserving durable siblings like `uploads/` (SHI-192).
+ * while preserving durable siblings like `uploads/` (planning#194).
  */
 export const OVERLAY_SESSION_SUBDIR = "overlay";
+
+/**
+ * The per-session, per-dep-dir overlay dir: `sessions/<id>/overlay/<scopeHash>/`.
+ * Holds one {@link sessionOverlayGenDir} per base generation this session has
+ * mounted (usually exactly one — the superseded ones are reaped at the next
+ * container create).
+ */
+export function sessionOverlayScopeDir(root: string, sessionId: string, scopeHash: string): string {
+  return path.join(root, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, scopeHash);
+}
+
+/**
+ * This session's `upper`/`work` parent for ONE base generation:
+ * `sessions/<id>/overlay/<scopeHash>/g<N>/`.
+ *
+ * **An upper layer is only valid over the lower it was built against.** Part of
+ * that is state naming specific lower *inodes* — copy-up origins and the
+ * `index/` entries under the workdir — which is what goes stale loudly. The
+ * larger part is quiet and needs no inode reference at all: a copied-up file, a
+ * whiteout and an opaque dir are keyed by PATH, so they go on shadowing whatever
+ * now sits at that path. Either way the kernel's own rule is that changing a
+ * layer under a live upper is undefined. The base is generational
+ * (`overlay-base/<hash>/g<N>`, see
+ * `overlayBaseGenDir`), and a publish rotates it while a session sleeps, so a
+ * generation-agnostic upper path would remount an old upper over a NEW lower on
+ * the session's next container start. Observed on the prod host as
+ * `overlayfs: failed to get index nlink (…, err=-61)` (ENODATA — the
+ * `trusted.overlay.nlink` xattr was written against a different lower), and
+ * silently as a torn dep tree: files the session had copied up keep shadowing
+ * the newer generation's versions of the same paths while everything it never
+ * touched comes from the new one.
+ *
+ * Keying the upper on the generation makes the rotation a fresh, empty upper
+ * instead — which is safe precisely because the dep-dir upper is a pure
+ * disposable cache (plan §"Disk cleanup"): it holds only the install delta, and
+ * the next install rebuilds it over the new base. `prepareOverlayDirs` pairs the
+ * reset with dropping the install marker, for the same reason
+ * `reclaimBlockedSessionCaches` does (planning#296) — an upper-less session over a
+ * populated lower is NOT present-but-empty, so `overlay-dep-check.ts` would not
+ * fire and `agent.install` would wrongly skip.
+ *
+ * See {@link supersededSessionOverlayLayers} for what a rotation reaps, including
+ * the pre-`g<N>` layout every session on disk at upgrade time still has.
+ */
+export function sessionOverlayGenDir(
+  root: string,
+  sessionId: string,
+  scopeHash: string,
+  generation: number,
+): string {
+  return path.join(sessionOverlayScopeDir(root, sessionId, scopeHash), `g${generation}`);
+}
+
+/**
+ * Absolute paths of the per-session upper layers under one dep dir's overlay
+ * scope dir that the container about to be created will NOT mount — the ones
+ * whose bytes are only meaningful over a lower the daemon is no longer going to
+ * mount. Two kinds:
+ *
+ *  - **a superseded `g<M>/`** — the session slept through a publish and its
+ *    previous generation's upper is still sitting beside the `g<N>/` it is
+ *    about to use; and
+ *  - **the legacy bare `upper/` + `work/`** — the generation-agnostic layout
+ *    every session used before this scope-dir gained its `g<N>` level. Counting
+ *    them is what makes the upgrade itself safe: without it, the first container
+ *    create after the deploy would move every live session onto a fresh, empty
+ *    `g<N>/upper` while its install marker still claimed those deps were
+ *    installed — silently the dep-less session `reclaimBlockedSessionCaches`
+ *    exists to prevent (planning#296). Counted, the same create drops the marker
+ *    and `agent.install` re-validates.
+ *
+ * Returns `[]` when the scope dir is absent (a cold session) or unreadable, and
+ * matches only those exact names, so nothing else that ever lands there becomes
+ * a delete candidate.
+ *
+ * **Nothing reaped here can be a live mount**, which is not obvious because it
+ * takes two calls to see: the sole caller runs inside `createContainer`, and a
+ * session reaches `createContainer` only with no container of its own — either it
+ * never had one, or `destroyContainer` ran first and removed the Docker overlay
+ * volume, which is what makes the daemon unmount the overlay. A session whose
+ * pre-upgrade container is still running was re-adopted through `rediscover`,
+ * which repopulates in-memory state and never creates a container, so its legacy
+ * dirs are not visited at all.
+ */
+export function supersededSessionOverlayLayers(
+  sessionScopeDir: string,
+  keepGeneration: number,
+): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(sessionScopeDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const keep = `g${keepGeneration}`;
+  return entries
+    .filter((e) => e.isDirectory())
+    .filter((e) => (/^g\d+$/.test(e.name) && e.name !== keep) || e.name === "upper" || e.name === "work")
+    .map((e) => path.join(sessionScopeDir, e.name));
+}
+
+/**
+ * Container path the workspace mounts at, and therefore the parent every dep-dir
+ * overlay nests under (`/workspace/<dep-dir>`). Named once so
+ * {@link buildOverlaySpecs} (which composes the mount target) and
+ * {@link overlayDepDirsFromMounts} (which reads it back off a live container)
+ * cannot drift apart.
+ */
+export const CONTAINER_WORKSPACE_PATH = "/workspace";
 
 /**
  * Build **N** overlay specs — one per declared dep dir — for an eligible session.
@@ -214,9 +335,15 @@ export const OVERLAY_SESSION_SUBDIR = "overlay";
  *
  * Each dep dir gets its own base (`overlay-base/<scopeHash>`, scopeHash keyed on the
  * dep-dir relpath) and its own per-session upper/work under
- * `sessions/<id>/overlay/<scopeHash>/` — so two dep dirs never share an upperdir
+ * `sessions/<id>/overlay/<scopeHash>/g<N>/` — so two dep dirs never share an upperdir
  * (the kernel forbids it) and a runtime change rotates the scope (and thus the upper)
  * for free.
+ *
+ * The trailing `g<N>` is the same base generation the lowerdir pins, so the upper
+ * rotates with the lower it was built against on THIS axis too — the one an
+ * unchanged runtime key leaves open, since a publish advances the generation
+ * without touching the scope hash. See {@link sessionOverlayGenDir} for why
+ * carrying an upper across a lower change is wrong.
  */
 export function buildOverlaySpecs(args: {
   sessionId: string;
@@ -246,9 +373,9 @@ export function buildOverlaySpecs(args: {
   return depDirs.map((depDir) => {
     const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
     const generation = generationForScope(scopeHash);
-    const sessionOverlayDir = path.join(volumeMountpoint, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, scopeHash);
+    const sessionOverlayDir = sessionOverlayGenDir(volumeMountpoint, sessionId, scopeHash, generation);
     const orchSessionOverlayDir = stateRoot
-      ? path.join(stateRoot, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, scopeHash)
+      ? sessionOverlayGenDir(stateRoot, sessionId, scopeHash, generation)
       : undefined;
     return {
       volumeName: overlayVolumeName(sessionId, depDir),
@@ -256,7 +383,7 @@ export function buildOverlaySpecs(args: {
       upperdir: path.join(sessionOverlayDir, "upper"),
       workdir: path.join(sessionOverlayDir, "work"),
       depDir,
-      mountPath: path.posix.join("/workspace", depDir),
+      mountPath: path.posix.join(CONTAINER_WORKSPACE_PATH, depDir),
       scope: { repoUrl: scope.repoUrl, runtimeKey: scope.runtimeKey, depDir },
       scopeHash,
       generation,
@@ -266,11 +393,79 @@ export function buildOverlaySpecs(args: {
               lowerdir: overlayBaseGenDir(stateRoot, scopeHash, generation),
               upperdir: path.join(orchSessionOverlayDir, "upper"),
               workdir: path.join(orchSessionOverlayDir, "work"),
+              sessionScopeDir: sessionOverlayScopeDir(stateRoot, sessionId, scopeHash),
             },
           }
         : {}),
     };
   });
+}
+
+/**
+ * Put a recorded overlay set in a stable order, by dep dir.
+ *
+ * The compose override is generated FROM this list, so its order is part of the
+ * override's bytes — and compose recreates a service container whenever the
+ * generated config differs from what the running one was built with. So the two
+ * sites that record the set ({@link overlayDepDirsFromMounts} and the container
+ * create path) must agree on an order, and neither may inherit one from
+ * something outside our control.
+ *
+ * That last part is why this sorts rather than trusting the input. The adoption
+ * path reads `docker inspect`'s `Mounts`, and nothing in Docker's API documents
+ * that array as ordered — the daemon builds it from a keyed collection, so the
+ * order is the daemon's to choose and to change. Left unsorted, an order that
+ * merely *differed* between two inspects would rewrite the override on every
+ * orchestrator restart and recreate every compose service in the fleet for no
+ * reason. Sorting makes the question moot instead of betting on the answer.
+ */
+export function sortOverlayDepDirs<T extends { depDir: string }>(pairs: T[]): T[] {
+  return [...pairs].sort((a, b) => (a.depDir < b.depDir ? -1 : a.depDir > b.depDir ? 1 : 0));
+}
+
+/**
+ * The (dep dir → overlay volume) pairs a **live** container actually has mounted,
+ * read back from its own `docker inspect` mount table.
+ *
+ * This is the answer for a container the orchestrator did not create — one
+ * rediscovered after a restart, or re-adopted by the inverse-leak reconciler
+ * (`container-discovery.ts`). Those paths have no `overlaySpecs` to record, and
+ * the alternative — re-deriving from the live workspace — is exactly what
+ * `SessionContainer.overlayDepDirs` exists to avoid: `shipit.yaml`'s `dep-dirs`,
+ * the pnpm signals and `git check-ignore` can all have moved since the container
+ * was built, and a disagreement there yields zero compose mounts while the agent
+ * keeps its overlay. The mount table cannot disagree with itself: it IS what the
+ * agent has mounted.
+ *
+ * So `[]` from here is as authoritative as `[]` from the create path — this
+ * container genuinely has no dep-dir overlay (a pnpm repo, a session that was
+ * ineligible at create time, a container from before the feature).
+ *
+ * A mount qualifies on both halves of how it was built (`buildOverlaySpecs` +
+ * `container-lifecycle.ts`): a **volume** named for this session's overlay set
+ * (`shipit-<sid12>_overlay…`), nested strictly under the workspace mount, whose
+ * dep dir is the remainder of the destination path. The workspace volume itself
+ * (same prefix-free name, destination exactly `/workspace`) and the pnpm store
+ * bind (`/workspace/.pnpm-store`, not an overlay volume) both fail it.
+ */
+export function overlayDepDirsFromMounts(
+  sessionId: string,
+  mounts: readonly { Type?: string; Name?: string; Destination?: string }[] | undefined,
+): { depDir: string; volumeName: string }[] {
+  const overlayPrefix = overlayVolumeName(sessionId);
+  const workspacePrefix = `${CONTAINER_WORKSPACE_PATH}/`;
+  const pairs: { depDir: string; volumeName: string }[] = [];
+  for (const mount of mounts ?? []) {
+    if (mount.Type !== "volume") continue;
+    const volumeName = mount.Name;
+    if (!volumeName?.startsWith(overlayPrefix)) continue;
+    const destination = mount.Destination;
+    if (!destination?.startsWith(workspacePrefix)) continue;
+    const depDir = destination.slice(workspacePrefix.length);
+    if (!depDir) continue;
+    pairs.push({ depDir, volumeName });
+  }
+  return sortOverlayDepDirs(pairs);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +489,13 @@ export function buildOverlaySpecs(args: {
  * resolver is injected so this stays pure and unit-testable; it is only consulted
  * when the feature is on (the kill-switch gate short-circuits first, so no config
  * reads happen when the store is killed off).
+ *
+ * **`sessions` MUST include warm-pool rows** (`listAllIncludingWarm`, planning#439).
+ * This function cannot enforce that — it filters what it is handed — and the
+ * default `listAll()` drops them, which is right for "whose work is this" and
+ * wrong here: a warm session's container mounts a base like any other, and a
+ * warm scope has NO other protection (the running-container probe is the only
+ * one, and a docker hiccup used to blank it).
  */
 export function liveOverlayScopeHashes(
   sessions: SessionInfo[],
@@ -363,7 +565,7 @@ export async function validDepDirsForOverlay(
     // every dep dir on exactly the sessions the overlay targets. The slash
     // form matches the pattern regardless of on-disk presence.
     const queries = parentExists.flatMap((d) => [d, `${d}/`]);
-    const ignored = new Set(await simpleGit(workspaceDir).checkIgnore(queries));
+    const ignored = new Set(await safeSimpleGit(workspaceDir).checkIgnore(queries));
     return parentExists.filter((d) => ignored.has(d) || ignored.has(`${d}/`));
   } catch {
     return [];
@@ -554,7 +756,7 @@ export async function preStampInstallMarker(args: {
 
   let head: string;
   try {
-    head = (await simpleGit(workspaceDir).revparse(["HEAD"])).trim();
+    head = (await safeSimpleGit(workspaceDir).revparse(["HEAD"])).trim();
   } catch {
     return false;
   }

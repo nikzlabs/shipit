@@ -1,5 +1,5 @@
 /**
- * propose_actions tool — action checklist cards (docs/207 / SHI-153).
+ * propose_actions tool — action checklist cards (docs/207 / planning#155).
  *
  * Pure transport: POSTs the proposed actions to the worker's
  * `/agent-ops/propose-actions` broker, which relays to the orchestrator. The
@@ -29,7 +29,10 @@ const TOOL_DESCRIPTION = [
   "the FULL self-contained instruction you should act on if the user picks it",
   "(the card outlives this turn, so the payload can't rely on conversation",
   "context). The card is non-blocking — it waits in the transcript; your turn",
-  "ends normally. Do NOT use it for routine recurring commands (run the tests /",
+  "ends normally. Call it LAST, after your closing text: the card is anchored",
+  "where the tool fired, so proposing before you write your reply renders the",
+  "card above the prose that explains it and the user has to scroll back for it.",
+  "Do NOT use it for routine recurring commands (run the tests /",
   "lint / typecheck), do not emit one every turn, and do not also repeat the same",
   "suggestion in prose. Cap it at ~3–5 actions, at most one card per turn. When a",
   "choice needs real discussion or is mutually exclusive, ask a question instead.",

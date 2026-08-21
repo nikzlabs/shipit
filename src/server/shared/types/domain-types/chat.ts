@@ -1,4 +1,5 @@
 import type { AgentId } from "../agent-types.js";
+import type { BillingMode } from "../../catalogue/types.js";
 
 /** Provenance for a prompt delivered by another ShipIt session's agent. */
 export interface SessionMessageOrigin {
@@ -30,7 +31,46 @@ export interface CompactionCard {
 }
 
 /**
- * docs/144 — the persisted "Consulted Codex · 47s · $0.03" transcript card for a
+ * docs/261 phase 4 (req 9) — the resolved parameters a sub-agent consult ran on,
+ * minus the harness (which is the card's own `subAgentId`).
+ *
+ * Ids, never rendered labels. A label is a catalogue fact that can be corrected;
+ * an id is what the run was billed and attributed against. Storing the label too
+ * would freeze a name at spawn time and give the same card two sources for one
+ * fact — the client resolves both through the catalogue at render and falls back
+ * to the id, which is a worse label but never a wrong one (the rule
+ * `client/utils/service-label.ts` already follows).
+ *
+ * The first three are required, because req 3 makes `(service, billing mode,
+ * model)` what identifies a model at all — the same id is reachable through a
+ * vendor and through a gateway at different prices.
+ */
+export interface SubAgentRunTarget {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  /**
+   * The harness-specific level (e.g. `"high"`), or **absent for `Default`** —
+   * the run passed no reasoning flag and the harness used its own level.
+   *
+   * Three ways it is absent, and the card renders them alike because they *are*
+   * alike — no flag was passed:
+   *
+   *  - a card written before docs/261, when the field did not exist;
+   *  - a harness that declares no levels at all (docs/274), where there was no
+   *    level to run at;
+   *  - a role at `Default` (docs/264 req 1), which is the general case the other
+   *    two fall under.
+   *
+   * The card records what the run actually ran on, and "no flag was passed" is
+   * that fact; naming a level here would mean resolving the harness's own
+   * default, which ShipIt does not know. Renders as "Default".
+   */
+  reasoningEffort?: string;
+}
+
+/**
+ * docs/144 — the persisted "Consulted Opus 5 · 47s · $0.03" transcript card for a
  * completed sub-agent spawn. Unlike the transient in-flight spinner (the
  * `sub_agent_spawn` WS message + `subAgentSpawns` store), this terminal record
  * IS transcript content — the user expects it to stay where the consultation
@@ -40,7 +80,7 @@ export interface CompactionCard {
  * terminal status, not just success (a cancelled/timed-out/failed consult is
  * still a fact the transcript should keep).
  *
- * SHI-278 — the card is now created in a `pending` state at SPAWN time and
+ * planning#280 — the card is now created in a `pending` state at SPAWN time and
  * patched to its terminal status on completion, so an in-flight consult has a
  * DURABLE surface. The transient `sub_agent_spawn` chip is live activity only
  * and dies on the first session switch; since docs/236 tells agents to
@@ -53,22 +93,64 @@ export interface SubAgentConsultCard {
   cardId: string;
   /** The in-flight spawn this card finalizes; clears the matching running chip. */
   spawnId: string;
-  /** The agent that was consulted (display: "Consulted Codex"). */
+  /**
+   * The **harness** that was consulted — a CLI, not a model (docs/252 phase 1).
+   * On its own it is no longer an answer to "what reviewed this": Claude Code
+   * can drive a non-Anthropic model, so "Consulted Claude" says which process
+   * ran and nothing about which weights did. {@link runOn} carries the rest.
+   */
   subAgentId: AgentId;
+  /**
+   * docs/261 phase 4 (req 9) — **what this consult actually ran on**, so its
+   * usage and cost are attributable to the service and billing mode that served
+   * it and the card can say which model reviewed the work.
+   *
+   * Copied from the target `runSubAgent` captures ONCE at spawn admission
+   * (`services/sub-agent-target.ts`), which is the same value the spawn, the
+   * retries and the usage row use — so the card cannot name a model that did not
+   * run. Written onto the `pending` card at creation rather than at completion,
+   * because a consult is in flight for minutes and "who is being asked" is the
+   * first thing the row has to answer; the pending → terminal patch carries it
+   * through unchanged.
+   *
+   * Optional only for rows written before this phase. The whole card serializes
+   * to one json column (`messages.sub_agent_consult`), so this needs no
+   * migration and no `CARD_MESSAGE_FIELDS` change — an older row simply parses
+   * without it and the card falls back to naming the harness alone.
+   */
+  runOn?: SubAgentRunTarget;
+  /**
+   * docs/264-agent-roles req 14 — the **role** that started this run, when one did.
+   *
+   * {@link runOn} says what ran; this says what was *asked for*. They are
+   * different facts and neither implies the other: a role resolves to a tuple
+   * (and the reviewer's resolves per run), so a card carrying only the tuple
+   * cannot answer "was this the reviewer, or `deep-dive`?" — which is the
+   * question a user reading the transcript actually has.
+   *
+   * A **snapshot of the name**, taken at spawn admission. Editing or deleting the
+   * role afterwards does not reach back into a card that already exists — the
+   * same rule a child session's `originRoleName` follows.
+   *
+   * Absent for a run that named all five parameters itself, and for rows written
+   * before this phase. Serializes into the card's single json column, so no
+   * migration and no `CARD_MESSAGE_FIELDS` change.
+   */
+  roleName?: string;
   /**
    * `pending` while the spawn is in flight; otherwise the terminal status,
    * which drives the verb ("Consulted" / "Cancelled" / …).
    */
   status: "pending" | "success" | "error" | "timeout" | "cancelled";
   /**
-   * SHI-307 — a SHIPIT-authored one-line explanation of a terminal status, for
+   * planning#309 — a SHIPIT-authored one-line explanation of a terminal status, for
    * the cases where the status alone is misleading. Currently set only by the
    * boot reconcile, which cancels consults stranded `pending` by an orchestrator
    * restart: without it "Cancelled Codex" is indistinguishable from a consult
    * the user cancelled.
    *
    * Deliberately NOT `outputMarkdown`. That field is the sub-agent's verbatim
-   * words — it is what `shipit agent result` prints on stdout and what SHI-245
+   * words — it is what `shipit agent result` prints on stdout and what planning#247
    * guarantees is the same artifact the user reads — so putting ShipIt's own
    * prose there would hand a caller our apology in the consultant's voice. This
    * field renders as ShipIt's commentary on both surfaces (the card face, and
@@ -89,7 +171,7 @@ export interface SubAgentConsultCard {
    */
   outputMarkdown?: string;
   /**
-   * docs/244 / SHI-297 — set on the SERVE path only: `outputMarkdown` carries
+   * docs/244 / planning#299 — set on the SERVE path only: `outputMarkdown` carries
    * just the one-line preview the card face draws, and the full text is fetched
    * from `/api/sessions/:id/sub-agent-consults/:cardId` when the viewer opens.
    * Never persisted — the stored card always holds the whole output, which is
@@ -100,7 +182,7 @@ export interface SubAgentConsultCard {
 }
 
 /**
- * docs/207 / SHI-153 — one optional action the agent proposes via the
+ * docs/207 / planning#155 — one optional action the agent proposes via the
  * `propose_actions` tool. The card renders these as a button (one action) or a
  * checklist (2+); ticking declares intent and the agent does the work, so no
  * field here ever executes anything directly.
@@ -124,7 +206,7 @@ export interface ActionChecklistItem {
 }
 
 /**
- * docs/207 / SHI-153 — a persisted "action checklist" transcript card. The agent
+ * docs/207 / planning#155 — a persisted "action checklist" transcript card. The agent
  * proposes one or more INDEPENDENT optional follow-ups; the user resolves the
  * subset they want with a SINGLE batched submit (one message → one turn, never N
  * racing clicks). The card is an immutable, reusable message composer: it has no
@@ -179,7 +261,7 @@ export interface BranchAutoResetCard {
   /** Emit time — doubles as the provenance stamp. */
   createdAt: string;
   /**
-   * SHI-277 — this reset ran under `shipit branch reset-to-base --force`, which
+   * planning#279 — this reset ran under `shipit branch reset-to-base --force`, which
    * bypasses the "this branch is exactly what merged" safety clause. The forced
    * path is trust-based rather than gated, so the transcript record IS the
    * accountability: absent these two fields the card describes a reset that

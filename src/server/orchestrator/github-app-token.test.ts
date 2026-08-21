@@ -162,6 +162,50 @@ describe("GitHubAppTokenMinter", () => {
     expect(await minter.getRepoToken("o", "r")).toBeNull();
   });
 
+  // docs/262 reqs 7, 10 — the plugin-repository path.
+  it("mints a read-scoped token with no write permission at all", async () => {
+    const { impl, calls } = fetchStub([
+      { status: 200, body: { id: 42 } },
+      { status: 201, body: { token: "ghs_ro", expires_at: "2099-01-01T00:00:00Z" } },
+    ]);
+    const minter = new GitHubAppTokenMinter({ config: config(), fetchImpl: impl, now: () => 1_700_000_000_000 });
+
+    const result = await minter.getRepoTokenResult("octo", "tools", "read");
+    expect(result).toEqual({ ok: true, token: "ghs_ro" });
+    const mintBody = JSON.parse(calls[1].init?.body as string) as Record<string, unknown>;
+    // A declaration grants a fetch, never a push (req 7): no `contents: write`,
+    // and no pull-request surface either.
+    expect(mintBody.permissions).toEqual({ contents: "read", metadata: "read" });
+  });
+
+  it("caches read and write tokens separately — one scope never serves the other", async () => {
+    const { impl } = fetchStub([
+      { status: 200, body: { id: 1 } },
+      { status: 201, body: { token: "ghs_write", expires_at: "2099-01-01T00:00:00Z" } },
+      { status: 200, body: { id: 1 } },
+      { status: 201, body: { token: "ghs_read", expires_at: "2099-01-01T00:00:00Z" } },
+    ]);
+    const minter = new GitHubAppTokenMinter({ config: config(), fetchImpl: impl, now: () => 1_700_000_000_000 });
+
+    expect(await minter.getRepoToken("o", "r")).toBe("ghs_write");
+    expect(await minter.getRepoTokenResult("o", "r", "read")).toEqual({ ok: true, token: "ghs_read" });
+  });
+
+  it("reports a 404 installation lookup as not_installed, and other failures as mint_failed", async () => {
+    const notInstalled = new GitHubAppTokenMinter({
+      config: config(), fetchImpl: fetchStub([{ status: 404, body: {} }]).impl, now: () => 1,
+    });
+    expect(await notInstalled.getRepoTokenResult("o", "r", "read")).toEqual({ ok: false, reason: "not_installed" });
+
+    const broken = new GitHubAppTokenMinter({
+      config: config(), fetchImpl: fetchStub([{ status: 500, body: {} }]).impl, now: () => 1,
+    });
+    expect(await broken.getRepoTokenResult("o", "r", "read")).toEqual({ ok: false, reason: "mint_failed" });
+
+    const unconfigured = new GitHubAppTokenMinter({ config: null });
+    expect(await unconfigured.getRepoTokenResult("o", "r", "read")).toEqual({ ok: false, reason: "not_configured" });
+  });
+
   it("invalidate() drops the cached token so the next call re-mints", async () => {
     const { impl, calls } = fetchStub([
       { status: 200, body: { id: 1 } },

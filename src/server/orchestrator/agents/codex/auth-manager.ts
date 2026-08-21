@@ -48,7 +48,7 @@ import type {
   AgentAuthStartOptions,
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
-import type { AgentId } from "../../../shared/types.js";
+import type { LoginIntegrationId } from "../../../shared/catalogue/types.js";
 import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
 // ---- Public types ----
@@ -214,7 +214,7 @@ export function extractCodexPlan(obj: Record<string, unknown>): string | null {
 }
 
 /**
- * docs/150 req 22 — the ChatGPT account this `auth.json` belongs to.
+ * docs/150-multiple-provider-subscriptions req 22 — the ChatGPT account this `auth.json` belongs to.
  *
  * `chatgpt_account_id` is the stable key: it is the account's own id, so it
  * survives an email change and tells two accounts on the same plan apart —
@@ -287,7 +287,7 @@ export interface CodexAuthManagerOptions {
 }
 
 export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
-  readonly agentId: AgentId = "codex";
+  readonly loginId: LoginIntegrationId = "openai-chatgpt";
 
   private proc: ChildProcess | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -327,7 +327,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
    * Quick check: does `auth.json` exist on disk?
    *
    * Wired into `AgentRegistry.checkCodexAuth` so a Codex agent reports
-   * `authConfigured: true` whenever a ChatGPT login is on disk, regardless
+   * `hasRunnableModels: true` whenever a ChatGPT login is on disk, regardless
    * of whether `OPENAI_API_KEY` is also set.
    */
   checkCredentials(credentialDir?: string): boolean {
@@ -646,7 +646,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     this.lastPendingEvent = ev;
     this.emit("codex_auth_pending", ev);
     // Normalized AgentAuthManager event — the orchestrator's SSE wiring
-    // rebroadcasts this as `agent_auth_pending` with `agentId: "codex"`,
+    // rebroadcasts this as `agent_auth_pending` with `loginId: "openai-chatgpt"`,
     // replacing the legacy `codex_auth_pending` SSE event family.
     this.emit("pending", {
       kind: "device-code",

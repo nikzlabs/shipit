@@ -19,13 +19,18 @@ import {
   ensureClaudeWorkspaceTrusted,
 } from "./agents/claude/user-config.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
-import { SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.js";
+import { AGENT_TOKEN_FILES, SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
   SHARED_CREDENTIAL_PATHS,
+  agentCredentialDirs,
+  beginSubtreeBorrow,
   chownSessionCredentialsTree,
   copyCredentialPath,
+  endSubtreeBorrow,
   perSessionCredentialsDir,
+  readSessionAccountMarker,
+  writeSessionAccountMarker,
   writeSessionGitConfig,
 } from "./session-credentials-scaffold.js";
 
@@ -61,11 +66,137 @@ export function provisionProviderAccountCredentials(
     providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
     true,
   );
+  writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
+}
+
+/**
+ * docs/260 §4/§5 — the subtree's recorded account. Defined in
+ * `session-credentials-scaffold.ts` (the token sync has to read it without
+ * importing this module) and re-exported here, where its readers have always
+ * found it: the per-turn identity check ({@link
+ * ensureSessionAccountCredentials}), post-restart resident-process adoption
+ * (the account a surviving CLI runs on IS the marker, since any account change
+ * retires the process before reprovisioning), and disconnect revocation ("which
+ * sessions hold account X's copy").
+ */
+export { readSessionAccountMarker, writeSessionAccountMarker };
+
+/**
+ * docs/260 §5 — the credential route the session's LAST SPAWNED resident
+ * process runs on, per agent. The account marker above cannot carry this: it
+ * records which account's SUBTREE COPY is on disk (revocation depends on that
+ * meaning), while a string-delivered credential authenticates from spawn env
+ * and leaves the subtree — and therefore the marker — untouched. Without this
+ * record a post-restart adoption cannot attribute a surviving string-credential
+ * process (req 11), and the busy deletion guard cannot see that the credential
+ * is in use (req 13).
+ *
+ * Written at the pre-spawn stamp (the same moment `runner.residentRoute` is
+ * set) and read ONLY by adoption recovery — a stale file with no surviving
+ * process is never consulted, so retirement does not need to clear it.
+ */
+const SESSION_RESIDENT_ROUTE = ".shipit-resident-route.json";
+
+export interface RecordedResidentRoute {
+  kind: "account" | "reserved" | "string";
+  id: string;
+}
+
+export function readSessionResidentRoute(
+  credentialsRoot: string,
+  sessionId: string,
+): Partial<Record<AgentId, RecordedResidentRoute>> {
+  const file = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SESSION_RESIDENT_ROUTE);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Partial<Record<AgentId, RecordedResidentRoute>> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (key !== "claude" && key !== "codex" && key !== "opencode" && key !== "grok") continue;
+      const route = value as { kind?: unknown; id?: unknown };
+      if (
+        (route?.kind === "account" || route?.kind === "reserved" || route?.kind === "string")
+        && typeof route.id === "string"
+      ) {
+        out[key] = { kind: route.kind, id: route.id };
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeSessionResidentRoute(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  route: RecordedResidentRoute,
+): void {
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  if (!fs.existsSync(dir)) return;
+  const current = readSessionResidentRoute(credentialsRoot, sessionId);
+  current[agentId] = route;
+  fs.writeFileSync(path.join(dir, SESSION_RESIDENT_ROUTE), JSON.stringify(current));
+}
+
+/**
+ * docs/260-turn-level-account-routing req 4 — make the session's credential subtree belong to the
+ * CHOSEN account before the turn spawns, whatever it held before.
+ *
+ *   - `match`: the marker already names the chosen account; the per-turn
+ *     freshness sync (which is same-account by construction now) does the
+ *     rest.
+ *   - `provisioned`: the subtree had no credentials for this agent yet.
+ *   - `adopted`: a pre-260 subtree with no marker whose token byte-matches
+ *     the chosen account's root — recorded, nothing copied.
+ *   - `replaced`: the subtree held a different account's credentials (the
+ *     wrong-account poisoning class), or an unidentifiable pre-260 copy.
+ *     Reprovisioned wholesale from the chosen account's root; conversation
+ *     state survives via the replacement allowlist.
+ */
+export function ensureSessionAccountCredentials(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId: string,
+): "match" | "provisioned" | "adopted" | "replaced" {
+  const recorded = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
+  if (recorded === accountId) return "match";
+  const sessionDir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  const sessionToken = readFirstTokenFile(sessionDir, agentId);
+  if (recorded === undefined && sessionToken === null) {
+    provisionProviderAccountCredentials(credentialsRoot, sessionId, agentId, accountId);
+    return "provisioned";
+  }
+  if (recorded === undefined && sessionToken !== null) {
+    const rootToken = readFirstTokenFile(
+      providerAccountCredentialRoot(credentialsRoot, agentId, accountId),
+      agentId,
+    );
+    if (rootToken !== null && sessionToken === rootToken) {
+      writeSessionAccountMarker(credentialsRoot, sessionId, agentId, accountId);
+      return "adopted";
+    }
+  }
+  provisionProviderAccountCredentials(credentialsRoot, sessionId, agentId, accountId);
+  return "replaced";
+}
+
+function readFirstTokenFile(root: string, agentId: AgentId): string | null {
+  for (const rel of AGENT_TOKEN_FILES[agentId] ?? []) {
+    try {
+      return fs.readFileSync(path.join(root, rel), "utf8");
+    } catch {
+      // Missing candidate — try the next filename this agent has used.
+    }
+  }
+  return null;
 }
 
 /**
  * Take a session's copy of a provider account's credentials away, with no
- * replacement to copy in (docs/150 req 23).
+ * replacement to copy in (docs/150-multiple-provider-subscriptions req 23).
  *
  * Disconnecting the account only removes the *source* subtree under
  * `provider-accounts/<provider>/<accountId>/`. Every session pinned to that
@@ -92,6 +223,10 @@ export function revokeSessionProviderCredentials(
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
     removeProviderSubtreeForReplacement(dir, rel);
   }
+  // docs/260 — the subtree no longer holds any account's credentials for this
+  // agent; a stale marker would make the next turn's identity check skip the
+  // reprovision it needs.
+  writeSessionAccountMarker(credentialsRoot, sessionId, agentId, null);
 }
 
 /**
@@ -107,7 +242,7 @@ export function revokeSessionProviderCredentials(
  * files Claude's `--resume` and Codex's `thread/resume` read. Those are
  * per-session and carry no account identity, so an account switch does not
  * invalidate them; deleting them is what would strand the user mid-conversation
- * (docs/150 req 9, and the same data-loss shape docs/153 hit).
+ * (docs/150-multiple-provider-subscriptions req 9, and the same data-loss shape docs/153 hit).
  *
  * Three cases, mirroring the allowlist's own fail-safe contract:
  *
@@ -248,6 +383,27 @@ function provisionAgentCredentialsFromRoot(
     }
     copyCredentialPath(sourceRoot, dir, rel);
   }
+  // planning#444 — and materialize whatever the copy did not, so the image's
+  // `~/.<agent>` symlink resolves even for a key-billed harness with no
+  // credential material on disk. See `agentCredentialDirs` for why a dangling
+  // link is a startup failure rather than a harmless absence.
+  //
+  // Per path rather than around the loop: one unwritable entry must not cost the
+  // others, and it must never skip the chown below — the whole subtree has just
+  // been rewritten and the container's boot-time chown has long since run.
+  //
+  // **This loop MUST stay above `chownSessionCredentialsTree`.** It creates the
+  // directories as the orchestrator (root), so a chown that ran first would
+  // leave them root-owned inside a subtree sealed 0700 to the session's uid —
+  // unreadable to the very CLI they exist for, and the failure would look
+  // exactly like the dangling link this replaces.
+  for (const rel of agentCredentialDirs(agentId)) {
+    try {
+      fs.mkdirSync(path.join(dir, rel), { recursive: true });
+    } catch (err) {
+      console.warn(`[session-credentials] could not materialize ${rel} for ${agentId}:`, err);
+    }
+  }
   // Normalize the copied config (e.g. Claude's onboarding + workspace trust)
   // before the chown, so the file it may create is handed over too.
   POST_PROVISION_CONFIG[agentId]?.(dir);
@@ -274,6 +430,37 @@ function provisionAgentCredentialsFromRoot(
  * `accountId` is the resolved provider-account id (`selectRouteForTurn(subAgentId)`
  * → `{ kind: "account", id }`); pass `undefined` for the legacy no-account
  * fallback (env-token / api-key routes), which copies from the flat root.
+ *
+ * **The marker moves with the copy**, and that is the point: a SAME-harness
+ * consult borrows the very subtree the session's own turn reads from, for an
+ * account chosen independently of the session's (`balanced` routing routinely
+ * hands background work the other account). While the borrow is in place the
+ * session's token file holds the borrowed account's bearer — so a marker still
+ * naming the session's account is a false statement, and the two write-back
+ * paths that trust it (the turn-end sync-back and the mid-turn publisher, both
+ * still pointed at the session's account) would publish one account's
+ * credential into another account's root. That is the duplicate-bearer state
+ * `quarantineDuplicateClaudeCredentials` cleans up after, and it presents to
+ * the user as a connected account silently becoming a different one.
+ *
+ * So the borrow states what is on disk, `syncProviderAccountTokenBack` refuses
+ * any write the marker does not agree with, and the restore in each caller's
+ * `finally` puts the session's own account back. A crash mid-borrow now leaves
+ * a marker that DISAGREES with the session's route, which makes the next turn's
+ * `ensureSessionAccountCredentials` reprovision — where a stale "match" used to
+ * let the session spawn on the borrowed account's token.
+ *
+ * **The account it displaces is captured HERE**, into the borrow ledger, rather
+ * than by each caller reading the marker some lines earlier (planning#445). The
+ * displaced account is what {@link releaseSubAgentCredentials} hands back for
+ * the restore, and a capture that reads `undefined` loses it — leaving the
+ * session with no marker at all and every later write-back refused, which for a
+ * rotating refresh token is not a delay but the permanent death of the source
+ * credential. Two things made a caller-side read return `undefined` on a
+ * session that plainly had an account: a torn read of the then non-atomic
+ * marker write, and a second borrow starting inside the window where the first
+ * had already cleared it. Capturing at the instant of overwrite closes the
+ * first; the ledger's re-entrancy closes the second.
  */
 export function provisionSubAgentCredentials(
   credentialsRoot: string,
@@ -284,17 +471,63 @@ export function provisionSubAgentCredentials(
   const sourceRoot = accountId
     ? providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)
     : credentialsRoot;
+  // Before the copy, not just before the marker write: the copy is what makes
+  // the subtree the borrower's, and the ledger entry is what tells a concurrent
+  // write-back that an absent marker means "borrowed", not "lost".
+  beginSubtreeBorrow(credentialsRoot, sessionId, subAgentId);
   provisionAgentCredentialsFromRoot(credentialsRoot, sessionId, subAgentId, sourceRoot, true);
+  writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, accountId ?? null);
 }
 
 /**
- * docs/144 — remove a **sub-agent's** credential subtree from a session's
- * credentials dir after a spawn completes (success, failure, crash, or cancel).
- * Deletes ONLY the sub-agent's paths (`.codex` for a Codex sub-agent, `.claude`
- * + `.claude.json` for a Claude one) — the pinned agent's subtree and the rest
- * of the per-session dir are untouched. Best-effort: the sub-agent CLI may still
- * be flushing writes to its own subtree at the instant we delete it, which is
- * tolerable (the next provision re-copies cleanly from source-of-truth).
+ * Close a borrow: wipe the borrowed credentials ({@link
+ * removeSubAgentCredentials}) and report the account the borrow displaced, so
+ * the caller can put the session back on its own credentials.
+ *
+ * This is the call every borrow's `finally` makes. The bare wipe is still
+ * exported for the two callers that are not ending a borrow — an account
+ * failover, which wipes and immediately re-borrows, and the sign-out sweep,
+ * which wipes another session's subtree it never borrowed — and neither may
+ * clear the ledger entry the in-flight borrow still needs.
+ *
+ * Ordering is load-bearing: the wipe runs while the ledger entry is still in
+ * place, so a write-back racing the wipe sees "a borrow is in flight" rather
+ * than an absent marker it might repair.
+ */
+export function releaseSubAgentCredentials(
+  credentialsRoot: string,
+  sessionId: string,
+  subAgentId: AgentId,
+): string | undefined {
+  removeSubAgentCredentials(credentialsRoot, sessionId, subAgentId);
+  return endSubtreeBorrow(sessionId, subAgentId);
+}
+
+/**
+ * docs/144 — close a temporary sub-agent credential window after a spawn
+ * completes (success, failure, crash, or cancel). Removes authentication and
+ * config material from only that agent's paths, while preserving the
+ * conversation-state allowlist used by account replacement. This distinction
+ * is load-bearing for a same-harness reviewer: its temporary route borrows the
+ * parent's `.codex` / `.claude` subtree, and deleting the whole directory would
+ * delete the rollout that the parent must resume after the reviewer finishes.
+ *
+ * All cleanup callers use this boundary, including quota failover, sign-out,
+ * reviewer/non-turn completion, and their failure/cancellation paths. A
+ * cross-provider temporary subtree can therefore leave non-secret conversation
+ * state behind, but never temporary authentication or config. Best-effort: the
+ * sub-agent CLI may still be flushing writes at the instant we clean it; the
+ * next provision runs the same replacement cleanup before copying credentials.
+ *
+ * The marker is cleared with the credentials, because it describes them: a
+ * marker outliving the copy it names would tell a write-back it may publish a
+ * token that is no longer there, and tell revocation to hunt a copy that is
+ * already gone. Callers that restore the session's own account afterwards write
+ * it back as part of reprovisioning.
+ *
+ * A caller ENDING a borrow wants {@link releaseSubAgentCredentials} instead —
+ * this one deliberately leaves the borrow ledger alone, for the failover that
+ * wipes and re-borrows in the same window.
  */
 export function removeSubAgentCredentials(
   credentialsRoot: string,
@@ -304,10 +537,11 @@ export function removeSubAgentCredentials(
   const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of AGENT_CREDENTIAL_PATHS[subAgentId]) {
     try {
-      fs.rmSync(path.join(dir, rel), { recursive: true, force: true });
+      removeProviderSubtreeForReplacement(dir, rel);
     } catch {
       // Best-effort — a leftover is reclaimed by the next provision's
       // replace-existing pass, or the disk-janitor's session sweep.
     }
   }
+  writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, null);
 }

@@ -142,6 +142,19 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
     expect(h.sseBroadcast).toHaveBeenCalledWith("session_list", expect.objectContaining({ sessions: expect.any(Array) }));
   });
 
+  it("carries the merged-tip anchor into the breadcrumb it stores", async () => {
+    // Same reason as the docs/216 path: `clearMerged` nulls `merged_head_sha`,
+    // and the explicit reset-to-base gate reads it. Without the durable copy a
+    // re-armed session can never satisfy the gate again.
+    const h = harness({
+      session: makeSession({ mergedAt: "2026-02-01", mergedHeadSha: "a1f3c9d0" }),
+      priorStatus: makePrStatus(),
+      advanced: true,
+    });
+    expect(await h.run()).toBe(true);
+    expect(h.clearMerged).toHaveBeenCalledWith("s1", expect.objectContaining({ mergedHeadSha: "a1f3c9d0" }));
+  });
+
   it("uses the prior PR's base branch for detection (not hardcoded main)", async () => {
     const h = harness({
       session: makeSession({ mergedAt: "2026-02-01" }),
@@ -225,6 +238,32 @@ describe("detectAndReArmMergedSession (docs/202)", () => {
       expect(h.fetch).toHaveBeenCalledWith("origin");
       expect(h.advancedBeyondMergedBase).toHaveBeenCalledWith("main");
     });
+  });
+
+  /**
+   * Regression — the re-arm read the poller's LIVE snapshot as "the prior merged
+   * PR" on the strength of `session.mergedAt` alone. A session carrying a stale
+   * merge record next to a freshly-opened PR therefore had that OPEN PR written
+   * into `previous_merged_pr`, which seeds `supersededPrNumbers` (and is re-seeded
+   * from the column on every restart) — so `verifyMissingPr` reports the PR's
+   * real merge as `"suppressed"` and the session's merge detection stops until a
+   * different-numbered PR appears. Observed in production 2026-08-19.
+   */
+  describe("the prior PR must actually be merged", () => {
+    for (const prState of ["open", "closed"] as const) {
+      it(`stays merged and records nothing when the snapshot is ${prState}`, async () => {
+        const h = harness({
+          session: makeSession({ mergedAt: "2026-02-01" }), // stale record
+          priorStatus: makePrStatus({ prNumber: 2484, prState }),
+          advanced: true, // would re-arm if the snapshot were trusted
+        });
+        expect(await h.run()).toBe(false);
+        expect(h.createGitManager).not.toHaveBeenCalled();
+        expect(h.clearMerged).not.toHaveBeenCalled();
+        expect(h.reArm).not.toHaveBeenCalled();
+        expect(h.sseBroadcast).not.toHaveBeenCalled();
+      });
+    }
   });
 });
 
@@ -311,6 +350,23 @@ describe("detectAndReArmResetSession (docs/216)", () => {
     expect(h.emit).not.toHaveBeenCalled();
   });
 
+  it("carries the merged-tip anchor into the breadcrumb it stores, but not into the card", async () => {
+    // `clearMerged` nulls `merged_head_sha`; the explicit reset-to-base gate
+    // reads it, so without the durable copy a re-armed session can never satisfy
+    // the gate again and is force-only forever. The CARD is client-facing state
+    // and deliberately does not carry it.
+    const h = resetHarness({
+      session: makeSession({ mergedAt: "2026-02-01", mergedHeadSha: "a1f3c9d0" }),
+      priorStatus: makePrStatus(),
+      atBase: true,
+    });
+    expect(await h.run()).toBe(true);
+    expect(h.clearMerged).toHaveBeenCalledWith("s1", expect.objectContaining({ mergedHeadSha: "a1f3c9d0" }));
+    expect(h.emit).toHaveBeenCalledWith(expect.objectContaining({
+      previousMergedPr: expect.not.objectContaining({ mergedHeadSha: expect.anything() }),
+    }));
+  });
+
   it("re-arms + emits a clean ready card when merged + branch reset to the base", async () => {
     const h = resetHarness({
       session: makeSession({ mergedAt: "2026-02-01", branch: "shipit/x" }),
@@ -349,6 +405,22 @@ describe("detectAndReArmResetSession (docs/216)", () => {
     });
     expect(await h.run()).toBe(false);
     expect(h.clearMerged).not.toHaveBeenCalled();
+    expect(h.emit).not.toHaveBeenCalled();
+  });
+
+  // Same guard as the sibling path — see its regression note. This path reaches
+  // `clearMerged` on a *clean* branch, so an unmerged PR recorded here would
+  // poison the breadcrumb just as readily.
+  it("stays merged and records nothing when the snapshot is not merged", async () => {
+    const h = resetHarness({
+      session: makeSession({ mergedAt: "2026-02-01" }),
+      priorStatus: makePrStatus({ prNumber: 2484, prState: "open" }),
+      atBase: true, // would re-arm if the snapshot were trusted
+    });
+    expect(await h.run()).toBe(false);
+    expect(h.createGitManager).not.toHaveBeenCalled();
+    expect(h.clearMerged).not.toHaveBeenCalled();
+    expect(h.reArm).not.toHaveBeenCalled();
     expect(h.emit).not.toHaveBeenCalled();
   });
 

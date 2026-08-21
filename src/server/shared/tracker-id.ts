@@ -31,7 +31,7 @@ import type { TrackerId } from "./types/domain-types/issue.js";
 /** Prefix marking a repository-qualified GitHub tracker id. */
 export const GITHUB_TRACKER_PREFIX = "github:";
 
-/** Prefix marking a team-qualified Linear tracker id (docs/248 req 5). */
+/** Prefix marking a team-qualified Linear tracker id (docs/248-declared-issue-trackers req 5). */
 export const LINEAR_TRACKER_PREFIX = "linear:";
 
 /** A GitHub repository, as `{owner, repo}`. */
@@ -91,7 +91,7 @@ export function normalizeLinearTeamKey(key: string): string | null {
   return trimmed.toUpperCase();
 }
 
-/** Build the qualified tracker id for a Linear team (docs/248 req 5). */
+/** Build the qualified tracker id for a Linear team (docs/248-declared-issue-trackers req 5). */
 export function linearTrackerId(teamKey: string): TrackerId {
   return `${LINEAR_TRACKER_PREFIX}${teamKey.toUpperCase()}`;
 }

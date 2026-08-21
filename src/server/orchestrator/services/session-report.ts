@@ -1,5 +1,5 @@
 /**
- * Upward + lateral session reports (docs/233, SHI-241).
+ * Upward + lateral session reports (docs/233, planning#243).
  *
  * Session coordination used to be strictly one-directional: a parent could
  * `view` / `message` / `wait` on / `notify-on-merge` its children, but a child
@@ -44,6 +44,7 @@ import type {
 import { wakeSessionWithTurn, type WakeSessionDeps } from "../wake-session.js";
 import { buildChildView, type ChildSessionView, type ChildViewProjections } from "./child-sessions.js";
 import { ServiceError } from "./types.js";
+import { isResolvedForGrouping } from "../../shared/session-resolution.js";
 
 /** Who a report is delivered to. Derived server-side — never a raw session id. */
 export type SessionReportTarget = "parent" | "cohort";
@@ -188,6 +189,16 @@ export interface DeliverSessionReportResult {
   severity: SessionReportSeverity;
   to: SessionReportTarget;
   recipients: SessionReportRecipient[];
+  skippedRecipients: {
+    sessionId: string;
+    title: string;
+    relation: "sibling";
+    reason: "resolved";
+  }[];
+}
+
+function hasVisibleDirectChildren(sessionManager: SessionManager, sessionId: string): boolean {
+  return sessionManager.findChildren(sessionId).some((child) => !isArchived(child));
 }
 
 /**
@@ -239,6 +250,7 @@ export async function deliverSessionReport(
 
   // Resolve recipients from the reporter's own linkage — never from agent input.
   const recipientRows: { session: SessionInfo; relation: "child" | "sibling" }[] = [];
+  const skippedRecipients: DeliverSessionReportResult["skippedRecipients"] = [];
   const parent = sessionManager.get(parentId);
   if (parent && !isArchived(parent)) {
     // `relation` is written from the RECIPIENT's point of view: to the parent,
@@ -248,10 +260,22 @@ export async function deliverSessionReport(
   if (to === "cohort") {
     for (const sibling of sessionManager.findChildren(parentId)) {
       if (sibling.id === reporterSessionId || isArchived(sibling)) continue;
+      if (isResolvedForGrouping(sibling, {
+        hasVisibleBrood: hasVisibleDirectChildren(sessionManager, sibling.id),
+        isRunning: deps.runnerRegistry.get(sibling.id)?.running === true,
+      })) {
+        skippedRecipients.push({
+          sessionId: sibling.id,
+          title: sibling.title,
+          relation: "sibling",
+          reason: "resolved",
+        });
+        continue;
+      }
       recipientRows.push({ session: sibling, relation: "sibling" });
     }
   }
-  if (recipientRows.length === 0) {
+  if (recipientRows.length === 0 && skippedRecipients.length === 0) {
     throw new ServiceError(
       400,
       to === "cohort"
@@ -262,13 +286,30 @@ export async function deliverSessionReport(
 
   // Rate-limit only once the report is known to be valid and deliverable, so a
   // rejected call doesn't burn the reporter's budget.
-  enforceRateLimit(reporterSessionId, Date.now());
+  if (recipientRows.length > 0) enforceRateLimit(reporterSessionId, Date.now());
 
   const reportId = randomUUID();
   const createdAt = new Date().toISOString();
   const recipients: SessionReportRecipient[] = [];
 
   for (const [index, { session, relation }] of recipientRows.entries()) {
+    const current = sessionManager.get(session.id);
+    if (
+      relation === "sibling" &&
+      current &&
+      isResolvedForGrouping(current, {
+        hasVisibleBrood: hasVisibleDirectChildren(sessionManager, current.id),
+        isRunning: deps.runnerRegistry.get(current.id)?.running === true,
+      })
+    ) {
+      skippedRecipients.push({
+        sessionId: current.id,
+        title: current.title,
+        relation: "sibling",
+        reason: "resolved",
+      });
+      continue;
+    }
     const card: SessionReportCard = {
       cardId: `session-report-${reportId}-${index}`,
       fromSessionId: reporter.id,
@@ -313,7 +354,7 @@ export async function deliverSessionReport(
     `[session-report] ${reporter.id} → ${to} (${recipients.length} recipient(s)), severity=${severity}`,
   );
 
-  return { reportId, severity, to, recipients };
+  return { reportId, severity, to, recipients, skippedRecipients };
 }
 
 /**

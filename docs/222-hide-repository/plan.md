@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-209
+issue: planning#211
 title: Hide repository from the sidebar
 description: Declutter the sidebar by hiding a repo (a pure visibility flag) without removing its sessions, containers, or history.
 ---

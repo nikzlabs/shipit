@@ -10,7 +10,7 @@
  *   2. Prompt (collapsed; click to expand): the prompt sent to the subagent.
  *      The transcript carries only its character count — a subagent prompt is
  *      routinely kilobytes and is behind a click, so docs/244's projection drops
- *      it and expanding fetches it (SHI-296).
+ *      it and expanding fetches it (planning#298).
  *   3. Subagent's work (collapsed; click to expand): nested tool calls in
  *      order, with a live action count on the toggle
  *   4. Final report (always visible when present): the markdown the

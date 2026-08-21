@@ -5,21 +5,23 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import { prepareShipitFixSpawn } from "./api-routes-shipit-fix.js";
 
 import {
-  getFileTree,
   getGitLog,
   getUsageStats,
   listWorktrees,
   getChatHistory,
   spawnChildSession,
+  parseSpawnTarget,
   listSpawnedChildren,
   getSpawnedChild,
   sendChildMessage,
+  ResolvedChildMessageError,
   waitForChildIdle,
   assertArchivableChild,
   registerMergeWatch,
@@ -60,6 +62,11 @@ export async function registerSessionSpawnRoutes(
     // singleton root (which aliases to the migrated default account).
     providerAccountManager: deps.providerAccountManager,
     ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
+    // docs/252 phase 7 (req 9) — naming runs on the model chosen for non-turn
+    // work, records what it spent, and surfaces a durable notice when it fails.
+    credentialStore: deps.credentialStore,
+    chatHistoryManager: deps.chatHistoryManager,
+    usageManager: deps.usageManager,
   };
 
   // Single shared claim service for every surface that mints a repo-backed
@@ -95,7 +102,6 @@ export async function registerSessionSpawnRoutes(
     const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
 
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
-    let fileTree: Awaited<ReturnType<typeof getFileTree>> = [];
     if (session.workspaceDir) {
       try {
         const git = createGitManager(session.workspaceDir);
@@ -103,12 +109,12 @@ export async function registerSessionSpawnRoutes(
       } catch {
         // No git repo — empty log
       }
-      try {
-        fileTree = await getFileTree(session.workspaceDir);
-      } catch {
-        // No workspace dir — empty tree
-      }
     }
+    // planning#375 — the workspace file tree used to ride along here. It is
+    // 325 KB of this repository's 2.67 MB payload (2,847 files), it has nothing
+    // to do with chat history, and it changes on a completely different cadence
+    // — so re-sending it with every transcript change was pure waste. The
+    // client seeds it from the dedicated `GET /api/sessions/:id/files` instead.
 
     const runner = deps.runnerRegistry.get(request.params.id);
     const agentRunning = runner?.running ?? false;
@@ -118,7 +124,11 @@ export async function registerSessionSpawnRoutes(
     // buffered into the turn-event log, which the next turn start clears, so a
     // switch into a between-turns session with outstanding work has nothing to
     // replay and would otherwise hydrate as finished.
-    const backgroundTasks = runner?.backgroundTaskDescriptions ?? [];
+    // planning#246 — the UNION, so a session switched into while a brokered
+    // `shipit agent run` consult is in flight hydrates as *waiting* too. The
+    // CLI's task list alone cannot see a consult: it outlives its parent turn,
+    // needs no resident streaming process, and Codex reports no tasks at all.
+    const backgroundTasks = runner?.backgroundWorkDescriptions ?? [];
     const rewindSnapshot = deps.chatHistoryManager.latestRewindSnapshot(request.params.id);
 
     // Don't reconstruct in-progress messages from runner.chatMessageGroups here.
@@ -142,10 +152,9 @@ export async function registerSessionSpawnRoutes(
     // idempotent by presentId, so this and the WS replay can't double-render.
     const presentations = deps.presentStore?.listForClient(request.params.id) ?? [];
 
-    return {
+    const payload = {
       messages,
       commits,
-      fileTree,
       agentRunning,
       backgroundTasks,
       rewindSnapshot,
@@ -155,6 +164,28 @@ export async function registerSessionSpawnRoutes(
       cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
       presentations,
     };
+
+    // planning#375 — revalidate instead of re-download. Switching between
+    // sessions is constant, and this response is megabytes on a long one.
+    //
+    // The tag is the hash of the BODY, not a composed version stamp, and that
+    // is the point: the payload is assembled from seven independent sources
+    // (chat rows, git log, runner state, background tasks, usage, presentations,
+    // rewind snapshot), so a stamp that forgets one serves a stale transcript.
+    // Hashing what is about to be sent cannot be wrong. It saves the transfer
+    // and the client's parse, not the server-side build.
+    const body = JSON.stringify(payload);
+    const etag = etagFor(body);
+    // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
+    // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
+    if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
+      reply.code(304).send();
+      return;
+    }
+    // `no-cache` = revalidate every time, never serve blind from the browser's
+    // own cache. A stale transcript is worse than a round trip.
+    reply.header("etag", etag).header("cache-control", "no-cache").type("application/json");
+    return reply.send(body);
   });
 
   // GET /api/sessions/:id/usage — usage stats
@@ -231,6 +262,13 @@ export async function registerSessionSpawnRoutes(
   // ===========================================================================
 
   // POST /api/sessions/:parentId/spawn — agent-driven session spawn
+  //
+  // docs/264 phase 3 (req 16) — the target half of the body is now the SAME
+  // vocabulary the one-shot spawn takes, read by the SAME parser
+  // (`parseSpawnTarget`), with one difference stated as a flag: `parentBase:
+  // true`, because a child has a parent to complete a partial call from and a
+  // one-shot run does not. `agent`/`model` remain accepted as the shim has sent
+  // them since docs/117 and are folded into the same shape.
   app.post<{
     Params: { parentId: string };
     Body: {
@@ -238,6 +276,16 @@ export async function registerSessionSpawnRoutes(
       title?: string;
       agent?: AgentId;
       model?: string;
+      // docs/264 — the shared target vocabulary: a role ± overrides, or all five.
+      role?: string;
+      // docs/264-agent-roles req 20 — `--no-role`: inherit the parent's
+      // parameters without the role it is running.
+      noRole?: boolean;
+      agentId?: string;
+      serviceId?: string;
+      billingMode?: string;
+      modelId?: string;
+      reasoningEffort?: string;
       spawnedByTurn?: string;
       // docs/205 — spawn a completely separate (parentless) session instead of
       // a child: no linkage, no sidebar nesting, no coordination, no chat card.
@@ -256,8 +304,13 @@ export async function registerSessionSpawnRoutes(
       // the telemetry record always carries an `agent` dimension, even when
       // the request fails before `spawnChildSession` reaches its own
       // resolution.
+      // docs/264 — `agentId` is the wire name the shared vocabulary uses, and
+      // `agent` is what a shim predating it sends; reading only the latter would
+      // file every role-era spawn under the parent's harness and quietly hollow
+      // out this dimension.
       const parentAgentId = sessionManager.get(request.params.parentId)?.agentId;
-      const effectiveAgentId = body.agent ?? parentAgentId ?? deps.defaultAgentId;
+      const effectiveAgentId =
+        ((body.agentId ?? body.agent) as AgentId | undefined) ?? parentAgentId ?? deps.defaultAgentId;
       try {
         // docs/162 — when `--shipit-source` is set, the child targets the
         // ShipIt source repo (not the parent's repo) and is pinned to the exact
@@ -268,6 +321,34 @@ export async function registerSessionSpawnRoutes(
         const { effectivePrompt, sourceBase, repoUrlOverride, shipitFixMeta } =
           await prepareShipitFixSpawn(deps, request.params.parentId, body);
 
+        // docs/264-agent-roles req 16 — one parser, one refusal rule, both commands. The
+        // legacy `agent`/`model` keys are read as overrides so a shim that
+        // predates the target sends the same shape; `parentBase: true` is the one
+        // difference from `agent run`, and it is what keeps the shipped partial
+        // form (`--model X`, everything else from the parent) legal here.
+        // Presence, never truthiness: a parameter the caller sent EMPTY is one it
+        // tried to name, and swallowing it here would spawn the child off the
+        // bare role or the bare inheritance — the dropped override req 10
+        // forbids, and the refusal `parseSpawnTarget` owns. `??` is the right
+        // join for the legacy aliases even so: it falls through only on
+        // `null`/`undefined`, so an explicitly empty `agentId` still beats a
+        // populated `agent`.
+        const aliasedAgentId = body.agentId ?? body.agent;
+        const aliasedModelId = body.modelId ?? body.model;
+        const target = parseSpawnTarget(
+          {
+            ...(body.role !== undefined ? { role: body.role } : {}),
+            // docs/264-agent-roles req 20 — decline the parent's role.
+            ...(body.noRole !== undefined ? { noRole: body.noRole } : {}),
+            ...(aliasedAgentId !== undefined ? { agentId: aliasedAgentId } : {}),
+            ...(body.serviceId !== undefined ? { serviceId: body.serviceId } : {}),
+            ...(body.billingMode !== undefined ? { billingMode: body.billingMode } : {}),
+            ...(aliasedModelId !== undefined ? { modelId: aliasedModelId } : {}),
+            ...(body.reasoningEffort !== undefined ? { reasoningEffort: body.reasoningEffort } : {}),
+          },
+          { parentBase: true },
+        );
+
         const result = await spawnChildSession(
           sessionManager,
           deps.runnerRegistry,
@@ -277,8 +358,7 @@ export async function registerSessionSpawnRoutes(
             prompt: effectivePrompt,
             ...(body.title !== undefined ? { title: body.title } : {}),
             ...(sourceBase !== undefined ? { base: sourceBase } : {}),
-            ...(body.agent !== undefined ? { agent: body.agent } : {}),
-            ...(body.model !== undefined ? { model: body.model } : {}),
+            target,
             ...(body.spawnedByTurn !== undefined ? { spawnedByTurn: body.spawnedByTurn } : {}),
             ...(body.detached ? { detached: true } : {}),
             ...(repoUrlOverride !== undefined ? { repoUrlOverride } : {}),
@@ -328,7 +408,13 @@ export async function registerSessionSpawnRoutes(
         recordSpawnInvocation({
           parentSessionId: request.params.parentId,
           ...(body.spawnedByTurn ? { spawnedByTurn: body.spawnedByTurn } : {}),
-          agentId: effectiveAgentId,
+          // docs/264 — the harness the child ACTUALLY got, which a role decides
+          // and the request cannot state. `effectiveAgentId` is resolved before
+          // the spawn so a FAILURE still carries the dimension, but on success a
+          // role-started child would otherwise be filed under the parent's
+          // harness — telemetry claiming Claude drove a spawn Codex is driving.
+          // Cross-agent review found this.
+          agentId: result.agentId,
           outcome: "success",
           statusCode: 200,
           childSessionId: result.sessionId,
@@ -518,6 +604,16 @@ export async function registerSessionSpawnRoutes(
         );
         return { queuePosition: result.queuePosition, enqueued: result.enqueued };
       } catch (err) {
+        if (err instanceof ResolvedChildMessageError) {
+          reply.code(409).send({
+            error: err.message,
+            sessionId: err.child.id,
+            title: err.child.title,
+            reason: "resolved",
+            delivered: false,
+          });
+          return;
+        }
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
           return;
@@ -665,7 +761,7 @@ export async function registerSessionSpawnRoutes(
   );
 
   // ===========================================================================
-  // Upward / lateral session reports (docs/233, SHI-241)
+  // Upward / lateral session reports (docs/233, planning#243)
   //
   // The counterpart to the parent→child routes above: these two are called with
   // the REPORTING session's own id (the worker injects it), so a child can at

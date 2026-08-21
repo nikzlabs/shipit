@@ -5,7 +5,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useApi } from "../hooks/useApi.js";
 import { Badge } from "./ui/badge.js";
 import type {
-  AgentId,
+  CredentialRoute,
   LimitsRefreshOutcome,
   LimitsRefreshResult,
   SubscriptionLimits,
@@ -13,18 +13,41 @@ import type {
   SubscriptionLimitsWindow,
 } from "../../server/shared/types.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
+import {
+  credentialStatusWord,
+  isUnconnectedAttempt,
+  type CredentialStatusWord,
+} from "../utils/credential-state.js";
+import { serviceLabel } from "../utils/service-label.js";
+import {
+  allServices,
+  modeReportsQuota,
+  nativeServiceForHarness,
+  subQuotaRefreshable,
+} from "../../server/shared/catalogue/index.js";
 
 /**
- * Stable ordering of pills in the header. Matches the provider
- * registration order in `app-di.ts` / `index.ts` so muscle memory
- * works — Claude first, Codex second.
+ * Stable ordering of pills in the header.
+ *
+ * docs/252 req 10 — one group per `(service, billing mode)` rather than per
+ * agent, since quota belongs to a service's subscription and not to the CLI.
+ * Only subscription modes appear at all: a key has no allowance and nothing
+ * that resets, and req 10 keeps that slot empty rather than showing a
+ * placeholder. First-party services keep their historical position so muscle
+ * memory works — Claude first, Codex second — with the rest in catalogue order.
  */
-const PILL_ORDER: AgentId[] = ["claude", "codex"];
-
-const AGENT_LABEL: Record<AgentId, string> = {
-  claude: "Claude",
-  codex: "Codex",
-};
+function pillOrder(): string[] {
+  const first = ["claude", "codex"]
+    .map((harness) => nativeServiceForHarness(harness as never))
+    .filter((id): id is string => id !== undefined);
+  const rest = allServices()
+    .map((service) => service.id)
+    .filter((id) => !first.includes(id));
+  return [...first, ...rest]
+    .filter((id) => allServices().some((s) => s.id === id && s.modes.some((m) => m.kind === "sub")))
+    .map((id) => `${id}:sub`);
+}
 
 /**
  * A known percentage older than this reads as "stale": the number is shown
@@ -85,11 +108,11 @@ interface SubscriptionLimitsBadgeProps {
 
 /**
  * Header badge group rendering one **pill per connected subscription** plus a
- * refresh button (Claude only — it's the one with an on-demand
- * `/api/oauth/usage` path). See docs/161 and
+ * refresh button, on the services whose quota can be re-read on demand
+ * (`subQuotaRefreshable`). See docs/161 and
  * docs/135-subscription-limits-badge/plan.md.
  *
- * docs/150 req 10 — quota is per account, so a provider with two connected
+ * docs/150-multiple-provider-subscriptions req 10 — quota is per account, so a provider with two connected
  * subscriptions gets two pills, each labelled with that account's name.
  *
  * The name is shown whenever the route IS an account, unconditionally. An
@@ -105,20 +128,27 @@ interface SubscriptionLimitsBadgeProps {
  */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  const pills = buildPills(limits, accounts);
+  const routes = useSettingsStore((s) => s.credentialRoutes);
+  const pills = buildPills(limits, accounts, routes);
   if (pills.length === 0) return null;
 
   return (
     <>
-      {pills.map(({ key, agentId, routeId, label, snapshot }) => (
+      {pills.map(({ key, serviceId, routeId, label, snapshot, attention }) => (
         <SubscriptionLimitPill
           key={key}
-          agentId={agentId}
+          serviceId={serviceId}
           routeId={routeId}
           label={label}
           snapshot={snapshot}
-          // eslint-disable-next-line no-restricted-syntax -- Claude is the only agent with an on-demand /api/oauth/usage refresh endpoint
-          showRefresh={agentId === "claude"}
+          {...(attention ? { attention } : {})}
+          // Only a service whose quota can be re-read on demand gets a button
+          // (planning#339). Codex's numbers are pushed during a turn and can
+          // only be received, so a button there would spin and change nothing.
+          // Asked of the catalogue rather than written out as `=== "anthropic"`,
+          // which is what left this and the two Settings rows to be found and
+          // changed by hand when GLM's reader landed.
+          showRefresh={subQuotaRefreshable(serviceId)}
           autoRefresh={autoRefresh}
         />
       ))}
@@ -128,10 +158,11 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
 
 interface SubscriptionPill {
   key: string;
-  agentId: AgentId;
+  serviceId: string;
   routeId: string;
   label: string;
   snapshot?: SubscriptionLimits;
+  attention?: CredentialStatusWord;
 }
 
 /**
@@ -145,41 +176,132 @@ interface SubscriptionPill {
  */
 export function useSubscriptionPillCount(limits: SubscriptionLimitsMap): number {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  return buildPills(limits, accounts).length;
+  const routes = useSettingsStore((s) => s.credentialRoutes);
+  return buildPills(limits, accounts, routes).length;
 }
 
 function buildPills(
   limits: SubscriptionLimitsMap,
-  accounts: { id: string; provider: AgentId; label: string }[],
+  accounts: CredentialRoute[],
+  /**
+   * Every credential the user holds — the superset that also carries the
+   * **supplied secrets** (an env-delivered token, a pasted plan key), which are
+   * not provider-account rows and so are absent from `accounts`. Read only for
+   * their state: what a supplied secret's pill says, and whether it gets one at
+   * all when it has never reported a quota.
+   */
+  routes: CredentialRoute[],
 ): SubscriptionPill[] {
   const pills: SubscriptionPill[] = [];
-  for (const id of PILL_ORDER) {
-    const byRoute = limits[id];
-    const providerAccounts = accounts.filter((account) => account.provider === id);
+  for (const modeKey of pillOrder()) {
+    const serviceId = modeKey.slice(0, modeKey.lastIndexOf(":"));
+    const byRoute = limits[modeKey];
+    /*
+      docs/274 req 16 — a subscription ShipIt has no reader for gets no METERS.
+      Without this the two windows render as `5h · —  7d · —` forever, with no
+      refresh button beside them (`subQuotaRefreshable` is already false), which
+      is a pill that looks broken rather than one that says nothing: the user
+      who reported it read the blanks as "ShipIt lost my numbers". They are not
+      pending — OpenCode Go's vendor publishes no per-key usage API, so nothing
+      will ever fill them. The Settings credential row reached this conclusion first
+      (`ServicesPanel`, `modeReportsQuota` rather than `billingMode === "sub"`):
+      an empty pill says "no usage" where the truth is "not measured".
 
-    // Connected accounts define pill presence, not cached snapshots. A quiet
-    // account may have no quota event yet, but its pill must remain available
-    // so the user can request a refresh and see that usage is still unknown.
-    for (const account of providerAccounts) {
+      Gated per mode rather than in `pillOrder`, because the pill still has a
+      second job that has nothing to do with quota — see the `attention` skip
+      below.
+    */
+    const reportsQuota = modeReportsQuota(serviceId, "sub");
+    // planning#342 — an account row IS a credential of its service now, so
+    // the pill matches on the service directly instead of mapping the row's
+    // harness back to one.
+    // A row that has never been anything but a sign-in attempt is not a
+    // credential yet ({@link isUnconnectedAttempt}), and the header must ask
+    // the same question Settings asks — a row exists from the instant *Sign
+    // in* is pressed and is deleted again if the user backs out. Without the
+    // test, starting a sign-in put a pill in the header saying the account
+    // needs reconnecting, about an account that was never connected.
+    const modeAccounts = accounts.filter(
+      (account) => account.serviceId === serviceId && !isUnconnectedAttempt(account),
+    );
+
+    // Among the modes that report a quota at all, connected accounts define
+    // pill presence, not cached snapshots. A quiet account may have no quota
+    // event yet, but its pill must remain available so the user can request a
+    // refresh and see that usage is still unknown. That argument is what the
+    // gate above bounds: it holds only where a refresh can produce a number.
+    for (const account of modeAccounts) {
+      // ...and the second job: a credential that cannot run a turn says so
+      // here, which is a statement about the SIGN-IN and not about quota. So a
+      // no-reader subscription keeps that pill and loses only the meters — an
+      // xAI account needing reconnection is exactly as worth saying as an
+      // Anthropic one, and this is the only place the header says it.
+      if (!reportsQuota && !credentialStatusWord(account)) continue;
       pills.push({
-        key: `${id}:${account.id}`,
-        agentId: id,
+        key: `${modeKey}:${account.id}`,
+        serviceId,
         routeId: account.id,
         label: account.label,
         snapshot: byRoute?.[account.id],
+        // A credential that cannot authenticate a turn has no quota worth
+        // reading, and the pill is the only place the header says anything
+        // about an account at all — so the state travels with it.
+        ...(credentialStatusWord(account) ? { attention: credentialStatusWord(account) } : {}),
       });
     }
 
-    // Reserved routes are not provider-account rows, so snapshots remain the
-    // only evidence that they exist. Append them after the user's account order.
+    // A supplied secret of this same subscription — `ANTHROPIC_AUTH_TOKEN`,
+    // GLM's coding-plan key. Not an account, so `accounts` does not hold it and
+    // the label stays the service's rather than inventing a name for something
+    // the user never named; but it IS a credential with a state, and planning#358
+    // records a provider refusing one exactly as it records a failed login.
+    const modeSecrets = new Map(
+      routes
+        .filter((r) => r.serviceId === serviceId && r.billingMode === "sub" && r.via === "string")
+        .map((r) => [r.id, r] as const),
+    );
+
+    // Reserved routes are not provider-account rows, so a snapshot is normally
+    // the only evidence that they exist. Append them after the user's account
+    // order.
+    const fromSnapshot = new Set<string>();
     for (const snapshot of Object.values(byRoute ?? {})) {
-      if (providerAccounts.some((account) => account.id === snapshot.routeId)) continue;
+      if (modeAccounts.some((account) => account.id === snapshot.routeId)) continue;
+      fromSnapshot.add(snapshot.routeId);
+      const secret = modeSecrets.get(snapshot.routeId);
+      const secretAttention = secret ? credentialStatusWord(secret) : undefined;
+      // Unreachable today and still worth writing: a mode with no reader has no
+      // `LimitsProvider`, so no snapshot of it can exist. But this loop derives
+      // a pill FROM a snapshot, so it would render one on nothing but the map's
+      // say-so — and a stale entry, or a service that loses a reader, would put
+      // the blank meters straight back. The rule is "no reader, no meters", and
+      // the code says it in every loop rather than in one loop and a doc.
+      if (!reportsQuota && !secretAttention) continue;
       pills.push({
-        key: `${id}:${snapshot.routeId}`,
-        agentId: id,
+        key: `${modeKey}:${snapshot.routeId}`,
+        serviceId,
         routeId: snapshot.routeId,
-        label: AGENT_LABEL[id],
+        label: serviceLabel(serviceId),
         snapshot,
+        ...(secretAttention ? { attention: secretAttention } : {}),
+      });
+    }
+
+    // ...and "normally" is the hole: a refused secret whose turns all failed may
+    // have no snapshot at all, and then the header said nothing whatsoever about
+    // the credential every turn was dying on. A supplied secret is `ready` from
+    // the moment it is stored, so this adds a pill only for one the provider has
+    // actually refused — never a second pill for a healthy one.
+    for (const secret of modeSecrets.values()) {
+      if (fromSnapshot.has(secret.id)) continue;
+      const attention = credentialStatusWord(secret);
+      if (!attention) continue;
+      pills.push({
+        key: `${modeKey}:${secret.id}`,
+        serviceId,
+        routeId: secret.id,
+        label: serviceLabel(serviceId),
+        attention,
       });
     }
   }
@@ -187,24 +309,101 @@ function buildPills(
 }
 
 interface SubscriptionLimitPillProps {
-  agentId?: AgentId;
+  serviceId?: string;
   /**
    * The subscription this pill describes — a provider-account id or a reserved
    * route id. Scopes the refresh to this account so one press costs one
    * upstream call instead of one per connected account.
    */
   routeId?: string;
-  label: string;
+  /**
+   * Whose quota this is — omitted where the surrounding row already says so.
+   *
+   * In the header a pill floats free and must name its account (docs/150 req
+   * 10). On a Settings → Services credential row (docs/252 req 19) the row IS
+   * the account's name, and repeating it inside the pill spends the width the
+   * compaction was for. The pill is otherwise identical, deliberately: the
+   * meters, the elapsed-time marker, the staleness dimming and the refresh
+   * button are one implementation, not a second read-out that can disagree.
+   */
+  label?: string;
   snapshot?: SubscriptionLimits;
   showRefresh?: boolean;
   /** See `SubscriptionLimitsBadgeProps.autoRefresh`. Only acts with `showRefresh`. */
   autoRefresh?: boolean;
+  /**
+   * This credential needs the user before it can run a turn — from
+   * {@link credentialStatusWord}. Present ⇒ the pill says so **instead of**
+   * showing meters (see {@link CredentialAttention}).
+   *
+   * Omitted by the Settings credential row, which prints the same word itself
+   * one element to the left and hides the pill entirely for a non-ready
+   * credential. The header has no such row, so there the pill carries it.
+   */
+  attention?: CredentialStatusWord;
 }
 
-export function SubscriptionLimitPill({ agentId, routeId, label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
+/**
+ * Which of the two meters this pill draws — **the windows the plan has**, never
+ * a fixed pair (planning#454).
+ *
+ * The pill drew both slots for every subscription, on the assumption that every
+ * plan has a 5-hour window and a weekly one. Several do not. SuperGrok has a
+ * single weekly pool and no short window at all; the user reporting this also
+ * had a ChatGPT plan and a GLM plan whose readings carry no 5-hour figure. All
+ * three rendered a `5h · —` that nothing could ever fill, beside a real weekly
+ * number — the same permanently-empty read-out as the pill this feature was
+ * opened to fix, just one slot narrower.
+ *
+ * **No service is named here, and the answer is not inferred here either.** The
+ * provider states it (`SubscriptionLimits.availableWindows`), because only the
+ * provider can. Deriving it from a null window was tried first and is WRONG:
+ * Claude's `rate_limit_event` carries one window per event, so the first
+ * reading of a session has the other side null on a plan that has both, and
+ * this function would have dropped a real 7d meter for the whole of that turn —
+ * longer if the `/api/oauth/usage` seed had been 429'd. A null window means
+ * "absent" from a reader whose payload describes the whole plan and "not yet"
+ * from one whose readings arrive piecemeal, and nothing at this end can tell
+ * those apart.
+ *
+ * Silence therefore means "draw everything": a provider that says nothing is
+ * treated as making no claim, so Claude's pill is untouched and a reading that
+ * carries only a lockout countdown still shows both slots pending — which the
+ * refresh button beside them can still make false.
+ */
+export function windowsShown(
+  snapshot: SubscriptionLimits | undefined,
+): { session: boolean; weekly: boolean } {
+  const declared = snapshot?.availableWindows;
+  if (declared === undefined || declared.length === 0) return { session: true, weekly: true };
+  return { session: declared.includes("session"), weekly: declared.includes("weekly") };
+}
+
+export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention }: SubscriptionLimitPillProps) {
   const now = Date.now();
-  const resolvedAgentId = snapshot?.agentId ?? agentId;
+  const resolvedServiceId = snapshot?.serviceId ?? serviceId;
   const resolvedRouteId = routeId ?? snapshot?.routeId;
+  const shows = windowsShown(snapshot);
+
+  // A broken credential's meters are worse than nothing: the numbers are real
+  // but frozen at whatever the account last reported, so the pill reads
+  // "healthy, 30% used" while every turn on that account is being refused. The
+  // user's report was exactly this — the pills worked, the commands did not,
+  // and only Settings knew why. So the state replaces the numbers rather than
+  // sitting beside them, and the refresh button goes with them: there is
+  // nothing to fetch until the sign-in is redone.
+  if (attention) {
+    return (
+      <Badge numeric className="gap-2 pl-2 pr-2 pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0">
+        {label !== undefined && (
+          <span className="truncate" title={label}>
+            {label}
+          </span>
+        )}
+        <CredentialAttention attention={attention} />
+      </Badge>
+    );
+  }
 
   // The pill carries inline meters with underline gauges, so it overrides
   // Badge's symmetric padding with the asymmetric `pl-2 pr-* pt-0 pb-0.5` it
@@ -221,34 +420,71 @@ export function SubscriptionLimitPill({ agentId, routeId, label, snapshot, showR
       numeric
       className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0`}
     >
-      <span className="truncate" title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>
-        {label}
-      </span>
-      <Meter
-        shortLabel="5h"
-        longLabel="5h window"
-        window={snapshot?.session ?? null}
-        windowMs={SESSION_WINDOW_MS}
-        fetchedAt={snapshot?.fetchedAt}
-        now={now}
-      />
-      <Meter
-        shortLabel="7d"
-        longLabel="7d window"
-        window={snapshot?.weekly ?? null}
-        windowMs={WEEKLY_WINDOW_MS}
-        fetchedAt={snapshot?.fetchedAt}
-        now={now}
-      />
-      {showRefresh && resolvedAgentId && (
+      {label !== undefined && (
+        <span className="truncate" title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>
+          {label}
+        </span>
+      )}
+      {shows.session && (
+        <Meter
+          shortLabel="5h"
+          longLabel="5h window"
+          window={snapshot?.session ?? null}
+          windowMs={SESSION_WINDOW_MS}
+          fetchedAt={snapshot?.fetchedAt}
+          now={now}
+        />
+      )}
+      {shows.weekly && (
+        <Meter
+          shortLabel="7d"
+          longLabel="7d window"
+          window={snapshot?.weekly ?? null}
+          windowMs={WEEKLY_WINDOW_MS}
+          fetchedAt={snapshot?.fetchedAt}
+          now={now}
+        />
+      )}
+      {showRefresh && resolvedServiceId && (
         <LimitsRefreshButton
-          agentId={resolvedAgentId}
+          serviceId={resolvedServiceId}
           routeId={resolvedRouteId}
           lockedUntil={snapshot?.lockedUntil}
           autoRefresh={autoRefresh}
         />
       )}
     </Badge>
+  );
+}
+
+/**
+ * The attention word inside a header pill, and the way out of the state it
+ * names: pressing it opens Settings → Services, where the credential's remedy
+ * lives — *Reconnect* for an account, *Replace* for a supplied secret.
+ *
+ * It is a button rather than a label because the alternative is a dead end —
+ * the whole failure this fixes is a user who could see that something was
+ * wrong only after going looking for it. The word is the same one the Settings
+ * row says ({@link credentialStatusWord}), so the two surfaces cannot disagree
+ * about what is wrong or about what to do next.
+ */
+function CredentialAttention({ attention }: { attention: CredentialStatusWord }) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        useUiStore.getState().setSettingsTab("services");
+        useUiStore.getState().setSettingsOpen(true);
+      }}
+      className={`inline-flex items-center gap-1 whitespace-nowrap hover:underline ${
+        attention.tone === "error" ? "text-(--color-error)" : "text-(--color-warning)"
+      }`}
+      title="Open Settings → Services to fix this credential"
+      data-credential-attention={attention.text}
+    >
+      <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
+      {attention.text}
+    </button>
   );
 }
 
@@ -410,17 +646,31 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
  * Explanations for the outcomes a refresh can end on without producing new
  * numbers. Shown in the button's tooltip — the whole point is that a press
  * which changes nothing on screen still says why.
+ *
+ * planning#339 — named after the service rather than hard-coded to "Anthropic",
+ * now that GLM's plan has a reader too: a GLM pill reporting that *Anthropic*
+ * rate-limited it names the wrong vendor and sends the user to the wrong place.
+ * The two outcomes that are about the *credential* rather than the vendor say
+ * "credential", because it can be either a sign-in or a pasted key.
  */
-const OUTCOME_MESSAGE: Record<LimitsRefreshOutcome, string | null> = {
-  updated: null,
-  skipped: null,
-  locked: "Usage refresh rate-limited by Anthropic",
-  "rate-limited": "Usage refresh rate-limited by Anthropic",
-  "no-credentials": "This account has no usable sign-in — reconnect it in Settings",
-  "expired-token": "This account's sign-in expired — reconnect it in Settings",
-  failed: "Couldn't reach Anthropic's usage endpoint",
-  unavailable: "Usage refresh isn't available for this account",
-};
+function outcomeMessage(outcome: LimitsRefreshOutcome, serviceName: string): string | null {
+  switch (outcome) {
+    case "updated":
+    case "skipped":
+      return null;
+    case "locked":
+    case "rate-limited":
+      return `Usage refresh rate-limited by ${serviceName}`;
+    case "no-credentials":
+      return "This credential has no usable sign-in or key — fix it in Settings";
+    case "expired-token":
+      return "This credential's sign-in expired — reconnect it in Settings";
+    case "failed":
+      return `Couldn't reach ${serviceName}'s usage endpoint`;
+    case "unavailable":
+      return "Usage refresh isn't available for this credential";
+  }
+}
 
 /**
  * Per-subscription refresh button. Fires one on-demand `/api/oauth/usage` fetch
@@ -448,17 +698,18 @@ const OUTCOME_MESSAGE: Record<LimitsRefreshOutcome, string | null> = {
  * both go through this component's state.
  */
 function LimitsRefreshButton({
-  agentId,
+  serviceId,
   routeId,
   lockedUntil,
   autoRefresh,
 }: {
-  agentId: AgentId;
+  serviceId: string;
   routeId?: string;
   lockedUntil?: number;
   autoRefresh?: boolean;
 }) {
   const api = useApi();
+  const serviceName = serviceLabel(serviceId);
   const [refreshing, setRefreshing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const now = Date.now();
@@ -467,7 +718,7 @@ function LimitsRefreshButton({
     ? formatResetCountdown(new Date(lockedUntil).toISOString(), now)
     : null;
 
-  const throttleKey = `${agentId}:${routeId ?? "*"}`;
+  const throttleKey = `${serviceId}:sub:${routeId ?? "*"}`;
 
   const refresh = useCallback(async () => {
     lastRefreshAttemptAt.set(throttleKey, Date.now());
@@ -475,19 +726,21 @@ function LimitsRefreshButton({
     try {
       const res = await api.post<{ ok: boolean; results?: LimitsRefreshResult[] }>(
         "/api/limits/refresh",
-        routeId ? { agentId, routeId } : { agentId },
+        // Only a subscription reports a quota (req 10), so the pill can only
+        // ever be asking about the `sub` mode.
+        routeId ? { serviceId, billingMode: "sub", routeId } : { serviceId, billingMode: "sub" },
       );
       // Report on this pill's own route when the response names it; a fan-out
       // response (no routeId sent) has no single owner, so fall back to the
       // first result rather than attributing another account's failure here.
       const mine = res.results?.find((r) => r.routeId === routeId) ?? res.results?.[0];
-      setProblem(mine ? OUTCOME_MESSAGE[mine.outcome] ?? null : null);
+      setProblem(mine ? outcomeMessage(mine.outcome, serviceName) : null);
     } catch (err) {
       setProblem(err instanceof Error ? err.message : "Usage refresh failed");
     } finally {
       setRefreshing(false);
     }
-  }, [agentId, api, routeId, throttleKey]);
+  }, [api, routeId, serviceId, serviceName, throttleKey]);
 
   // Fire-once-on-mount auto refresh. The ref (not the throttle map) is what
   // makes it once-per-mount: the map only bounds how often *any* mount is
@@ -509,7 +762,7 @@ function LimitsRefreshButton({
   // of one press, so it survives a remount.
   const title = locked
     ? `Usage refresh rate-limited — retry in ${lockCountdown}`
-    : problem ?? "Refresh usage from Anthropic";
+    : problem ?? `Refresh usage from ${serviceName}`;
 
   const failed = !locked && problem !== null;
 

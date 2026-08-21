@@ -1,5 +1,5 @@
 /**
- * Declared issue trackers (docs/248 reqs 1–6) — the types and the small amount
+ * Declared issue trackers (docs/248-declared-issue-trackers reqs 1–6) — the types and the small amount
  * of pure logic that turns a declaration into a routable destination.
  *
  * Deliberately **filesystem-free** so both halves of the app can import it. The
@@ -94,7 +94,7 @@ export function declaredTrackerKey(decl: DeclaredTracker): string {
 }
 
 /**
- * A destination a reference may resolve to (docs/248 req 11). This is the whole
+ * A destination a reference may resolve to (docs/248-declared-issue-trackers req 11). This is the whole
  * resolution context: the set of destinations reachable from a session, each
  * with the `name` it was declared under (absent for the session's own
  * repository, the one destination that needs no declaration — req 12).
@@ -111,6 +111,33 @@ export interface TrackerDestination {
   /** The backend's own identity: GitHub `owner/repo`, Linear team key. */
   key?: string;
   kind: DeclaredTracker["kind"];
+  /**
+   * docs/262 req 25 — this destination exists because the repository declared a
+   * plugin *repository*, not because it declared a tracker. It is reachable the
+   * same way and brokered the same way; what it is not is one of the project's
+   * own trackers, so it renders no Issues tab (see `RegistryEntry.listed`) and
+   * error messages name it as a feedback destination.
+   */
+  origin?: "plugin";
+  /**
+   * docs/262 req 25 — the `plugins.repos[].name`s that also address this
+   * destination. Normally one, equal to `name`. It differs when a repository is
+   * BOTH a declared tracker and a declared plugin repository: the two names then
+   * share one destination rather than minting a second, because two named
+   * destinations with the same backend identity would make the canonical form
+   * (`owner/repo#42`) ambiguous and break the tracker that was already there.
+   */
+  pluginNames?: string[];
+}
+
+/**
+ * Whether this destination is reachable *only* because a plugin repository was
+ * declared (docs/262 req 25). A tracker destination that merely carries plugin
+ * aliases is not one: the repository declared it as a tracker, which is the
+ * stronger statement, and it keeps its tab and its wording.
+ */
+export function isPluginFeedbackDestination(dest: TrackerDestination): boolean {
+  return dest.origin === "plugin";
 }
 
 /** Build a {@link TrackerDestination} from a declaration. */

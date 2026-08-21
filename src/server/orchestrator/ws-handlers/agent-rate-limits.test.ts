@@ -17,12 +17,16 @@ import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap, SubscriptionLi
 const SESSION_LIMIT_NOTICE = "You've hit your session limit · resets 5:10pm (UTC)";
 const NOON_UTC = Date.parse("2026-08-06T12:00:00.000Z");
 
+/** docs/252 req 10 — quota belongs to a service's SUBSCRIPTION, not to a harness. */
+const serviceOf = (agentId: AgentId): string => (agentId === "claude" ? "anthropic" : "openai");
+
 const snapshot = (
   agentId: AgentId,
   session: SubscriptionLimitsWindow | null,
   routeId = `acct-${agentId}`,
 ): SubscriptionLimits => ({
-  agentId,
+  serviceId: serviceOf(agentId),
+  billingMode: "sub",
   routeId,
   plan: null,
   session,
@@ -31,7 +35,7 @@ const snapshot = (
 });
 
 const limitsFor = (agentId: AgentId, session: SubscriptionLimitsWindow | null): SubscriptionLimitsMap => ({
-  [agentId]: { [`acct-${agentId}`]: snapshot(agentId, session) },
+  [`${serviceOf(agentId)}:sub`]: { [`acct-${agentId}`]: snapshot(agentId, session) },
 });
 
 /** docs/150 — two connected accounts for one provider. */
@@ -40,56 +44,78 @@ const twoAccounts = (
   a: SubscriptionLimitsWindow | null,
   b: SubscriptionLimitsWindow | null,
 ): SubscriptionLimitsMap => ({
-  [agentId]: {
+  [`${serviceOf(agentId)}:sub`]: {
     "acct-a": snapshot(agentId, a, "acct-a"),
     "acct-b": snapshot(agentId, b, "acct-b"),
   },
 });
 
+/**
+ * An instant before every `resetAt` these cases use, passed explicitly. The
+ * reclassification now asks whether a window still describes NOW (docs/260
+ * req 8), so a fixed fixture date that quietly slid into the past would make
+ * these cases assert the opposite of what they were written for.
+ */
+const BEFORE_RESET = Date.parse("2026-06-16T00:00:00.000Z");
+
 describe("normalizeAgentUsageLimitError", () => {
   it("leaves a non-usage-limit message untouched", () => {
     const limits = limitsFor("claude", { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("claude", "network error", limits)).toBe("network error");
+    expect(normalizeAgentUsageLimitError("claude", "network error", limits, BEFORE_RESET)).toBe("network error");
   });
 
   it("keeps the upstream text when there is no subscription snapshot", () => {
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", undefined)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", undefined, BEFORE_RESET)).toBe(
       "monthly usage limit reached",
     );
   });
 
   it("keeps the upstream text when the session window has no reported utilization (usedPct null)", () => {
     const limits = limitsFor("claude", { usedPct: null, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits, BEFORE_RESET)).toBe(
       "monthly usage limit reached",
     );
   });
 
   it("keeps the upstream text when the session window is not yet exhausted (usedPct < 100)", () => {
     const limits = limitsFor("claude", { usedPct: 80, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits, BEFORE_RESET)).toBe(
       "monthly usage limit reached",
     );
   });
 
   it("reclassifies to the 5h-window message when the session window is exhausted", () => {
     const limits = limitsFor("claude", { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits, BEFORE_RESET)).toBe(
       "You've hit Claude's 5h usage limit. It resets at 2026-06-16T05:00:00.000Z.",
     );
   });
 
   it("labels the agent by id (Codex) and normalizes the reset time to ISO", () => {
     const limits = limitsFor("codex", { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("codex", "Monthly Usage Limit", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("codex", "Monthly Usage Limit", limits, BEFORE_RESET)).toBe(
       "You've hit Codex's 5h usage limit. It resets at 2026-06-16T05:00:00.000Z.",
     );
   });
 
-  it("falls back to the raw resetAt string when it isn't a parseable date", () => {
+  // docs/260-turn-level-account-routing req 8 — a snapshot is only refreshed by a turn on that account or
+  // by the refresh button, so a 100% reading can outlive its window by hours.
+  // Rewriting a real monthly-limit refusal from one would tell the user the
+  // wrong limit AND quote a reset that has already passed (req 6).
+  it("keeps the upstream text when the exhausted window has already reset", () => {
+    const limits = limitsFor("claude", { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" });
+    const afterReset = Date.parse("2026-06-16T06:00:00.000Z");
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits, afterReset)).toBe(
+      "monthly usage limit",
+    );
+  });
+
+  it("keeps the upstream text when the reset time is not a parseable date", () => {
+    // No usable reset means no window to attach the percentage to — and the
+    // old behavior quoted the junk string straight back at the user.
     const limits = limitsFor("claude", { usedPct: 100, resetAt: "not-a-date" });
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
-      "You've hit Claude's 5h usage limit. It resets at not-a-date.",
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits, BEFORE_RESET)).toBe(
+      "monthly usage limit",
     );
   });
 
@@ -101,7 +127,7 @@ describe("normalizeAgentUsageLimitError", () => {
       { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" },
       { usedPct: 12, resetAt: "2026-06-16T09:00:00.000Z" },
     );
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits, BEFORE_RESET)).toBe(
       "monthly usage limit",
     );
   });
@@ -112,14 +138,14 @@ describe("normalizeAgentUsageLimitError", () => {
       { usedPct: 100, resetAt: "2026-06-16T09:00:00.000Z" },
       { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" },
     );
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits, BEFORE_RESET)).toBe(
       "You've hit Claude's 5h usage limit. It resets at 2026-06-16T05:00:00.000Z.",
     );
   });
 });
 
 /**
- * docs/150 req 7 — recognizing that a failed turn means the *subscription* is
+ * docs/150-multiple-provider-subscriptions req 7 — recognizing that a failed turn means the *subscription* is
  * spent, as opposed to any of the other things a turn dies of. A false
  * positive benches a working subscription, so the negative cases matter as
  * much as the positive ones.
@@ -156,7 +182,7 @@ describe("detectHardExhaustion", () => {
       "Request timed out",
       "tool use failed: file not found",
       "",
-      // docs/150 req 17 (non-goal) — a model the account cannot run must NOT
+      // docs/150-multiple-provider-subscriptions req 17 (non-goal) — a model the account cannot run must NOT
       // trigger the same-turn retry. "No automatic recovery" holds because this
       // detector is the retry's only trigger and matches quota language only.
       "model claude-opus-5 is not available on your plan",
@@ -306,4 +332,141 @@ describe("exhaustionLockoutUntil", () => {
   it("falls back rather than producing NaN on an unparseable instant", () => {
     expect(exhaustionLockoutUntil({ resetAt: "soon-ish" }, NOW)).toBe(NOW + UNKNOWN_RESET_LOCKOUT_MS);
   });
+});
+
+/**
+ * planning#453 — verbatim SuperGrok *subscription* exhaustion text captured
+ * from a real headless turn, plus the channel it arrived on.
+ *
+ * `null` until one is captured. Filling this in is the one-assignment change
+ * that un-skips the lock below. Do NOT paste TUI copy from `strings` on the
+ * grok binary: pager wording has never been seen on the `-p` wire.
+ *
+ * Paste the capture byte-exact, including the apostrophe code point. The grok
+ * binary stores U+2019 (`’`) in its contracted copy; `/you'?ve/i` does NOT
+ * match `you’ve` (`'?` is an optional ASCII apostrophe, not a character class).
+ * A widening against a curly-apostrophe capture must use `['’]?` (or normalize
+ * first) — an ASCII-only rewrite of a U+2019 original locks a string the CLI
+ * never emits.
+ *
+ * `channel: "error"` = `agent_result.error` (unanchored {@link detectHardExhaustion}).
+ * `channel: "text"`  = final assistant text (anchored {@link detectHardExhaustionInTurnText}).
+ */
+const GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE: {
+  channel: "error" | "text";
+  text: string;
+} | null = null;
+
+/**
+ * Binary-sourced copy from grok 1.0.1 (`@xai-official/grok-linux-x64`).
+ * Provenance is `strings` on the installed binary, 2026-08-20 — NOT a
+ * captured headless emission. Classified from neighbouring literals in
+ * `xai-grok-pager` (TUI) and `xai-grok-shell` (compaction / API-error
+ * matching). A future widening of either matcher that starts firing on
+ * these is a false positive: they are a free tier, a credit balance, or
+ * a pay-as-you-go CTA, not a spent SuperGrok subscription.
+ */
+const GROK_NON_SUBSCRIPTION_COPY = [
+  // Tagged `free-usage-upsell` in the pager, next to "Unlock all features
+  // with SuperGrok." — the free-tier wall, not a subscription.
+  "You hit your free usage limit.",
+  // Compaction/API-error matching in the shell. Credit-balance language.
+  "usage balance exhausted",
+  // Pager CTA for a spending cap, not a spent plan.
+  "You can continue by increasing your spending limit.",
+  "You can continue by enabling pay-as-you-go usage.",
+  "You can continue by purchasing more credits.",
+  // Pager copy for credits / PAYG. The binary stores these with U+2019
+  // (`’`); `/you'?ve/i` matches neither encoding, because "credit" /
+  // "spending cap" are not window words. Both spellings stay here so a
+  // future `['’]?` widening still refuses them.
+  "You've hit the credit limit for your plan.",
+  "You've hit your spending cap.",
+  "You\u2019ve hit the credit limit for your plan.",
+  "You\u2019ve hit your spending cap.",
+] as const;
+
+/**
+ * planning#453 — Grok has no quota reader, so these two matchers are the
+ * *only* spent-plan signal. The gap is that we have never seen a SuperGrok
+ * subscription emit a limit notice on the headless wire, so the patterns
+ * stay as they are. What we can pin from the code and from the binary:
+ *
+ *   - which matcher applies to which channel
+ *   - that the text channel's provider prefix is Claude/Codex, not Grok
+ *   - that free-tier and credit-balance copy must not fire either detector
+ *   - a skip that becomes the lock the moment a real capture fills
+ *     {@link GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE}
+ */
+describe("Grok exhaustion channels (planning#453)", () => {
+  it("does not treat free-tier or credit-balance copy as a spent subscription", () => {
+    for (const message of GROK_NON_SUBSCRIPTION_COPY) {
+      expect(detectHardExhaustion(message), `error channel: ${message}`).toBeNull();
+      expect(detectHardExhaustionInTurnText(message), `text channel: ${message}`).toBeNull();
+    }
+  });
+
+  // Item 3 of planning#453, answered from the code: the error channel is
+  // unanchored `EXHAUSTION_PATTERNS`; the text channel is anchored
+  // `TURN_TEXT_NOTICE_PATTERNS` and is only asked when there is no error.
+  // A provider prefix on the text channel is Claude's and Codex's own
+  // notice grammar — `grok` is not in it. Bare `usage limit reached` still
+  // matches both (the prefix is optional; the error pattern is a substring).
+  // Current behaviour, expected to move if a capture arrives as
+  // "Grok usage limit reached" on the text channel — not an invariant.
+  it("the text channel's provider prefix names Claude and Codex, not Grok", () => {
+    expect(detectHardExhaustion("Grok usage limit reached")).not.toBeNull();
+    expect(detectHardExhaustion("usage limit reached")).not.toBeNull();
+    expect(detectHardExhaustionInTurnText("usage limit reached")).not.toBeNull();
+    expect(detectHardExhaustionInTurnText("Claude usage limit reached")).not.toBeNull();
+    expect(detectHardExhaustionInTurnText("Codex usage limit reached")).not.toBeNull();
+    expect(detectHardExhaustionInTurnText("Grok usage limit reached")).toBeNull();
+    expect(detectHardExhaustionInTurnText("Grok Build usage limit reached")).toBeNull();
+  });
+
+  // `out of credits` is already in EXHAUSTION_PATTERNS (API-error language).
+  // The text channel deliberately drops it: that is how an API reports a
+  // spent *balance*, and admitting it is how "The Vercel deploy failed
+  // because your account is out of credits" benches a healthy subscription.
+  it("keeps generic credit language on the error channel and off the text channel", () => {
+    expect(detectHardExhaustion("out of credits")).not.toBeNull();
+    expect(detectHardExhaustionInTurnText("out of credits")).toBeNull();
+  });
+
+  // TUI pager copy that *looks* like SuperGrok weekly-limit wording. It
+  // currently matches neither channel (`you'?ve` requires the contraction;
+  // `weekly usage limit` requires the word `usage`). Left unmatched on
+  // purpose: it has never been seen on the headless wire, and loosening
+  // `you've` to `you hit` is exactly how the free-tier string above would
+  // start to look tempting. When a capture fills the fixture, this case
+  // moves — it is not a negative we are committed to.
+  it("does not yet match the unverified TUI weekly-limit wording", () => {
+    const tuiWeekly = "You hit your weekly limit.";
+    expect(detectHardExhaustion(tuiWeekly)).toBeNull();
+    expect(detectHardExhaustionInTurnText(tuiWeekly)).toBeNull();
+  });
+
+  // The grok adapter synthesizes this when a fatal `{"type":"error",…}`
+  // event ends the turn without a `result`. The provider's own wording is
+  // logged and then dropped, so neither matcher can see it. Documented,
+  // not repaired, in docs/274 — forwarding that message is a separate
+  // change and would still need a captured string to match against.
+  it("does not fire on the grok adapter's synthesized fatal-error result", () => {
+    expect(detectHardExhaustion("Grok exited with code 1 before producing a result")).toBeNull();
+    expect(
+      detectHardExhaustionInTurnText("Grok exited with code 1 before producing a result"),
+    ).toBeNull();
+  });
+
+  it.skipIf(GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE === null)(
+    "recognizes a captured SuperGrok subscription notice on the channel it arrived on",
+    () => {
+      const capture = GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE!;
+      const detected =
+        capture.channel === "error"
+          ? detectHardExhaustion(capture.text)
+          : detectHardExhaustionInTurnText(capture.text);
+      expect(detected).not.toBeNull();
+    },
+  );
 });

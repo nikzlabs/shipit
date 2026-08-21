@@ -53,6 +53,12 @@
   --color-folder: #eab308;
   --color-autofix: #f97316;
   --color-attention: #d97706;
+  /* docs/260 — the attention amber as TEXT/glyph colour. `--color-attention` is a
+     3px marker on a row: at 12px and below it measures 2.35–2.89:1 on the light
+     themes' surfaces, under the 4.5:1 AA asks of small text. This is the lightest
+     shade of the same amber ramp that clears 4.5:1 on each theme, so the sidebar's
+     "Needs you" switch stays legible without touching the marker's colour. */
+  --color-attention-text: #b45309;
 
   /* Context meter */
   --color-context-ok: #22c55e;

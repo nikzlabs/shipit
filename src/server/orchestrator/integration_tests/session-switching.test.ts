@@ -128,9 +128,14 @@ describe("Integration: Session isolation — switching & resume", () => {
 
     expect(body.messages).toBeDefined();
     expect(body.commits).toBeDefined();
-    expect(body.fileTree).toBeDefined();
+    // planning#375 — the file tree no longer rides on the history response; it
+    // has its own endpoint. The per-session isolation this test exists to prove
+    // is unchanged, so the assertion simply moved with the data.
+    expect(body.fileTree).toBeUndefined();
 
-    const flatNames = body.fileTree.map((n: any) => n.name);
+    const filesRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionA.id}/files` });
+    expect(filesRes.statusCode).toBe(200);
+    const flatNames = filesRes.json().tree.map((n: any) => n.name);
     expect(flatNames).toContain("marker-a.txt");
     expect(flatNames).toContain("index.html");
     // Session B's files should NOT be in the tree

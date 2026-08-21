@@ -1,5 +1,5 @@
 /**
- * Account-scoped agent HOME for `RUNTIME_MODE=local` (docs/150 req 19, docs/118).
+ * Account-scoped agent HOME for `RUNTIME_MODE=local` (docs/150-multiple-provider-subscriptions req 19, docs/118).
  *
  * In containerized mode the account a session was routed to reaches the CLI
  * through the filesystem: the worker image symlinks `~/.claude` / `~/.codex`
@@ -49,7 +49,7 @@ import type { AgentId } from "../shared/types/agent-types.js";
 import type { AgentProcess, SessionInfo } from "../shared/types.js";
 import type { AgentHomeResolver } from "../shared/agent-home.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
-import { providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { accountServiceForHarness, providerAccountCredentialRoot } from "./provider-account-manager.js";
 
 /**
  * The local-mode agent factory (`app-di.ts` → `buildLocalAgentFactory`).
@@ -66,6 +66,13 @@ export type LocalAgentFactory = (
 export interface LocalAgentHomeDeps {
   /** Session lookup — only `get` is used, so tests can pass a stub. */
   sessionManager: { get(sessionId: string): SessionInfo | undefined };
+  /**
+   * docs/260 §1b — the credential route the session's CURRENT turn selected
+   * (env-prep stamps it on the runner before the spawn resolves this HOME).
+   * The session row records no route any more, so this is the only in-process
+   * answer to "which account root does this spawn read".
+   */
+  getTurnRoute?: (sessionId: string) => { kind: string; id: string } | undefined;
   /**
    * Used only for an agent this session is NOT pinned to (a cross-provider
    * sub-agent spawn), where the session's own route says nothing about which
@@ -98,15 +105,16 @@ export function resolveLocalAgentHome(
 ): string | undefined {
   const session = deps.sessionManager.get(sessionId);
 
-  // The pinned route belongs to the session's own agent. Read it directly
-  // rather than re-selecting, so this never disagrees with the account
-  // env-prep pinned, stamped `lastUsedAt` on, and reported in diagnostics —
-  // including when the pin is a RESERVED route, which authenticates from the
-  // environment and must keep the process-global home rather than fall through
-  // to an account.
-  if (session?.agentId === agentId && session?.providerRouteKind) {
-    return session.providerRouteKind === "account" && session.providerRouteId
-      ? providerAccountCredentialRoot(deps.credentialsDir, agentId, session.providerRouteId)
+  // docs/260 — the turn's own selection, stamped onto the runner by env-prep
+  // immediately before this spawn resolves. Read it rather than re-selecting,
+  // so the HOME never disagrees with the account the turn stamped
+  // `lastUsedAt` on — including when the route is RESERVED, which
+  // authenticates from the environment and must keep the process-global home
+  // rather than fall through to an account.
+  const turnRoute = deps.getTurnRoute?.(sessionId);
+  if (session?.agentId === agentId && turnRoute) {
+    return turnRoute.kind === "account"
+      ? providerAccountCredentialRoot(deps.credentialsDir, agentId, turnRoute.id)
       : undefined;
   }
 
@@ -114,7 +122,7 @@ export function resolveLocalAgentHome(
   // sub-agent spawn (`shipit agent run`, docs/144). Its account is chosen the
   // same way session naming chooses one (`graduate-session.ts`) — the route a
   // turn for that provider would take right now.
-  const route = deps.providerAccountManager?.selectRouteForTurn(agentId);
+  const route = deps.providerAccountManager?.selectRouteForTurn(accountServiceForHarness(agentId));
   if (route?.kind === "account") {
     return providerAccountCredentialRoot(deps.credentialsDir, agentId, route.id);
   }

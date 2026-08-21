@@ -3,6 +3,7 @@ import { createHeadlessSession, handleSessionResume, resumeSessionInternal, star
 import { useSessionStore } from "../session-store.js";
 import { useUiStore } from "../ui-store.js";
 import { useIssuesStore } from "../issues-store.js";
+import { usePluginReposStore } from "../plugin-repos-store.js";
 import { useRepoStore } from "../repo-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
@@ -37,7 +38,6 @@ describe("createHeadlessSession", () => {
     const result = await createHeadlessSession({
       repoUrl: "https://github.com/acme/app.git",
       initialPrompt: "fix CI",
-      branch: "quick-ci",
       agent: "codex",
       model: "gpt-5.4",
     });
@@ -52,7 +52,6 @@ describe("createHeadlessSession", () => {
       body: JSON.stringify({
         repoUrl: "https://github.com/acme/app.git",
         initialPrompt: "fix CI",
-        branch: "quick-ci",
         agent: "codex",
         model: "gpt-5.4",
       }),
@@ -159,6 +158,22 @@ describe("resumeSessionInternal", () => {
     expect(useSessionStore.getState().compacting).toBe(false);
   });
 
+  /**
+   * `historyLoaded` says "the transcript on screen has its `GET /history`
+   * baseline". This function clears the transcript, so it must clear that too:
+   * `useMessageHandler` queues the attach-time `turn_snapshot` only while the
+   * flag is false, which is what makes the snapshot land ON TOP of the baseline
+   * instead of being overwritten by it. Carrying the outgoing session's `true`
+   * into the incoming one erased the running turn's tail until a reload.
+   */
+  it("clears historyLoaded so the incoming session's attach snapshot is queued behind its history", () => {
+    useSessionStore.setState({ sessionId: "session-a", historyLoaded: true });
+
+    resumeSessionInternal("session-b");
+
+    expect(useSessionStore.getState().historyLoaded).toBe(false);
+  });
+
   it("resets the mobile panel to chat so a switch never lands on the previous session's workspace tab", () => {
     // Outgoing session was parked on the workspace/preview tab on mobile.
     useSessionStore.setState({ sessionId: "session-a" });
@@ -169,8 +184,24 @@ describe("resumeSessionInternal", () => {
     expect(useUiStore.getState().mobilePanel).toBe("chat");
   });
 
+  // docs/262 — the plugin snapshot IS session-scoped: it gates the Plugins tab
+  // and its warn dot, so carrying it into another session would show that
+  // session a tab its repository never declared.
+  it("drops the plugin declarations on switch", () => {
+    useSessionStore.setState({ sessionId: "session-a" });
+    usePluginReposStore.setState({
+      snapshot: { declared: true, pending: false, activating: false, consumerRepoUrl: null, repos: [], warnings: [] },
+      forSessionId: "session-a",
+    });
+
+    resumeSessionInternal("session-b");
+
+    expect(usePluginReposStore.getState().snapshot).toBeNull();
+    expect(usePluginReposStore.getState().forSessionId).toBeNull();
+  });
+
   /**
-   * SHI-325 — the issues store is repo-scoped, not session-scoped: it's dropped
+   * planning#327 — the issues store is repo-scoped, not session-scoped: it's dropped
    * when the incoming session belongs to another repository (whose `shipit.yaml`
    * declares a different tracker set), and left alone within one repository.
    */

@@ -1,23 +1,27 @@
-/** Human-readable display names for known model aliases/IDs. */
-const MODEL_DISPLAY_NAMES: Record<string, string> = {
+import { catalogueModelLabels } from "../../server/shared/catalogue/index.js";
+
+/**
+ * Display names for ids the catalogue has NO row for: CLI aliases and models
+ * ShipIt no longer offers but old sessions still show.
+ *
+ * docs/252 phase 1 — every current model's label now comes from the service
+ * catalogue (`ModelDef.label`), so a model is named in one place rather than in
+ * a hand-kept client record that drifted from the server's model list.
+ */
+const LEGACY_DISPLAY_NAMES: Record<string, string> = {
   // Claude CLI aliases
   sonnet: "Sonnet 5",
-  haiku: "Haiku 4.5",
   "claude-opus-4-8": "Opus 4.8",
-  "claude-opus-5": "Opus 5",
-  "claude-sonnet-5": "Sonnet 5",
-  "claude-fable-5": "Fable 5",
   // Codex model IDs. Display names normalize the ChatGPT backend's
-  // inconsistent casing (e.g. "gpt-5.4" → "GPT-5.4").
+  // inconsistent casing (e.g. "gpt-5.4" → "GPT-5.4"). The unsuffixed 5.6 slug
+  // is retired from selection but still appears in old history.
   "gpt-5.6": "GPT-5.6 Sol",
-  "gpt-5.6-sol": "GPT-5.6 Sol",
-  "gpt-5.6-terra": "GPT-5.6 Terra",
-  "gpt-5.6-luna": "GPT-5.6 Luna",
-  "gpt-5.5": "GPT-5.5",
-  "gpt-5.4": "GPT-5.4",
-  "gpt-5.4-mini": "GPT-5.4 Mini",
-  "gpt-5.3-codex": "GPT-5.3 Codex",
-  "gpt-5.2": "GPT-5.2",
+};
+
+/** Human-readable display names for known model aliases/IDs. */
+const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  ...LEGACY_DISPLAY_NAMES,
+  ...catalogueModelLabels(),
 };
 
 /** Known Claude model families that map to CLI aliases. */

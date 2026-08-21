@@ -1,12 +1,12 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-307
+issue: planning#309
 title: A sub-agent consult survives an orchestrator restart
 description: What must be true of a `shipit agent run` consult whose orchestrator restarts while the run is in flight.
 ---
 
 # Requirements — a sub-agent consult survives an orchestrator restart
 
-Source: SHI-307, plus the spawning session's brief. Everything numbered below is
+Source: planning#309, plus the spawning session's brief. Everything numbered below is
 stated in the issue or is directly observable from it. Anything I had to supply
 myself is under [Open questions](#open-questions), not here.
 

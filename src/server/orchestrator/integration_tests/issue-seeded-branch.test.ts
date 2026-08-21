@@ -1,12 +1,12 @@
 /**
- * Integration test for SHI-320 — the Issues tab's "Start session", end to end.
+ * Integration test for planning#322 — the Issues tab's "Start session", end to end.
  *
  * Since docs/236 that action does NOT create the session: it prefills the chat
  * composer, so the session becomes real only when the user sends the first
  * message. Two things therefore have to ride on that message rather than on
  * creation, and both regressed when the flow changed:
  *
- *   1. The branch must be pinned to the issue's POINTER (docs/248 req 22). The
+ *   1. The branch must be pinned to the issue's POINTER (docs/248-declared-issue-trackers req 22). The
  *      prefilled prompt opens with the issue's *title*, so a session that
  *      graduates normally has its branch AI-named from that text — publishing
  *      tracker content to a git remote. This test asserts the pushed-branch
@@ -47,10 +47,13 @@ import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
 // `graduateSession` shells out to the real naming CLI when nothing is pinned.
 // Returning a name here is deliberate: it is exactly what would rewrite the
 // branch to a title-derived slug, so the pin has something real to beat.
+// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`
+// rather than a bare `SessionName | null`. The old shape resolved to a value
+// whose `.name` was undefined, which graduation reads as "naming failed" — so
+// the AI branch rename below never fired and the control case timed out.
 vi.mock("../session-namer.js", () => ({
   generateSessionName: vi.fn().mockResolvedValue({
-    slug: "sso-login-crash",
-    title: "SSO login crash",
+    name: { slug: "sso-login-crash", title: "SSO login crash" },
   }),
 }));
 
@@ -71,7 +74,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-describe("Integration: issue-seeded session branch + started (SHI-320)", () => {
+describe("Integration: issue-seeded session branch + started (planning#322)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;
@@ -178,14 +181,17 @@ describe("Integration: issue-seeded session branch + started (SHI-320)", () => {
       "graduation",
     );
 
-    // The branch is the pointer, slugified — in the DB and on disk.
+    // The branch is the pointer, slugified, plus a random uniqueness suffix
+    // (planning#413) — the same value in the DB and on disk. The suffix is what
+    // stops the NEXT session on this issue from landing on this branch and
+    // adopting its PR; the stem is what keeps the branch readable.
     const branch = sessionManager.get(sessionId)!.branch;
-    expect(branch).toBe("octocat-hello-world-42");
+    expect(branch).toMatch(/^octocat-hello-world-42-[a-z0-9_-]{1,6}$/);
     expect(
       execSync("git branch --show-current", { cwd: sessionDir }).toString().trim(),
-    ).toBe("octocat-hello-world-42");
+    ).toBe(branch);
 
-    // docs/248 req 22 — no fragment of the issue title reaches the branch name.
+    // docs/248-declared-issue-trackers req 22 — no fragment of the issue title reaches the branch name.
     for (const word of ISSUE_TITLE.toLowerCase().split(/\W+/).filter(Boolean)) {
       expect(branch).not.toContain(word);
     }

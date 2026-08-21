@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-151
+issue: planning#153
 description: Surface the issue(s) related to a session/PR as intent-led chips folded into the PR card's collapsible changed-docs panel.
 ---
 
@@ -69,7 +69,7 @@ message won't reliably contain. But scanning free text for bare Linear keys
 - Full GitHub issue URLs (`https://github.com/o/r/issues/N`)
 - GitHub short refs (`owner/repo#N`)
 - Bare Linear keys **only when preceded by the word `issue`** (case-insensitive,
-  e.g. `working on issue SHI-90`, `issue: SHI-90`) — which the seed always
+  e.g. `working on issue planning#92`, `issue: planning#92`) — which the seed always
   produces and natural phrasing usually does.
 
 A bare `SHI-90` typed with no `issue` lead-in is intentionally *not* matched

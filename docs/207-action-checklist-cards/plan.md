@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-153
+issue: planning#155
 title: Action checklist cards
 description: A transient, agent-authored card proposing one or more independent optional follow-up actions the user resolves with a single batched click.
 ---
@@ -178,7 +178,7 @@ own" path **routes through the existing composer** (which already has voice):
    addition, so the agent sees what the user leaned toward and the freeform note —
    all self-contained. *(How that quote is visually **rendered** inside the
    composer — plain text vs. a styled quote block — is a separate, composer-wide
-   question; being investigated in its own session, see SHI-153 thread.)*
+   question; being investigated in its own session, see planning#155 thread.)*
 
    **Add comment… is never disabled.** Unlike Submit, it doesn't require a
    selection: commenting is valid with any subset, including none (e.g. *"none of
@@ -260,6 +260,20 @@ These were open questions; the following are the settled answers.
   follow-up issue for the rate-limit edge case", "update the API docs for the new
   route" — not "run lint".
 
+- **Anchoring is where the tool fired, so the agent must fire it LAST**
+  *(reported from use)*. The card is recorded in-band at the point the tool ran
+  rather than floated to the bottom of the turn — the property that keeps it an
+  in-line historical card instead of a standing palette (see the §5 check above),
+  and the same reason `emitChatCard` anchors by `afterGroupIndex`. The cost is
+  that an agent which proposes *before* writing its closing prose buries the
+  card above the whole answer: the user reads to the end, sees nothing, and finds
+  the card only by scrolling back. That is a prompt rule, not a render rule —
+  moving the card to the end of the turn would undo the anchoring the §5 argument
+  rests on. So the placement is stated where the agent reads it: the tool
+  description (`mcp-tools/propose-actions.ts`), the session prompt
+  (`prompts/skeleton.md`), and this repo's own `CLAUDE.md` all say to post the
+  card after the reply, as the final act of the turn.
+
 - **Provenance travels in the submitted message, not in card state** *(Codex
   design review)*. "No staleness" does **not** mean pretending nothing changed
   since the card was emitted. The card stays a pure message-sender, but the
@@ -324,7 +338,7 @@ These were open questions; the following are the settled answers.
 
 ## Still open
 
-- **Server-side delivery ack** (tracked in SHI-312). The delivery signal today is client-local
+- **Server-side delivery ack** (tracked in planning#314). The delivery signal today is client-local
   (`useWebSocket.send`'s boolean). It catches every `readyState !== OPEN` drop
   but not the zombie-socket case, where a backgrounded mobile socket still reads
   OPEN after the OS killed the connection and `ws.send()` "succeeds" locally
@@ -343,7 +357,7 @@ These were open questions; the following are the settled answers.
   question tracked outside this doc; today it seeds as plain text via
   `setPrefillText`, which is self-contained regardless of how it's later styled.
 
-## Key files (implemented — SHI-153)
+## Key files (implemented — planning#155)
 
 Server (tool → relay → orchestrator → persist):
 - `src/server/session/mcp-tools/propose-actions.ts` — the `propose_actions` MCP

@@ -45,20 +45,45 @@ export function isValidRepoColorIndex(value: unknown): value is number {
 }
 
 /**
- * Pick a color for a new repo: the lowest palette index nobody is using yet.
+ * The order colors are handed out in — NOT palette order.
  *
- * Lowest-free rather than round-robin so the early colors stay stable as repos
- * come and go — removing repo #2 and adding another gives the new one #2's old
- * slot rather than shifting everyone. Once every index is taken (17+ repos) it
- * wraps to the least-used index, which is the first repeat req 5 allows.
+ * The palette is laid out as a hue wheel (Clay → Ochre → Mustard → Olive → …),
+ * which is what the picker grid wants but the worst possible thing to assign
+ * from in sequence: a workspace with three repos got three adjacent warm
+ * ochres, and the whole point of req 5 is that the groups read as different at
+ * a glance. So assignment walks this order instead.
+ *
+ * It is a farthest-point traversal: each entry is the one whose closest
+ * approach to ANY already-assigned color is largest, measured as the worse of
+ * its light and dark values (a pair can be distinct on one surface and not the
+ * other). Distance to the nearest earlier pick goes 268 → 161 → 121 → 95 for
+ * the first four repos, against 68 → 53 → 58 walking the palette in order.
+ *
+ * Regenerate rather than hand-edit if the palette changes: `repo-palette.test.ts`
+ * carries both the metric and the check that this order stays the spread one.
+ */
+export const REPO_COLOR_ASSIGNMENT_ORDER = [
+  6, 12, 3, 9, 1, 4, 10, 5, 15, 8, 11, 2, 14, 0, 13, 7,
+] as const;
+
+/**
+ * Pick a color for a new repo: the first color in assignment order that nobody
+ * is using yet.
+ *
+ * First-free rather than round-robin so the early colors stay stable as repos
+ * come and go — removing the second repo and adding another gives the new one
+ * that freed slot rather than shifting everyone. Once every index is taken
+ * (17+ repos) it wraps to the least-used index, which is the first repeat req 5
+ * allows; ties there break by assignment order, so the repeats spread out too.
  */
 export function pickRepoColorIndex(taken: readonly number[]): number {
   const counts = new Array<number>(REPO_COLOR_COUNT).fill(0);
   for (const idx of taken) {
     if (isValidRepoColorIndex(idx)) counts[idx] += 1;
   }
-  let best = 0;
-  for (let i = 1; i < REPO_COLOR_COUNT; i++) {
+  let best: number = REPO_COLOR_ASSIGNMENT_ORDER[0];
+  for (const i of REPO_COLOR_ASSIGNMENT_ORDER) {
+    if (counts[i] === 0) return i;
     if (counts[i] < counts[best]) best = i;
   }
   return best;

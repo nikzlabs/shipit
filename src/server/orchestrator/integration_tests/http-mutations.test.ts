@@ -27,6 +27,7 @@ import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig, getGitIdentity, setGitIdentity } from "../git-config.js";
 import { AgentRegistry } from "../../shared/agent-registry.js";
+import { readSessionAccountMarker, writeSessionAccountMarker } from "../session-credentials.js";
 
 describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   let app: FastifyInstance;
@@ -40,7 +41,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
-    // Save and clear OPENAI_API_KEY so codex agent starts with authConfigured=false
+    // Save and clear OPENAI_API_KEY so codex agent starts with hasRunnableModels=false
     savedOpenAIKey = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-http-mutations-"));
@@ -330,7 +331,9 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         method: "PUT", url: "/api/sessions/keep-b/keep-preview-running", payload: { enabled: true },
       });
       expect(overflow.statusCode).toBe(409);
-      expect(overflow.json()).toMatchObject({ error: expect.stringContaining("capacity") });
+      // The refusal names the session holding the slot — the count alone left
+      // the user with nothing to act on (docs/241).
+      expect(overflow.json()).toMatchObject({ error: expect.stringContaining('"A"') });
       expect(sessionManager.get("keep-b")?.keepPreviewRunning).toBeUndefined();
     });
   });
@@ -594,17 +597,21 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   });
 
   describe("provider account settings endpoints", () => {
-    it("creates, renames, makes primary, and disconnects provider accounts", async () => {
+    // docs/252 req 21 — "makes primary" is gone from this list, and so is
+    // `POST …/:id/primary`: "primary" was never a property, only position 0,
+    // and the endpoint behind that button was `reorder([this, …rest])`.
+    // Reordering is the verb that survived, and it is what this now exercises.
+    it("creates, renames, reorders, and disconnects provider accounts", async () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
         payload: { provider: "claude", label: "Work Anthropic" },
       });
       expect(created.statusCode).toBe(200);
-      const createdBody = created.json() as { account: { id: string; label: string; isPrimary: boolean }; accounts: { provider: string }[] };
+      const createdBody = created.json() as { account: { id: string; label: string; isPrimary: boolean }; accounts: { serviceId: string }[] };
       expect(createdBody.account.label).toBe("Work Anthropic");
       expect(createdBody.account.isPrimary).toBe(true);
-      expect(createdBody.accounts.filter((account) => account.provider === "claude")).toHaveLength(1);
+      expect(createdBody.accounts.filter((account) => account.serviceId === "anthropic")).toHaveLength(1);
 
       const accountId = createdBody.account.id;
       const renamed = await app.inject({
@@ -623,10 +630,13 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const secondId = (second.json() as { account: { id: string } }).account.id;
 
       const primary = await app.inject({
-        method: "POST",
-        url: `/api/provider-accounts/claude/${secondId}/primary`,
+        method: "PUT",
+        url: "/api/provider-accounts/claude/order",
+        payload: { accountIds: [secondId, accountId] },
       });
       expect(primary.statusCode).toBe(200);
+      // `isPrimary` still crosses the wire, still derived from position — what
+      // went is the UI that read it and the setter that wrote it.
       const primaryAccounts = (primary.json() as { accounts: { id: string; isPrimary: boolean }[] }).accounts;
       expect(primaryAccounts.find((account) => account.id === secondId)?.isPrimary).toBe(true);
       expect(primaryAccounts.find((account) => account.id === accountId)?.isPrimary).toBe(false);
@@ -636,26 +646,34 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         url: `/api/provider-accounts/claude/${accountId}`,
       });
       expect(deleted.statusCode).toBe(200);
-      expect((deleted.json() as { accounts: { provider: string; id: string }[] }).accounts
-        .filter((account) => account.provider === "claude")
+      expect((deleted.json() as { accounts: { serviceId: string; id: string }[] }).accounts
+        .filter((account) => account.serviceId === "anthropic")
         .map((account) => account.id)).toEqual([secondId]);
     });
 
-    // docs/150 req 23 — this used to 409. With no other connected account there
-    // is nowhere to move the pinned session to, and refusing made the last
-    // subscription undisconnectable, so the disconnect goes through and reports
-    // the session it left without an account.
-    it("disconnects the last account over HTTP, reporting the sessions it stranded", async () => {
+    // docs/260-turn-level-account-routing req 3 — deleting an account never enumerates, moves, or reports
+    // sessions. The old wire shape carried `switchedSessionIds` /
+    // `strandedSessionIds`; both are gone: the response is the remaining
+    // account list and nothing else, and each session's next turn routes
+    // normally among the accounts that remain. The one per-session effect is
+    // revoking the session's own credential COPY, found by the session's
+    // recorded marker (docs/260 §6), which is asserted here over HTTP so the
+    // route is known to thread `credentialsDir` into the service.
+    it("disconnects the last account over HTTP: {accounts} only, no stranded/switched reporting (docs/260-turn-level-account-routing req 3)", async () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
         payload: { provider: "codex", label: "Team ChatGPT" },
       });
       const accountId = (created.json() as { account: { id: string } }).account.id;
-      const session = sessionManager.track("pinned-session", "Pinned session", path.join(tmpDir, "session"));
-      sessionManager.setAgentId(session.id, "codex");
-      sessionManager.setProviderRoute(session.id, "account", accountId);
-      sessionManager.setAgentPinned(session.id);
+      // An idle session whose subtree holds (and is marked as holding) the
+      // account's copy — the thing disconnect must revoke by recorded identity.
+      await createSession("codex-session", "Codex session");
+      sessionManager.setAgentId("codex-session", "codex");
+      const tokenPath = path.join(tmpDir, "sessions", "codex-session", ".codex", "auth.json");
+      fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+      fs.writeFileSync(tokenPath, '{"accessToken":"live"}');
+      writeSessionAccountMarker(tmpDir, "codex-session", "codex", accountId);
 
       const deleted = await app.inject({
         method: "DELETE",
@@ -663,19 +681,27 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       });
 
       expect(deleted.statusCode).toBe(200);
-      const body = deleted.json() as {
-        accounts: { provider: string; id: string }[];
-        switchedSessionIds: string[];
-        strandedSessionIds: string[];
-      };
-      expect(body.strandedSessionIds).toEqual(["pinned-session"]);
-      expect(body.switchedSessionIds).toEqual([]);
-      expect(body.accounts.filter((account) => account.provider === "codex")).toEqual([]);
+      const body = deleted.json() as Record<string, unknown> & { accounts: { serviceId: string; id: string }[] };
+      expect(body.accounts.filter((account) => account.serviceId === "openai")).toEqual([]);
+      // Rename-proof: the filter above went vacuous once already, when the wire
+      // shape lost `provider` (planning#342) and every row stopped matching.
+      // An id cannot be renamed out from under the assertion.
+      expect(body.accounts.map((account) => account.id)).not.toContain(accountId);
+      // req 3 — no session bookkeeping in the response, under any name.
+      expect(body).not.toHaveProperty("switchedSessionIds");
+      expect(body).not.toHaveProperty("strandedSessionIds");
+      // The session's recorded copy is revoked, and the marker cleared so the
+      // next turn's identity check reprovisions from whatever it selects.
+      expect(fs.existsSync(tokenPath)).toBe(false);
+      expect(readSessionAccountMarker(tmpDir, "codex-session").codex).toBeUndefined();
     });
 
-    // The refusal that remains: a session mid-turn. Unlike the one above,
-    // waiting clears it, so it names what to wait for.
-    it("still refuses to disconnect an account whose pinned session is mid-turn", async () => {
+    // docs/260-turn-level-account-routing req 13 — the one refusal left, and it is process-scoped, not
+    // pin-scoped: a live process on the account with a running turn (or
+    // in-progress background work) blocks the disconnect, because killing it
+    // loses the tokens already spent and rewriting credentials under a live
+    // turn is a mid-turn 401. Waiting clears it, so the 409 names the session.
+    it("refuses to disconnect while a live process on the account is busy, and allows it once idle (docs/260-turn-level-account-routing req 13)", async () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
@@ -684,22 +710,34 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const accountId = (created.json() as { account: { id: string } }).account.id;
       const session = sessionManager.track("running-session", "Running session", path.join(tmpDir, "session"));
       sessionManager.setAgentId(session.id, "codex");
-      sessionManager.setProviderRoute(session.id, "account", accountId);
-      sessionManager.setAgentPinned(session.id);
+      // The account identity is the PROCESS's (docs/260 §5): the runner's
+      // residentRoute, typed at spawn — no session row is consulted.
       const runner = app.runnerRegistry.getOrCreate(session.id, path.join(tmpDir, "session"), "codex");
+      runner.residentRoute = { kind: "account", id: accountId };
       runner.running = true;
 
-      const deleted = await app.inject({
+      const blocked = await app.inject({
         method: "DELETE",
         url: `/api/provider-accounts/codex/${accountId}`,
       });
 
-      expect(deleted.statusCode).toBe(409);
-      expect((deleted.json() as { error: string }).error).toMatch(/"Running session"/);
+      expect(blocked.statusCode).toBe(409);
+      expect((blocked.json() as { error: string }).error).toMatch(/"Running session"/);
+      expect((blocked.json() as { error: string }).error).toMatch(/wait/i);
+
+      // The turn ends; a merely-resident (idle) process no longer blocks — it
+      // is retired and the disconnect returns the account list only.
       runner.running = false;
+      const deleted = await app.inject({
+        method: "DELETE",
+        url: `/api/provider-accounts/codex/${accountId}`,
+      });
+      expect(deleted.statusCode).toBe(200);
+      expect((deleted.json() as { accounts: { serviceId: string }[] }).accounts
+        .filter((account) => account.serviceId === "openai")).toEqual([]);
     });
 
-    // docs/150 req 2 — the reorder control's whole job is to change the order
+    // docs/150-multiple-provider-subscriptions req 2 — the reorder control's whole job is to change the order
     // the user *sees*. Writing `priority` while every wire response still
     // carried storage order is what made the buttons read as broken, so this
     // asserts the order over HTTP, where the client actually reads it.
@@ -715,8 +753,8 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const c = await mk("Account C");
 
       const claudeIds = (payload: unknown): string[] =>
-        (payload as { accounts: { id: string; provider: string }[] }).accounts
-          .filter((row) => row.provider === "claude")
+        (payload as { accounts: { id: string; serviceId: string }[] }).accounts
+          .filter((row) => row.serviceId === "anthropic")
           .map((row) => row.id);
 
       // Creation order to start with.
@@ -894,18 +932,28 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       // no longer be auth-configured.
       expect(Array.isArray(body.agents)).toBe(true);
       const claude = body.agents.find((a: { id: string }) => a.id === "claude");
-      expect(claude?.authConfigured).toBe(false);
+      expect(claude?.hasRunnableModels).toBe(false);
     });
 
-    // docs/150 — provider-wide sign-out drops every account row, so it needs
-    // the running-turn guard the per-account disconnect already has. Signing
-    // out mid-turn rewrites credentials under a live agent, and the user gets
-    // a 401 instead of an answer.
-    it("refuses while a pinned session is mid-turn, and allows it once idle", async () => {
+    // docs/260-turn-level-account-routing req 13 — provider-wide sign-out drops every account row, so it
+    // needs the same busy-process guard the per-account disconnect has: a live
+    // process working on a CONNECTED account (running turn or in-progress
+    // background work, keyed on the runner's residentRoute — no pins) blocks
+    // it. Signing out mid-turn rewrites credentials under a live agent, and
+    // the user gets a 401 instead of an answer.
+    it("refuses while a live process on a connected account is mid-turn, and allows it once idle (docs/260-turn-level-account-routing req 13)", async () => {
+      // The guard is scoped to CONNECTED accounts, so the account must exist
+      // as a row the manager lists — a route id on a session row means nothing
+      // any more.
+      const now = Date.now();
+      credentialStore.upsertCredentialRoute({
+        id: "acct_live", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Live", isPrimary: true,
+        priority: 0, status: "ready", createdAt: now, updatedAt: now,
+      });
       await createSession("signout-1", "Mid-turn session");
       sessionManager.setAgentId("signout-1", "claude");
-      sessionManager.setProviderRoute("signout-1", "account", "acct_live");
       const runner = app.runnerRegistry.getOrCreate("signout-1", "/tmp/signout-1", "claude");
+      runner.residentRoute = { kind: "account", id: "acct_live" };
       runner.running = true;
 
       const blocked = await app.inject({ method: "DELETE", url: "/api/auth/api-key" });
@@ -917,31 +965,31 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
     });
 
-    // A session pinned to an account that sign-out removed is NOT stranded:
-    // the route reads as unusable, so its next turn's preflight fails it over
-    // (or reports auth_required if nothing is connected). Only the mid-turn
+    // A session that ran on a signed-out account is NOT stranded and nothing
+    // reports it as such (docs/260-turn-level-account-routing req 3): its next turn simply routes among
+    // whatever accounts remain (or surfaces auth_required). Only the mid-turn
     // case is unrecoverable, which is why that is the only thing guarded.
     //
-    // SHI-283 — but it does have to actually *lose* the account. The row is not
-    // where the token lives: the session holds its own copy, that copy is what
-    // the CLI in its container reads, and nothing else ever deletes it (first-
-    // turn provisioning is guarded on `agentPinned`, and only a switch to
-    // another account overwrites it). Scoping detail is covered by
-    // `services/provider-signout.test.ts`.
-    it("still signs out with an idle pinned session, revoking its copy and leaving it to re-route", async () => {
+    // planning#285 / docs/260 §6 — but it does have to actually *lose* the
+    // account. The row is not where the token lives: the session holds its own
+    // copy, that copy is what the CLI in its container reads, and it is found
+    // by the session's own recorded MARKER (`readSessionAccountMarker`) —
+    // never a session row, never token-byte compares. Scoping detail is
+    // covered by `services/provider-signout.test.ts`.
+    it("still signs out with an idle session holding the account's copy, revoking it by marker", async () => {
       const now = Date.now();
-      credentialStore.upsertProviderAccount({
-        id: "acct_gone", provider: "claude", label: "Gone", isPrimary: true,
+      credentialStore.upsertCredentialRoute({
+        id: "acct_gone", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Gone", isPrimary: true,
         priority: 0, status: "ready", createdAt: now, updatedAt: now,
       });
-      await createSession("signout-2", "Idle pinned session");
+      await createSession("signout-2", "Idle session");
       sessionManager.setAgentId("signout-2", "claude");
-      sessionManager.setProviderRoute("signout-2", "account", "acct_gone");
       const sessionToken = path.join(tmpDir, "sessions", "signout-2", ".claude", ".credentials.json");
       const resume = path.join(tmpDir, "sessions", "signout-2", ".claude", "projects", "abc.jsonl");
       fs.mkdirSync(path.dirname(resume), { recursive: true });
       fs.writeFileSync(sessionToken, '{"accessToken":"live"}');
       fs.writeFileSync(resume, "{}");
+      writeSessionAccountMarker(tmpDir, "signout-2", "claude", "acct_gone");
 
       expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
 
@@ -949,19 +997,20 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(fs.existsSync(sessionToken)).toBe(false);
       // The conversation is not collateral damage — reconnecting resumes it.
       expect(fs.existsSync(resume)).toBe(true);
-      // The pin is left in place on purpose — the preflight re-routes it.
-      expect(sessionManager.get("signout-2")?.providerRouteId).toBe("acct_gone");
+      // The marker is cleared with the copy, so the next turn's identity check
+      // reprovisions from whatever account that turn selects.
+      expect(readSessionAccountMarker(tmpDir, "signout-2").claude).toBeUndefined();
     });
 
-    // docs/150 req 19 — the route used to drop the account rows and clear only
+    // docs/150-multiple-provider-subscriptions req 19 — the route used to drop the account rows and clear only
     // the singleton path, which on a migrated install aliased the *first*
     // account. Every account connected after that kept live OAuth tokens on
     // disk, with its row deleted so nothing in the UI could reach them.
     it("erases the on-disk credentials of every connected account, not just the first", async () => {
       const now = Date.now();
       const accountDirs = ["claude-default", "acct_work"].map((id, index) => {
-        credentialStore.upsertProviderAccount({
-          id, provider: "claude", label: id, isPrimary: index === 0,
+        credentialStore.upsertCredentialRoute({
+          id, serviceId: "anthropic", billingMode: "sub", via: "account", label: id, isPrimary: index === 0,
           priority: index, status: "ready", createdAt: now, updatedAt: now,
         });
         const dir = path.join(tmpDir, "provider-accounts", "claude", id, ".claude");
@@ -972,7 +1021,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
 
       expect((await app.inject({ method: "DELETE", url: "/api/auth/api-key" })).statusCode).toBe(200);
 
-      expect(credentialStore.listProviderAccounts("claude")).toEqual([]);
+      expect(credentialStore.listCredentialRoutes("anthropic", "sub")).toEqual([]);
       for (const dir of accountDirs) {
         expect(fs.existsSync(dir)).toBe(false);
       }
@@ -1352,7 +1401,7 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       // Initially Codex auth is not configured
       const beforeRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
       const codexBefore = beforeRes.json().agents.find((a: any) => a.id === "codex");
-      expect(codexBefore.authConfigured).toBe(false);
+      expect(codexBefore.hasRunnableModels).toBe(false);
 
       const res = await app.inject({
         method: "POST",
@@ -1365,7 +1414,7 @@ describe("Integration: Phase 2 HTTP agent mutations", () => {
       // Verify auth status updated
       const afterRes = await app.inject({ method: "GET", url: "/api/bootstrap" });
       const codexAfter = afterRes.json().agents.find((a: any) => a.id === "codex");
-      expect(codexAfter.authConfigured).toBe(true);
+      expect(codexAfter.hasRunnableModels).toBe(true);
     });
 
     it("returns 400 for disallowed env key", async () => {

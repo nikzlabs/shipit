@@ -46,6 +46,17 @@ Used by the orchestrator to seed and refresh the cache, then cut per-session clo
 - `isEmpty()` / `createInitialCommit()` — empty-repo handling
 - `readHead()` / `lastFetchAgeMs()` — cache freshness checks used by the proactive pre-fetcher
 
+#### Who owns the bare cache (docs/272-shared-cache-ownership)
+
+The cache is **ShipIt's own tree, owned uniformly by the orchestrator's identity**, and `orchestrator/shared-tree-ownership.ts` enforces that rather than assuming it: `fetchCache` and `cloneFromCache` each check the cache with one `lstat` first and repair it if a foreign owner appears, and the boot janitor makes one deep pass over `repo-cache/` and `marketplace-cache/`. Three production failures came out of the same unstated contract — refs that could not be locked, a chown reaching through a hardlink into the cache, and a root clone that a uid-1000 source refused once git's ownership check was armed.
+
+Two rules when you touch any of this:
+
+- **Never `chownRecursive` a tree cut from the cache.** `clone --local` hardlinks `.git/objects`, and an inode has one owner across every link, so it is a chown *inside the cache*. Use `handWorkspaceBackToWorker` (a session workspace) or `handPluginCheckoutToWorker` (a plugin generation's checkout); both chown object *directories* and never the data files. `session-fork-merge.ts` is the one legitimate exception, and only because it clones with `--no-hardlinks`. Enforced by `orchestrator/shared-tree-ownership-coverage.test.ts`.
+- **A clone needs BOTH ownership answers — source and destination.** git's check tests the repository being *read*, and `clone --local` can only hardlink an object file the cloning identity may link. A destination-only audit cleared the site that broke production. Enforced by the two censuses in `shared/git-hooks-guard-coverage.test.ts`.
+
+**Debugging:** a root process getting `EACCES`/`EPERM` is not impossible — read it as *"the process dropped uid (docs/266) and the tree is not uniformly owned"* before anything else.
+
 ## Session Types and Git Setup
 
 ### Standalone Session

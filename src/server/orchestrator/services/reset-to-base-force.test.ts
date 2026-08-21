@@ -1,5 +1,5 @@
 /**
- * SHI-277 — `shipit branch reset-to-base --force`, the break-glass for a branch
+ * planning#279 — `shipit branch reset-to-base --force`, the break-glass for a branch
  * whose work shipped under a DIFFERENT commit.
  *
  * These tests build the stranded state for real — a bare "remote", a multi-commit
@@ -159,7 +159,12 @@ describe("reset-to-base --force on a squash-merged, cherry-picked branch", () =>
     const outcome = await resetBranchToBaseExplicit(makeDeps(session), "s1", sessionDir);
 
     expect(outcome.outcome).toBe("refused");
-    expect(outcome.reason).toMatch(/not on the merged pull request/);
+    // The clause that actually refused, in its own words — not one hard-coded
+    // sentence printed for all nine. Against REAL git: the cherry-picked commit
+    // is a different commit, so HEAD is neither the merged head nor contained in
+    // `origin/main`, and `head-moved` is genuinely the right diagnosis here.
+    expect(outcome.reason).toMatch(/moved since the merge/);
+    expect(outcome.reason).toMatch(/not contained in origin\/main/);
     // The refusal must point at the override, or it reads as a dead end and the
     // agent reaches for `git reset --hard` instead.
     expect(outcome.reason).toMatch(/--force/);
@@ -241,6 +246,98 @@ describe("reset-to-base --force on a squash-merged, cherry-picked branch", () =>
     expect(fs.existsSync(path.join(sessionDir, ".git", "rebase-merge"))
       || fs.existsSync(path.join(sessionDir, ".git", "rebase-apply"))).toBe(true);
     execFileSync("git", ["rebase", "--abort"], { cwd: sessionDir, stdio: "pipe" });
+  });
+
+  /**
+   * The incident this fix comes from, rebuilt against real git: a session whose
+   * PR merged, whose branch was then left BEHIND an advanced `origin/main` with
+   * a clean tree, and whose docs/202 re-arm had cleared `merged_at` and
+   * `merged_head_sha` (so the live PR snapshot is gone too).
+   *
+   * Every commit reachable from HEAD is reachable from `origin/main`, so the
+   * reset discards nothing — and yet the old gate refused, on `not-merged`,
+   * while claiming "this branch carries work that is not on the merged pull
+   * request". The operator then pushed a provably-lossless operation through the
+   * trust-based `--force` break-glass. It must now simply succeed.
+   */
+  describe("a re-armed branch sitting behind an advanced base", () => {
+    /** Advance `origin/main` past the branch, leaving HEAD a strict ancestor. */
+    function advanceBaseBeyondBranch(): void {
+      inSession("checkout", "-q", "main");
+      fs.writeFileSync(path.join(sessionDir, "OTHER.md"), "someone else's merged PR\n");
+      inSession("add", "-A");
+      inSession("commit", "-qm", "another PR (#2146)");
+      inSession("push", "-q", "origin", "main");
+      inSession("checkout", "-q", BRANCH);
+      // The branch sits exactly on the squash-merge commit: contained in main.
+      inSession("reset", "--hard", "origin/main~1");
+      inSession("fetch", "-q", "origin");
+    }
+
+    /** After `clearMerged` + `reArm`: no merged columns, no live snapshot, and
+     * only the durable breadcrumb left. */
+    function reArmedSession(): SessionInfo {
+      const s = makeSession();
+      delete s.mergedAt;
+      delete s.mergedHeadSha;
+      s.previousMergedPr = {
+        number: 2145,
+        url: "https://github.com/o/r/pull/2145",
+        title: "Feature ABC",
+        baseBranch: "main",
+      };
+      return s;
+    }
+
+    it("resets without --force, because HEAD is contained in origin/main", async () => {
+      advanceBaseBeyondBranch();
+      const baseTip = inSession("rev-parse", "origin/main");
+      expect(inSession("rev-parse", "HEAD")).not.toBe(baseTip);
+      expect(inSession("status", "--porcelain")).toBe("");
+
+      const outcome = await resetBranchToBaseExplicit(
+        { ...makeDeps(reArmedSession()), getPrStatus: () => null }, "s1", sessionDir,
+      );
+
+      expect(outcome.outcome).toBe("reset");
+      expect(outcome.forced).toBeUndefined();
+      expect(outcome.base).toBe("main");
+      expect(inSession("rev-parse", "HEAD")).toBe(baseTip);
+    });
+
+    it("still refuses once that same branch gains a commit of its own", async () => {
+      advanceBaseBeyondBranch();
+      fs.writeFileSync(path.join(sessionDir, "unshipped.ts"), "export const x = 1;\n");
+      inSession("add", "-A");
+      inSession("commit", "-qm", "work nobody has merged");
+      const head = inSession("rev-parse", "HEAD");
+
+      const outcome = await resetBranchToBaseExplicit(
+        { ...makeDeps(reArmedSession()), getPrStatus: () => null }, "s1", sessionDir,
+      );
+
+      // No longer contained in the base, and the breadcrumb carries no anchor —
+      // so the gate refuses, and says which clause did it.
+      expect(outcome.outcome).toBe("refused");
+      expect(outcome.reason).toMatch(/no record of the commit GitHub merged/);
+      expect(inSession("rev-parse", "HEAD")).toBe(head);
+    });
+
+    it("passes on the breadcrumb's anchor when the branch is untouched since the merge", async () => {
+      // Same re-armed session, still on exactly the commit GitHub merged. The
+      // durable copy of the anchor is the only thing that can prove that here.
+      const session = reArmedSession();
+      session.previousMergedPr = { ...session.previousMergedPr!, mergedHeadSha };
+      expect(inSession("rev-parse", "HEAD")).toBe(mergedHeadSha);
+
+      const outcome = await resetBranchToBaseExplicit(
+        { ...makeDeps(session), getPrStatus: () => null }, "s1", sessionDir,
+      );
+
+      expect(outcome.outcome).toBe("reset");
+      expect(outcome.forced).toBeUndefined();
+      expect(inSession("rev-parse", "HEAD")).toBe(inSession("rev-parse", "origin/main"));
+    });
   });
 
   /**

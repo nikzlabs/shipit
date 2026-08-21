@@ -6,6 +6,7 @@ import type { LogSource } from "../shared/types.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionManager } from "./sessions.js";
+import { holdsActiveReservation } from "./sessions.js";
 
 // ---- Idle container enforcement ----
 
@@ -79,7 +80,7 @@ export const IDLE_GRACE_PERIOD_MS = 600_000;
  *  - Runner disposal is TOCTOU-safe: state is re-checked at dispose time, and
  *    `runner.dispose()` itself refuses to run while the agent is active.
  *  - The container is destroyed only AFTER the runner accepted disposal
- *    (SHI-296). A declined dispose leaves the container running, so the
+ *    (planning#298). A declined dispose leaves the container running, so the
  *    runner-level guards and the enforcer can never disagree about whether the
  *    session is reclaimable.
  *
@@ -110,7 +111,11 @@ export function createIdleEnforcer(
       if (containerManager.isStandby(sc.sessionId)) continue;
       // docs/241 — the reservation is a user-facing always-on guarantee, so it
       // wins over both ordinary idle trimming and pressure-mode eviction.
-      if (sessionManager?.get(sc.sessionId)?.keepPreviewRunning) continue;
+      // `holdsActiveReservation`, not the raw flag: an archived row that still
+      // carries the flag is ignored by admission, so protecting its surviving
+      // container here would hold RAM for a reservation the books no longer
+      // count — while a new session is admitted to the slot it freed.
+      if (holdsActiveReservation(sessionManager?.get(sc.sessionId))) continue;
       const runner = runnerRegistry.get(sc.sessionId);
       if (!runner) {
         // Container exists without a runner — orphaned. Eligible for cleanup.
@@ -122,7 +127,7 @@ export function createIdleEnforcer(
       // background task finished and the CLI started a fresh turn) reads as
       // idle here and gets its container destroyed mid-turn. `agentBusy` also
       // covers the quieter case: a task still pending between turns, which is
-      // work that will resume and must not be reclaimed — and (SHI-296) a
+      // work that will resume and must not be reclaimed — and (planning#298) a
       // backgrounded sub-agent consult, which has neither a running turn nor a
       // resident streaming process yet is very much live work.
       if (runner.agentBusy) continue;
@@ -150,11 +155,11 @@ export function createIdleEnforcer(
         // if it is still safe to do so. `runner.dispose()` also enforces
         // this at the runner level (defense in depth).
         const runner = runnerRegistry.get(sid);
-        if (sessionManager?.get(sid)?.keepPreviewRunning) continue;
+        if (holdsActiveReservation(sessionManager?.get(sid))) continue;
         if (runner && (runner.agentBusy || runner.viewerCount > 0)) {
           continue;
         }
-        // SHI-296 — dispose FIRST, and treat a declined dispose as "leave this
+        // planning#298 — dispose FIRST, and treat a declined dispose as "leave this
         // container alone". Previously `destroy` was fired unconditionally and
         // `dispose` ran after it, so the runner-level guards (running agent,
         // in-flight sub-agent spawn) could only decline *after* `container.stop`

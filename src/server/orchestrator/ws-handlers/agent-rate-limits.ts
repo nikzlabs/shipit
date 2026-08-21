@@ -1,5 +1,6 @@
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import { listSubscriptionLimits } from "../../shared/types/usage-limits-types.js";
+import { limitsModeKey, subscriptionWindowIsCurrent } from "../../shared/types/usage-limits-types.js";
+import { nativeServiceForHarness } from "../../shared/catalogue/index.js";
 
 /**
  * Rate-limit + subscription-snapshot handling, extracted from
@@ -12,10 +13,12 @@ import { listSubscriptionLimits } from "../../shared/types/usage-limits-types.js
 const AGENT_LIMIT_LABELS: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
+  grok: "Grok Build",
 };
 
 /**
- * docs/150 req 7 — how long an account stays out of the running when the
+ * docs/150-multiple-provider-subscriptions req 7 — how long an account stays out of the running when the
  * provider says "you are out of quota" but does not say when that ends.
  *
  * Neither extreme works. Not stamping at all means the very next turn walks
@@ -58,6 +61,16 @@ const CLOCK_RESET_UTC = /resets?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*
  * had started saying "You've hit your session limit" while this list still knew
  * only weekly/monthly/5h *usage* limits. `usage` is optional for the same
  * reason — "session limit" and "session usage limit" are the same event.
+ *
+ * Grok (planning#453): this list is still Claude/Codex wording, and xAI's
+ * subscription has no quota reader (`quota: null`), so a miss here is the
+ * *only* miss — there is no meter to fall back on. Strings exist in the grok
+ * binary that this list does not match (`You hit your weekly limit.`,
+ * `usage balance exhausted`, a free-tier `You hit your free usage limit.`).
+ * None of them has been seen on a SuperGrok *headless* turn. Do not widen
+ * against `strings` output; the capture fixture in the co-located test is
+ * the one-assignment change once a real notice is in hand. See
+ * `docs/274-grok-build-harness`.
  */
 const EXHAUSTION_PATTERNS: readonly RegExp[] = [
   /usage limit reached/i,
@@ -87,6 +100,11 @@ const EXHAUSTION_PATTERNS: readonly RegExp[] = [
  * words, so nothing can precede the notice and still match.
  */
 const TURN_TEXT_NOTICE_PATTERNS: readonly RegExp[] = [
+  // The optional prefix is Claude's and Codex's own notice grammar, not a
+  // harness registry. `grok` is absent on purpose: "Grok usage limit reached"
+  // as conversation text has never been captured, and adding a word here is
+  // how an ordinary short summary that happens to start with the harness name
+  // would bench a working subscription (planning#453).
   /^[^a-z0-9]*(?:claude(?: ai| code)?|codex)?\s*usage limit reached\b/i,
   /^[^a-z0-9]*you'?ve hit (?:your|[a-z]+'?s) (?:weekly|monthly|session|5h|five[- ]hour) (?:usage )?limit\b/i,
 ];
@@ -133,7 +151,7 @@ function parseClockResetUtc(message: string, now: number): string | null {
 }
 
 /**
- * docs/150 req 7 — does this turn error mean the account that ran it is out of
+ * docs/150-multiple-provider-subscriptions req 7 — does this turn error mean the account that ran it is out of
  * quota, and if so, until when?
  *
  * Returns `null` when the error is anything else, so the caller leaves the
@@ -165,7 +183,7 @@ export function detectHardExhaustion(
  *
  * The cost of asymmetry is that this channel carries the agent's own prose,
  * where a phrase match is no longer proof: a false positive benches a healthy
- * account AND repeats the turn's side effects (docs/150 req 14 accepts that on
+ * account AND repeats the turn's side effects (docs/150-multiple-provider-subscriptions req 14 accepts that on
  * a real failover, not on a misread). So it does NOT reuse the error channel's
  * patterns — it matches only the provider's own notice, anchored at the start
  * of a message short enough to be one ({@link TURN_TEXT_NOTICE_PATTERNS},
@@ -213,6 +231,7 @@ export function normalizeAgentUsageLimitError(
   agentId: AgentId,
   message: string,
   limits: SubscriptionLimitsMap | undefined,
+  now: number = Date.now(),
 ): string {
   if (!/monthly usage limit/i.test(message)) return message;
 
@@ -220,17 +239,30 @@ export function normalizeAgentUsageLimitError(
   // only true if *every* connected account for this provider is exhausted.
   // Reclassifying on the first exhausted account would tell a user with a
   // healthy second subscription that they are out of quota.
-  const providerLimits = listSubscriptionLimits(limits ?? {}).filter((l) => l.agentId === agentId);
+  //
+  // docs/252 req 10 — and it is per `(service, billing mode)`, so the group is
+  // this harness's own vendor SUBSCRIPTION: the only thing that reports a
+  // quota, and the only thing the message's "5h usage limit" wording describes.
+  // A turn redirected to another service has no window here and falls through
+  // with the upstream text intact, which is the honest outcome.
+  const modeKey = limitsModeKey({
+    serviceId: nativeServiceForHarness(agentId) ?? agentId,
+    billingMode: "sub",
+  });
+  const providerLimits = Object.values(limits?.[modeKey] ?? {});
   const sessionWindows = providerLimits.map((l) => l.session).filter((w) => w !== null);
   if (sessionWindows.length === 0) return message;
+  // docs/260-turn-level-account-routing req 8 — and only on windows that still describe now. A rolled-over
+  // or timestamp-less 100% reading would rewrite a real monthly-limit refusal
+  // into a 5h one and quote a reset instant that has already passed, which is
+  // the opposite of req 6's "report what the provider said".
   if (sessionWindows.some((w) => w.usedPct === null || w.usedPct < 100)) return message;
-  // Report the window that frees up first.
+  if (sessionWindows.some((w) => !subscriptionWindowIsCurrent(w, now))) return message;
+  // Report the window that frees up first. Every window is current here, so
+  // each `resetAt` parses.
   const sessionLimit = sessionWindows.reduce((soonest, w) =>
     Date.parse(w.resetAt) < Date.parse(soonest.resetAt) ? w : soonest);
-  const reset = new Date(sessionLimit.resetAt);
-  const resetText = Number.isNaN(reset.getTime())
-    ? sessionLimit.resetAt
-    : reset.toISOString();
+  const resetText = new Date(sessionLimit.resetAt).toISOString();
   const label = AGENT_LIMIT_LABELS[agentId] ?? agentId;
   return `You've hit ${label}'s 5h usage limit. It resets at ${resetText}.`;
 }

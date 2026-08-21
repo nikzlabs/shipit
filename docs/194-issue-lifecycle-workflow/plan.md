@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-114
+issue: planning#116
 description: Automatic issue lifecycle — mark started when a session takes on an issue, mark completed when the finishing PR merges, with the agent deciding which PR finishes it via a Closes <pointer> line.
 ---
 
@@ -104,7 +104,7 @@ When the agent judges that a PR **fully resolves** the issue, it includes a
 closing line in the PR body:
 
 ```
-Closes SHI-43
+Closes planning#45
 ```
 
 The pointer is in the **tracker-neutral** form `shipit issue` already

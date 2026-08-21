@@ -1,8 +1,17 @@
 import type { ChatMessage, ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 import { isPresentTool } from "./tool-names.js";
+import { TASK_LIST_TOOL_NAMES, isTaskListTool } from "../../server/shared/task-list-tools.js";
+import { foldTaskList, type TaskItem } from "./task-list.js";
 
 // Tools that render as standalone items outside the grouped container
-export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "EnterPlanMode", "ExitPlanMode"]);
+export const STANDALONE_TOOLS = new Set([
+  "AskUserQuestion",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  // The task-list tools draw nothing on their own — the panel draws them — so
+  // they must never be folded into the clipped tool group either.
+  ...TASK_LIST_TOOL_NAMES,
+]);
 
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
 //
@@ -68,6 +77,7 @@ export const CARD_MESSAGE_FIELDS = [
   "childMerged",
   "selfMergeWatch",
   "sessionReport",
+  "nonTurnFailure",
 ] as const satisfies readonly (keyof ChatMessage)[];
 
 /**
@@ -78,7 +88,7 @@ export const CARD_MESSAGE_FIELDS = [
  * Two kinds qualify:
  *
  *   - a card carrier (any `CARD_MESSAGE_FIELDS` field), where the card field IS
- *     the content — SHI-112;
+ *     the content — planning#114;
  *   - a system notice (`notice: true`, docs/138), the muted full-width panel an
  *     `emitNoticeInTurn` call produces (account failover, guarded-mode warning,
  *     pre-turn-reset skip).
@@ -102,16 +112,107 @@ export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
   | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] }
   | { kind: "subagent"; tool: ToolUseBlock; streaming: boolean; messageIndex: number }
-  | { kind: "standalone-tool"; tool: ToolUseBlock; result?: ToolResultBlock; streaming: boolean; messageIndex: number };
+  | { kind: "standalone-tool"; tool: ToolUseBlock; result?: ToolResultBlock; streaming: boolean; messageIndex: number }
+  | { kind: "task-panel"; tasks: TaskItem[]; messageIndex: number };
+
+/**
+ * Is `next` the same element as `prev`, such that the row rendering it would
+ * draw exactly the same thing?
+ *
+ * Tool and result objects are compared by REFERENCE, not by value: they are the
+ * very objects hanging off `ChatMessage`, so an unchanged message yields
+ * unchanged refs and a changed one yields fresh ones. That is precisely the
+ * signal we want, and it costs nothing.
+ *
+ * A `message` element deliberately carries no message content — the row takes
+ * `messages[index]` as its own prop, so the message's identity (not this
+ * element's) is what re-renders a bubble whose text just grew.
+ */
+function sameElement(prev: VisualElement, next: VisualElement): boolean {
+  if (prev.kind !== next.kind) return false;
+  switch (next.kind) {
+    case "message": {
+      const p = prev as Extract<VisualElement, { kind: "message" }>;
+      return p.index === next.index && p.hideTools === next.hideTools;
+    }
+    case "tool-group": {
+      const p = prev as Extract<VisualElement, { kind: "tool-group" }>;
+      return p.streaming === next.streaming
+        && p.messageIndices.length === next.messageIndices.length
+        && p.messageIndices.every((v, i) => v === next.messageIndices[i])
+        && p.items.length === next.items.length
+        && p.items.every((it, i) =>
+          it.tool === next.items[i].tool
+          && it.result === next.items[i].result
+          && it.isLast === next.items[i].isLast);
+    }
+    case "subagent": {
+      const p = prev as Extract<VisualElement, { kind: "subagent" }>;
+      return p.tool === next.tool && p.streaming === next.streaming && p.messageIndex === next.messageIndex;
+    }
+    case "standalone-tool": {
+      const p = prev as Extract<VisualElement, { kind: "standalone-tool" }>;
+      return p.tool === next.tool && p.result === next.result
+        && p.streaming === next.streaming && p.messageIndex === next.messageIndex;
+    }
+    case "task-panel": {
+      const p = prev as Extract<VisualElement, { kind: "task-panel" }>;
+      return p.messageIndex === next.messageIndex
+        && p.tasks.length === next.tasks.length
+        && p.tasks.every((t, i) => {
+          const o = next.tasks[i];
+          return t.id === o.id && t.subject === o.subject
+            && t.status === o.status && t.activeForm === o.activeForm;
+        });
+    }
+  }
+}
+
+/**
+ * Reuse the previous run's object for every element that would render
+ * identically (planning#375).
+ *
+ * `buildVisualElements` allocates a fresh object for every element on every
+ * call, so before this pass NOTHING in the transcript was ever referentially
+ * equal between two renders — which made `React.memo` on a row useless and left
+ * every update re-rendering all ~2,000 rows at a measured 92 ms a time.
+ *
+ * Alignment is positional, and it does not have to be clever: during a
+ * streaming turn elements are appended, so the whole prefix aligns and the
+ * comparison is a handful of reference checks per element. An insertion in the
+ * middle (a rewind, a card landing out of order) breaks alignment from that
+ * point on, and everything after it is simply treated as new — correct, just
+ * not free. This walk is O(n) in cheap comparisons; the 92 ms it replaces was
+ * O(n) in React fiber work.
+ */
+function reuseUnchanged(previous: VisualElement[], next: VisualElement[]): VisualElement[] {
+  const out = next;
+  const shared = Math.min(previous.length, next.length);
+  for (let i = 0; i < shared; i++) {
+    if (sameElement(previous[i], next[i])) out[i] = previous[i];
+    else break;
+  }
+  return out;
+}
 
 /**
  * Build a flat list of visual elements from messages.
  * Extracts groupable tools from consecutive assistant messages into shared tool-groups.
  * Text/images/files render as separate message bubbles without tools.
  * Preserves original chronological order — tools from a message appear after that message's text.
+ *
+ * `previous` is the last result this caller got. When supplied, unchanged
+ * elements come back as the SAME objects, so a memoized row can bail out — see
+ * `reuseUnchanged`. Omit it and the function behaves exactly as it always did.
  */
-export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
+export function buildVisualElements(messages: ChatMessage[], previous?: VisualElement[]): VisualElement[] {
   const elements: VisualElement[] = [];
+  // The task panel is its own element, not something a message bubble draws.
+  // It has to be: the calls that build it carry no text, so the message holding
+  // the last one often produces no bubble at all — and when it also holds an
+  // ordinary tool it produces a tool-group instead. Anchoring the panel to a
+  // bubble made it vanish in exactly those cases.
+  const taskList = foldTaskList(messages);
   let toolAccum: { tool: ToolUseBlock; result?: ToolResultBlock }[] = [];
   let toolMsgIndices: number[] = [];
   let lastToolMsgStreaming = false;
@@ -165,7 +266,7 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       // tools would change the rendering from tool-group → message bubble, causing
       // the tool-group to disappear and the dialog to jump.
       const extractableStandalone = nonSubagentTools.filter(
-        (t) => isStandaloneTool(t.name) && t.name !== "TodoWrite",
+        (t) => isStandaloneTool(t.name) && !isTaskListTool(t.name),
       );
       if (extractableStandalone.length > 0) {
         flushTools();
@@ -181,9 +282,10 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       // and no visible text content, extract them as standalone elements instead
       // of rendering an empty bubble. This handles history-loaded messages where
       // ExitPlanMode was persisted in a separate message group from the plan text.
-      // Exclude TodoWrite-only messages — those render via lastTodoWriteId in the bubble.
+      // Exclude the task-list tools — the panel draws those, so extracting them
+      // here would put an empty standalone element beside it.
       const extractableStandalone = nonSubagentTools.filter(
-        (t) => isStandaloneTool(t.name) && t.name !== "TodoWrite",
+        (t) => isStandaloneTool(t.name) && !isTaskListTool(t.name),
       );
       const standaloneOnly = msg.role === "assistant" && !hasVisibleContent
         && extractableStandalone.length > 0
@@ -194,8 +296,12 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
           elements.push({ kind: "standalone-tool", tool, result, streaming: !!msg.streaming, messageIndex: i });
         }
       } else {
-        // Hide tools in the bubble when the only tools are subagent tools (rendered separately)
-        const hideSubagentOnly = subagentTools.length > 0 && nonSubagentTools.length === 0;
+        // Hide tools in the bubble when nothing left in it would draw anything:
+        // the subagent tools render as their own elements, and the task-list
+        // tools render as the panel. Leaving them visible drew the subagent
+        // twice — once as a generic tool line in the bubble, once as its card.
+        const hideSubagentOnly = subagentTools.length > 0
+          && nonSubagentTools.every((t) => isTaskListTool(t.name));
         elements.push({ kind: "message", index: i, hideTools: hideSubagentOnly });
       }
     } else {
@@ -208,6 +314,14 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     // `toolResults` for the nested-tree view (109).
     for (const tool of subagentTools) {
       elements.push({ kind: "subagent", tool, streaming: !!msg.streaming, messageIndex: i });
+    }
+
+    // The panel goes where the list last changed, after that message's own
+    // tools. A read-only `TaskList`/`TaskGet` doesn't move it, so re-checking
+    // the list mid-turn leaves the panel where the user last saw it.
+    if (i === taskList?.anchorIndex && taskList.tasks.length > 0) {
+      flushTools();
+      elements.push({ kind: "task-panel", tasks: taskList.tasks, messageIndex: i });
     }
   }
 
@@ -227,5 +341,8 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     }
   }
 
-  return elements;
+  // Strictly after the post-process, which MUTATES `streaming` in place. Run it
+  // the other way round and the pass would rewrite an element the previous
+  // render is still holding.
+  return previous ? reuseUnchanged(previous, elements) : elements;
 }

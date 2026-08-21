@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-245
+issue: planning#247
 title: Sub-agent result delivery — one artifact, named and re-readable
 description: Make the text `shipit agent run` hands the invoking agent provably the same artifact the UI renders, and recoverable when the call dies.
 ---
@@ -8,7 +8,7 @@ description: Make the text `shipit agent run` hands the invoking agent provably 
 
 ## The report
 
-SHI-245: for a single `shipit agent run --agent codex`, the text delivered to the
+planning#247: for a single `shipit agent run --agent codex`, the text delivered to the
 **invoking agent** on stdout and the text shown in the **ShipIt UI** were
 different documents, and the agent's copy was materially less complete — a
 different opening sentence, two sections missing, ~9 findings where ~15 existed.
@@ -111,7 +111,7 @@ a foreground shell cap (10 min in Claude Code) is shorter than the consult cap
 (30 min), and documents `shipit agent result`. The foreground ceiling was
 previously undiscoverable until it bit.
 
-## Follow-on: backgrounding needed a durable in-flight surface (SHI-278)
+## Follow-on: backgrounding needed a durable in-flight surface (planning#280)
 
 §5's "launch long consults in the background" landed before the UI had anywhere
 to *show* a backgrounded consult. docs/144 §7 built the in-flight spinner as
@@ -130,7 +130,7 @@ bounded. That section, not this one, is the reference.
 
 ## Deliberate non-changes
 
-- **No UI change** *(superseded by SHI-278 — see above; the card is now created
+- **No UI change** *(superseded by planning#280 — see above; the card is now created
   at spawn time and renders a pending state)*. The card already renders the
   verbatim output; the parity guarantee is server-side. A run-id chip on the card
   would be noise for the common single-consult case.
@@ -169,9 +169,9 @@ its correct transcript position (it happened after the turn), the same choice
 `finalizeInProgress` *before* clearing `running`, so `running === false`
 guarantees there is no in-progress set to join.
 
-### How this sits with SHI-278 (docs/144 §7a)
+### How this sits with planning#280 (docs/144 §7a)
 
-SHI-278 landed in parallel and moved consult-card *creation* to spawn time: a
+planning#280 landed in parallel and moved consult-card *creation* to spawn time: a
 `pending` card is emitted through `emitChatCard` when the run starts, and the
 terminal status is applied later through `persistCardTransition` — which already
 carried the `running` guard, for the same reason described here ("a post-finalize
@@ -179,10 +179,10 @@ carried the `running` guard, for the same reason described here ("a post-finaliz
 row"). Between them the two changes close the hole from both ends, and neither
 subsumes the other:
 
-- SHI-278 removes the *ordinary* backgrounded consult from the hazard: the launch
+- planning#280 removes the *ordinary* backgrounded consult from the hazard: the launch
   happens mid-turn, so the pending card legitimately rides the in-progress turn,
   and only the terminal patch is post-turn.
-- This fix covers the emit that SHI-278's guard does not reach: **a launch that is
+- This fix covers the emit that planning#280's guard does not reach: **a launch that is
   itself post-turn** — the shim firing from a background shell started in an
   earlier turn. There the *pending* card is what lands with no turn in flight, and
   without the append path it is deleted by the next turn, after which the terminal

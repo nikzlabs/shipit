@@ -1,6 +1,6 @@
 ---
 description: Seed script that adds a reproducible set of repos to the ShipIt-in-ShipIt dogfood loop at dev-service boot, plus the API the outer agent uses to drive the inner ShipIt.
-issue: https://linear.app/shipit-ai/issue/SHI-52
+issue: planning#54
 ---
 
 # Dogfood seed sessions (reproducible inner state for ShipIt-in-ShipIt)
@@ -182,7 +182,9 @@ sh -c "
 
 (The `npm install` this doc originally showed is gone — the `dev` service shares
 the agent container's `node_modules` and waits for `agent.install` instead; see
-feature 137. The seed step slots in after the orch launch either way.)
+feature 137. The seed step slots in after the orch launch either way. It is now
+`npx tsx scripts/seed-inner.ts` rather than the single repo seeder shown above —
+see [One seed step, three things seeded](#one-seed-step-three-things-seeded).)
 
 The script itself owns the "wait until healthy" poll (bounded retries, ~60s cap)
 so it's resilient to the orch taking a while to boot behind that wait.
@@ -234,7 +236,7 @@ So the work for reqs 8–10 is:
   the new behavior, and it belongs to the existing route rather than to a second
   one. Implemented by lifting the materialization out of `activateSession` into
   `services/materialize-runner.ts` and calling it from both sides, so the
-  archived guard and the SHI-179 workspace restore cannot drift between
+  archived guard and the planning#181 workspace restore cannot drift between
   transports. What still 404s: an id with no session row, an archived session,
   and a session with no workspace.
 - **Trust, at seed time.** The 403 trust gate (`session-runner.ts:336`) is the
@@ -253,13 +255,279 @@ calls above are `curl` one-liners against a documented API, and a wrapper would
 be a second surface to keep in sync with the routes. A short section in
 `CLAUDE.md`'s dogfooding paragraph, listing them, is the deliverable.
 
+## Seeding credentials, not just repos (reqs 11–12)
+
+The same idea one layer down: a developer sets a service key **once** in the
+outer ShipIt's Settings → Secrets, and every dogfood session comes up holding it
+(req 11).
+
+### The env var was already forwarded — and was not a credential
+
+`x-shipit-secrets` has forwarded `ANTHROPIC_API_KEY` into the `dev` service's
+environment since docs/118. That is genuinely enough to *run* a turn, which is
+why it looked done. It does not satisfy req 12, and the gap is exact:
+
+| Asked of an env-supplied key | Answer | Where |
+|---|---|---|
+| Are its models eligible in the picker? | **Yes** | `listConfiguredCredentials` reads `env[storageEnv]` directly (`service-routing.ts`) |
+| Does it have a route id? | **Yes**, synthetic | `envRouteIdFor` → `env:<NAME>`, or a legacy `claude-api-key`-style id |
+| Does inner Settings → Services show it? | **No** | `listCredentialRoutes` reads the credential STORE only (`services/credential-routes.ts`); `ServicesPanel.tsx` renders that plus provider accounts |
+| Can it be ordered, persistently benched, failed over to? | **No** | `stringSelectionFor` reaches it only when *nothing* is stored — it has no row to carry a priority or an `exhaustedUntil` |
+| Can a quota reader attach to it? | **Partly** | `credentialOwnerForRouteId` resolves an `env:` id from the catalogue, and Claude's provider keeps cached reserved routes in `routeIds()` — so an *event-fed* snapshot does land. What it cannot do is survive as a stored bench, or be reported for a service with no registered limits provider |
+
+So an env key is an *eligibility* fact, not a credential. `app-di.ts` seeds
+`process.env` **from** the stored routes at boot; nothing does the inverse, and
+`syncProcessEnvForMode` is explicit that ShipIt only ever touches a value it put
+there. That deliberate restraint is right for a real deployment and is exactly
+what leaves the dogfood instance credential-less.
+
+The quota row was overstated in the first draft of this doc ("nothing to attach
+a reader to") and a cross-agent review corrected it. The accurate statement is
+narrower and still sufficient for `planning#339`: a stored row is what a
+per-credential quota snapshot can be *kept on* across restarts and what the
+Services card renders a pill against. Registering GLM's `zai-plan-usage`
+provider is still that issue's own work — only Claude's and Codex's are
+registered today (`agents/index.ts`).
+
+### The missing half
+
+`scripts/seed-inner-credentials.ts`, run from the same boot hook as the repo
+seeder, POSTs each supplied variable to `/api/credential-routes`. Over HTTP
+rather than at the store, because the orchestrator owns that store, is already
+up, and the POST also fires `propagateCredentialChange()` and the
+`credential_routes` SSE — an inner UI already open updates live.
+
+Generalisation is the catalogue's, not the script's: it walks
+`credentialStorageEnvNames()` and places each name with
+`credentialModeForStorageEnv()`. There is no GLM branch.
+
+Adding a service is therefore *nearly* one catalogue edit — `x-shipit-secrets`
+is the exception, and it cannot be derived: static YAML, read by the outer
+orchestrator's secret resolver long before any of this code runs. So
+`seed-inner-credentials.test.ts` guards it, and adding a service fails the build
+naming the missing key rather than quietly making that service untestable in
+dogfood. Deliberately a one-way guard: it does **not** assert the block contains
+nothing else, since the dev service may legitimately want an unrelated secret
+(`GITHUB_TOKEN` already is one) and a stale entry left by a renamed `storageEnv`
+is indistinguishable from a deliberate one.
+
+Idempotency mirrors req 4's: a `(service, billing mode)` that already holds a
+`via: "string"` route is left completely alone. Not a PATCH — re-writing the
+secret on every boot would silently clobber a credential edited in the inner UI.
+A connected **account** is not a reason to skip, since an account and a supplied
+token are different credentials of the same mode.
+
+### The billing hazards, stated rather than fixed
+
+Two mechanisms, and the first draft of this section had only the second — and
+had it wrong. Both corrections came from the cross-agent review; the wrong one
+is left visible here because it is the more instructive.
+
+**1. Background work follows the install.** Session naming and PR descriptions
+resolve an unpinned model through `firstEligibleNonTurnSelection`
+(`non-turn-model.ts`): the *first eligible model in catalogue order*, over
+whatever credentials the install holds. So supplying **any** metered key can
+make it what that work spends on, with no CLI and no ambient-variable trick
+involved. Observed live on the smoke instance: with only `DEEPSEEK_API_KEY` set,
+Settings → Services → Background work reads "DeepSeek · V4 Flash". This is the
+hazard that actually generalises across all eight names, and calling the five
+ShipIt-namespace ones "inert" — as the first draft did — was wrong.
+
+**2. Three names bypass a connected account.** `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` are read by the vendor CLIs
+directly. The first draft said local-mode non-turn spawns are never scoped
+because `SessionRunner.spawnSubAgent` passes no `resolveHome`. **That is false**:
+`systemTurnDeps.agentFactory` prefers `runner.createAgent`
+(`runner-registry-factory.ts`), and local mode binds `resolveLocalAgentHome`
+into exactly that closure (`app-lifecycle.ts`). The real shape is narrower:
+
+- A **redirected** spawn is safe outright — `applyServiceRouting` deletes every
+  Anthropic credential variable and sets exactly one, so an ambient key cannot
+  reach a turn pointed at another service.
+- An **unshaped** spawn (the harness on its own vendor) is safe only when a
+  scoped `HOME` resolves, and `resolveLocalAgentHome` returns one **only for an
+  `account` route** — for a reserved/string route it deliberately keeps the
+  process-global home. With no account route, the scrub is a no-op and the
+  ambient variable is what the CLI reads.
+- Non-turn work adds a mismatch: `resolveLocalAgentHome` reads the *runner's*
+  resident route while `runNonTurnSpawn` selects its own target, so the home can
+  belong to a different credential than the work was routed to.
+
+Neither predates nor is caused by this change, and neither is fixable from here
+(the second is docs/150 / docs/252 territory and touches the container path
+too). What the feature owes is that they never become silent:
+
+- Declaring a name seeds nothing; **supplying a value is the per-key opt-in**,
+  and it already has the right granularity — the outer Settings → Secrets is
+  per-name.
+- The seed prints a `⚠` line per applicable hazard: one for every metered key,
+  naming Background work; one more for the vendor-native names.
+- The `dogfooding-shipit` skill carries both, replacing the narrower "leave
+  `ANTHROPIC_API_KEY` unset" advice it had for one key.
+
+`ZAI_CODING_PLAN_KEY` is worth naming explicitly as *not* a case of hazard 2:
+its `targetOverride` renames it to `ANTHROPIC_AUTH_TOKEN` only at spawn shaping,
+when `zai:sub` was actually selected.
+
+### How a stored credential reaches a local spawn
+
+Worth recording because the review's highest-severity finding was that it does
+not — that `SHIPIT_CREDENTIAL_<routeId>` is loaded only at `app-di` boot (and
+indeed `isAllowedAgentEnvKey` filters that prefix out there), so a route created
+at runtime would make a shaped spawn find no credential and raise
+`auth_required` until a restart.
+
+It is delivered elsewhere: `applyLocalMcp` wraps the local adapter's `run()` in
+`withTemporaryEnv(localMcpSpawnEnv(credentialStore))` → `selectAgentEnvForPush`
+→ `collectServiceCredentialEnv`, which emits every per-route name and is read
+**live from the store on every spawn**. So a credential seeded after boot works
+on the next turn, with no restart. Confirmed by running one on the dogfood
+instance rather than by reading: a session pinned to `deepseek:key` logged
+`route=reserved:cred_…` and `[claude] service routing: deepseek/key ->
+https://api.deepseek.com/anthropic`, and answered.
+
+### What becomes reachable
+
+Seeded from a single outer secret each: `anthropic:sub` (via the env token),
+`anthropic:key`, `openai:key`, `deepseek:key`, `zai:sub`, `zai:key`,
+`openrouter:key`, `vercel:key`. **`openai:sub` stays unreachable** — the
+catalogue gives ChatGPT's plan an `account` credential and no `storageEnv`, so
+it needs a real `codex login` device flow rather than a string, and no amount of
+seeding substitutes for it. `anthropic:sub` is reachable *as a string
+credential*; its OAuth-account form is likewise a login flow.
+
+## Seeding agent roles
+
+The same idea one layer further on: the inner instance came up with **zero**
+agent roles, so every role surface — the composer's role control, a populated
+Settings → Roles list, a role's disabled state — could not be looked at there at
+all. A visual check of docs/272's composer work was blocked on exactly that.
+
+**Provenance, stated because it is not a numbered requirement.** Reqs 1–12 above
+are the human's; this extends req 1's idea ("the inner ShipIt comes up with
+something to work in rather than an empty slate") from repos to roles, and it was
+asked for by the sibling session doing docs/264's composer work rather than
+stated by the product owner. It is recorded here rather than promoted into
+`requirements.md`, where an agent-supplied requirement would be indistinguishable
+from a human one. If it should be a requirement, it gets a number and a receipt
+first.
+
+### The params are resolved, never hardcoded
+
+A role is a `(harness, service, billing mode, model, level)` tuple
+(docs/264-agent-roles req 6), and a hardcoded one is stranded on any install
+whose secrets differ from the author's — strictly worse than seeding nothing,
+because a broken role in the list is a bug report waiting to be filed. So
+`scripts/seed-inner-roles.ts` reads `GET /api/bootstrap`'s `settings.agents` —
+the same credential-filtered join the Settings role editor renders its pickers
+from — and resolves each role against it: a harness that is installed and has an
+eligible model, that harness's first eligible model, and a level taken from the
+levels that harness actually declares.
+
+What is committed is therefore a set of **recipes** — *what kind of role*, not
+*which tuple*. Between them they cover what the surfaces need to be worth looking
+at, and no more:
+
+| Recipe | Harness | Level | Carries |
+|---|---|---|---|
+| `deep-dive` | the first runnable one | its highest | description + standing instructions |
+| `quick-look` | the same | its lowest | description only |
+| `second-opinion` | a *different* one, where the install runs two | `Default` | description + standing instructions |
+| `needs-a-credential` | a runnable one | `Default` | description; **deliberately unavailable** |
+
+`second-opinion` is skipped rather than duplicated on a single-harness install:
+its whole point is the harness axis, which one harness cannot show. The
+descriptions are written as descriptions the *agent* reads (docs/264 req 19),
+not as notes to self — a seeded set whose descriptions all said "the fast one"
+would exercise the field without exercising what the field is for.
+
+### One deliberately-unavailable role, derived rather than written down
+
+`needs-a-credential` exists so the "shown, disabled, with its reason" state is
+visible too, and it is **derived**: the seeder walks
+`catalogueEntriesForHarness()` for a runnable harness and takes the first entry
+that is *not* in that harness's eligible set. By construction that is a
+`(service, mode)` this install holds no credential for, whatever its secrets
+happen to be — so a hardcoded "unavailable" tuple that silently starts working
+one day is not a failure mode this can have, and an install that holds every
+credential simply gets no such role.
+
+`disconnected` is also the only unavailable state that is seedable at all.
+`stranded` names something the catalogue does not have, which is precisely what
+the save validator refuses (docs/264-agent-roles req 6); `quota_exhausted` is a
+routing state nothing can write. The harness is a *runnable* one on purpose,
+which isolates the reason to the missing credential — the inner UI then says
+"reconnect the service" rather than reporting a role that is also broken some
+other way.
+
+**`reviewer` is never written.** It is present on every install, its params are
+resolved per run (docs/264-agent-roles req 2), and the settings surface refuses
+pinned params under that name — so naming it could only produce a 400. The
+reserved name is excluded unconditionally rather than because the live settings
+read happened to report it.
+
+### Contract, and where it differs from its two siblings
+
+Same as the others: skip what is already present, exit 0 on any failure,
+`DOGFOOD_SEED=0` off entirely, and a per-step switch — `DOGFOOD_SEED_ROLES=0`.
+Two deliberate differences:
+
+- **The name is the idempotency key**, and a present name is left *completely*
+  alone. The developer may have re-pointed `deep-dive` at another model in the
+  inner UI; a seeder that corrected that on every restart would be a worse tool
+  than one that seeds nothing.
+- **One `PUT /api/settings` per role**, not one batched write. `applyRoleWrites`
+  validates every entry before writing any of it (which is right for a Settings
+  screen), so a batch would let one refused role take the good ones down with it
+  — the opposite of req 5.
+
+## One seed step, three things seeded
+
+There are three things to seed and they arrived one at a time, so the `dev`
+service's `command:` had grown into a chain of three interpreter invocations with
+the ordering rationale in a YAML comment. Nothing required that: all three
+modules already export dependency-injected functions, so `scripts/seed-inner.ts`
+is the single entry point compose names, and the order lives next to the code
+that depends on it. Each step keeps its own entry block, so any of them can still
+be run alone while debugging.
+
+The order is load-bearing twice over:
+
+1. **Credentials first**, because they decide the rest. A role names a harness
+   and a model, and the role seeder resolves those against the models this
+   install can actually run — so planning before the credentials are stored
+   plans against a narrower install and seeds fewer, or no, roles.
+2. **Repos last**, because a cold bare-cache clone takes minutes and the other
+   two are seconds of HTTP each.
+
+Consolidating adds exactly one guarantee: a step that throws something
+unexpected is logged and the **remaining steps still run**. Three separate
+invocations could not take each other down, and a single entry point must not
+become a single point of failure either. Everything else is unchanged and still
+each step's own — `DOGFOOD_SEED=0`, a per-step switch, skip-what-is-present,
+exit 0.
+
+The failure mode worth naming is the one every step shares by design: they exit 0
+on failure, so "seeded nothing" and "was never launched" look identical in the
+`[seed]` logs. `seed-inner.test.ts` therefore asserts the *wiring* — that the
+`dev` service's `command:` runs the entry point under `tsx`, and that the step
+order is what the reasoning above requires — so an unwired seeder fails the build
+instead of looking like success.
+
 ## Key files
 
 | File | Change |
 |---|---|
+| `scripts/seed-inner.ts` | New. The single entry point compose runs: credentials → roles → repos, sequential, each step's unexpected throw logged without cancelling the rest. Owns the order and the reason for it. |
+| `scripts/seed-inner.test.ts` | New. Step order, continue-after-throw, and the guard that `docker-compose.yml`'s `dev` command actually runs the entry point under `tsx`. |
+| `scripts/seed-inner-roles.ts` | New. Resolves a committed set of role *recipes* against `settings.agents` and writes each with one `PUT /api/settings`. Never writes `reviewer`; derives one deliberately-`disconnected` role from the catalogue. `DOGFOOD_SEED_ROLES=0` disables it alone. TypeScript, run under `npx tsx` — it imports the catalogue. |
+| `scripts/seed-inner-roles.test.ts` | New. Unit tests for the recipe resolution, the derived unavailable role, idempotency and the failure contract. |
+| `scripts/seed-inner-credentials.ts` | New (reqs 11–12). Catalogue-driven: every supplied `storageEnv` becomes a credential route via `POST /api/credential-routes`. Same fail-open/idempotent/`[seed]`-prefixed contract as the repo seeder; `DOGFOOD_SEED_CREDENTIALS=0` disables it alone. TypeScript, so it runs under `npx tsx` — it imports the catalogue. |
+| `scripts/seed-inner-credentials.test.ts` | New. Unit tests plus the guard that `docker-compose.yml`'s `x-shipit-secrets` covers every catalogue credential name. |
 | `scripts/seed-inner-sessions.js` | New. Add repo → poll `ready` → trust, per fixture entry, keyed for idempotency on `GET /api/repos`. Non-fatal on error, honors `DOGFOOD_SEED`. Plain Node (no deps) so it runs before/independent of the build. |
 | `scripts/dogfood-seed.json` | New. Default fixture — one repo. |
-| `docker-compose.yml` | Background seed step in the `dev` service's `command:`, detached so Vite is not held up. |
+| `docker-compose.yml` | Background seed step in the `dev` service's `command:`, detached so Vite is not held up — one `npx tsx scripts/seed-inner.ts`, which owns the credentials → roles → repos order. `x-shipit-secrets` declares every catalogue credential name. |
+| `.claude/skills/dogfooding-shipit/SKILL.md` | Credentials section rewritten: set them once outside, what a seeded credential *is*, and the three names that bypass a connected subscription. |
 | `docs/118-shipit-ui-local/plan.md` | Cross-link this doc from the dogfooding section. **Done.** |
 | `CLAUDE.md` | The "Dogfooding ShipIt in ShipIt" paragraph: the seed, plus the four calls the outer agent uses to drive the inner ShipIt. |
 | `services/materialize-runner.ts` | New. The runner-materialization core lifted out of `activateSession` — archived guard, agent reconciliation, workspace restore, `getOrCreate` — so WS connect and HTTP dispatch bring a session up the same way. |

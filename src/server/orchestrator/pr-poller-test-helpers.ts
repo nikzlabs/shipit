@@ -15,13 +15,20 @@ import type { SessionRunnerInterface, SessionRunnerRegistry } from "./session-ru
 /**
  * Minimal SessionRunnerRegistry fake for tests that need to drive the
  * viewer-gated supervisor. Lets a test attach/detach viewers and toggle a
- * session's `running` flag without spinning up real runners.
+ * session's `running` / `agentBusy` flags without spinning up real runners.
+ *
+ * `agentBusy` follows `running` unless `setBusy` overrides it — the real
+ * runner's getter is strictly wider (background tasks, a backgrounded sub-agent
+ * consult, the post-turn hold), and a fake that answered only `running` would
+ * make every gate built on `agentBusy` untestable: it could never read busy in
+ * the exact window — turn over, work not yet pushed — those gates exist for.
  */
 export function makeFakeRegistry(): SessionRunnerRegistry & {
   setViewers(sessionId: string, count: number): void;
   setRunning(sessionId: string, running: boolean): void;
+  setBusy(sessionId: string, busy: boolean | undefined): void;
 } {
-  const runners = new Map<string, { viewerCount: number; running: boolean }>();
+  const runners = new Map<string, { viewerCount: number; running: boolean; busy?: boolean }>();
   const ensure = (id: string) => {
     let r = runners.get(id);
     if (!r) { r = { viewerCount: 0, running: false }; runners.set(id, r); }
@@ -32,13 +39,19 @@ export function makeFakeRegistry(): SessionRunnerRegistry & {
     get: (id: string) => {
       const r = runners.get(id);
       if (!r) return undefined;
-      return { viewerCount: r.viewerCount, running: r.running } as unknown as SessionRunnerInterface;
+      return {
+        viewerCount: r.viewerCount,
+        running: r.running,
+        agentBusy: r.busy ?? r.running,
+      } as unknown as SessionRunnerInterface;
     },
     setViewers(sessionId: string, count: number) { ensure(sessionId).viewerCount = count; },
     setRunning(sessionId: string, running: boolean) { ensure(sessionId).running = running; },
+    setBusy(sessionId: string, busy: boolean | undefined) { ensure(sessionId).busy = busy; },
   } as unknown as SessionRunnerRegistry & {
     setViewers(sessionId: string, count: number): void;
     setRunning(sessionId: string, running: boolean): void;
+    setBusy(sessionId: string, busy: boolean | undefined): void;
   };
 }
 
@@ -124,12 +137,18 @@ export const CONVERSATION_OVERRIDES = {
   },
 };
 
+/**
+ * `archived: true` models `SessionManager.list()`'s `userArchived` filter: the
+ * session disappears from `list()` but `get()` still returns it. Anything that
+ * iterates `list()` (the poller's per-session loop) stops seeing it, which is
+ * how an armed managed auto-merge could be left with nothing to merge it.
+ */
 export function makeSessionManager(
-  sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string }[],
+  sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string; archived?: boolean }[],
   opts: { pendingMergeWatches?: string[] } = {},
 ): SessionManager {
   return {
-    list: () => sessions.map((s) => ({
+    list: () => sessions.filter((s) => !s.archived).map((s) => ({
       id: s.id,
       title: "Test",
       createdAt: new Date().toISOString(),
@@ -170,5 +189,8 @@ export function makeGitHubAuth(graphqlResult: unknown = null, restProbeResult: u
     // Poller reads this on every tick; default to "not limited" so existing
     // tests don't need to know about the rate-limit gate.
     getRateLimitState: vi.fn().mockReturnValue({ limited: false, resetAt: null, remaining: null }),
+    // The managed auto-merge loop's REST merge. Succeeds by default so a test
+    // only has to assert whether it was reached.
+    mergePullRequest: vi.fn().mockResolvedValue({ success: true, message: "merged" }),
   } as unknown as GitHubAuthManager;
 }

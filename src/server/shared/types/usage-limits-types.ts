@@ -7,7 +7,11 @@
  * See docs/135-subscription-limits-badge/plan.md.
  */
 
-import type { AgentId } from "./agent-types.js";
+import type { BillingMode } from "../catalogue/types.js";
+import { credentialModeKey } from "./domain-types/credential-route.js";
+
+/** One of the two windows a subscription reading can describe. */
+export type SubscriptionWindowName = "session" | "weekly";
 
 export interface SubscriptionLimitsWindow {
   /**
@@ -34,10 +38,21 @@ export interface SubscriptionLimitsWindow {
 }
 
 export interface SubscriptionLimits {
-  /** Which agent these numbers belong to. */
-  agentId: AgentId;
   /**
-   * docs/150 req 10 — which *route* produced these numbers: a provider-account
+   * docs/252 req 10 — usage is reported per **billing mode of a service**, not
+   * per agent. `agentId` was the conflation this feature removes: a harness is
+   * not a vendor, so it cannot own a quota, and one service can hold both a
+   * subscription (which has an allowance) and a key (which has none).
+   *
+   * Only a `sub` mode ever produces a snapshot — a key has no allowance and
+   * nothing that resets, and req 10 keeps that slot empty rather than filling
+   * it with a placeholder. The mode is still carried explicitly so the key is
+   * uniform with every other `(service, mode)` map in this feature.
+   */
+  serviceId: string;
+  billingMode: BillingMode;
+  /**
+   * docs/150-multiple-provider-subscriptions req 10 — which *route* produced these numbers: a provider-account
    * id (`acct_…`) or a reserved route id (`claude-env-oauth`,
    * `claude-api-key`).
    *
@@ -54,10 +69,43 @@ export interface SubscriptionLimits {
    * determine it.
    */
   plan: string | null;
-  /** Rolling short-window quota (Claude: 5h, Codex: 5h). */
+  /**
+   * Rolling short-window quota (Claude: 5h, Codex: 5h).
+   *
+   * **`null` is ambiguous and must not be read as "this plan has no 5h
+   * window"** — see {@link SubscriptionLimits.availableWindows}, which is how a
+   * provider says that. It can equally mean "not delivered yet": Claude's
+   * `rate_limit_event` carries ONE window per event, so the first reading of a
+   * session legitimately has the other side null on a plan that has both.
+   */
   session: SubscriptionLimitsWindow | null;
-  /** Weekly quota across all models. */
+  /** Weekly quota across all models. `null` as for {@link SubscriptionLimits.session}. */
   weekly: SubscriptionLimitsWindow | null;
+  /**
+   * Which windows this plan HAS — **set only by a provider whose source states
+   * them all at once**, and omitted by one whose readings arrive piecemeal.
+   *
+   * This exists because `session: null` cannot carry the fact. Two very
+   * different situations produce it and the pill has to tell them apart
+   * (planning#454): SuperGrok genuinely has one weekly pool and no short
+   * window, so a `5h · —` beside its real figure is a read-out nothing can ever
+   * fill; but Claude's event stream delivers `five_hour` and `seven_day` in
+   * separate events, so a null there means "not yet". Deriving the answer from
+   * the null was tried and is wrong for exactly that reason — it would have
+   * dropped a real 7d meter for the whole of a first turn, and longer if the
+   * `/api/oauth/usage` seed was 429'd.
+   *
+   * So the provider that KNOWS answers, and the one that cannot stays quiet:
+   *
+   *   - `XaiLimitsProvider`, `ZaiLimitsProvider`, `CodexLimitsProvider` — one
+   *     payload describes the whole plan, so an unmentioned window is absent.
+   *   - `ClaudeLimitsProvider` — omits this, and both meters render as they
+   *     always have.
+   *
+   * Omitted or empty ⇒ the reader says nothing and every window is drawn. A
+   * reading that carries only a lockout countdown is exactly that case.
+   */
+  availableWindows?: SubscriptionWindowName[];
   /** Epoch ms when this snapshot was last updated. */
   fetchedAt: number;
   /**
@@ -72,12 +120,59 @@ export interface SubscriptionLimits {
 }
 
 /**
- * Map sent over the wire on every `subscription_limits` SSE broadcast:
- * **provider → route → limits** (docs/150 req 10).
+ * Does this window's reading still describe **now**? (docs/260-turn-level-account-routing req 8)
  *
- * The inner key is a provider-account id or a reserved route id, so a user with
- * two Anthropic subscriptions gets two independent entries under `claude`
- * rather than one that flickers between whichever account last took a turn.
+ * A percentage describes the window it was measured in. Once `resetAt` passes,
+ * that window is gone and the number is a fact about a period that has ended;
+ * with no usable `resetAt` at all, there is no period to attach it to. Neither
+ * one is evidence about the current window, so neither may answer a routing
+ * question.
+ *
+ * The rule is one function because every reader of a percentage needs it and
+ * they are spread across the manager, the credential store, the rate-limit
+ * normalizer and the client. Reading `usedPct` without it was a genuine bug:
+ * snapshots are **event-fed only** (`limits-registry.ts` polls nothing, by
+ * design — Anthropic's usage API locks out after a handful of calls), so a
+ * reading refreshes when a turn runs on that credential, or when the user
+ * presses refresh. Any rule that demotes a credential on a reading it can no
+ * longer replace is self-sustaining: the demotion keeps turns off the
+ * credential whose turns are the only source of a newer reading. docs/260
+ * removed that shape from the blocking checks; it survived in the ordering
+ * ones until this rule existed.
+ *
+ * Discarding a reading is safe because it only ever means "try this credential
+ * again": a credential that is genuinely spent is refused by the harness, and
+ * that refusal — not telemetry — is the authoritative signal (req 5), bounded
+ * and remembered by refusal memory (req 9).
+ *
+ * This is about **evidence**, not display: `meterDisplay` in
+ * `SubscriptionLimitsBadge.tsx` keeps its own three-way split, because a
+ * rolled-over window and an unreported number look different to a reader.
+ */
+export function subscriptionWindowIsCurrent(
+  window: { resetAt?: unknown } | null | undefined,
+  now: number,
+): boolean {
+  if (typeof window?.resetAt !== "string") return false;
+  const at = Date.parse(window.resetAt);
+  return !Number.isNaN(at) && at > now;
+}
+
+/**
+ * Map sent over the wire on every `subscription_limits` SSE broadcast:
+ * **`${serviceId}:${billingMode}` → route → limits** (docs/150-multiple-provider-subscriptions req 10,
+ * re-keyed by docs/252 req 10).
+ *
+ * The OUTER key moved off `AgentId`; the inner one deliberately did not.
+ * Dropping the route would be a regression, not a simplification: two connected
+ * subscriptions have two independent 5h windows, two independent
+ * `/api/oauth/usage` results and two independent 429 lockouts, and req 12's
+ * failover has to know *which* subscription is exhausted before moving to
+ * another.
+ *
+ * So a user with two Anthropic subscriptions gets two independent entries under
+ * `anthropic:sub` rather than one that flickers between whichever account last
+ * took a turn.
  * Routes with no snapshot are **omitted** (not stored as `null`). Connected
  * provider accounts still render an unknown-state pill from the account
  * registry; this map supplies readings, not account visibility. Reserved
@@ -85,7 +180,12 @@ export interface SubscriptionLimits {
  * client replaces its store map wholesale on each broadcast so stale readings
  * and signed-out reserved routes propagate naturally.
  */
-export type SubscriptionLimitsMap = Partial<Record<AgentId, Record<string, SubscriptionLimits>>>;
+export type SubscriptionLimitsMap = Record<string, Record<string, SubscriptionLimits> | undefined>;
+
+/** The outer key of {@link SubscriptionLimitsMap} for one snapshot. */
+export function limitsModeKey(of: { serviceId: string; billingMode: BillingMode }): string {
+  return credentialModeKey(of.serviceId, of.billingMode);
+}
 
 /**
  * Why an on-demand usage refresh did or didn't produce new numbers.
@@ -127,15 +227,15 @@ export interface LimitsRefreshResult {
 /**
  * Flatten the nested map to a list — what most consumers actually want (render
  * each pill, find the worst window, ask whether anything is exhausted). Each
- * entry carries its own `agentId`/`routeId`, so nothing has to be re-derived
- * from the nesting.
+ * entry carries its own `serviceId`/`billingMode`/`routeId`, so nothing has to
+ * be re-derived from the nesting.
  */
 export function listSubscriptionLimits(map: SubscriptionLimitsMap): SubscriptionLimits[] {
   const out: SubscriptionLimits[] = [];
   for (const byRoute of Object.values(map)) {
     if (!byRoute) continue;
     // Defensive: this map arrives over the wire, and a hole here would
-    // otherwise throw inside every consumer that reads `.agentId`.
+    // otherwise throw inside every consumer that reads `.serviceId`.
     for (const snap of Object.values(byRoute)) if (snap) out.push(snap);
   }
   return out;

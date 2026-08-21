@@ -10,6 +10,7 @@ import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
 import { useIssuesStore } from "../issues-store.js";
+import { usePluginReposStore } from "../plugin-repos-store.js";
 import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
 
 /**
@@ -23,7 +24,7 @@ import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
  * answer is "unknown", and the sidebar's active repo is only a guess, which
  * would keep an issue open across a repo change (observed with warm sessions,
  * which aren't in the list). A sentinel differs from every other scope, so an
- * unknown session always re-scopes — fail closed, per docs/248 req 11.
+ * unknown session always re-scopes — fail closed, per docs/248-declared-issue-trackers req 11.
  */
 function sessionRepoUrl(sessionId?: string): string | null {
   const session = useSessionStore.getState();
@@ -34,7 +35,7 @@ function sessionRepoUrl(sessionId?: string): string | null {
 }
 
 /**
- * SHI-325 — re-scope the Issues tab to the repository we're moving to. Issue
+ * planning#327 — re-scope the Issues tab to the repository we're moving to. Issue
  * trackers are declared per repository (`shipit.yaml`, docs/248), so an open
  * issue and the loaded lists belong to the repository they were opened from;
  * carrying them into a repository that doesn't declare that tracker leaves an
@@ -60,6 +61,10 @@ export function resetSessionState() {
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
   usePresentStore.getState().reset();
+  // docs/262 — the Plugins tab's snapshot is session-scoped; drop it so the
+  // incoming session doesn't briefly gate its tab on the outgoing session's
+  // declarations (App refetches on the sessionId change).
+  usePluginReposStore.getState().reset();
   // Not an unconditional reset: the issues store is repo-scoped, not
   // session-scoped, and only drops its contents when the repo actually changes.
   scopeIssuesToSession();
@@ -82,6 +87,22 @@ export function resumeSessionInternal(sessionId: string) {
   session.setActivity(undefined);
   session.setQueuedMessages([]);
   session.setContainerFreshness(null);
+  // The transcript we just cleared belonged to the outgoing session, so the
+  // incoming one has no baseline yet — and `historyLoaded` is what says so.
+  // `useMessageHandler` queues `turn_snapshot` / `agent_event` only while this
+  // is false, which is the ONLY thing that makes the attach snapshot land on
+  // top of the `GET /history` baseline instead of under it. Leaving it true
+  // (this reset was missing, unlike in the sibling `resetSessionState`) let the
+  // snapshot dispatch immediately and then be overwritten by the history
+  // response, erasing everything the running turn produced since its last
+  // tool-result boundary until a reload.
+  //
+  // `useConnectionSync` also clears it on a `closed`/`connecting` status
+  // transition, which covers most switches — but not one that starts while the
+  // socket is ALREADY connecting (a reconnect whose history load landed late),
+  // because `setStatus("connecting")` is then a no-op and the effect never
+  // re-runs. Owning the flag here removes the dependence on that timing.
+  session.setHistoryLoaded(false);
   // docs/178 — the "Compacting…" spinner is a global, transient flag. Clear it
   // on switch so a compaction in flight on the outgoing session doesn't bleed
   // its spinner into the incoming one (it's never persisted, so history reload
@@ -98,7 +119,13 @@ export function resumeSessionInternal(sessionId: string) {
   useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePresentStore.getState().reset();
-  // Repo-scoped, not session-scoped (SHI-325): clears only when the incoming
+  // docs/262 — session-scoped: drop the outgoing session's plugin declarations
+  // so the incoming session never gates its tab (or warn dot) on them. The
+  // store also pairs every snapshot with its session id, so a missed reset
+  // can't leak state — this keeps the store from holding a dead session's
+  // data at all.
+  usePluginReposStore.getState().reset();
+  // Repo-scoped, not session-scoped (planning#327): clears only when the incoming
   // session belongs to a different repository than the outgoing one.
   scopeIssuesToSession(sessionId);
 
@@ -138,7 +165,11 @@ export function fullResetAllStores() {
   useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
+  // Every session is gone, so the slot keys these are keyed by are dead. The
+  // session-scoped `reset()` above deliberately keeps them (docs/089).
+  usePreviewStore.getState().clearPreviewPaths();
   usePresentStore.getState().reset();
+  usePluginReposStore.getState().reset();
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
   useRepoStore.getState().reset();
@@ -150,7 +181,6 @@ export function fullResetAllStores() {
 export async function createHeadlessSession(opts: {
   repoUrl: string;
   initialPrompt: string;
-  branch?: string;
   agent?: AgentId;
   model?: string;
   /**
@@ -160,6 +190,13 @@ export async function createHeadlessSession(opts: {
    * first turn runs with it. Persistence to localStorage stays in the picker.
    */
   reasoning?: string;
+  /**
+   * docs/272-user-selectable-roles reqs 1, 11 — the role picked in the overlay. Resolved by
+   * the server and applied OVER `agent`/`model`/`reasoning`, which describe the
+   * controls a role replaces; a name rather than a tuple, so the role's
+   * parameters are resolved where they are stored.
+   */
+  role?: string;
   /**
    * docs/175 — arm auto-merge for the new session at creation time. Per-session
    * and never persisted (decision #1): the overlay does NOT remember it in
@@ -186,7 +223,7 @@ export async function createHeadlessSession(opts: {
   if (files && files.length > 0) {
     const form = new FormData();
     // All current jsonBody fields are strings (or undefined). The multipart
-    // route reads each part's `value` as a string and parses agent/branch/etc.
+    // route reads each part's `value` as a string and parses agent/model/etc.
     // itself, so we just pass values through without coercion.
     for (const [k, v] of Object.entries(jsonBody)) {
       if (v === undefined) continue;

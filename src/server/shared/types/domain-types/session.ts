@@ -1,5 +1,6 @@
 import type { AgentId } from "../agent-types.js";
 import type { ProviderRouteKind } from "./provider.js";
+import type { BillingMode } from "../../catalogue/types.js";
 // Type-only, so it erases at compile time — no runtime edge from types/ back
 // into the detector module.
 import type { SecretFinding } from "../../secret-scan.js";
@@ -166,6 +167,14 @@ export interface SessionInfo {
    * pin protects list/disk persistence, while this flag consumes live capacity.
    */
   keepPreviewRunning?: boolean;
+  /**
+   * docs/277 — ISO instant the user muted the session; absent = not muted.
+   * A muted session is suppressed from `computeAttentionReason`, so it drops
+   * out of the row marker, the "Needs you" view and its count, and the
+   * notification/voice-note watcher together (req 2). Cleared at the START of
+   * the session's next turn, whatever started that turn (req 4).
+   */
+  mutedAt?: string;
   /** Branch name for sessions cloned from a repo. */
   branch?: string;
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */
@@ -202,11 +211,34 @@ export interface SessionInfo {
    */
   agentPinned?: boolean;
   /**
+   * docs/252 — the rest of the selected model's identity. `model` holds the
+   * model id; these two say which catalogue service offers it and under which
+   * billing mode, which a bare id cannot: the same id is reachable through a
+   * vendor directly and through a gateway, and through two modes of one service,
+   * at different prices. Together the three are a `ModelSelection`.
+   *
+   * Absent on a session that has never had a selection resolved (and on rows
+   * older than the migration whose model id the catalogue could not place).
+   */
+  serviceId?: string;
+  billingMode?: BillingMode;
+  /**
    * docs/150 — route used for the pinned provider. Account routes refer to a
    * stored ProviderAccount id; reserved routes are env/API-key auth paths.
+   *
+   * docs/252 — a route belongs to a `(service, billing mode)`, and the pair it
+   * was pinned for is recorded alongside it. Environment preparation reuses a
+   * pinned route unconditionally whenever it is present, so a selection that
+   * moves to a different service or mode must invalidate it — otherwise the
+   * turn respawns against the new endpoint and authenticates with the previous
+   * service's credential, which is a turn billed to the wrong account rather
+   * than a failed one. `setModelSelection` clears all four fields on such a
+   * move; the next turn's preflight re-pins.
    */
   providerRouteKind?: ProviderRouteKind;
   providerRouteId?: string;
+  providerRouteServiceId?: string;
+  providerRouteBillingMode?: BillingMode;
   /**
    * If this session was spawned by another session via `shipit session create`
    * (see docs/117-agent-spawned-sessions/), the parent's session ID. Used to
@@ -222,6 +254,42 @@ export interface SessionInfo {
    * orchestrator does not interpret it beyond persistence.
    */
   spawnedByTurn?: string;
+  /**
+   * docs/264-agent-roles req 14 — the **role** this session was started from, when one
+   * started it (`shipit session create --role deep-dive`).
+   *
+   * A **snapshot of the name, not a live link**, and the distinction is the
+   * whole point: a role decides what a child *starts as*, not what it is bound to
+   * (req 11). Editing that role later does not change a running child, deleting
+   * it does not orphan or alter one, and the child may over time run on something
+   * other than what the role named — it keeps the ordinary routing, account
+   * failover and model-retirement behaviour every session has. A field that
+   * looked like a reference would promise a relationship this design deliberately
+   * does not have.
+   *
+   * Immutable: written once at creation and never updated (the setter refuses to
+   * overwrite a value). Absent for every session started any other way.
+   */
+  originRoleName?: string;
+  /**
+   * docs/272-user-selectable-roles reqs 5, 13, 15 — the role currently **in force**: the one the
+   * composer shows in place of the harness, model and reasoning selectors.
+   *
+   * Not the same fact as {@link SessionInfo.originRoleName} above, and the two
+   * are deliberately separate rather than one field with a rule. That one is
+   * provenance and never changes; this one is true only while the role still
+   * describes what the session runs on, and is **cleared the moment the user
+   * moves any of the three controls the role set** (req 15). A single field
+   * would either go on naming a role the session has left, or lose the
+   * provenance the first time somebody switched model.
+   *
+   * **Never derived** (req 13). A session whose harness, model and level happen
+   * to equal a role's carries nothing here: selecting a role also puts its
+   * standing instructions in force, and those are not reachable by moving
+   * controls, so a coincidental match is not the same state and must not read
+   * like one.
+   */
+  roleName?: string;
   /**
    * docs/201 — the top-level ancestor of this session's spawn tree. A child can
    * itself spawn grandchildren; `parentSessionId` is single-step, so the sidebar
@@ -265,7 +333,7 @@ export interface SessionInfo {
    */
   mergeWatch?: SessionMergeWatch;
   /**
-   * docs/213 / SHI-315 — the session's auto-commit is currently refused because
+   * docs/213 / planning#317 — the session's auto-commit is currently refused because
    * the working tree carries a likely credential. Present ⇒ blocked.
    *
    * Persisted rather than held on the runner, because that is what makes the
@@ -337,10 +405,30 @@ export interface PreviousMergedPr {
   title: string;
   /** The prior PR's base branch — the new PR targets the same base. */
   baseBranch: string;
+  /**
+   * The durable copy of {@link SessionInfo.mergedHeadSha} — the SHA GitHub
+   * merged (the PR's `head.sha`) — carried across the re-arm that clears the
+   * column.
+   *
+   * `clearMerged` nulls `merged_head_sha` because a re-armed session is no
+   * longer *in* the merged state, and a stale anchor must never let the
+   * automatic docs/218 reset fire. But the explicit `shipit branch
+   * reset-to-base` gate reads the same field to prove a branch carries only
+   * already-shipped work, so clearing it made every re-armed session
+   * permanently force-only — it could never satisfy the gate again no matter
+   * what state its branch was in. Keeping the SHA here separates the two: the
+   * merged *state* is gone, the merged *fact* is not.
+   *
+   * It must stay the PR's `head.sha` and never be refreshed from local HEAD —
+   * the whole reason the anchor is meaningful (see `mergedHeadSha` above and
+   * `pr-status-poller.ts`'s capture site). Optional because rows written before
+   * this field existed have none; the gate then falls back to the other clauses.
+   */
+  mergedHeadSha?: string;
 }
 
 /**
- * docs/213 / SHI-315 — the sticky record of an auto-commit refused by the
+ * docs/213 / planning#317 — the sticky record of an auto-commit refused by the
  * secret scanner. Stored as JSON on the session row.
  *
  * `findings` are already redacted at the detector (only a short public prefix +
@@ -377,7 +465,7 @@ export interface SessionMergeWatch {
    * docs/196's parent→child watch.
    *
    * Deliberately one optional discriminator on the EXISTING row rather than a
-   * second watch subsystem: `merge-observed`, the SHI-258 retry supervisor, the
+   * second watch subsystem: `merge-observed`, the planning#260 retry supervisor, the
    * polling gate and `reconcilePending` then all come by inheritance. The
    * accepted cost is that a session cannot be parent-watched and self-watching
    * at the same time — the row holds one watch — so a self-arm is refused while
@@ -407,13 +495,13 @@ export interface SessionMergeWatch {
    * - `merge-observed` — the poller saw the merge and surfaced the card, but the
    *   actionable wake-turn has not RUN to completion yet. Covers both "queued
    *   behind a busy parent" and "the last delivery attempt threw"; the retry
-   *   supervisor tells those apart (SHI-258, see `merge-watch.ts`).
+   *   supervisor tells those apart (planning#260, see `merge-watch.ts`).
    * - `delivered` — the merge wake-turn actually ran. Terminal, fire-once.
    * - `closed-unmerged` — the PR closed without merging; a distinct wake-turn was
    *   enqueued so the parent doesn't proceed as if the work shipped. Terminal.
    * - `delivery-failed` — delivery threw `MAX_DELIVERY_ATTEMPTS` times; the watch
    *   gives up and surfaces a failure card into the parent instead of retrying
-   *   forever (SHI-258). Terminal.
+   *   forever (planning#260). Terminal.
    */
   state: "armed" | "merge-observed" | "delivered" | "closed-unmerged" | "delivery-failed";
   /** ISO instant the watch was armed. */
@@ -423,20 +511,20 @@ export interface SessionMergeWatch {
   /** ISO instant the wake-turn was enqueued into the parent. */
   deliveredAt?: string;
   /**
-   * SHI-258 — how many times `deliverWakeTurn` has been *invoked* for this watch
+   * planning#260 — how many times `deliverWakeTurn` has been *invoked* for this watch
    * (not how many times it failed). Persisted so the attempt budget survives an
    * orchestrator restart; drives both the retry backoff and the
    * `delivery-failed` cap.
    */
   deliveryAttempts?: number;
   /**
-   * SHI-258 — ISO instant of the most recent delivery attempt. The retry
+   * planning#260 — ISO instant of the most recent delivery attempt. The retry
    * supervisor's backoff anchor: a stalled watch is only re-attempted once the
    * backoff window since this instant has elapsed.
    */
   lastAttemptAt?: string;
   /**
-   * SHI-264 — durable identity of the most recent delivery attempt
+   * planning#266 — durable identity of the most recent delivery attempt
    * (`watchId:attempt`), stamped onto the wake-turn, sent to the worker, and
    * reported back from its `/agent/status`.
    *
@@ -452,9 +540,9 @@ export interface SessionMergeWatch {
    * row) can never have an old delivery re-settle the new watch.
    */
   deliveryId?: string;
-  /** SHI-258 — message from the most recent failed delivery attempt, if any. */
+  /** planning#260 — message from the most recent failed delivery attempt, if any. */
   lastDeliveryError?: string;
-  /** SHI-258 — ISO instant the watch gave up (`delivery-failed`). */
+  /** planning#260 — ISO instant the watch gave up (`delivery-failed`). */
   failedAt?: string;
 }
 
@@ -482,7 +570,7 @@ export interface ChildMergedCard {
   /** Merge commit SHA, when known (merged outcome only). */
   mergeSha?: string;
   /**
-   * SHI-258 — when set, this card is the *delivery-failure* variant: the merge
+   * planning#260 — when set, this card is the *delivery-failure* variant: the merge
    * (or close) was observed and the first card already told the user, but the
    * actionable wake-turn could never be delivered into this session (the
    * container wouldn't boot, credentials wouldn't refresh, …) and the watch has
@@ -524,7 +612,7 @@ export interface SelfMergeWatchCard {
 }
 
 /**
- * docs/233 (SHI-241) — how urgently a session report needs the recipient's
+ * docs/233 (planning#243) — how urgently a session report needs the recipient's
  * attention. Shapes both the card's tone and the wake-turn's instruction:
  *
  * - `fyi`     — informational; the recipient probably needs no action.
@@ -534,7 +622,7 @@ export interface SelfMergeWatchCard {
 export type SessionReportSeverity = "fyi" | "warn" | "blocker";
 
 /**
- * docs/233 (SHI-241) — payload for the inline "session report" transcript card
+ * docs/233 (planning#243) — payload for the inline "session report" transcript card
  * surfaced into a RECIPIENT session when another session in its cohort pushes a
  * report upward (`shipit session report`).
  *
@@ -615,11 +703,60 @@ export interface RepoInfo {
    * that spans the repo's whole sidebar group.
    *
    * An INDEX rather than a color: each theme maps it to its own light/dark
-   * value, so one stored choice looks right everywhere. Assigned at add time to
-   * the least-used index and never reassigned implicitly — the color is stable
-   * across adds, removals, reorders and hide/unhide — and changeable by the user
-   * from Project Settings. `undefined` only for a row written by an older build
-   * before the backfill migration ran; the UI falls back to no edge.
+   * value, so one stored choice looks right everywhere. Assigned at add time
+   * from `REPO_COLOR_ASSIGNMENT_ORDER` (which is NOT palette order — see that
+   * constant) and stable thereafter across adds, removals, reorders and
+   * hide/unhide, plus changeable by the user from Project Settings.
+   *
+   * The one exception is a migration: `database.ts` re-spread the colors the
+   * original backfill assigned, since those walked the palette in index order
+   * and came out as adjacent hues. `undefined` only for a row written by an
+   * older build before that backfill ran; the UI falls back to no edge.
    */
   colorIndex?: number;
+}
+
+/**
+ * docs/252 phase 7 (req 9) — payload for the inline notice shown when the work
+ * ShipIt does OUTSIDE a turn fails: naming a session, writing a pull-request
+ * description.
+ *
+ * Two properties the requirement fixes and neither is optional:
+ *
+ *  - **Durable.** Session naming is fire-and-forget — it can finish while the
+ *    user is looking at another session, or with no viewer attached at all — so
+ *    a toast would be silent in exactly the case req 9 exists to prevent. It is
+ *    transcript content, persisted through `emitChatCard` like every other card.
+ *  - **Dismissed is STATE on the row, not the absence of one.** Deleting the
+ *    row on dismissal would make "I read this" and "it never happened"
+ *    indistinguishable on the next reload, and would take the record of a
+ *    recurring failure with it.
+ *
+ * The card names the *service*, because that is what req 9 says failed and what
+ * the user can act on; the model and mode ride along so a user holding one
+ * service under two billing modes can tell which one broke.
+ */
+export interface NonTurnFailureCard {
+  /** Server-generated stable id — the dismissal target and the append-idempotency key. */
+  cardId: string;
+  /** Which piece of non-turn work failed. */
+  purpose: "session-naming" | "pr-description";
+  /**
+   * The service the work was pointed at, or absent when nothing was runnable at
+   * all — an install with no credentials has no service to blame, and saying so
+   * beats naming one at random.
+   */
+  serviceId?: string;
+  serviceName?: string;
+  billingMode?: "sub" | "key";
+  modelId?: string;
+  /** True when the selection came from the user's own pin rather than the derived default. */
+  pinned?: boolean;
+  /** What ShipIt did instead — the fallback the surrounding operation completed with. */
+  fallback: string;
+  /** Short failure detail, when the runner gave one. Never a stack trace. */
+  detail?: string;
+  createdAt: string;
+  /** Set once the user dismisses it. The row stays; only this flips. */
+  dismissedAt?: string;
 }

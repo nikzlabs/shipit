@@ -1,15 +1,30 @@
 /**
- * `shipit agent run` / `shipit agent result` handlers (docs/144, SHI-245).
+ * `shipit agent run` / `shipit agent result` handlers (docs/144, planning#247).
  *
  * `run` spawns ANOTHER registered agent for a one-shot sub-task and prints its
  * text on stdout. The prompt (the single context channel — task, diff, focus
  * hints) is read from a file or stdin, so backticks and $(...) are never
  * shell-evaluated. The shim forwards its inherited SHIPIT_AGENT_DEPTH so the
  * orchestrator's recursion guard can reject a sub-agent spawning a sub-agent.
- * Review is just a review-shaped prompt.
+ *
+ * docs/261 — WHO runs is said by naming a ROLE. `--role reviewer` leaves the
+ * reviewer to ShipIt's own settings (req 6): a review is no longer "a
+ * review-shaped prompt handed to whichever backend the repository's markdown
+ * named". A call that names no role must name every parameter — harness,
+ * service, billing mode, model, and the reasoning level where the harness
+ * declares levels (docs/275 req 2) — and an omission is refused rather than
+ * completed from a stored default (req 7).
+ *
+ * docs/264 — a role is now any name the USER configured, not one of a compiled-in
+ * list, and it may carry any subset of its parameters as an **override**
+ * (req 10): `--role deep-dive --model X`. The two used to be mutually exclusive;
+ * that refusal narrowed to the one shape with nothing to complete it from. Two
+ * reads make both nameable — `shipit agent roles` and `shipit agent params`
+ * (req 12) — and they exist together because an agent that may name a parameter
+ * and cannot see which parameters exist names one from memory.
  *
  * `result` re-reads a finished run's persisted consult card — the SAME artifact
- * the UI renders. Two reasons it exists (SHI-245): the caller can confirm its
+ * the UI renders. Two reasons it exists (planning#247): the caller can confirm its
  * copy is the user's copy instead of assuming it, and a run whose `run` call was
  * killed mid-flight (a foreground tool timeout SIGTERMs the shim; the spawn
  * keeps going server-side) is still recoverable instead of being lost silently.
@@ -24,6 +39,7 @@ import {
   onTerminationSignal,
   parseFlags,
   readBodyFromFileOrStdin,
+  success,
 } from "./shim-common.js";
 import {
   INLINE_PROMPT_FLAGS,
@@ -31,13 +47,16 @@ import {
   formatError,
   type RunDeps,
 } from "./shipit.js";
+// The module rather than the `types.js` barrel: the shim runs under tsx with no
+// bundler, so an import here is a module the container actually loads.
+import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
 
 const AGENT_RUN_INLINE_REDIRECT = `shipit agent run: inline prompt flags (-p/--prompt/-m) are not supported.
 Pass the prompt via --prompt-file FILE, or --prompt-file - to read it from stdin,
 so backticks and $(...) in the prompt are not evaluated by the shell. Use a
 single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
 
-  shipit agent run --agent codex --prompt-file - <<'EOF'
+  shipit agent run --role reviewer --prompt-file - <<'EOF'
   Review this diff and list any bugs as file:line — comment. Diff:
   $(git diff)
   EOF`;
@@ -47,6 +66,111 @@ function inheritedAgentDepth(): number {
   const raw = process.env.SHIPIT_AGENT_DEPTH;
   const n = raw ? Number.parseInt(raw, 10) : 0;
   return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * docs/261 req 7 — the flags that, together, name what a one-shot run runs on.
+ * Listed once, in the order the error messages print them, so "every parameter"
+ * has a single definition here and cannot drift from the check.
+ *
+ * docs/275 req 2 — `--effort` exists exactly where the harness declares
+ * reasoning levels, which is a catalogue fact the shim cannot see. So the local
+ * completeness check covers only the four flags marked `required`; whether
+ * `--effort` is required, forbidden, or valid is the server's call, and its
+ * refusal names the levels (or the fact there are none).
+ */
+const EXPLICIT_FLAGS = [
+  { flag: "--agent", key: "agent", body: "agentId", required: true },
+  { flag: "--service", key: "service", body: "serviceId", required: true },
+  { flag: "--billing-mode", key: "billingMode", body: "billingMode", required: true },
+  { flag: "--model", key: "model", body: "modelId", required: true },
+  { flag: "--effort", key: "effort", body: "reasoningEffort", required: false },
+] as const;
+
+const ROLE_HINT =
+  `To run a role instead, use: --role ${RESERVED_ROLE_NAME} (or any role configured on this `
+  + "install — `shipit agent roles` lists them). A role names one word and supplies the rest.";
+
+/**
+ * docs/264-agent-roles req 16 — turn the parsed flags into the spawn target's half of the
+ * request body. **One rule, shared with `shipit session create`.**
+ *
+ * What changed from docs/261, and both halves matter:
+ *
+ *  - **`--role NAME` alongside a parameter is no longer refused** — it is the
+ *    override path (req 10). The role supplies everything the caller did not
+ *    name, so `--role deep-dive --model X` is an ordinary call rather than two
+ *    questions at once.
+ *  - **The role name is no longer checked here.** It used to be matched against a
+ *    compiled-in list, which cannot know the roles a *user* configured — they
+ *    live server-side (req 18 lets a role be any name typed). So the local check
+ *    becomes a pass-through and the server's resolution is the authority, with
+ *    its refusal naming the roles that do exist (req 13). The shim buys a message
+ *    for what it can know and does not pretend to know the rest.
+ *
+ * What stays refused is a call with **no base and only some parameters** — a
+ * one-shot run has no parent to complete it from, so it must name everything
+ * itself: the four identity flags always, `--effort` where the harness declares
+ * levels (docs/275 req 2). (`session create` does have one, which is why the
+ * same shape is legal there and is the one place the two commands differ.)
+ *
+ * The server enforces all of this again — this shim is not the only caller, and a
+ * client-side check is a message, not a guarantee. What it buys is the message:
+ * the agent learns which flag it forgot without a round trip.
+ */
+function spawnTargetPayload(
+  values: Record<string, string | undefined>,
+  io: RunDeps["io"],
+): Record<string, unknown> {
+  const role = values.role;
+  // `!== undefined`, NOT a truthiness test: a flag the caller passed with an
+  // empty value is something they TRIED to say, and dropping it here would run
+  // the bare role instead — the dropped override req 10 forbids. It rides along
+  // and the server refuses it by name. (The explicit path below keeps counting a
+  // blank as missing, which is the better message for the shape it is in.)
+  const named = EXPLICIT_FLAGS.filter((f) => values[f.key] !== undefined);
+
+  // The one parameter the shim can judge without the catalogue, so it is judged
+  // on BOTH paths rather than only where a target is assembled: `--billing-mode`
+  // has a closed value set, and an override carrying a third value is the same
+  // typo whether it rides a role or a five-flag call.
+  const mode = values.billingMode;
+  if (mode !== undefined && mode !== "sub" && mode !== "key") {
+    fail(
+      io,
+      `shipit agent run: --billing-mode must be "sub" (a subscription) or "key" (a metered API key), not "${mode}".`,
+    );
+  }
+
+  if (role !== undefined) {
+    // A role plus any subset of the parameters. Everything named rides along as
+    // an override; the server validates each against this install's catalogue
+    // and refuses an incoherent one by name.
+    const payload: Record<string, unknown> = { role };
+    for (const f of named) payload[f.body] = values[f.key];
+    return payload;
+  }
+
+  const missing = EXPLICIT_FLAGS.filter((f) => f.required && !values[f.key]?.trim());
+  if (missing.length > 0) {
+    fail(
+      io,
+      "shipit agent run: a run that does not name a role must name EVERY parameter it runs on — "
+        + `missing ${missing.map((f) => f.flag).join(", ")}.\n`
+        + "(--effort is also required where the harness declares reasoning levels — "
+        + "`shipit agent params` shows them.)\n"
+        + `Nothing is filled in from a stored setting, so an incomplete call is refused rather than\n`
+        + `completed from somewhere you cannot see. ${ROLE_HINT}`,
+    );
+  }
+  // docs/275 — `--effort` rides along exactly as given, blank included: the
+  // server owns whether it is required, forbidden or valid for the named
+  // harness, and a blank is refused there by name rather than dropped here.
+  const payload: Record<string, unknown> = {};
+  for (const f of EXPLICIT_FLAGS) {
+    if (values[f.key] !== undefined) payload[f.body] = values[f.key];
+  }
+  return payload;
 }
 
 export async function handleAgentRun(args: string[], deps: RunDeps): Promise<void> {
@@ -62,6 +186,15 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
       "--agent": "agent", "-a": "agent",
       "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
       "--model": "model",
+      // docs/261 req 7 — the rest of what a model IS (req 3: a model is a
+      // service, a billing mode and an id) plus the reasoning level (req 5).
+      // `--model` alone cannot say which credential pays for a model two
+      // services offer, and no effort flag existed at all.
+      "--service": "service",
+      "--billing-mode": "billingMode",
+      "--effort": "effort",
+      // docs/261 req 6 — the implicit path: name the role, not the reviewer.
+      "--role": "role",
     },
     booleans: { "--json": "json" },
   });
@@ -69,10 +202,7 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
     fail(deps.io, `Unsupported flag for shipit agent run: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
 
-  const agentId = parsed.values.agent;
-  if (!agentId) {
-    fail(deps.io, "shipit agent run: --agent is required (e.g. --agent codex).");
-  }
+  const target = spawnTargetPayload(parsed.values, deps.io);
   const promptFile = parsed.values.promptFile;
   if (!promptFile) {
     fail(deps.io, "shipit agent run: --prompt-file is required (a file, or `-` for stdin, holding the sub-agent's prompt).");
@@ -85,10 +215,9 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
     fail(deps.io, "shipit agent run: the prompt exceeds 200,000 characters.");
   }
 
-  const payload: Record<string, unknown> = { agentId, prompt, depth: inheritedAgentDepth() };
-  if (parsed.values.model) payload.model = parsed.values.model;
+  const payload: Record<string, unknown> = { ...target, prompt, depth: inheritedAgentDepth() };
 
-  // SHI-245 — a long consult routinely outlives the *caller's* patience: an
+  // planning#247 — a long consult routinely outlives the *caller's* patience: an
   // agent's foreground shell tool caps commands (10 min in Claude Code) and
   // SIGTERMs on expiry, while a review-sized spawn can run to the 30-minute cap.
   // Killing the shim does NOT stop the run — it finishes server-side and
@@ -135,7 +264,7 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
   // the primary always sees whatever the sub-agent produced.
   if (text) deps.io.stdout(text.endsWith("\n") ? text : `${text}\n`);
 
-  // SHI-245 — name the run on stderr. This text and the "Consulted …" card in
+  // planning#247 — name the run on stderr. This text and the "Consulted …" card in
   // the UI are one artifact, and the id is what lets either side say *which*
   // run they are looking at when they seem to disagree (two consults in a turn
   // produce two cards, and it is otherwise impossible to tell them apart).
@@ -155,6 +284,145 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
     deps.io.stderr("shipit agent run: note — the sub-agent's output was truncated at the cost cap.\n");
   }
   deps.io.exit(0);
+}
+
+/**
+ * `shipit agent roles [--json]` (docs/264-agent-roles req 12) — the roles this install has.
+ *
+ * The read that makes `--role NAME` nameable: an agent mapping "review the PR"
+ * onto a role (req 3), or telling the user which roles exist, had no way to see
+ * them before — they live in the user's settings, not in anything compiled in.
+ *
+ * Prints the name first on each line, because the name is the whole invocation:
+ * everything after it is context for choosing between them.
+ *
+ * **The description is carried for two jobs, not one** (req 19). It is what makes
+ * an intent resolvable onto a role (req 3) — and it is also the only thing that
+ * tells the caller how to *write* for that role, because a prompt pitched for a
+ * deep research model wastes a fast narrow one and a prompt pitched for a fast
+ * narrow one wastes a deep one. The epilogue says so, because the field's mere
+ * presence in the output does not: this listing shipped with the description in
+ * it and every caller still wrote one prompt for every role.
+ */
+export async function handleAgentRoles(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit agent roles: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const res = await deps.call("GET", "/agent-ops/agent/roles", undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to list roles"), 1);
+  }
+  const roles = (res.body.roles as Record<string, unknown>[] | undefined) ?? [];
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(roles)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  if (roles.length === 0) {
+    // Not reachable on a healthy install — the reviewer is always present
+    // (req 2) — so say what it means rather than printing an empty list.
+    success(deps.io, "No roles are configured. Roles are created in ShipIt's Settings.");
+    return;
+  }
+  const lines = roles.map((role) => {
+    const parts = [asString(role.name)];
+    if (role.description) parts.push(asString(role.description));
+    if (role.runsOn) parts.push(asString(role.runsOn));
+    // A role that cannot run is still listed, with the reason: which remedy it
+    // needs differs, and a role missing from the list would read as "no such
+    // role" and send the agent to invent a different one.
+    if (role.unavailable) parts.push(`UNAVAILABLE (${asString(role.unavailable)})`);
+    return parts.join("\t");
+  });
+  success(
+    deps.io,
+    [
+      ...lines,
+      "",
+      "Run one with: shipit agent run --role NAME --prompt-file - (or shipit session create --role NAME).",
+      "The reviewer's model is resolved per run, which is why it lists none.",
+      "",
+      "Read the description before you choose a role AND before you write its prompt. It is the",
+      "user's account of what the role is for, so it is what tells you which role an unnamed",
+      "request means, and how much the prompt has to spell out: a role described as fast, cheap or",
+      "narrow wants explicit steps; one described as deep or exploratory can take an open brief.",
+      "Where a role has no description, what it runs on is the only hint there is. Neither moves",
+      "the target — write the prompt to fit the role, never override a parameter to fit the task.",
+    ].join("\n"),
+  );
+}
+
+/**
+ * `shipit agent params [--json]` (docs/264-agent-roles req 12) — the parameters an override
+ * may name on THIS install.
+ *
+ * Ships with `roles` and never without it. An agent allowed to carry "review this
+ * with Opus at high effort" (req 10) but unable to see which models exist would
+ * fill the gap from memory, and a remembered model is indistinguishable from a
+ * supplied one by the time it reaches ShipIt.
+ *
+ * What it is NOT is an invitation to assemble a target from scratch: a role plus
+ * an override does the same job in less and stays anchored to something the user
+ * configured. The footer says so, because this list is exactly where that
+ * temptation appears.
+ */
+export async function handleAgentParams(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, { values: {}, booleans: { "--json": "json" } });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit agent params: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const res = await deps.call("GET", "/agent-ops/agent/params", undefined, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to list spawn parameters"), 1);
+  }
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const harnesses = (res.body.harnesses as Record<string, unknown>[] | undefined) ?? [];
+  if (harnesses.length === 0) {
+    success(deps.io, "No harness is installed in this deployment.");
+    return;
+  }
+  const blocks = harnesses.map((harness) => {
+    const levels = (harness.reasoningLevels as string[] | undefined) ?? [];
+    const models = (harness.models as Record<string, unknown>[] | undefined) ?? [];
+    const lines = [
+      `${asString(harness.name)} (--agent ${asString(harness.id)})`,
+      // docs/275 req 6 — say which shape a complete role-less call takes here:
+      // where there are no levels there is no `--effort` parameter, and naming
+      // one is refused rather than dropped.
+      `  --effort: ${
+        levels.length > 0
+          ? `${levels.join(", ")} (required on a role-less call)`
+          : "(this harness declares no levels — omit --effort; the other four flags are the whole call)"
+      }`,
+      models.length > 0
+        ? "  models:"
+        : "  models:   (none — this install has no credential this harness can use)",
+    ];
+    for (const model of models) {
+      lines.push(
+        `    --service ${asString(model.serviceId)} --billing-mode ${asString(model.billingMode)} `
+        + `--model ${asString(model.modelId)}\t${asString(model.label)}`,
+      );
+    }
+    return lines.join("\n");
+  });
+  success(
+    deps.io,
+    [
+      ...blocks,
+      "",
+      "These are the values an override may name. Prefer a role and override only what the",
+      "user asked to change (`--role deep-dive --model X`) — relay a parameter the user named,",
+      "never decide one yourself. `shipit agent roles` lists the roles.",
+    ].join("\n"),
+  );
 }
 
 /**
@@ -355,7 +623,7 @@ async function waitForResult(
 
 /**
  * `shipit agent result [<run-id>] [--wait [--timeout SECONDS]] [--json]`
- * (SHI-245, docs/248) — print a spawn's persisted output: the exact card the UI
+ * (planning#247, docs/248) — print a spawn's persisted output: the exact card the UI
  * shows. No id ⇒ the session's most recent run. A run-id prefix is accepted as
  * long as it is unambiguous.
  *
@@ -444,7 +712,7 @@ export async function handleAgentResult(args: string[], deps: RunDeps): Promise<
   }
 
   deps.io.stderr(`shipit agent result: run ${spawnId} · ${subAgentId} · ${status}\n`);
-  // SHI-307 — ShipIt's own explanation of a terminal status, when the status
+  // planning#309 — ShipIt's own explanation of a terminal status, when the status
   // alone would mislead (a consult cancelled by an orchestrator restart reads
   // exactly like one the user cancelled). On stderr, never stdout: stdout is the
   // sub-agent's verbatim output and must stay in the consultant's voice.

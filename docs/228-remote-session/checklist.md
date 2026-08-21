@@ -1,6 +1,6 @@
 # Checklist — Remote session
 
-Design doc only so far; nothing implemented. Tracks SHI-215.
+Design doc only so far; nothing implemented. Tracks planning#217.
 
 ## Phase 1 — Prove the loop
 - [ ] Add `openssh-client` to `Dockerfile.session-worker.prod` and `.dev`

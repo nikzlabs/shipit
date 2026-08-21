@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CheckIcon, DownloadSimpleIcon, PencilSimpleIcon, PushPinIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, BellIcon, BellSlashIcon, BroadcastIcon, CheckIcon, DownloadSimpleIcon, PencilSimpleIcon, PushPinIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { formatRelativeDate } from "../../utils/dates.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "../ui/dropdown-menu.js";
@@ -52,7 +52,7 @@ interface SessionItemProps {
 export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch, overflowMenuPortaled = true }: SessionItemProps) {
   const isArchived = session.archived === true;
 
-  const attentionReason = useAttentionInfo(session.id);
+  const attentionReason = useAttentionInfo(session.id, !!session.mutedAt);
   const needsAttention = attentionReason !== null && !isArchived;
   const hasChildren = (childCount ?? 0) > 0 && !!onToggleChildren;
 
@@ -135,6 +135,17 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const handleTogglePin = useCallback(() => {
     void useSessionStore.getState().setPinned(session.id, !session.pinnedAt);
   }, [session.id, session.pinnedAt]);
+  // docs/277 — mute the session: it stops appearing as needing attention until
+  // its next turn starts (req 4). The control is offered only on a row that is
+  // currently asking for the user (req 6) — attention lives in the browser, so
+  // this menu IS that half of the rule — and on an already-muted row, which
+  // needs its way back (req 5): muting makes the reason go away, so a control
+  // gated on the reason alone would vanish at the moment it was used.
+  const isMuted = !!session.mutedAt;
+  const canToggleMute = !isArchived && (isMuted || needsAttention);
+  const handleToggleMute = useCallback(() => {
+    void useSessionStore.getState().setMuted(session.id, !session.mutedAt);
+  }, [session.id, session.mutedAt]);
   const handleToggleKeepPreviewRunning = useCallback(() => {
     void useSessionStore.getState().setKeepPreviewRunning(session.id, !session.keepPreviewRunning);
   }, [session.id, session.keepPreviewRunning]);
@@ -236,6 +247,18 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             {isPinned && (
               <PushPinIcon size={ICON_SIZE.XS} weight="fill" className="text-(--color-accent) shrink-0" />
             )}
+            {/* docs/241 — the reservation is capped (default 1 per deployment),
+                so "capacity is full" is only actionable if the row holding the
+                slot is identifiable at a glance. The overflow-menu checkmark
+                confirms state on a row you already opened; it cannot answer
+                "which session?". Sized and placed like the pin beside it. */}
+            {session.keepPreviewRunning && !isArchived && (
+              <BroadcastIcon
+                size={ICON_SIZE.XS}
+                className="text-(--color-success) shrink-0"
+                alt="Always-on preview"
+              />
+            )}
             {session.kind === "ops" && (
               <span className="text-[9px] font-semibold uppercase tracking-wide text-(--color-text-tertiary) border border-(--color-border-secondary) rounded px-1 leading-tight shrink-0">
                 ops
@@ -280,6 +303,14 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                   <PushPinIcon size={ICON_SIZE.SM} weight={isPinned ? "fill" : "regular"} />
                   {isPinned ? "Unpin" : "Pin to top"}
                 </DropdownMenuItem>
+                {canToggleMute && (
+                  <DropdownMenuItem onSelect={handleToggleMute} disabled={disabled}>
+                    {isMuted
+                      ? <BellIcon size={ICON_SIZE.SM} />
+                      : <BellSlashIcon size={ICON_SIZE.SM} />}
+                    {isMuted ? "Unmute" : "Mute until next turn"}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onSelect={handleToggleKeepPreviewRunning} disabled={disabled}>
                   <span className="flex h-4 w-4 items-center justify-center">
                     {session.keepPreviewRunning && <CheckIcon size={ICON_SIZE.SM} weight="bold" />}

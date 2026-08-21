@@ -19,9 +19,9 @@ export function parseMcpToolName(name: string): { server: string; tool: string }
 
 /**
  * True for the ShipIt `present` tool in any of its emitted name forms: the bare
- * `present`, the consolidated `mcp__shipit__present` (SHI-128), and the legacy
+ * `present`, the consolidated `mcp__shipit__present` (planning#130), and the legacy
  * per-tool `mcp__shipit-present__present` (so already-persisted present cards in
- * pre-SHI-128 sessions, whose tool names are stored verbatim, still match).
+ * pre-planning#130 sessions, whose tool names are stored verbatim, still match).
  */
 export function isPresentTool(name: string): boolean {
   if (name === "present") return true;

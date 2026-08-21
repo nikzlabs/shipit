@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-152
+issue: planning#154
 description: Bare issue references in chat/markdown prose (TRACKER-43, roadmap#SHI-319, planning#57) render as inline badges that open the in-app Issues viewer; on mobile the click also switches to the workspace panel.
 ---
 
@@ -28,7 +28,7 @@ lookup id (`Tracker.getIssue(key)`). This feature closes that gap the same way
 - **Bare issue references become inline badges.** A reference-shaped token in
   chat / docs / PR-body / tooltip markdown renders as a small monospace pill in
   the accent color. Clicking it opens the issue in the inline Issues viewer.
-  Both of docs/248 req 10's prose-legible forms are recognized: the **bare key**
+  Both of docs/248-declared-issue-trackers req 10's prose-legible forms are recognized: the **bare key**
   (`TRACKER-43`) and the **name form** (`roadmap#SHI-319`, `planning#57`).
 - **The badge does not grow the line height.** It renders at `text-[0.85em]`
   with `leading-none` and horizontal-only padding, so it stays within the
@@ -60,7 +60,7 @@ matcher here predated the name form, so `roadmap#SHI-319` badged only its
 ShipIt's own references take after docs/247's migration — matched nothing at all.
 The gate was Linear-team-specific (compare the token's prefix against the
 connected workspace's bound team key), which had no answer for a GitHub name
-form and reproduced req 11's ambiguity rule by hand. SHI-323 closed both halves:
+form and reproduced req 11's ambiguity rule by hand. planning#325 closed both halves:
 the matcher learned the name form, and the gate became `resolveIssueRef` over the
 declared destinations — the same shared implementation the markdown-href branch,
 the doc `issue:` chips and the `shipit issue` shim already used. docs/248's own
@@ -85,7 +85,7 @@ now has no gate logic of its own.
      `SHI-319` tail of `roadmap#SHI-319`. The name form's lookbehind also
      rejects a leading `/`, so a GitHub short form (`owner/repo#42`) isn't
      half-matched as `repo#42`; the bare-key branch's lookbehind is unchanged
-     (it still permits a leading `#`, so `issue #SHI-3` keeps badging).
+     (it still permits a leading `#`, so `issue #planning#5` keeps badging).
 2. `react-markdown`'s default `urlTransform` would strip the unknown
    `shipit-issue:` scheme to `""`, losing the token — so `message-markdown.tsx`
    passes a small `urlTransform` that passes that scheme through and delegates
@@ -121,7 +121,7 @@ now has no gate logic of its own.
 - `src/client/stores/issues-store.ts` — `toTrackerDestinations` (the projection
   the badge's render-time `useMemo` needs) and `trackerDestinations` over it.
 - `src/server/shared/issue-ref-resolution.ts` — `resolveIssueRef`, the shared
-  gate (docs/248 req 11). The badge has no resolution logic of its own.
+  gate (docs/248-declared-issue-trackers req 11). The badge has no resolution logic of its own.
 - `docs/207-inline-issue-badges/mockup.html` — line-height visual reference.
 
 ## Verification

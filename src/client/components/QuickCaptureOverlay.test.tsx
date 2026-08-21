@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { QuickCaptureOverlay } from "./QuickCaptureOverlay.js";
 import type { MessageInput } from "./MessageInput.js";
@@ -72,8 +72,13 @@ const LAST_QUICK_SESSION_REPO_KEY = "shipit-last-quick-session-repo";
 describe("QuickCaptureOverlay", () => {
   beforeEach(() => {
     // Sending now records the target repo, so clear it between tests to keep
-    // the "no remembered repo" default path deterministic.
+    // the "no remembered repo" default path deterministic. The harness/model
+    // seeds are cleared for the same reason: a test that picks a harness writes
+    // both, and the overlay reads them on every render, so a leak would decide
+    // the next test's answer.
     localStorage.removeItem(LAST_QUICK_SESSION_REPO_KEY);
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("vibe-model-id");
     startQuickSessionMock.mockReset();
     lastMessageInputProps = undefined;
     useUiStore.setState({
@@ -84,7 +89,7 @@ describe("QuickCaptureOverlay", () => {
         id: "claude",
         name: "Claude",
         installed: true,
-        authConfigured: true,
+        hasRunnableModels: true,
         models: [],
         supportsReview: true,
       }],
@@ -286,8 +291,8 @@ describe("QuickCaptureOverlay", () => {
     localStorage.setItem("vibe-model-id", "claude-opus-4-8");
     useUiStore.setState({
       agentList: [
-        { id: "claude", name: "Claude", installed: true, authConfigured: true, models: ["sonnet", "haiku", "claude-opus-4-8"], supportsReview: true },
-        { id: "codex", name: "Codex", installed: true, authConfigured: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["sonnet", "haiku", "claude-opus-4-8"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
       ],
     });
     useRepoStore.setState({
@@ -310,6 +315,76 @@ describe("QuickCaptureOverlay", () => {
     );
     // The picker also shows the derived agent, so display and send agree.
     expect(lastMessageInputProps?.activeAgentId).toBe("claude");
+
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("vibe-model-id");
+  });
+
+  it("moves the model onto a picked harness, so the pick is not a no-op", () => {
+    // The reported bug: on a quick session, tapping Codex changed nothing at
+    // all. The harness here is DERIVED from the model, so persisting the agent
+    // key alone left the previous harness's model in place and the derivation
+    // handed back the harness the user had just moved away from.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-4-8");
+    useUiStore.setState({
+      agentList: [
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
+      ],
+    });
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    expect(lastMessageInputProps?.activeAgentId).toBe("claude");
+
+    act(() => lastMessageInputProps?.onAgentChange?.("codex"));
+
+    // The picker now names Codex — and names Codex's first model, which is what
+    // the model picker itself falls back to, so anchor and Model row agree.
+    expect(lastMessageInputProps?.activeAgentId).toBe("codex");
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+    expect(startQuickSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "codex", model: "gpt-5.5" }),
+      expect.any(Function),
+    );
+
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("vibe-model-id");
+  });
+
+  it("keeps the model across a harness switch when the new harness runs it", () => {
+    // A harness switch is not a model switch. The shared models (DeepSeek, GLM,
+    // anything through a gateway) are precisely the ones both harnesses offer,
+    // and they are also where deriving the harness from the model is a coin
+    // flip — so this is the case the pick has to survive intact.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "deepseek-v4-pro");
+    useUiStore.setState({
+      agentList: [
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8", "deepseek-v4-pro"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "deepseek-v4-pro"], supportsReview: true },
+      ],
+    });
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    act(() => lastMessageInputProps?.onAgentChange?.("codex"));
+
+    expect(lastMessageInputProps?.activeAgentId).toBe("codex");
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+    expect(startQuickSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "codex", model: "deepseek-v4-pro" }),
+      expect.any(Function),
+    );
 
     localStorage.removeItem("vibe-agent-id");
     localStorage.removeItem("vibe-model-id");

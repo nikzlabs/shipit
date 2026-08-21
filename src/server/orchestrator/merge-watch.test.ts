@@ -25,8 +25,8 @@ import { createTurnSettlement, TURN_COMPLETED, type TurnHandle, type TurnOutcome
  * In both cases a held callback is flushed by `completeTurn()`.
  *
  * The fake models the CONTRACT, not the machinery: it can't reproduce a message
- * being live-steered into a running turn (SHI-254) or a queue drain narrowing the
- * entry it shifts (SHI-255), because both live in the real turn path. Those are
+ * being live-steered into a running turn (planning#256) or a queue drain narrowing the
+ * entry it shifts (planning#257), because both live in the real turn path. Those are
  * covered against a real turn in `integration_tests/system-turn-queue.test.ts` and
  * the busy-parent case of `integration_tests/session-notify-on-merge.test.ts`; the
  * checks here pin the dispatch SHAPE those fixes depend on (`systemTurn` set, a
@@ -41,9 +41,9 @@ class FakeRunner {
   autoCompleteTurn = true;
   /** Outcome the simulated turn settles with — docs/240: only `completed` delivers. */
   turnOutcome: TurnOutcome = TURN_COMPLETED;
-  /** SHI-264 — the delivery of the turn this runner is RUNNING, if any. */
+  /** planning#266 — the delivery of the turn this runner is RUNNING, if any. */
   activeDeliveryId: string | undefined;
-  /** SHI-264 — deliveries sitting in the (in-memory) queue behind a busy turn. */
+  /** planning#266 — deliveries sitting in the (in-memory) queue behind a busy turn. */
   private readonly queuedDeliveries = new Set<string>();
   private pendingComplete: (() => void)[] = [];
   constructor(public sessionDir: string) {}
@@ -69,7 +69,7 @@ class FakeRunner {
     fire();
     return settlement;
   }
-  /** SHI-264 — the ground-truth liveness answer the retry supervisor now asks for. */
+  /** planning#266 — the ground-truth liveness answer the retry supervisor now asks for. */
   hasDelivery(deliveryId: string): boolean {
     return this.activeDeliveryId === deliveryId || this.queuedDeliveries.has(deliveryId);
   }
@@ -96,7 +96,7 @@ class FakeRunner {
 }
 
 /**
- * `control.failWake` models the SHI-258 failure: the parent's container can't be
+ * `control.failWake` models the planning#260 failure: the parent's container can't be
  * resumed. `wakeSessionWithTurn` detects that as a disposed runner and throws,
  * which is exactly what a boot failure / credential-refresh failure surfaces as.
  */
@@ -306,7 +306,7 @@ describe("MergeWatchManager (docs/196)", () => {
     // watch is recoverable: NOT delivered while it sits in the queue.
     expect(parentRunner.dispatched).toHaveLength(1);
     expect(parentRunner.dispatched[0].systemTurn).toBe(true);
-    // SHI-254 — the wake-turn carries both markers that make it unsteerable, so
+    // planning#256 — the wake-turn carries both markers that make it unsteerable, so
     // a real runner enqueues it instead of injecting it into the running user
     // turn (which would return before the enqueue and drop the callback below).
     expect(parentRunner.dispatched[0].onTurnComplete).toBeTypeOf("function");
@@ -377,7 +377,7 @@ describe("MergeWatchManager (docs/196)", () => {
     expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
   });
 
-  // ---- SHI-258: a FAILED delivery is retried without an orchestrator restart ----
+  // ---- planning#260: a FAILED delivery is retried without an orchestrator restart ----
   //
   // The pre-fix behavior: `deliverWakeTurn` throws (parent container won't
   // resume), the watch is left at `merge-observed`, and because the poller's
@@ -385,7 +385,7 @@ describe("MergeWatchManager (docs/196)", () => {
   // `reconcilePending` has a bootstrap-only call site, nothing ever re-enters
   // delivery. The merge card sits in the parent's transcript and the agent never
   // starts, until someone restarts the orchestrator.
-  describe("failed-delivery retry (SHI-258)", () => {
+  describe("failed-delivery retry (planning#260)", () => {
     afterEach(() => {
       ctx.manager.stopRetryLoop();
       vi.useRealTimers();
@@ -588,7 +588,7 @@ describe("MergeWatchManager (docs/196)", () => {
       expect(ctx.sessionManager.getMergeWatch("child")).toBeUndefined();
     });
 
-    // ---- SHI-264: the delivery identity the retry supervisor now reads ----
+    // ---- planning#266: the delivery identity the retry supervisor now reads ----
     //
     // These pin the manager-side half of "derive liveness rather than track it".
     // The half that only a real worker can prove — that the id survives an

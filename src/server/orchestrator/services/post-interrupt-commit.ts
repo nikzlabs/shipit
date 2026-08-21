@@ -29,6 +29,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { postTurnCommit } from "../ws-handlers/post-turn.js";
 import { emitPrLifecycleAfterCommit } from "./pr-lifecycle.js";
 import { getErrorMessage } from "../validation.js";
+import type { GenerateText } from "../non-turn-model.js";
 
 /**
  * Deps for the commit fallback. The shape mirrors `PrLifecycleDeps` plus the
@@ -42,7 +43,7 @@ export interface PostInterruptCommitDeps {
   prStatusPoller: PrStatusPoller;
   githubAuthManager: GitHubAuthManager;
   credentialStore: CredentialStore;
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: GenerateText;
   createGitManager: (dir: string) => GitManager;
   scheduleAutoPush?: (git: GitManager, sessionId?: string) => void;
 }

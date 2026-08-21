@@ -240,9 +240,9 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     const res = await app.inject({ method: "GET", url: "/api/trackers" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { trackers: TrackerInfo[] };
-    // GitHub is registered alongside Linear (SHI-80); both unconfigured with no
+    // GitHub is registered alongside Linear (planning#82); both unconfigured with no
     // token and no active-session repo binding.
-    // docs/248 req 1 — with no session (so no declarations) the only destination
+    // docs/248-declared-issue-trackers req 1 — with no session (so no declarations) the only destination
     // is the session's own repository, which is itself unconfigured here. Linear
     // is NOT present: it is a declared tracker now, not a built-in.
     expect(body.trackers).toEqual([{ id: "github", label: "GitHub", kind: "github", configured: false }]);
@@ -306,7 +306,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   });
 
   it("connects the credential, then lists the declared team's issues priority-sorted", async () => {
-    // docs/248 req 4 — connecting stores the credential and returns the teams it
+    // docs/248-declared-issue-trackers req 4 — connecting stores the credential and returns the teams it
     // can reach as a LOOKUP for writing a declaration. It binds nothing: the
     // team lives in the repository's `shipit.yaml`, which `lin-sess` carries.
     const connect = await app.inject({
@@ -441,7 +441,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(body.availableStatuses?.map((s) => s.name)).toEqual(["Todo", "In Progress", "Done"]);
   });
 
-  it("GET /api/issue/labels returns the tracker's labels with colors (SHI-92 foundation)", async () => {
+  it("GET /api/issue/labels returns the tracker's labels with colors (planning#94 foundation)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
 
     // The next tracker fetch is the `IssueLabels` query (`listLabels`).

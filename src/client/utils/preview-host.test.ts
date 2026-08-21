@@ -65,7 +65,7 @@ describe("resolvePreviewHost (docs/216)", () => {
   });
 });
 
-describe("suggestWildcardHost (docs/254 req 8)", () => {
+describe("suggestWildcardHost (docs/254-local-bind-and-tailnet-access req 8)", () => {
   it("suggests the dashed sslip.io form for a Tailscale address", () => {
     // The local-install-over-Tailscale case: the raw IP can't carry preview
     // subdomains, but its sslip.io form resolves right back to the same host.

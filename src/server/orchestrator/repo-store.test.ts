@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
+import { REPO_COLOR_ASSIGNMENT_ORDER } from "../shared/repo-colors.js";
 
 let dbManager: DatabaseManager;
 let store: RepoStore;
@@ -31,6 +32,30 @@ describe("RepoStore", () => {
     const repo2 = store.add("https://github.com/owner/repo.git");
     expect(store.list()).toHaveLength(1);
     expect(repo2.url).toBe("https://github.com/owner/repo.git");
+  });
+
+  // docs/262 req 19 — the row key is the credential-free URL, in EVERY method
+  // that takes one. Stripping in `add` alone would store the clean URL and then
+  // leave `setReady`/`get`/`setWarmSessionId` addressing a row that never
+  // existed, which is a repo stuck at status "cloning" forever.
+  it("treats a credentialed URL and its clean twin as one row", () => {
+    const credentialed = "https://x-access-token:pw@github.com/owner/repo.git";
+    const clean = "https://github.com/owner/repo.git";
+
+    expect(store.add(credentialed).url).toBe(clean);
+    expect(store.list()).toHaveLength(1);
+    expect(store.add(clean).url).toBe(clean);
+    expect(store.list()).toHaveLength(1);
+
+    store.setReady(credentialed);
+    expect(store.get(clean)?.status).toBe("ready");
+    expect(store.get(credentialed)?.status).toBe("ready");
+    expect(store.has(credentialed)).toBe(true);
+
+    store.setWarmSessionId(credentialed, "warm-1");
+    expect(store.get(clean)?.warmSessionId).toBe("warm-1");
+    expect(store.remove(credentialed)).toBe(true);
+    expect(store.list()).toEqual([]);
   });
 
   it("setReady changes status", () => {
@@ -307,7 +332,7 @@ describe("RepoStore", () => {
     const b = "https://github.com/owner/b.git";
 
     it("assigns a color on add", () => {
-      expect(store.add(a).colorIndex).toBe(0);
+      expect(store.add(a).colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[0]);
     });
 
     // req 5 — no two repos share a color while unused colors remain.
@@ -329,9 +354,9 @@ describe("RepoStore", () => {
     it("does not hand a second repo the colour a hidden repo is holding", () => {
       store.add(a);
       store.setHidden(a, true);
-      // `a` holds 0 while hidden; `b` must not collide with it, or unhiding
-      // `a` would produce two identical edges.
-      expect(store.add(b).colorIndex).toBe(1);
+      // `a` still holds its color while hidden; `b` must not collide with it, or
+      // unhiding `a` would produce two identical edges.
+      expect(store.add(b).colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[1]);
     });
 
     it("sets and persists an explicit color", () => {
@@ -345,10 +370,10 @@ describe("RepoStore", () => {
     });
 
     it("reuses a freed color after a removal", () => {
-      store.add(a);            // 0
-      store.add(b);            // 1
+      store.add(a);            // assignment order [0]
+      store.add(b);            // assignment order [1]
       store.remove(a);
-      expect(store.add("https://github.com/owner/c.git").colorIndex).toBe(0);
+      expect(store.add("https://github.com/owner/c.git").colorIndex).toBe(REPO_COLOR_ASSIGNMENT_ORDER[0]);
     });
   });
 });

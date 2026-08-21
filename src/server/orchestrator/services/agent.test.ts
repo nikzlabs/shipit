@@ -17,7 +17,7 @@ describe("dispatchAgentMessage authentication", () => {
       runnerRegistry: { get: () => runner },
       agentRegistry: {
         refreshAuth,
-        get: () => ({ authConfigured: true }),
+        get: () => ({ hasRunnableModels: true }),
       },
       credentialStore: {},
       // Regression boundary: this is the obsolete value that rejected added

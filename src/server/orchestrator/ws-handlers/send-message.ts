@@ -11,7 +11,7 @@ import { resolveRunner } from "./resolve-runner.js";
 import { shouldSteerMessage } from "../dispatch-steering.js";
 import { resetSubAgentSpawnBudget } from "../session-runner.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
-import { agentAuthenticationError, isAgentAuthenticated } from "../services/agent-auth-gate.js";
+import { agentAdmissionError } from "../services/agent-auth-gate.js";
 import { imageHash, imageUrl } from "../transcript-projection.js";
 
 // Re-export all public symbols from sub-modules for backwards compatibility
@@ -48,8 +48,13 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
   // so it sees every connected subscription account. The former Claude-only
   // gate consulted the legacy singleton AuthManager and rejected a turn before
   // routing whenever the usable credential lived in an added account row.
-  if (!isAgentAuthenticated(ctx.agentRegistry, activeAgentId)) {
-    ctx.send({ type: "error", message: agentAuthenticationError(activeAgentId) });
+  // docs/252 phase 9 — `agentAdmissionError` also refuses a harness this
+  // deployment did not install, which is the only gate the effective-agent paths
+  // (a pre-existing pin, a stale browser selection, Quick Capture) all pass
+  // through.
+  const refusal = agentAdmissionError(ctx.agentRegistry, activeAgentId);
+  if (refusal) {
+    ctx.send({ type: "error", message: refusal });
     return false;
   }
   return true;
@@ -95,14 +100,22 @@ export async function handleSendMessage(
   // admission used by dispatch(), before steering, attachment reads, warm
   // graduation, persistence, or process mutation.
   if (runnerForQueue) runnerForQueue.assertCanDispatch();
-  if (runnerForQueue?.running) {
+  // planning#338 — `systemTurnInProgress` counts as busy even while `running` is
+  // false: a system FLOW (the rebase driver) holds the session between its own
+  // turns — the executor clears `running` at `agent_result`, and the driver
+  // keeps running git (stage / `rebase --continue` / force-push) after each
+  // resolution turn settles. A message started in that gap displaced the
+  // resolution agent's slot in production and stranded the workspace
+  // mid-rebase. The dispatch fall-through below enqueues it instead; the flow
+  // releases the queue when it settles.
+  if (runnerForQueue?.running || runnerForQueue?.systemTurnInProgress) {
     // Verify with the worker that an agent is actually running. The local
     // `running` flag can get stranded `true` if the orchestrator missed a
     // terminal SSE event (drop mid-turn, container restart, /agent/kill
     // race). Without this check, the new message would be queued forever
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
-    // SHI-280 — the recovery inside `verifyRunningState` may have released a
+    // planning#282 — the recovery inside `verifyRunningState` may have released a
     // queue entry the phantom turn was blocking, which claims the runner
     // synchronously. Re-read `running` rather than trusting the return value, or
     // this message falls through and spawns a second agent against the one the
@@ -111,7 +124,7 @@ export async function handleSendMessage(
     // queues this message behind the entry that was there first (steering and
     // `/compact` both fall through to the queue: the released turn has no
     // resident streaming process yet).
-    if (actuallyRunning || runnerForQueue.running) {
+    if (actuallyRunning || runnerForQueue.running || runnerForQueue.systemTurnInProgress) {
       // docs/178 — `/compact` while a turn is in flight: trigger compaction on
       // the resident live process (streaming Claude injects `/compact`; live
       // Codex sends `thread/compact/start`) rather than queuing the literal text.
@@ -300,7 +313,7 @@ export async function handleSendMessage(
           }
           // Broadcast message_steered so all viewers (including other tabs) see it.
           //
-          // docs/244 / SHI-297 — the echo goes out projected: base64 payloads are
+          // docs/244 / planning#299 — the echo goes out projected: base64 payloads are
           // replaced by the same `/images/:hash` URLs `projectMessagesForWire`
           // builds, so a steered screenshot doesn't cross the wire twice (once
           // here, once on every later history load). Safe by ordering rather than
@@ -332,7 +345,7 @@ export async function handleSendMessage(
       runnerForQueue.dispatch(prepareDispatch({
         text: msg.text,
         agentInterface: undefined,
-        // SHI-255 — a user-typed message: when this queues behind the running
+        // planning#257 — a user-typed message: when this queues behind the running
         // turn, the drain must reproduce an INTERACTIVE turn (the client already
         // rendered an optimistic bubble, so the dispatched executor's
         // `system_user_message` echo would double it).
@@ -445,9 +458,9 @@ export async function handleSendMessage(
     // not inline setWarm / track / setBranchRenamed / scheduleSessionNaming /
     // repoStore.touch / sseBroadcast("session_list") here.
     if (session?.warm) {
-      // SHI-320 — this message is the first one of a session the Issues tab
+      // planning#322 — this message is the first one of a session the Issues tab
       // started from an issue, so the issue reaches ShipIt here rather than at
-      // creation. Pin the branch to the pointer (docs/248 req 22) BEFORE
+      // creation. Pin the branch to the pointer (docs/248-declared-issue-trackers req 22) BEFORE
       // graduating: the pins are what stop AI naming from deriving a branch
       // slug from this very text, which opens with the issue's title.
       const issuePins = msg.issueRef
@@ -470,6 +483,11 @@ export async function handleSendMessage(
           // docs/150 — AI naming runs on the account a turn would use.
           ...(ctx.providerAccountManager ? { providerAccountManager: ctx.providerAccountManager } : {}),
           ...(ctx.credentialsDir ? { credentialsDir: ctx.credentialsDir } : {}),
+          // docs/252 phase 7 (req 9) — naming's own model, its usage row, and
+          // the durable failure notice.
+          credentialStore: ctx.credentialStore,
+          chatHistoryManager: ctx.chatHistoryManager,
+          usageManager: ctx.usageManager,
         },
         {
           sessionId: effectiveSessionId,
@@ -479,7 +497,7 @@ export async function handleSendMessage(
         },
       );
 
-      // SHI-320 / docs/194 — seed path → started. The headless route fires this
+      // planning#322 / docs/194 — seed path → started. The headless route fires this
       // at creation from the same pointer; the in-app path's "creation" is this
       // first message, so it fires here. Fire-and-forget and fully best-effort:
       // a tracker that isn't connected must never delay or fail the turn.
@@ -595,6 +613,23 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   // + re-wire unconditional, which is the fix.
   const runnerEarly = resolveRunner(ctx);
   if (runnerEarly) runnerEarly.assertCanDispatch();
+
+  // planning#338 — while a system flow (rebase resolution, CI fix) holds the
+  // session, the resident agent is the flow's own turn. The stale-kill below
+  // would classify it non-reusable (`!systemTurnInProgress` in the
+  // persistent-streaming gate), kill it, and clear its slot — the awaited
+  // resolution turn then never settles and the flow's hold wedges the session.
+  // A pending question can only be stale here (a system turn's AskUserQuestion
+  // interrupt settles the turn — and clears this flag — before the card is
+  // answerable), so refuse rather than queue an answer to a question the next
+  // turn won't be asking.
+  if (runnerEarly?.systemTurnInProgress) {
+    ctx.send({
+      type: "error",
+      message: "The agent is busy with a system operation (rebase or CI fix). Try again once it finishes.",
+    });
+    return;
+  }
 
   // Preserve the session's permission mode across the answer. An AskUserQuestion
   // answer is a fresh `--resume` turn; if we don't re-pin the mode, a session

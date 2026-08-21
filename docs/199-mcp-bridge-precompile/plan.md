@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-126
+issue: planning#128
 title: Precompile internal MCP bridges to plain JS
 description: Agent turns fail at the 0.5-CPU AGENT_DEFAULTS because tsx-spawned bridges miss the CLI's 2000ms MCP pre-wait; precompiling them to self-contained JS fixes it.
 ---
@@ -85,7 +85,7 @@ time and run it with plain `node`:
   `dist/mcp-bridges/mcp-shipit-bridge.js`. The `@modelcontextprotocol/sdk` is
   **inlined**, so the bundle has zero runtime `node_modules` dependency. A
   `createRequire` banner covers any transitive CJS `require`. npm script:
-  `build:bridges`. (Pre-SHI-128 this built six separate bundles.)
+  `build:bridges`. (Pre-planning#130 this built six separate bundles.)
 - `src/server/session/mcp-bridge-paths.ts` — `resolveBridge(basename)` prefers
   `dist/mcp-bridges/<basename>.js` (launched with `process.execPath`) and falls
   back to running the `.ts` source through tsx when the bundle is absent
@@ -99,7 +99,7 @@ Consolidating the five bridges into a single stdio process was deferred as a
 **follow-up** (precompile alone clears the window with comfortable margin and was
 the smaller, lower-risk change). That follow-up is now done — see below.
 
-## Consolidation into one process (SHI-128)
+## Consolidation into one process (planning#130)
 
 The precompile fixed correctness; this follow-up cuts the per-tool stdio
 processes from **5 → 1** for density (~138 MB → ~30 MB resident). All six tools
@@ -125,13 +125,13 @@ now live in ONE server named `shipit`, so their names are `mcp__shipit__<tool>`
   `…__report_shipit_bug`) — NOT a `mcp__shipit__*` glob — so the permission tool
   (the CLI's `--permission-prompt-tool`, never model-callable) stays unlisted.
 - Client present-card detection (`message-tools.tsx`) matches both `shipit` and
-  the legacy `shipit-present` server so pre-SHI-128 persisted cards still render.
+  the legacy `shipit-present` server so pre-planning#130 persisted cards still render.
 
 ## Key files
 
 - `scripts/build-mcp-bridges.mjs` — the esbuild precompile step (one bundle).
-- `src/server/session/mcp-shipit-bridge.ts` — consolidated stdio server + `selectTools`/`createShipitBridgeServer` (SHI-128).
-- `src/server/session/mcp-tools/*.ts` — per-tool `ToolDescriptor` modules + shared `types.ts` (SHI-128).
+- `src/server/session/mcp-shipit-bridge.ts` — consolidated stdio server + `selectTools`/`createShipitBridgeServer` (planning#130).
+- `src/server/session/mcp-tools/*.ts` — per-tool `ToolDescriptor` modules + shared `types.ts` (planning#130).
 - `src/server/session/mcp-bridge-paths.ts` — `resolveBridge()` (compiled-JS-first, tsx fallback).
 - `src/server/session/session-worker.ts` — `shipitBridgePaths()` delegates to `resolveBridge`.
 - `src/server/session/agents/{claude,codex}/adapter.ts` — write one `shipit` server with the per-agent `SHIPIT_MCP_TOOLS` subset.

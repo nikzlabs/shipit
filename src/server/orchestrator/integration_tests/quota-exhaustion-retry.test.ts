@@ -1,13 +1,16 @@
 /**
- * docs/150 req 14 — "When hard exhaustion happens partway through a turn,
+ * docs/150-multiple-provider-subscriptions req 14 — "When hard exhaustion happens partway through a turn,
  * ShipIt retries on the next eligible account regardless of what that turn has
- * already done."
+ * already done" — generalized by docs/260 into the per-turn attempt loop.
  *
  * The provider ends the turn with `agent_result { error: "…usage limit…" }`.
  * Before that result can drain the queue or finalize the turn, the executor
- * re-runs it once on a fresh agent; the retry's own env-prep is what moves the
- * session onto another account (the spent one was benched by the listener a
- * moment earlier, req 7).
+ * re-runs it on a fresh agent whose env-prep re-runs selection with the
+ * refused credential excluded (the attempt ledger, docs/260 §3). The loop is
+ * bounded per CREDENTIAL, not per hop: each connected account is attempted at
+ * most once per turn, and when every one has refused, selection throws
+ * `ProviderRouteUnavailableError` and the turn fails with the terminal report
+ * built from the ledger (req 6).
  *
  * These drive the real `SessionRunner.dispatch` → `runDispatchedTurn` →
  * `executeAgentTurn` path in-process with a fake agent, the same way the
@@ -20,7 +23,9 @@ import { EventEmitter } from "node:events";
 import { SessionRunner } from "../session-runner.js";
 import type { SystemTurnDeps } from "../session-runner.js";
 import type { AgentId } from "../../shared/types.js";
+import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
+import { allRefusedMessage } from "../turn-executor.js";
 
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
@@ -66,6 +71,7 @@ function makeDeps(agents: FakeAgent[]): {
         setLastTurnErrored: vi.fn(),
         get: vi.fn(),
         track: vi.fn(),
+        setMuted: vi.fn(),
         list: vi.fn().mockReturnValue([]),
       } as never,
       chatHistoryManager: {
@@ -81,8 +87,41 @@ function makeDeps(agents: FakeAgent[]): {
       getSelectedModel: () => undefined,
     },
     buildRunParams: vi.fn().mockResolvedValue({ prompt: "do work", cwd: "/tmp/s1" }),
+    // docs/260-turn-level-account-routing req 6 — the terminal report and the in-turn attempt notices
+    // name credentials by the user's own labels, resolved through this hook.
+    routeLabel: (routeId: string) => ROUTE_LABELS[routeId],
   };
   return { deps, prepareAgentEnv, persistUserRow, autoCommit };
+}
+
+const ROUTE_LABELS: Record<string, string> = {
+  "acct-1": "Personal",
+  "acct-2": "Work",
+};
+
+/**
+ * docs/260 — model per-turn selection over two connected accounts. Each
+ * env-prep call returns the first account the turn's attempt ledger has not
+ * excluded; when the exclusion set covers both, it throws the router's
+ * all-exhausted error, exactly as `prepareSessionAgentEnvironment` does when
+ * `selectAccountForTurn` runs out of candidates. That throw is what bounds the
+ * attempt loop to one attempt per credential (req 6) — the fake has to model
+ * it or the loop has no terminal state.
+ */
+function selectionOverTwoAccounts(prepareAgentEnv: ReturnType<typeof vi.fn>): void {
+  prepareAgentEnv.mockImplementation(
+    async (_sessionId: string, _agentId: AgentId, opts?: { excludeRouteIds?: readonly string[] }) => {
+      const excluded = opts?.excludeRouteIds ?? [];
+      const next = Object.keys(ROUTE_LABELS).find((id) => !excluded.includes(id));
+      if (!next) {
+        throw new ProviderRouteUnavailableError("claude" as AgentId, {
+          reason: "all_exhausted",
+          earliestResetAt: null,
+        });
+      }
+      return { turnRoute: { kind: "account" as const, id: next } };
+    },
+  );
 }
 
 async function flush(): Promise<void> {
@@ -103,8 +142,33 @@ const QUOTA_ERROR = "You've hit Claude's 5h usage limit. It resets at 2099-01-01
 /** Verbatim from the incident — the CLI's own notice, delivered as assistant text. */
 const QUOTA_NOTICE_TEXT = "You've hit your session limit · resets 5:10pm (UTC)";
 
-describe("same-turn quota failover (docs/150 req 14)", () => {
+describe("same-turn quota failover (docs/150-multiple-provider-subscriptions req 14)", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("preserves quota details when the attempt ledger also contains an auth failure", () => {
+    const message = allRefusedMessage([
+      {
+        routeId: "acct-1",
+        label: "Personal",
+        providerMessage: QUOTA_ERROR,
+        resetAt: "2099-01-01T00:00:00.000Z",
+        failureKind: "quota",
+      },
+      {
+        routeId: "acct-2",
+        label: "Work",
+        providerMessage: "Authentication failed",
+        resetAt: null,
+        failureKind: "auth",
+      },
+    ]);
+
+    expect(message).toContain("Personal");
+    expect(message).toContain(QUOTA_ERROR);
+    expect(message).toContain("2099-01-01T00:00:00.000Z");
+    expect(message).toContain("Authentication failed for: Work");
+    expect(message).not.toContain("Authentication failed for: Personal");
+  });
 
   it("re-runs the turn once on a fresh agent when the provider reports exhaustion", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
@@ -132,25 +196,91 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
     runner.dispose({ force: true });
   });
 
-  // Bounded to one retry: if the second account is spent too, the turn fails
-  // normally rather than marching down every account one process at a time.
-  it("does not retry a second time when the retry is also exhausted", async () => {
+  // docs/260-turn-level-account-routing reqs 6 + 12 — the loop is bounded per CREDENTIAL, not per hop:
+  // with two connected accounts both refusing, the turn attempts each exactly
+  // once (each retry's selection excludes every ledger entry), then fails with
+  // the terminal report built from what the providers actually said — it never
+  // re-runs a credential that already refused this turn.
+  it("tries each account once, then fails with the ledger-built all-refused report (docs/260-turn-level-account-routing reqs 6, 12)", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
-    const { deps } = makeDeps(agents);
+    const { deps, prepareAgentEnv, persistUserRow } = makeDeps(agents);
+    selectionOverTwoAccounts(prepareAgentEnv);
     runner.setSystemTurnDeps(deps);
 
     runner.dispatch(testDispatch({ text: "do work" }));
     await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
 
     agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
-    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "second account's attempt");
+    // The retry's selection excludes the credential that just refused (req 6's
+    // one-attempt-per-credential bound).
+    expect(prepareAgentEnv.mock.calls[1]?.[2]?.excludeRouteIds).toEqual(["acct-1"]);
 
     agents[1]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
     agents[1]!.emit("done", 0);
     await waitFor(() => !runner.running, "turn finished");
 
-    expect(agents).toHaveLength(2);
+    // The third attempt died inside selection — both credentials excluded, so
+    // env-prep threw before a process could run. One attempt per credential.
+    expect(agents).toHaveLength(3);
+    expect(agents[2]!.run).not.toHaveBeenCalled();
+    expect(prepareAgentEnv.mock.calls[2]?.[2]?.excludeRouteIds).toEqual(["acct-1", "acct-2"]);
+
+    // req 6 — the terminal message is built ONLY from this turn's refusals:
+    // each attempted credential by its user label, the provider's own words,
+    // and the provider-stated reset time. (Resending re-tries every account —
+    // req 12 — which is what makes the closing instruction honest.)
+    const errorRow = persistUserRow.mock.calls
+      .map((call) => call[1] as { text?: string; isError?: boolean } | undefined)
+      .find((row) => row?.isError === true);
+    expect(errorRow?.text).toContain("Every connected account refused this turn for quota");
+    expect(errorRow?.text).toContain("Personal");
+    expect(errorRow?.text).toContain("Work");
+    expect(errorRow?.text).toContain("resets at 2099-01-01T00:00:00.000Z");
+    expect(errorRow?.text).toContain("usage limit");
+    expect(runner.lastTurnErrored).toBe(true);
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * The 2026-08-10 incident: a post-turn commit landed and its push silently
+   * never happened.
+   *
+   * The quota-retry path clears `running` before the replacement attempt starts,
+   * so when the superseded process died the error listener signalled "idle"
+   * while the turn's post-turn commit was still ~150ms away. The idle enforcer
+   * accepted `dispose(force=false)` in that window, the runner left the
+   * registry, and the push — whose debounce timer lived on that runner — went
+   * with it. Nothing was logged.
+   *
+   * Pinned as an *ordering* fact, not a call shape: whenever the runner says it
+   * is idle, this turn's commit has already run.
+   */
+  it("does not signal idle before the errored turn's post-turn commit has run", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const { deps, autoCommit } = makeDeps(agents);
+    runner.setSystemTurnDeps(deps);
+
+    let committedWhenIdle: number | null = null;
+    runner.on("idle", () => { committedWhenIdle = autoCommit.mock.calls.length; });
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    // Quota exhausted → the retry is armed and the current spawn is killed.
+    agents[0]!.emit("event", { type: "agent_result", error: QUOTA_ERROR, sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+
+    // ...and the retry dies at once — every account is spent, so the process
+    // errors instead of producing a result. This is the path that signalled idle
+    // ahead of its own commit.
+    agents[1]!.emit("error", new Error("turn blocked: no eligible account"));
+    await waitFor(() => committedWhenIdle !== null, "idle signal");
+
+    expect(committedWhenIdle).toBeGreaterThan(0);
 
     runner.dispose({ force: true });
   });
@@ -189,13 +319,16 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
     runner.dispose({ force: true });
   });
 
-  // Bounded to one retry on the text channel too — and the turn it ends on must
-  // not look like a success. That is the original incident (a limit notice
-  // retiring as a completed turn), one account further along.
-  it("ends errored, not successful, when the retry hits the limit in text as well", async () => {
+  // The per-credential bound holds on the text channel too — and the turn the
+  // loop ends on must not look like a success. That is the original incident
+  // (a limit notice retiring as a completed turn), now every account further
+  // along: with all accounts refusing in text, the turn ends errored on the
+  // ledger-built report (docs/260-turn-level-account-routing reqs 6, 12), never as a clean turn.
+  it("ends errored on the all-refused report, not successful, when every account hits the limit in text (docs/260-turn-level-account-routing req 6)", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
-    const { deps } = makeDeps(agents);
+    const { deps, prepareAgentEnv, persistUserRow } = makeDeps(agents);
+    selectionOverTwoAccounts(prepareAgentEnv);
     runner.setSystemTurnDeps(deps);
 
     runner.dispatch(testDispatch({ text: "do work" }));
@@ -206,7 +339,7 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
       content: [{ type: "text", text: QUOTA_NOTICE_TEXT }],
     });
     agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
-    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "retry agent run");
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "second account's attempt");
 
     agents[1]!.emit("event", {
       type: "agent_assistant",
@@ -216,8 +349,17 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
     agents[1]!.emit("done", 0);
     await waitFor(() => !runner.running, "turn finished");
 
-    expect(agents).toHaveLength(2);
+    // Both credentials attempted once; the third selection threw before any
+    // process ran (agents[2] was created but never spawned).
+    expect(agents).toHaveLength(3);
+    expect(agents[2]!.run).not.toHaveBeenCalled();
     expect(runner.lastTurnErrored).toBe(true);
+    // req 6 — the honest terminal report, with the provider's own notice text.
+    const errorRow = persistUserRow.mock.calls
+      .map((call) => call[1] as { text?: string; isError?: boolean } | undefined)
+      .find((row) => row?.isError === true);
+    expect(errorRow?.text).toContain("Every connected account refused this turn for quota");
+    expect(errorRow?.text).toContain(QUOTA_NOTICE_TEXT);
 
     runner.dispose({ force: true });
   });

@@ -108,6 +108,47 @@ dropped unless the session was created as an ops session.
   This replaces the old dead end where the only way from a PR to a session was
   guessing between candidate UUIDs by timestamp. Reach for it first.
 
+- **Read-only session server logs.** `docker logs shipit-shipit-1` is **not the
+  whole story.** A large class of orchestrator events is written per session
+  through `broadcastLog`, which goes to the durable log store and the in-memory
+  ring and makes **no console call at all** — so it never appears in the
+  orchestrator container's stdout or the journal. Auto-push outcomes, compose
+  reconcile failures, container recovery/re-adoption, idle disposal and OOM
+  notices all live there. From the host, a failure in that class looks like
+  nothing happened:
+  ```bash
+  shipit session logs 7bc72326                       # full id or the prefix from a log line
+  shipit session logs 7bc72326 --since 2h            # ISO-8601, or a relative age: 90s/30m/2h/3d
+  shipit session logs 7bc72326 --since 2026-08-14T20:00:00Z --until 2026-08-15T02:00:00Z
+  shipit session logs 7bc72326 --lines 500 --json
+  ```
+  What comes back is **narrower than "the session's logs", deliberately**: only
+  lines whose whole text is one ShipIt itself authored — a fixed template whose
+  variable parts are ShipIt-controlled tokens (a count, an exit code, a
+  duration). The agent CLI's stdout/stderr, preview errors from the user's app,
+  install output, and any orchestrator line that quotes workspace content or a
+  raw error message are all withheld; no flag reaches them (see the boundary
+  below). Matched lines are then redacted like the rest of the ops surface.
+
+  Lines that were withheld are **counted and reported**, not silently dropped —
+  `withheld: N server line(s) …`. Most of those legitimately carry workspace or
+  raw error text and never will be returned. But a count that looks too high for
+  the incident is also the only signal that a producer's wording has drifted off
+  its template, so treat it as "ask the operator to read the session's Logs panel
+  for this window", not as noise.
+
+  It reads the durable store, so a session whose container is already gone still
+  answers. If a session's logs were pruned — archive, delete, or full reset
+  removes them — the output says so explicitly. Read that carefully: an empty
+  window and a pruned history look the same otherwise, and "no lines" is not
+  evidence that nothing happened.
+
+  One more reason not to read absence as proof: the underlying channel keeps a
+  bounded tail (docs/192 rotates it), and it is a *mixed* stream, so a session
+  whose agent wrote a lot of output can push its own older server lines out of
+  retention. On a busy session, treat a quiet distant past as "not retained",
+  not as "nothing happened then".
+
 - **Spawn a ShipIt fix session.** Once you have a root-cause hypothesis and the
   suspect files, delegate the fix to a normal repo-backed session branched from
   the exact commit you inspected:
@@ -147,6 +188,25 @@ dropped unless the session was created as an ops session.
   developer with push access can pick the issue up as a fix session. See
   `bug-filing.md` for the tool contract and what never goes in the body.
 
+## Your workspace git — ShipIt does not commit it
+
+An ops workspace **is** a real git repo on its own branch, but ShipIt runs **no**
+automatic commit and **no** automatic push for it. The auto-commit guidance in
+`environment.md` and `github.md` describes ordinary sessions and does **not**
+apply here.
+
+- Nothing sweeps up your edits at the end of a turn. `git add` and `git commit`
+  yourself when a change is worth keeping for the rest of *this* investigation;
+  scratch can stay uncommitted, and will.
+- Stay on the current branch — `git checkout -b` / `git switch -c` are blocked.
+- There is no remote, so a commit here does not travel: this history has exactly
+  one reader, this session. A finding that must outlive this workspace belongs in
+  an issue, in a `report_shipit_bug` filing, or in the `--shipit-source` fix
+  session that owns the code change. A new or corrected `prompts/` recipe goes
+  upstream too — see "Adding a recipe" below.
+- `git status` / `git diff` / `git log` are trustworthy here, unlike in an
+  ordinary session: the tree is exactly what you left it.
+
 ## What you CANNOT do (by design)
 
 - **No Docker writes.** `docker stop`, `docker rm`, `docker kill`,
@@ -162,6 +222,26 @@ dropped unless the session was created as an ops session.
   output, secrets, or workspace files, and none will be added — that boundary is
   the reason the inventory surface exists as its own narrow route rather than as
   general access to the sessions API.
+
+  `shipit session logs` does not weaken this, and the reason is worth stating
+  precisely — because the obvious version of it *would* have.
+
+  The durable log channel is a *mixed* stream: the same file carries the agent
+  CLI's own stdout/stderr alongside the orchestrator's lifecycle lines. Filtering
+  that stream by its `source` label is **not** enough, and an early version of
+  this subcommand that did so was wrong. `"server"` names the producer, not the
+  content, and several orchestrator producers interpolate text they don't
+  control: an invalid value in a project's own `docker-compose.yml` is quoted
+  verbatim into a validation error that is then broadcast as a `"server"` line.
+
+  So the filter is on the **content**. A line is returned only when its whole
+  text matches a template ShipIt authored, whose variable parts are
+  ShipIt-controlled tokens. Free-text interpolation cannot match one, so a line
+  carrying workspace, agent, or user content is withheld by construction rather
+  than by an audit someone has to keep correct. Unmatched lines are counted and
+  reported. If the question genuinely needs the session's chat — or one of those
+  withheld lines — that is still an "ask the operator to open it in the UI"
+  answer.
 - **No writes to ShipIt source.** `shipit source` is read-only — there is no
   `edit`, `commit`, `push`, `checkout`, or `git` subcommand. Change ShipIt only
   through a spawned `--shipit-source` fix session, which goes through the normal
@@ -171,12 +251,32 @@ dropped unless the session was created as an ops session.
 
 - `prompts/trace-a-pr.md` — take a PR, branch, or container name back to the
   session that produced it.
+- `prompts/read-session-logs.md` — when the orchestrator log shows nothing:
+  read a session's own server-source log lines.
 - `prompts/investigate-loop.md` — a container stuck in a SIGTERM/recreate loop.
 - `prompts/diagnose-stuck-session.md` — one misbehaving session container.
 - `prompts/daily-health.md` — a quick host-health snapshot.
+- `prompts/remediate-shipit-bug.md` — turn a diagnosis into a fix session or a
+  filed bug.
+- `prompts/verify-ops-access.md` — check that the privileges above actually work.
 
 These are paste-and-go recipes. The session's chat history doubles as the
 incident log, so investigations are self-documenting for the next time.
+
+### Adding a recipe
+
+These files are **not** authored in this workspace. Each one is a string constant
+in `src/server/orchestrator/templates-ops.ts`, listed in `OPS_TEMPLATE.files` and
+written into every ops workspace at session creation. A `prompts/*.md` you write
+and commit here is therefore read by this session only — the next ops session gets
+a fresh workspace from the template and never sees it.
+
+So when an investigation produces a command sequence worth keeping — and that is
+worth doing — draft it locally, then send it upstream through a `--shipit-source`
+fix session (see "Spawn a ShipIt fix session" above): add the constant to
+`templates-ops.ts`, register it in `OPS_TEMPLATE.files`, and add a line to the
+list above. That is the same channel as any other ShipIt code change, and it gives
+a file shipped to every future ops session a review step before it lands.
 
 ## Why read-only
 

@@ -220,12 +220,33 @@ export interface AutoConflictResolveState {
   nextEligibleAt?: number;
 }
 
+/**
+ * Why auto-merge is ShipIt-managed rather than GitHub-native. docs/266.
+ *
+ *  - `native-unavailable` — GitHub refused `enablePullRequestAutoMerge` (no
+ *    branch protection, "Allow auto-merge" off). A repo misconfiguration: the
+ *    card explains it and links to the settings page.
+ *  - `session-live` — ShipIt declined to hand the PR to GitHub because the
+ *    session has a live runner, so the merge must stay behind the busy gate in
+ *    `AutoMergeManager.handleManaged`. Nothing is wrong; the card says the PR
+ *    merges when the session finishes.
+ *
+ * The two must stay distinguishable: rendering the second as the first tells
+ * the user their repository is misconfigured when it isn't.
+ */
+export type AutoMergeManagedReason = "native-unavailable" | "session-live";
+
 /** Auto-merge state for a session's PR, managed by the poller. */
 export interface AutoMergeState {
   enabled: boolean;
   mergeMethod: "squash" | "merge" | "rebase";
-  /** True when GitHub native auto-merge failed and ShipIt manages the merge. */
+  /** True when ShipIt, not GitHub, owns the merge. See {@link managedReason}. */
   managed?: boolean;
+  /**
+   * Why {@link managed} is set. Absent on an old/hand-built state is read as
+   * `native-unavailable` (the only reason that existed before docs/266).
+   */
+  managedReason?: AutoMergeManagedReason;
   /** GitHub settings URL — shown in tooltip when managed. */
   settingsUrl?: string;
   /**
@@ -371,8 +392,10 @@ export interface PrStatusSummary {
   autoMerge?: {
     enabled: boolean;
     mergeMethod: "squash" | "merge" | "rebase";
-    /** True when ShipIt manages the merge (GitHub native auto-merge unavailable). */
+    /** True when ShipIt, not GitHub, owns the merge. See {@link managedReason}. */
     managed?: boolean;
+    /** Why ShipIt owns the merge — a repo misconfiguration, or a live session. docs/266. */
+    managedReason?: AutoMergeManagedReason;
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
     /** The real GitHub error that triggered the managed-merge fallback. docs/077. */
@@ -469,8 +492,10 @@ export interface WsPrLifecycleUpdate {
   autoMerge?: {
     enabled: boolean;
     mergeMethod: "squash" | "merge" | "rebase";
-    /** True when ShipIt manages the merge (GitHub native auto-merge unavailable). */
+    /** True when ShipIt, not GitHub, owns the merge. See {@link managedReason}. */
     managed?: boolean;
+    /** Why ShipIt owns the merge — a repo misconfiguration, or a live session. docs/266. */
+    managedReason?: AutoMergeManagedReason;
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
     /** The real GitHub error that triggered the managed-merge fallback. docs/077. */

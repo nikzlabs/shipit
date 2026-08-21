@@ -13,15 +13,22 @@
  */
 
 import type {
-  AgentId,
   LimitsRefreshResult,
   SubscriptionLimits,
   SubscriptionLimitsWindow,
 } from "../../shared/types.js";
+import type { BillingMode } from "../../shared/catalogue/types.js";
 
 export interface LimitsProvider {
-  /** Which agent backend this provider belongs to. */
-  readonly agentId: AgentId;
+  /**
+   * docs/252 req 10 — the `(service, billing mode)` this provider reports quota
+   * for. Replaces `agentId`: a harness is not a vendor and cannot own a quota,
+   * and one service can hold both a subscription and a key. Only a `sub` mode
+   * has an allowance to report, which is why both shipped providers declare
+   * one — a key mode renders no indicator at all rather than an empty one.
+   */
+  readonly serviceId: string;
+  readonly billingMode: BillingMode;
 
   /**
    * docs/150 — the routes this provider currently holds a snapshot for: a

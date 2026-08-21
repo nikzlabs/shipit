@@ -17,6 +17,9 @@ import { EventEmitter } from "node:events";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
+import type { CredentialRoute } from "../shared/types.js";
+import type { ModelSelection } from "../shared/catalogue/index.js";
+import { credentialStorageEnvNames } from "../shared/catalogue/index.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   prepareSessionAgentEnvironment,
@@ -26,6 +29,11 @@ import {
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
 import { syncAgentTokenIn } from "./session-credentials.js";
+import {
+  readSessionAccountMarker,
+  writeSessionAccountMarker,
+} from "./session-agent-credentials.js";
+import { resetLocalAgentOpsForTests } from "./local-agent-ops.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
 import {
@@ -41,8 +49,22 @@ import {
 class FakeContainerRunner extends EventEmitter {
   serviceManager: { getSecretsSnapshot: () => { agentValues: Record<string, string> } } | null = null;
   pushed: Record<string, string>[] = [];
+  /** docs/260 §5 — env-prep stamps the turn's selection here before the spawn. */
+  residentRoute?: { kind: "account" | "reserved"; id: string };
+  /** planning#353 — the viewer-facing messages env-prep sends. */
+  emitted: { type: string; [k: string]: unknown }[] = [];
+  /**
+   * docs/153 — a CLI process still resident after the turn. It decides whether
+   * turn end may tear the token write-back watch down: a streaming process
+   * outlives its turn and rotates the OAuth token on its own clock.
+   */
+  residentAgent: object | null = null;
+  getAgent(): object | null { return this.residentAgent; }
   async tryPushAgentSecrets(values: Record<string, string>): Promise<void> {
     this.pushed.push(values);
+  }
+  emitMessage(msg: { type: string; [k: string]: unknown }): void {
+    this.emitted.push(msg);
   }
 }
 // Reparent the fake so `runner instanceof ContainerSessionRunner` is true —
@@ -50,17 +72,62 @@ class FakeContainerRunner extends EventEmitter {
 Object.setPrototypeOf(FakeContainerRunner.prototype, ContainerSessionRunner.prototype);
 
 function makeFakeCredentialStore(
-  initial: { agentEnv?: Record<string, string> } = {},
+  initial: {
+    agentEnv?: Record<string, string>;
+    // docs/252 phase 2 — the stored service credentials, which are collected
+    // separately from `agentEnv` and land under their catalogue `storageEnv`
+    // names.
+    credentialRoutes?: CredentialRoute[];
+    credentialSecrets?: Record<string, string>;
+  } = {},
 ): CredentialStore {
   const agentEnv = { ...(initial.agentEnv ?? {}) };
+  const routes = initial.credentialRoutes ?? [];
+  const secrets = { ...(initial.credentialSecrets ?? {}) };
   const stub = {
     getAllAgentEnv: () => ({ ...agentEnv }),
     getAllMcpOAuthTokens: () => ({}),
     getAllMcpServers: () => ({}),
     getAgentSystemInstructionsEnabled: () => true,
     getAutoCreatePr: () => false,
+    listCredentialRoutes: () => routes.map((r) => ({ ...r })),
+    getCredentialSecret: (routeId: string) => secrets[routeId],
+    // docs/252 phase 5 — env prep asks whether the pinned credential is benched
+    // and stamps the one it resolved onto.
+    getCredentialRoute: (routeId: string) => {
+      const found = routes.find((r) => r.id === routeId);
+      return found ? { ...found } : undefined;
+    },
+    markCredentialRouteUsed: (routeId: string) => {
+      const found = routes.find((r) => r.id === routeId);
+      if (found) found.lastUsedAt = Date.now();
+    },
+    getSelectionMode: () => "strict" as const,
+    // The string-delivered walk applies the user's cutoffs, exactly as the
+    // account walk does. The defaults, since nothing here reports a quota.
+    getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
   };
   return stub as unknown as CredentialStore;
+}
+
+/**
+ * docs/260 — env-prep's routing dependency, faked at the seam a turn actually
+ * calls: `selectAccountForTurn` answers the walk (accounts first, reserved env
+ * fallback last) and `markAccountUsed` receives the lastUsedAt stamp. The
+ * session row no longer carries a route to pre-set, so a test pins a specific
+ * account by making it this walk's answer — exactly how production pins one
+ * (the only ready account, or the highest priority).
+ */
+function fakeAccountManager(
+  selection:
+    | { ok: true; route: { kind: "account" | "reserved"; id: string } }
+    | { ok: false; reason: "auth_required" }
+    | { ok: false; reason: "all_exhausted"; earliestResetAt: string | null },
+): { selectAccountForTurn: ReturnType<typeof vi.fn>; markAccountUsed: ReturnType<typeof vi.fn> } {
+  return {
+    selectAccountForTurn: vi.fn().mockReturnValue(selection),
+    markAccountUsed: vi.fn(),
+  };
 }
 
 function makeFakeSessionManager(opts: {
@@ -70,6 +137,8 @@ function makeFakeSessionManager(opts: {
   providerRouteId?: string;
   remoteUrl?: string;
   model?: string;
+  /** Extra session-row fields (docs/252: the selection triple, route ownership). */
+  extra?: Record<string, unknown>;
 }): {
   sm: SessionManager;
   state: {
@@ -81,6 +150,8 @@ function makeFakeSessionManager(opts: {
     clearAgentSessionIdCalls: string[];
     conversationReplay: string | undefined;
     setProviderRouteCalls: { id: string; kind: string; routeId: string }[];
+    modelSelection: ModelSelection | undefined;
+    setModelSelectionCalls: ModelSelection[];
   };
 } {
   const state = {
@@ -92,6 +163,9 @@ function makeFakeSessionManager(opts: {
     clearAgentSessionIdCalls: [] as string[],
     conversationReplay: undefined as string | undefined,
     setProviderRouteCalls: [] as { id: string; kind: string; routeId: string }[],
+    /** planning#353 — the derived selection env-prep settles onto the row. */
+    modelSelection: undefined as ModelSelection | undefined,
+    setModelSelectionCalls: [] as ModelSelection[],
   };
   const sm = {
     get: () => ({
@@ -102,7 +176,21 @@ function makeFakeSessionManager(opts: {
       providerRouteId: opts.providerRouteId,
       remoteUrl: opts.remoteUrl ?? "",
       model: opts.model,
+      ...(opts.extra ?? {}),
+      // Written last so a settled selection is what the re-read returns, which
+      // is the behaviour the production row has.
+      ...(state.modelSelection
+        ? {
+            serviceId: state.modelSelection.serviceId,
+            billingMode: state.modelSelection.billingMode,
+            model: state.modelSelection.modelId,
+          }
+        : {}),
     }),
+    setModelSelection: (_id: string, selection: ModelSelection) => {
+      state.setModelSelectionCalls.push(selection);
+      state.modelSelection = selection;
+    },
     setAgentId: () => { state.setAgentIdCalls += 1; },
     setAgentPinned: () => {
       state.setAgentPinnedCalls += 1;
@@ -133,7 +221,13 @@ describe("prepareSessionAgentEnvironment", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-env-prep-"));
   });
 
-  it("provisions agent credentials + pins on first call, but skips both on a second call (idempotent)", async () => {
+  afterEach(() => {
+    // Turn-shaped calls (enforceAccountRouting) arm the mid-turn write-back
+    // watch as a side effect; drop them so no watcher outlives its test.
+    stopAllTokenWriteBackWatches();
+  });
+
+  it("provisions legacy flat credentials + scaffolds once on the first routed turn, skips both on the second (docs/260 — agentPinned gates only the legacy branch)", async () => {
     // Seed Claude creds at the source so provisioning has something to copy.
     fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
@@ -149,6 +243,7 @@ describe("prepareSessionAgentEnvironment", () => {
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
+      enforceAccountRouting: true,
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
     expect(state.setAgentIdCalls).toBe(1);
@@ -156,12 +251,13 @@ describe("prepareSessionAgentEnvironment", () => {
     const provisioned = fs.existsSync(path.join(tmpDir, "sessions", "s1", ".claude.json"));
     expect(provisioned).toBe(true);
 
-    // Second call: session is now pinned, so re-provisioning is a no-op.
+    // Second turn: session is now pinned, so re-provisioning is a no-op.
     // Clobber the session's `.claude.json` to prove we didn't re-copy.
     fs.writeFileSync(path.join(tmpDir, "sessions", "s1", ".claude.json"), "sentinel");
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
+      enforceAccountRouting: true,
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
     expect(state.setAgentIdCalls).toBe(1);
@@ -185,6 +281,7 @@ describe("prepareSessionAgentEnvironment", () => {
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
+      enforceAccountRouting: true,
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
     const sessionCreds = path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json");
@@ -199,6 +296,7 @@ describe("prepareSessionAgentEnvironment", () => {
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
+      enforceAccountRouting: true,
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
     expect(fs.readFileSync(sessionCreds, "utf8")).toBe(fresh);
@@ -250,14 +348,22 @@ describe("prepareSessionAgentEnvironment", () => {
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: "2595726f-stale-uuid-from-pre-recovery",
-      providerRouteKind: "account",
-      providerRouteId: "claude-default",
     });
 
+    // docs/260 — the account-scoped sync (and with it the repair) follows THIS
+    // call's own selection, not a session row; the repair only runs on a turn.
     const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
-      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: fakeAccountManager({
+          ok: true, route: { kind: "account", id: "claude-default" },
+        }) as never,
+      },
     });
 
     expect(result.overrideAgentSessionId).toBe(recoveredId);
@@ -267,13 +373,13 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(state.agentSessionId).toBe(recoveredId);
   });
 
-  it("routes a fresh session through the account router rather than inheriting one (req 18)", async () => {
-    // An agent-spawned child session is created with no persisted route. It
-    // must therefore ask the router, which applies the user's normal priority
-    // order — a child does NOT ride whatever account its parent happened to be
-    // pinned to (docs/150 req 18). This is the mechanism that guarantees it:
-    // `providerRouteKind`/`providerRouteId` are only ever written from a
-    // router decision, never copied at spawn.
+  it("selects the turn's route fresh, returns it as turnRoute, and never persists a session route (docs/260-turn-level-account-routing reqs 1–2)", async () => {
+    // Every routed turn asks the walk at its own start — an agent-spawned
+    // child, a follow-up turn, and a first turn all take the same path, so a
+    // child never rides its parent's account and nothing fixes a session to
+    // an account across turns. The choice is handed back as a VALUE
+    // (`turnRoute`) and stamped on the runner; the session row records
+    // nothing.
     const account = path.join(tmpDir, "provider-accounts", "claude", "acct-primary");
     fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), "{}");
@@ -281,45 +387,9 @@ describe("prepareSessionAgentEnvironment", () => {
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
     const { sm, state } = makeFakeSessionManager({ agentPinned: false });
-    const selectAccountForTurn = vi
-      .fn()
-      .mockReturnValue({ ok: true, route: { kind: "account", id: "acct-primary" } });
+    const manager = fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-primary" } });
 
-    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
-      sessionId: "s1",
-      agentId: "claude",
-      deps: {
-        credentialsDir: tmpDir,
-        credentialStore,
-        sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
-      },
-    });
-
-    expect(selectAccountForTurn).toHaveBeenCalledWith("claude");
-    expect(state.setProviderRouteCalls).toEqual([
-      { id: "s1", kind: "account", routeId: "acct-primary" },
-    ]);
-    // The child's own credentials came from the routed account.
-    expect(
-      fs.existsSync(path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json")),
-    ).toBe(true);
-  });
-
-  it("reuses an already-persisted route instead of re-running the router", async () => {
-    // Follow-up turns (including detached / system turns that recreate a
-    // runner from scratch) must land on the account the session is already
-    // pinned to, not re-select and drift onto a different one mid-conversation.
-    const runner = new FakeContainerRunner();
-    const credentialStore = makeFakeCredentialStore();
-    const { sm, state } = makeFakeSessionManager({
-      agentPinned: true,
-      providerRouteKind: "account",
-      providerRouteId: "acct-secondary",
-    });
-    const selectAccountForTurn = vi.fn();
-
-    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
       enforceAccountRouting: true,
@@ -327,15 +397,62 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
+        providerAccountManager: manager as never,
       },
     });
 
-    expect(selectAccountForTurn).not.toHaveBeenCalled();
+    // Optimistic, always (req 12): the result WILL be attempted, so refusal
+    // memory may order candidates but never produce all_exhausted on its own.
+    expect(manager.selectAccountForTurn).toHaveBeenCalledWith("anthropic", { optimistic: true });
+    expect(result.turnRoute).toEqual({ kind: "account", id: "acct-primary" });
+    expect(runner.residentRoute).toEqual({ kind: "account", id: "acct-primary" });
+    // lastUsedAt stamped on the account the turn resolved onto (docs/150-multiple-provider-subscriptions req 21).
+    expect(manager.markAccountUsed).toHaveBeenCalledWith("anthropic", "acct-primary");
+    // req 2 — no session pin exists, so none may be written.
+    expect(state.setProviderRouteCalls).toEqual([]);
+    // Per-turn provisioning came from the routed account and recorded it in
+    // the session's marker (docs/260 §4).
+    expect(
+      fs.existsSync(path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json")),
+    ).toBe(true);
+    expect(readSessionAccountMarker(tmpDir, "s1").claude).toBe("acct-primary");
+  });
+
+  it("re-runs selection on every turn — legacy provider_route_* row values are never consulted (docs/260-turn-level-account-routing req 1)", async () => {
+    // The session row's provider_route_* columns survive only as dead legacy.
+    // A row still naming another account must not steer the turn: the walk's
+    // fresh answer wins, every time.
+    const account = path.join(tmpDir, "provider-accounts", "claude", "acct-primary");
+    fs.mkdirSync(path.join(account, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(account, ".claude", ".credentials.json"), "{}");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm, state } = makeFakeSessionManager({
+      agentPinned: true,
+      providerRouteKind: "account",
+      providerRouteId: "acct-secondary",
+    });
+    const manager = fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-primary" } });
+
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: manager as never,
+      },
+    });
+
+    expect(manager.selectAccountForTurn).toHaveBeenCalledTimes(1);
+    expect(result.turnRoute).toEqual({ kind: "account", id: "acct-primary" });
     expect(state.setProviderRouteCalls).toEqual([]);
   });
 
-  // ---- docs/150 req 13: the turn preflight ----
+  // ---- docs/150-multiple-provider-subscriptions req 13: the turn preflight ----
 
   it("fails the turn immediately with the earliest reset when every account is exhausted (req 13)", async () => {
     const runner = new FakeContainerRunner();
@@ -380,9 +497,7 @@ describe("prepareSessionAgentEnvironment", () => {
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
     const { sm } = makeFakeSessionManager({ agentPinned: false, model: "claude-opus-5" });
-    const selectAccountForTurn = vi
-      .fn()
-      .mockReturnValue({ ok: true, route: { kind: "account", id: "acct-a" } });
+    const manager = fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-a" } });
 
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
@@ -392,11 +507,12 @@ describe("prepareSessionAgentEnvironment", () => {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
+        providerAccountManager: manager as never,
       },
     });
 
-    expect(selectAccountForTurn).toHaveBeenCalledWith("claude");
+    // The walk hears the service and the attempt-loop options — never a model.
+    expect(manager.selectAccountForTurn).toHaveBeenCalledWith("anthropic", { optimistic: true });
   });
 
   // Not-signed-in has its own guided surface; env-prep must not convert it
@@ -426,36 +542,372 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(state.setProviderRouteCalls).toEqual([]);
   });
 
-  // The service-level warm-up calls (child spawn, headless create) run before
-  // the turn exists. Throwing there would abort a session *creation*, leaving
-  // a session in the sidebar nobody asked for; the executor's own preflight is
-  // what stops the turn moments later.
-  it("keeps its fail-open contract when the caller is not the turn's preflight", async () => {
+  /**
+   * planning#353 — a session that has never had a model picked.
+   *
+   * The bug: turn routing asked the harness's OWN vendor whatever the install
+   * held, so on a DeepSeek-only install every selection-less turn was sent to
+   * Anthropic and died `auth_required`, while the composer displayed a runnable
+   * model. These pin the fix at the level that matters — the row is settled
+   * BEFORE anything reads it, so route selection and `buildRunParams` (which
+   * shapes the endpoint, the credential and `--model` from that same row)
+   * cannot disagree about what the turn runs.
+   */
+  describe("a selection-less session is settled onto the install's first eligible model", () => {
+    const deepseekRoute: CredentialRoute = {
+      id: "cred_ds", serviceId: "deepseek", billingMode: "key", via: "string", label: "DeepSeek",
+      isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+    };
+    const deepseekSelection = {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    };
+
+    beforeEach(() => {
+      // Hermetic: the derived default reads `process.env` in production (that is
+      // where a deployment-supplied credential lives), so a machine exporting
+      // ANY catalogue credential name would otherwise outrank the store and
+      // change the answer. Clear the whole set, not the three that happen to
+      // sort first — cross-agent review caught the narrower version, under
+      // which "the install has nothing" failed on a developer box with a
+      // DeepSeek key exported.
+      for (const name of credentialStorageEnvNames()) vi.stubEnv(name, "");
+    });
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    async function prep(opts: {
+      routes?: CredentialRoute[];
+      secrets?: Record<string, string>;
+      extra?: Record<string, unknown>;
+      model?: string;
+      turn?: boolean;
+      agent?: "claude" | "codex" | "opencode";
+    }) {
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        ...(opts.routes ? { credentialRoutes: opts.routes } : {}),
+        ...(opts.secrets ? { credentialSecrets: opts.secrets } : {}),
+      });
+      const { sm, state } = makeFakeSessionManager({
+        agentPinned: true,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.extra ? { extra: opts.extra } : {}),
+      });
+      const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: opts.agent ?? "claude",
+        ...(opts.turn === false ? {} : { enforceAccountRouting: true }),
+        deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      });
+      return { result, state };
+    }
+
+    it("writes the derived selection to the row and routes the turn onto it", async () => {
+      const { result, state } = await prep({
+        routes: [deepseekRoute],
+        secrets: { cred_ds: "sk-ds" },
+      });
+      expect(state.setModelSelectionCalls).toEqual([deepseekSelection]);
+      // Not `auth_required` against Anthropic, which is what the bug produced.
+      expect(result.turnRoute).toEqual({ kind: "reserved", id: "cred_ds" });
+    });
+
+    it("tells the viewers, so the composer stops showing a model the turn is not using", async () => {
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        credentialRoutes: [deepseekRoute],
+        credentialSecrets: { cred_ds: "sk-ds" },
+      });
+      const { sm } = makeFakeSessionManager({ agentPinned: true });
+      await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        enforceAccountRouting: true,
+        deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      });
+      const sent = runner.emitted.find((m) => m.type === "model_selection_changed");
+      expect(sent).toMatchObject({ sessionId: "s1", agentId: "claude", selection: deepseekSelection });
+    });
+
+    it("leaves a row that already names a real catalogue mode completely alone", async () => {
+      // A user's own choice must never be overwritten — the write only ever
+      // fills a gap.
+      const { state } = await prep({
+        routes: [
+          deepseekRoute,
+          {
+            id: "cred_glm", serviceId: "zai", billingMode: "sub", via: "string", label: "GLM",
+            isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+          },
+        ],
+        secrets: { cred_ds: "sk-ds", cred_glm: "glm" },
+        model: "glm-5.2[1m]",
+        extra: { serviceId: "zai", billingMode: "sub" },
+      });
+      expect(state.setModelSelectionCalls).toEqual([]);
+    });
+
+    it("settles a row whose model id the catalogue no longer knows", async () => {
+      // `setModel` nulls the service and mode for an unknown id on purpose, so
+      // this row holds a model and no triple — indistinguishable, for routing,
+      // from never having picked one.
+      const { state } = await prep({
+        routes: [deepseekRoute],
+        secrets: { cred_ds: "sk-ds" },
+        model: "claude-sonnet-4-20250514",
+      });
+      expect(state.setModelSelectionCalls).toEqual([deepseekSelection]);
+    });
+
+    /**
+     * The guard that keeps this a strict no-op wherever the old fallback
+     * already worked — and the case a cross-agent review found regressed
+     * before it existed.
+     *
+     * `ANTHROPIC_AUTH_TOKEN` is a *subscription* delivered as a bearer token.
+     * Deriving `(anthropic, sub)` for it would shape the spawn, and shaping
+     * moves the secret into `ANTHROPIC_API_KEY` — Claude's declared string
+     * target, since Anthropic's own subscription has no `targetOverride` — so
+     * the CLI would send an OAuth bearer as an `x-api-key` header
+     * (planning#354). Unshaped, the token works. Nothing may be written here.
+     */
+    it("writes nothing when the first eligible model is the harness's own vendor", async () => {
+      for (const [name, value] of [
+        ["ANTHROPIC_AUTH_TOKEN", "tok"],
+        ["ANTHROPIC_API_KEY", "sk-ant"],
+      ] as const) {
+        vi.stubEnv(name, value);
+        const { state } = await prep({});
+        expect(state.setModelSelectionCalls, `${name} must stay unshaped`).toEqual([]);
+        vi.stubEnv(name, "");
+      }
+    });
+
+    it("writes nothing when the native vendor has an account, even with another service configured", async () => {
+      // Anthropic leads the catalogue, so the derived answer here IS the native
+      // vendor and the old question reaches the same account. No write, no
+      // newly-shaped spawn, no `--model` where there was none.
+      const { state } = await prep({
+        routes: [
+          {
+            id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Acct",
+            isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+          },
+          deepseekRoute,
+        ],
+        secrets: { cred_ds: "sk-ds" },
+      });
+      expect(state.setModelSelectionCalls).toEqual([]);
+    });
+
+    it("still writes when the derived service IS the native one but has no login (docs/272)", async () => {
+      // OpenCode's native service is its own inference (Zen/Go): a pasted key,
+      // no login flow. The native-vendor skip's premise — "the old unshaped
+      // fallback reaches the same credential" — is false there, because the
+      // OpenCode adapter refuses a spawn with no routing outright. So a
+      // selection-less turn on an OpenCode-key-only install has to settle the
+      // row even though the derived service IS the harness's own vendor.
+      const { state } = await prep({
+        agent: "opencode",
+        routes: [{
+          id: "cred_oc",
+          serviceId: "opencode",
+          billingMode: "key",
+          via: "string",
+          label: "OpenCode",
+          isPrimary: true,
+          priority: 0,
+          status: "ready",
+          createdAt: 0,
+          updatedAt: 0,
+        }],
+        secrets: { cred_oc: "sk-oc" },
+      });
+      expect(state.setModelSelectionCalls).toEqual([
+        { serviceId: "opencode", billingMode: "key", modelId: "claude-opus-5" },
+      ]);
+    });
+
+    it("writes nothing on a warm-up", async () => {
+      // A warm-up is account-neutral by design; pinning a model there would make
+      // an untouched session silently acquire one.
+      const { state } = await prep({
+        routes: [deepseekRoute],
+        secrets: { cred_ds: "sk-ds" },
+        turn: false,
+      });
+      expect(state.setModelSelectionCalls).toEqual([]);
+    });
+
+    it("writes nothing, and does not throw, when the install has no credentials", async () => {
+      const { result, state } = await prep({});
+      expect(state.setModelSelectionCalls).toEqual([]);
+      expect(result.turnRoute).toBeUndefined();
+    });
+  });
+
+  // docs/260-turn-level-account-routing req 11 — the string-delivered twin of the account walk. A
+  // subscription authenticated by a supplied key (the GLM coding plan) is
+  // selected per turn through the SAME walk: refusal memory is the only skip
+  // (blocked while now < min(exhaustedUntil, exhaustedAt + ~30 min)), nothing
+  // is persisted onto the session between turns, and only credentials the
+  // provider actually refused this turn (the attempt loop's exclusion set)
+  // can produce the terminal failure.
+  describe("string-delivered subscription credentials are routed per turn (docs/260-turn-level-account-routing req 11)", () => {
+    const glmRoutes = (primary: Partial<CredentialRoute> = {}): CredentialRoute[] => [
+      {
+        id: "cred_a", serviceId: "zai", billingMode: "sub", via: "string", label: "Plan A",
+        isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+        ...primary,
+      },
+      {
+        id: "cred_b", serviceId: "zai", billingMode: "sub", via: "string", label: "Plan B",
+        isPrimary: false, priority: 1, status: "ready", createdAt: 0, updatedAt: 0,
+      },
+    ];
+    const glmSession = { serviceId: "zai", billingMode: "sub" };
+
+    async function prepGlm(
+      routes: CredentialRoute[],
+      opts: { turn?: boolean; excludeRouteIds?: string[] } = {},
+    ): Promise<{
+      result: Awaited<ReturnType<typeof prepareSessionAgentEnvironment>>;
+      state: { setProviderRouteCalls: { id: string; kind: string; routeId: string }[] };
+      runner: FakeContainerRunner;
+    }> {
+      const runner = new FakeContainerRunner();
+      const credentialStore = makeFakeCredentialStore({
+        credentialRoutes: routes,
+        credentialSecrets: { cred_a: "k1", cred_b: "k2" },
+      });
+      const { sm, state } = makeFakeSessionManager({
+        agentPinned: true,
+        model: "glm-5.2[1m]",
+        extra: glmSession,
+      });
+      const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        ...(opts.turn === false ? {} : { enforceAccountRouting: true }),
+        ...(opts.excludeRouteIds ? { excludeRouteIds: opts.excludeRouteIds } : {}),
+        deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      });
+      return { result, state, runner };
+    }
+
+    it("routes the turn onto the next credential when the primary is refusal-blocked, stamping lastUsedAt (reqs 9, 11)", async () => {
+      const now = Date.now();
+      const routes = glmRoutes({ exhaustedUntil: now + 3_600_000, exhaustedAt: now });
+
+      const { result, state } = await prepGlm(routes);
+
+      expect(result.turnRoute).toEqual({ kind: "reserved", id: "cred_b" });
+      // The credential the turn authenticates with is the one `balanced`
+      // sorts by — attribution and authentication name the same credential.
+      expect(routes.find((r) => r.id === "cred_b")?.lastUsedAt).toBeDefined();
+      // The move is a per-turn fact; nothing is persisted onto the session (req 1).
+      expect(state.setProviderRouteCalls).toEqual([]);
+    });
+
+    it("keeps a healthy primary, per turn, with nothing persisted", async () => {
+      const now = Date.now();
+      const routes = glmRoutes({ exhaustedUntil: now - 1, exhaustedAt: now - 3_600_000 });
+
+      const { result, state } = await prepGlm(routes);
+
+      expect(result.turnRoute).toEqual({ kind: "reserved", id: "cred_a" });
+      expect(state.setProviderRouteCalls).toEqual([]);
+    });
+
+    it("treats a legacy bench with no exhaustedAt clock as expired (docs/260 migration)", async () => {
+      // Pre-260 string benches never wrote the clock. The read rule requires
+      // both halves, so a clockless bench cannot block — which is exactly how
+      // the permanently-stuck legacy rows self-heal on deploy.
+      const routes = glmRoutes({ exhaustedUntil: Date.now() + 3_600_000 });
+
+      const { result } = await prepGlm(routes);
+
+      expect(result.turnRoute).toEqual({ kind: "reserved", id: "cred_a" });
+    });
+
+    it("still returns the best blocked credential when every one is refusal-blocked (req 12)", async () => {
+      // Selection is optimistic on the turn's own preflight: remembered
+      // refusals may order candidates but never block a turn on a credential
+      // that was not actually tried this turn (req 5).
+      const now = Date.now();
+      const routes = glmRoutes({ exhaustedUntil: now + 3_600_000, exhaustedAt: now });
+      routes[1]!.exhaustedUntil = now + 3_600_000;
+      routes[1]!.exhaustedAt = now;
+
+      const { result } = await prepGlm(routes);
+
+      expect(result.turnRoute).toEqual({ kind: "reserved", id: "cred_a" });
+    });
+
+    it("blocks the turn only when every credential was actually refused THIS turn (reqs 6, 12)", async () => {
+      // The attempt loop excludes each refused route as it goes; only a
+      // selection with every candidate excluded may fail. Names the SERVICE,
+      // not the harness: "every connected Claude account is out of quota" is
+      // wrong for a spent GLM plan running on the Claude harness.
+      const now = Date.now();
+      const routes = glmRoutes({ exhaustedUntil: now + 3_600_000, exhaustedAt: now });
+      routes[1]!.exhaustedUntil = now + 3_600_000;
+      routes[1]!.exhaustedAt = now;
+
+      await expect(
+        prepGlm(routes, { excludeRouteIds: ["cred_a", "cred_b"] }),
+      ).rejects.toThrow(/Every GLM \(Z\.ai\) credential is out of quota/);
+    });
+
+    it("selects and stamps nothing on a pre-turn warm-up (docs/260 §5b)", async () => {
+      // The warm-up calls (child spawn, headless create, CI fix, wake) leave
+      // `enforceAccountRouting` unset: account-neutral by design, so they can
+      // never double-select against the real turn moments later.
+      const routes = glmRoutes();
+
+      const { result } = await prepGlm(routes, { turn: false });
+
+      expect(result.turnRoute).toBeUndefined();
+      expect(routes.every((r) => r.lastUsedAt === undefined)).toBe(true);
+    });
+  });
+
+  // The service-level warm-up calls (child spawn, headless create, CI fix,
+  // wake) run before the turn exists. docs/260 §5b splits env prep in two:
+  // the warm-up half is ACCOUNT-NEUTRAL — it selects nothing, provisions
+  // nothing, and stamps nothing (so it can neither throw a routing failure
+  // nor double-select against the real turn moments later); only the MCP
+  // refresh and the secrets push still run.
+  it("a warm-up call is account-neutral: selects, provisions, and pins nothing (docs/260 §5b)", async () => {
     fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, ".claude.json"), "{}");
 
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();
     const { sm, state } = makeFakeSessionManager({ agentPinned: false });
-    const selectAccountForTurn = vi
-      .fn()
-      .mockReturnValue({ ok: false, reason: "all_exhausted", earliestResetAt: null });
+    const manager = fakeAccountManager({ ok: true, route: { kind: "account", id: "acct-a" } });
 
-    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+    const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
       deps: {
         credentialsDir: tmpDir,
         credentialStore,
         sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn, markAccountUsed: vi.fn() } as never,
+        providerAccountManager: manager as never,
       },
     });
 
-    // Nothing was routed, so the executor's preflight still has the decision
-    // to make — but the session itself was created and pinned normally.
+    expect(manager.selectAccountForTurn).not.toHaveBeenCalled();
+    expect(result.turnRoute).toBeUndefined();
+    expect(manager.markAccountUsed).not.toHaveBeenCalled();
     expect(state.setProviderRouteCalls).toEqual([]);
-    expect(state.setAgentPinnedCalls).toBe(1);
+    expect(state.setAgentPinnedCalls).toBe(0);
+    expect(state.setAgentIdCalls).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, "sessions", "s1"))).toBe(false);
+    // The account-neutral half still ran: the merged agent env reached the worker.
+    expect(runner.pushed).toHaveLength(1);
   });
 
   it("returns no override on healthy turns (no leak repair fired)", async () => {
@@ -492,14 +944,23 @@ describe("prepareSessionAgentEnvironment", () => {
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: healthyId,
-      providerRouteKind: "account",
-      providerRouteId: "claude-default",
     });
+    // The subtree already belongs to the account this turn's selection lands
+    // on (docs/260 §4 — the marker, not the session row, records identity).
+    writeSessionAccountMarker(tmpDir, "s1", "claude", "claude-default");
 
     const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
-      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: fakeAccountManager({
+          ok: true, route: { kind: "account", id: "claude-default" },
+        }) as never,
+      },
     });
 
     expect(result.overrideAgentSessionId).toBeUndefined();
@@ -540,14 +1001,21 @@ describe("prepareSessionAgentEnvironment", () => {
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: "doomed-init-uuid-from-failed-resume",
-      providerRouteKind: "account",
-      providerRouteId: "claude-default",
     });
+    writeSessionAccountMarker(tmpDir, "s1", "claude", "claude-default");
 
     const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
-      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: fakeAccountManager({
+          ok: true, route: { kind: "account", id: "claude-default" },
+        }) as never,
+      },
     });
 
     expect(result.overrideAgentSessionId).toBeNull();
@@ -604,14 +1072,20 @@ describe("prepareSessionAgentEnvironment", () => {
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: codexThreadId,
-      providerRouteKind: "account",
-      providerRouteId: "codex-default",
     });
 
     const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "codex",
-      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: fakeAccountManager({
+          ok: true, route: { kind: "account", id: "codex-default" },
+        }) as never,
+      },
     });
 
     expect(result.overrideAgentSessionId).toBeUndefined();
@@ -637,8 +1111,6 @@ describe("prepareSessionAgentEnvironment", () => {
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: codexThreadId,
-      providerRouteKind: "account",
-      providerRouteId: "codex-default",
     });
     const chatHistoryManager = {
       load: () => [
@@ -652,7 +1124,16 @@ describe("prepareSessionAgentEnvironment", () => {
     const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "codex",
-      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm, chatHistoryManager },
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        chatHistoryManager,
+        providerAccountManager: fakeAccountManager({
+          ok: true, route: { kind: "account", id: "codex-default" },
+        }) as never,
+      },
     });
 
     expect(result.overrideAgentSessionId).toBeNull();
@@ -671,14 +1152,20 @@ describe("prepareSessionAgentEnvironment", () => {
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: codexThreadId,
-      providerRouteKind: "account",
-      providerRouteId: "codex-default",
     });
 
     const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "codex",
-      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+      enforceAccountRouting: true,
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore,
+        sessionManager: sm,
+        providerAccountManager: fakeAccountManager({
+          ok: true, route: { kind: "account", id: "codex-default" },
+        }) as never,
+      },
     });
 
     expect(result.overrideAgentSessionId).toBeNull();
@@ -790,9 +1277,12 @@ describe("prepareSessionAgentEnvironment", () => {
     const credentialStore = makeFakeCredentialStore();
     const { sm } = makeFakeSessionManager({ agentPinned: false, remoteUrl: repoUrl });
 
+    // docs/260 — memory seeding is turn-bound (`agentPinned` still gates it to
+    // the FIRST routed turn), so the flag is required.
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
+      enforceAccountRouting: true,
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
 
@@ -810,6 +1300,7 @@ describe("prepareSessionAgentEnvironment", () => {
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
+      enforceAccountRouting: true,
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
 
@@ -826,6 +1317,7 @@ describe("prepareSessionAgentEnvironment", () => {
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
+      enforceAccountRouting: true,
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
 
@@ -845,6 +1337,7 @@ describe("prepareSessionAgentEnvironment", () => {
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "codex",
+      enforceAccountRouting: true,
       deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
     });
 
@@ -888,6 +1381,49 @@ describe("finalizeSessionAgentEnvironment", () => {
       "utf8",
     );
     expect(sourceCreds).toContain("rotated");
+  });
+
+  it("writes back to the route captured for the turn, not a later session route", () => {
+    const accountRoot = (id: string) =>
+      path.join(tmpDir, "provider-accounts", "claude", id, ".claude");
+    for (const [id, token] of [["acct-a", "A"], ["acct-b", "B"]] as const) {
+      fs.mkdirSync(accountRoot(id), { recursive: true });
+      fs.writeFileSync(
+        path.join(accountRoot(id), ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { expiresAt: 1_000_000_000_000, accessToken: token } }),
+      );
+    }
+    const sessionDir = path.join(tmpDir, "sessions", "s1", ".claude");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: 2_000_000_000_000, accessToken: "A-rotated" } }),
+    );
+    // The turn that ran on acct-a left the subtree recorded as acct-a's — the
+    // write-back publishes only to the account the subtree says it holds.
+    writeSessionAccountMarker(tmpDir, "s1", "claude", "acct-a");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    // The persisted row moved after this process started. Re-reading it here
+    // used to copy A's token into B's account root.
+    const { sm } = makeFakeSessionManager({
+      agentPinned: true,
+      providerRouteKind: "account",
+      providerRouteId: "acct-b",
+    });
+
+    finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      capturedRoute: { providerRouteKind: "account", providerRouteId: "acct-a" },
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(fs.readFileSync(path.join(accountRoot("acct-a"), ".credentials.json"), "utf8"))
+      .toContain("A-rotated");
+    expect(fs.readFileSync(path.join(accountRoot("acct-b"), ".credentials.json"), "utf8"))
+      .toContain('"accessToken":"B"');
   });
 
   it("is a no-op when the runner is not a ContainerSessionRunner", () => {
@@ -997,17 +1533,18 @@ describe("repushSessionAgentToken (docs/179 401 recovery)", () => {
     expect(readToken(sessionRoot)).toContain("LIVE-SOURCE");
   });
 
-  it("repushes from the pinned account's root for an account-routed session", () => {
+  it("repushes from the account recorded in the session's credential marker (docs/260)", () => {
+    // The session row records no route any more; the subtree's own marker
+    // (written by the only provisioning writer) names the account whose token
+    // the session holds — so the recovery pushes THAT account's source, never
+    // the flat root's, over the dead copy.
     const accountRoot = path.join(tmpDir, "provider-accounts", "claude", "acct-a");
     writeToken(accountRoot, "ACCOUNT-A", 1_000_000_000_000);
     writeToken(tmpDir, "SHARED-ROOT", 1_000_000_000_000);
     const sessionRoot = path.join(tmpDir, "sessions", "s1");
     writeToken(sessionRoot, "DEAD-BUT-LATER", 2_000_000_000_000);
-    const { sm } = makeFakeSessionManager({
-      agentPinned: true,
-      providerRouteKind: "account",
-      providerRouteId: "acct-a",
-    });
+    writeSessionAccountMarker(tmpDir, "s1", "claude", "acct-a");
+    const { sm } = makeFakeSessionManager({ agentPinned: true });
 
     repushSessionAgentToken(new FakeContainerRunner() as unknown as SessionRunnerInterface, {
       sessionId: "s1",
@@ -1059,26 +1596,33 @@ describe("mid-turn token write-back watch wiring", () => {
   async function prep(
     opts: {
       enforceAccountRouting?: boolean;
-      providerRouteKind?: "account" | "reserved";
-      providerRouteId?: string;
+      /**
+       * docs/260 — the route THIS call's own selection resolves. The session
+       * row is no longer consulted, so a test pins the route by making it the
+       * walk's answer.
+       */
+      selection?: { kind: "account" | "reserved"; id: string };
     },
   ): Promise<{ runner: FakeContainerRunner; sm: SessionManager }> {
     const runner = new FakeContainerRunner();
-    const { sm } = makeFakeSessionManager({
-      agentPinned: true,
-      ...(opts.providerRouteKind ? { providerRouteKind: opts.providerRouteKind } : {}),
-      ...(opts.providerRouteId ? { providerRouteId: opts.providerRouteId } : {}),
-    });
+    const { sm } = makeFakeSessionManager({ agentPinned: true });
     await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
       sessionId: "s1",
       agentId: "claude",
       ...(opts.enforceAccountRouting ? { enforceAccountRouting: true } : {}),
-      deps: { credentialsDir: tmpDir, credentialStore: makeFakeCredentialStore(), sessionManager: sm },
+      deps: {
+        credentialsDir: tmpDir,
+        credentialStore: makeFakeCredentialStore(),
+        sessionManager: sm,
+        ...(opts.selection
+          ? { providerAccountManager: fakeAccountManager({ ok: true, route: opts.selection }) as never }
+          : {}),
+      },
     });
     return { runner, sm };
   }
 
-  it("arms on the turn's own pre-spawn step and disarms at turn end", async () => {
+  it("arms on the turn's own pre-spawn step and disarms at turn end when no CLI survives it", async () => {
     const { runner, sm } = await prep({ enforceAccountRouting: true });
     expect(hasTokenWriteBackWatch("s1")).toBe(true);
 
@@ -1090,38 +1634,81 @@ describe("mid-turn token write-back watch wiring", () => {
     expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });
 
+  // docs/153 — the daily-reconnect bug. A resident `claude --print
+  // --input-format stream-json` process outlives its turn and refreshes the
+  // shared single-use refresh token hours later, with no turn in view. Turn end
+  // used to stop watching regardless, so that rotation reached nothing and the
+  // next refresher tick spent a token Anthropic had already invalidated.
+  it("keeps the watch alive past turn end while a CLI process is still resident", async () => {
+    const { runner, sm } = await prep({ enforceAccountRouting: true });
+    runner.residentAgent = { pid: 80 };
+
+    finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore: makeFakeCredentialStore(), sessionManager: sm },
+    });
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+
+    // ...and the runner's own teardown is what finally stops it.
+    runner.emit("disposed");
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
+  it("drops the surviving watch at the next turn end once the process is gone", async () => {
+    const { runner, sm } = await prep({ enforceAccountRouting: true });
+    runner.residentAgent = { pid: 80 };
+    const finalize = (): void => {
+      finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+        sessionId: "s1",
+        agentId: "claude",
+        deps: { credentialsDir: tmpDir, credentialStore: makeFakeCredentialStore(), sessionManager: sm },
+      });
+    };
+    finalize();
+    expect(hasTokenWriteBackWatch("s1")).toBe(true);
+
+    runner.residentAgent = null; // the CLI exited
+    finalize();
+    expect(hasTokenWriteBackWatch("s1")).toBe(false);
+  });
+
   it("does not arm on a pre-turn warm-up call (no turn to publish for yet)", async () => {
     await prep({});
     expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });
 
   it("skips the reserved claude-env-oauth route, like the sync-in does", async () => {
+    // What a real selection resolves when ANTHROPIC_AUTH_TOKEN is the only
+    // credential (no accounts connected) — those credentials aren't ours to
+    // write, so no watch may arm.
     await prep({
       enforceAccountRouting: true,
-      providerRouteKind: "reserved",
-      providerRouteId: "claude-env-oauth",
+      selection: { kind: "reserved", id: "claude-env-oauth" },
     });
     expect(hasTokenWriteBackWatch("s1")).toBe(false);
   });
 
-  it("arms against the pinned account's source for an account-routed session", async () => {
+  it("arms against the routed account's source for an account turn", async () => {
     const accountSource = path.join(
       tmpDir, "provider-accounts", "claude", "acct-work", ".claude", ".credentials.json",
     );
     fs.mkdirSync(path.dirname(accountSource), { recursive: true });
     fs.writeFileSync(accountSource, JSON.stringify({ claudeAiOauth: { expiresAt: 1_000 } }));
-    // The session's CLI rotated mid-turn — ahead of the account source.
+    // The session's CLI rotated mid-turn — ahead of the account source. The
+    // marker names the account so the per-turn identity check reads "match"
+    // and leaves the rotated copy in place (docs/260 §4).
     const sessionCreds = path.join(tmpDir, "sessions", "s1", ".claude", ".credentials.json");
     fs.mkdirSync(path.dirname(sessionCreds), { recursive: true });
     fs.writeFileSync(
       sessionCreds,
       JSON.stringify({ claudeAiOauth: { expiresAt: 2_000_000_000_000, accessToken: "rotated" } }),
     );
+    writeSessionAccountMarker(tmpDir, "s1", "claude", "acct-work");
 
     await prep({
       enforceAccountRouting: true,
-      providerRouteKind: "account",
-      providerRouteId: "acct-work",
+      selection: { kind: "account", id: "acct-work" },
     });
     expect(hasTokenWriteBackWatch("s1")).toBe(true);
 
@@ -1145,6 +1732,7 @@ describe("selectAgentEnvForPush (relocated from agent-execution.ts)", () => {
           missingByService: {},
           missingRequired: [],
           agentNames: [],
+          plugins: [],
         }),
       },
       credentialStore: makeFakeCredentialStore(),
@@ -1161,6 +1749,66 @@ describe("selectAgentEnvForPush (relocated from agent-execution.ts)", () => {
     });
     expect(out).toEqual({ OPENAI_API_KEY: "k" });
   });
+
+  // docs/252 phase 5 — a snapshot taken before the per-credential names existed
+  // makes a shaped turn find no credential and raise `auth_required`, because
+  // spawn shaping now sources the PINNED credential from its own variable. Every
+  // session already holding a compose stack was in that state on the deploy that
+  // shipped this, and `syncSecrets` does not necessarily run before the next turn.
+  it("merges a per-credential name a stale compose snapshot is missing", () => {
+    const stored: CredentialRoute = {
+      id: "cred_ds", serviceId: "deepseek", billingMode: "key", via: "string",
+      label: "Key", isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+    };
+    const out = selectAgentEnvForPush({
+      serviceManager: {
+        getSecretsSnapshot: () => ({
+          agentValues: { STRIPE_KEY: "s" },
+          declared: [],
+          missingByService: {},
+          missingRequired: [],
+          agentNames: [],
+          plugins: [],
+        }),
+      },
+      credentialStore: makeFakeCredentialStore({
+        credentialRoutes: [stored],
+        credentialSecrets: { cred_ds: "sk-ds" },
+      }),
+    });
+    expect(out.SHIPIT_CREDENTIAL_CRED_DS).toBe("sk-ds");
+    // The group name is NOT merged: a compose file can legitimately declare its
+    // own `DEEPSEEK_API_KEY`, and the snapshot is authoritative for it.
+    expect(out.DEEPSEEK_API_KEY).toBeUndefined();
+  });
+
+  it("overwrites a ROTATED per-credential value the snapshot still carries", () => {
+    // Found by cross-backend review. Filling only the gap would keep pushing the
+    // old secret after a rotation: the name is present in the stale snapshot, so
+    // nothing replaces it, and a broken compose file means no sync ever will —
+    // a revoked key delivered indefinitely.
+    const stored: CredentialRoute = {
+      id: "cred_ds", serviceId: "deepseek", billingMode: "key", via: "string",
+      label: "Key", isPrimary: true, priority: 0, status: "ready", createdAt: 0, updatedAt: 0,
+    };
+    const out = selectAgentEnvForPush({
+      serviceManager: {
+        getSecretsSnapshot: () => ({
+          agentValues: { SHIPIT_CREDENTIAL_CRED_DS: "sk-old" },
+          declared: [],
+          missingByService: {},
+          missingRequired: [],
+          agentNames: [],
+          plugins: [],
+        }),
+      },
+      credentialStore: makeFakeCredentialStore({
+        credentialRoutes: [stored],
+        credentialSecrets: { cred_ds: "sk-rotated" },
+      }),
+    });
+    expect(out.SHIPIT_CREDENTIAL_CRED_DS).toBe("sk-rotated");
+  });
 });
 
 /**
@@ -1176,6 +1824,10 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-env-topology-"));
+  });
+
+  afterEach(() => {
+    stopAllTokenWriteBackWatches();
   });
 
   const CONVERSATION_ID = "c0ffee00-dead-beef-cafe-000000000001";
@@ -1202,6 +1854,11 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
     );
   }
 
+  /**
+   * A turn-shaped preparation. docs/260 — the route comes from this call's own
+   * selection (`accountId`, default the legacy-named `claude-default`), never
+   * from a session row.
+   */
   function prepare(
     sessionManager: SessionManager,
     opts: { reusingResidentAgent?: boolean; accountId?: string } = {},
@@ -1211,10 +1868,15 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
       {
         sessionId: "s1",
         agentId: "claude",
+        enforceAccountRouting: true,
         deps: {
           credentialsDir: tmpDir,
           credentialStore: makeFakeCredentialStore(),
           sessionManager,
+          providerAccountManager: fakeAccountManager({
+            ok: true,
+            route: { kind: "account", id: opts.accountId ?? "claude-default" },
+          }) as never,
         },
         ...(opts.reusingResidentAgent ? { reusingResidentAgent: true } : {}),
       },
@@ -1241,8 +1903,6 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: CONVERSATION_ID,
-      providerRouteKind: "account",
-      providerRouteId: "claude-default",
     });
 
     const first = await prepare(sm);
@@ -1265,7 +1925,7 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
     expect(state.clearAgentSessionIdCalls).toHaveLength(0);
   });
 
-  it("syncs the pinned non-default account's token, not the default's", async () => {
+  it("syncs the routed non-default account's token, not the default's", async () => {
     seedAccount("claude-default", "DEFAULT-TOKEN");
     seedAccount("acct_second", "SECOND-TOKEN");
     const sessionDir = path.join(tmpDir, "sessions", "s1");
@@ -1275,11 +1935,9 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
     const { sm } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: CONVERSATION_ID,
-      providerRouteKind: "account",
-      providerRouteId: "acct_second",
     });
 
-    await prepare(sm);
+    await prepare(sm, { accountId: "acct_second" });
 
     const synced = JSON.parse(
       fs.readFileSync(path.join(sessionDir, ".claude", ".credentials.json"), "utf8"),
@@ -1304,12 +1962,14 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
     );
     fs.mkdirSync(orphanClaude, { recursive: true });
     seedConversation(orphanClaude, CONVERSATION_ID);
+    // The resident process was spawned from an earlier claude-default turn,
+    // whose provisioning wrote the marker — so this turn's identity check
+    // reads "match" and leaves the subtree alone (docs/260 §4).
+    writeSessionAccountMarker(tmpDir, "s1", "claude", "claude-default");
 
     const { sm, state } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: CONVERSATION_ID,
-      providerRouteKind: "account",
-      providerRouteId: "claude-default",
     });
 
     const result = await prepare(sm, { reusingResidentAgent: true });
@@ -1354,12 +2014,13 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
       path.join(tmpDir, "provider-accounts", "claude", "claude-default", ".claude"),
       path.join(sessionDir, ".claude"),
     );
+    // The live process's earlier provisioning recorded the account, so the
+    // per-turn identity check matches and never reprovisions under it.
+    writeSessionAccountMarker(tmpDir, "s1", "claude", "claude-default");
 
     const { sm } = makeFakeSessionManager({
       agentPinned: true,
       agentSessionId: CONVERSATION_ID,
-      providerRouteKind: "account",
-      providerRouteId: "claude-default",
     });
 
     await prepare(sm, { reusingResidentAgent: true });
@@ -1374,7 +2035,7 @@ describe("credential topology under a resident agent (nikzlabs/shipit#1874)", ()
 void vi;
 
 /**
- * docs/118 (SHI-59) — local-mode workspace trust.
+ * docs/118 (planning#61) — local-mode workspace trust.
  *
  * The Claude CLI silently drops a workspace's own `.claude/settings.json`
  * `permissions.allow` entries until that exact directory is trusted. A
@@ -1388,7 +2049,7 @@ void vi;
  * repository. So both directions are pinned: local mode writes the key, and
  * containerized mode is byte-for-byte what it was.
  */
-describe("local-mode workspace trust (docs/118, SHI-59)", () => {
+describe("local-mode workspace trust (docs/118, planning#61)", () => {
   let tmpDir: string;
   let home: string;
   let runtimeModeBefore: string | undefined;
@@ -1409,17 +2070,28 @@ describe("local-mode workspace trust (docs/118, SHI-59)", () => {
     return ws;
   }
 
+  /**
+   * A turn-shaped preparation (the local-mode trust write, like every routing
+   * side effect, runs only on turns — docs/260). `selection` is what this
+   * call's own walk resolves; omitted, nothing is signed in and the legacy
+   * flat path runs.
+   */
   function prepare(
     runner: SessionRunnerInterface,
     sm: SessionManager,
+    selection?: { kind: "account" | "reserved"; id: string },
   ): Promise<unknown> {
     return prepareSessionAgentEnvironment(runner, {
       sessionId: "s1",
       agentId: "claude",
+      enforceAccountRouting: true,
       deps: {
         credentialsDir: tmpDir,
         credentialStore: makeFakeCredentialStore(),
         sessionManager: sm,
+        ...(selection
+          ? { providerAccountManager: fakeAccountManager({ ok: true, route: selection }) as never }
+          : {}),
       },
     });
   }
@@ -1435,11 +2107,15 @@ describe("local-mode workspace trust (docs/118, SHI-59)", () => {
     process.env.AGENT_HOME = home;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (runtimeModeBefore === undefined) delete process.env.RUNTIME_MODE;
     else process.env.RUNTIME_MODE = runtimeModeBefore;
     if (agentHomeBefore === undefined) delete process.env.AGENT_HOME;
     else process.env.AGENT_HOME = agentHomeBefore;
+    // Turn-shaped calls arm the write-back watch (container cases) and start
+    // the local `/agent-ops` loopback host (local cases); drop both.
+    stopAllTokenWriteBackWatches();
+    await resetLocalAgentOpsForTests();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -1448,13 +2124,9 @@ describe("local-mode workspace trust (docs/118, SHI-59)", () => {
     const accountRoot = path.join(tmpDir, "provider-accounts", "claude", "acct-a");
     fs.mkdirSync(path.join(accountRoot, ".claude"), { recursive: true });
     const ws = makeWorkspace("s1");
-    const { sm } = makeFakeSessionManager({
-      agentPinned: true,
-      providerRouteKind: "account",
-      providerRouteId: "acct-a",
-    });
+    const { sm } = makeFakeSessionManager({ agentPinned: true });
 
-    await prepare(makeLocalRunner(ws), sm);
+    await prepare(makeLocalRunner(ws), sm, { kind: "account", id: "acct-a" });
 
     const config = JSON.parse(
       fs.readFileSync(path.join(accountRoot, ".claude.json"), "utf-8"),
@@ -1465,13 +2137,9 @@ describe("local-mode workspace trust (docs/118, SHI-59)", () => {
   it("falls back to the process-global agent home for a reserved route", async () => {
     process.env.RUNTIME_MODE = "local";
     const ws = makeWorkspace("s1");
-    const { sm } = makeFakeSessionManager({
-      agentPinned: true,
-      providerRouteKind: "reserved",
-      providerRouteId: "claude-api-key",
-    });
+    const { sm } = makeFakeSessionManager({ agentPinned: true });
 
-    await prepare(makeLocalRunner(ws), sm);
+    await prepare(makeLocalRunner(ws), sm, { kind: "reserved", id: "claude-api-key" });
 
     const config = JSON.parse(
       fs.readFileSync(path.join(home, ".claude.json"), "utf-8"),
@@ -1489,13 +2157,9 @@ describe("local-mode workspace trust (docs/118, SHI-59)", () => {
       JSON.stringify({ projects: { [dead]: { hasTrustDialogAccepted: true } } }),
     );
     const ws = makeWorkspace("s1");
-    const { sm } = makeFakeSessionManager({
-      agentPinned: true,
-      providerRouteKind: "account",
-      providerRouteId: "acct-a",
-    });
+    const { sm } = makeFakeSessionManager({ agentPinned: true });
 
-    await prepare(makeLocalRunner(ws), sm);
+    await prepare(makeLocalRunner(ws), sm, { kind: "account", id: "acct-a" });
 
     const config = JSON.parse(
       fs.readFileSync(path.join(accountRoot, ".claude.json"), "utf-8"),

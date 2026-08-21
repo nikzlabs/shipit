@@ -1,7 +1,7 @@
 /**
  * build-mcp-bridges — precompile the consolidated internal stdio MCP bridge to a
- * self-contained plain-JS bundle at image-build time (docs/199; SHI-126 fix +
- * SHI-128 consolidation).
+ * self-contained plain-JS bundle at image-build time (docs/199; planning#128 fix +
+ * planning#130 consolidation).
  *
  * WHY: the bridge ships as TypeScript and is spawned by the agent CLI. Under
  * `tsx <bridge>.ts` it compiles with esbuild on every spawn — a ~1.5-2s,
@@ -20,7 +20,7 @@
  * ~1.7s (idle) / ~3.0s (under CPU contention harsher than 0.5 CPU) for tsx to
  * ~0.3s / ~0.74s for the compiled bundle — comfortably inside the 2000ms window.
  *
- * SHI-128 then collapsed the five per-tool bridges into ONE `mcp-shipit-bridge`
+ * planning#130 then collapsed the five per-tool bridges into ONE `mcp-shipit-bridge`
  * server (selected subset via the SHIPIT_MCP_TOOLS env), so there is a single
  * entry/bundle here now instead of six.
  *
@@ -36,7 +36,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sessionDir = path.join(root, "src/server/session");
 const outdir = path.join(root, "dist/mcp-bridges");
 
-// Single consolidated bridge (SHI-128). Keep in sync with session-worker.ts's
+// Single consolidated bridge (planning#130). Keep in sync with session-worker.ts's
 // resolveBridge("mcp-shipit-bridge"). Bundling pulls in the mcp-tools/* modules.
 const BRIDGES = ["mcp-shipit-bridge"];
 

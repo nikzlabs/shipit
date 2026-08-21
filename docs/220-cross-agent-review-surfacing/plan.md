@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-195
+issue: planning#197
 title: Cross-agent review surfacing — ShipIt renders what it brokers
 description: Render cross-agent reviewer output deterministically in the consult card instead of routing it back through the parent agent's submit_review call.
 ---
@@ -142,7 +142,7 @@ the middle re-typing it).
     file-review wiring even when flags disable it). The comment / ask-review
     handlers simply do not exist on this path.
   - **Read-only ≠ inert.** `MarkdownContent` (`message-markdown.tsx`) already
-    linkifies in-app: Linear issue keys (`SHI-123` → Issues viewer), file paths
+    linkifies in-app: Linear issue keys (`planning#125` → Issues viewer), file paths
     (`foo.ts:42` → file preview), GitHub refs / URLs, plus code syntax
     highlighting. So the findings are clickable through to the real code and
     issues with no file-review wiring — the interactivity is in the links, not in
@@ -201,7 +201,7 @@ reach it. B governs **brokered** calls; `Task` is not one.
 
 ## Reconciliation with existing docs
 
-- **`docs/203` (plain-text AI review, SHI-136)** — currently implemented. Its §3
+- **`docs/203` (plain-text AI review, planning#138)** — currently implemented. Its §3
   + "submit_review" sections assume the parent records the card for both modes,
   and its `submit_review` **patches one card** across review → re-review. Under
   Option B `submit_review` is **removed** for both branches: the cross-agent
@@ -210,7 +210,7 @@ reach it. B governs **brokered** calls; `Task` is not one.
   the AI-review card (`ReviewCard`, `ai_review`) is retired for new reviews
   (legacy rows still render). The human user-comment path is untouched. This is a
   deliberate revision of shipped behavior.
-- **`docs/144` (sub-agent spawning, SHI-37)** — §6 ("output is text; review is an
+- **`docs/144` (sub-agent spawning, planning#39)** — §6 ("output is text; review is an
   optional renderer") and §7 ("chat surfacing", the consult card). This proposal
   extends §7's consult card from metadata-only to content-carrying.
 

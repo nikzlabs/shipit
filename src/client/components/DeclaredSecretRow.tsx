@@ -9,6 +9,23 @@ const PLATFORM_SOURCE_LABELS: Record<string, string> = {
   "platform:github_token": "GitHub token",
 };
 
+/**
+ * Whether this row is the read-only "provided automatically" kind.
+ *
+ * A `source: platform:*` entry is no longer forwarded (docs/184) — but the row
+ * stays read-only because a compose file asking for a platform credential has
+ * no user value to type. docs/262 req 23 adds the case that breaks that: when a
+ * PLUGIN also declares the name, the merged row is the one place the user must
+ * be able to set a real value, and leaving it read-only would make the plugin
+ * permanently unsatisfiable through the affordance the card sends them to.
+ * Exported because `SecretsTab`'s save path must skip exactly the same rows.
+ */
+export function isPlatformProvided(requirement: DeclaredSecretState): boolean {
+  return (
+    !!requirement.source?.startsWith("platform:") && (requirement.plugins ?? []).length === 0
+  );
+}
+
 export interface DeclaredSecretRowProps {
   requirement: DeclaredSecretState;
   value: string;
@@ -38,7 +55,7 @@ export function DeclaredSecretRow({
   onChange,
   onClear,
 }: DeclaredSecretRowProps) {
-  const isPlatform = requirement.source?.startsWith("platform:");
+  const isPlatform = isPlatformProvided(requirement);
   const platformLabel = requirement.source ? PLATFORM_SOURCE_LABELS[requirement.source] : null;
   // A name is "missing" when it's required AND any service that consumes it
   // has it on its missing list (which means no value resolved). Optional
@@ -92,6 +109,9 @@ export function DeclaredSecretRow({
         <p className="text-xs text-(--color-text-secondary)">{requirement.description}</p>
       )}
 
+      {/* Claimant chips. docs/262 req 23 adds the second dimension: a plugin
+          that declares this credential name. A name claimed by a service AND a
+          plugin is one stored secret, so it stays one row listing both. */}
       <div className="flex items-center gap-2 text-[11px] text-(--color-text-tertiary) flex-wrap">
         <span>Used by:</span>
         {requirement.services.map((svc) => (
@@ -102,6 +122,19 @@ export function DeclaredSecretRow({
             {svc}
           </span>
         ))}
+        {(requirement.plugins ?? []).map((alias) => (
+          <span
+            key={`plugin:${alias}`}
+            title={`Declared by the ${alias} plugin`}
+            className="px-1.5 py-0.5 rounded bg-(--color-accent)/15 text-(--color-accent)"
+            data-testid={`secret-plugin-claimant-${requirement.name}-${alias}`}
+          >
+            {alias}
+          </span>
+        ))}
+        {requirement.services.length === 0 && (requirement.plugins ?? []).length === 0 && (
+          <span className="italic">nothing yet</span>
+        )}
       </div>
 
       {isPlatform ? (

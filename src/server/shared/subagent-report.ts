@@ -40,7 +40,7 @@ const SUBAGENT_META_KEYS = new Set([
 
 /**
  * Split a subagent's `tool_result` content into report text and the CLI's
- * accounting footer (SHI-287).
+ * accounting footer (planning#289).
  *
  * The CLI returns the result as a **JSON-encoded block array** whenever the
  * subagent's reply has more than one block — which is the normal case, because
@@ -213,7 +213,7 @@ export interface SlicedReport {
  * A report must never be sliced as a raw string. The CLI's normal encoding is a
  * `JSON.stringify`'d block array — a **single line** — so a line cap never
  * fires and a byte cap cuts mid-array, leaving JSON that `parseSubagentReport`
- * cannot parse and therefore renders verbatim. That is the SHI-287 bug with
+ * cannot parse and therefore renders verbatim. That is the planning#289 bug with
  * extra steps. So the slice is applied to the report *text* and the block
  * structure is rebuilt around it, exactly as `projectBlockArray` does for MCP
  * image results.

@@ -53,6 +53,7 @@ import { parseGitHubRemote } from "./git-utils.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition } from "./pr-target.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { assessMergeAutoPublish } from "./release-autopublish-check.js";
+import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
 /**
  * docs/214 — read the release-branch fields from a workspace's shipit.yaml.
@@ -251,6 +252,7 @@ export async function registerGitHubRoutes(
           // flush, those edits wouldn't appear on the PR.
           sessionId: request.params.id,
           runnerRegistry: deps.runnerRegistry,
+          ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
         });
         if (deps.prStatusPoller && session.remoteUrl) {
@@ -393,8 +395,20 @@ export async function registerGitHubRoutes(
           remoteUrl,
           sessionId: request.params.id,
           runnerRegistry: deps.runnerRegistry,
+          ...(deps.cancelAutoPush ? { cancelAutoPush: deps.cancelAutoPush } : {}),
           chatHistory: deps.chatHistoryManager,
         });
+
+        // nikzlabs/shipit#2429 — `prepare` re-materializes the worktree from the
+        // orchestrator (a `checkout -B` onto the release branch, plus the
+        // cherry-picks or the `--from` merge-override), so it can leave the live
+        // session on a tree whose lockfile the container never installed. Gated
+        // on the target being the session's OWN clone: `resolvePrTarget` sends a
+        // `--repo`/`--cwd` release at a different one, whose dependencies are
+        // not this session's to reinstall.
+        if (gitDir === dir) {
+          onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "release-prepare");
+        }
 
         // Drive the release poller directly off the result (server-side, no
         // agent-echoed marker — docs/214).
@@ -495,7 +509,7 @@ export async function registerGitHubRoutes(
       }
       // Resolve the session's repo so the broker can prefer a short-lived,
       // single-repo-scoped GitHub App installation token (docs/172 Gap 2-R /
-      // SHI-79) over the long-lived PAT, shrinking the blast radius of an
+      // planning#81) over the long-lived PAT, shrinking the blast radius of an
       // extracted credential. Falls back to the PAT when no App is configured
       // or the repo can't be identified.
       const repo = session.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
@@ -1058,14 +1072,20 @@ export async function registerGitHubRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        // Block merge while the agent is mid-turn. Auto-commit fires after
+        // Block merge while the agent is still working. Auto-commit fires after
         // the turn ends (see post-turn.ts), so merging now could ship a PR
         // whose later commits land on a branch with a closed PR — orphaned
         // work. The client also disables the button, but a stale tab or
         // race could still POST here, so enforce on the server too.
+        //
+        // docs/266 — `agentBusy`, widened from bare `running`. The window this
+        // guard exists to close does not end when `running` clears: the commit,
+        // the debounced auto-push it arms, and a backgrounded review consult all
+        // run past that point and all still produce commits to push. Same
+        // predicate the managed auto-merge loop now uses, for the same reason.
         const runner = deps.runnerRegistry.get(request.params.id);
-        if (runner?.running) {
-          reply.code(409).send({ error: "Agent turn in progress — wait for it to finish before merging" });
+        if (runner?.agentBusy) {
+          reply.code(409).send({ error: "Agent still working — wait for it to finish before merging" });
           return;
         }
 
@@ -1110,7 +1130,18 @@ export async function registerGitHubRoutes(
         }
 
         const git = createGitManager(dir);
-        const result = await mergePullRequest(git, deps.githubAuthManager, request.body?.method, session?.remoteUrl);
+        // docs/266 — this route can end in an ARMING rather than a merge (checks
+        // still running). A live session's arming stays on ShipIt's managed
+        // loop, where the busy gate holds it; GitHub native would merge the PR
+        // during a later turn with no idea one was running.
+        const preferManaged = poller?.hasLiveRunner(request.params.id) === true;
+        const result = await mergePullRequest(
+          git, deps.githubAuthManager, request.body?.method, session?.remoteUrl, { preferManaged },
+        );
+        if (result.managed && poller) {
+          poller.setAutoMergeEnabled(request.params.id, true);
+          poller.setAutoMergeManaged(request.params.id, true, { managedReason: "session-live" });
+        }
         if ((result.success || result.autoMergeEnabled) && poller && session?.remoteUrl) {
           if (result.success) {
             await poller.forceVerifySessionPrState(request.params.id);
@@ -1200,7 +1231,7 @@ export async function registerGitHubRoutes(
       if (!dir) return;
       try {
         const git = createGitManager(dir);
-        return await generatePrDescription(git, deps.generateText, dir);
+        return await generatePrDescription(git, deps.generateText, dir, request.params.id);
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

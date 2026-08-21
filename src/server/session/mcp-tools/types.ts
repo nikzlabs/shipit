@@ -1,5 +1,5 @@
 /**
- * Shared types for the consolidated internal MCP bridge (SHI-128 / docs/199).
+ * Shared types for the consolidated internal MCP bridge (planning#130 / docs/199).
  *
  * Each internal ShipIt tool (review/present/voice/bug/permission/ask) is a
  * {@link ToolDescriptor}: a tool definition plus a `call()` that forwards to the

@@ -22,24 +22,76 @@ That makes several things degrade, by design — do not treat them as bugs:
 
 Full design: `docs/118-shipit-ui-local`.
 
-## Credentials — set almost nothing
+## Credentials — set them once, outside
 
 The `dev` service's credentials are **user-supplied secrets**, set once in the outer **Settings → Secrets** (`docs/184-remove-platform-secret-forwarding`). Platform secret forwarding was deliberately removed, so nothing is inherited.
 
-**Only `GITHUB_TOKEN` should normally be set.** Sign the inner ShipIt in to a Claude or Codex account instead of supplying keys.
+`GITHUB_TOKEN` plus **any service credential you want to exercise** is the set. The `x-shipit-secrets` block in `docker-compose.yml` declares every `storageEnv` name the model catalogue knows — `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_CODING_PLAN_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY` — so a key set once out there appears in every dogfood session without a visit to inner Settings (docs/131 req 11).
 
-**Leave `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unset.** They are not broken — a local turn spawns its CLI with `HOME` at the routed account's root (`local-agent-home.ts`), and `scrubEnvAuthForScopedHome` drops them from that spawn's env so the account's own login is what the CLI sees. The reason to leave them unset is billing, not breakage:
+**Declaring a name costs nothing; supplying a value is the opt-in.** An unset secret resolves to nothing and seeds nothing. That per-name choice is the only granularity there is — there is no second switch.
 
-- They rank as a **metered fallback below** connected subscription accounts.
-- A spawn with **no session route** — `generateText`, used for PR descriptions — is **not** scrubbed. So a key set "just in case" would silently bill for those calls while every real turn ran on the subscription.
+### A supplied key becomes a credential ROUTE, not just a variable
 
-`local-agent-credentials.ts` maintains that unscoped fallback home (SHI-282) and is not on the per-turn path.
+This matters and is not what the environment alone gives you. A bare variable is read by `listConfiguredCredentials` (`service-routing.ts`), so its models are already *eligible* and it does get a synthetic `env:<NAME>` route id. What it does **not** have is a row — so inner Settings → Services shows nothing, and it can be neither ordered, nor persistently benched, nor failed over to (`stringSelectionFor` reaches it only when nothing is stored). `scripts/seed-inner-credentials.ts` closes that: at boot it POSTs each supplied variable to `/api/credential-routes`, so the inner instance holds a real credential.
+
+The stored credential reaches a local turn through `applyLocalMcp` → `localMcpSpawnEnv` → `selectAgentEnvForPush`, which applies `SHIPIT_CREDENTIAL_*` to `process.env` around each spawn, read live from the store. **No orchestrator restart is needed** — a credential seeded (or added by hand) after boot works on the next turn. Verified with a real inner turn.
+
+### ⚠ Two billing hazards, and the first one is the one people miss
+
+**1. Any metered key can become what background work spends on.** Session naming and PR descriptions resolve an unpinned model with `firstEligibleNonTurnSelection` (`non-turn-model.ts`) — the *first eligible model in catalogue order*, over whatever credentials the install holds. So supplying only a DeepSeek key makes that the background-work model, and it bills. No CLI is involved, and this applies to every metered `key` mode, not just the vendor-native ones. Check **Settings → Services → Background work**, and pin it if you care.
+
+**2. Three names bypass a connected account.** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `OPENAI_API_KEY` are read by the vendor CLIs **directly**. Two things protect a spawn, and neither is universal:
+
+- A **redirected** spawn is safe: `applyServiceRouting` deletes every Anthropic credential variable and sets exactly one, so a GLM or DeepSeek turn can never pick up an ambient Anthropic key.
+- An **unshaped** spawn — the harness on its own vendor — is safe only when a scoped `HOME` resolves, which `resolveLocalAgentHome` does **only for an `account` route**. With no route selected it deliberately keeps the process-global home, `scrubEnvAuthForScopedHome` is a no-op, and the ambient variable is what the CLI uses.
+
+Non-turn work has a further wrinkle: `resolveLocalAgentHome` reads the *runner's* resident route, while `runNonTurnSpawn` selects its own target — so the home can belong to a different credential than the work was routed to.
+
+The seed prints a `⚠` line for each hazard that applies. `local-agent-credentials.ts` maintains the unscoped fallback home (planning#284) and is not on the per-turn path.
+
+## Testing onboarding — the `onboarding` service, not a wipe
+
+`dev` is a *configured* install and cannot be un-configured. Every key supplied in the outer Settings → Secrets is injected into it, `adoptEnvCredentials` turns each one into a stored credential at boot (docs/252 req 20), and `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the first read — permanently, since nothing clears it. **`DOGFOOD_SEED_CREDENTIALS=0` is not enough**: it stops the seeder POSTing, and adoption still makes rows out of the variables.
+
+So there is a second manual service:
+
+```bash
+shipit service start onboarding      # port 3001; `dev` can stay up on 3000
+```
+
+Two differences from `dev`, and nothing else. It declares **`GITHUB_TOKEN` and no service credential** — a name in `x-shipit-secrets` is what injects the value, so the list *is* the mechanism; GitHub is supplied because the subject is the **services** onboarding and re-pasting a token to reach it is friction rather than coverage. And it has **its own `SHIPIT_STATE_DIR`** at `.inner-shipit/onboarding`: a separate SQLite db, credential store and agent home. It comes up on *"Add a service, and the chat starts working"*, both harnesses reading `no model it can run yet`, composer disabled.
+
+**Never add a catalogue `storageEnv` to that block.** One line added in good faith turns the fresh instance into a second configured one — the variable is adopted into a stored credential at boot and the install stamps itself onboarded — and the symptom is an absence: the panel under test simply never appears. `scripts/seed-inner-credentials.test.ts` asserts exact membership so this fails the build instead.
+
+It seeds nothing (`DOGFOOD_SEED=0`), so the repo list starts empty too. If you would rather have a repo waiting, swap that for `DOGFOOD_SEED_CREDENTIALS: "0"`, which keeps the credential half off whatever is declared.
+
+Reset it to a fresh install — and note that deleting the directory is the *whole* reset, because everything an install remembers hangs off it:
+
+```bash
+shipit service stop onboarding && rm -rf .inner-shipit/onboarding && shipit service start onboarding
+```
+
+Never test onboarding by deleting credentials from inner Settings or wiping `.inner-shipit/` — the first is destructive to the developer's real setup and the second throws away the configured instance they are about to go back to.
 
 ## Seeding
 
-At `dev`-service boot, a background step adds and trusts the repos listed in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate (`docs/131-dogfood-seed-sessions`).
+At `dev`-service boot, `scripts/seed-inner.ts` runs in the background and seeds three things in order, all prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
 
-Behavior: skips repos already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`, and prefixes its output with `[seed]` in the service logs.
+1. **Credentials** (`scripts/seed-inner-credentials.ts`) — every supplied service key becomes a credential route, labelled `… (dogfood secret)` in inner Settings → Services.
+2. **Roles** (`scripts/seed-inner-roles.ts`) — a few agent roles, so the role surfaces are not empty: `deep-dive`, `quick-look`, `second-opinion`, and `needs-a-credential`. Second **because it reads what the install can run** — a role's harness, model and level are resolved out of `settings.agents`, which step 1 has just widened.
+3. **Repos** (`scripts/seed-inner-sessions.js`) — adds and trusts the repos in `scripts/dogfood-seed.json`, so the inner UI comes up with a repo ready to work in instead of an empty slate. Last, because a cold clone takes minutes.
+
+Behavior for all three: skips what is already present, exits 0 on any failure (never blocks boot), honors `DOGFOOD_SEED=0`, and has a switch of its own — `DOGFOOD_SEED_CREDENTIALS=0`, `DOGFOOD_SEED_ROLES=0`. A step that throws is logged and the remaining steps still run.
+
+Already-present means *left completely alone*: a credential or role you edited in the inner UI survives a restart, and rotating the outer secret does **not** propagate — delete the inner credential to re-seed it. The **name** is a role's identity, so a re-pointed `deep-dive` is never reconciled back.
+
+### What the seeded roles are for
+
+Nothing is hardcoded: a role's `(harness, service, billing mode, model, level)` is resolved against what this install can actually run, so the set differs per install and a role is never stranded by someone else's secrets. `reviewer` is never written — it exists on every install and resolves its params per run (`docs/264-agent-roles` req 2).
+
+`needs-a-credential` is **deliberately unavailable**, so the "shown, disabled, with its reason" state is visible too: the seeder derives it by taking the first catalogue entry its harness can speak to that this install holds *no* credential for, so it reads `Service disconnected` in Settings → Roles and is greyed out in the composer's role menu. An install that holds every credential simply gets no such role. Connecting that service turns it into an ordinary working role — that is not a bug.
+
+Delete a seeded role in the inner UI and the next `dev` boot puts it back. To try the empty-install state instead, set `DOGFOOD_SEED_ROLES: "0"` on the `dev` service.
 
 ## Driving the inner instance over HTTP
 
@@ -65,5 +117,6 @@ Then these calls cover the whole loop:
 
 - `docs/118-shipit-ui-local` — local-mode design and degraded behaviors
 - `docs/131-dogfood-seed-sessions` — seeding
+- `docs/264-agent-roles` — what a role is, and why the reviewer's params resolve rather than pin
 - `docs/184-remove-platform-secret-forwarding` — why credentials are user-supplied
 - `src/server/shipit-docs/preview.md` (shipped to containers as `/shipit-docs/preview.md`) — resolving service hosts from inside a container

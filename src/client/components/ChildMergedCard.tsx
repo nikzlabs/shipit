@@ -10,7 +10,7 @@
  *     NOT ship. Warning-toned so the user (and the parent agent's wake-turn)
  *     don't proceed as if it had.
  *
- * A third variant rides on `deliveryFailure` (SHI-258): the terminal state was
+ * A third variant rides on `deliveryFailure` (planning#260): the terminal state was
  * observed and the first card already said so, but the actionable wake-turn
  * could not be delivered into this session after repeated attempts. Warning-
  * toned, and it says what the other two don't — the agent did NOT start, so the
@@ -38,7 +38,7 @@ export interface ChildMergedCardProps {
   prTitle?: string;
   mergeSha?: string;
   /**
-   * SHI-258 — present on the follow-up card emitted when the wake-turn could not
+   * planning#260 — present on the follow-up card emitted when the wake-turn could not
    * be delivered. Switches the card to its "this session was not resumed" form.
    */
   deliveryFailure?: { attempts: number; error?: string };

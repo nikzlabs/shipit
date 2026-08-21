@@ -122,7 +122,7 @@ fi
 # Idempotent: rewrite any existing SHIPIT_TAILNET_BIND line rather than appending
 # a duplicate, so re-running never grows the file. The IP is deliberately NOT
 # persisted here — lib.sh re-reads it from Tailscale on every start so a changed
-# address needs no edit (docs/254 req 6).
+# address needs no edit (docs/254-local-bind-and-tailnet-access req 6).
 touch "$SHIPIT_ENV_FILE"
 if grep -q '^SHIPIT_TAILNET_BIND=' "$SHIPIT_ENV_FILE" 2>/dev/null; then
   tmp="$(mktemp "${SHIPIT_ENV_FILE}.XXXXXX")"
