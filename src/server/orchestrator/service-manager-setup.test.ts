@@ -136,7 +136,7 @@ describe("setupServiceManager — overlay publish gate", () => {
   }
 
   async function publishCallsFor(outcome: {
-    ok: boolean; withheld?: boolean; unverified?: boolean;
+    ok: boolean; unverified?: boolean;
   }): Promise<number> {
     repoStore.add(REMOTE);
     repoStore.setTrusted(REMOTE, true);
@@ -157,10 +157,6 @@ describe("setupServiceManager — overlay publish gate", () => {
 
   it("does NOT publish an install that was never observed", async () => {
     expect(await publishCallsFor({ ok: true, unverified: true })).toBe(0);
-  });
-
-  it("does NOT publish a withheld install (docs/271)", async () => {
-    expect(await publishCallsFor({ ok: true, withheld: true })).toBe(0);
   });
 });
 

@@ -79,12 +79,6 @@ export function rewritePhrase(rewrite: string | undefined): string {
     case "reset-to-base": return "a branch reset onto the base";
     case "pre-turn-reset": return "an automatic reset of this merged branch";
     case "release-prepare": return "a release prepare";
-    // Not a tree rewrite at all — ShipIt discarded the INSTALLED tree (a rotated
-    // shared dependency base, a disk reclaim, a whiteout before a reinstall that
-    // then failed) and re-ran the accepted install to rebuild it. Shares this
-    // type because the consequence is identical: what is installed does not
-    // match what the code needs, and the remedy is the same command list.
-    case "dependency-reset": return "a reset of its installed dependencies";
     case undefined: return "a change to its dependency files";
     default: return "a working-tree rewrite";
   }
@@ -114,7 +108,8 @@ export function dependencyGapNotice(gap: DependencyGap): string {
   const head =
     gap.reason === "install-failed"
       ? [
-          `ShipIt re-ran \`agent.install\` after ${where}, and it **failed**.`,
+          `ShipIt rewrote this session's working tree (${where}) and re-ran ` +
+            "`agent.install`, which **failed**.",
         ]
       : [
           `ShipIt rewrote this session's working tree (${where}) and did **not** ` +
@@ -189,7 +184,7 @@ export function dependencyGapAgentPrefix(gap: DependencyGap | null | undefined):
   const where = rewritePhrase(gap.rewrite);
   const cause =
     gap.reason === "install-failed"
-      ? `ShipIt re-ran \`agent.install\` after ${where}, and it FAILED.`
+      ? `ShipIt rewrote this session's working tree (${where}) and re-ran \`agent.install\`, which FAILED.`
       : `ShipIt rewrote this session's working tree (${where}) and did NOT re-run \`agent.install\`, ` +
         "because its commands are not a recognized dependency install and ShipIt cannot tell which " +
         "files they consume.";

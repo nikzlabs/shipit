@@ -110,66 +110,6 @@ describe("runPreInstall (warm-pool pre-install executor)", () => {
     expect(install?.body).toEqual({ commands: ["npm ci", "npm run build"] });
   });
 
-  /**
-   * PRODUCTION SHAPE, and it is load-bearing: `.install-accepted` lives at
-   * `<sessionRoot>/`, resolved from the clone by taking its parent, and the
-   * resolver THROWS on a workspace that is not at `<sessionRoot>/workspace`
-   * (planning#288). The fixture above passes a bare temp dir, so the record
-   * write there is a silent no-op — a test of this behaviour built on it would
-   * pass no matter what the code did.
-   */
-  const shaped = (name: string) => {
-    const sessionRoot = path.join(tmpDir, name);
-    const workspace = path.join(sessionRoot, "workspace");
-    fs.mkdirSync(workspace, { recursive: true });
-    return { sessionRoot, workspace };
-  };
-
-  /**
-   * docs/271, found by the third review. This is the one install path that does
-   * NOT go through `ContainerSessionRunner.runInstall`, and it gated without
-   * recording — so the branch's invariant ("a durable acceptance exists before
-   * every permitted POST") held everywhere except here. It also stamps the
-   * marker, which is the anchor the gate falls back to, so a standby that
-   * pre-installed and then lost its marker had nothing left.
-   */
-  it("records the acceptance the gate granted before posting", async () => {
-    const { sessionRoot, workspace } = shaped("s-record");
-    fs.writeFileSync(path.join(workspace, "shipit.yaml"), "agent:\n  install:\n    - npm ci\n");
-
-    await runPreInstall(workspace, worker.url, "sess-record");
-
-    expect(worker.requests.find((r) => r.url === "/install")).toBeDefined();
-    const record = JSON.parse(fs.readFileSync(path.join(sessionRoot, ".install-accepted"), "utf8"));
-    expect(record.commands).toEqual(["npm ci"]);
-  });
-
-  /**
-   * The same fail-closed rule `runInstall` applies: a plugin-bearing session
-   * that cannot anchor its authorization gets no unattended install. Pre-install
-   * is best-effort, so this costs the standby only its head start — activation
-   * runs the install again through `runInstall`.
-   */
-  it("skips the post when a plugin-bearing standby cannot persist the acceptance", async () => {
-    const { sessionRoot, workspace } = shaped("s-refuse");
-    fs.writeFileSync(
-      path.join(workspace, "shipit.yaml"),
-      "agent:\n  install:\n    - npm ci\nplugins:\n  use:\n    - plugin: probe\n      from: tools\n",
-    );
-    fs.mkdirSync(path.join(sessionRoot, "plugin-data", "probe"), { recursive: true });
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const rename = vi.spyOn(fs, "renameSync").mockImplementation(() => {
-      throw new Error("ENOSPC: no space left on device");
-    });
-    try {
-      await runPreInstall(workspace, worker.url, "sess-refuse");
-    } finally {
-      rename.mockRestore();
-    }
-
-    expect(worker.requests.find((r) => r.url === "/install")).toBeUndefined();
-  });
-
   it("never touches the worker when there is no install config (nothing executes)", async () => {
     // No shipit.yaml at all → resolveShipitConfig yields an empty install list.
     await runPreInstall(tmpDir, worker.url, "sess-2");

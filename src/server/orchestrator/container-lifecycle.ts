@@ -849,15 +849,6 @@ export function prepareOverlayDirs(
  * marker we failed to remove costs a skipped install we would rather have run,
  * which the worker's own gate (`overlay-dep-check.ts`) still backstops for the
  * empty-dep-dir case; throwing here would fail container creation outright.
- *
- * **The drop cannot lose the trust gate's anchor** (the ops finding of
- * 2026-08-20). It used to: the marker was also docs/271's record of the command
- * list this session had ACCEPTED, so deleting it for dependency reasons erased a
- * fact about the session, and a plugin-bearing session whose reinstall was then
- * withheld could have a changed `agent.install` allowed on the next recreate.
- * Acceptance now lives in its own durable record written when an install
- * SUCCEEDS (`agent-install-gate.ts`), so this deletion says only what it means:
- * the dependency tree is no longer vouched for.
  */
 function removeInstallMarkerForRotation(workspaceDir: string): void {
   try {

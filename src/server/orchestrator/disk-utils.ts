@@ -185,15 +185,6 @@ export async function reclaimRegenerableSessionDirs(
  * removals therefore live in one function rather than at the call site. Same
  * unlink `claim-session.ts` does when it hands a clone to a new session.
  *
- * **"`agent.install` will re-run" is an assumption, not a guarantee** (the ops
- * finding of 2026-08-20): the docs/271 trust gate refuses a changed list on a
- * plugin-bearing session, so this reclaim can leave exactly the dep-less session
- * the paragraph above exists to prevent. Two things make that survivable rather
- * than silent. The gate reports a withhold landing on an absent marker, which is
- * this state, so the session says what happened instead of dying on
- * `sh: 1: vite: not found`. And docs/271's accepted-command record is no longer
- * the marker, so this unlink no longer destroys it.
- *
  * Never rejects.
  */
 export async function reclaimBlockedSessionCaches(

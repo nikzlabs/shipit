@@ -21,7 +21,6 @@ import type { SessionInfo } from "../../shared/types.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
-import { copyAcceptedInstall } from "../agent-install-gate.js";
 import { allocateAndSealSessionDir } from "../session-uid-allocator.js";
 import {
   buildLfsUnresolvedAgentNotice,
@@ -343,17 +342,6 @@ export async function forkSession(
   // the moment that seal is the only thing standing.
   allocateAndSealSessionDir(newSessionDir);
   chownTreeToSessionWorker(newWorkspaceDir);
-
-  // docs/271 — carry the parent's accepted `agent.install` into the fork.
-  //
-  // A fork clones the parent's WORKSPACE, so it inherits every plugin-authored
-  // change to `shipit.yaml` that the parent was refusing to run. Without the
-  // record it inherits none of the reason: the gate finds no accepted list,
-  // reads that as "first install", and runs the very command list the parent
-  // withheld. A fork continues the parent's work on a copy of its tree, so it
-  // continues its acceptance too — the one thing a fork must NOT inherit is a
-  // clone that changed hands, which is the claim path, not this one.
-  copyAcceptedInstall(activeSession?.workspaceDir, newWorkspaceDir);
 
   const newGit = safeSimpleGit(newWorkspaceDir);
   // Disable auto-gc. It was originally here to stop gc breaking the hardlinks

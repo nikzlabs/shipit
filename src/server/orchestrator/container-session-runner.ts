@@ -54,14 +54,6 @@ import { TerminalBufferManager } from "./terminal-buffer-manager.js";
 import { stopTokenWriteBackWatch } from "./session-token-publisher.js";
 import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 import {
-  evaluateInstallGate,
-  installWithheldNotice,
-  readAcceptedInstall,
-  recordAcceptedInstall,
-  recordWithheldCommands,
-  sessionHasPlugin,
-} from "./agent-install-gate.js";
-import {
   dependencyGapNotice,
   dependencyGapSummary,
   type DependencyGap,
@@ -97,25 +89,6 @@ const INSTALL_POST_TIMEOUT_MS = 180_000;
  * is a wedged worker rather than a long job.
  */
 const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
-
-/**
- * What {@link ContainerSessionRunner.runInstall} tells its caller.
- *
- * `ok` is the compose install gate's input and stays deliberately generous: a
- * withheld install is not a failure, because the session usually keeps working
- * on the dependencies it already has (docs/271 req 7) and latching every
- * `dependsOnInstall` service to `error` over a `shipit.yaml` edit would be the
- * loud opposite of that. See the note at that gate for why it stays that way
- * even when the dependencies are in question.
- */
-export interface InstallOutcome extends InstallCompletion {
-  /**
-   * The docs/271 gate refused these commands, so nothing ran. Its consumer is
-   * the overlay publish, which must never stamp a shared base pointer with a
-   * command list that did not execute.
-   */
-  withheld?: boolean;
-}
 
 /**
  * How an in-flight install resolved — the shape the SSE-backed completion
@@ -256,21 +229,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   rerunServiceSetup?: () => void;
 
   /**
-   * docs/271 — report a withheld `agent.install` into the chat transcript.
-   *
-   * Wired by `runner-registry-factory` (which has the `ChatHistoryManager` this
-   * class does not) to `emitNoticeInTurn`, beside the two hooks above that
-   * solve the same problem. Optional on purpose: a runner built without the
-   * wiring — unit tests, local mode — still withholds, it just does so
-   * silently. The gate's decision must never depend on whether anyone is
-   * listening.
-   */
-  onInstallWithheld?: (message: string) => void;
-
-  /**
    * nikzlabs/shipit#2429 — report unverified dependencies into the chat transcript.
    *
-   * Wired exactly like {@link onInstallWithheld}, and optional for the same
+   * Optional on purpose, for the same
    * reason: whether the gap is RECORDED must not depend on whether anyone is
    * listening. A runner built without the wiring still carries the gap on
    * {@link dependencyGap}, which is what the service list reads.
@@ -535,15 +496,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // The turn's terminal sequence and the auto-push it arms both happen once
       // `running` is false, and reclaim destroys both. See the interface doc.
       || this._postTurnHold.active
-      // An install in flight is work, and disposing it is not merely wasteful:
-      // `dispose()` resolves the completion as `unverified`, which is correct —
-      // nothing was observed — but it means the acceptance record is never
-      // written even though the worker may have finished and written its marker.
-      // Archive or eviction then removes `state/` with that marker, and the
-      // restored session has no acceptance source at all, so the docs/271 gate
-      // reads "first install" and allows a changed list. Same shape as the
-      // post-turn hold above: the answer to "is this runner busy?" and the
-      // answer to "may it be disposed?" must not be able to disagree.
+      // An install in flight is work. Disposing mid-install tears the container
+      // down while the worker is part-way through `npm ci`, and `dispose()`
+      // resolves the completion `unverified` — correct, nothing was observed,
+      // but it means nothing downstream can tell a half-installed tree from a
+      // finished one. Same shape as the post-turn hold above: the answer to "is
+      // this runner busy?" and the answer to "may it be disposed?" must not be
+      // able to disagree.
       || this._installInFlight;
   }
   get postTurnWorkInFlight(): boolean { return this._postTurnHold.active; }
@@ -1911,205 +1870,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (record(failures)) this.emitMessage({ type: "plugin_repos_updated", sessionId: this.sessionId });
   }
 
-  /**
-   * Say once, per distinct command list, that a changed `agent.install` was not
-   * run (docs/271 reqs 7, 8). De-duplicated by the durable `.install-withheld`
-   * record so an idle session that resumes repeatedly does not collect one
-   * notice per resume.
-   *
-   * Contained: the hook reaches SQLite and the viewer transports, and
-   * `setupServiceManager` maps a throw out of `runInstall` to `{ ok: false }`,
-   * which latches every `dependsOnInstall` service to `error` — so a failure to
-   * REPORT must never become a failed install (req 7).
-   */
-  private reportWithheld(accepted: string[], requested: string[], alreadyReported: boolean): void {
-    if (alreadyReported) return;
-    // Recorded BEFORE reporting, so a throw in the hook cannot turn into a
-    // notice on every recreate.
-    recordWithheldCommands(this.sessionDir, requested);
-    try {
-      this.onInstallWithheld?.(installWithheldNotice(accepted, requested));
-    } catch (err) {
-      console.error(
-        `[install:${this.sessionId}] could not report the withheld agent.install:`,
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  }
-
-  async runInstall(commands: string[]): Promise<InstallOutcome> {
+  async runInstall(commands: string[]): Promise<InstallCompletion> {
     if (commands.length === 0) return { ok: true };
-
-    // docs/271 — the ONE place a session's `agent.install` reaches the worker,
-    // which is why the gate is here rather than at the `shipit.yaml` delta the
-    // issue found the bug in. Both paths that can carry a plugin's rewritten
-    // command list converge on this method: the live config delta
-    // (`maybeReinstallForDepChange`) and session setup after a container
-    // recreate (`setupServiceManager`) — and gating only the first would leave
-    // the second open, since a plugin's write is auto-committed like any other
-    // workspace change and read back at the next start.
-    //
-    // Returns ok WITHOUT posting: a withheld install is not a failure. The
-    // session keeps working on the dependencies it already has (req 7), and the
-    // notice tells the user how to get the new ones (req 8).
-    // `this.sessionDir` IS the clone (`app-lifecycle.ts:685`), which is what the
-    // gate wants — it derives the session root and state dir from it.
-    const verdict = evaluateInstallGate({ workspaceDir: this.sessionDir, requested: commands });
-    if (verdict.withheld) {
-      console.warn(
-        `[install:${this.sessionId}] agent.install changed in a plugin-bearing session — withheld (${commands.length} command(s))`,
-      );
-      // The ops finding of 2026-08-20 — a withhold that lands on a session whose
-      // dependency tree nothing is vouching for is a different event from the
-      // ordinary one, and the difference is the whole incident. Ordinarily the
-      // session keeps working on the dependencies it already has (req 7). Here
-      // the marker is gone, which means the install that was supposed to rebuild
-      // them is exactly the one being refused — so the session serves
-      // `sh: 1: vite: not found` and the log blames the user's project.
-      //
-      // So ShipIt runs the list it ALREADY accepted. That is not the withheld
-      // command and it is not new authority: `verdict.accepted` is the list that
-      // last completed in this session, the one ShipIt re-runs unattended on
-      // every ordinary container recreate. Requirement 4 forbids running the
-      // CHANGED list on our own initiative, and this does not; requirement 8's
-      // remedy for getting the new command — the user asking the agent — is
-      // untouched. What it buys is the automatic repair path the incident found
-      // missing, instead of three surfaces narrating a dead service.
-      //
-      // `withheld: true` still rides on the return even when the replay
-      // succeeded, and that is load-bearing: `setupServiceManager` hands the
-      // overlay publish the CONFIG's command list, so publishing here would stamp
-      // the shared base pointer with the list that did not run.
-      // Nothing to replay AND nothing vouching for the tree. This is not the
-      // ordinary withhold — that one leaves a session working on dependencies it
-      // still has — and it is not repairable either, because the accepted list
-      // is unknown (an unreadable record resolves to an empty list, which is
-      // right for the gate's execute/refuse decision and useless here). Reported
-      // as a FAILED install so dependent services latch with a cause attached,
-      // rather than being released as successful into an exit 127 nobody can
-      // explain. Deliberately different from the repairable case below, where
-      // latching would take healthy sessions down at scale on a mere "unvouched".
-      if (verdict.afterDependencyReset && verdict.accepted.length === 0) {
-        console.error(
-          `[install:${this.sessionId}] dependency tree is unvouched and the accepted ` +
-          `install list is unknown — cannot repair`,
-        );
-        this.reportWithheld(verdict.accepted, commands, verdict.alreadyReported);
-        return { ok: false, withheld: true };
-      }
-      if (verdict.afterDependencyReset && verdict.accepted.length > 0) {
-        console.warn(
-          `[install:${this.sessionId}] dependency tree is unvouched — re-running the ` +
-          `${verdict.accepted.length} accepted command(s) instead of the changed list`,
-        );
-        // The user is still told the changed list was not run, once per list.
-        this.reportWithheld(verdict.accepted, commands, verdict.alreadyReported);
-        const replay = await this.runInstall(verdict.accepted);
-        if (!replay.ok) {
-          // A genuine install failure: the compose gate latches dependent
-          // services to `error`, and the gap names what moved the tree.
-          this.recordDependencyGap({
-            reason: "install-failed",
-            commands: [...verdict.accepted],
-            rewrite: "dependency-reset",
-          });
-        }
-        // `unverified` rides through: a replay that resolved from no observation
-        // is not evidence the tree is installed, and the overlay publish reads
-        // that as well as `withheld`.
-        return { ok: replay.ok, withheld: true, ...(replay.unverified ? { unverified: true } : {}) };
-      }
-      this.reportWithheld(verdict.accepted, commands, verdict.alreadyReported);
-      return { ok: true, withheld: true };
-    }
-
-    // docs/271 remainder 5 — acceptance is recorded where the gate ALLOWS, not
-    // where the install completes, and the difference is a hole the security
-    // review found.
-    //
-    // Recording on completion meant a session whose FIRST install resolved
-    // `unverified` (dispose, a reconnect resync with no last result) wrote no
-    // record at all. The marker was then the only anchor, and the marker is
-    // deleted by five paths — so a base rotation or a disk eviction left an
-    // established, plugin-bearing session reaching the gate with neither source,
-    // reading as a first install, and allowing whatever `shipit.yaml` said by
-    // then. That is the incident's own class, reached from the other end.
-    //
-    // Recording here grants nothing new: the gate has just ALLOWED this exact
-    // list, so writing it down cannot authorize anything that was not already
-    // about to run. What it changes is the meaning of the record — from "what
-    // ran" to "what was authorized" — and that is the point. Acceptance is a
-    // property of the decision, and the decision has been made by this line.
-    //
-    // The cost, stated plainly: a plugin-bearing session that changes its own
-    // `agent.install` between an allowed attempt and a successful one is now
-    // withheld, where before it was allowed until the first install completed.
-    // That is the gate's ordinary behaviour arriving one event earlier, and the
-    // remedy is unchanged (req 8 — ask the agent).
-    if (!recordAcceptedInstall(this.sessionDir, commands)) {
-      // A failed write is survivable only while a DURABLE anchor still exists.
-      // Re-read rather than assume, because whether one does decides whether
-      // proceeding is safe.
-      //
-      // `readAcceptedInstall`, NOT `acceptedInstallCommands`, and the difference
-      // is the whole guard. The convenient helper resolves record-then-MARKER,
-      // and the marker is exactly what this install is about to destroy: the
-      // worker whiteouts it before every reinstall (`install-controller.ts:183`)
-      // so a partial run cannot leave a stamp claiming success. Accepting it as
-      // an anchor asks "does some acceptance source exist right now", when the
-      // question is "will one survive this install". A marker-only session whose
-      // migration backfill had also failed passed the first test, lost its
-      // marker to the reinstall, and — if that reinstall failed — ended with
-      // neither source, which is the original fail-open reached through the
-      // migration path. Found by the second review of this fix.
-      //
-      // An UNREADABLE record is non-null and so counts as durable, which is
-      // right: it fails closed at every later gate.
-      //
-      // Found by review, and it is the hole this whole change claims to close,
-      // surviving one layer down: `recordAcceptedInstall` is best-effort, so a
-      // first install whose write failed proceeded with NO durable
-      // authorization. If the attempt then resolved unverified — or failed after
-      // the worker whiteouted the marker — the session was left with neither
-      // source, and the next list a plugin wrote read as a first install and
-      // ran. Logging louder does not close that; not proceeding does.
-      //
-      // So the invariant is: **no unattended install runs in a session that
-      // needs a gate unless its authorization is durably recorded.** Refused as
-      // a failed install, so `dependsOnInstall` services latch with a cause
-      // rather than being released into a tree nothing vouches for. Same shape
-      // as `copyAcceptedInstall`'s throw, and for the same reason.
-      if (readAcceptedInstall(this.sessionDir) === null && sessionHasPlugin(this.sessionDir)) {
-        console.error(
-          `[install:${this.sessionId}] refusing to install: this session has a plugin and its ` +
-          `accepted-install list could not be persisted, so nothing would anchor the gate afterwards`,
-        );
-        // Returned directly, WITHOUT `signalInstallComplete` — same as the
-        // withheld branches above and for the same reason: the completion
-        // promise is not armed until the concurrency guard below, so signalling
-        // here would either do nothing or resolve a CONCURRENT caller's promise
-        // with a failure that is not theirs.
-        //
-        // `withheld` alongside `ok: false`, the same shape the unrepairable
-        // branch above returns. Without it `reinstallForDepChange` falls past
-        // its `res.withheld` return and records an `install-failed` gap — which
-        // tells the user, in the transcript and in the agent's turn prefix, that
-        // ShipIt ran these commands and they failed. Nothing was posted. The
-        // flag is read internally as "did not run" (it also skips the overlay
-        // publish, correctly), and no notice rides on it, so this reports the
-        // truth rather than inventing a failure.
-        return { ok: false, withheld: true };
-      }
-      // The survivable half. A plugin-free session's gate allows on its first
-      // line regardless, and a session that already had an anchor keeps it — in
-      // which case the PREVIOUS list stays in force, which withholds rather than
-      // allows. Still worth a line: it is how a session ends up depending on a
-      // marker five paths delete.
-      console.error(
-        `[install:${this.sessionId}] could not record the accepted install list; this ` +
-        `session's gate still depends on its install marker`,
-      );
-    }
 
     // Concurrent-call guard: if an install is already in flight (either we
     // armed `_installComplete` and haven't resolved yet, or the worker is
@@ -2405,10 +2167,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * matched and it was skipped. Either way whatever gap we were carrying is
    * answered.
    *
-   * Only those two outcomes clear it. A withheld install (docs/271) did not run,
-   * and the "worker restarted, we cannot tell" resync synthesizes a completion
-   * from no evidence at all; treating either as proof would clear a gap that is
-   * still real.
+   * Only those two outcomes clear it. The "worker restarted, we cannot tell"
+   * resync synthesizes a completion from no evidence at all; treating that as
+   * proof would clear a gap that is still real.
    *
    * That second exclusion was **asserted here before it was true of the code**
    * (found 2026-08-20). `signalInstallComplete` defaults to `ok = true`, and
@@ -2417,20 +2178,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * paths this paragraph excludes. It is now carried in the type
    * ({@link InstallCompletion.unverified}) rather than in prose.
    *
-   * docs/271's ACCEPTANCE used to be recorded here too, on the reasoning that an
-   * install completing with positive evidence *is* the user's session running a
-   * list to completion. The security review of 2026-08-20 found the gap that
-   * leaves: a first install that resolves `unverified` completes without
-   * evidence, so nothing was ever recorded and the gate fell back to a marker
-   * five paths delete. Acceptance is now recorded at the gate's ALLOW in
-   * `runInstall` — one event earlier and unconditional — so this method is back
-   * to doing only what its name says.
-   *
-   * That also retired the `joined` special case at the call site. It existed
-   * because coalescing onto a DIFFERENT list meant the completion was not
-   * evidence about OUR commands; under authorization semantics our commands were
-   * allowed by the gate regardless of what the worker happened to be running, so
-   * there is nothing left for it to protect.
    */
   private clearDependencyGap(): void {
     this._dependencyGap = null;
@@ -2520,7 +2267,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     const rewrite = this._lastRewriteLabel;
     this._lastRewriteLabel = undefined;
     mgr?.setInstallRunning(true);
-    let res: InstallOutcome = { ok: true };
+    let res: InstallCompletion = { ok: true };
     try {
       res = await this.runInstall(this._depReinstallCommands);
     } catch {
@@ -2528,12 +2275,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     } finally {
       mgr?.setInstallRunning(false, { failed: !res.ok });
     }
-    // A WITHHELD outcome means these commands did not run — so a failure here is
-    // not theirs. `runInstall` either replayed the accepted list (and recorded
-    // the gap against that list itself) or could not repair at all; attributing
-    // it to `_depReinstallCommands` would overwrite that with a second, false
-    // notice saying ShipIt re-ran the withheld command and it failed.
-    if (res.withheld) return;
     // nikzlabs/shipit#2429 — a failed re-install leaves the tree and its dependencies
     // out of step just as surely as never running one. The gate latches
     // `dependsOnInstall` services to `error`, which is the loud half, but it

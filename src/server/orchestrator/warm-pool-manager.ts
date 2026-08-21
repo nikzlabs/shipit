@@ -13,7 +13,6 @@ import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
 import { materializeLfsWithWarning } from "./git-lfs.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
-import { evaluateInstallGate, recordAcceptedInstall, sessionHasPlugin } from "./agent-install-gate.js";
 import { workerInstall, workerGet } from "./worker-http.js";
 
 // ---- Warm session pool ----
@@ -363,36 +362,6 @@ export async function runPreInstall(workspaceDir: string, workerUrl: string, ses
     return;
   }
   if (commands.length === 0) return;
-
-  // docs/271 — the one install path that does NOT go through
-  // `ContainerSessionRunner.runInstall`: this POSTs the worker directly. In
-  // practice a standby's clone is fresh and no plugin container has ever run
-  // against it, so the gate allows — but "in practice" is not the guarantee
-  // req 5 asks for, and an ungated run here would also stamp the marker, which
-  // is the very anchor the gate reads.
-  if (evaluateInstallGate({ workspaceDir, requested: commands }).withheld) {
-    console.warn(`[warm:install:${sessionId}] Skipping pre-install — agent.install is withheld`);
-    return;
-  }
-  // ...and record the acceptance the gate just granted, on the same terms
-  // `runInstall` does. Without this the branch's own invariant — a durable
-  // acceptance exists before every permitted POST — held everywhere EXCEPT here,
-  // and this path stamps the marker, which is the anchor the gate falls back to.
-  // A standby that pre-installed and then lost its marker had nothing left.
-  //
-  // Found by the third review of the acceptance record. The comment above
-  // already knew this path was special; what it got wrong was concluding that
-  // gating it was enough.
-  if (!recordAcceptedInstall(workspaceDir, commands) && sessionHasPlugin(workspaceDir)) {
-    // Same fail-closed rule as `runInstall`: a plugin-bearing session that
-    // cannot anchor its authorization does not get an unattended install. Warm
-    // pre-install is best-effort by design, so this only costs the standby its
-    // head start — activation runs the install again through `runInstall`.
-    console.warn(
-      `[warm:install:${sessionId}] Skipping pre-install — the accepted-install list could not be persisted`,
-    );
-    return;
-  }
 
   try {
     // The worker returns `{ started: true }` / `{ skipped: true }` fast and
