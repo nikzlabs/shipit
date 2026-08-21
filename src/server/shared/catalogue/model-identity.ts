@@ -192,6 +192,7 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   // Anthropic's own rate.
   "claude-haiku-4-5": "claude-haiku-4.5",
   "x-preview-f-free": "ox-alpha",
+  "ox-alpha-free": "ox-alpha",
 };
 
 /**
