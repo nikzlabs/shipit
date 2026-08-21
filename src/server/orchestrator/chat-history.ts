@@ -538,6 +538,7 @@ export class ChatHistoryManager {
   private stmtFinalizeRowById;
   private stmtDeleteRowById;
   private stmtDeleteExpiredSnapshots;
+  private stmtTranscriptRevision;
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
@@ -616,6 +617,31 @@ export class ChatHistoryManager {
     this.stmtFinalizeRowById = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE id = ?");
     this.stmtDeleteRowById = this.db.prepare("DELETE FROM messages WHERE id = ?");
     this.stmtDeleteExpiredSnapshots = this.db.prepare("DELETE FROM rewind_snapshots WHERE expires_at_ms <= ?");
+    this.stmtTranscriptRevision = this.db.prepare(
+      "SELECT revision FROM transcript_revisions WHERE session_id = ?",
+    );
+  }
+
+  /**
+   * planning#324 — how many times this session's persisted transcript has been
+   * written. A value that has not moved is a positive statement that no row of
+   * this session's history was inserted, patched or deleted since it was read;
+   * `GET /history` folds it into the response's ETag so a tab returning to the
+   * foreground can be told "unchanged" without the transcript being loaded,
+   * projected and hashed first.
+   *
+   * The counter is maintained by three triggers on `messages` rather than by
+   * this class (see the migration in `database.ts` for why), so it holds for
+   * every write path — appends, the in-place card patches that leave the row
+   * count and the largest id untouched, and full rewrites through
+   * `saveMessages` / `replaceInProgress` alike.
+   *
+   * 0 for a session that has never had a message. That is a real value, not a
+   * failure: it changes as soon as anything is written.
+   */
+  transcriptRevision(sessionId: string): number {
+    const row = this.stmtTranscriptRevision.get(sessionId) as { revision: number } | undefined;
+    return row?.revision ?? 0;
   }
 
   private toRow(sessionId: string, msg: PersistedMessage) {

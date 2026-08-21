@@ -1089,3 +1089,108 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     expect(readBack().map((r) => r.input_tokens)).toEqual([200, 200, 200]);
   });
 });
+
+/**
+ * planning#324 — the transcript-revision triggers live in the schema rather than
+ * in `ChatHistoryManager`, so the two things that can only go wrong at this
+ * layer are pinned here: a write nobody routed through the manager still moves
+ * the counter, and `clearAll` really does clear it.
+ *
+ * The `clearAll` case is an ordering trap. Deleting a session's messages FIRES
+ * the delete trigger, so a `DELETE FROM transcript_revisions` placed before the
+ * messages delete is silently undone — the table comes back one row per session,
+ * on a "delete all rows from all tables" method.
+ */
+describe("planning#324 — transcript revision triggers", () => {
+  let dir: string;
+  let file: string;
+  let manager: DatabaseManager;
+
+  const revision = (sessionId: string): number => (manager.db
+    .prepare("SELECT revision FROM transcript_revisions WHERE session_id = ?")
+    .get(sessionId) as { revision: number } | undefined)?.revision ?? 0;
+
+  const insert = (sessionId: string, content: string): void => {
+    manager.db
+      .prepare("INSERT INTO messages (session_id, role, content) VALUES (?, 'user', ?)")
+      .run(sessionId, content);
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "transcript-revision-"));
+    file = join(dir, "test.db");
+    manager = new DatabaseManager(file);
+  });
+
+  afterEach(() => {
+    manager.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("moves on raw SQL that never goes near ChatHistoryManager", () => {
+    insert("s1", "hello");
+    const afterInsert = revision("s1");
+    expect(afterInsert).toBeGreaterThan(0);
+
+    manager.db.prepare("UPDATE messages SET content = ? WHERE session_id = ?").run("edited", "s1");
+    const afterUpdate = revision("s1");
+    expect(afterUpdate).toBeGreaterThan(afterInsert);
+
+    manager.db.prepare("DELETE FROM messages WHERE session_id = ?").run("s1");
+    expect(revision("s1")).toBeGreaterThan(afterUpdate);
+  });
+
+  /**
+   * A row that changes owner leaves one session as much as it joins another.
+   * The plain `AFTER UPDATE` trigger speaks only for the session the row arrives
+   * in, so without the reassignment trigger the OLD owner keeps a validator that
+   * is still "valid" for a transcript that has lost a row.
+   */
+  it("moves BOTH counters when a row is reassigned to another session", () => {
+    insert("s1", "originally s1's");
+    insert("s2", "already s2's");
+    const s1 = revision("s1");
+    const s2 = revision("s2");
+
+    manager.db.prepare("UPDATE messages SET session_id = 's2' WHERE session_id = 's1'").run();
+
+    expect(revision("s2")).toBeGreaterThan(s2);
+    expect(revision("s1")).toBeGreaterThan(s1);
+  });
+
+  it("survives closing and reopening the database", () => {
+    insert("s1", "hello");
+    const before = revision("s1");
+    expect(before).toBeGreaterThan(0);
+
+    manager.close();
+    manager = new DatabaseManager(file);
+
+    // An ordinary table, not a TEMP one: a counter that reset on restart could
+    // re-mint a revision a client already holds and answer 304 over different
+    // content.
+    expect(revision("s1")).toBe(before);
+    insert("s1", "after the restart");
+    expect(revision("s1")).toBeGreaterThan(before);
+  });
+
+  it("counts per session, not per database", () => {
+    insert("s1", "mine");
+    const mine = revision("s1");
+    insert("s2", "theirs");
+    insert("s2", "theirs again");
+    expect(revision("s1")).toBe(mine);
+    expect(revision("s2")).toBeGreaterThan(mine);
+  });
+
+  it("is emptied by clearAll, not resurrected by the messages delete", () => {
+    insert("s1", "hello");
+    insert("s2", "hello");
+    expect(revision("s1")).toBeGreaterThan(0);
+
+    manager.clearAll();
+
+    const rows = manager.db.prepare("SELECT COUNT(*) AS n FROM transcript_revisions").get() as { n: number };
+    expect(rows.n).toBe(0);
+  });
+});

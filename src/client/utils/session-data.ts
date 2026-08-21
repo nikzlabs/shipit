@@ -198,9 +198,12 @@ let inFlightHistoryLoad: { seq: number; controller: AbortController } | null = n
  * sends `If-None-Match`, gets a `304`, and reuses the parsed object: no
  * transfer, no `JSON.parse`, no re-materialising thousands of message objects.
  *
- * Correctness is the server's, not ours: the ETag is a hash of the response
- * body, so a `304` is a positive statement that nothing changed. We never
- * decide for ourselves that a cached transcript is still good.
+ * Correctness is the server's, not ours: a `304` is a positive statement that
+ * nothing changed, and we never decide for ourselves that a cached transcript is
+ * still good. The tag is no longer a hash of the body (planning#324 — the server
+ * cannot afford to build megabytes to discover it has nothing to send); it is
+ * composed from the session's transcript revision, the other payload sources,
+ * and a wire-shape version. Same guarantee, arrived at without the build.
  *
  * Bounded because a transcript is megabytes and a long day touches many
  * sessions. `Map` iterates in insertion order, so the oldest entry is the first
