@@ -250,7 +250,7 @@ HARNESS_ROWS=(
   "claude|Claude Code|Anthropic's CLI"
   "codex|Codex|OpenAI's CLI"
   "opencode|OpenCode|open-source, bring your own provider"
-  "grok|Grok Build|xAI's CLI (API key only)"
+  "grok|Grok Build|xAI's CLI"
 )
 SUPPORTED_HARNESSES=""
 for _row in "${HARNESS_ROWS[@]}"; do

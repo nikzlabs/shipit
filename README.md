@@ -28,8 +28,7 @@ ShipIt is a browser-based, chat-driven IDE for running coding agents through you
   stack, so the agent can build, run, and fix before you preview and merge.
 - **Bring your own agent** — on the subscription or API key you already have (Anthropic, OpenAI,
   DeepSeek, OpenRouter, etc.).
-  - Supported harnesses: Claude Code, Codex, OpenCode, and Grok Build. Cursor CLI support is
-    coming.
+  - Supported harnesses: Claude Code, Codex, OpenCode, and Grok Build.
 - **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving
   ShipIt.
 - **Runs on Linux, macOS, and Windows (WSL2)** — in isolated Docker containers.
