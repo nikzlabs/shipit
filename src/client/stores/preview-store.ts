@@ -510,12 +510,62 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setPreviewProxyError: (previewProxyError) => set({ previewProxyError }),
 
-  setDevicePreset: (devicePreset) =>
-    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null }),
+  setDevicePreset: (devicePreset) => {
+    // Landscape belongs to NAMED presets only, and re-enters portrait on
+    // every change of the active size. Two leaks it used to spring:
+    //
+    // D1 — switching from a rotated preset to a custom size kept
+    // `isLandscape` true, so `useDeviceFrame` silently swapped the dimensions
+    // the user had just typed (labels read `customSize` unrotated; the frame
+    // rendered swapped). A freeform size names its exact width and height —
+    // rotating it contradicts the input (see docs/279 resolved question 4).
+    //
+    // Switching between named presets also resets to portrait rather than
+    // carrying rotation over, so entering any preset has exactly one meaning.
+    set({
+      devicePreset,
+      isLandscape: false,
+      // Selecting a named preset (or Responsive) supersedes a standing custom
+      // size; keeping it would leave an invisible value that reappears in the
+      // inputs the next time Custom opens.
+      customSize: devicePreset?.category === "custom" ? get().customSize : null,
+    });
+  },
 
   toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
 
-  setCustomSize: (customSize) => set({ customSize }),
+  setCustomSize: (customSize) => {
+    if (!customSize) {
+      // Clearing the size drops the whole custom preset — "no custom size"
+      // and "a custom preset with no size" are not a state worth keeping.
+      set({
+        customSize: null,
+        ...(get().devicePreset?.category === "custom" ? { devicePreset: null } : {}),
+      });
+      return;
+    }
+    // D2 — installing the synthetic custom preset here makes this action
+    // self-consistent: callers no longer have to remember to move
+    // `devicePreset` out of the previous preset, whose dimensions would
+    // otherwise keep owning the toolbar's checkmark and trigger label while
+    // `useDeviceFrame` ignored them in favour of `customSize`. The toolbar's
+    // `onCustomSize` now relies on exactly this behavior. The label mirrors
+    // the applied size so the collapsed toolbar's tooltip stays truthful.
+    //
+    // D1's other half — a custom size is never rotated, so arriving here from
+    // a rotated preset must drop the flag, exactly as `setDevicePreset` does.
+    set({
+      customSize,
+      isLandscape: false,
+      devicePreset: {
+        id: "custom",
+        label: `${customSize.width}×${customSize.height}`,
+        width: customSize.width,
+        height: customSize.height,
+        category: "custom",
+      },
+    });
+  },
 
   setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 

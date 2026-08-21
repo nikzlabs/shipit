@@ -30,6 +30,35 @@ describe("preview-store device viewport", () => {
       usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
       expect(usePreviewStore.getState().customSize).toBeNull();
     });
+
+    it("keeps customSize when selecting the custom category (docs/279 D2)", () => {
+      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+      // Re-applying a size must not wipe the value it just installed.
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
+      expect(usePreviewStore.getState().devicePreset?.category).toBe("custom");
+    });
+
+    it("resets isLandscape when switching from a rotated preset to a custom size (docs/279 D1)", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().toggleLandscape();
+      expect(usePreviewStore.getState().isLandscape).toBe(true);
+      usePreviewStore.getState().setCustomSize({ width: 800, height: 600 });
+      expect(usePreviewStore.getState().isLandscape).toBe(false);
+    });
+
+    it("resets isLandscape when returning to Responsive (docs/279 D1)", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().toggleLandscape();
+      usePreviewStore.getState().setDevicePreset(null);
+      expect(usePreviewStore.getState().isLandscape).toBe(false);
+    });
+
+    it("re-enters portrait when switching between named presets (docs/279 D1)", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().toggleLandscape();
+      usePreviewStore.getState().setDevicePreset(findPresetById("ipad-mini"));
+      expect(usePreviewStore.getState().isLandscape).toBe(false);
+    });
   });
 
   describe("toggleLandscape", () => {
@@ -48,10 +77,39 @@ describe("preview-store device viewport", () => {
       expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
     });
 
-    it("clears when called with null", () => {
+    it("installs the synthetic custom preset (docs/279 D2)", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+      const preset = usePreviewStore.getState().devicePreset;
+      expect(preset?.id).toBe("custom");
+      expect(preset?.category).toBe("custom");
+      expect(preset?.width).toBe(500);
+      expect(preset?.height).toBe(900);
+      // The label mirrors the applied size so the collapsed toolbar's
+      // tooltip stays truthful.
+      expect(preset?.label).toBe("500×900");
+    });
+
+    it("refreshes dimensions when a custom size is re-applied (docs/279 D2)", () => {
+      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+      usePreviewStore.getState().setCustomSize({ width: 640, height: 480 });
+      const preset = usePreviewStore.getState().devicePreset;
+      expect(preset?.width).toBe(640);
+      expect(preset?.height).toBe(480);
+      expect(preset?.label).toBe("640×480");
+    });
+
+    it("clears when called with null, dropping the synthetic preset too (docs/279 D2)", () => {
       usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
       usePreviewStore.getState().setCustomSize(null);
       expect(usePreviewStore.getState().customSize).toBeNull();
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+    });
+
+    it("null does not clobber an unrelated named preset", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+      usePreviewStore.getState().setCustomSize(null);
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
     });
   });
 
@@ -67,8 +125,10 @@ describe("preview-store device viewport", () => {
       usePreviewStore.getState().toggleLandscape();
       usePreviewStore.getState().snapshotSession("session-a");
 
+      // Switching presets re-enters portrait (docs/279 D1) — the landscape
+      // flag is per-selection, not carried across.
       usePreviewStore.getState().setDevicePreset(findPresetById("ipad-mini"));
-      usePreviewStore.getState().toggleLandscape();
+      expect(usePreviewStore.getState().isLandscape).toBe(false);
       usePreviewStore.getState().snapshotSession("session-b");
 
       usePreviewStore.getState().restoreSession("session-a");
@@ -82,14 +142,8 @@ describe("preview-store device viewport", () => {
     });
 
     it("persists custom viewport state per session snapshot", () => {
+      // setCustomSize installs the synthetic custom preset itself (docs/279 D2).
       usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
-      usePreviewStore.getState().setDevicePreset({
-        id: "custom",
-        label: "500×900",
-        width: 500,
-        height: 900,
-        category: "custom",
-      });
       usePreviewStore.getState().snapshotSession("session-a");
 
       usePreviewStore.getState().restoreSession("session-b");

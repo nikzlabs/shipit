@@ -76,6 +76,16 @@ describe("DeviceSelector", () => {
     expect(screen.getByLabelText("Switch to landscape")).toBeInTheDocument();
   });
 
+  it("hides rotate button when a custom size is active (docs/279 D3)", () => {
+    render(
+      <DeviceSelector
+        {...baseProps}
+        activePreset={{ id: "custom", label: "800×600", width: 800, height: 600, category: "custom" }}
+      />,
+    );
+    expect(screen.queryByLabelText(/Switch to/)).not.toBeInTheDocument();
+  });
+
   it("toggles landscape label based on isLandscape prop", () => {
     const preset = findPresetById("iphone-16")!;
     const { rerender } = render(<DeviceSelector {...baseProps} activePreset={preset} />);

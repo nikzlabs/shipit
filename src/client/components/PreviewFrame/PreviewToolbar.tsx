@@ -220,18 +220,15 @@ export function PreviewToolbar({
               customSize={customSize}
               onSelectPreset={(preset) => {
                 setDevicePreset(preset);
-                if (!preset) setCustomSize(null);
+                // A non-custom selection supersedes a standing custom size;
+                // that clearing lives in the store action (setDevicePreset).
               }}
               onToggleLandscape={toggleLandscape}
               onCustomSize={(width, height) => {
+                // The store action installs/refreshes the synthetic
+                // `{id: "custom"}` preset itself (docs/279 D2) — the caller
+                // used to duplicate half of that here.
                 setCustomSize({ width, height });
-                setDevicePreset({
-                  id: "custom",
-                  label: `${width}×${height}`,
-                  width,
-                  height,
-                  category: "custom",
-                });
               }}
             />
             {deviceFrameActive && (

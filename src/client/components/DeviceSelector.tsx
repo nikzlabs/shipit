@@ -201,7 +201,13 @@ export function DeviceSelector({
           </div>
         </DropdownMenuContent>
       </DropdownMenu>
-      {activePreset && (
+      {/* Rotate is a named-preset affordance only: a preset's numbers are a
+          device fact the user may view either way, while a custom size is the
+          user's own input — swapping it would contradict what they typed
+          (docs/279 D3). The store also refuses to keep `isLandscape` true
+          across a custom selection, so the button could never mean anything
+          here. */}
+      {activePreset && activePreset.category !== "custom" && (
         <Button
           variant="ghost"
           size="sm"
