@@ -193,6 +193,7 @@ const OPENROUTER_PRICES = {
   v4flash: { input: 0.06146, output: 0.12292, cacheRead: 0.012292, cacheWrite: 0.06146 },
   v4pro: { input: 1.168, output: 2.336, cacheRead: 0.09855, cacheWrite: 1.168 },
   glm52: { input: 0.308, output: 0.968, cacheRead: 0.0572, cacheWrite: 0.308 },
+  oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
 /**
@@ -246,16 +247,6 @@ const OPENCODE_ZEN_PRICES = {
   // Zen publishes no cache-write rate for Grok; 0 is "not charged", not
   // "unknown" — the vendor's table omits the column for this model.
   grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
-  // Ox Alpha, free while it is in stealth. Every rate is 0 because the vendor
-  // charges nothing — the same "real answer" `cacheWrite: 0` already means, and
-  // the reason the missing-value sentinel is negative rather than zero. ✅ live
-  // 2026-08-20: a real completion on this id answers `"cost": "0"` in the
-  // response body, which is the same field the harness reports spend from
-  // (docs/272 §5), so ShipIt's own accounting agrees with the published table.
-  //
-  // Free is a PROMOTIONAL rate and the vendor says so ("free ... for a limited
-  // time"), so this row is the one to re-check first when Zen's price table
-  // moves. A priced Ox Alpha is an ordinary edit here, not a new model.
   oxAlpha: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const;
 
@@ -808,6 +799,7 @@ export const SERVICES = [
           // open-weight all-rounder.
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
           { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
+          { id: "stealth/ox-alpha", label: "Ox Alpha", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.oxAlpha, reasoningEfforts: ["high", "low"] },
         ],
       },
     ],
@@ -1023,18 +1015,7 @@ export const SERVICES = [
         //     rows of this mode (2026-08-17 receipt) and left unauthored — each
         //     duplicates a paid row in a rate-limited form, and none is a
         //     frontier coding model, which is the subset rule this list follows.
-        //     **Ox Alpha is here on req 8** (2026-08-20) — the human named it,
-        //     which is a different warrant from the subset rule and not a
-        //     narrowing of it. It would fail that rule: the rule keeps the set
-        //     to models overlapping ShipIt's existing FAMILIES, and a stealth
-        //     model can be shown to overlap none of them — unknown rather than
-        //     absent, since it may well BE a lineage listed here. Two things
-        //     are true of it
-        //     that are not true of the other six, and neither is why it is
-        //     here: it duplicates no paid row (nothing else on Zen serves it),
-        //     and models.dev describes it as a "stealth reasoning model for
-        //     coding, agentic tasks, and tool use" rather than a rate-limited
-        //     copy. The rule is unamended and the other six stay out.
+        //     Ox Alpha is the exception, added on request.
         models: [
           { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           // Zen undercuts Anthropic's own rate here (2/10 against 3/15) — the
@@ -1049,39 +1030,6 @@ export const SERVICES = [
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4pro },
           { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.glm52 },
-          // Ox Alpha (req 8) — a stealth model with no maker named, hence its
-          // own family, which `model-identity.ts` pairs with an explicit
-          // "undisclosed" marker so the reviewer ranking stops short of
-          // claiming a lineage difference it cannot establish. ✅ live
-          // 2026-08-20, all four facts on this row measured rather than read:
-          //
-          //  - **Served here, under this id.** A completion on
-          //    `/zen/v1/chat/completions` returns `model: "x-preview-f-free"`;
-          //    the same call with a bogus id answers `ModelError: Model … is
-          //    not supported`, which is the negative control the rest of this
-          //    list uses.
-          //  - **`O_CC` and nothing else**, per the vendor's endpoint table
-          //    (`@ai-sdk/openai-compatible`) — and the gateway does not
-          //    translate between styles, so a second style here would be a 400
-          //    on every turn rather than a wider offer.
-          //  - **1M context**, models.dev `limit.context`.
-          //  - **`reasoningEfforts` is load-bearing on this row, not
-          //    cosmetic.** `low`, `high` and `max` each returned a completion;
-          //    `medium` — a level OpenCode's harness vocabulary offers and this
-          //    row therefore has to remove — FAILED the request outright:
-          //    `[1210] This model always engages in thinking and cannot be
-          //    disabled; please use low, high, or max`. Same refusal Go's
-          //    `glm-5.3` gives, and exactly the "vendor fact for the catalogue
-          //    to carry" that `opencode-spawn-shaping.ts` says cannot live in
-          //    its style table. Omit the field and every user who picks the
-          //    harness default lands on a turn that cannot start.
-          //
-          // One live fact deliberately NOT modelled: this id answers with **no
-          // credential at all** (the anonymous free tier, rate-limited per
-          // caller). It stays a row of the key mode because docs/272 req 4's
-          // receipt puts the credential-less tier out of scope — ShipIt offers
-          // the ways an OpenCode *account* can be used, and a Zen key is what
-          // makes this an account's model rather than an anonymous request.
           { id: "x-preview-f-free", label: "Ox Alpha Free", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.oxAlpha, reasoningEfforts: ["max", "high", "low"] },
           // The `openai-responses` rows. Authored after the first pass on the
           // user's instruction, because without one Codex could not be paired

@@ -51,14 +51,6 @@ launches must not invert that.
    Anthropic's subscription and API key do; OpenCode's do not, since one key
    and one flow serve both products.
 
-8. **OpenCode Zen's Ox Alpha is offered**, on the pasted Zen key like any other
-   Zen model. It is the first model here whose maker the vendor has not named,
-   so it **cannot be shown to overlap** any of ShipIt's existing model families
-   — which is the test the 2026-08-17 subset answer set. (Unknown, not absent:
-   a stealth model may well be a lineage already listed here; nothing says so.)
-   The human named this model directly; the subset rule is unchanged for models
-   nobody asked for.
-
 ## Open questions
 
 (none)
@@ -101,12 +93,3 @@ launches must not invert that.
 - **2026-08-17 (Nik, doc review)** — *Maintained model subset.* Answer:
   "agree" → the frontier coding set that overlaps ShipIt's existing model
   families, decided at row-authoring time against live models.dev.
-- **2026-08-20 (Nik, chat)** — *Ox Alpha.* "Let's support ox alpha model from
-  OpenCode." → req 8 added. Recorded because the row does NOT satisfy the
-  subset answer above — Ox Alpha is a stealth model, so no overlap with an
-  existing family can be shown — and an agent may not narrow a human's rule to
-  fit its own row. What
-  the answer scoped was the **maintained** set: the models ShipIt curates on
-  its own judgement, which is not what a directly-named model is. So req 8 is
-  this model and no wider rule; the other six free rows stay out on the
-  2026-08-17 answer, unamended.

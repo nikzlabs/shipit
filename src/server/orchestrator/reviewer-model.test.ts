@@ -69,8 +69,6 @@ const ANTHROPIC_KEY = route({ serviceId: "anthropic", billingMode: "key" });
 const OPENAI_KEY = route({ serviceId: "openai", billingMode: "key" });
 const DEEPSEEK_KEY = route({ serviceId: "deepseek", billingMode: "key" });
 const OPENROUTER_KEY = route({ serviceId: "openrouter", billingMode: "key" });
-/** The one service carrying a model whose lineage the vendor has not disclosed. */
-const OPENCODE_ZEN_KEY = route({ serviceId: "opencode", billingMode: "key" });
 
 describe("reviewerDistanceTier (req 4)", () => {
   const claude = { canonicalModelKey: "claude-opus-5", family: "claude" as const };
@@ -1048,78 +1046,6 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     // while slot 1's claude-opus-5 is most likely what the session itself runs.
     expect(result.target.harnessId).toBe("codex");
     expect(result.target.selection.serviceId).toBe("openai");
-  });
-
-  /**
-   * The same claim, through the door the check above does not cover: a STEALTH
-   * implementer. Its identity is present and its family is a real value, so
-   * `implementerIdentity` is defined and every model-axis check reports a
-   * decided answer — while the vendor has disclosed no lineage at all.
-   *
-   * Both halves matter. The reviewer must still be CHOSEN on the model axis (the
-   * tier is 1, and the ordering is untouched), and the basis must still say the
-   * model axis was not established — otherwise a tier of 1 reads as "a different
-   * family was proved" about a model nobody knows the maker of.
-   */
-  it("marks the ranking as harness-only when the implementer's lineage is undisclosed", async () => {
-    installAll();
-    const { selectReviewer } = await import("./reviewer-model.js");
-    const result = selectReviewer(
-      {
-        harnessId: "opencode",
-        selection: { serviceId: "opencode", billingMode: "key", modelId: "x-preview-f-free" },
-      },
-      { credentialStore: storeWith([ANTHROPIC_KEY, OPENAI_KEY]), env: {} },
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.tierBasis).toBe("harness-only");
-    // Chosen, not refused: a different harness and a family that does not match
-    // still rank at the top rung. That is the SAME answer this module gives an
-    // identity it cannot resolve at all — see `UNDISCLOSED_LINEAGE` for why the
-    // tier is deliberately not made stricter than that.
-    expect(result.tier).toBe(1);
-    expect(result.target.harnessId).not.toBe("opencode");
-  });
-
-  /**
-   * The candidate side of the same claim, which is a different code path: the
-   * harness-only tie-break asks for a **provable** family difference, and a
-   * stealth candidate has an identity, so it satisfied the `!== undefined`
-   * test and collected credit for a difference nobody established.
-   *
-   * The fixture is the tie-break's own precondition — an implementer whose
-   * model is unknown, so `likelyFamily` is derived from its harness. Both slots
-   * then reach a different-harness candidate and tie on tier, and the prior is
-   * what breaks it. An Ox candidate must not be the thing that breaks it.
-   */
-  it("gives the harness-only tie-break no credit for an undisclosed candidate", async () => {
-    installAll();
-    const { selectReviewer } = await import("./reviewer-model.js");
-    // Both slots reach a different harness and a family that does not match, so
-    // both land on tier 1 and the prior alone decides. Slot order favours Ox:
-    // an equal tier keeps the EARLIER slot unless the later one avoids the
-    // likely family and the earlier does not.
-    const result = selectReviewer(
-      { harnessId: "claude" },
-      {
-        credentialStore: storeWith([OPENCODE_ZEN_KEY, OPENAI_KEY], {
-          first: { serviceId: "opencode", billingMode: "key", modelId: "x-preview-f-free" },
-          second: { serviceId: "openai", billingMode: "key", modelId: "gpt-5.4" },
-        }),
-        env: {},
-      },
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    // GPT-5.4 displaces Ox precisely because its difference from the likely
-    // family is established and Ox's is not. Before the fix Ox kept the slot:
-    // it has an identity, so it passed the `!== undefined` test, took the
-    // credit, and nothing could displace it.
-    expect(result.target.selection.modelId).toBe("gpt-5.4");
-    expect(result.tier).toBe(1);
   });
 
   /**

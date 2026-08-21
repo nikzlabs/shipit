@@ -63,68 +63,8 @@ export const MODEL_FAMILY_IDS = [
   "grok",
   "kimi",
   "qwen",
-  // A **stealth** model's lineage, which is a family precisely because nobody
-  // outside the vendor knows what it is. OpenCode publishes Ox Alpha with no
-  // maker named, so every alternative to its own family is a claim this
-  // repository cannot make: filing it under an existing vendor asserts a
-  // lineage nobody disclosed, and reusing another family's handle would make
-  // ShipIt refuse a review pairing on a guess.
-  //
-  // It is NOT a claim of distance either, and that distinction is the whole of
-  // {@link UNDISCLOSED_LINEAGE} below: a family of its own makes every
-  // comparison report "different family", which is the ideal reviewer tier
-  // (docs/261 req 4) awarded on something nobody established. So `ox` is
-  // declared here AND named as undisclosed, and the ranking degrades what it
-  // *claims* rather than what it *chooses*.
   "ox",
 ] as const;
-
-/**
- * Families that stand for "the vendor has not said who trained this", not for a
- * lineage anyone knows.
- *
- * `family` answers "what does this share its training with", and a stealth
- * release has no answer. The catalogue still has to write one — the field is
- * required, and every alternative spelling asserts more than the vendor did —
- * so the honest shape is a family of its own PLUS this set, which is how the
- * ranking can tell a decided difference from an undecided one.
- *
- * What it changes: nothing about which reviewer is chosen. `sameModelFamily`
- * still reports `false` against every disclosed family, so the ORDERING is
- * untouched. What degrades is the `tierBasis` a selection reports — the field
- * `reviewer-model.ts` added precisely so that a tier of 1 is never read as "a
- * different family was established" when it wasn't. Without this, a stealth
- * model is the one identity that is *present* and still undecidable, and it
- * would sail past a check written for identities that are *absent*.
- *
- * **Why the TIER is deliberately left alone**, which review has now asked twice.
- * The objection is real on its face: an undisclosed candidate can outrank a
- * candidate whose different family IS established, so ShipIt may prefer the
- * unproven second opinion. But `reviewer-model.ts` already answers this for the
- * identical epistemic state — an identity it cannot resolve at all, where
- * `sameCanonicalModel` and `sameModelFamily` both report `false` and the pair
- * lands on the same top rung, documented as failing "toward *using* a reviewer
- * rather than refusing one". A stealth model is that state with a row attached.
- * Ranking it below a model ShipIt cannot identify at all would mean knowing more
- * about a model made it a worse reviewer, and changing BOTH is a change to
- * docs/261's ranking, not to this row. So the claim degrades and the tier does
- * not.
- *
- * Note the residual: two undisclosed models would compare as one family and
- * rank as closer than they might be. That is the conservative direction — it
- * refuses to claim independence rather than inventing it — and there is one
- * such model today.
- *
- * Typed by {@link ModelFamily} and not by `string`, so a family named here that
- * the catalogue does not declare is a compile error rather than a safeguard that
- * silently matches nothing.
- */
-export const UNDISCLOSED_LINEAGE: ReadonlySet<ModelFamily> = new Set<ModelFamily>(["ox"]);
-
-/** True when this identity's family stands for an undisclosed lineage. */
-export function lineageIsUndisclosed(identity: ModelIdentity | undefined): boolean {
-  return identity !== undefined && UNDISCLOSED_LINEAGE.has(identity.family);
-}
 
 export type ModelFamily = (typeof MODEL_FAMILY_IDS)[number];
 
@@ -220,18 +160,7 @@ export const MODEL_IDENTITIES = {
   grok420NonReasoning: identity("grok-4.20-0309-non-reasoning", "grok"),
   kimiK3: identity("kimi-k3", "kimi"),
   qwen38max: identity("qwen3.8-max", "qwen"),
-
-  // OpenCode Zen's stealth model, served ONLY there (2026-08-20), and keyed by
-  // its wire id rather than by the vendor's product name "Ox Alpha Free".
-  //
-  // The readable `ox-alpha` was tried first and is wrong here, for the reason
-  // this file gives itself: an alias entry is "a claim a reviewer should check",
-  // and the only claim available today is that the display name and the wire id
-  // name one model. Dropping `preview` and `free` from the key would assert
-  // something further — that a model leaving stealth under a new id is still
-  // THIS model — which no source establishes and nothing yet needs. When the id
-  // does change, that is the moment to decide it, with facts.
-  oxAlpha: identity("x-preview-f-free", "ox"),
+  oxAlpha: identity("ox-alpha", "ox"),
 } as const;
 
 /**
@@ -262,6 +191,7 @@ export const MODEL_ID_ALIASES: Record<string, string> = {
   // second model: Zen is a gateway serving Anthropic's own Haiku 4.5, at
   // Anthropic's own rate.
   "claude-haiku-4-5": "claude-haiku-4.5",
+  "x-preview-f-free": "ox-alpha",
 };
 
 /**

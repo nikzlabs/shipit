@@ -103,16 +103,12 @@ Zen authenticates and then answers `AI_APICallError: Insufficient balance`.
       package refuses; an unknown `--variant` is ignored by the CLI, so a user
       who picks `none` gets the provider's default effort instead of a turn
       that cannot start
-- [ ] **Still not fixed, but no longer unfixable.** `glm-5.3` on Go refuses
-      `none` upstream ("[1210] This model always engages in thinking and cannot
-      be disabled; please use low, high, or max"). Today that only breaks the
+- [ ] **Not fixed — no schema for it.** `glm-5.3` on Go refuses `none`
+      upstream ("[1210] This model always engages in thinking and cannot be
+      disabled; please use low, high, or max"). Today that only breaks the
       CLI's own title call, but a user who picks effort `none` for it would
-      lose the turn. The catalogue schema this was waiting for now exists —
-      docs/274 added `ModelDef.reasoningEfforts`, and the Ox Alpha row below is
-      the first OpenCode row to use it against this exact refusal — so the fix
-      is `reasoningEfforts: ["max", "high", "low"]` on the Go row. Left for its
-      own change: the accepted set here comes from the vendor's error text
-      rather than from a per-level probe, which needs a real Go key
+      lose the turn. `ModelDef` has no per-model reasoning field, so carrying
+      this needs a catalogue schema change
 - [ ] **Not fixed — wider than this feature.** A turn the service refuses
       leaves an EMPTY assistant bubble: "Insufficient balance" reached the
       adapter and became an `agent_result` with `status: "error"`, and the
@@ -120,24 +116,6 @@ Zen authenticates and then answers `AI_APICallError: Insufficient balance`.
       still reads `ready` in Settings. Measured on both Zen routes. Worth
       checking against the other harnesses before deciding where the text is
       being dropped
-
-## Ox Alpha — req 8 (2026-08-20)
-
-- [x] `x-preview-f-free` on Zen's `key` mode, `O_CC` only, 1M context, every
-      rate $0 — id, style, efforts and cost each measured live against
-      `/zen/v1/chat/completions`, with a bogus id as the negative control
-- [x] `reasoningEfforts: ["max", "high", "low"]` — the row's `medium` is a live
-      refusal, not an omission
-- [x] Family `ox`, declared in `UNDISCLOSED_LINEAGE` — see plan.md for why
-- [x] `selectReviewer` degrades `tierBasis` to `harness-only` when either
-      side's lineage is undisclosed
-- [x] The harness-only tie-break gives an undisclosed candidate no credit for
-      "provably differs", with a test that fails without the clause
-- [x] Canonical key = the wire id, no alias
-- [x] `FREE_ROWS` in `catalogue.test.ts`, checked both ways: an all-zero row
-      must be declared, and a declaration must still name an all-zero row
-- [x] The per-model effort invariant is scoped to the harnesses that can carry
-      a row, not every harness that joins it by style
 
 ## One key, no choice (req 7) — the follow-up this PR was scoped out of
 

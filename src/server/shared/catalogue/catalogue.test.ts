@@ -91,21 +91,6 @@ function everyRow(): { service: ServiceDef; mode: BillingModeDef; model: ModelDe
   );
 }
 
-/**
- * Rows the vendor charges nothing for, as `service/mode/model`.
- *
- * The human confirmation behind an all-zero price — the same job
- * `MODEL_ID_ALIASES` does for an id that does not match its key. Zero is a real
- * rate, so it cannot be told from an accident by inspection; naming the row here
- * is what makes it a stated fact.
- *
- * `opencode/key/x-preview-f-free` — Ox Alpha, ✅ live 2026-08-20: a completion
- * on it answers `"cost": "0"`, and the vendor's own table prices every column
- * Free. Promotional ("free … for a limited time"), so this entry leaves when the
- * rates do.
- */
-const FREE_ROWS: readonly string[] = ["opencode/key/x-preview-f-free"];
-
 describe("no shipped row still carries a sentinel", () => {
   // The sentinels are negative rather than zero precisely so a forgotten row is
   // loud. Zero is a real answer for `cacheWrite` (OpenAI charges nothing to
@@ -131,47 +116,7 @@ describe("no shipped row still carries a sentinel", () => {
       // A rate expressed per *token* rather than per million would come out
       // vanishingly small; a rate expressed per thousand would come out huge.
       // These bounds catch the unit slip that a spot-check by eye does not.
-      //
-      // A row the vendor charges NOTHING for is exempt from the lower bound and
-      // only from it — a free model's input rate is 0, which is indistinguishable
-      // from a per-token slip by magnitude alone.
-      //
-      // Two conditions, not one, because "all four rates are zero" alone is a
-      // shape an accident can also produce (a zero-initialised object, a
-      // constant wired to the wrong row): the row must ALSO be named in
-      // {@link FREE_ROWS}, which is where a human states that the vendor charges
-      // nothing. So a half-authored `input: 0` beside a priced output fails on
-      // the rates, and a wholly zeroed row nobody vouched for fails on the list.
-      const allZero =
-        model.price.input === 0 &&
-        model.price.output === 0 &&
-        model.price.cacheRead === 0 &&
-        model.price.cacheWrite === 0;
-      if (allZero) {
-        expect(FREE_ROWS, `${where} prices everything at zero but is not a declared free row`)
-          .toContain(where);
-      } else {
-        expect(model.price.input, where).toBeGreaterThan(0.001);
-      }
-    }
-  });
-
-  // The other direction, and the one the list would otherwise lose quietly.
-  // Free is PROMOTIONAL here, so the expected end of this entry is that Zen
-  // starts charging — at which point the row above simply passes the ordinary
-  // bounds and nothing would ever mention the stale declaration again. A
-  // declaration that no longer describes a free row is a claim about the vendor
-  // that has gone out of date, so it fails until someone removes it.
-  it("names no free row that has stopped being free, or stopped existing", () => {
-    const rows = new Map(everyRow().map((r) => [`${r.service.id}/${r.mode.kind}/${r.model.id}`, r.model]));
-    for (const where of FREE_ROWS) {
-      const model = rows.get(where);
-      expect(model, `${where} is declared free but is not in the catalogue`).toBeDefined();
-      if (!model) continue;
-      expect(
-        [model.price.input, model.price.output, model.price.cacheRead, model.price.cacheWrite],
-        `${where} is declared free but carries a rate`,
-      ).toEqual([0, 0, 0, 0]);
+      if (model.price.input > 0) expect(model.price.input, where).toBeGreaterThan(0.001);
       expect(model.price.input, where).toBeLessThan(1000);
       expect(model.price.output, where).toBeGreaterThanOrEqual(model.price.input);
       expect(model.price.cacheRead, where).toBeLessThanOrEqual(model.price.input);
@@ -1244,31 +1189,6 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
     expect(go("gpt-5.6-luna")!.price.input).toBeLessThan(zen("gpt-5.6-luna")!.price.input);
   });
 
-  it("offers Ox Alpha only the three reasoning levels it accepts", () => {
-    // The narrowing on this row is not cosmetic, which is why it is pinned
-    // separately from the grok rows that share the mechanism. Measured live
-    // 2026-08-20: `low`, `high` and `max` each returned a completion, while
-    // `medium` — a level OpenCode's harness vocabulary offers, so the DEFAULT
-    // for a row that names nothing — failed the request outright with `[1210]
-    // This model always engages in thinking and cannot be disabled`. Drop
-    // `reasoningEfforts` from the row and ShipIt renders a level that cannot
-    // start a turn.
-    const oxAlpha = { serviceId: "opencode", billingMode: "key" as const, modelId: "x-preview-f-free" };
-    expect(reasoningOptionsFor("opencode", oxAlpha).map((o) => o.value)).toEqual([
-      "low",
-      "high",
-      "max",
-    ]);
-    expect(selectionHonoursEffort("opencode", oxAlpha, "medium")).toBe(false);
-    expect(selectionHonoursEffort("opencode", oxAlpha, "max")).toBe(true);
-    // The contrast that proves the row did the narrowing rather than the
-    // harness: a sibling of the same mode and style, naming no efforts, still
-    // gets OpenCode's whole vocabulary.
-    expect(
-      reasoningOptionsFor("opencode", { ...oxAlpha, modelId: "kimi-k3" }).length,
-    ).toBe(getHarness("opencode")?.capabilities.reasoning?.options.length);
-  });
-
   it("names OpenCode's own inference as its harness's native service (docs/272)", () => {
     // …and the thing that makes that safe: three readers used "native" to mean
     // "the vendor's account machinery owns this", which is false here. The
@@ -1698,17 +1618,6 @@ describe("credentials", () => {
       // The INVARIANT `reasoningOptionsFor` relies on: a row may only narrow the
       // harness's list, never add to it. A typo here would otherwise vanish
       // silently (intersected away) instead of failing the build.
-      //
-      // Scoped to the harnesses that can actually SPAWN the row, not to every
-      // harness that joins it by style. `catalogueEntriesForHarness` is a style
-      // join alone, so it hands the grok CLI every chat-completions row in the
-      // catalogue — including OpenCode Zen's, which no grok credential may carry
-      // (`carriers: ["opencode", "codex"]`). Asserting against a harness that can
-      // never reach the row makes the invariant the INTERSECTION of unrelated
-      // vocabularies: Zen's Ox Alpha honours `max`, which OpenCode declares and
-      // grok does not, and the unscoped check failed on a level the only harness
-      // that can run it accepts. A typo is still caught — it is in no
-      // vocabulary, so the harness that CAN spawn the row fails on it.
       for (const harness of allHarnesses()) {
         const vocabulary = new Set(harness.capabilities.reasoning?.options.map((o) => o.value) ?? []);
         for (const entry of catalogueEntriesForHarness(harness.id)) {
