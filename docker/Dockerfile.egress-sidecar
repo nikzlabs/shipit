@@ -25,9 +25,12 @@ COPY egress-sidecar/sni-proxy/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sni-proxy .
 
 # --- Runtime image -----------------------------------------------------------
-# Digest-pinned. `3.20` is a MINOR tag: it moves to 3.20.1, 3.20.2, … as Alpine
-# ships patch releases, so it is mutable in the same way `:latest` is, only
-# slower. Everything below (the apk layer) re-runs when it moves.
+# Digest-pinned. The version in the tag is a MINOR series, not a pin on its own:
+# it moves to .1, .2, … as Alpine ships patch releases, so the tag alone is
+# mutable in the same way `:latest` is, only slower. Only the digest pins it.
+# Everything below (the apk layer) re-runs when the pin advances. Deliberately
+# phrased without naming the version: a Renovate minor bump rewrites the FROM
+# line below but not this comment (it left `3.20` here when it moved to 3.24).
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 # iptables + ip6tables + ipset for the rules; bind-tools for `dig`; curl for the
