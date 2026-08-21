@@ -28,15 +28,17 @@ Resolved questions.
 
 1. Plugin code is trusted at the same level as a `package.json` dependency.
 2. (empty)
-3. `agent.install` MUST NOT be executed on the strength of an acceptance the
-   user gave for a **different** command list.
+3. When a repo's `agent.install` list changes, ShipIt MUST NOT run the new list
+   unattended. The user's acceptance covers the list they accepted, not whatever
+   the file says later. *(Justification withdrawn — see Open questions.)*
 4. (empty)
 5. (empty)
 6. A plugin MUST be able to write the consuming project's files, including
    `shipit.yaml` itself.
-7. A change to `agent.install` that ShipIt does not execute MUST appear in the
-   chat transcript, naming both the list in force and the one withheld, MUST
-   still be there after a reload, and MUST NOT otherwise break the session.
+7. Whenever req 3 stops a list from running, the chat transcript MUST say so,
+   naming the list still in force and the one not run. The notice MUST survive a
+   reload, and nothing else about the session may break — clone, file tree, agent
+   chat and already-installed dependencies keep working.
 8. A user MUST be able to get a withheld command run by asking the agent — no
    config edit, no prompt, no restart.
 9. The design MUST state this route as closed, partly closed, or left open, and
@@ -51,20 +53,39 @@ what it said and why it went is in [Requirement history](#requirement-history).
 
 ## Open questions
 
-- **Does the `agent.install` gate still have a reason to exist?** Req 1 was its
-  justification. Req 3 may stand alone — its rationale is the *user's*
-  acceptance, not plugins. Reqs 7 and 8 hold only as long as something is
-  withheld; req 11 becomes trivially true.
+- **Why would ShipIt not run some changes — and does req 3 still have a reason to
+  exist?** Asked by the requester on 2026-08-21, reading reqs 3 and 7: *"I don't
+  get it"* and *"why would it not execute some changes?"*
 
-  **(a)** Req 3 survives, the gate stays but stops being a security control — the
-  notice becomes "your install command changed" rather than "a plugin may have
-  written this". **(b)** Req 3 falls with req 1, the gate goes, and
-  `agent.install` runs unattended as it did before this feature — which also
-  dissolves the ops incident that opened this branch, since a withheld install is
-  what stranded that session.
+  **The plain answer to "why" is: because a plugin might have written them.**
+  That was the whole reason. Req 3 was never about install commands in general —
+  it was old req 1 applied to the one file that reaches unattended execution. The
+  requester's own sentence for it, *"The user accepted the commands the repo had
+  **then**, not the ones it has now"*, was said about a repo a plugin can edit.
 
-  Governs how much of the shipped code stays. The feedback that reversed req 1
-  did not reach it.
+  With req 1 reversed, that reason is gone and **req 3 has no stated
+  justification left**. The question being unanswerable from the document is the
+  finding, not a gap in the writing: reqs 3 and 7 now read as arbitrary because
+  they are, in the current requirement set, arbitrary.
+
+  The residual argument for keeping req 3 is thin and worth naming so it can be
+  rejected on the merits: a changed list is something the user has not seen, so
+  running it unattended is a surprise. But ShipIt already runs whatever the repo
+  says (docs/178 repo trust), the agent edits `shipit.yaml` on request all the
+  time, and every one of those is "something the user has not read" too.
+
+  **(a)** Keep req 3 on that surprise-avoidance argument. The gate stays but
+  stops being a security control, and the notice becomes "your install command
+  changed" rather than "a plugin may have written this".
+  **(b)** Retire req 3 as `(empty)`, with 7, 8 and 11 following it. `agent.install`
+  runs unattended as it did before this feature. This also dissolves the ops
+  incident that opened this branch — a withheld install is precisely what
+  stranded that session — and removes the whole acceptance-record mechanism
+  rather than continuing to harden it.
+
+  **Recommendation: (b).** Two questions from the person who wrote the
+  requirement is strong evidence it no longer describes something anyone wants.
+  Governs how much of the shipped code stays — see plan.md.
 
 ## Resolved questions
 
@@ -91,6 +112,8 @@ what it said and why it went is in [Requirement history](#requirement-history).
   what `/project` contains) take away a write req 6 grants in plain words.
   Answer: **re-gate the execution** — let a plugin write `shipit.yaml` like any
   other project file, and stop ShipIt running a changed list unattended.
+  **Overtaken on 2026-08-21:** the question presupposed that a plugin changing
+  `agent.install` was a problem to solve. Req 1 now says it is not.
 
 - **2026-08-17 — When ShipIt withholds a change, what does the user see?** A
   prompt to accept (docs/178's shape, needing a new per-session acceptance store
@@ -112,7 +135,7 @@ stable and never reused.
 | # | Source |
 |---|---|
 | 1 | Requester, 2026-08-21, in these words. **Replaced** the original req 1 (below). |
-| 3 | Requester: *"The user accepted the commands the repo had **then**, not the ones it has now."* |
+| 3 | Requester: *"The user accepted the commands the repo had **then**, not the ones it has now."* Said about a repo a plugin can edit — so its justification went with old req 1, and the requester asked on 2026-08-21 what it was for. See Open questions. |
 | 6 | docs/262 req 29, settled 2026-08-15: *"plugins should be able to write to the user repo, that is their purpose"* — with its consequence that the project's own files are NOT a containment boundary. Reaffirmed here 2026-08-17. |
 | 7 | Transcript half: requester, 2026-08-17. "Does not break the session" half: inferred from docs/178's shape for the same class of decision (`service-manager-setup.ts:388-398`). |
 | 8 | Requester, 2026-08-17. Sufficient rather than merely cheaper because the agent runs commands in that container anyway — "ask the agent" is the same authority, exercised where a human can see it. |
