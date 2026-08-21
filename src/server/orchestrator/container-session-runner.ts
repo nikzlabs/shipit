@@ -101,11 +101,10 @@ const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
  * completes only so the orchestrator un-wedges, and `dispose()`, which resolves
  * awaiters so they do not leak. Both are right to resolve and neither is proof.
  *
- * `clearDependencyGap` is what makes the distinction matter — it is now the
- * single place the session's "dependencies are accounted for" answer is
- * retracted, on the runner AND on disk, so treating a synthesized completion as
- * proof would clear a real gap and, worse, drop the trust gate's accepted-list
- * anchor without an install having run. `clearDependencyGap`'s own docstring
+ * `clearDependencyGap` is what makes the distinction matter — it is the single
+ * place the session's "dependencies are accounted for" answer is retracted, so
+ * treating a synthesized completion as proof would clear a real gap without an
+ * install having run. `clearDependencyGap`'s own docstring
  * asserted this exclusion before it was true of the code; it is enforced here
  * now.
  */
@@ -1944,7 +1943,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // hanging the user's first turn forever.
       const result = await workerInstall(this.workerUrl, commands, {
         timeoutMs: INSTALL_POST_TIMEOUT_MS,
-      }) as { skipped?: boolean; started?: boolean; ok?: boolean; joined?: boolean };
+      }) as { skipped?: boolean; started?: boolean; ok?: boolean };
       this._installPostIssued = true;
       if (result.skipped) {
         // The worker's content-keyed marker matched, which IS the dependency
@@ -1975,12 +1974,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       // (reconnect resync with no last result, dispose), which resolve
       // `ok: true` by default and are not evidence of anything.
       //
-      // `result.joined` used to be tested here as well, because coalescing onto
-      // a different list made the completion no evidence about OUR commands.
-      // That mattered only while this call also recorded acceptance; it no
-      // longer does. For the GAP the distinction was always weaker — a joined
-      // install still installed something into this tree — so dropping it costs
-      // nothing the type does not already carry.
+      // `joined` — the worker coalesced us onto an install that was ALREADY
+      // running, possibly for a different command list — is NOT classified here,
+      // and that is a known gap rather than a decision: a joined completion is
+      // evidence about the list that ran, not ours. It predates this file's
+      // current shape and is unchanged by the docs/271 removal. Owner:
+      // planning#400.
       if (outcome.ok && !outcome.unverified) {
         this.clearDependencyGap();
       }

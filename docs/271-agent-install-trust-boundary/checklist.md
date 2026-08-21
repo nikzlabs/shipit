@@ -25,7 +25,9 @@ happened, and so did the removal.
 - [x] Orphaned `dependency-reset` gap phrase removed
 - [x] Pre-existing fixes deliberately kept (`unverified`, `_installInFlight`)
       and documented as such in `plan.md`
-- [x] Suite shrank rather than grew — 2 files and 50 tests removed, none added
+- [x] Suite shrank rather than grew — net −18 `it()` declarations vs `main`
+      (−19 deleted gate test file, −1 runner, +2 covering the retained
+      `unverified` fix)
 - [x] `npm run typecheck`, `npm run lint:dev`, `npm test` green
 - [x] Independent review of the removal
 - [x] planning#400 updated

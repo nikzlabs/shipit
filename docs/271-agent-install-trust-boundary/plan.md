@@ -7,8 +7,8 @@ description: What the docs/271 trust gate was, why its founding requirement was 
 # Plan — the `agent.install` gate, removed
 
 Implements [requirements.md](./requirements.md). **The feature this document
-designed no longer exists**; only requirements 1, 6, 9 and 10 survive, and none
-of them asks ShipIt to withhold anything.
+designed no longer exists**; only requirements 1 and 6 survive, and neither asks
+ShipIt to withhold anything.
 
 ## What the code does now
 
@@ -51,7 +51,12 @@ ShipIt to withhold anything — along with 7, 8 and 11. Full history is in
 - The `withheld` outcome flag and the overlay-publish skip that read it.
 - The `dependency-reset` gap phrase, which only the auto-replay produced.
 
-The suite shrank by two files and 50 tests.
+**Net effect on the suite, measured against `main`: 18 fewer `it()`
+declarations** — 19 lost with `agent-install-gate.test.ts`, one more from the
+runner, and two *added* in `service-manager-setup.test.ts` covering the retained
+`unverified` fix below. (The branch-internal drop is larger, because the gate
+work added tests of its own before removing them; those net to zero against
+`main` and are not what a reviewer sees.)
 
 ## Two things it deliberately did NOT take
 

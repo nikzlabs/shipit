@@ -6,10 +6,11 @@ description: Where plugin-authored code sits in ShipIt's trust model, and what t
 
 # Requirements — `agent.install` and the plugin trust level
 
-Tracked by planning#400. This is **route 2** of the three routes planning#384
-identified; route 1 (`.git`) shipped as
-[docs/266](../266-orchestrator-git-trust-boundary/requirements.md) and route 3
-(the compose file) closed as planning#386.
+Tracked by planning#400. This was opened as **route 2** of the three routes
+planning#384 identified — route 1 (`.git`) shipped as
+[docs/266](../266-orchestrator-git-trust-boundary/requirements.md), route 3 (the
+compose file) closed as planning#386. Route 2 turned out not to be a boundary at
+all: see requirement 1.
 
 This document states **what must be true**. The design is in
 [plan.md](./plan.md).
@@ -35,20 +36,17 @@ Resolved questions.
    `shipit.yaml` itself.
 7. (empty)
 8. (empty)
-9. The design MUST state this route as closed, partly closed, or left open, and
-   any remainder MUST have a named owner.
-10. The design MUST record what could not be verified, distinguishing code read
-    at the source from claims inherited from a doc.
+9. (empty)
+10. (empty)
 11. (empty)
 12. (empty)
 
 Numbers are stable and never reused. `(empty)` marks a retired requirement —
 what it said and why it went is in [Requirement history](#requirement-history).
 
-Two requirements remain, and neither asks ShipIt to withhold anything: 1 places
-plugin code in the trust model, 6 says what a plugin may write. 9 and 10 are
-documentation conventions carried from docs/266. **`agent.install` therefore runs
-as it did before this feature.**
+**Two requirements remain, and both are about plugins:** 1 places plugin code in
+the trust model, 6 says what a plugin may write. Neither asks ShipIt to withhold
+anything, so `agent.install` runs as it did before this feature.
 
 ## Open questions
 
@@ -127,7 +125,6 @@ stable and never reused.
 |---|---|
 | 1 | Requester, 2026-08-21, in these words. **Replaced** the original req 1 (below). |
 | 6 | docs/262 req 29, settled 2026-08-15: *"plugins should be able to write to the user repo, that is their purpose"* — with its consequence that the project's own files are NOT a containment boundary. Reaffirmed here 2026-08-17. |
-| 9, 10 | Conventions docs/266 set for these three routes; carried over unchanged. |
 
 ### Retired (2026-08-21) — because req 1 was reversed
 
@@ -174,6 +171,28 @@ Nothing here promotes a mechanism into a requirement. "Read the install marker"
 and "check for the session's plugin data directory" are how requirements get
 satisfied, and they live in `plan.md`.
 
+
+### Retired (2026-08-21) — because they were never about plugins
+
+Both were documentation conventions carried from docs/266, which set them for the
+**three-route set** planning#384 identified. They constrained how this feature's
+design doc had to be written, not what ShipIt had to do — so they sat in a list
+of plugin requirements without being about plugins. The requester asked exactly
+that: *"how is this related to plugins?"*
+
+- **9** — *"The design MUST state this route as closed, partly closed, or left
+  open, and any remainder MUST have a named owner."* The framing it depends on is
+  gone: with req 1 reversed there is no boundary here to be closed or open, so
+  "which is it" became a category error rather than a question with an answer.
+  What survives is recorded plainly instead — `plan.md` says the gate was removed
+  and why, and there are no remainders left to own.
+
+- **10** — *"The design MUST record what could not be verified, distinguishing
+  code read at the source from claims inherited from a doc."* Good discipline,
+  and still followed — see [What was verified, and what was
+  not](#what-was-verified-and-what-was-not), which is kept because its readings
+  are still true. But it is a repo-wide writing rule (`CLAUDE.md`, *Verify an
+  inherited guarantee at the source*), not something this feature must do.
 
 ### Retired (2026-08-21) — because req 3 went
 

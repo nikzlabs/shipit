@@ -165,9 +165,9 @@ describe("worker auth guard", () => {
   it("planning#421: a worker with no token configured refuses every peer container", async () => {
     // The orchestrator-facing leg used to be served here, as a compatibility
     // fallback for a container created by an orchestrator that predates the
-    // token. `/install` is the one that matters most: docs/271's `agent.install`
-    // gate sits at `runInstall`, not on this route, so a plugin service that can
-    // reach the agent container had a direct-POST bypass of the whole gate.
+    // token. `/install` is the one that matters most: it runs `agent.install`
+    // with `shell: true` in the credential-bearing container, and a plugin
+    // service can reach that container.
     app = buildGuardedApp(undefined);
     for (const url of ["/agent-ops/voice/note", "/terminal/start", "/install"]) {
       const res = await app.inject({

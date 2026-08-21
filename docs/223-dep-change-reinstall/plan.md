@@ -218,8 +218,8 @@ the gap notice above:
   channel for the failure case is the gap prefix, and a session that hits both
   must not read two paragraphs that sound the same. The notice therefore opens
   by saying nothing is broken, and never borrows the gap notice's phrasing.
-- **A record beside the install marker** (`.install-not-content-keyed`, the
-  shape of docs/271's `INSTALL_WITHHELD_FILE`) so the panel reads a state
+- **A record beside the install marker** (`.install-not-content-keyed`) so the
+  panel reads a state
   detected once at setup, and the operator log line fires once per *distinct*
   command list rather than once per container recreate. The record is cleared
   the moment the config resolves an input set again, so it cannot outlive the
