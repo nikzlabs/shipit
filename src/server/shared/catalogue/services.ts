@@ -801,23 +801,24 @@ export const SERVICES = [
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
           { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
           // ✅ 2026-08-21 — `A_MSG` measured, the same way as the four rows above:
-          // a real Claude Code turn (CLI 2.1.227) against `https://openrouter.ai/api`
-          // answered `42` to a prompt not containing it, ×5 including both declared
-          // efforts. The negative control is what makes the id meaningful —
+          // five SERIAL Claude Code turns (CLI 2.1.227) against
+          // `https://openrouter.ai/api`, the verdict read from assistant text only,
+          // answering `42` to a prompt that does not contain it — so a turn with no
+          // output scores a fail. Both declared efforts were among the five. The
+          // negative control is what makes the id meaningful:
           // `stealth/ox-alpha-bogus` on the same route is refused with
           // `400 … is not a valid model ID`, so the gateway validates ids and the
           // pass is not a default model answering. This is the only surface that can
-          // reach Claude Code: the Zen and Go rows below serve the model over
+          // reach Claude Code — the Zen and Go rows below serve the model over
           // chat-completions, and that gateway does not translate.
           //
-          // `reasoningEfforts` stays as measured on chat-completions, and is now
-          // deliberately NARROWER than this surface: OpenRouter answers 200 to an
-          // explicit `reasoning.effort: "medium"` here, where Zen rejects it with
-          // `[1210]`. Its own metadata lists `max`/`high`/`low`, so the skin is
-          // normalizing a value the model does not have rather than honouring it —
-          // no reason to offer a level whose effect nobody has measured. `max` is
-          // still absent because the grok harness has no such level and can carry
-          // this credential.
+          // `reasoningEfforts` is unchanged, and deliberately narrower than what this
+          // surface accepts. The gateway's own metadata lists `max`/`high`/`low`, yet
+          // an explicit `reasoning.effort: "medium"` answers 200 here — which
+          // establishes only that OpenRouter ACCEPTS the value, not that the model
+          // honours it. Whether it is normalized, ignored or honoured is unmeasured,
+          // so it stays unoffered. `max` is absent for its own reason: the grok
+          // harness has no such level and can carry this credential.
           { id: "stealth/ox-alpha", label: "Ox Alpha", ...MODEL_IDENTITIES.oxAlpha, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.oxAlpha, reasoningEfforts: ["high", "low"] },
         ],
       },
