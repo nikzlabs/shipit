@@ -92,6 +92,35 @@ describe("sandbox capability editing", () => {
     expect(sessionManager.get("s1")?.capabilities?.dangerousGitHubOps).toBe(false);
   });
 
+  it("merges a partial payload over the current set instead of resetting omitted grants", () => {
+    // A body that never mentions `git` must not revoke it. `normalizeCapabilities`
+    // alone would substitute the CREATION DEFAULTS for everything missing, so
+    // `{ docker: true }` used to turn Network on and silently drop GitHub access.
+    const { deps, sessionManager } = setup();
+    sessionManager.setCapabilities("s1", full({ git: true, network: false }));
+
+    const view = updateSandboxCapabilities(deps, "s1", { docker: true });
+
+    expect(view.capabilities).toEqual(full({ git: true, network: false, docker: true }));
+  });
+
+  it("still revokes on an explicit false — only absence means 'leave it alone'", () => {
+    const { deps } = setup();
+    const view = updateSandboxCapabilities(deps, "s1", { network: false });
+    expect(view.capabilities.network).toBe(false);
+  });
+
+  it("clears the merge sub-grant when a partial payload revokes GitHub access alone", () => {
+    // The sub-grant rule runs on the MERGED result, so revoking its parent takes
+    // it with it even though the body never named it.
+    const { deps, sessionManager } = setup();
+    sessionManager.setCapabilities("s1", full({ git: true, dangerousGitHubOps: true }));
+
+    const view = updateSandboxCapabilities(deps, "s1", { git: false });
+
+    expect(view.capabilities.dangerousGitHubOps).toBe(false);
+  });
+
   it("refuses a session that is not a sandbox", () => {
     const { deps } = setup({ kind: "ops" });
     expect(() => updateSandboxCapabilities(deps, "s1", full({ docker: true })))

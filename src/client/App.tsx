@@ -2752,6 +2752,15 @@ export default function App() {
             unreachable from the banner on a phone. */}
         {wsSessionId && (
           <SessionSettingsDialog
+            /* Keyed by session: this component is now persistent (it used to be
+               mounted per sidebar row and unmounted with the menu), so without a
+               key its state — the loaded capability set, the selected mode —
+               would survive a session switch. The dialog would then show session
+               A's grants, enabled, while B's fetch was still in flight, and one
+               click would PUT A's whole set onto B. Remounting is the fix rather
+               than clearing state in the effects, because it cannot be partially
+               forgotten when a field is added. (Review finding.) */
+            key={wsSessionId}
             sessionId={wsSessionId}
             open={sessionSettingsDialogOpen}
             onOpenChange={(open) =>

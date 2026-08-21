@@ -599,6 +599,17 @@ async function attemptContainerCreate(
     // this is the point the grant becomes container plumbing. Sandbox-only:
     // every other session has no capability set, and an absent record correctly
     // reads as "nothing to pend".
+    //
+    // Known race, accepted (review finding): `opts.session` was captured before
+    // the await above, while `resolveEgressConfig` re-reads the session from
+    // SQLite *during* creation. So a capability edit that lands mid-create can
+    // plumb egress from the new value and record the old one. It needs the user
+    // to toggle a grant in the seconds a container is booting, and the failure
+    // is a pending indicator that is offered (or withheld) once too often — not
+    // a wrong grant, since the durable set is what every broker reads. Recording
+    // the same object Docker was derived from is the lesser evil: re-reading
+    // here would make the snapshot disagree with the Docker plumbing instead,
+    // which is the half that cannot be corrected without a restart anyway.
     if (opts.session?.kind === "sandbox" && opts.session.capabilities) {
       mgr.recordCapabilitiesAtStart(sessionId, opts.session.capabilities);
     }

@@ -328,9 +328,6 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     // and the only trace was the radio button's own position. Network access is
     // a trust boundary like any capability grant, so an actual change now leaves
     // the same persisted transcript card a sandbox capability edit does.
-    // `pendingRestart: true` unconditionally because the containment topology is
-    // installed into the netns at container creation — the very reason this
-    // dialog has a "Restart to apply now" button.
     app.put<{ Params: { id: string }; Body: { override?: boolean | null } }>(
       "/api/egress/session/:id",
       async (request) => {
@@ -340,6 +337,15 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           const previous = store.getSessionOverride(sessionId);
           store.setSessionOverride(sessionId, override);
           if (previous !== override) {
+            // The card's `pendingRestart` is the SAME value this route is about
+            // to report to the dialog, read after the write. It used to be
+            // hardcoded `true` on the reasoning that egress topology is always a
+            // creation-time choice — but "the topology is fixed at creation" is
+            // not "this change alters it": with no running container, or with
+            // one already started in the resolved containment (global Contained,
+            // Inherit → Contained), nothing is pending. The dialog would have
+            // shown no pending row while the transcript card beside it said
+            // "applies on next container start". (Review finding.)
             emitSessionSettingsChangeCard(
               { runnerRegistry: deps.runnerRegistry, chatHistoryManager: deps.chatHistoryManager },
               sessionId,
@@ -349,7 +355,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
                 from: egressModeLabel(previous),
                 to: egressModeLabel(override),
               }],
-              true,
+              sessionSettings(store, sessionId, enforcementActive, liveContained(sessionId)).pendingRestart,
             );
           }
         }

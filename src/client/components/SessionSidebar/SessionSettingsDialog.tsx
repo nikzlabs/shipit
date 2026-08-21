@@ -374,10 +374,10 @@ export function SessionSettingsDialog({
         <p className="px-5 pb-4.5 pt-2 text-[11px] text-(--color-text-tertiary)">
           {isSandbox ? (
             <>
-              Turning a capability off removes the agent&rsquo;s access to it and destroys nothing it
-              already made — containers it built keep running until this session is archived. Network
-              access off still isn&rsquo;t an air-gap: the agent&rsquo;s lifeline (the LLM API and
-              ShipIt) always stays open.
+              Turning a capability off removes the agent&rsquo;s access to it — it deletes no files or
+              images. Restarting the container to apply a change does restart this session&rsquo;s
+              services. Network access off isn&rsquo;t an air-gap either: the agent&rsquo;s lifeline
+              (the LLM API and ShipIt) always stays open.
             </>
           ) : (
             <>

@@ -64,6 +64,30 @@ capabilitiesPendingRestart(started, current) =>
              || (!current.network && started.git !== current.git))
 ```
 
+### Two limitations of that snapshot, both accepted
+
+**After an orchestrator restart the answer is genuinely unknown.** A live
+container is *rediscovered* (`container-discovery.ts`) into a fresh record with
+no `capabilitiesAtStart`, so a Docker/Network change made afterwards is saved and
+shows no pending indicator. This is the same tradeoff `egressContainedAtStart`
+already makes for the same reason, and the alternative is worse: a false
+"pending" that no restart can clear.
+
+The obvious-looking fix — read `SessionContainer.dockerAccess`, which *is*
+repopulated on rediscovery — **does not work, and checking that is what settles
+it.** Rediscovery fills that field from `sessionInfoResolver(sessionId)`, i.e.
+from the session's CURRENT config, not from what the container booted with. It
+would therefore always equal `current.docker` and report no pending change — the
+same hole, but now dressed as knowledge. A recorded snapshot is the only honest
+source, which is also why it cannot collapse into that field in general.
+
+**A capability edit can race container creation.** `opts.session` is captured
+before the `create` await while the egress resolver re-reads SQLite during it, so
+a toggle flipped in the seconds a container is booting can plumb egress from the
+new value and record the old one. Narrow, and the failure is a pending indicator
+offered once too often — never a wrong grant, since every broker reads the
+durable set.
+
 ## The write path
 
 `PUT /api/sessions/:id/capabilities` (`api-routes-session-crud.ts`), with a
@@ -79,6 +103,31 @@ sibling `GET` for the dialog's initial read.
   cleared whenever `git` is off. It was enforced only in `SandboxDialog`'s local
   state, i.e. client-side, on the one payload the server explicitly does not
   trust. It belongs in the coercer both trust boundaries already run through.
+- **The body is merged over the current set, not substituted for it.** A partial
+  payload keeps the grants it does not mention; only an explicit `false` revokes.
+  `normalizeCapabilities` on its own fills every missing flag from the *creation
+  defaults*, so `{ docker: true }` would have turned Network on and revoked
+  GitHub access — an unrelated security setting overwritten by a request that
+  never named it (review finding).
+
+### The revoke has to reach the brokered verbs, not just the token
+
+docs/211 gated one route on the `git` capability: `POST .../git/credential`, the
+one that hands out a token. The reasoning was that a token-less container cannot
+reach GitHub — and it does not hold for the fifteen brokered verbs beside it.
+`gh pr create`, merge, comment, ready, close, reopen and the Actions reads are
+all `containerAccessible` and all run **server-side with the orchestrator's own
+credential**, handing the agent nothing. A container with no token could still
+act on GitHub through them.
+
+That was survivable while the grant was fixed at creation: a sandbox created with
+GitHub access off had a container wired for it from the start, so "what happens
+when it is revoked?" could not be asked. Making the set editable asks it, and
+req 2 answers it — a revoke that leaves those verbs open is not a revoke. So
+`gitBrokerDenied` now guards every container-reachable GitHub route in
+`api-routes-github.ts`, reads included (they reach private repos through the
+user's credential). It is a no-op for every non-sandbox session, because
+`gitCredentialAllowed` denies only a sandbox with `git` explicitly off.
 - Persists via the existing `setCapabilities`, then broadcasts `session_updated`
   over SSE so the sidebar badge and the sandbox banner track it without a reload.
 
@@ -88,8 +137,18 @@ container started with, and the derived `pendingRestart` — mirroring
 answer instead of re-deriving one.
 
 Restart itself reuses `POST /api/sessions/:id/container/restart`, unchanged: the
-dialog's existing "Restart to apply now" button already drives it, is refused
-while a turn is running, and is never automatic (req 3).
+dialog's existing "Restart to apply now" button already drives it and is never
+automatic (req 3). The "not while a turn is running" rule is a **client-side**
+guard on the button, and stays one — `restartContainer` is the rescue path, whose
+whole purpose is killing a wedged agent, so refusing it server-side while
+`running` would break the case it exists for. (Raised in review as a missing
+server-side gate; it is deliberate.)
+
+That endpoint restarts the session's Compose services along with the container.
+That does not conflict with req 6, which is about the **revoke** — the revoke
+writes a grant and runs no teardown. But the dialog must not imply otherwise, so
+its footer says what a restart actually does rather than promising that nothing
+is ever torn down.
 
 A revoke writes the grant and nothing else (req 6). Containers, networks and
 volumes the agent created under a since-revoked Docker grant are labelled to the

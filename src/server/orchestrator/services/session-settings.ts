@@ -130,10 +130,22 @@ export function readSandboxCapabilities(
  * container). See `capabilitiesPendingRestart` for why that split is a fact about
  * the read sites rather than a policy.
  *
- * `input` is untrusted and partial: it goes through `normalizeCapabilities`,
- * which fills every missing flag from the defaults and enforces docs/224's
- * sub-grant rule. Callers that mean "change one toggle" must therefore send the
- * whole set — which the dialog does, because it holds it.
+ * `input` is untrusted and may be partial, so it is merged over the session's
+ * CURRENT set and only then normalized — an omitted or malformed flag keeps the
+ * grant the session already has.
+ *
+ * Merging rather than replacing is the safe direction and the corrected one
+ * (review finding). `normalizeCapabilities` alone substitutes the *creation
+ * defaults* for anything missing, so a `{ docker: true }` body would have turned
+ * Network on and silently revoked GitHub access and the merge sub-grant — an
+ * unrelated security setting overwritten by a request that never mentioned it.
+ * The dialog always sends the whole set, so this changes nothing for it; it
+ * matters for an older client, a direct request, or a frontend defect. An
+ * explicit `false` still revokes: only *absence* means "leave it alone".
+ *
+ * `normalizeCapabilities` still runs last, so docs/224's sub-grant rule
+ * (`dangerousGitHubOps` requires `git`) is enforced on the merged result — a
+ * body that revokes `git` alone also clears the merge grant it depended on.
  */
 export function updateSandboxCapabilities(
   deps: SessionSettingsDeps,
@@ -141,7 +153,8 @@ export function updateSandboxCapabilities(
   input: unknown,
 ): SandboxCapabilitiesView {
   const previous = requireSandbox(deps.sessionManager, sessionId);
-  const next = normalizeCapabilities(input);
+  const patch = input && typeof input === "object" ? input : {};
+  const next = normalizeCapabilities({ ...previous, ...patch });
   const changes = describeCapabilityChanges(previous, next);
 
   const capabilitiesAtStart = deps.containerManager?.capabilitiesAtStart(sessionId) ?? null;

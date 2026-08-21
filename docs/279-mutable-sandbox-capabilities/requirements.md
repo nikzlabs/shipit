@@ -30,9 +30,13 @@ losing its workspace and chat history.
    dialog, and the **sandbox banner**'s granted list is a second entry point
    into that same dialog.
 6. Revoking a capability removes the agent's **access** and destroys nothing it
-   already made: the containers, networks and volumes an agent created under a
-   since-revoked Docker grant keep running until the session is archived, as
-   they do today.
+   already made. The revoke itself writes a grant and runs no teardown; what
+   happens to the containers, networks and volumes an agent created stays
+   governed by the existing container lifecycle, unchanged by this feature.
+   (Amended 2026-08-21 after review: the original wording said they "keep
+   running until the session is archived", which overstates it — the restart
+   this feature offers, and idle container disposal, both already reap them.
+   The requirement is about the revoke, and that is what the wording now says.)
 7. A capability change writes a **persisted chat card** into the session's
    transcript, so the trust boundary moving is visible in the scrollback and
    survives reload.
