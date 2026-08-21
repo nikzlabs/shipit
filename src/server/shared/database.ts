@@ -1409,6 +1409,27 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "muted_at");
   },
+  // planning#324 — the per-session transcript revision counter.
+  //
+  // One row per session that has ever had a transcript mutation, holding a
+  // monotonically increasing count of those mutations. It is the messages-half
+  // of the `/history` ETag: the route can answer a conditional request without
+  // reading the session's messages at all, because every write path in
+  // `ChatHistoryManager` bumps this counter in the same transaction as the
+  // write. A separate table rather than a column on `sessions`: rows with
+  // history but no session row must still count, and an upsert into this table
+  // needs none of `sessions`' other columns.
+  //
+  // Replay-safe under the migration tests' `user_version` rewind, like every
+  // `CREATE TABLE IF NOT EXISTS` before it.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_transcript_revisions (
+        session_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL
+      );
+    `);
+  },
 ];
 
 /**
@@ -1505,6 +1526,7 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM egress_allowlist").run();
       this.db.prepare("DELETE FROM egress_settings").run();
       this.db.prepare("DELETE FROM presentations").run();
+      this.db.prepare("DELETE FROM session_transcript_revisions").run();
     })();
   }
 

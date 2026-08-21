@@ -538,6 +538,8 @@ export class ChatHistoryManager {
   private stmtFinalizeRowById;
   private stmtDeleteRowById;
   private stmtDeleteExpiredSnapshots;
+  private stmtGetTranscriptRevision;
+  private stmtBumpTranscriptRevision;
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
@@ -616,6 +618,42 @@ export class ChatHistoryManager {
     this.stmtFinalizeRowById = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE id = ?");
     this.stmtDeleteRowById = this.db.prepare("DELETE FROM messages WHERE id = ?");
     this.stmtDeleteExpiredSnapshots = this.db.prepare("DELETE FROM rewind_snapshots WHERE expires_at_ms <= ?");
+    // planning#324 — the per-session transcript revision counter. See
+    // `transcriptRevision` / `bumpTranscriptRevision`.
+    this.stmtGetTranscriptRevision = this.db.prepare(
+      "SELECT revision FROM session_transcript_revisions WHERE session_id = ?",
+    );
+    this.stmtBumpTranscriptRevision = this.db.prepare(
+      "INSERT INTO session_transcript_revisions (session_id, revision) VALUES (?, 1) "
+      + "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
+    );
+  }
+
+  /**
+   * planning#324 — move the session's transcript revision counter by one.
+   *
+   * Every method here that can change what `load(sessionId)` returns calls this
+   * at the point of write — inside the surrounding transaction where there is
+   * one, so a rolled-back write never moves the counter. The `/history` route
+   * uses the counter as the messages-half of its ETag, so a missed bump is not
+   * a lost optimization but a stale transcript served forever: bias is toward
+   * bumping on doubt. The only permitted skips are PROVABLE no-ops (a card
+   * patch that matched no row, a truncate that kept everything), and each one
+   * is pinned by the enumeration test in `chat-history.test.ts`.
+   */
+  private bumpTranscriptRevision(sessionId: string): void {
+    this.stmtBumpTranscriptRevision.run(sessionId);
+  }
+
+  /**
+   * planning#324 — how many times this session's persisted transcript has
+   * changed. 0 for a session with no recorded mutations. Read in O(1) from one
+   * row; this is what lets the history route answer a conditional request
+   * without materializing the transcript.
+   */
+  transcriptRevision(sessionId: string): number {
+    const row = this.stmtGetTranscriptRevision.get(sessionId) as { revision: number } | undefined;
+    return row?.revision ?? 0;
   }
 
   private toRow(sessionId: string, msg: PersistedMessage) {
@@ -742,7 +780,9 @@ export class ChatHistoryManager {
 
   /** Append a message to a session's history. */
   append(sessionId: string, message: PersistedMessage): number {
-    return this.stmtInsert.run(this.toRow(sessionId, message)).lastInsertRowid as number;
+    const id = this.stmtInsert.run(this.toRow(sessionId, message)).lastInsertRowid as number;
+    this.bumpTranscriptRevision(sessionId);
+    return id;
   }
 
   /** Load all messages for a session. Returns [] if none exist. */
@@ -781,6 +821,7 @@ export class ChatHistoryManager {
       Object.assign(last, update);
       const row = this.toRow(sessionId, last);
       this.stmtUpdate.run({ ...row, id: lastRow.id });
+      this.bumpTranscriptRevision(sessionId);
       return lastRow.id;
     })();
   }
@@ -809,6 +850,7 @@ export class ChatHistoryManager {
         const msg = this.fromRow(row);
         msg.bugReport = merged;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.bumpTranscriptRevision(sessionId);
         return true;
       }
       return false;
@@ -896,6 +938,9 @@ export class ChatHistoryManager {
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id });
         out.push(marked);
       }
+      // One bump for the batch — the caller marked at least one card to get
+      // here (`pending.length === 0` returned early above).
+      this.bumpTranscriptRevision(sessionId);
       return out;
     })();
   }
@@ -921,6 +966,7 @@ export class ChatHistoryManager {
         const msg = this.fromRow(row);
         msg.releaseCard = card;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.bumpTranscriptRevision(sessionId);
         return;
       }
       this.append(sessionId, { role: "assistant", text: "", releaseCard: card });
@@ -951,6 +997,7 @@ export class ChatHistoryManager {
         const msg = this.fromRow(row);
         msg.egressPrompt = merged;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.bumpTranscriptRevision(sessionId);
         return true;
       }
       return false;
@@ -980,6 +1027,7 @@ export class ChatHistoryManager {
         const msg = this.fromRow(row);
         msg.permissionPrompt = merged;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.bumpTranscriptRevision(sessionId);
         return true;
       }
       return false;
@@ -1014,6 +1062,7 @@ export class ChatHistoryManager {
         const hit = retireBackgroundSubagentResult(msg, completion, built);
         if (!hit) continue;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.bumpTranscriptRevision(sessionId);
         return hit;
       }
       return null;
@@ -1121,6 +1170,7 @@ export class ChatHistoryManager {
         msg.subAgentConsult = { ...card, ...patch };
         if (opts?.finalize) msg.inProgress = false;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.bumpTranscriptRevision(sessionId);
         return true;
       }
       return false;
@@ -1147,6 +1197,7 @@ export class ChatHistoryManager {
         const msg = this.fromRow(row);
         msg.nonTurnFailure = { ...card, ...patch };
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.bumpTranscriptRevision(sessionId);
         return true;
       }
       return false;
@@ -1191,6 +1242,7 @@ export class ChatHistoryManager {
         const msg = this.fromRow(row);
         msg.issueWrite = merged;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.bumpTranscriptRevision(sessionId);
         return true;
       }
       return false;
@@ -1212,6 +1264,7 @@ export class ChatHistoryManager {
       this.db.prepare(
         "DELETE FROM messages WHERE session_id = ? AND id > ?",
       ).run(sessionId, lastKeepId);
+      this.bumpTranscriptRevision(sessionId);
     }
 
     return rows.slice(0, count).map((r) => this.fromRow(r));
@@ -1224,6 +1277,7 @@ export class ChatHistoryManager {
       for (const msg of messages) {
         this.stmtInsert.run(this.toRow(sessionId, msg));
       }
+      this.bumpTranscriptRevision(sessionId);
     })();
   }
 
@@ -1240,6 +1294,7 @@ export class ChatHistoryManager {
                code_rollback_hash = CASE WHEN id = ? THEN ? ELSE code_rollback_hash END
          WHERE session_id = ? AND id >= ?
       `).run(firstId, codeRollbackHash, sessionId, firstId);
+      this.bumpTranscriptRevision(sessionId);
       return targetRows.map((r) => r.id);
     })();
   }
@@ -1253,10 +1308,12 @@ export class ChatHistoryManager {
              code_rollback_hash = NULL
        WHERE session_id = ? AND id IN (${placeholders})
     `).run(sessionId, ...messageIds);
+    this.bumpTranscriptRevision(sessionId);
   }
 
   deleteMessageById(sessionId: string, messageId: number): boolean {
     const result = this.db.prepare("DELETE FROM messages WHERE session_id = ? AND id = ?").run(sessionId, messageId);
+    if (result.changes > 0) this.bumpTranscriptRevision(sessionId);
     return result.changes > 0;
   }
 
@@ -1390,6 +1447,7 @@ export class ChatHistoryManager {
         }
         this.stmtInsert.run(this.toRow(sessionId, msg));
       }
+      this.bumpTranscriptRevision(sessionId);
     })();
   }
 
@@ -1446,7 +1504,10 @@ export class ChatHistoryManager {
 
   /** Remove the inProgress flag from all messages. Called on agent_result. */
   finalizeInProgress(sessionId: string): void {
-    this.stmtFinalizeInProgress.run(sessionId);
+    const result = this.stmtFinalizeInProgress.run(sessionId);
+    // A turn end with no in-progress rows changed nothing the client could
+    // see — bumping anyway would invalidate a transcript that did not move.
+    if (result.changes > 0) this.bumpTranscriptRevision(sessionId);
   }
 
   /**
@@ -1462,12 +1523,14 @@ export class ChatHistoryManager {
     this.db.transaction(() => {
       this.stmtFinalizeConsultRows.run(sessionId);
       this.stmtDeleteInProgress.run(sessionId);
+      this.bumpTranscriptRevision(sessionId);
     })();
   }
 
   /** Delete a session's chat history. */
   delete(sessionId: string): boolean {
     const result = this.stmtDeleteBySession.run(sessionId);
+    if (result.changes > 0) this.bumpTranscriptRevision(sessionId);
     return result.changes > 0;
   }
 

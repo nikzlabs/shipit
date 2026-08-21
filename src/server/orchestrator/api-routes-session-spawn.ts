@@ -41,6 +41,16 @@ import {
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 
+/**
+ * planning#324 — the wire-shape half of the `/history` validator. The
+ * transcript revision counter covers the session's rows; this constant covers
+ * the one input the rows cannot — a change to how `projectMessagesForWire`
+ * renders them. Bump it when the projection's output shape changes without a
+ * data change, so held validators invalidate in one move instead of serving a
+ * stale-shaped transcript until the client's cache ages out.
+ */
+const HISTORY_VALIDATOR_VERSION = 1;
+
 export async function registerSessionSpawnRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -99,8 +109,11 @@ export async function registerSessionSpawnRoutes(
       reply.code(404).send({ error: "Session not found" });
       return;
     }
-    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
 
+    // planning#324 — assemble everything EXCEPT the messages first. Every one
+    // of these sources is small; the messages are the megabytes, and they are
+    // represented in the validator by the session's transcript revision counter
+    // instead, so the 304 decision below never reads them.
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
     if (session.workspaceDir) {
       try {
@@ -131,13 +144,6 @@ export async function registerSessionSpawnRoutes(
     const backgroundTasks = runner?.backgroundWorkDescriptions ?? [];
     const rewindSnapshot = deps.chatHistoryManager.latestRewindSnapshot(request.params.id);
 
-    // Don't reconstruct in-progress messages from runner.chatMessageGroups here.
-    // The DB already has in-progress rows persisted at each agent_tool_result
-    // boundary, which is a consistent snapshot. Including chatMessageGroups
-    // would duplicate content that also arrives via the WS live event stream,
-    // causing messages to appear twice (or be overwritten) on reconnect.
-    // The WS listener picks up where the DB snapshot leaves off.
-
     // Authoritative per-turn / cumulative usage for the context dial. This
     // replaces the old "attach turnUsage to the last message group" hack:
     // the canonical source is `usage_turns`, fetched here so the dial sees
@@ -152,6 +158,49 @@ export async function registerSessionSpawnRoutes(
     // idempotent by presentId, so this and the WS replay can't double-render.
     const presentations = deps.presentStore?.listForClient(request.params.id) ?? [];
 
+    // planning#324 — revalidate without building the transcript.
+    //
+    // planning#375 hashed the full response BODY, and that was the right call
+    // then: the payload is assembled from seven independent sources, and a
+    // stamp that forgets one serves a stale transcript. But hashing the body
+    // means building it — every focus-triggered revalidation loaded every
+    // message row, projected them for the wire, and stringified megabytes only
+    // to throw them away. This validator keeps the seven-sources guarantee with
+    // one substitution: the six non-transcript sources are hashed directly
+    // (they are small), and the messages are represented by the session's
+    // transcript revision counter, which `ChatHistoryManager` bumps inside the
+    // same transaction as EVERY row mutation — appends, in-place card patches,
+    // and full rewrites alike. That coverage is enforced by an enumeration test
+    // (`chat-history.test.ts`), not by convention; `HISTORY_VALIDATOR_VERSION`
+    // covers the one input rows cannot, a change to the wire projection itself.
+    const validator = JSON.stringify({
+      v: HISTORY_VALIDATOR_VERSION,
+      revision: deps.chatHistoryManager.transcriptRevision(request.params.id),
+      commits,
+      agentRunning,
+      backgroundTasks,
+      rewindSnapshot,
+      turnUsage,
+      sessionUsage,
+      cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
+      cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
+      presentations,
+    });
+    const etag = etagFor(validator);
+    // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
+    // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
+    if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
+      reply.code(304).send();
+      return;
+    }
+
+    // Don't reconstruct in-progress messages from runner.chatMessageGroups here.
+    // The DB already has in-progress rows persisted at each agent_tool_result
+    // boundary, which is a consistent snapshot. Including chatMessageGroups
+    // would duplicate content that also arrives via the WS live event stream,
+    // causing messages to appear twice (or be overwritten) on reconnect.
+    // The WS listener picks up where the DB snapshot leaves off.
+    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
     const payload = {
       messages,
       commits,
@@ -164,28 +213,10 @@ export async function registerSessionSpawnRoutes(
       cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
       presentations,
     };
-
-    // planning#375 — revalidate instead of re-download. Switching between
-    // sessions is constant, and this response is megabytes on a long one.
-    //
-    // The tag is the hash of the BODY, not a composed version stamp, and that
-    // is the point: the payload is assembled from seven independent sources
-    // (chat rows, git log, runner state, background tasks, usage, presentations,
-    // rewind snapshot), so a stamp that forgets one serves a stale transcript.
-    // Hashing what is about to be sent cannot be wrong. It saves the transfer
-    // and the client's parse, not the server-side build.
-    const body = JSON.stringify(payload);
-    const etag = etagFor(body);
-    // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
-    // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
-    if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
-      reply.code(304).send();
-      return;
-    }
     // `no-cache` = revalidate every time, never serve blind from the browser's
     // own cache. A stale transcript is worse than a round trip.
     reply.header("etag", etag).header("cache-control", "no-cache").type("application/json");
-    return reply.send(body);
+    return reply.send(JSON.stringify(payload));
   });
 
   // GET /api/sessions/:id/usage — usage stats
