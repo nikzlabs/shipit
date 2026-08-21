@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-176
+issue: planning#178
 description: Fix three coupled agent failures — a masked Claude 401, a stuck "Agent already running" state under live steering, and new sessions silently switching the user's model/agent.
 ---
 
@@ -253,14 +253,56 @@ mapping). Divergence becomes structurally impossible.
   agent (which would otherwise pull the model→agent derivation back), while
   preserving a saved model that already resolves to an authed agent.
 
+- **C5 (done)** — **…and make it reversible.** C4 was right that the redirect
+  must be persisted and wrong to leave it permanent: the two are not the same
+  thing. Eligibility drops a provider account the moment its row leaves
+  `ready`/`authenticating`
+  ([service-routing.ts](../../src/server/orchestrator/service-routing.ts)), and
+  `ClaudeOAuthRefresher` marks a row `auth_failed` on a classification it can
+  get wrong — `markProviderAccountReauthenticated`
+  ([app-lifecycle.ts](../../src/server/orchestrator/app-lifecycle.ts)) exists
+  precisely to undo one. A few unlucky minutes therefore overwrote
+  `vibe-agent-id` + `vibe-model-id` in place, and the user's harness choice was
+  gone for good: the recovery arrives on the same `agent_list` event and nothing
+  consumed it. Nothing on screen ever said the harness had changed, either.
+
+  The displaced selection — harness plus the whole `(service, mode, model)`
+  triple — is now **parked** first (`ParkedHarness` in
+  [local-storage.ts](../../src/client/utils/local-storage.ts)) and handed back by
+  `resolveParkedRestore` as soon as that harness reports runnable again. Three
+  rules keep it from fighting the user: only a *forced* move parks (a deliberate
+  pick clears the park, so choosing Codex while Claude is down means it), only
+  the *first* forced move parks (a second redirect must not overwrite the user's
+  choice with the machine's), and the restore writes through the same
+  `persistHarnessPick` a deliberate pick uses, so the restored harness and model
+  agree. Both directions now raise a toast; the redirect's links to Settings →
+  Services.
+
+  **What is parked is the SEED, and the seed is not `activeAgentId`.** That
+  field is synced to whichever session is being *viewed*
+  ([useConnectionSync.ts](../../src/client/hooks/useConnectionSync.ts)) — it
+  answers "what is this session running on", while the seed answers "what will
+  the next session be created on" (`newSessionAgentId` is that rule). Reading the
+  wrong one got both halves wrong, and cross-backend review caught both: open an
+  old Codex session while the seed is Claude/Opus and let Codex's credential
+  fail, and the redirect is a no-op for the seed yet parked `{codex, Opus}` — a
+  pair the user never chose, which on recovery would replace their Claude seed
+  with Codex's first model. And after a real redirect, every reconnect re-synced
+  `activeAgentId` to the viewed session's dead harness, so the same redirect
+  re-ran and re-toasted for the whole outage. Both the park and the notice are
+  therefore gated on the seed actually moving; the in-memory correction and the
+  persisted writes below that gate still run unconditionally, because that is
+  C4's job and it is idempotent when nothing moved.
+
 ### Key files
-- `src/client/utils/local-storage.ts` — model as source of truth; derive agent (C1)
+- `src/client/utils/local-storage.ts` — model as source of truth; derive agent (C1); the parked selection (C5)
+- `src/client/utils/harness-seed.ts` — the one writer of a harness pick: harness + the model seed that must agree with it (C5, docs/166)
 - `src/client/hooks/useSessionWebSocket.ts` — derive agent query param from saved model (C1)
 - `src/client/hooks/useConnectionSync.ts` — stop mirror feeding new-session agent (C2)
 - `src/client/stores/ui-store.ts` — initial `activeAgentId` derived from model (C1)
 - `src/client/App.tsx` — `handleModelChange` / `handleAgentChange` reconciliation (C1)
-- `src/client/hooks/useServerEvents.ts` — persist the auth-redirect to localStorage (C4)
-- `src/client/utils/resolve-authed-selection.ts` — pure redirect decision, unit-tested (C4)
+- `src/client/hooks/useServerEvents.ts` — persist the auth-redirect to localStorage (C4); park it, restore it, and say so (C5)
+- `src/client/utils/resolve-authed-selection.ts` — pure redirect decision (C4) and its undo, `resolveParkedRestore` (C5); unit-tested
 
 ---
 

@@ -7,8 +7,15 @@ export type DatabaseInstance = BetterSqlite3.Database;
  * Schema migration: a function that receives the database and applies changes.
  * Migrations are run in order by index (0-based). Each migration runs inside
  * a transaction managed by DatabaseManager.
+ *
+ * `fromVersion` is the schema version the database was at when this pass
+ * started, so a migration can tell which of its predecessors ran *alongside* it
+ * versus in some earlier boot. Almost nothing needs it — it exists for the one
+ * case where "did the previous migration just write this data, or did a user
+ * touch it in between?" is the difference between a safe rewrite and clobbering
+ * a deliberate choice (see the color re-spread at the end of the list).
  */
-export type Migration = (db: DatabaseInstance) => void;
+export type Migration = (db: DatabaseInstance, fromVersion: number) => void;
 
 const MIGRATIONS: Migration[] = [
   // Migration 0: initial schema — all tables
@@ -506,7 +513,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN pinned_at TEXT");
   },
-  // docs/193 / SHI-112 — persist sensitive-action permission-request cards (and
+  // docs/193 / planning#114 — persist sensitive-action permission-request cards (and
   // their approved/denied/expired terminal state) so they survive a session
   // switch / full reload. The card arrives off the agent-event stream (the
   // PermissionBroker's `agent_permission_request` broadcast) and is recorded
@@ -607,7 +614,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN ai_review TEXT");
   },
-  // docs/172 / SHI-90 — persist Tier C egress allow-once cards (and their
+  // docs/172 / planning#92 — persist Tier C egress allow-once cards (and their
   // allowed-once / added / denied terminal state) so they survive a session
   // switch / full reload. The card arrives off the agent-event stream (the SNI
   // proxy's deny → orchestrator decision endpoint) and is recorded in-band via
@@ -616,7 +623,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN egress_prompt TEXT");
   },
-  // docs/172 / SHI-90 — durable egress allowlist + containment settings. The
+  // docs/172 / planning#92 — durable egress allowlist + containment settings. The
   // Tier A/B/C enforcement was per-session in-memory (allow-once) and read its
   // allowlist only from env + the live credential store; this makes the user's
   // "Add to allowlist" decisions and the global containment toggle survive a
@@ -674,7 +681,7 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_presentations_session ON presentations(session_id);
     `);
   },
-  // docs/207 / SHI-153 — persist "action checklist" cards so they survive a
+  // docs/207 / planning#155 — persist "action checklist" cards so they survive a
   // session switch / full reload. The card arrives off the agent-event stream
   // (the `propose_actions` tool's HTTP relay) and is recorded in-band via
   // emitChatCard; without this column the inline card renders live but vanishes
@@ -761,7 +768,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
   },
-  // docs/233 (SHI-241) — persist the inline "session report" card so a report
+  // docs/233 (planning#243) — persist the inline "session report" card so a report
   // pushed from a child/sibling survives a session switch / full reload. The
   // card is appended to the RECIPIENT's history from an HTTP relay that fires
   // outside any of the recipient's turns, so without this column it would render
@@ -821,7 +828,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN session_renamed TEXT");
   },
-  // docs/213 / SHI-315 — sticky "auto-commit blocked by the secret scanner"
+  // docs/213 / planning#317 — sticky "auto-commit blocked by the secret scanner"
   // state, as JSON (`SessionSecretBlock`). Persisted rather than kept on the
   // runner because the runner dies with the idle container: the block outlives
   // it (the credential is in the working tree), so the warning has to as well.
@@ -847,9 +854,12 @@ const MIGRATIONS: Migration[] = [
   // Existing rows are backfilled here rather than left NULL: the edge is the
   // whole feature, so a workspace that upgrades into it with every repo
   // uncolored would see nothing at all. Backfill walks rows in the sidebar's own
-  // display order and hands out distinct low indices, which is exactly what
-  // `pickRepoColorIndex` would have produced had the repos been added under this
-  // build — so an upgraded workspace and a fresh one agree.
+  // display order and hands out distinct low indices, matching what
+  // `pickRepoColorIndex` produced at the time.
+  //
+  // Those low indices are adjacent hues, which read as nearly the same color —
+  // the migration below re-spreads them. This one stays as it shipped: a
+  // migration must keep reproducing the same result forever.
   (db) => {
     db.exec("ALTER TABLE repos ADD COLUMN color_index INTEGER");
     const rows = db
@@ -867,7 +877,589 @@ const MIGRATIONS: Migration[] = [
     // later changes — a bigger palette must not retroactively recolor old repos.
     rows.forEach((row, i) => update.run(i % 16, row.url));
   },
+  // docs/254 — re-spread the repo colors the migration above just assigned.
+  //
+  // The palette is a hue wheel and assignment used to walk it in index order, so
+  // the backfill's low indices came out as 0, 1, 2 — three adjacent warm ochres
+  // that read as the same color in the sidebar, which is precisely what the
+  // per-repo edge exists to prevent. Assignment now walks a farthest-point order
+  // (`REPO_COLOR_ASSIGNMENT_ORDER`), and this maps the backfill's output onto
+  // it, so a workspace upgrading into the feature lands where a fresh one would.
+  //
+  // ONLY the backfill's output. A repo color is also something the user can pick
+  // in Project Settings, nothing records which colors were chosen, and no
+  // property of the stored values can tell them apart: a user who swaps two
+  // repos' colors leaves the same contiguous {0..N-1} set the backfill does.
+  // So rather than infer, this runs exclusively when the backfill ran in THIS
+  // pass — `fromVersion <= COLOR_BACKFILL_MIGRATION` — where the values are
+  // provably machine-assigned microseconds earlier and there was no window for
+  // anyone to pick anything.
+  //
+  // The cost is deliberate and was the user's call: a workspace already on a
+  // build that had the backfill keeps its adjacent hues, and re-spreading it
+  // means picking colors by hand. Overwriting a chosen color is worse.
+  (db, fromVersion) => {
+    if (fromVersion > COLOR_BACKFILL_MIGRATION) return;
+    // Inlined for the same reason as above: frozen input, frozen output.
+    const ORDER = [6, 12, 3, 9, 1, 4, 10, 5, 15, 8, 11, 2, 14, 0, 13, 7];
+    const rows = db.prepare("SELECT url, color_index FROM repos").all() as {
+      url: string;
+      color_index: number;
+    }[];
+    const update = db.prepare("UPDATE repos SET color_index = ? WHERE url = ?");
+    // A straight permutation, so it holds for a workspace past 16 repos too:
+    // the backfill wrapped and handed out duplicates there, and remapping every
+    // value preserves that structure exactly while spreading the hues.
+    for (const row of rows) update.run(ORDER[row.color_index], row.url);
+  },
+  // docs/252 phase 1 — the selected model becomes the triple
+  // `(serviceId, billingMode, modelId)`. `model` keeps holding the model id; the
+  // two new columns carry the rest of the identity, which a bare id cannot: the
+  // same id is reachable through a vendor directly and through a gateway, and
+  // through two billing modes of one service, at different prices.
+  //
+  // The other two columns record which `(service, mode)` the pinned credential
+  // route belongs to. A session stores its route as a bare `{kind, id}` and
+  // environment preparation reuses it unconditionally whenever it is present, so
+  // without an owner a later switch to a different service would respawn
+  // correctly — new endpoint, new model — and then authenticate with the
+  // PREVIOUS service's credential. That is not a failed turn; it is a turn
+  // billed to the wrong account.
+  //
+  // ## Backfilling the billing mode
+  //
+  // The third element decides what a user is billed, so it is not guessed:
+  // sessions already persist `provider_route_kind` and `provider_route_id`,
+  // columns that exist for exactly this distinction. **Classify by route id, not
+  // by kind** — the kind describes where a credential is *stored*, not how it is
+  // *billed*, and the two do not line up: `claude-env-oauth` is a `reserved`
+  // route carrying a SUBSCRIPTION token (quota-bearing, ranked above metered
+  // billing). Reading `kind` alone would bill those subscribers as metered and
+  // hide their quota.
+  //
+  //   kind 'account' (any id)              → sub   (a subscription account)
+  //   id 'claude-env-oauth'                → sub   (a subscription token that arrives by env)
+  //   id 'claude-api-key' / 'codex-api-key'→ key   (metered)
+  //   no route at all                      → sub   (the only case with no evidence)
+  //
+  // The last row is the one judgement, and it fails in the safe direction: a
+  // session wrongly on `sub` stops and says so, where one wrongly on `key`
+  // silently spends money. It is also only sound because the chosen mode must
+  // actually OFFER the model — and it does for every id in the frozen migration
+  // lists below. Later catalogue additions can be mode-specific; they are not
+  // pre-feature rows and must not be added to these historical lists.
+  //
+  // ## Why the mapping is inlined
+  //
+  // A migration must keep reproducing the same result forever, so this cannot
+  // read the live catalogue: a model dropped from the catalogue next year must
+  // not change what an old row migrates to. The service is derived from the
+  // pinned agent — which IS the frozen fact, since before this feature a
+  // harness could only reach its own vendor — with a model-id prefix as the
+  // fallback for rows that never pinned one.
+  //
+  // The four `ADD COLUMN`s are guarded rather than bare. Migrations run inside a
+  // transaction so a real database can never be half-applied — the guard is for
+  // the migration TESTS, which rewind `user_version` to re-run a specific step
+  // and therefore re-run every step after it too. Without it, appending any
+  // migration breaks an unrelated older test.
+  (db) => {
+    addSessionColumnIfMissing(db, "service_id");
+    addSessionColumnIfMissing(db, "billing_mode");
+    addSessionColumnIfMissing(db, "provider_route_service_id");
+    addSessionColumnIfMissing(db, "provider_route_billing_mode");
+
+    // **Only rows whose model the catalogue actually offers get a triple.** The
+    // stored triple must either name a real catalogue row or carry no service and
+    // mode at all — a fabricated `(anthropic, sub, sonnet)` is a row
+    // `resolveEndpoint` cannot shape a turn from, which is worse than saying
+    // nothing. A legacy alias (`sonnet`, `opus`) or a retired id
+    // (`claude-opus-4-8`) therefore keeps its `model` and gets NULLs; the next
+    // real selection writes the triple, and req 13's retirement map (phase 8) is
+    // what carries such a session forward.
+    //
+    // The id list is INLINED, like the palette data in the color migrations
+    // above and for the same reason: a migration must keep reproducing the same
+    // result forever, so it cannot follow a catalogue that later drops a model.
+    const ANTHROPIC_MODELS = ["claude-opus-5", "claude-sonnet-5", "haiku", "claude-fable-5"];
+    const OPENAI_MODELS = [
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4",
+      "gpt-5.4-mini", "gpt-5.5", "gpt-5.3-codex", "gpt-5.2",
+      // The retired unsuffixed slug: old rows still hold it, and the catalogue
+      // carries a successor for it, so it is placeable.
+      "gpt-5.6",
+    ];
+    const placeholders = (n: number) => Array(n).fill("?").join(", ");
+    db.prepare(
+      `UPDATE sessions SET service_id = 'anthropic'
+       WHERE model IN (${placeholders(ANTHROPIC_MODELS.length)})`,
+    ).run(...ANTHROPIC_MODELS);
+    db.prepare(
+      `UPDATE sessions SET service_id = 'openai'
+       WHERE model IN (${placeholders(OPENAI_MODELS.length)})`,
+    ).run(...OPENAI_MODELS);
+
+    // Billing mode, by route id — never by route kind. Every model id in the
+    // frozen migration lists above was offered under BOTH modes when this
+    // migration shipped, so whichever mode is chosen here offers the row's
+    // model. Later mode-specific catalogue rows are outside this migration.
+    db.exec(
+      `UPDATE sessions SET billing_mode = 'key'
+       WHERE service_id IS NOT NULL
+         AND provider_route_id IN ('claude-api-key', 'codex-api-key')`,
+    );
+    db.exec(
+      "UPDATE sessions SET billing_mode = 'sub' WHERE service_id IS NOT NULL AND billing_mode IS NULL",
+    );
+
+    // A pinned route belongs to the pair we just derived for it.
+    db.exec(
+      `UPDATE sessions
+       SET provider_route_service_id = service_id,
+           provider_route_billing_mode = billing_mode
+       WHERE provider_route_id IS NOT NULL AND service_id IS NOT NULL`,
+    );
+  },
+  // docs/252 phase 3 (usage-record half) — the per-turn usage row gains its
+  // attribution: which `(service, billing mode)` a turn ran on, and the four
+  // unit rates in force when it did.
+  //
+  // Req 16 splits usage and cost by service and billing mode, and neither can be
+  // reconstructed after the fact: the same model id is reachable through two
+  // services and two modes at different prices, and the session's CURRENT
+  // selection says nothing about what an earlier turn ran on. So the row has to
+  // gain the columns no later than the phase that starts producing such turns.
+  // This lands earlier than that, which satisfies the bound: with no writer yet
+  // supplying the fields, every row is all-null — exactly the `legacy` bucket
+  // req 16 already defines for pre-feature rows.
+  //
+  // The rates are STORED rather than looked up at read time, and that is the
+  // whole point of the four columns: a price edit must not silently restate
+  // every historical "you paid", and a retired model has no live price to look
+  // up at all. Req 16 asks where money *was* spent, which is a fact about the
+  // past. They are stored on every attributed row including the ones whose
+  // `cost_usd` came from the harness, because the two answer different
+  // questions — what was billed, versus what the catalogue said at the time.
+  //
+  // The resolved API style is deliberately NOT stored: req 16 groups by service
+  // and mode, pricing is keyed by service/mode/model, and nothing names a reader
+  // for historical style — it would be a column with no consumer.
+  //
+  // ## Why this rebuilds the table instead of six ALTER TABLEs
+  //
+  // The six are ALL-OR-NOTHING: either every one is present or every one is
+  // null. There is no such thing as a row that knows its service but not what it
+  // was charged, and since historical attribution cannot be reconstructed
+  // afterwards, a half-row is unrecoverable in exactly the way the columns exist
+  // to prevent. That belongs at the write — a CHECK constraint — rather than in
+  // a convention every future caller has to remember, and SQLite cannot add a
+  // table-level CHECK with ALTER TABLE. Hence the standard rebuild: new table,
+  // copy, drop, rename, re-create the index.
+  //
+  // All-null is the `legacy` bucket. It needs no extra discriminator and no
+  // widening of `BillingMode`, which stays "sub" | "key" and describes a
+  // *selection* rather than a row's provenance.
+  //
+  // Guarded like the docs/252 phase-1 migration above, and for the same reason:
+  // the migration TESTS rewind `user_version` to re-run an earlier step and
+  // therefore re-run every step after it too. Without the guard, re-running this
+  // one would rebuild the table a second time and copy only the pre-migration
+  // columns, dropping attribution it had already written.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "service_id")) return;
+    db.exec(`
+      CREATE TABLE usage_turns_new (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        cost_usd REAL NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        created_at TEXT DEFAULT (datetime('now')),
+        cache_read_tokens INTEGER,
+        cache_create_tokens INTEGER,
+        model TEXT,
+        context_tokens INTEGER,
+        sub_agent_id TEXT,
+        cumulative_cost_usd REAL,
+        service_id TEXT,
+        billing_mode TEXT,
+        rate_input REAL,
+        rate_output REAL,
+        rate_cache_read REAL,
+        rate_cache_write REAL,
+        CHECK (
+          (service_id IS NULL AND billing_mode IS NULL
+           AND rate_input IS NULL AND rate_output IS NULL
+           AND rate_cache_read IS NULL AND rate_cache_write IS NULL)
+          OR
+          (service_id IS NOT NULL AND billing_mode IS NOT NULL
+           AND rate_input IS NOT NULL AND rate_output IS NOT NULL
+           AND rate_cache_read IS NOT NULL AND rate_cache_write IS NOT NULL)
+        )
+      );
+      INSERT INTO usage_turns_new (
+        id, session_id, cost_usd, duration_ms, input_tokens, output_tokens,
+        created_at, cache_read_tokens, cache_create_tokens, model,
+        context_tokens, sub_agent_id, cumulative_cost_usd
+      )
+      SELECT
+        id, session_id, cost_usd, duration_ms, input_tokens, output_tokens,
+        created_at, cache_read_tokens, cache_create_tokens, model,
+        context_tokens, sub_agent_id, cumulative_cost_usd
+      FROM usage_turns;
+      DROP TABLE usage_turns;
+      ALTER TABLE usage_turns_new RENAME TO usage_turns;
+      CREATE INDEX IF NOT EXISTS idx_usage_session ON usage_turns(session_id);
+    `);
+  },
+  // docs/252 phase 7 (req 9) — persist the dismissible "non-turn work failed"
+  // notice. Session naming is fire-and-forget and routinely finishes with the
+  // user on another session or no viewer attached at all, so an emit-only card
+  // would be silent in exactly the case the requirement exists to prevent —
+  // and the requirement additionally demands the notice still be findable
+  // after a reload. Dismissal is a patch to this JSON payload, not a delete:
+  // the row is the record that the failure happened. NULL = ordinary
+  // (non-card) message.
+  //
+  // Guarded like the two docs/252 migrations above, and for the same reason:
+  // the migration TESTS rewind `user_version` to re-run an earlier step, which
+  // re-runs every step after it against a table that already has the column.
+  // Every migration appended from here on inherits that requirement.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "non_turn_failure")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN non_turn_failure TEXT");
+  },
+  // docs/260 (req 7) — the free-text note the user attaches when sending a
+  // review. Written once, beside `sent_at`, and read back by "Past reviews" so
+  // the note is still there next to the review it framed. Additive with no
+  // backfill: reviews sent before this feature have no note, and NULL is the
+  // single representation of "sent without one" (the service stores a
+  // whitespace-only note as NULL rather than as an empty string).
+  //
+  // Guarded like the migrations above: the migration tests rewind
+  // `user_version` to re-run an earlier step, which re-runs every step after it
+  // against a table that already has the column.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(file_reviews)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "note")) return;
+    db.exec("ALTER TABLE file_reviews ADD COLUMN note TEXT");
+  },
+  // docs/260 §5 — the credential route a turn actually authenticated with.
+  // The durable "previous turn's account" that req 10's change notice reads,
+  // now that `sessions.provider_route_*` records nothing. Nullable: legacy
+  // rows, env-delivered credentials, and turns that resolved no route all
+  // legitimately have none. Guarded like the steps above for the rewind tests.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "credential_route_id")) return;
+    db.exec("ALTER TABLE usage_turns ADD COLUMN credential_route_id TEXT");
+  },
+  // planning#367 — rebuild the per-turn token counts of Codex turns that were
+  // recorded as the app-server's CUMULATIVE thread rollup.
+  //
+  // `thread/tokenUsage/updated`'s `total` accumulates over the whole thread, and
+  // `thread/resume` restores the accumulator from the rollout file in the
+  // persistent `~/.codex` volume, so it never reset for the life of a session.
+  // Every row therefore holds the running total, and every SUM over the four
+  // token columns over-counted by about `(N+1)/2` for N flat turns — worse for
+  // turns that grow with the conversation. A ~31-turn session read as roughly
+  // 11–18× its real usage, in the context dial, the token series, the "at API
+  // rates" comparison and — on a metered key, where `cost_usd` is derived from
+  // these very columns — in real money.
+  //
+  // The data is fully recoverable BECAUSE each row holds a running total: the
+  // per-turn figure is `row − previous row`, the same `max(0, current −
+  // previous)` rule `UsageManager.record` already applies to a cumulative COST,
+  // over one conversation's rows ordered by `id`.
+  //
+  // The conversation here is the PRIMARY agent's (`sub_agent_id IS NULL`). A
+  // sub-agent consult is spawned with no thread to resume, so its app-server
+  // starts a fresh thread whose rollup already is that run's own — there is
+  // nothing to subtract, and diffing two unrelated consults would invent one.
+  //
+  // ## What is eligible, and why the test is so narrow
+  //
+  // No column says which harness wrote a row, and the two failure modes are not
+  // symmetric: leaving a Codex chain inflated is a visible number a later pass
+  // can still fix, while diffing a chain that was ALREADY per-turn destroys real
+  // billing history. So a chain is rebuilt only when all four hold:
+  //
+  //  1. its session is pinned to Codex (`sessions.agent_id`);
+  //  2. no row took a cost from a harness running total (`cumulative_cost_usd`
+  //     is NULL throughout) — Claude reports `total_cost_usd` on every turn, so
+  //     this alone excludes a Claude chain, and it stays true for a Claude turn
+  //     recorded inside a session later switched to Codex;
+  //  3. no row predates the column that (2) reads. `cumulative_cost_usd` was
+  //     added without a backfill, so on a row older than the first one that
+  //     carries it, NULL says nothing about the harness — and `agent_id` is
+  //     CURRENT session metadata, so a long-lived session whose early turns ran
+  //     Claude can be labelled Codex today. Before that id, the two tests that
+  //     identify a harness both go quiet, so the chain is refused;
+  //  4. the chain is non-decreasing in all four token columns, which is what a
+  //     cumulative rollup looks like and what a per-turn series generally does
+  //     not.
+  //
+  // ## One session is not necessarily one thread
+  //
+  // A rewind clears `agent_session_id` (`sessions.clearAgentSessionId`), so the
+  // next turn starts a FRESH Codex thread whose accumulator restarts — inside
+  // the same ShipIt session, with no thread id anywhere in `usage_turns` to say
+  // where the seam is. When the new thread's first rollup happens to exceed the
+  // old thread's last, the whole run still reads as non-decreasing and (4) would
+  // subtract one thread's total from the other's first turn.
+  //
+  // `context_tokens` is the seam detector, and it is already on the row: it
+  // holds `last.totalTokens`, the real occupancy of the context window, which
+  // grows through a thread and DROPS when one starts over. So a chain is cut
+  // wherever occupancy falls, and each piece is diffed only against itself. A
+  // compaction also drops occupancy without resetting the rollup, so it cuts the
+  // chain too — that leaves one row still holding a running total, which is the
+  // safe direction: an inflated row a later pass can fix, rather than a real
+  // row diffed away.
+  //
+  // Anything else is left alone — including a chain whose accumulator restarted
+  // with no occupancy drop to show for it. Rows with no token telemetry at all
+  // are skipped rather than counted as zeros, so one such turn cannot
+  // disqualify the session around it.
+  //
+  // `cost_usd` is recomputed from the corrected tokens for metered rows only,
+  // with the rates persisted on the row — that is precisely where the inflated
+  // figure became money. A subscription row's `cost_usd` is already 0 and its
+  // "at API rates" comparison is recomputed at read time from these columns, so
+  // fixing the tokens fixes it.
+  //
+  // The added column is provenance AND the re-run guard the steps above use: its
+  // presence ends this migration before the rebuild, so a migration test that
+  // rewinds `user_version` cannot diff an already-diffed chain a second time.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "cumulative_tokens_repaired")) return;
+    db.exec("ALTER TABLE usage_turns ADD COLUMN cumulative_tokens_repaired INTEGER");
+
+    interface RepairRow {
+      id: number;
+      session_id: string;
+      input_tokens: number | null;
+      output_tokens: number | null;
+      cache_read_tokens: number | null;
+      cache_create_tokens: number | null;
+      context_tokens: number | null;
+      cost_usd: number;
+      cumulative_cost_usd: number | null;
+      billing_mode: string | null;
+      rate_input: number | null;
+      rate_output: number | null;
+      rate_cache_read: number | null;
+      rate_cache_write: number | null;
+    }
+    const rows = db
+      .prepare(
+        `SELECT u.id, u.session_id,
+                u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_create_tokens,
+                u.context_tokens, u.cost_usd, u.cumulative_cost_usd, u.billing_mode,
+                u.rate_input, u.rate_output, u.rate_cache_read, u.rate_cache_write
+         FROM usage_turns u
+         JOIN sessions s ON s.id = u.session_id
+         WHERE s.agent_id = 'codex' AND u.sub_agent_id IS NULL
+         ORDER BY u.id`,
+      )
+      .all() as RepairRow[];
+
+    // Test (3): the first row that ever carried a harness running total. Rows
+    // written before it are from an era when the absence of one meant nothing.
+    // Compared by `id` rather than `created_at` — insertion order, immune to how
+    // a timestamp happens to be formatted.
+    const firstCumulative = (db
+      .prepare("SELECT MIN(id) AS id FROM usage_turns WHERE cumulative_cost_usd IS NOT NULL")
+      .get() as { id: number | null }).id;
+
+    const chains = new Map<string, RepairRow[]>();
+    for (const row of rows) {
+      // No telemetry at all is not a zero-token turn — it carries no rollup, so
+      // it takes no part in the sequence and is left untouched.
+      const reported = [row.input_tokens, row.output_tokens, row.cache_read_tokens, row.cache_create_tokens];
+      if (reported.every((v) => v === null)) continue;
+      const chain = chains.get(row.session_id);
+      if (chain) chain.push(row);
+      else chains.set(row.session_id, [row]);
+    }
+
+    const classes = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_create_tokens"] as const;
+    const update = db.prepare(
+      `UPDATE usage_turns
+       SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_create_tokens = ?,
+           cost_usd = ?, cumulative_tokens_repaired = 1
+       WHERE id = ?`,
+    );
+    for (const chain of chains.values()) {
+      if (chain.length < 2) continue;
+      if (chain.some((row) => row.cumulative_cost_usd !== null)) continue;
+      if (firstCumulative !== null && chain.some((row) => row.id < firstCumulative)) continue;
+
+      // Cut at every drop in context occupancy — a thread that started over, or
+      // a compaction. Both end the run of one accumulator.
+      const segments: RepairRow[][] = [];
+      for (const row of chain) {
+        const open = segments[segments.length - 1];
+        const previous = open?.[open.length - 1];
+        const continues = previous !== undefined
+          && !(previous.context_tokens !== null && row.context_tokens !== null
+            && row.context_tokens < previous.context_tokens);
+        if (continues) open.push(row);
+        else segments.push([row]);
+      }
+
+      for (const segment of segments) {
+        if (segment.length < 2) continue;
+        const cumulative = segment.every((row, i) =>
+          i === 0 || classes.every((c) => (row[c] ?? 0) >= (segment[i - 1][c] ?? 0)));
+        if (!cumulative) continue;
+
+        for (const [i, row] of segment.entries()) {
+          const previous = i === 0 ? null : segment[i - 1];
+          const perTurn = Object.fromEntries(
+            classes.map((c) => [c, row[c] === null ? null : Math.max(0, row[c] - (previous?.[c] ?? 0))]),
+          ) as Record<(typeof classes)[number], number | null>;
+          // Money only where the inflated tokens became money: a metered row's
+          // cost was derived from them (`costFromRates` — per-million rates).
+          const metered = row.billing_mode === "key" ? row.rate_input : null;
+          const costUsd = metered !== null
+            ? ((perTurn.input_tokens ?? 0) * metered
+              + (perTurn.output_tokens ?? 0) * (row.rate_output ?? 0)
+              + (perTurn.cache_read_tokens ?? 0) * (row.rate_cache_read ?? 0)
+              + (perTurn.cache_create_tokens ?? 0) * (row.rate_cache_write ?? 0)) / 1_000_000
+            : row.cost_usd;
+          update.run(
+            perTurn.input_tokens, perTurn.output_tokens,
+            perTurn.cache_read_tokens, perTurn.cache_create_tokens,
+            costUsd, row.id,
+          );
+        }
+      }
+    }
+  },
+  // docs/264-agent-roles req 14 — provenance for a child session started from a role:
+  // WHICH role started it. NULL for every existing row and for every session
+  // started any other way, which is the correct reading — nothing to backfill,
+  // because a session that predates roles was not started from one.
+  //
+  // A snapshot, not a reference: no foreign key, and nothing rewrites it when the
+  // role is renamed or deleted. That is the design (req 11), not an omission —
+  // the role decides what the child starts as and stops being involved.
+  //
+  // Guarded, like the docs/252 columns: the migration tests rewind
+  // `user_version` and replay the tail, so an unguarded `ALTER` fails there on a
+  // column that is already present.
+  (db) => {
+    addSessionColumnIfMissing(db, "origin_role_name");
+  },
+  // docs/270 — the per-session uid allocation ledger.
+  //
+  // One row, holding only the NEXT uid to hand out. It is deliberately not a
+  // column on `sessions`: the record of a session's identity is the OWNER of its
+  // session directory (`shared/session-identity.ts` explains why that has to be
+  // somewhere the session cannot write), and a second copy on the row would be a
+  // thing that can drift from it. This table's only job is to never hand out the
+  // same number twice, including across the deletion of the session that held it
+  // — which a `MAX(uid) + 1` over `sessions` could not promise, because deleting
+  // the highest row would lower the maximum and re-issue its uid.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_uid_allocation (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        next_uid INTEGER NOT NULL
+      );
+    `);
+  },
+  // nikzlabs/shipit#2350 — `consumeUnreportedBugOutcomes` runs on EVERY user turn to
+  // ask "did the user resolve a bug-report card since last time?", and for
+  // almost every turn of almost every session the answer is no. A partial index
+  // makes that answer O(1) instead of a scan over the session's whole message
+  // history, which grows without bound. Partial (`WHERE bug_report IS NOT NULL`)
+  // so it indexes only the handful of rows that are cards, not every message.
+  (db) => {
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_messages_bug_report ON messages(session_id) WHERE bug_report IS NOT NULL",
+    );
+  },
+  // docs/272-user-selectable-roles — the role currently IN FORCE on a session, which is a
+  // different fact from `origin_role_name` beside it and cannot share its column.
+  //
+  // `origin_role_name` is write-once provenance: what the session was started as
+  // (req 6). This one is what the composer NAMES, and it is cleared the moment
+  // the user moves the harness, model or reasoning (req 15) — because the role
+  // stopped being true. One column could serve only one of the two: it would
+  // either keep naming a role the session no longer runs as, or lose the
+  // provenance the first time somebody changed the model.
+  //
+  // NULL for every existing row, which is the correct reading rather than a
+  // backfill gap: no session that predates this feature had a role in force.
+  (db) => {
+    addSessionColumnIfMissing(db, "role_name");
+  },
+  // docs/277-session-mute — the instant the user muted the session; NULL = not
+  // muted. Presence is the flag (the value only answers "since when"), and the
+  // column is cleared at the start of the session's next turn (req 4). Stored
+  // on the session rather than in the browser so one device's mute is every
+  // device's mute (req 7), and so the turn that clears it — which may have been
+  // started with no browser attached — can reach it.
+  (db) => {
+    addSessionColumnIfMissing(db, "muted_at");
+  },
 ];
+
+/**
+ * Add a nullable TEXT column to `sessions` only if it is absent.
+ *
+ * See the docs/252 migration below for why the guard exists: it is for the
+ * migration tests that rewind `user_version`, not for production, where the
+ * migration transaction already rules out a half-applied step.
+ */
+function addSessionColumnIfMissing(db: DatabaseInstance, column: string): void {
+  const columns = db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+  if (columns.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+}
+
+/**
+ * 0-based index of the repo-color backfill in `MIGRATIONS`, so the re-spread
+ * immediately after it can tell whether it ran in the same pass.
+ *
+ * Frozen, like the palette data those two migrations inline. Migrations are
+ * append-only — `user_version` counts them, so inserting one renumbers every
+ * database in existence — which is what makes a literal index safe here.
+ *
+ * Exported so the migration test can rewind to this exact step rather than
+ * counting back from the tip: counting from the tip silently re-targets the
+ * wrong migrations the moment one is appended.
+ */
+export const COLOR_BACKFILL_MIGRATION = 66;
+
+/**
+ * 0-based index of the docs/252 phase-1 selection-triple backfill in
+ * `MIGRATIONS`. Frozen and exported for the same reason as the constant above:
+ * its test must rewind to *this* step, and counting back from the tip silently
+ * re-targets a different migration the moment one is appended — which is
+ * exactly what appending the usage-attribution step below would have done.
+ */
+export const MODEL_SELECTION_MIGRATION = 68;
+
+/**
+ * 0-based index of the docs/252 phase-3 usage-attribution rebuild in
+ * `MIGRATIONS`. Frozen and exported for its own migration test, per the note on
+ * `MODEL_SELECTION_MIGRATION`.
+ */
+export const USAGE_ATTRIBUTION_MIGRATION = 69;
+
+/**
+ * 0-based index of the planning#367 Codex cumulative-rollup repair in
+ * `MIGRATIONS`. Frozen and exported for its own migration test, per the note on
+ * `MODEL_SELECTION_MIGRATION`.
+ */
+export const CODEX_ROLLUP_REPAIR_MIGRATION = 73;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;
@@ -889,7 +1481,7 @@ export class DatabaseManager {
 
     const migrate = this.db.transaction(() => {
       for (let i = currentVersion; i < MIGRATIONS.length; i++) {
-        MIGRATIONS[i](this.db);
+        MIGRATIONS[i](this.db, currentVersion);
       }
       this.db.pragma(`user_version = ${MIGRATIONS.length}`);
     });

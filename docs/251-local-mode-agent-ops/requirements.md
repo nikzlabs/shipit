@@ -44,7 +44,7 @@ a requirement. Requirements 5 and 6 are **preservation** requirements — they
 assert that existing guarantees survive, and are not new asks. They are written
 down because the obvious implementation (mounting `/agent-ops` on the
 orchestrator keyed by a session id in the request path, which is the sketch in
-SHI-303) would break requirement 5.
+planning#305) would break requirement 5.
 
 ## Open questions
 
@@ -59,5 +59,5 @@ _(none)_
   ServiceManager and local mode runs no Compose stacks; `shipit agent run`
   spawns a sub-agent). **Nik: `gh` only.** So this feature installs the `gh`
   shim and nothing else; the `shipit` shim stays absent and remains tracked by
-  SHI-303 along with the worker-served tools. Requirements 1–3 are unchanged —
+  planning#305 along with the worker-served tools. Requirements 1–3 are unchanged —
   they already named only `gh`.

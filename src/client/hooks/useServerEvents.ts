@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: EventSource (SSE) connection lifecycle with cleanup (external system sync)
 import { useEffect, useRef, useState } from "react";
+import type { LoginIntegrationId } from "../../server/shared/catalogue/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -8,11 +9,21 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId, EgressSettings } from "../../server/shared/types.js";
+import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
+import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
-import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
-import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
-import { useEventListeners } from "./useEventListener.js";
+import {
+  getParkedHarness,
+  getSavedModelId,
+  getSavedModelSelection,
+  saveAgentId,
+  saveModelId,
+  saveParkedHarness,
+} from "../utils/local-storage.js";
+import { persistHarnessPick } from "../utils/harness-seed.js";
+import { newSessionAgentId } from "../utils/new-session-agent.js";
+import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-authed-selection.js";
+import { useForegroundSignal } from "./useForegroundSignal.js";
 
 let reloadingForClientUpdate = false;
 
@@ -24,13 +35,80 @@ function backoffMs(attempt: number): number {
   return Math.min(1000 * Math.pow(2, attempt), 30_000);
 }
 
+
 /**
- * One window reactivation fires several listeners within a few milliseconds
- * (`visibilitychange` + `focus`, plus `pageshow` on a bfcache restore). Treat
- * them as one signal so a resume opens ONE stream, not three — same constant and
- * reason as `useWebSocket`'s `handleForeground`.
+ * Per-login sign-in copy.
+ *
+ * This is the table that replaced eight `agentId === "claude" | "codex"`
+ * branches. Those branches existed almost entirely for WORDING — the state
+ * transitions on either side of them were identical — plus one flow-specific
+ * toast. Keeping the strings as data preserves each flow's exact copy while the
+ * logic stays single-path, and adding a third login is a row here rather than
+ * another `else if`.
+ *
+ * An **absent** entry (or an absent `expiry`) is meaningful, not an oversight:
+ * it means that flow says nothing extra and shows no re-sign-in toast, which is
+ * how a flow with no diagnostics behaves today. The table is the gate.
  */
-const FOREGROUND_COALESCE_MS = 1000;
+const AUTH_COPY: Partial<Record<LoginIntegrationId, {
+  /** Shown in the diagnostics stream once the challenge arrives. */
+  pendingDiagnostic?: string;
+  /** Diagnostics line on success. */
+  completed?: string;
+  /** Fallback per failure reason, when the server sends no message. */
+  failure?: Partial<Record<string, string>>;
+  /** Generic fallback when `failure` has no entry for the reason. */
+  failureDefault?: string;
+  /**
+   * Toast copy for a credential that expired or vanished underneath the user.
+   * Only a flow that can report these reasons declares them.
+   */
+  expiry?: Partial<Record<"revoked" | "missing_credentials", string>>;
+}>> = {
+  "anthropic-oauth": {
+    pendingDiagnostic:
+      "Authentication link received. Paste the authorization code after signing in.",
+    completed: "Claude sign-in completed.",
+    failure: {
+      missing_credentials: "Claude credentials are missing. Sign in again.",
+    },
+    failureDefault: "Claude sign-in failed. You can retry or copy the diagnostic details.",
+    expiry: {
+      revoked: "Claude authentication expired. Sign in again.",
+      missing_credentials: "Claude credentials are missing. Sign in again.",
+    },
+  },
+  "openai-chatgpt": {
+    failure: {
+      timeout: "Sign-in timed out. Try again.",
+      denied: "Sign-in was denied.",
+    },
+    failureDefault: "Sign-in failed. Try again.",
+  },
+  // planning#435 — the same device-code shape as ChatGPT's, so the same copy.
+  // No `pendingDiagnostic`: there is nothing extra to tell the user beyond the
+  // URL and code the card already shows, which is exactly the case the table's
+  // partiality exists for.
+  "xai-oauth": {
+    failure: {
+      timeout: "Sign-in timed out. Try again.",
+      denied: "Sign-in was denied.",
+    },
+    failureDefault: "Sign-in failed. Try again.",
+  },
+};
+
+/** The failure string for a reason, honouring the flow's own wording. */
+function failureCopy(
+  copy: (typeof AUTH_COPY)[LoginIntegrationId],
+  reason: string | undefined,
+): string {
+  return (
+    (reason ? copy?.failure?.[reason] : undefined)
+    ?? copy?.failureDefault
+    ?? "Sign-in failed. Try again."
+  );
+}
 
 /**
  * SSE hook for global push events — session list, repo updates, auth, activity dots.
@@ -45,11 +123,12 @@ const FOREGROUND_COALESCE_MS = 1000;
  * snapshot (PR statuses, sessions, repos — see `/api/events` initial-state
  * writes) so the UI catches up immediately.
  *
- * That foreground signal must be the SAME set the WebSocket listens for —
- * `visibilitychange` + `pageshow` + `focus` + `online` — not `visibilitychange`
- * alone. A standalone-PWA app-switch or a bfcache restore surfaces as
- * `pageshow`/`focus` with `visibilitychange` either absent or already delivered
- * while the page was frozen, so a visibility-only trigger misses the resume the
+ * That foreground signal must be the SAME set the WebSocket listens for, on the
+ * same terms — hence the shared `useForegroundSignal`, not a second hand-rolled
+ * listener set — and NOT `visibilitychange` alone. A standalone-PWA app-switch
+ * or a bfcache restore surfaces as `pageshow`/`focus` with `visibilitychange`
+ * either absent or already delivered while the page was frozen, so a
+ * visibility-only trigger misses the resume the
  * WebSocket recovers from. That asymmetry is directly visible in the product:
  * the chat reconnects and looks healthy while every *cross-session* surface fed
  * only by SSE — the sidebar's PR / CI indicators above all, since
@@ -74,7 +153,6 @@ export function useServerEvents(): void {
   const [connectAttempt, setConnectAttempt] = useState(0);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastForegroundReconnectRef = useRef(0);
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
@@ -157,6 +235,7 @@ export function useServerEvents(): void {
         backgroundTaskSessionIds?: string[];
         sessionId?: string;
         awaitingPermission?: boolean;
+        backgroundTasks?: string[];
       };
       const store = useSessionStore.getState();
       if (Array.isArray(data.awaitingPermissionSessionIds)) {
@@ -175,11 +254,36 @@ export function useServerEvents(): void {
         );
         return;
       }
-      if (data.sessionId) {
-        const sid = data.sessionId;
+      if (!data.sessionId) return;
+      const sid = data.sessionId;
+      // Each live form carries exactly one axis, so each is applied only when
+      // its own field is present. Reacting to a missing `awaitingPermission` as
+      // `false` would let a background-task transition silently clear an
+      // outstanding permission prompt's sidebar signal.
+      if (data.awaitingPermission !== undefined) {
         store.setAwaitingPermissionSessions((prev) => {
           const next = new Set(prev);
           if (data.awaitingPermission) next.add(sid);
+          else next.delete(sid);
+          return next;
+        });
+      }
+      // The live counterpart of the snapshot's `backgroundTaskSessionIds`
+      // (docs/235 §5b). Without it the sidebar only ever learned about a
+      // session's background work if that work was already outstanding when the
+      // SSE connected: a `shipit agent run` consult backgrounded *after* connect
+      // reached only the viewers attached to that session's WebSocket, so the
+      // session read as idle in the sidebar until it was opened — which is what
+      // delivered the WS `background_tasks` and lit the dot.
+      //
+      // An empty list means drained, so the entry is removed. Descriptions ride
+      // along (unlike the ids-only snapshot) so the chat status line can name
+      // the task on a switch rather than falling back to its unnamed label.
+      if (data.backgroundTasks) {
+        const descriptions = data.backgroundTasks;
+        store.setBackgroundTaskSessions((prev) => {
+          const next = new Map(prev);
+          if (descriptions.length > 0) next.set(sid, descriptions);
           else next.delete(sid);
           return next;
         });
@@ -201,184 +305,157 @@ export function useServerEvents(): void {
       useRepoStore.getState().updateRepoWarmSession(data.url, data.sessionId);
     });
 
-    // ---- Unified per-agent auth events (docs/155 Phase 2b) ----
-    // The orchestrator broadcasts one event family for every backend's
+    // ---- Unified auth events (docs/155 Phase 2b) ----
+    // The orchestrator broadcasts one event family for every LOGIN FLOW's
     // sign-in lifecycle: `agent_auth_pending` (sign-in card content arriving),
     // `agent_auth_complete` (success), `agent_auth_failed` (failure or
     // revocation). The legacy event names (`auth_required`, `auth_complete`,
-    // `codex_auth_*`) are gone; adding a new backend is one variant added to
-    // the discriminated `details.kind` union, not three new listeners here.
-    // docs/155: the three SSE auth handlers below dispatch on the runtime
-    // event's `agentId` + `details.kind` to shape each backend's payload into
-    // the account-keyed challenge slice. That's discriminated-union narrowing
-    // of received wire data, not abstraction-leaking dispatch — adding a
-    // backend means adding one more `else if` here for its payload shape. The
-    // disables sit inline so a new backend wires its narrowing without
-    // re-tripping the leak guard.
+    // `codex_auth_*`) are gone. A new BACKEND may need nothing here at all — it
+    // can sign in through a flow that already exists; a new FLOW is one variant
+    // added to the discriminated `details.kind` union, not three new listeners.
+    // The handlers below no longer dispatch on WHICH backend sent the event.
+    // They branch only on `details.kind` (the one thing the payloads actually
+    // differ by) and read per-flow wording from `AUTH_COPY`. The eight
+    // `agentId === "claude" | "codex"` branches this replaced were almost
+    // entirely about copy, not control flow — so a new backend is a row in that
+    // table plus, at most, one new `details.kind` variant.
     //
-    // docs/150 req 16/19: every subscription sign-in is account-scoped, so an
+    // docs/150-multiple-provider-subscriptions req 16/19: every subscription sign-in is account-scoped, so an
     // event without `accountId` has no home and is ignored rather than
     // falling back to a provider-wide slot. The provider-wide slots
     // (`sessionStore.authUrl`, `settingsStore.codexDeviceAuth*`) are gone with
-    // the singleton endpoints that fed them. Claude's *diagnostics* are still
-    // provider-wide and are updated regardless — they're a debug buffer, not a
-    // challenge.
+    // the singleton endpoints that fed them. Diagnostics are per account too,
+    // and a flow that records none simply no-ops rather than being gated.
     es.addEventListener("agent_auth_pending", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
-        agentId: AgentId;
+        loginId: LoginIntegrationId;
         accountId?: string;
         details:
           | { kind: "code-paste-url"; verificationUri: string }
           | { kind: "device-code"; verificationUri: string; userCode: string; expiresInSec: number };
       };
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      if (data.agentId === "claude" && data.details.kind === "code-paste-url") {
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, {
-            provider: "claude",
-            accountId: data.accountId,
-            verificationUri: data.details.verificationUri,
-          });
-          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
-        }
-        // docs/150 — advance only THIS account's diagnostics, and only if it
-        // already has an attempt in flight to advance.
-        const accountId = data.accountId;
-        const currentAttemptId = accountId
-          ? useSettingsStore.getState().claudeAuthDiagnostics[accountId]?.attemptId
-          : undefined;
-        if (accountId && currentAttemptId) {
-          useSettingsStore.getState().setClaudeAuthProgress(accountId, {
-            attemptId: currentAttemptId,
-            phase: "waiting_for_code",
-            message: "Authentication link received. Paste the authorization code after signing in.",
-          });
-        }
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      } else if (data.agentId === "codex" && data.details.kind === "device-code") {
-        // docs/150 req 16 — an account-scoped Codex sign-in belongs on its own
-        // row. Before this, `accountId` was dropped here and every device code
-        // landed in the provider-wide slot, so connecting a second Codex
-        // account rendered its challenge in the singleton card instead of the
-        // row that started it.
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, {
-            provider: "codex",
-            accountId: data.accountId,
-            verificationUri: data.details.verificationUri,
-            userCode: data.details.userCode,
-          });
-          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
-        }
+      // docs/150-multiple-provider-subscriptions req 16 — a challenge belongs on the row that started it, so an
+      // unscoped payload has nowhere to land and is dropped.
+      if (!data.accountId) return;
+      useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, {
+        loginId: data.loginId,
+        accountId: data.accountId,
+        verificationUri: data.details.verificationUri,
+        // Present only on the device-code shape; the paste-code flow has no
+        // second factor to show. Discriminated by `details.kind`, which is what
+        // the shapes actually differ by — the backend's identity never was.
+        ...(data.details.kind === "device-code" ? { userCode: data.details.userCode } : {}),
+      });
+      useSettingsStore.getState().setProviderAccountAuthError(data.loginId, data.accountId, null);
+      // Advance diagnostics only where an attempt is already in flight. A flow
+      // that reports no diagnostics never records one, so this is a no-op for it
+      // rather than a case to branch on.
+      const currentAttemptId =
+        useSettingsStore.getState().claudeAuthDiagnostics[data.accountId]?.attemptId;
+      if (currentAttemptId) {
+        useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
+          attemptId: currentAttemptId,
+          phase: "waiting_for_code",
+          message: AUTH_COPY[data.loginId]?.pendingDiagnostic
+            ?? "Authentication link received.",
+        });
       }
     });
 
     es.addEventListener("agent_auth_complete", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { agentId: AgentId; accountId?: string };
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      if (data.agentId === "claude") {
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
-          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
-        }
-        if (data.accountId) {
-          useSettingsStore.getState()
-            .finishClaudeAuthDiagnostics(data.accountId, "complete", "Claude sign-in completed.");
-        }
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      } else if (data.agentId === "codex") {
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
-          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
-        }
-      }
+      const data = JSON.parse(e.data as string) as {
+        loginId: LoginIntegrationId;
+        accountId?: string;
+      };
+      if (!data.accountId) return;
+      useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, null);
+      useSettingsStore.getState().setProviderAccountAuthError(data.loginId, data.accountId, null);
+      // No-ops when the flow recorded no diagnostics (`finishClaudeAuthDiagnostics`
+      // returns early on an account with no attempt), so it needs no gate.
+      useSettingsStore.getState().finishClaudeAuthDiagnostics(
+        data.accountId,
+        "complete",
+        AUTH_COPY[data.loginId]?.completed,
+      );
     });
 
     es.addEventListener("agent_auth_failed", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
-        agentId: AgentId;
+        loginId: LoginIntegrationId;
         accountId?: string;
-        reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
+        reason?: "timeout" | "denied" | "error" | "revoked" | "missing_credentials" | "duplicate";
         message?: string;
       };
-      // docs/150 req 22 — a refused duplicate connect usually DELETES the row
-      // it names, so the per-row error below has nowhere to land. Toast it
-      // first, for every provider, and skip the retry-flavoured copy: retrying
-      // this sign-in would only be refused again.
+      const copy = AUTH_COPY[data.loginId];
+      // docs/150-multiple-provider-subscriptions req 22 — a refused duplicate connect usually DELETES the row it
+      // names, so the per-row error below has nowhere to land. Skip the
+      // retry-flavoured copy too: retrying would only be refused again.
+      //
+      // docs/257 req 5 — card-scoped rather than row-scoped for that same
+      // reason: the row is gone.
       if (data.reason === "duplicate") {
-        useUiStore.getState().setToast({
+        useSettingsStore.getState().setProviderAccountNotice(data.loginId, {
+          kind: "error",
           message: data.message ?? "That account is already connected.",
-          duration: 12000,
         });
         if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth(data.agentId, data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, null);
         }
         return;
       }
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      if (data.agentId === "claude") {
-        // Clear the URL so the sign-in card flips back to "Sign in" — also
-        // the path the legacy `auth_required {}` broadcast took for
-        // refresher-revoked accounts.
-        const claudeFailure = data.message
-          ?? "Claude sign-in failed. You can retry or copy the diagnostic details.";
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
-          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, claudeFailure);
-          useSettingsStore.getState().finishClaudeAuthDiagnostics(data.accountId, "failed", claudeFailure);
-        }
-        if (data.reason === "revoked") {
-          useUiStore.getState().setToast({
-            message: data.message ?? "Claude authentication expired. Sign in again.",
-            action: {
-              label: "Sign in",
-              onClick: () => {
-                useUiStore.getState().setSettingsTab("agent-claude");
-                useUiStore.getState().setSettingsOpen(true);
-              },
+      const failure = data.message ?? failureCopy(copy, data.reason);
+      if (data.accountId) {
+        // Clearing the challenge flips the sign-in card back to "Sign in" —
+        // also the path a refresher-revoked account takes.
+        useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, null);
+        useSettingsStore.getState().setProviderAccountAuthError(data.loginId, data.accountId, failure);
+        useSettingsStore.getState().finishClaudeAuthDiagnostics(data.accountId, "failed", failure);
+      }
+      // The re-sign-in toast is per login flow, because only a flow that can
+      // report a revoked credential has anywhere to send the user back to.
+      // Absent copy means no toast — the table is the gate, not an `if`.
+      const expiryToast = data.reason === "revoked" || data.reason === "missing_credentials"
+        ? copy?.expiry?.[data.reason]
+        : undefined;
+      if (expiryToast) {
+        useUiStore.getState().setToast({
+          message: data.message ?? expiryToast,
+          action: {
+            label: "Sign in",
+            onClick: () => {
+              useUiStore.getState().setSettingsTab("services");
+              useUiStore.getState().setSettingsOpen(true);
             },
-            duration: 12000,
-          });
-        }
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      } else if (data.agentId === "codex") {
-        const fallback = data.reason === "timeout"
-          ? "Sign-in timed out. Try again."
-          : data.reason === "denied"
-            ? "Sign-in was denied."
-            : "Sign-in failed. Try again.";
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
-          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, data.message ?? fallback);
-        }
+          },
+          duration: 12000,
+        });
       }
     });
 
     es.addEventListener("agent_auth_progress", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
-        agentId: AgentId;
+        loginId: LoginIntegrationId;
         accountId?: string;
         attemptId: string;
         phase: "starting" | "waiting_for_cli" | "skipping_setup" | "waiting_for_url" | "waiting_for_code" | "checking_credentials" | "complete" | "failed";
         message: string;
         elapsedMs?: number;
       };
-      // docs/150 — diagnostics are per account. An unscoped payload has no row
-      // that could render it, so it is dropped rather than pooled provider-wide.
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
-      if (data.agentId === "claude" && data.accountId) {
-        useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
-          attemptId: data.attemptId,
-          phase: data.phase,
-          message: data.message,
-          ...(data.elapsedMs !== undefined ? { elapsedMs: data.elapsedMs } : {}),
-        });
-      }
+      // docs/150 — diagnostics are per account; an unscoped payload has no row
+      // that could render it. Only a flow with diagnostics emits this event at
+      // all, so there is nothing else to filter on.
+      if (!data.accountId) return;
+      useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
+        attemptId: data.attemptId,
+        phase: data.phase,
+        message: data.message,
+        ...(data.elapsedMs !== undefined ? { elapsedMs: data.elapsedMs } : {}),
+      });
     });
 
     es.addEventListener("agent_auth_log", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
-        agentId: AgentId;
+        loginId: LoginIntegrationId;
         accountId?: string;
         attemptId: string;
         timestamp: string;
@@ -387,16 +464,14 @@ export function useServerEvents(): void {
         message: string;
       };
       // See `agent_auth_progress` above for why an unscoped payload is dropped.
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
-      if (data.agentId === "claude" && data.accountId) {
-        useSettingsStore.getState().appendClaudeAuthLog(data.accountId, {
-          attemptId: data.attemptId,
-          timestamp: data.timestamp,
-          level: data.level,
-          source: data.source,
-          message: data.message,
-        });
-      }
+      if (!data.accountId) return;
+      useSettingsStore.getState().appendClaudeAuthLog(data.accountId, {
+        attemptId: data.attemptId,
+        timestamp: data.timestamp,
+        level: data.level,
+        source: data.source,
+        message: data.message,
+      });
     });
 
     // The orchestrator pushes `github_status` whenever the stored GitHub
@@ -440,7 +515,7 @@ export function useServerEvents(): void {
           id: string;
           name: string;
           installed: boolean;
-          authConfigured: boolean;
+          hasRunnableModels: boolean;
           models?: string[];
           // 125 — every adapter now publishes a supportsReview flag, but old
           // server builds may omit it; default to false so a stale wire
@@ -457,7 +532,70 @@ export function useServerEvents(): void {
           reasoning?: { label: string; options: { value: string; label: string }[] };
           skillInvocationPrefix?: string;
         }[];
+        // docs/257 req 8 — the install-level "can run a turn" signal, computed
+        // server-side. Optional because an older server omits it; in that case
+        // the store keeps whatever bootstrap gave it rather than being clobbered
+        // with `false`, which would disable the composer on a runnable install.
+        canRunTurns?: boolean;
+        // docs/257 req 9 — the install-level onboarding stamp, written the
+        // moment the server first sees a runnable install. Absent means "no
+        // news" (not stamped yet, or an older server), never "cleared" — the
+        // server never clears it, so ignoring an absent field cannot strand a
+        // stale value.
+        harnessOnboardingCompletedAt?: string;
+        // docs/261 phase 3 (req 8) — both reviewer slots, re-resolved. This is
+        // the whole reason the reviewer resolution rides `agent_list`: the event
+        // fires on every credential and harness-availability change, which is
+        // exactly when an auto-configured reviewer re-derives. Absent means an
+        // older server, so the store keeps what bootstrap gave it.
+        reviewers?: ReviewerSlotView[];
+        /*
+          docs/264 phase 2 — the roles ride this event for the same reason the
+          reviewer slots do: a role reports `disconnected` the moment the
+          service it names loses its credential, and a Settings tab that does
+          not follow that change shows the answer from before it. Absent means
+          an older server, so the store keeps what bootstrap gave it.
+        */
+        roles?: RoleView[];
+        /*
+          docs/252 req 9 — the background-work setting and what it resolves to,
+          re-read on every credential change for the same reason `reviewers` is.
+          `null` and absent mean different things here: absent is an older
+          server ("no news", keep what bootstrap gave us), while `null` is this
+          server saying the value is gone — which is the case that matters, since
+          removing the chosen model's credential leaves Settings reporting a
+          harness that background work can no longer reach.
+        */
+        nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
+        nonTurnModelResolved?: {
+          serviceId: string;
+          billingMode: "sub" | "key";
+          modelId: string;
+          serviceName: string;
+          label: string;
+          harnessId: string;
+          source: "pinned" | "default";
+        } | null;
       };
+      if (data.reviewers) {
+        useSettingsStore.getState().setReviewers(data.reviewers);
+      }
+      if (data.roles) {
+        useSettingsStore.getState().setRoles(data.roles);
+      }
+      if (data.nonTurnModel !== undefined || data.nonTurnModelResolved !== undefined) {
+        useSettingsStore.getState().setNonTurnModel(
+          data.nonTurnModel ?? null,
+          data.nonTurnModelResolved ?? null,
+        );
+      }
+      if (typeof data.canRunTurns === "boolean") {
+        useSettingsStore.getState().setCanRunTurns(data.canRunTurns);
+      }
+      if (typeof data.harnessOnboardingCompletedAt === "string") {
+        useSettingsStore.getState()
+          .setHarnessOnboardingCompletedAt(data.harnessOnboardingCompletedAt);
+      }
       const agents = data.agents.map((a) => ({
         ...a,
         models: a.models ?? [],
@@ -475,24 +613,124 @@ export function useServerEvents(): void {
       // the first turn still connected as the unauthed one and got rejected by
       // the server's auth gate, until the user round-tripped the selector. See
       // resolveAuthedSelection / docs/142.
-      const redirect = resolveAuthedSelection(
-        agents,
-        useUiStore.getState().activeAgentId,
-        getSavedModelId(),
-      );
+      //
+      // Both directions, because a credential coming back is delivered on this
+      // same event and used to be ignored: the redirect below is persistent by
+      // design and used to be PERMANENT by accident, so a transient
+      // `auth_failed` moved the user to the other harness for good. The restore
+      // runs first — a harness that can be handed back is never also a harness
+      // to redirect away from, and doing it in the other order would re-park
+      // what it had just restored.
+      const activeAgentId = useUiStore.getState().activeAgentId;
+      const parked = getParkedHarness();
+      const restoreTo = resolveParkedRestore(agents, parked);
+      if (restoreTo) {
+        const agentId = restoreTo.id as AgentId;
+        // Through the same writer a deliberate pick uses, so the restored
+        // harness and the restored model agree — handing back `vibe-agent-id`
+        // alone would be outvoted by the redirect's model exactly as the
+        // composer's own pick was. It clears the park as part of the write.
+        // Same question the redirect's notice asks, for the same reason: did the
+        // SEED move? `activeAgentId` would answer about the session being
+        // viewed, and stay silent whenever that session happens to run the
+        // harness being handed back.
+        const seedMoved = newSessionAgentId(agents) !== agentId;
+        persistHarnessPick({ agentId, agents, ...(parked?.model ? { current: parked.model } : {}) });
+        useUiStore.getState().setActiveAgentId(agentId);
+        if (seedMoved) {
+          useUiStore.getState().setToast({
+            message: `${restoreTo.name} is available again — switched back to it.`,
+            duration: 8000,
+          });
+        }
+        return;
+      }
+      const redirect = resolveAuthedSelection(agents, activeAgentId, getSavedModelId());
       if (redirect) {
+        // **What is being taken away is the SEED, and the seed is not
+        // `activeAgentId`.** That field is synced to whichever session is being
+        // VIEWED (`useConnectionSync`), on purpose — it answers "what is this
+        // session running on". The seed answers "what will the next session be
+        // created on", and `newSessionAgentId` is that rule.
+        //
+        // Reading the wrong one gets both halves wrong. Open an old Codex
+        // session while the seed is Claude/Opus, and let Codex's credential
+        // fail: the redirect is a no-op for the seed (it writes Claude/Opus back
+        // over Claude/Opus) but parked `{codex, Opus}` — an incoherent pair the
+        // user never chose, which on Codex's recovery would be restored and
+        // would replace their Claude seed with Codex's first model. And on every
+        // reconnect after a real redirect, `useConnectionSync` re-syncs
+        // `activeAgentId` to the viewed session's dead harness, so the same
+        // redirect re-ran and re-toasted for the whole outage.
+        //
+        // So both the park and the notice are gated on the seed actually moving.
+        // Everything below the gate — the in-memory correction and the persisted
+        // writes — still runs unconditionally, because that is C4's job and it
+        // is idempotent when nothing moved.
+        const seedAgentId = newSessionAgentId(agents);
+        const seedModelId = getSavedModelId();
+        const displacesSeed =
+          redirect.agentId !== seedAgentId
+          || (!!redirect.modelId && redirect.modelId !== seedModelId);
+        // Park BEFORE overwriting, and only when nothing is parked yet — a
+        // second redirect must not overwrite the user's own choice with the
+        // machine's.
+        if (displacesSeed && !parked) {
+          const saved = getSavedModelSelection();
+          saveParkedHarness({
+            agentId: seedAgentId,
+            ...(seedModelId
+              ? {
+                  model: {
+                    modelId: seedModelId,
+                    ...(saved ? { serviceId: saved.serviceId, billingMode: saved.billingMode } : {}),
+                  },
+                }
+              : {}),
+          });
+        }
         useUiStore.getState().setActiveAgentId(redirect.agentId);
         saveAgentId(redirect.agentId);
         if (redirect.modelId) saveModelId(redirect.modelId);
+        // Say so. The redirect changes the single most consequential and
+        // irreversible fact about every session created from here on, and it
+        // used to happen silently — the user found out by noticing a different
+        // name in a dropdown, if at all.
+        if (displacesSeed) {
+          const from = agents.find((a) => a.id === seedAgentId);
+          const to = agents.find((a) => a.id === redirect.agentId);
+          useUiStore.getState().setToast({
+            message:
+              `${from?.name ?? seedAgentId} has no usable credential right now — `
+              + `new sessions will run on ${to?.name ?? redirect.agentId}.`,
+            action: {
+              label: "Settings",
+              onClick: () => {
+                useUiStore.getState().setSettingsTab("services");
+                useUiStore.getState().setSettingsOpen(true);
+              },
+            },
+            duration: 12000,
+          });
+        }
       }
     });
 
     es.addEventListener("provider_accounts", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { accounts: ProviderAccount[] };
+      const data = JSON.parse(e.data as string) as { accounts: CredentialRoute[] };
       useSettingsStore.getState().setProviderAccounts(data.accounts);
     });
 
-    // docs/172 / SHI-90 — egress containment settings changed in another tab.
+    // docs/252 phase 2 — a credential was added, edited, removed or reordered
+    // in another tab. Same shape and the same reason as `provider_accounts`
+    // above; the two are separate events because they have separate writers
+    // (the docs/150 account flow, and the credential-route endpoints).
+    es.addEventListener("credential_routes", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as { routes: CredentialRoute[] };
+      useSettingsStore.getState().setCredentialRoutes(data.routes);
+    });
+
+    // docs/172 / planning#92 — egress containment settings changed in another tab.
     // Refresh the effective allowlist view so the Settings → Network egress
     // editor stays in sync. Only when already loaded (the panel was opened),
     // so a background tab that never opened Settings doesn't fetch.
@@ -590,6 +828,17 @@ export function useServerEvents(): void {
         next.delete(data.sessionId);
         return next;
       });
+      // …and from the background-work set, for the same reason. The container
+      // is gone, so nothing can still be outstanding in it — and the disposal
+      // paths clear the runner's own trackers directly, without a draining
+      // event of their own. Without this the sidebar dot would keep pulsing on
+      // a reaped session until the next SSE connect.
+      useSessionStore.getState().setBackgroundTaskSessions((prev) => {
+        if (!prev.has(data.sessionId)) return prev;
+        const next = new Map(prev);
+        next.delete(data.sessionId);
+        return next;
+      });
     });
 
     es.addEventListener("full_reset_complete", () => {
@@ -653,21 +902,17 @@ export function useServerEvents(): void {
   // cleanup, which re-runs when `connectAttempt` changes. The attempt counter is
   // reset first so a user-visible return to the app reconnects immediately
   // rather than inheriting a long backoff delay from the outage.
-  function reconnectNow(): void {
-    reconnectAttemptRef.current = 0;
-    setConnectAttempt((n) => n + 1);
-  }
-  function handleForeground(): void {
-    if (document.hidden) return;
-    const now = Date.now();
-    if (now - lastForegroundReconnectRef.current < FOREGROUND_COALESCE_MS) return;
-    lastForegroundReconnectRef.current = now;
-    reconnectNow();
-  }
-  useEventListeners([
-    { target: document, type: "visibilitychange", handler: handleForeground },
-    { target: window, type: "pageshow", handler: handleForeground },
-    { target: window, type: "focus", handler: handleForeground },
-    { target: window, type: "online", handler: handleForeground },
-  ]);
+  //
+  // Which events count as a resume — and why a bare window `focus` does not —
+  // lives in `useForegroundSignal`, shared with `useWebSocket` so the two
+  // channels can never drift apart on that question again.
+  useForegroundSignal({
+    onForeground: () => {
+      reconnectAttemptRef.current = 0;
+      setConnectAttempt((n) => n + 1);
+    },
+    isConnectionLive: () =>
+      eventSourceRef.current !== null &&
+      eventSourceRef.current.readyState !== EventSource.CLOSED,
+  });
 }

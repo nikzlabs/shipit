@@ -1,5 +1,5 @@
 /**
- * The one place a queued message is turned back into a running turn (SHI-255).
+ * The one place a queued message is turned back into a running turn (planning#257).
  *
  * A session has a single in-memory message queue but TWO drains: the dispatched
  * turn's own post-turn drain (`dispatched-turn.ts`) and the WS interactive
@@ -20,7 +20,7 @@
  * handed to `runner.runDispatchedTurn`; only a `"interactive"` entry ever
  * reaches a transport's own narrower re-entry.
  *
- * SHI-259 then proved that "cannot reintroduce the bug without deliberately
+ * planning#261 then proved that "cannot reintroduce the bug without deliberately
  * bypassing this module" was wishful thinking: turn adoption added a FOURTH
  * hand-rolled drain days later, by an author reasonably following the code
  * around them. So docs/240 moved the rule into the type system —
@@ -76,7 +76,7 @@ export async function startQueuedMessage(
  *
  * This is the drain for the paths that have NO turn of their own to hang off —
  * a turn that ended without running (an auto-conflict-resolve attempt that
- * settled, SHI-280's stuck-running recovery). Every other drain is reached from
+ * settled, planning#282's stuck-running recovery). Every other drain is reached from
  * a turn that actually ran and can re-enter its own executor; these can only
  * ask the runner to start the next thing.
  *
@@ -88,7 +88,13 @@ export async function startQueuedMessage(
  * here is the recurring bug and not a shortcut.
  */
 export function releaseQueuedTurn(runner: SessionRunnerInterface): boolean {
-  if (runner.running || runner.queueLength === 0) return false;
+  // planning#338 — `systemTurnInProgress` without `running` is a system FLOW (the
+  // rebase driver) holding the session between its own turns while it runs git
+  // against the workspace. Releasing a user turn into that window is how a
+  // production session stranded mid-rebase: the released turn displaced the
+  // conflict-resolution agent and nothing ever ran `git rebase --continue` or
+  // `--abort`. The flow releases the queue itself when it settles.
+  if (runner.running || runner.systemTurnInProgress || runner.queueLength === 0) return false;
   // A runner with no system-turn deps can't start a dispatched turn at all
   // (`dispatch` falls back to a plain enqueue), so dequeuing here would only
   // shuffle the entry to the back of its own queue.

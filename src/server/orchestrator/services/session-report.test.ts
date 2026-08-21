@@ -1,5 +1,5 @@
 /**
- * Unit tests for upward / lateral session reports (docs/233, SHI-241).
+ * Unit tests for upward / lateral session reports (docs/233, planning#243).
  *
  * Covers the two halves of delivery — the persisted card in each recipient's
  * history and the queued system turn on its runner — plus the guards that make
@@ -66,7 +66,7 @@ function makeFakeRegistry(): { registry: SessionRunnerRegistry; runners: Map<str
   return { registry, runners };
 }
 
-/** Parent with three children (the cohort from the SHI-241 report). */
+/** Parent with three children (the cohort from the planning#243 report). */
 function makeCohort() {
   const db = new DatabaseManager(":memory:");
   const sessionManager = new SessionManager(db);
@@ -177,6 +177,61 @@ describe("deliverSessionReport (docs/233)", () => {
 
     expect(result.recipients.map((r) => r.sessionId).sort()).toEqual(["necromancer", "parent"]);
     expect(ctx.chatHistoryManager.load("druid").filter((m) => m.sessionReport)).toHaveLength(0);
+  });
+
+  it("returns resolved siblings as named skips without a card or wake", async () => {
+    ctx.db.db.prepare("UPDATE sessions SET last_used_at = ?, merged_at = ? WHERE id = ?")
+      .run("2026-08-14T10:00:00.000Z", "2026-08-14 11:00:00", "druid");
+
+    const result = await deliverSessionReport(ctx.deps, "elementalist", {
+      body: "Heads up",
+      to: "cohort",
+    });
+
+    expect(result.skippedRecipients).toEqual([{
+      sessionId: "druid",
+      title: "Druid catalog",
+      relation: "sibling",
+      reason: "resolved",
+    }]);
+    expect(result.recipients.map((recipient) => recipient.sessionId).sort()).toEqual([
+      "necromancer",
+      "parent",
+    ]);
+    expect(ctx.chatHistoryManager.load("druid").filter((message) => message.sessionReport)).toHaveLength(0);
+    expect(ctx.runners.has("druid")).toBe(false);
+  });
+
+  it("delivers to a running sibling whose PR became terminal mid-turn", async () => {
+    const runner = ctx.registry.getOrCreate("druid", "/ws/druid", "claude") as unknown as FakeRunner;
+    runner.running = true;
+    ctx.db.db.prepare("UPDATE sessions SET last_used_at = ?, closed_at = ? WHERE id = ?")
+      .run("2026-08-14T10:00:00.000Z", "2026-08-14 11:00:00", "druid");
+
+    const result = await deliverSessionReport(ctx.deps, "elementalist", {
+      body: "Heads up",
+      to: "cohort",
+      severity: "blocker",
+    });
+
+    expect(result.skippedRecipients).toEqual([]);
+    expect(result.recipients.some((recipient) => recipient.sessionId === "druid")).toBe(true);
+  });
+
+  it("does not charge the rate limit when all available recipients are resolved", async () => {
+    ctx.sessionManager.archive("parent");
+    ctx.sessionManager.archive("necromancer");
+    ctx.db.db.prepare("UPDATE sessions SET last_used_at = ?, merged_at = ? WHERE id = ?")
+      .run("2026-08-14T10:00:00.000Z", "2026-08-14 11:00:00", "druid");
+
+    for (let index = 0; index < MAX_REPORTS_PER_WINDOW + 1; index++) {
+      const result = await deliverSessionReport(ctx.deps, "elementalist", {
+        body: `report ${index}`,
+        to: "cohort",
+      });
+      expect(result.recipients).toEqual([]);
+      expect(result.skippedRecipients).toHaveLength(1);
+    }
   });
 
   it("refuses when the reporting session has no parent (top-level or --detached)", async () => {

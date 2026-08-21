@@ -31,6 +31,26 @@ export const CONTAINER_SESSION_STATE_DIR = "/session-state";
  */
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 
+/**
+ * docs/262 — where a session's plugin checkouts appear inside the agent
+ * container. Two paths, and **both are read-only**: the agent container never
+ * gets a writable view of a plugin checkout at any path (req 7). Plugin code
+ * that must write runs elsewhere, against a copy-on-write overlay volume
+ * (plan §1b).
+ *
+ * - {@link CONTAINER_PLUGINS_DIR} — the **agent-facing** surface, and the only
+ *   one a plugin author or an agent should ever be told about. Holds one
+ *   symlink per declared repo, pointing into the store below.
+ * - {@link CONTAINER_PLUGIN_STORE_DIR} — the session's whole plugin root. The
+ *   symlinks resolve through it, so swapping a generation's `active` link on
+ *   the host is visible in-container at once (req 12's refresh, with no
+ *   container recreation). Mounting a generation directly would instead pin
+ *   whichever one was live at container creation, since Docker resolves a bind
+ *   source's symlinks then.
+ */
+export const CONTAINER_PLUGINS_DIR = "/plugins";
+export const CONTAINER_PLUGIN_STORE_DIR = "/plugin-store";
+
 /** Generated compose merge file (`docker compose -f … -f <this>`). */
 export const COMPOSE_OVERRIDE_FILE = "compose.override.yml";
 /** Install-skip marker, written in-container after `agent.install` succeeds. */
@@ -57,13 +77,28 @@ export const WORKSPACE_SKIP_DIRS = new Set([
   "sessions",
   ".shipit",
   ".inner-shipit",
-  // docs/150 — the non-root entrypoint drops a UID-stamped sentinel DIR into
-  // each writable mount (incl. /workspace in prod) to make the boot-time
-  // `chown -R` a one-shot. It's an empty dir, so git never commits it (git
-  // doesn't track empty dirs), but hide it from the file tree / watcher so it
-  // isn't surfaced as workspace noise. Keep in sync with entrypoint.sh.
-  ".shipit-uid-1000",
 ]);
+
+/**
+ * docs/150 — the non-root entrypoint drops an identity-stamped sentinel DIR into
+ * each writable mount (incl. `/workspace` in prod) to make the boot-time
+ * `chown -R` a one-shot. It's an empty dir, so git never commits it (git doesn't
+ * track empty dirs), but it must stay out of the file tree / watcher or it
+ * surfaces as workspace noise.
+ *
+ * It is a PREFIX rather than a literal name because docs/270 made the stamp
+ * carry both halves of the identity — `.shipit-uid-<uid>-<gid>`, so that a
+ * change to either rotates it. The old exact-match entry (`.shipit-uid-1000`)
+ * silently stopped matching the moment the gid was added: EVERY session, legacy
+ * ones included, grew a visible `.shipit-uid-1000-1000` directory in its file
+ * tree. Keep in sync with `entrypoint.sh`.
+ */
+export const SESSION_UID_SENTINEL_PREFIX = ".shipit-uid-";
+
+/** Whether a directory ENTRY NAME should be hidden from the workspace tree. */
+export function isWorkspaceSkipDir(name: string): boolean {
+  return WORKSPACE_SKIP_DIRS.has(name) || name.startsWith(SESSION_UID_SENTINEL_PREFIX);
+}
 
 /**
  * Individual files (not directories) hidden from the workspace file tree.

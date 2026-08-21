@@ -1,8 +1,12 @@
 import { create } from "zustand";
-import type { EgressAllowlistEntry, EgressAllowlistView } from "../../server/shared/types.js";
+import type {
+  EgressAllowlistEntry,
+  EgressAllowlistView,
+  EgressHostGrantOutcome,
+} from "../../server/shared/types.js";
 
 /**
- * Egress containment settings store (docs/172 / SHI-90).
+ * Egress containment settings store (docs/172 / planning#92).
  *
  * Backs the Settings → Advanced → "Network egress" section: the default-on
  * global containment toggle (Contained vs Open), the per-session containment
@@ -18,7 +22,7 @@ import type { EgressAllowlistEntry, EgressAllowlistView } from "../../server/sha
  * Mutations are optimistic where it helps perceived latency, then reconciled
  * against the server's authoritative effective view (`refresh`).
  *
- * The `/api/egress/*` routes are NOT `containerAccessible` — SHI-129's
+ * The `/api/egress/*` routes are NOT `containerAccessible` — planning#131's
  * default-deny keeps the contained agent from reaching them to loosen its own
  * containment.
  */
@@ -38,7 +42,7 @@ interface EgressState {
    * Whether this deployment can actually ENFORCE containment (enforcement on +
    * sidecar image configured). When containment is the policy but this is false,
    * the panel warns "Contained — NOT enforced on this deployment" instead of a
-   * reassuring green state (docs/172, SHI-90).
+   * reassuring green state (docs/172, planning#92).
    */
   enforcementActive: boolean;
   /** In-scope session override: null = inherit global, true/false = force. */
@@ -53,7 +57,8 @@ interface EgressState {
   refresh: () => Promise<void>;
   setGlobalEnabled: (enabled: boolean) => Promise<void>;
   setOverride: (override: boolean | null) => Promise<void>;
-  addHost: (host: string, scope: EgressScope) => Promise<void>;
+  /** Resolves with what the add took effect on (planning#376), or null if the server said nothing. */
+  addHost: (host: string, scope: EgressScope) => Promise<EgressHostGrantOutcome | null>;
   removeHost: (host: string, scope: EgressScope) => Promise<void>;
   editHost: (oldHost: string, newHost: string, scope: EgressScope) => Promise<void>;
   restoreDefaults: () => Promise<void>;
@@ -65,13 +70,16 @@ function apiScope(scope: EgressScope, sessionId: string | null): string | null {
   return sessionId; // null when no session in scope → caller no-ops
 }
 
-async function postJson(url: string, method: string, body: unknown): Promise<void> {
+async function postJson(url: string, method: string, body: unknown): Promise<unknown> {
   const res = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  // Every one of these routes answers with JSON; a body that isn't parseable is
+  // not worth failing a successful write over (only `addHost` reads one).
+  return await res.json().catch(() => null);
 }
 
 export const useEgressStore = create<EgressState>((set, get) => ({
@@ -139,10 +147,16 @@ export const useEgressStore = create<EgressState>((set, get) => ({
     }
   },
 
+  /**
+   * Add a host, and report what it took effect on (planning#376). The route
+   * answers with `grant` — which surfaces are live now and which keep the old
+   * allowlist until they restart — because the two scopes behave differently
+   * and the editor said nothing at all after a successful add.
+   */
   addHost: async (host, scope) => {
     const trimmed = host.trim();
     const s = apiScope(scope, get().sessionId);
-    if (!trimmed || !s) return;
+    if (!trimmed || !s) return null;
     // Optimistic: show the row immediately (source matches the scope).
     const optimistic: EgressAllowlistEntry = {
       host: trimmed,
@@ -152,8 +166,11 @@ export const useEgressStore = create<EgressState>((set, get) => ({
     const prev = get().entries;
     if (!prev.some((e) => e.host === trimmed)) set({ entries: [...prev, optimistic] });
     try {
-      await postJson("/api/egress/hosts", "POST", { host: trimmed, scope: s });
+      const body = (await postJson("/api/egress/hosts", "POST", { host: trimmed, scope: s })) as {
+        grant?: EgressHostGrantOutcome;
+      } | null;
       await get().refresh();
+      return body?.grant ?? null;
     } catch (err) {
       set({ entries: prev });
       throw err;

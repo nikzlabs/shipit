@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts.js";
 import { useQuickCaptureHotkey } from "./useQuickCaptureHotkey.js";
+import { useKeybinding } from "../keybindings/use-keybinding.js";
 import { useUiStore } from "../stores/ui-store.js";
 
 /**
@@ -36,5 +37,15 @@ export function useAppKeyboardShortcuts(params: {
   // matcher as the text-only quick-capture hotkey.
   useQuickCaptureHotkey(voiceInputEnabled ? voiceHotkeyModeB : "", () => {
     useUiStore.getState().setQuickCaptureOpen(true, true);
+  });
+
+  // docs/260-attention-sidebar-view req 14 — flip the sidebar between its two views. Registered in the
+  // keybinding registry (docs/180), so it appears in the ? overlay and the
+  // Keyboard settings tab and is rebindable like every other chord; this hook
+  // only binds whatever the registry currently resolves to. Reuses the
+  // second-modifier matcher because it must fire while the user is typing.
+  const attentionViewChord = useKeybinding("toggle-attention-view");
+  useQuickCaptureHotkey(attentionViewChord, () => {
+    useUiStore.getState().toggleSidebarView();
   });
 }

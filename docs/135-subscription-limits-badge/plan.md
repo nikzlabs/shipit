@@ -1,4 +1,5 @@
 ---
+issue: planning#429
 description: Header badges showing subscription rate-limit usage (5-hour window, weekly cap, reset clock) for Claude and Codex, rendered inline without leaving ShipIt.
 ---
 
@@ -417,6 +418,48 @@ Stable rendering rules:
   same `gap-2 sm:gap-3` spacing the rest of the header uses.
 - **Mobile** (`hidden sm:inline`): the entire badge group hides, same
   affordance as `DockerMemoryBadge`.
+
+### When the credential can't run a turn
+
+A pill whose credential is not `ready` shows **why**, in place of its
+meters — "reconnect needed", "credential rejected", or "signing in…",
+the same words the Settings credential row says, from one shared
+`credentialStatusWord()` so the two surfaces cannot disagree. The word
+is a button, and it opens Settings → Services, where the *Reconnect*
+lives.
+
+This replaces the numbers rather than sitting beside them. A stale
+snapshot is worse than no snapshot here: the percentages are real but
+frozen at whatever the account last reported, so a pill reading
+"Claude · 5h 30% · 7d 50%" describes a subscription that is refusing
+every turn. That is how the state was reported — the pills looked
+healthy, chat commands failed, and only Settings knew the sign-in had
+expired. The refresh button goes with the meters for the same reason:
+there is nothing to fetch until the sign-in is redone.
+
+Settings' own row passes no attention word, because it prints it one
+element to the left and hides the pill entirely for a non-ready
+credential (docs/252 req 19).
+
+This covers **supplied secrets too**, not only accounts. An
+env-delivered token (`ANTHROPIC_AUTH_TOKEN`) or a pasted plan key is not
+a provider-account row, so it reached the header through its snapshot
+alone — and a token every turn is dying on may never have reported a
+quota, in which case the header said nothing whatsoever about it. A
+`via: "string"` credential of a subscription mode that the provider has
+**refused** now gets a pill of its own saying "credential rejected",
+read from `credentialRoutes`. A healthy one is unchanged: it is `ready`
+from the moment it is stored, so it still appears only if it has
+numbers to show.
+
+A row that has never been anything but a sign-in attempt gets **no
+pill at all** — the header asks `isUnconnectedAttempt()`, the same
+question the Services panel asks about which rows are credentials
+(docs/252 req 17). A row exists from the instant *Sign in* is pressed
+and is deleted again if the user backs out; without the test, starting
+a sign-in put a red "reconnect needed" in the header about an account
+that had never been connected. Both predicates live in
+`src/client/utils/credential-state.ts` so neither surface owns them.
 
 ### Client
 

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-105
+issue: planning#107
 description: emitChatCard persists the in-progress turn immediately, so every transcript card is in chat history the instant it appears — no disappear-then-reappear flicker.
 ---
 

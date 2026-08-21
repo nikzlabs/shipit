@@ -6,6 +6,7 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { resolvePointerNavigation } from "../../utils/preview-link-navigation.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
@@ -14,7 +15,8 @@ import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePrevie
 import { useDeviceFrame } from "./DeviceFrame.js";
 import { PreviewToolbar, type PortInfo } from "./PreviewToolbar.js";
 import { PreviewErrors } from "./PreviewErrors.js";
-import { ComposeErrorBanner, ComposeHint } from "./ComposeErrorBanner.js";
+import { ComposeErrorBanner } from "./ComposeErrorBanner.js";
+import { PreviewSetupInvite } from "./PreviewSetupInvite.js";
 import { SecretsMissingBanner } from "./SecretsMissingBanner.js";
 import { handleAgentInterfaceRequest } from "../../agent-interface-sdk/handle-request.js";
 import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
@@ -35,12 +37,6 @@ export interface PreviewStatus {
 
 const READY_BUFFER_LIMIT = 8;
 const READY_BUFFER_TTL_MS = 2_000;
-/**
- * Cap on a reported preview path. The value is authored by the previewed page,
- * so it is untrusted input — a pathological one must not reach React or the
- * clipboard. Long enough that no real route is clipped.
- */
-const MAX_PATH_LENGTH = 2048;
 
 function previewOrigin(url: string): string | null {
   try {
@@ -54,8 +50,6 @@ interface PreviewFrameProps {
   preview: PreviewStatus | null;
   /** Current session ID — part of the iframe-pool slot key (`sessionId:port`). */
   sessionId?: string;
-  /** Sessions whose PR has merged; background iframes for these sessions are torn down. */
-  mergedSessionIds?: string[];
   /** All detected ports available for selection. */
   detectedPorts: number[];
   /** The currently selected port override, or null to use the default. */
@@ -70,15 +64,30 @@ interface PreviewFrameProps {
   onClearErrors: () => void;
   /** Called when user clicks "Send to agent" to send error info to the agent. */
   onSendCrashToAgent?: () => void;
-  /** Called when user clicks "Send to agent" to ask the agent to add compose config. */
+  /** Called when the user asks the agent to set a preview up for this repo. */
   onSendComposeHintToAgent?: () => void;
   onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
+  /**
+   * Whether this pane is actually ON SCREEN, as opposed to merely mounted.
+   *
+   * The pane is deliberately kept mounted behind the other right-panel tabs and
+   * behind the mobile Chat tab, so returning to it is instant. But a preview
+   * that is not on screen must stop rendering AND be told it is hidden, or it
+   * keeps a WebGL canvas drawing and its audio playing behind the Files tree
+   * (nikzlabs/shipit#2418, second site). `PreviewFrame` cannot work this out for
+   * itself: the class that hides it is applied by an ancestor, and
+   * `visibility: hidden` is invisible to geometry — an `IntersectionObserver`
+   * on the iframe reports it as intersecting.
+   *
+   * Defaults to `true` so the signal can only ever *remove* visibility: a caller
+   * that does not pass it gets exactly the previous behavior.
+   */
+  paneVisible?: boolean;
 }
 
 export function PreviewFrame({
   preview,
   sessionId,
-  mergedSessionIds = [],
   detectedPorts,
   selectedPort,
   onSelectPort,
@@ -88,13 +97,24 @@ export function PreviewFrame({
   onSendCrashToAgent,
   onSendComposeHintToAgent,
   onAgentInterfaceMessage,
+  paneVisible = true,
 }: PreviewFrameProps) {
   const autoFixEnabled = usePreviewStore((s) => s.autoFixEnabled);
   const [refreshKey, setRefreshKey] = useState(0);
-  // Current path per slot, as reported by each page's injected script. State,
-  // not a ref — it drives the toolbar. Kept per slot so switching sessions
-  // shows that preview's own route rather than the last one seen anywhere.
-  const [slotPaths, setSlotPaths] = useState<Map<string, string>>(new Map());
+  // Current path per slot, as reported by each page's injected script. Kept per
+  // slot so switching sessions shows that preview's own route rather than the
+  // last one seen anywhere, and held in the store rather than in component
+  // state so it also survives this component unmounting — a slot recreated
+  // later re-enters at the same path instead of the front page.
+  const slotPaths = usePreviewStore((s) => s.previewPaths);
+  // Whether each slot's preview has a history entry of its own, as reported by
+  // the injected script. Deliberately component state and NOT in the store
+  // beside `previewPaths`: a path is a destination worth restoring, but this
+  // describes the live frame's history. A remount recreates the iframe with no
+  // history at all, so a persisted `true` would enable a Back button that has
+  // nowhere to go. Starting empty ("unknown") is the honest state, and the
+  // first report from the page corrects it.
+  const [slotCanGoBack, setSlotCanGoBack] = useState<Map<string, boolean>>(new Map());
   const [errorPanelOpen, setErrorPanelOpen] = useState(false);
   const [portSelectorOpen, setPortSelectorOpen] = useState(false);
 
@@ -116,15 +136,20 @@ export function PreviewFrame({
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
   // Background slots keep their iframes alive in the DOM. See `useIframePool`
   // for LRU eviction and `usePreviewHealthPoller` for slot creation.
-  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot, pruneSlots } = useIframePool();
+  const { slots, slotOrder, iframeRefs, createdSlotsRef, pollingRef, promoteSlot, setSlot, dropSlot, getSlot } = useIframePool();
 
   const activeSlotKey = activePort ? `${sessionId ?? "_"}:${activePort}` : null;
   const activeSlot = activeSlotKey ? slots.get(activeSlotKey) ?? null : null;
-  const mergedSessionKey = mergedSessionIds.join("\0");
-  const mergedSessionIdSet = useMemo(() => new Set(mergedSessionIds), [mergedSessionKey]);
 
   // Container mode detection for the current preview
   const isContainerMode = !!(preview?.url?.startsWith("/preview/"));
+
+  // The service that owns the active port. Same derivation as the toolbar
+  // label below, so the slot's recorded owner and the row the user sees can't
+  // disagree. The health poller compares it with a retained slot's recorded
+  // owner and drops the slot when the port changed hands (planning#394).
+  const services = usePreviewStore((s) => s.services);
+  const activeService = activePort ? services.find((s) => s.port === activePort)?.name : undefined;
 
   // Compute poll URL for the active slot
   const pollUrl = isContainerMode && sessionId
@@ -145,45 +170,25 @@ export function PreviewFrame({
     pollingRef,
     promoteSlot,
     setSlot,
+    getSlot,
+    dropSlot,
+    activeService,
   });
-
-  // Merged sessions are terminal: keep the active iframe mounted while the user
-  // is viewing that session, but tear down its background iframe as soon as the
-  // user switches away so completed PR previews do not keep running invisibly.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (mergedSessionIdSet.size === 0) return;
-    for (const key of slotOrder) {
-      if (key === activeSlotKey) continue;
-      const [slotSessionId] = key.split(":");
-      if (mergedSessionIdSet.has(slotSessionId)) {
-        loadedSlotsRef.current.delete(key);
-        reloadableWindowsRef.current.delete(key);
-        setSlotPaths((prev) => {
-          if (!prev.has(key)) return prev;
-          const next = new Map(prev);
-          next.delete(key);
-          return next;
-        });
-      }
-    }
-    pruneSlots((key) => {
-      if (key === activeSlotKey) return false;
-      const [slotSessionId] = key.split(":");
-      return mergedSessionIdSet.has(slotSessionId);
-    });
-  }, [activeSlotKey, mergedSessionIdSet, pruneSlots, slotOrder]);
 
   // Derive active slot state for overlay/UI logic
   const activeSlotUrl = activeSlot?.url ?? null;
-  const activePath = activeSlotKey ? slotPaths.get(activeSlotKey) ?? null : null;
+  const activePath = activeSlotKey ? slotPaths[activeSlotKey] ?? null : null;
+  const activeCanGoBack = activeSlotKey ? slotCanGoBack.get(activeSlotKey) : undefined;
   // Resolve against the slot URL to recover the absolute URL for click-to-copy.
-  // Safe despite `activePath` being untrusted: the message handler already
-  // rejected anything that isn't a same-origin absolute path.
+  // `activePath` is untrusted and `sanitizePreviewPath` has already rejected
+  // everything that could escape the origin — but this value goes to the user's
+  // clipboard, so re-check the resolved origin here rather than inheriting that
+  // guarantee. A mismatch means the sanitizer missed something; show no URL.
   const activeFullUrl = useMemo(() => {
     if (!activePath || !activeSlotUrl) return null;
     try {
-      return new URL(activePath, activeSlotUrl).href;
+      const resolved = new URL(activePath, activeSlotUrl);
+      return resolved.origin === new URL(activeSlotUrl).origin ? resolved.href : null;
     } catch {
       return null;
     }
@@ -210,7 +215,25 @@ export function PreviewFrame({
   // all in-iframe state (scroll, form inputs, SPA route). Keying loaded
   // state per slot lets us skip the timer for slots we've already confirmed
   // came up cleanly.
-  const [authBlocked, setAuthBlocked] = useState(false);
+  //
+  // A confirmed load is not the only way a slot stops being a fresh fetch,
+  // though. The timer's whole premise is "we just requested this URL and heard
+  // nothing back" — on a revisit there was no request, so an expiry carries no
+  // signal at all. `authSettledRef` therefore records the verdict for a slot
+  // whose detection already ran to a conclusion, so returning to a preview that
+  // never reported "loaded" (non-HTML root, failed injection, a 502 served
+  // during startup) re-shows that verdict instead of force-reloading the cached
+  // iframe again. Both are cleared by a manual refresh, which IS a fresh fetch.
+  const [authBlockedSlots, setAuthBlockedSlots] = useState<ReadonlySet<string>>(() => new Set());
+  const authSettledRef = useRef<Map<string, string>>(new Map());
+  const markAuthBlocked = (key: string, blocked: boolean) =>
+    setAuthBlockedSlots((prev) => {
+      if (prev.has(key) === blocked) return prev;
+      const next = new Set(prev);
+      if (blocked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
   const loadedSlotsRef = useRef<Set<string>>(new Set());
   // Windows that have reported "loaded", i.e. the injected preview script is
   // running there and will honour a "shipit-toolbar" command. Unlike
@@ -228,6 +251,19 @@ export function PreviewFrame({
   activeSlotKeyRef.current = activeSlotKey;
   const MAX_AUTH_TIMEOUT_MS = 5000;
   const MAX_AUTH_RETRIES = 2;
+  const authBlocked = !!activeSlotKey && authBlockedSlots.has(activeSlotKey);
+
+  /**
+   * Which pool slot a postMessage came from. We can't trust the message
+   * contents for this — the injected script doesn't know the slot key — so
+   * match `event.source` against each iframe's contentWindow.
+   */
+  const slotKeyForWindow = (source: MessageEventSource): string | null => {
+    for (const [key, el] of iframeRefs.current.entries()) {
+      if (el?.contentWindow && el.contentWindow === source) return key;
+    }
+    return null;
+  };
 
   const replyToVisibilityReady = (
     source: MessageEventSource,
@@ -286,18 +322,23 @@ export function PreviewFrame({
       return;
     }
     if (data.type === "path" && event.source) {
-      const raw = (data as { path?: unknown }).path;
-      // Untrusted — authored by the previewed page. Require a same-document
-      // absolute path: anything else is not something we can render as "where
-      // you are", and a protocol-relative "//host/x" would resolve against the
-      // slot URL into a *different* origin, putting a foreign host in the
-      // tooltip and on the clipboard.
-      if (typeof raw !== "string" || !raw.startsWith("/") || raw.startsWith("//")) return;
-      const value = raw.slice(0, MAX_PATH_LENGTH);
-      for (const [key, el] of iframeRefs.current.entries()) {
-        if (!el?.contentWindow || el.contentWindow !== event.source) continue;
-        setSlotPaths((prev) => (prev.get(key) === value ? prev : new Map(prev).set(key, value)));
-        return;
+      // The payload is untrusted (authored by the previewed page); the store
+      // sanitizes the path and drops anything that isn't a same-document
+      // absolute path. Which slot it came from is decided here by matching the
+      // source window, never by trusting the message.
+      const key = slotKeyForWindow(event.source);
+      if (!key) return;
+      usePreviewStore.getState().setPreviewPath(key, (data as { path?: unknown }).path);
+      // Equally untrusted, and absent when the page never ran our injected
+      // script at all (a non-proxied local preview). Anything that isn't a
+      // boolean is ignored, leaving the slot "unknown" and Back enabled — so a
+      // page can't clear a value it already reported by following up with a
+      // malformed one.
+      const rawCanGoBack = (data as { canGoBack?: unknown }).canGoBack;
+      if (typeof rawCanGoBack === "boolean") {
+        setSlotCanGoBack((prev) => (
+          prev.get(key) === rawCanGoBack ? prev : new Map(prev).set(key, rawCanGoBack)
+        ));
       }
       return;
     }
@@ -311,10 +352,12 @@ export function PreviewFrame({
       if (el?.contentWindow && el.contentWindow === event.source) {
         loadedSlotsRef.current.add(key);
         reloadableWindowsRef.current.set(key, el.contentWindow);
-        if (key === activeSlotKeyRef.current) {
-          authRetryRef.current = 0;
-          setAuthBlocked(false);
-        }
+        // A late "loaded" overturns a blocked verdict — the page came up after
+        // all, so the slot must not stay settled or the overlay would come back
+        // on the next visit.
+        authSettledRef.current.delete(key);
+        markAuthBlocked(key, false);
+        if (key === activeSlotKeyRef.current) authRetryRef.current = 0;
         return;
       }
     }
@@ -333,16 +376,20 @@ export function PreviewFrame({
     // Without this guard the timer would expire (no fresh postMessage on
     // revisit), force-reload the iframe, and discard the user's in-iframe state.
     if (loadedSlotsRef.current.has(activeSlotKey)) {
-      setAuthBlocked(false);
+      markAuthBlocked(activeSlotKey, false);
       return;
     }
+    // Detection already concluded for this slot at this URL. Re-arming would
+    // time out against a cached iframe that isn't fetching anything and reload
+    // it for no reason; the recorded verdict is already on screen.
+    if (authSettledRef.current.get(activeSlotKey) === activeSlotUrl) return;
     // Reset the retry budget when the user navigates to a different preview URL.
     // refreshKey changes (manual or auto retry) keep the existing budget.
     if (lastAuthUrlRef.current !== activeSlotUrl) {
       lastAuthUrlRef.current = activeSlotUrl;
       authRetryRef.current = 0;
     }
-    setAuthBlocked(false);
+    markAuthBlocked(activeSlotKey, false);
     const timer = setTimeout(() => {
       if (loadedSlotsRef.current.has(activeSlotKey)) return;
       if (authRetryRef.current < MAX_AUTH_RETRIES) {
@@ -353,10 +400,71 @@ export function PreviewFrame({
         setRefreshKey((k) => k + 1);
         return;
       }
-      setAuthBlocked(true);
+      authSettledRef.current.set(activeSlotKey, activeSlotUrl);
+      markAuthBlocked(activeSlotKey, true);
     }, MAX_AUTH_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [activeSlotKey, activeSlotUrl, previewSubdomainUrl, isLocalPreview, refreshKey]);
+
+  // ---- Agent-authored pointers (docs/258) ----
+  // A `shipit-preview://` click records a destination; by the time it reaches
+  // this slot, everything else has already happened (the service is running and
+  // its port is selected). All that is left is to put the frame there.
+  //
+  // The destination is handed to the injected preview script, for the same
+  // reason refresh is: a `src` assignment is always a *document load*, so a
+  // pointer at a place inside the page the user is already on tore the app down
+  // and rebuilt it — a visible blink, and every bit of in-page state gone. The
+  // script sits on the other side of the cross-origin boundary, where the live
+  // `location` is readable, so it can tell a same-document destination (only
+  // the fragment differs) from one that genuinely needs a new document.
+  //
+  // Slots without that script — a non-proxied local preview, a 502, an
+  // auth-gated response — never reported "loaded", and fall back to the `src`
+  // assignment, which is a document load but at least arrives.
+  const previewLinkIntent = usePreviewStore((s) => s.previewLinkIntent);
+  // eslint-disable-next-line no-restricted-syntax -- navigates a live iframe to an agent-authored destination
+  useEffect(() => {
+    if (!previewLinkIntent || !activeSlotKey || !activeSlotUrl) return;
+    if (previewLinkIntent.slotKey !== activeSlotKey) return;
+    if (previewLinkIntent.sessionId !== sessionId) return;
+    // No slot yet — the health poller creates it *at* the destination, so
+    // there is nothing to do here and nothing to report.
+    const el = iframeRefs.current.get(activeSlotKey);
+    if (!el) return;
+
+    const clearIntent = () =>
+      usePreviewStore.getState().clearPreviewLinkIntent(previewLinkIntent.clickId);
+
+    const outcome = resolvePointerNavigation(
+      previewLinkIntent.targetPath,
+      activeSlotUrl,
+      usePreviewStore.getState().previewPaths[activeSlotKey],
+    );
+    clearIntent();
+
+    if (outcome.kind === "navigate") {
+      const win = el.contentWindow;
+      // Targeted at the slot's own origin, never `"*"`. A `WindowProxy` keeps
+      // its identity across document AND origin changes, so a frame that has
+      // since navigated itself somewhere else still matches the capability
+      // gate — and this message carries the agent-authored URL, which a foreign
+      // page must not be handed. A mismatch drops the message in the browser;
+      // that leaves the click doing nothing, which is the accepted best-effort
+      // class (req 10), not a leak.
+      const expectedOrigin = previewOrigin(activeSlotUrl);
+      if (win && expectedOrigin && reloadableWindowsRef.current.get(activeSlotKey) === win) {
+        win.postMessage({ source: "shipit-toolbar", type: "navigate", url: outcome.url }, expectedOrigin);
+      } else {
+        el.src = outcome.url;
+      }
+    } else if (outcome.kind === "outside-preview") {
+      useUiStore.getState().setToast({
+        message: "That link can't be opened — it points outside the preview.",
+        variant: "error",
+      });
+    }
+  }, [previewLinkIntent, activeSlotKey, activeSlotUrl, sessionId, iframeRefs]);
 
   // Force-reload the active iframe on refresh click
   const lastRefreshKey = useRef(refreshKey);
@@ -364,13 +472,15 @@ export function PreviewFrame({
   useEffect(() => {
     if (refreshKey !== lastRefreshKey.current) {
       lastRefreshKey.current = refreshKey;
-      setAuthBlocked(false);
       if (activeSlotKey) {
+        markAuthBlocked(activeSlotKey, false);
         // A manual refresh (or the auth-retry escalation) intentionally
-        // throws away the cached "loaded" state for this slot so the
-        // detection timer re-arms and a genuinely auth-blocked response
-        // can be re-detected.
+        // throws away the cached "loaded" state and any settled verdict for
+        // this slot so the detection timer re-arms and a genuinely
+        // auth-blocked response can be re-detected. This is a real fetch, so
+        // an expiry means something again.
         loadedSlotsRef.current.delete(activeSlotKey);
+        authSettledRef.current.delete(activeSlotKey);
         const el = iframeRefs.current.get(activeSlotKey);
         // Reload the page the preview is CURRENTLY on. Re-assigning `src`
         // navigates back to the slot's entry URL, so a user who had clicked
@@ -399,7 +509,6 @@ export function PreviewFrame({
   const isRunning = !!preview?.running;
   const showSelector = isRunning && (detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0));
   const startupSteps = usePreviewStore((s) => s.startupSteps);
-  const services = usePreviewStore((s) => s.services);
 
   // Compute current port label and remember it for transitions
   // Prefer service name over raw port number for detected services
@@ -453,15 +562,22 @@ export function PreviewFrame({
   // Subdomain routing is the only supported container-preview path (the old
   // path-based fallback is gone — it 404'd every absolute asset URL).
   const cannotSubdomainPreview = isContainerMode && isRunning && !!activePort && !!sessionId && previewSubdomainUrl === null;
-  // A concrete host the user could switch to, when one exists (docs/254 req 8).
+  // A concrete host the user could switch to, when one exists (docs/254-local-bind-and-tailnet-access req 8).
   const suggestedWildcardHost = cannotSubdomainPreview ? suggestWildcardHost(apiHost) : null;
 
-  // When not running, hide the iframe behind the overlay (but keep DOM element alive)
-  const hideIframe = !isRunning && !showStarting;
+  // When not running, hide the iframe behind the overlay (but keep DOM element
+  // alive) — and likewise whenever this pane is not the one on screen. Both
+  // reasons feed the same flag because both have the same two consequences: the
+  // slot is given `display: none`, which is what actually stops it rendering,
+  // and every mounted page is told `visible: false`.
+  const hideIframe = (!isRunning && !showStarting) || !paneVisible;
 
   // Keep every mounted page informed when its ShipIt surface becomes visible
   // or hidden. Background slots remain alive by design, so CSS alone is not a
   // sufficient lifecycle signal for audio, animation, or automatic work.
+  // `iframeRefs` is a ref (stable) and `drainPendingReady` is only invoked, never
+  // captured — the effect must fire on slot/visibility changes, not on either
+  // identity, so both stay out of the deps.
   // eslint-disable-next-line no-restricted-syntax -- synchronize cooperative child visibility with iframe-pool state
   useEffect(() => {
     drainPendingReady();
@@ -475,6 +591,7 @@ export function PreviewFrame({
         visible: key === activeSlotKey && !hideIframe,
       }, expectedOrigin);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `iframeRefs` is a ref and `drainPendingReady` is only invoked; this must fire on slot/visibility changes, not on either identity
   }, [activeSlotKey, hideIframe, slotOrder, slots]);
 
   // Determine overlay content for the main area
@@ -484,7 +601,7 @@ export function PreviewFrame({
   } else if (showComposeError) {
     overlayContent = <ComposeErrorBanner composeError={composeError} onSendToAgent={onSendCrashToAgent} />;
   } else if (showComposeHint) {
-    overlayContent = <ComposeHint onSendToAgent={onSendComposeHintToAgent} />;
+    overlayContent = <PreviewSetupInvite onSendToAgent={onSendComposeHintToAgent} />;
   } else if (showStarting && !showIframe) {
     overlayContent = (
       <div className="text-center space-y-3">
@@ -531,7 +648,10 @@ export function PreviewFrame({
           <Button
             variant="primary"
             size="md"
-            onClick={() => window.open(activeSlotUrl, "_blank")}
+            // `noopener,noreferrer` like the toolbar's button: the preview is
+            // arbitrary user code, and an opener handle lets it navigate the
+            // ShipIt tab it was launched from.
+            onClick={() => window.open(activeSlotUrl, "_blank", "noopener,noreferrer")}
           >
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
             Open in new tab
@@ -540,7 +660,7 @@ export function PreviewFrame({
             variant="secondary"
             size="md"
             onClick={() => {
-              setAuthBlocked(false);
+              if (activeSlotKey) markAuthBlocked(activeSlotKey, false);
               authRetryRef.current = 0;
               setRefreshKey((k) => k + 1);
             }}
@@ -558,15 +678,15 @@ export function PreviewFrame({
     // duplicating the list. `manualOnly` just tunes the copy (the dogfooding
     // case is a single manual `dev` service the user must start by hand).
     const manualOnly = services.length > 0 && services.every(s => s.preview === "manual");
+    // No button here. The drawer opens itself while nothing is previewing, and
+    // the one case where it doesn't — the user collapsed it by hand — is a
+    // deliberate act, with the drawer's own caret right there to undo it.
     overlayContent = (
       <div className="text-center space-y-3 max-w-sm px-4">
         <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
         <p className="text-sm text-(--color-text-secondary)">
           {manualOnly ? "No preview running. Start a service to launch it." : "No preview running"}
         </p>
-        <Button variant="secondary" size="md" onClick={() => usePreviewStore.getState().setServicesDrawerExpanded(true)}>
-          Show services
-        </Button>
       </div>
     );
   }
@@ -594,13 +714,41 @@ export function PreviewFrame({
         errorPanelOpen={errorPanelOpen}
         setErrorPanelOpen={setErrorPanelOpen}
         onRefresh={() => setRefreshKey((k) => k + 1)}
+        canGoBack={activeCanGoBack}
         onBack={() => {
           // The iframe is cross-origin, so we can't call `history.back()` on it
           // directly — ask the injected preview script (preview-proxy.ts) to.
+          // It navigates the frame's own entry list, never the joint session
+          // history, so a preview with nothing behind it can't walk ShipIt back.
           if (!activeSlotKey) return;
           iframeRefs.current
             .get(activeSlotKey)
             ?.contentWindow?.postMessage({ source: "shipit-toolbar", type: "back" }, "*");
+        }}
+        onHome={() => {
+          // The iframe is cross-origin, so the parent can't read or write its
+          // `location` — ask the injected preview script (preview-proxy.ts) to
+          // navigate it to the slot's root, the same channel the agent-pointer
+          // effect uses. The script drops the navigation when the page is
+          // already at root, so this never reloads the front page for its own
+          // sake. Slots without that script — a non-proxied local preview, a
+          // 502, an auth-gated response — never reported "loaded", and fall
+          // back to a `src` assignment, which is a document load but arrives.
+          if (!activeSlotKey || !activeSlotUrl) return;
+          const el = iframeRefs.current.get(activeSlotKey);
+          const rootUrl = new URL("/", activeSlotUrl).href;
+          // Targeted at the slot's own origin, never `"*"` — same reasoning as
+          // the pointer effect above. A `WindowProxy` keeps its identity across
+          // origin changes, so a frame that navigated itself somewhere else
+          // still passes the capability gate, and this message carries a URL
+          // (the preview subdomain names the session) rather than the bare
+          // `back`/`reload` verbs. A mismatch drops it in the browser.
+          const expectedOrigin = previewOrigin(activeSlotUrl);
+          if (el?.contentWindow && expectedOrigin && reloadableWindowsRef.current.get(activeSlotKey) === el.contentWindow) {
+            el.contentWindow.postMessage({ source: "shipit-toolbar", type: "navigate", url: rootUrl }, expectedOrigin);
+          } else if (el) {
+            el.src = rootUrl;
+          }
         }}
         activeSlotUrl={activeSlotUrl}
         previewPath={activePath}
@@ -661,12 +809,45 @@ export function PreviewFrame({
             front), and reordering keyed <iframe> elements moves them in the DOM — which forces the
             browser to RELOAD the iframe, wiping its in-page state and defeating the whole pool.
             Insertion order never moves an existing iframe, so a cached preview survives switching
-            away and back. The active slot is chosen via CSS visibility below, so render order is
+            away and back. The active slot is chosen by the `hidden` class below, so render order is
             purely structural and doesn't affect which preview is shown. */}
         {[...slots.keys()].map((key) => {
           const slot = slots.get(key);
           if (!slot) return null;
           const isActive = key === activeSlotKey;
+          // `hidden` is Tailwind's `display: none`, and that is the whole of
+          // nikzlabs/shipit#2418.
+          //
+          // This was `invisible` (`visibility: hidden`), which hides only the
+          // pixels: the document keeps rendering at full frame rate for the rest
+          // of the session. Measured cross-origin over a 4-second hide, a
+          // background page drew **240 frames** that way and **1** under
+          // `display: none`. On the reporter's phone that surplus was a second
+          // WebGL renderer competing for the GPU with the preview they were
+          // looking at, costing the visible one 9.5–13.5% of its frames in a
+          // matched A/B at both 60 Hz and 120 Hz.
+          //
+          // **The one thing this costs is focus inside the frame**, knowingly:
+          // measured, a genuine browser tab switch DOES restore the focused
+          // element, so this deviates from the "it feels like keeping tabs open"
+          // promise this pool is built on (docs/089). Everything else a person
+          // would notice survives — no reload, typed text, inner and document
+          // scroll, and the caret offset — so a preview you were typing in comes
+          // back whole except that you must tap the field to resume. The design
+          // owner was shown the measurement and took that trade.
+          //
+          // The alternative that keeps focus is `invisible` plus a parking
+          // transform (`translateY(-200vh)`), which throttles equally well. It
+          // was dropped once focus was off the table: two properties doing two
+          // jobs, and a silent dependency on that constant always clearing the
+          // viewport — a future layout placing this pane under a transformed or
+          // scrolled ancestor would stop it throttling with nothing to notice.
+          // `display: none` cannot fail that way, and it drops the frame from
+          // the tab order and the accessibility tree without a second property.
+          //
+          // This does not replace the docs/146 visibility contract: nothing here
+          // stops **audio**, which is exactly why that cooperative protocol
+          // exists. Rendering and audio are separate axes.
           const hidden = !isActive || hideIframe;
           // When a device preset is active, give the active iframe explicit dimensions
           // and center it in the panel with a scale transform.
@@ -693,8 +874,8 @@ export function PreviewFrame({
               style={deviceFrameStyle}
               className={
                 useDeviceFrameStyle
-                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "invisible" : ""}`
-                  : `absolute inset-0 w-full h-full ${hidden ? "invisible" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
+                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "hidden" : ""}`
+                  : `absolute inset-0 w-full h-full ${hidden ? "hidden" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
               }
               {...(!slot.containerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
             />

@@ -2,10 +2,10 @@
  * Review services — server-persisted, per-(session, file) reviews.
  *
  * Backs the unified review surface (docs/112-unified-review-surface):
- * markdown human drafts get selection-anchored comments, code human drafts get
+ * markdown drafts get selection-anchored comments, code drafts get
  * line-anchored comments, and both share the same draft/sent/history lifecycle.
- * Agent review submissions can use either line or selection anchors for
- * markdown snapshots because subagents often review the source form of a doc.
+ * Every comment is human-authored: the AI write path was removed in docs/203
+ * (plain-text review) and docs/220 (cross-agent review surfacing).
  */
 
 import { createHash } from "node:crypto";
@@ -16,7 +16,6 @@ import type {
   FileReview,
   FileReviewType,
   ReviewComment,
-  ReviewCommentSource,
   SelectionReviewComment,
 } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
@@ -173,7 +172,6 @@ export function addSelectionComment(
   contextBefore: string,
   contextAfter: string,
   text: string,
-  source: ReviewCommentSource = "human",
 ): ReviewComment {
   if (!text.trim()) {
     throw new ServiceError(400, "Comment text cannot be empty");
@@ -197,7 +195,6 @@ export function addSelectionComment(
     contextBefore,
     contextAfter,
     text,
-    source,
   );
 }
 
@@ -207,7 +204,6 @@ export function addLineComment(
   reviewId: string,
   line: number,
   text: string,
-  source: ReviewCommentSource = "human",
 ): ReviewComment {
   if (!text.trim()) {
     throw new ServiceError(400, "Comment text cannot be empty");
@@ -225,7 +221,7 @@ export function addLineComment(
   if (review.fileType !== "code") {
     throw new ServiceError(400, "Line comments are only valid on code files");
   }
-  return reviewStore.addLineComment(reviewId, line, text, source);
+  return reviewStore.addLineComment(reviewId, line, text);
 }
 
 /** Update a comment's text. */
@@ -278,16 +274,34 @@ export function deleteDraftReview(reviewStore: FileReviewStore, reviewId: string
 
 // ---- Prompt construction ----
 
+/** Ceiling on the send dialog's free-text note (docs/260). */
+export const MAX_NOTE_LENGTH = 4000;
+
+/**
+ * docs/260 — the send dialog's free-text note, rendered as the FIRST piece of
+ * feedback: after the lead-in line, before the anchored comments. A note is
+ * either a summary (which belongs before what it summarizes) or the one comment
+ * that fits no line (which has no other natural position), and the closing
+ * "address each piece of feedback" instruction has to stay the last line, so the
+ * bottom is not available. It carries no label — it is the user's own words in
+ * the user's own message.
+ */
+function noteBlock(note: string | undefined): string {
+  const trimmed = note?.trim();
+  return trimmed ? `${trimmed}\n\n` : "";
+}
+
 export function buildReviewPrompt(
   filePath: string,
   fileType: FileReviewType,
   comments: ReviewComment[],
   fileContent: string,
+  note?: string,
 ): string {
   if (fileType === "markdown") {
-    return buildMarkdownPrompt(filePath, comments, fileContent);
+    return buildMarkdownPrompt(filePath, comments, fileContent, note);
   }
-  return buildCodePrompt(filePath, comments, fileContent);
+  return buildCodePrompt(filePath, comments, fileContent, note);
 }
 
 function truncateForPrompt(text: string, max = 200): string {
@@ -299,6 +313,7 @@ function buildMarkdownPrompt(
   filePath: string,
   comments: ReviewComment[],
   fileContent: string,
+  note?: string,
 ): string {
   const { anchored, orphaned } = reanchorComments(comments, fileContent);
   const inDocOrder = [...anchored].sort((a, b) => {
@@ -306,6 +321,7 @@ function buildMarkdownPrompt(
   });
 
   let prompt = `I've reviewed ${filePath} and have the following feedback:\n\n`;
+  prompt += noteBlock(note);
 
   for (const c of inDocOrder) {
     prompt += `> ${truncateForPrompt(c.quotedText)}\n\n`;
@@ -331,6 +347,7 @@ function buildCodePrompt(
   filePath: string,
   comments: ReviewComment[],
   fileContent: string,
+  note?: string,
 ): string {
   const lines = fileContent.split("\n");
   const lineComments = comments
@@ -338,6 +355,7 @@ function buildCodePrompt(
     .sort((a, b) => a.line - b.line);
 
   let prompt = `I have the following comments on ${filePath}:\n\n`;
+  prompt += noteBlock(note);
 
   for (const comment of lineComments) {
     const start = Math.max(0, comment.line - 3);
@@ -367,6 +385,7 @@ export async function sendReview(
   reviewStore: FileReviewStore,
   reviewId: string,
   workspaceDir: string,
+  note?: string,
 ): Promise<{ prompt: string; review: FileReview }> {
   const review = reviewStore.getReview(reviewId);
   if (!review) {
@@ -378,6 +397,11 @@ export async function sendReview(
   if (review.comments.length === 0) {
     throw new ServiceError(400, "Cannot send a review with no comments");
   }
+  // The note is context, not an attachment point for a whole file. An
+  // unbounded free-text field on a prompt path gets a ceiling.
+  if (note !== undefined && note.length > MAX_NOTE_LENGTH) {
+    throw new ServiceError(400, `Note must be ${MAX_NOTE_LENGTH} characters or fewer`);
+  }
 
   const content = (await readFileSafe(workspaceDir, review.filePath)) ?? "";
   const prompt = buildReviewPrompt(
@@ -385,8 +409,15 @@ export async function sendReview(
     review.fileType,
     review.comments,
     content,
+    note,
   );
-  reviewStore.markSent(reviewId);
+  // The status check above happened before the awaited file read, so it can't
+  // be trusted on its own: two concurrent sends of the same draft both reach
+  // here. The conditional UPDATE decides, and the loser is rejected rather than
+  // dispatching a second identical prompt to the agent.
+  if (!reviewStore.markSent(reviewId, note)) {
+    throw new ServiceError(400, "Review already sent");
+  }
   const updated = reviewStore.getReview(reviewId);
   return { prompt, review: updated ?? review };
 }

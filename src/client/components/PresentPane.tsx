@@ -32,10 +32,13 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { usePresentStore, type Presentation } from "../stores/present-store.js";
+import { useUiStore } from "../stores/ui-store.js";
+import { slugifyHeading } from "../utils/shipit-link.js";
 import { PresentGallery } from "./PresentGallery.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { FileContentView } from "./FileContentView/FileContentView.js";
 import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
+import { FileReviewSendDialog } from "./SendReviewDialog.js";
 import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
 import { kindFromMimeType, supportsSourceToggle } from "../utils/file-content-kind.js";
@@ -63,11 +66,24 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   const setGalleryOpen = usePresentStore((s) => s.setGalleryOpen);
   const markSeen = usePresentStore((s) => s.markSeen);
 
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  // Keyed by the artifact it belongs to. An unkeyed error outlives the artifact
+  // that produced it for one render — long enough for the pointer effect below
+  // to blame artifact B for artifact A's failed fetch, mark B's click handled,
+  // and never deliver it.
+  const [fetchError, setFetchError] = useState<{ presentId: string; message: string } | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("rendered");
   // Ids with an in-flight content fetch, so a re-render doesn't double-fetch.
   const fetching = useRef<Set<string>>(new Set());
   const agentInterfaceFrameRef = useRef<HTMLIFrameElement | null>(null);
+  // docs/258 — the place an agent-authored pointer asked to be shown.
+  const linkTarget = usePresentStore((s) => s.linkTarget);
+  // Present's own container. A markdown artifact renders in ShipIt's DOM, so
+  // the pane scrolls it itself; this is a dedicated ref rather than a reach into
+  // `MarkdownSelectionComments`' internals.
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  // Clicks already acted on, so a re-render (or the content arriving) can't
+  // re-toast a fragment that matched nothing.
+  const handledClickRef = useRef<number | null>(null);
 
   // Active entry (computed before any early return so the hooks below see it).
   const hasEntries = presentations.length > 0;
@@ -75,6 +91,8 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   const active = hasEntries ? presentations[safeIndex] : undefined;
   const activePresentId = active?.presentId;
   const activeContent = active?.content;
+
+  const activeError = fetchError && fetchError.presentId === activePresentId ? fetchError.message : null;
 
   const kind = kindFromMimeType(active?.mimeType ?? "", active?.filePath ?? "");
   const agentInterfaceActive = isActiveTab && !galleryOpen && kind === "html" && viewMode === "rendered";
@@ -131,6 +149,90 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   // eslint-disable-next-line no-restricted-syntax -- reset toggle on carousel navigation
   useEffect(() => { setViewMode("rendered"); }, [activePresentId]);
 
+  // docs/258 — a pointer addresses a place in the RENDERED artifact, so
+  // delivering one switches back from source view. `viewMode` is local state
+  // that only resets when `activePresentId` changes, so re-clicking a pointer to
+  // the already-active artifact would otherwise leave source on screen and
+  // deliver nothing. Deliberately chosen over preserving the user's view mode:
+  // the pointer's whole meaning is "look at this", and honouring source view
+  // would silently drop the request.
+  const linkTargetIsActive = !!linkTarget && linkTarget.presentId === activePresentId;
+  // eslint-disable-next-line no-restricted-syntax -- an agent-authored pointer overrides the local view mode
+  useEffect(() => {
+    if (linkTargetIsActive) setViewMode("rendered");
+  }, [linkTargetIsActive, linkTarget?.clickId]);
+
+  // Scroll a MARKDOWN artifact to the addressed heading. Markdown renders in
+  // ShipIt's own DOM (not an iframe), which is what makes req 9's markdown
+  // support cheap: no SDK, no postMessage, no handshake timing. Rendered HTML
+  // takes the other path — a script injected into its `srcDoc` (`RenderedFrame`).
+  //
+  // Headings carry no `id` attributes: adding them would mean slugging in the
+  // shared markdown renderer, changing every markdown surface in the app to
+  // serve one pane. Matching the rendered text at click time is confined here
+  // and needs no new dependency.
+  // eslint-disable-next-line no-restricted-syntax -- scrolls the pane's own DOM once the content is on screen
+  useEffect(() => {
+    if (!linkTarget || !linkTargetIsActive) return;
+    if (handledClickRef.current === linkTarget.clickId) return;
+
+    // Mark the click acted on, and release the store's target so returning to
+    // this tab later cannot replay it. `handledClickRef` alone is not enough:
+    // `PresentPane` is only mounted while its tab is selected, so a switch away
+    // and back gives a fresh component with an empty ref and would re-toast.
+    //
+    // A rendered HTML fragment is the exception — there the target IS the render
+    // input (`scrollTo` below), so clearing it would rebuild the `srcDoc` and
+    // remount the frame, undoing the very scroll it just performed. Keeping it
+    // costs nothing: an HTML artifact has no toast to repeat, and a remount
+    // re-runs the injected scroll, which is what returning to the tab should do.
+    const done = (keepTarget = false) => {
+      handledClickRef.current = linkTarget.clickId;
+      if (!keepTarget) usePresentStore.getState().clearLinkTarget(linkTarget.clickId);
+    };
+
+    // A pointer is commonly what first shows an artifact, so the bytes are
+    // usually still loading. Wait; a failed fetch is a req 10 outcome.
+    if (activeError) {
+      done();
+      useUiStore.getState().setToast({
+        message: `Could not open ${active?.filePath ?? "that artifact"} — ${activeError}`,
+        variant: "error",
+      });
+      return;
+    }
+    if (activeContent === undefined) return;
+
+    // No fragment addresses the artifact as a whole (req 5) — focusing it, which
+    // already happened, is the entire action.
+    if (linkTarget.fragment === undefined) {
+      done();
+      return;
+    }
+    // HTML scrolls itself from the injected script; nothing to do here, and
+    // whether its fragment matched is not observable across an opaque origin.
+    if (kind !== "markdown") {
+      done(kind === "html");
+      return;
+    }
+    done();
+
+    const root = contentRef.current;
+    const wanted = slugifyHeading(linkTarget.fragment);
+    const headings = root ? [...root.querySelectorAll("h1,h2,h3,h4,h5,h6")] : [];
+    // First match wins — no de-duplication suffixes. That is part of the slug
+    // contract the agent authors against, stated in the agent-facing docs.
+    const match = headings.find((h) => slugifyHeading(h.textContent ?? "") === wanted);
+    if (!match) {
+      useUiStore.getState().setToast({
+        message: `No heading "${linkTarget.fragment}" in ${active?.filePath ?? "that artifact"}.`,
+        variant: "error",
+      });
+      return;
+    }
+    match.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [linkTarget, linkTargetIsActive, activeContent, activeError, kind, active?.filePath]);
+
   // Discard the outgoing artifact's empty draft on carousel nav / tab blur /
   // unmount — the Present analogue of the modal's close. `discardEmptyDraftNow`
   // is captured at effect-setup so the cleanup targets the OUTGOING file; the
@@ -144,6 +246,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   useEffect(() => {
     if (!isActiveTab) return;
     return () => { discardOutgoing(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `discardOutgoing` is captured at effect-setup on purpose so the cleanup targets the OUTGOING file (see above)
   }, [activePresentId, isActiveTab]);
 
   // Keyboard nav scoped to this pane — read latest index via the store rather
@@ -196,7 +299,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
         }
         if (!cancelled) usePresentStore.getState().setContent(id, body.content);
       } catch (err) {
-        if (!cancelled) setFetchError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setFetchError({ presentId: id, message: err instanceof Error ? err.message : String(err) });
       } finally {
         fetching.current.delete(id);
       }
@@ -306,10 +409,10 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
           // navigation (so the fade only plays when swapping in/out of the
           // gallery, not on every ◀/▶); mounting fresh on gallery→single makes
           // `animate-in` cross-fade it back in over the closing gallery.
-          <div className="absolute inset-0 animate-in fade-in duration-200">
-            {fetchError ? (
+          <div ref={contentRef} className="absolute inset-0 animate-in fade-in duration-200">
+            {activeError ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-sm text-(--color-text-tertiary) p-6 text-center">
-                <p className="max-w-xs">{fetchError}</p>
+                <p className="max-w-xs">{activeError}</p>
                 <p className="max-w-xs text-xs">
                   The artifact may no longer be on disk. Ask the agent to present it again.
                 </p>
@@ -330,6 +433,9 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
                 markdownComments={review.markdownComments}
                 codeComments={review.codeComments}
                 agentInterfaceFrameRef={kind === "html" ? agentInterfaceFrameRef : undefined}
+                scrollTo={
+                  linkTargetIsActive && kind === "html" ? linkTarget?.fragment : undefined
+                }
               />
             )}
           </div>
@@ -343,6 +449,9 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
           canSend={review.canSend}
           composing={review.composing}
           onSend={review.handleSend}
+          sendDialog={
+            <FileReviewSendDialog controls={review} filePath={active?.filePath ?? ""} />
+          }
         />
       )}
     </div>

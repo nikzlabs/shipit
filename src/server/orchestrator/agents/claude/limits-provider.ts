@@ -77,7 +77,11 @@ export interface ClaudeLimitsDeps {
 }
 
 export class ClaudeLimitsProvider implements LimitsProvider {
-  readonly agentId = "claude" as const;
+  // docs/252 req 10 — Anthropic's SUBSCRIPTION is what has an allowance;
+  // `claude-api-key` is metered and reports no quota, which is why a key-mode
+  // route's snapshot is dropped upstream rather than filed here.
+  readonly serviceId = "anthropic";
+  readonly billingMode = "sub" as const;
   private authManager: Pick<AuthManager, "getAccessToken">;
   private fetchImpl: typeof fetch;
   private now: () => number;
@@ -99,6 +103,8 @@ export class ClaudeLimitsProvider implements LimitsProvider {
   private lockedUntil = new Map<string, number>();
   /** Single-flight guard so concurrent refreshes share one request, per route. */
   private inFlight = new Map<string, Promise<LimitsRefreshResult>>();
+  /** Invalidates responses that started before a route's credential changed. */
+  private routeGeneration = new Map<string, number>();
 
   private listAccountRouteIds: (() => string[]) | undefined;
   private credentialDirForRoute: ((routeId: string) => string | undefined) | undefined;
@@ -143,6 +149,8 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     this.eventLatest.delete(routeId);
     this.apiLatest.delete(routeId);
     this.lockedUntil.delete(routeId);
+    this.inFlight.delete(routeId);
+    this.routeGeneration.set(routeId, (this.routeGeneration.get(routeId) ?? 0) + 1);
   }
 
   async fetch(routeId: string): Promise<SubscriptionLimits | null> {
@@ -158,7 +166,7 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     if (!eventLatest && !apiLatest && !locked) return null;
 
     // Plan tier isn't in either payload — derive from the credentials file.
-    // Account-scoped for the same reason `doRefresh` is (docs/150 req 19): the
+    // Account-scoped for the same reason `doRefresh` is (docs/150-multiple-provider-subscriptions req 19): the
     // unscoped read hits the singleton config root, which since the aliases
     // were retired holds nothing on a migrated install — so every account's
     // pill lost its plan label, and before that they all showed the migrated
@@ -181,8 +189,18 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     );
 
     const fetchedAt = Math.max(eventLatest?.at ?? 0, apiLatest?.at ?? 0);
+    // No `availableWindows` here, and the omission is the decision
+    // (planning#454). Every other reader states which windows its plan has, so
+    // the pill can drop a slot the plan does not have. This one CANNOT say it:
+    // `rate_limit_event` carries one window per event, so a null side means
+    // "not delivered yet" on a plan that has both — and the `/api/oauth/usage`
+    // seed that would fill the gap is rate-limited to a handful of calls before
+    // a ~30 minute lockout. Claiming completeness here would have hidden a real
+    // 7d meter for the whole of a first turn. Silence draws both, which is what
+    // this pill has always done.
     return {
-      agentId: "claude",
+      serviceId: this.serviceId,
+      billingMode: this.billingMode,
       routeId,
       plan,
       session,
@@ -211,14 +229,16 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     }
     const existing = this.inFlight.get(routeId);
     if (existing) return existing;
-    const run = this.doRefresh(routeId).finally(() => {
-      this.inFlight.delete(routeId);
+    const generation = this.routeGeneration.get(routeId) ?? 0;
+    const request = this.doRefresh(routeId, generation);
+    const run = request.finally(() => {
+      if (this.inFlight.get(routeId) === run) this.inFlight.delete(routeId);
     });
     this.inFlight.set(routeId, run);
     return run;
   }
 
-  private async doRefresh(routeId: string): Promise<LimitsRefreshResult> {
+  private async doRefresh(routeId: string, generation: number): Promise<LimitsRefreshResult> {
     // Account-scoped: `getAccessToken()` with no dir prefers ANTHROPIC_AUTH_TOKEN
     // and otherwise reads the ROOT config dir, so passing nothing here fetched
     // the wrong subscription's usage (or none at all, leaving the pill at "—").
@@ -259,6 +279,9 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     }
 
     if (response.status === 429) {
+      if ((this.routeGeneration.get(routeId) ?? 0) !== generation) {
+        return { routeId, outcome: "skipped" };
+      }
       const until = this.now() + retryAfterMs(response);
       this.lockedUntil.set(routeId, until);
       console.warn(
@@ -283,6 +306,9 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     if (!parsed) {
       console.warn("[claude-limits] /usage unexpected payload shape");
       return { routeId, outcome: "failed", detail: "unexpected /usage payload" };
+    }
+    if ((this.routeGeneration.get(routeId) ?? 0) !== generation) {
+      return { routeId, outcome: "skipped" };
     }
     // A successful fetch clears any prior lockout for this route.
     this.lockedUntil.delete(routeId);

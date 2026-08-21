@@ -49,6 +49,9 @@ routing, tracker names — is a separate feature
 12. Issues are copied in ascending key order, so their relative order survives:
     of any two migrated issues, the one with the lower Linear key has the lower
     number in the planning repository.
+13. The Linear workspace is the archive for whatever the copy could not carry.
+    It is kept, not deleted, and no separate export is maintained as a
+    long-lived artifact.
 
 ## Open questions
 
@@ -127,3 +130,10 @@ to ShipIt's own planning. The full deliberation history of the superseded
 - 2026-08-04 — The user clarified that every code repository keeps its own GitHub
   Issues tracker. The fixed public bug-report destination applies only to ShipIt
   product reports.
+- 2026-08-07 — Three things the copy could not carry were surfaced after the
+  migration ran: workflow state finer than open/closed, the 226 byte-identical
+  duplicate comments the write-dedup window collapsed, and Linear's attachment
+  URLs. Offered the choice between preserving a durable export and keeping the
+  Linear workspace as the archive, the user chose **Linear as the archive**
+  (req 13). The `/persist/linear-export/` copy is therefore a working artifact of
+  the migration, not a deliverable, and is expected to disappear with its session.

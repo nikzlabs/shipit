@@ -5,6 +5,11 @@ services:
     build:
       context: ../../..
       dockerfile: docker/Dockerfile.prod
+      args:
+        # docs/252 req 14 — the harnesses this install has. Override in
+        # $SHIPIT_HOME/.shipit.env (sourced by deployment/local/lib.sh) and
+        # re-run the installer; both images below must get the same value.
+        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
     # docs/254 — bind loopback by DEFAULT. ShipIt has no built-in authentication
     # (SECURITY-MODEL.md), so publishing on 0.0.0.0 exposed an agent with a shell
     # and repo access to every network the machine joins. A host firewall is not a
@@ -34,7 +39,7 @@ services:
       - NODE_ENV=production
       - PORT=4123
       - USE_CONTAINERS=true
-      # docs/150 (SHI-31) — non-root session worker runtime. See deployment/vps
+      # docs/150 (planning#33) — non-root session worker runtime. See deployment/vps
       # for the rationale; orchestrator HOME stays /root (auth.ts), only the
       # session containers run as shipit(1000).
       - SHIPIT_SESSION_WORKER_UID=1000
@@ -44,7 +49,7 @@ services:
       - DOCKER_NETWORK=shipit-prod
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
       - DOCKER_STACK=shipit-prod
-      # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
+      # docs/172 Gap 1 (planning#92) — agent egress containment is ON by default for
       # all instances (fail-closed). The orchestrator runs the privileged
       # installer/resolver/proxy sidecars in the agent netns from this image;
       # the local installer (deployment/local/setup.sh -> lib.sh) builds the
@@ -53,6 +58,13 @@ services:
       # opt-out (SESSION_EGRESS_ENFORCE=0) when this host can't run the sidecar.
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
       - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
+      # planning#370 / planning#378 — extra hostnames/origins this install answers
+      # to. Empty for every documented local path: loopback, a tailnet IP, a
+      # MagicDNS name and an sslip.io preview host are all derived from the
+      # name's own shape by api-origin-guard.ts. Needed only if you point an
+      # owned domain at this machine, since a registrable name proves nothing.
+      # Set it in ~/.shipit/.shipit.env, which lib.sh sources before `up`.
+      - SHIPIT_ALLOWED_ORIGINS=${SHIPIT_ALLOWED_ORIGINS:-}
     networks:
       - shipit-prod
 
@@ -60,11 +72,14 @@ services:
     build:
       context: ../../..
       dockerfile: docker/Dockerfile.session-worker.prod
+      args:
+        # docs/252 req 14 — must match the orchestrator's value above.
+        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
     image: shipit-session-worker:prod
     profiles:
       - build-only
 
-  # Egress firewall sidecar (docs/172 Gap 1, SHI-90) — see SESSION_EGRESS_SIDECAR_IMAGE
+  # Egress firewall sidecar (docs/172 Gap 1, planning#92) — see SESSION_EGRESS_SIDECAR_IMAGE
   # above. Build-only (like session-worker); built by lib.sh shipit_build_and_up,
   # never started by `up`. Its Dockerfile COPYs egress-sidecar/* so the build
   # context is docker/ (../.. from here).

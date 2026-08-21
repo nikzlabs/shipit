@@ -84,10 +84,16 @@ export function DeviceSelector({
           <button
             className="flex items-center gap-1.5 text-(--color-text-primary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
             aria-label="Select device viewport"
-            title="Select device viewport"
+            // Names the active preset, not just the control: once the toolbar
+            // collapses this label away, the tooltip is what reports it.
+            title={`Select device viewport (${triggerLabel})`}
           >
             <DeviceMobileIcon size={ICON_SIZE.SM} />
-            <span>{triggerLabel}</span>
+            {/* First label the preview toolbar gives up when it runs short of
+                width (see usePreviewToolbarCollapse): the device icon still
+                carries the meaning, and the `title` keeps the exact preset
+                readable. Inert anywhere without a `group/ptb` ancestor. */}
+            <span className="group-data-[hide-viewport=true]/ptb:hidden">{triggerLabel}</span>
             <CaretDownIcon size={ICON_SIZE.XS} />
           </button>
         </DropdownMenuTrigger>

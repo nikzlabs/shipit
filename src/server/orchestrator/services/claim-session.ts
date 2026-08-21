@@ -19,7 +19,8 @@ import { existsSync, unlinkSync } from "node:fs";
 import { sessionStateDirForWorkspace, sessionSharedStateDir, INSTALL_MARKER_FILE } from "../session-state-dir.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
+import { gitRemoteCredentialResolver } from "./github.js";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -201,7 +202,11 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     if (deps.githubAuthManager.authenticated) {
       deps.githubAuthManager.configureGitCredentials(sessionDir);
     }
-    const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(sessionDir, onAuthError);
+    const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(
+      sessionDir,
+      onAuthError,
+      { resolveRemoteCredential: gitRemoteCredentialResolver(deps.githubAuthManager) },
+    );
     if (resetTarget) {
       await sessionGit.rollback(resetTarget);
     }
@@ -234,11 +239,22 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     await materializeLfsWithWarning(sessionDir, repoLabel, (message) =>
       deps.sseBroadcast("error", { message }),
     );
-    // docs/150 §7 addendum (SHI-145): the fetch/rollback/branch-realign git ops
-    // above run as the root orchestrator against the (already-booted) warm
-    // clone. The `rollback` is a `git reset --hard`, which re-materializes the
-    // WORKTREE — not just `.git` — as root:root. Hand BOTH back before the
-    // worker uses them, or the non-root agent EACCESes editing tracked files.
+    // docs/150 §7 addendum (planning#147): the fetch/rollback/branch-realign git ops
+    // above re-materialize the WORKTREE — not just `.git` — so hand BOTH back
+    // before the worker uses them, or the non-root agent EACCESes editing
+    // tracked files.
+    //
+    // planning#412 — this used to say those ops "run as the root orchestrator"
+    // and leave the tree `root:root`. Since docs/266-orchestrator-git-trust-boundary E1 they do NOT: they go
+    // through `deps.createGitManager(sessionDir)` → `safeSimpleGit`, which drops
+    // to the session's own identity, so `rollback`'s `git reset --hard` writes
+    // worker-owned files. The handback is now belt-and-braces for the paths that
+    // still write as root (the clone itself), not the load-bearing step this
+    // comment described.
+    //
+    // Left standing rather than deleted because it is still correct about WHAT
+    // it does; only the stated reason was stale. That staleness was read as fact
+    // and nearly justified reordering the LFS pull below it.
     handWorkspaceBackToWorker(sessionDir);
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
@@ -410,7 +426,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const { resetTarget, fetched, fetchDurationMs, authError } = await fetchAndResolveDefaultBranch(
           workspaceDir,
           (err) => deps.githubAuthManager.markTokenInvalid(`claim-session fetch failed for ${url}: ${err.message}`),
-          { skipFetch },
+          { skipFetch, resolveRemoteCredential: gitRemoteCredentialResolver(deps.githubAuthManager) },
         );
         if (!skipFetch && !fetched && !authError) {
           console.warn(`[claim-session] Workspace fetch failed for ${url} — branching from the bare-cache snapshot, which may be stale`);
@@ -420,7 +436,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         }
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (resetTarget) branchArgs.push(resetTarget);
-        await simpleGit(workspaceDir).raw(branchArgs);
+        await safeSimpleGit(workspaceDir).raw(branchArgs);
 
         // Realign local `main` with `origin/main` (see syncLocalDefaultBranchToOrigin):
         // the branch was just cut from the freshly-fetched `origin/HEAD`, but
@@ -435,11 +451,22 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         await materializeLfsWithWarning(workspaceDir, url, (message) =>
           deps.sseBroadcast("error", { message }),
         );
-        // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
-        // uid after the root orchestrator's fetch + `checkout -b` + ref
-        // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE,
-        // so hand back both worktree AND `.git` — `.git` alone leaves the
-        // cloned/branched files root-owned and uneditable by the non-root agent.
+        // docs/150 §7 addendum (planning#147): hand back both worktree AND
+        // `.git`, because `checkout -b <resetTarget>` re-materializes the
+        // WORKTREE and not just `.git`.
+        //
+        // planning#412 — the tree this repairs is the one `cloneFromCache` just
+        // CREATED. That clone is a bare `safeSimpleGit()` naming no directory to
+        // stat, so it is the one git here that runs as root and lands
+        // `root:root`; `cloneFromCache` hands it over before returning
+        // (`repo-git.ts`), and the fetch, `checkout -b`, ref realignment and LFS
+        // pull above then all drop to this session's identity through
+        // `safeSimpleGit(workspaceDir)` / `gitSpawnOverridesForTree` and write
+        // worker-owned files. So this call's job is reconciling `.git` with
+        // `resolveGitDirOwner` — the uid that will next RUN git in it — and
+        // handing the worktree to the identity the container runs as. No-op
+        // wherever no identity resolves (local mode, dev, tests), which is also
+        // the only place the ops above still write as root.
         handWorkspaceBackToWorker(workspaceDir);
 
         deps.sessionManager.setRemoteUrl(appSessionId, url);

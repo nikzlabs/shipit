@@ -4,7 +4,7 @@ import type { Handler } from "./types.js";
 
 /**
  * docs/144 — the persisted sub-agent consult card. Two deliveries share this
- * handler (SHI-278):
+ * handler (planning#280):
  *
  *  - **at spawn**, `status: "pending"` — the durable in-flight record. Appended
  *    inline at the call site, so a backgrounded consult survives the session

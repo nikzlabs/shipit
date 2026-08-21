@@ -138,6 +138,67 @@ Plumbed end-to-end:
 - `turnContextTokens()` prefers the explicit `turn.contextTokens` when present and falls back to the cache-sum for legacy rows. All call sites (`ContextDial`, `useMessageHandler`, `session-data`) inherit the fix transparently.
 - `tokens.cacheRead` / `tokens.cacheWrite` on `AgentResultEvent` keep their existing meaning (turn-wide sums) and continue to drive cost/billing rollups — only the dial's "current context size" reading switched to the last-iteration value.
 
+### Claude-compatible providers report per-call usage in two different places
+
+Every Claude-compatible provider ShipIt routes to omits `result.usage.iterations`
+— DeepSeek leaves it out, Z.ai sends an empty array. So the reading has to come
+from a per-call event in the stream, and **which event carries it differs by
+provider**, which is why the adapter reads both into one
+`latestCallContextTokens` field:
+
+| Route | `result.usage.iterations` | `assistant` → `message.usage` | `message_delta` frame |
+|---|---|---|---|
+| Anthropic (first-party) | populated ✅ | populated | — (flag not passed) |
+| DeepSeek (`deepseek:key`) | absent | populated ✅ | populated |
+| Z.ai / GLM (`zai:sub`, `zai:key`) | `[]` | **all zeros** | populated ✅ |
+
+The CLI snapshots an `assistant` event's usage from the call's `message_start`
+SSE frame, and Z.ai sends zeros there, reporting the real numbers only in the
+closing `message_delta`. That left GLM turns with no per-call reading at all, so
+`turnContextTokens()` fell back to summing the turn's billing totals — which
+multiplies context by the API-call count. Measured on `glm-5.3[1m]`, 2026-08-17:
+a 3-call turn whose true final context was 26,145 tokens summed to 77,725, and a
+real session reported **2.1M against a 1M window**.
+
+The fix asks the CLI for the raw SSE frames (`--include-partial-messages`) and
+takes the last top-level `message_delta.usage`. The flag costs one re-emitted
+event per content delta plus a few small lifecycle frames per call (~440 lines
+where a small turn had 8; each line is small — a `message_start` frame carries
+the response's metadata, not an echo of the request — so the volume does not
+grow with context). It is therefore passed **only on a service-routed spawn**:
+the first-party Anthropic spawn has real iterations and keeps its argv
+unchanged. The adapter consumes the frames and maps them to `null`, so nothing
+extra crosses the container boundary.
+
+The gate is per-route rather than per-provider on purpose. It means DeepSeek
+pays the chunk overhead for a reading its assistant events already gave it —
+accepted, because the alternative is a `serviceId === "zai"` test that puts
+provider knowledge in the worker and silently mis-reads the next provider with
+GLM's shape.
+
+Precedence is unchanged: `iterations` first, then the last per-call reading from
+either event, never the result totals. Within a call the wire order is
+`assistant` then the closing `message_delta`, so "latest wins" resolves to the
+delta — the protocol's final figure. Both orderings and the agreement between
+the two sources are measured, not assumed: on DeepSeek under the flag the
+assistant event and the delta read exactly 168 + 25,216 on the last call
+(2026-08-17). Nested subagent events (a `parent_tool_use_id` on either the
+assistant event or the frame) are excluded — defensively for the frames, since
+every frame observed under the flag had it null, including on a turn that ran a
+subagent. Zero and output-only usage is ignored rather than written, so a
+provider that zeroes one source cannot empty a reading the other supplied. The
+turn-wide result totals remain the billing source and are untouched.
+
+Two limits are worth naming. **A provider that reports usage in neither
+per-call place** still falls through to `turnContextTokens()`'s sum and can
+therefore over-read — the bug class is narrowed to unmeasured providers, not
+eliminated. And the reading is cleared at `run()`, `sendUserMessage()` and each
+result, but **not on the adoption path** (`turn-adoption.ts` attaches listeners
+without going through either entry point), so a turn adopted after an abnormal
+end can inherit the previous turn's reading. That is pre-existing behaviour from
+the DeepSeek fix; the delta source makes a stale value more likely to be
+populated.
+
 ## Authoritative context window from `result.modelUsage.contextWindow`
 
 The original implementation derived the context window from a static `MODEL_CONTEXT_WINDOWS` map keyed by substring. That's brittle: Claude Opus 4.7 ships with a 1M window, but the map's `"opus": 200_000` entry beat any future-model substring and pinned the dial at 200K. The Claude CLI already reports the real window in `result.modelUsage.<model>.contextWindow` — that's now the source of truth.

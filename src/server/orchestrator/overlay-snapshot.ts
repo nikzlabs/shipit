@@ -137,7 +137,7 @@ export async function fetchDepSnapshotStream(
   signal?: AbortSignal,
 ): Promise<Readable> {
   const url = `${workerUrl}/workspace/dep-snapshot?path=${encodeURIComponent(depDir)}`;
-  // SHI-311 — orchestrator-facing worker route; carry the per-session token.
+  // planning#313 — orchestrator-facing worker route; carry the per-session token.
   const res = await fetch(url, {
     headers: workerAuthHeaders(workerUrl),
     ...(signal ? { signal } : {}),
@@ -178,7 +178,7 @@ export async function fetchWorkspaceHeadInfo(
   signal?: AbortSignal,
 ): Promise<WorkspaceHeadInfo | null> {
   try {
-    // SHI-311 — orchestrator-facing worker route; carry the per-session token.
+    // planning#313 — orchestrator-facing worker route; carry the per-session token.
     const res = await fetch(`${workerUrl}/workspace/head-commit`, {
       headers: workerAuthHeaders(workerUrl),
       ...(signal ? { signal } : {}),

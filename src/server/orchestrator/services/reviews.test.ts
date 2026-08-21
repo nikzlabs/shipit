@@ -16,7 +16,6 @@ function selectionComment(
     contextBefore?: string;
     contextAfter?: string;
     text: string;
-    source?: "human" | "ai";
   },
 ): SelectionReviewComment {
   return {
@@ -26,19 +25,17 @@ function selectionComment(
     contextBefore: partial.contextBefore ?? "",
     contextAfter: partial.contextAfter ?? "",
     text: partial.text,
-    source: partial.source ?? "human",
   };
 }
 
 function lineComment(
-  partial: { id?: string; line: number; text: string; source?: "human" | "ai" },
+  partial: { id?: string; line: number; text: string },
 ): ReviewComment {
   return {
     id: partial.id ?? "c1",
     kind: "line",
     line: partial.line,
     text: partial.text,
-    source: partial.source ?? "human",
   };
 }
 
@@ -254,5 +251,65 @@ describe("buildReviewPrompt (code)", () => {
       "x",
     );
     expect(prompt).toContain("Please address each comment.");
+  });
+});
+
+// ============================================================
+// buildReviewPrompt — the send dialog's note (docs/260)
+// ============================================================
+
+describe("buildReviewPrompt (note)", () => {
+  const CONTENT = "## Overview\nScope is unclear.";
+  const MARKDOWN_COMMENTS = [
+    selectionComment({ id: "c1", quotedText: "Scope is unclear", text: "Clarify scope" }),
+  ];
+  const CODE_COMMENTS = [lineComment({ id: "c1", line: 1, text: "fix" })];
+
+  it("puts the note after the lead-in line and before the first comment (markdown)", () => {
+    const prompt = buildReviewPrompt(
+      "plan.md", "markdown", MARKDOWN_COMMENTS, CONTENT, "Overall this reads as a design doc.",
+    );
+
+    const leadIn = prompt.indexOf("I've reviewed plan.md");
+    const note = prompt.indexOf("Overall this reads as a design doc.");
+    const firstComment = prompt.indexOf("> Scope is unclear");
+    expect(leadIn).toBe(0);
+    expect(note).toBeGreaterThan(leadIn);
+    expect(firstComment).toBeGreaterThan(note);
+  });
+
+  it("puts the note after the lead-in line and before the first comment (code)", () => {
+    const prompt = buildReviewPrompt(
+      "src/foo.ts", "code", CODE_COMMENTS, "x", "Do not restructure the file.",
+    );
+
+    const leadIn = prompt.indexOf("I have the following comments");
+    const note = prompt.indexOf("Do not restructure the file.");
+    const firstComment = prompt.indexOf("**src/foo.ts:1**");
+    expect(leadIn).toBe(0);
+    expect(note).toBeGreaterThan(leadIn);
+    expect(firstComment).toBeGreaterThan(note);
+  });
+
+  it("keeps the closing instruction last", () => {
+    const prompt = buildReviewPrompt(
+      "src/foo.ts", "code", CODE_COMMENTS, "x", "A note.",
+    );
+    expect(prompt.endsWith("Please address each comment.")).toBe(true);
+  });
+
+  it("leaves the prompt byte-identical when there is no note", () => {
+    const withoutArg = buildReviewPrompt("plan.md", "markdown", MARKDOWN_COMMENTS, CONTENT);
+    expect(buildReviewPrompt("plan.md", "markdown", MARKDOWN_COMMENTS, CONTENT, undefined))
+      .toBe(withoutArg);
+    expect(buildReviewPrompt("plan.md", "markdown", MARKDOWN_COMMENTS, CONTENT, "   \n  "))
+      .toBe(withoutArg);
+  });
+
+  it("trims the note", () => {
+    const prompt = buildReviewPrompt(
+      "plan.md", "markdown", MARKDOWN_COMMENTS, CONTENT, "  padded  ",
+    );
+    expect(prompt).toContain("feedback:\n\npadded\n\n");
   });
 });

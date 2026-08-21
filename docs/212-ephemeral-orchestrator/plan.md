@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-167
+issue: planning#169
 title: Ephemeral orchestrator (scale-to-zero)
 description: Analysis of shutting the orchestrator down when no browser is connected and reviving it on the next request without losing state.
 ---
@@ -44,11 +44,28 @@ authoritative state.
 ### Containers survive orchestrator death by design
 
 `shutdown-manager.ts` calls `runnerRegistry.disposeAll()` and `containerManager.dispose()`
-but **deliberately leaves session containers running**. Containers are labeled
+and **leaves session containers running**. Containers are labeled
 `shipit-session=<sessionId>`; on boot, `rediscoverContainers()` (`container-discovery.ts`)
 re-adopts them from the persisted session list, and `adoptRunningContainer()` is a
 backstop for runners whose container reference was lost. **A restart reconnects, it does
 not rebuild.**
+
+> **Corrected 2026-08-10.** This paragraph originally read "deliberately leaves
+> session containers running" and was **false against the code** from the day it
+> was written until that date: `containerManager.dispose()` called `destroyAll()`,
+> so the shutdown hook destroyed every session container (docs/051 wired it that
+> way; docs/113 removed the *other* kill path, the `docker rm -f` sweep in
+> `deploy.sh`, but not this one). Two live turns were killed mid-flight on the
+> 2026-08-10 update before it was found. `destroyAll()` has been deleted and
+> `dispose()` now releases only orchestrator-side resources, so the sentence is
+> true as written. The lesson is the one CLAUDE.md states under *Workflow*: a
+> doc describing an inherited guarantee is a claim, not a contract. Verify it at
+> the source.
+>
+> Note the scope: the session's **Compose stack** is still `compose down`-ed by
+> the runner's own `disposed` handler, and that is correct — `ServiceManager.
+> start()` opens with `killStaleContainers()`, so the next orchestrator rebuilds
+> the stack either way. Only the **agent container** is adopted across a swap.
 
 ### The transport is stateless and replay-safe
 
@@ -136,7 +153,8 @@ Smallest blast radius first:
 ## Key files
 
 - `container-discovery.ts` — `rediscoverContainers()`, `adoptRunningContainer()` (boot re-adopt)
-- `shutdown-manager.ts` — graceful shutdown; leaves containers running by design
+- `shutdown-manager.ts` — graceful shutdown; leaves session containers running (docs/113; guarded by `shutdown-manager.test.ts`)
+- `session-container.ts` — `dispose()` releases the health monitor and listeners only; per-session teardown is `destroy(sessionId)`, owned by the idle enforcer and explicit user actions
 - `app-lifecycle.ts` — startup reconciliation, signal handlers, shutdown hooks
 - `sse-client.ts`, `sse-connection-manager.ts` — sequence-numbered SSE + `?since` resume
 - `worker-http.ts` — stateless HTTP to containers

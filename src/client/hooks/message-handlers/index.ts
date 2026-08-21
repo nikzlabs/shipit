@@ -16,6 +16,7 @@ import { handleBackgroundTasks } from "./background-tasks.js";
 import { handleBugReportCard } from "./bug-report-card.js";
 import { handleBugReportFailed } from "./bug-report-failed.js";
 import { handleBugReportFiled } from "./bug-report-filed.js";
+import { handleBugReportDismissed } from "./bug-report-dismissed.js";
 import { handleEgressPromptCard, handleEgressPromptResolved } from "./egress-card.js";
 import { handlePermissionRequestCard } from "./permission-request-card.js";
 import { handlePermissionResolved } from "./permission-resolved.js";
@@ -28,6 +29,7 @@ import { handleContainerRestarting } from "./container-restarting.js";
 import { handleError } from "./error.js";
 import { handleFileTree } from "./file-tree.js";
 import { handleFilesChanged } from "./files-changed.js";
+import { handlePluginReposUpdated } from "./plugin-repos-updated.js";
 import { handleFullResetComplete } from "./full-reset-complete.js";
 import { handleForkBreadcrumb } from "./fork-breadcrumb.js";
 import { handleGithubStatus } from "./github-status.js";
@@ -47,6 +49,7 @@ import { handleMcpServerStatus } from "./mcp-server-status.js";
 import { handleMessageQueued } from "./message-queued.js";
 import { handleMessageSteered } from "./message-steered.js";
 import { handleModelInfo } from "./model-info.js";
+import { handleModelSelectionChanged } from "./model-selection-changed.js";
 import { handlePrLifecycleUpdate } from "./pr-lifecycle-update.js";
 import { handlePrNotableFiles } from "./pr-notable-files.js";
 import { handleResetEligible } from "./reset-eligible.js";
@@ -76,6 +79,7 @@ import { handleSessionSpawned } from "./session-spawned.js";
 import { handleChildMergedCard } from "./child-merged.js";
 import { handleSelfMergeWatchCard } from "./self-merge-watch.js";
 import { handleSessionReportCard } from "./session-report.js";
+import { handleNonTurnFailureCard, handleNonTurnFailureDismissed } from "./non-turn-failure.js";
 import { handleSessionStarted } from "./session-started.js";
 import { handleSessionStatus } from "./session-status.js";
 import { handleSessionContainerFreshness } from "./session-container-freshness.js";
@@ -134,6 +138,7 @@ export const messageHandlers: MessageHandlerMap = {
   bug_report_card: handleBugReportCard,
   bug_report_failed: handleBugReportFailed,
   bug_report_filed: handleBugReportFiled,
+  bug_report_dismissed: handleBugReportDismissed,
   egress_prompt_card: handleEgressPromptCard,
   egress_prompt_resolved: handleEgressPromptResolved,
   permission_request_card: handlePermissionRequestCard,
@@ -147,6 +152,7 @@ export const messageHandlers: MessageHandlerMap = {
   error: handleError,
   file_tree: handleFileTree,
   files_changed: handleFilesChanged,
+  plugin_repos_updated: handlePluginReposUpdated,
   full_reset_complete: handleFullResetComplete,
   fork_breadcrumb: handleForkBreadcrumb,
   git_committed: handleGitCommitted,
@@ -166,6 +172,7 @@ export const messageHandlers: MessageHandlerMap = {
   message_queued: handleMessageQueued,
   message_steered: handleMessageSteered,
   model_info: handleModelInfo,
+  model_selection_changed: handleModelSelectionChanged,
   pr_lifecycle_update: handlePrLifecycleUpdate,
   pr_notable_files: handlePrNotableFiles,
   reset_eligible: handleResetEligible,
@@ -191,6 +198,8 @@ export const messageHandlers: MessageHandlerMap = {
   session_forked: handleSessionForked,
   session_memory_exhausted: handleSessionMemoryExhausted,
   session_report_card: handleSessionReportCard,
+  non_turn_failure_card: handleNonTurnFailureCard,
+  non_turn_failure_dismissed: handleNonTurnFailureDismissed,
   session_spawn_failed: handleSessionSpawnFailed,
   session_spawned: handleSessionSpawned,
   child_merged_card: handleChildMergedCard,
@@ -241,6 +250,7 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "bug_report_card",
   "bug_report_failed",
   "bug_report_filed",
+  "bug_report_dismissed",
   "child_merged_card",
   "compaction_card",
   "compaction_status",
@@ -255,6 +265,8 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "self_merge_watch_card",
   "session_renamed_card",
   "session_report_card",
+  "non_turn_failure_card",
+  "non_turn_failure_dismissed",
   "session_spawn_failed",
   "session_spawned",
   "session_container_freshness",

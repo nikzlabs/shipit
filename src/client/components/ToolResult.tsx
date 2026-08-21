@@ -4,6 +4,7 @@ import hljs from "highlight.js";
 import { Button } from "./ui/button.js";
 import type { ToolResultBlock } from "./MessageList.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useDevicePixelRatio } from "../hooks/useDevicePixelRatio.js";
 
 interface ToolResultImage {
   /** Base64 payload — only present on results the client parsed locally. */
@@ -275,20 +276,77 @@ function GenericResult({ content, isError, maxLines, lazy }: { content: string; 
   );
 }
 
-/** Render images from tool result content (e.g. Playwright screenshots). */
+/**
+ * Render images from tool result content (e.g. Playwright screenshots).
+ *
+ * Drawn so that **one pixel of the image is one physical pixel of the display**
+ * — never resampled, in either direction. A screenshot too wide for that scrolls
+ * sideways rather than shrinking to fit. Fitting is the tempting default and it
+ * is the wrong one here: a resampled screenshot looks like a faithful one, so
+ * the reader has no way to tell whether the blur they are squinting at is in the
+ * page or in the render. A scrollbar says which.
+ *
+ * Hitting that on a high-DPI display takes the `srcSet` density descriptor.
+ * These screenshots are 1× — headless Chromium runs at `deviceScaleFactor: 1`,
+ * so a 1280 CSS-px viewport captures as 1280 image pixels whatever `scale` the
+ * agent passes. Laid out with no descriptor, a browser treats an image pixel as
+ * a *CSS* pixel, so on a 2× display those 1280 pixels get smeared across 2560
+ * physical ones. That is the stretch: a bitmap magnified 2×, sitting next to
+ * text the same display renders sharply. Declaring the density as the viewer's
+ * own ratio makes the browser lay the image out at `naturalWidth / dpr`, which
+ * lands each image pixel on exactly one physical pixel.
+ *
+ * The consequence is deliberate and worth knowing: on a 2× display the shot
+ * occupies half the CSS width it used to, so it reads *smaller* than the page it
+ * captured. Sharp-and-smaller beats big-and-smeared for the thing this view is
+ * for — checking what the page actually looked like.
+ *
+ * **The descriptor decides the layout size outright — it is not a hint the
+ * browser weighs against the display.** Verified in Chromium: `srcset="X 2x"`
+ * lays X out at half its natural width even at `dpr === 1`, and `1.5x` / `3x` /
+ * a Windows-scaling `1.7647…x` all divide exactly. `src` naming the same URL
+ * does not override it and costs no second request. Two things follow. The
+ * descriptor MUST carry the *live* ratio — a stale one mis-sizes the image with
+ * no fallback, which is why {@link useDevicePixelRatio} re-arms on change rather
+ * than reading `devicePixelRatio` once. And at `dpr === 1` this is exactly a
+ * no-op, so nothing changes for an ordinary display.
+ *
+ * A base64 `data:` URL is safe in `srcset` despite the comma after `;base64`:
+ * candidates are split on commas that follow whitespace, and base64 contains
+ * none. (A `utf8,<svg …>` data URL is *not* safe — its spaces do split it. Also
+ * verified, by breaking it.)
+ *
+ * Two earlier bounds are gone, for the reason above: a 256px height cap that
+ * reduced a 1280×720 shot to an unreadable strip, and the `max-w-full` that
+ * replaced it. Neither had a click-to-full-size view behind it to recover the
+ * detail from. `max-w-none` is load-bearing — Tailwind's preflight sets
+ * `img { max-width: 100% }`, which would silently re-fit the image inside the
+ * scroller and leave a scrollbar that never scrolls. The frame sits on the
+ * scroll container, not the image, so it stays put while the picture moves
+ * under it.
+ *
+ * Stacked rather than wrapped: a result with two images gives each the full
+ * width instead of squeezing both onto one row.
+ */
 function ToolResultImages({ images }: { images: ToolResultImage[] }) {
+  const dpr = useDevicePixelRatio();
   return (
-    <div className="flex gap-2 flex-wrap mt-2" data-testid="tool-result-images">
+    <div className="flex flex-col gap-2 mt-2" data-testid="tool-result-images">
       {images.map((img, i) => {
         const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         return (
-          <img
+          <div
             key={i}
-            src={src}
-            alt={`Tool output image ${i + 1}`}
-            loading="lazy"
-            className="max-w-full max-h-64 rounded-md border border-(--color-border-secondary)/50 object-contain"
-          />
+            className="overflow-x-auto rounded-md border border-(--color-border-secondary)/50"
+          >
+            <img
+              src={src}
+              srcSet={`${src} ${dpr}x`}
+              alt={`Tool output image ${i + 1}`}
+              loading="lazy"
+              className="block max-w-none h-auto"
+            />
+          </div>
         );
       })}
     </div>
@@ -419,6 +477,17 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   );
 
   const displayContent = parsed?.text ?? (lazy?.full ?? result.content);
+  // The previews below read `lazy.full` in preference to the `content` prop
+  // (`useExpandable`), so the two have to be in the SAME units. For a content-
+  // block array they are not: `displayContent` is the text we just unwrapped out
+  // of the blocks, while `lazy.full` is the raw `JSON.stringify`'d array. Handing
+  // the raw one through drew the whole array — image payload and all — as the
+  // text panel directly under the screenshot it had already rendered, which is
+  // what a `browser_take_screenshot` modal showed. Substitute the unwrapped text
+  // so the fetched tail arrives as the same kind of thing the preview started with.
+  const textLazy = lazy && parsed && lazy.full !== undefined
+    ? { ...lazy, full: parsed.text }
+    : lazy;
   const images = parsed?.images ?? [];
   const hasImages = images.length > 0;
   const hasContent = !!displayContent;
@@ -457,20 +526,32 @@ export function ToolResult({ tool, result }: { tool: string; result: ToolResultB
   let textResult = null;
   if (hasContent || result.isError) {
     if (tool === "Bash") {
-      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <BashResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={textLazy} />;
     } else if (tool === "Read") {
-      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <ReadResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
     } else if (tool === "Grep" || tool === "Glob") {
-      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <GrepResult content={displayContent} maxLines={textMaxLines} lazy={textLazy} />;
     } else {
-      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={lazy} />;
+      textResult = <GenericResult content={displayContent} isError={result.isError} maxLines={textMaxLines} lazy={textLazy} />;
     }
   }
+
+  // A projected screenshot arrives as an emptied text block plus a URL-backed
+  // image, so `hasImages` carries it past both status branches above and the
+  // text half of it can fail silently: the picture renders and the body that
+  // never loaded leaves no trace. The image is still the useful part, so this
+  // reports the miss beside it rather than replacing it.
+  const imageBodyFailed = hasImages && !hasContent && !!lazy?.error;
 
   return (
     <div>
       {textResult}
       {hasImages && <ToolResultImages images={images} />}
+      {imageBodyFailed && (
+        <div className="mt-1 text-xs text-(--color-error)" role="status">
+          Couldn&apos;t load this output.
+        </div>
+      )}
     </div>
   );
 }

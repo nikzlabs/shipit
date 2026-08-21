@@ -47,10 +47,10 @@ class FakeRunner {
   recordedCards: { afterGroupIndex: number; message: Record<string, unknown> }[] = [];
   steeredMessages: unknown[] = [];
   lastPersistedBufferIndex = 0;
-  /** SHI-264 — the delivery of the held wake-turn, so liveness is derivable. */
+  /** planning#266 — the delivery of the held wake-turn, so liveness is derivable. */
   activeDeliveryId: string | undefined;
   /**
-   * SHI-316 — the worker's `turnActive`, i.e. ground truth for "is a turn in
+   * planning#318 — the worker's `turnActive`, i.e. ground truth for "is a turn in
    * flight?". Deliberately independent of `running`: in production the local
    * mirror is exactly the thing that goes stale.
    */
@@ -337,7 +337,7 @@ describe("delivering a self merge wake (docs/239)", () => {
 });
 
 /**
- * SHI-316 — one merge must produce exactly one wake, even when the wake turn is
+ * planning#318 — one merge must produce exactly one wake, even when the wake turn is
  * cut short.
  *
  * The production incident: the wake ran for seven minutes, the user interrupted
@@ -345,7 +345,7 @@ describe("delivering a self merge wake (docs/239)", () => {
  * "the container never booted" — re-sent the identical prompt on its next tick,
  * retiring the session's resident agent process on the way in.
  */
-describe("a wake that reached the agent is not re-delivered (SHI-316)", () => {
+describe("a wake that reached the agent is not re-delivered (planning#318)", () => {
   let ctx: ReturnType<typeof makeCtx>;
   beforeEach(() => { ctx = makeCtx(); });
 
@@ -381,7 +381,7 @@ describe("a wake that reached the agent is not re-delivered (SHI-316)", () => {
 
   it("a wake that genuinely never ran is still retried", async () => {
     // The guard above must not disable the supervisor: a `no-result` wake is the
-    // case SHI-258 exists for and stays retryable.
+    // case planning#260 exists for and stays retryable.
     await deliverWake();
     ctx.runner.completeTurns(turnNoResult("agent process exited without producing a turn result"));
     expect(ctx.sessionManager.getMergeWatch(SESSION_ID)?.state).toBe("merge-observed");

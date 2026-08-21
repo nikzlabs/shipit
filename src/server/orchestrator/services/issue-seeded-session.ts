@@ -1,5 +1,5 @@
 /**
- * Issue-seeded sessions on the **in-app** path (SHI-320).
+ * Issue-seeded sessions on the **in-app** path (planning#322).
  *
  * `createHeadlessSession` derives branch/title from an `IssueRef` before the
  * session exists, because it owns creation end to end. The Issues tab's "Start
@@ -12,13 +12,15 @@
  * carried, rename the claimed session's throwaway branch to the pointer-derived
  * one and hand back the pins graduation needs so AI naming never touches either.
  * The derivation itself is NOT duplicated here — it is `seedFromIssueRef`, so
- * both paths produce the same branch for the same issue.
+ * both paths produce the same *shape* of branch for the same issue. Not the
+ * same NAME: since planning#413 that name ends in a random uniqueness suffix,
+ * precisely so two sessions on one issue never land on one remote branch.
  */
 
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { IssueRef } from "../../shared/types.js";
-import { seedFromIssueRef } from "./headless-sessions.js";
+import { seedFromIssueRef, isIssueSeededBranch } from "./headless-sessions.js";
 import { getErrorMessage } from "../validation.js";
 
 export interface IssueSeededSessionDeps {
@@ -33,7 +35,7 @@ export interface IssueSeededSessionDeps {
  * `explicitBranch` / `explicitTitle`. Both are always set, which is the point:
  * either one makes `graduateSession` skip AI naming, and AI naming is what
  * would otherwise rewrite the branch to a slug of the first message — a message
- * that begins with the issue's title (docs/248 req 22).
+ * that begins with the issue's title (docs/248-declared-issue-trackers req 22).
  *
  * `branch` is what the session is ACTUALLY on afterwards, not what we wanted.
  * A failed rename returns the existing throwaway branch rather than a name the
@@ -53,7 +55,15 @@ export async function pinIssueSeededSession(
   if (!session?.workspaceDir || !currentBranch) {
     return { branch: currentBranch || seed.branch, title: seed.title };
   }
-  if (currentBranch === seed.branch) return { branch: seed.branch, title: seed.title };
+  // Already on a branch seeded from THIS issue — leave it alone. The test is on
+  // the pointer-derived stem rather than on `seed.branch`, which now ends in a
+  // fresh random suffix and so can never equal a branch already on disk: an
+  // equality check would rename an already-correct branch to a second name on
+  // every call, and a re-entry after the branch was pushed would strand the
+  // pushed one.
+  if (isIssueSeededBranch(currentBranch, issueRef.identifier)) {
+    return { branch: currentBranch, title: seed.title };
+  }
 
   try {
     await deps.createGitManager(session.workspaceDir).renameBranch(currentBranch, seed.branch);

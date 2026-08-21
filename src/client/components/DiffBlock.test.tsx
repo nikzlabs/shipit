@@ -114,6 +114,43 @@ describe("DiffBlock", () => {
     });
   });
 
+  /**
+   * Long lines wrap instead of scrolling sideways. This isn't only taste: each
+   * diff line paints its own add/remove background, and a background only spans
+   * the *container* width — so with a horizontal scrollbar everything past the
+   * fold rendered as uncolored text. Wrapping is what keeps the coloring whole.
+   */
+  describe("long-line wrapping", () => {
+    const diffBody = () => screen.getByLabelText("Diff view").querySelector("pre:last-of-type")!;
+
+    it("wraps an edit diff rather than scrolling it horizontally", () => {
+      render(<DiffBlock filePath="f.ts" oldString={"x".repeat(400)} newString={"y".repeat(400)} />);
+      fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+      const pre = diffBody();
+      expect(pre.className).toMatch(/whitespace-pre-wrap/);
+      expect(pre.className).not.toMatch(/overflow-x-auto/);
+    });
+
+    it("wraps a unified diff rather than scrolling it horizontally", () => {
+      render(<DiffBlock filePath="f.ts" unifiedDiff={`+${"z".repeat(400)}`} />);
+      fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+      const pre = diffBody();
+      expect(pre.className).toMatch(/whitespace-pre-wrap/);
+      expect(pre.className).not.toMatch(/overflow-x-auto/);
+    });
+
+    it("wraps a whole-file write rather than scrolling it horizontally", () => {
+      render(<DiffBlock filePath="f.ts" newString={"q".repeat(400)} isWrite />);
+      fireEvent.click(screen.getByRole("button", { name: "Show diff" }));
+
+      const pre = diffBody();
+      expect(pre.className).toMatch(/whitespace-pre-wrap/);
+      expect(pre.className).not.toMatch(/overflow-x-auto/);
+    });
+  });
+
   describe("file path", () => {
     it("opens the file preview when clicked", async () => {
       useSessionStore.getState().setSessionId("session-1");

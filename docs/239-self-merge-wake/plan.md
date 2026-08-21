@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-253
+issue: planning#255
 title: Self-merge wake — continue a session automatically when its own PR merges
 description: A session opts in to being woken when its own PR merges; the agent resets its branch via an explicit command and continues, inside its own turn.
 ---
@@ -62,7 +62,7 @@ Separating what was decided from what was derived or proposed.
 | **Arming surfaces a cancellable card** | Chosen from options |
 | **Chaining, implemented at the agent level** | "Can we simply implement chaining on the agent level?… the agent would need to rearm manually" |
 | **A tested command rather than prompt instructions** | "the command sounds more robust" |
-| **SHI-262 fixed first, separately** | Chosen from options |
+| **planning#264 fixed first, separately** | Chosen from options |
 
 ### Derived — implementation constraints, not requirements
 
@@ -70,7 +70,7 @@ The reset safety gate; `merge-observed`, the retry supervisor and startup reconc
 (inherited from docs/196, not built); firing after `markMergedAndPruneExcess`; the live
 open-PR lookup; arming replacing an existing watch; explicit-mode bypass of docs/218's
 preference; `handWorkspaceBackToWorker`; the co-located prompt file and card persistence
-(repo-wide rules); SHI-262 as a prerequisite.
+(repo-wide rules); planning#264 as a prerequisite.
 
 ### Easily-misread boundaries
 
@@ -87,7 +87,7 @@ preference; `handWorkspaceBackToWorker`; the co-located prompt file and card per
 
 Extend `SessionMergeWatch` with an optional `{ kind: "self", watchId, prNumber }` and set
 `parentSessionId === sessionId`. No new column, no migration, no second list query, no
-parallel manager path — and `merge-observed`, the SHI-258 retry supervisor, the polling
+parallel manager path — and `merge-observed`, the planning#260 retry supervisor, the polling
 gate and `reconcilePending` all come by inheritance rather than reimplementation.
 
 **Accepted limitation:** a session cannot be simultaneously parent-watched and
@@ -147,7 +147,7 @@ wake turn settles, so without it an old settlement marks the new watch delivered
 Delivery, retry and restart recovery are docs/196's, unchanged; `reconcilePending`
 branches on `kind`.
 
-### One merge, one wake — even when the wake turn is cut short (SHI-316)
+### One merge, one wake — even when the wake turn is cut short (planning#318)
 
 In production a single merge produced **two** identical wake turns 7.5 minutes apart.
 The wake ran, the user interrupted it, and the session's next message spawned a fresh
@@ -155,7 +155,7 @@ agent that took the runner's `_agent` slot. The wake spawn's late `agent_done` t
 arrived with a stale `runToken` and was dropped by the docs/146 relay guard — right for
 the relay, since emitting it would run the dead turn's teardown against the live turn's
 slot — but nothing else told the wake turn it was over. Its settlement stayed pending,
-so the watch sat at `merge-observed`, which the SHI-258 supervisor cannot distinguish
+so the watch sat at `merge-observed`, which the planning#260 supervisor cannot distinguish
 from "the container never booted". Neither `settleAsDropped` net covered it: the runner
 was alive (no `disposed`) and the worker truthfully reported an agent running (no
 `turn_abandoned`).
@@ -185,6 +185,33 @@ Three changes, each closing one link of that chain:
   worker's `turnActive` via `runner.hasTurnInFlight()` and defers a tick when a turn is
   genuinely in flight. Fails open — an unreachable worker is the failure the retry
   exists for.
+
+**Follow-up, 2026-08-10 — retirement is displacement too.** The same duplicate wake
+recurred (session 18d04568, PR #2104 sent twice three minutes apart) through a route the
+first bullet does not cover. `supersedeDisplacedAgent` fires on a slot **replacement** —
+`setAgent(next)` over a still-installed proxy. Both retirement blocks in
+`runDispatchedTurn`'s `runOnce` take the other shape, `kill(); setAgent(null);
+createAgent()`, so the incoming proxy is installed over an already-empty slot and the
+hook has nothing to compare against. Wake A had produced its `agent_result` and its
+post-turn drain started wake B; B is a system turn, so it declined to adopt A's resident
+process and retired it here; A's own `agent_done` was then dropped by the docs/146
+stale-spawn guard, and A never settled at all.
+
+So the rule is **retirement is displacement**, and it holds at every site that retires a
+resident process to start a turn on the same runner: both blocks in `runOnce`
+(`supersedeRetiredTurn`), the two `resident-spawn-guard.ts` helpers a drained turn and
+the WS path share, and the WS failover release in `agent-execution.ts`. Each settles the
+outgoing turn before killing — and, where the site drops the previous turn's listeners,
+before that too, since the settlement travels on one of them. Settlement only, same
+contract as the displacement hook; the outcome is `completed` when the retired turn's
+result had arrived, `interrupted` when it had not, and never `no-result`, which is the
+one the supervisor retries.
+
+Two same-shaped sites are deliberately **not** covered, because each has a real terminal
+event of its own: `send-message.ts`'s stale kill leaves the slot installed, so the next
+`setAgent` is an ordinary replacement the displacement hook already sees, and the
+`answer_question` kill follows an interrupt whose `done` does arrive (that is the
+`wasInterrupted` shape planning#318 already pinned).
 
 The wider `systemTurn && !reuse` preemption is **not** fixed here: its comment ("only
 reachable with no turn in flight — `dispatchOnRunner` enqueues while `running`") is
@@ -239,15 +266,43 @@ Six things the mode must change or add:
   otherwise. The agent behaves identically for "unsafe" and "errored", so they are one
   outcome.
 
-The safety gate is retained exactly: `HEAD === mergedHeadSha`, clean tree, on
-`session.branch`, no in-progress sequencer, re-checked after the fetch. It is what makes a
-duplicate wake, a late wake, or a wake behind SHI-262's uncommitted work refuse rather
-than destroy.
+The safety gate is retained exactly: `HEAD === mergedHeadSha` **or** HEAD contained in
+`origin/<base>`, clean tree, on `session.branch`, no in-progress sequencer, re-checked
+after the fetch (see docs/218's "Safety gate" for the containment clause). It is what
+makes a duplicate wake, a late wake, or a wake behind planning#264's uncommitted work
+refuse rather than destroy.
 
 **The gate is prompt-mediated.** A refused agent could still hand-roll `git reset --hard`.
 The refusal message is therefore load-bearing copy — it must say why and forbid working
 around it — and extending the existing PreToolUse hook to bare destructive git is worth
 considering.
+
+### The refusal names the clause that refused
+
+The gate has nine clauses; the refusal used to print **one hard-coded sentence** for all
+of them — "this branch carries work that is not on the merged pull request" — which is
+true of exactly one (`head-moved`). `computeResetBlocker` has returned the refusing clause
+with its own `detail` since planning#297; this path collapsed it back to a boolean via
+`computeResetEligible` and then guessed.
+
+The cost was not cosmetic. In the incident that prompted the fix the real clause was
+`not-merged` (a docs/202 re-arm had cleared `merged_at`), while the branch was a strict
+ancestor of `origin/main` with a clean tree — provably lossless to reset. The agent read
+the sentence, constructed a root cause that was wrong in every particular, and pushed the
+lossless operation through the `--force` break-glass, which exists for cases that *cannot*
+be proven safe.
+
+So: build the refusal from the clause's own `detail` (`buildExplicitRefusal`), and keep
+the way-forward half verbatim per KIND of clause — `--force` for the gate clauses it
+bypasses, "resolve the condition and retry" for the {@link checkResetPreconditions} ones it
+does not. Pointing an agent at a bypass that correctly refuses again is how a refusal turns
+into a hand-rolled reset.
+
+**Every refusal writes an orchestrator log line** naming the clause (`[branch-reset]
+refused for <id> (<clause>)`). Before that, only a *forced* reset logged anything: the
+refusing clause in the incident was recoverable only because the agent went on to force
+the reset and *that* line happened to print the state which explained it. The refusal is
+the more interesting of the two events — it is the one where a session gets stuck.
 
 ## Chaining
 
@@ -280,7 +335,7 @@ watch silently; the user froze that transcript deliberately.
 
 ## Prerequisite — done
 
-**SHI-262** ✅ — the finished turn's local commit now completes before a queued turn
+**planning#264** ✅ — the finished turn's local commit now completes before a queued turn
 starts. Without it a wake queued behind a user turn would meet uncommitted work and
 refuse, making the happy path unreliable. The guarantee lives inside `tryDrain`, the
 funnel every drain site passes through, so it holds for all of them rather than for one
@@ -288,9 +343,9 @@ reordered call site.
 
 ## Known gaps (tracked separately)
 
-- **SHI-263** — a dispatch throwing during setup strands its settlement and blocks
-  SHI-258's retry.
-- ~~**SHI-264** — a restart mid-wake can queue a duplicate; the reset gate makes it refuse
+- **planning#265** — a dispatch throwing during setup strands its settlement and blocks
+  planning#260's retry.
+- ~~**planning#266** — a restart mid-wake can queue a duplicate; the reset gate makes it refuse
   rather than destroy.~~ Closed: every wake-turn now carries a durable delivery id the
   worker reports back, so adoption re-settles the surviving turn and reconcile
   redispatches only when nothing reports it. See docs/240 § Fix C.
@@ -301,9 +356,10 @@ reordered call site.
 |---|---|---|
 | Watch | `sessions.ts`, `shared/types/domain-types/session.ts` | `kind`/`watchId`/`prNumber` on `SessionMergeWatch` |
 | Arm / cancel | `agent-shim/shipit-session.ts`, `agent-ops-routes.ts`, session routes | `--self`; live open-PR lookup; cancel with `watchId` |
-| Delivery | `merge-watch.ts` | Self branch: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch; SHI-316 `interrupted` is terminal + the retry's `hasTurnInFlight` gate |
-| Settlement | `turn-settlement.ts`, `turn-executor.ts` | SHI-316 `interrupted` outcome; settle on the `superseded` event |
-| Slot displacement | `container-session-runner.ts`, `session-runner.ts`, `proxy-agent-process.ts` | SHI-316 emit `superseded` on a proxy pushed out by a newer spawn |
+| Delivery | `merge-watch.ts` | Self branch: anchor comparison, closed-note, `watchId` settlement check, `reconcilePending` branch; planning#318 `interrupted` is terminal + the retry's `hasTurnInFlight` gate |
+| Settlement | `turn-settlement.ts`, `turn-executor.ts` | planning#318 `interrupted` outcome; settle on the `superseded` event |
+| Slot displacement | `container-session-runner.ts`, `session-runner.ts`, `proxy-agent-process.ts` | planning#318 emit `superseded` on a proxy pushed out by a newer spawn |
+| Slot retirement | `dispatched-turn.ts`, `resident-spawn-guard.ts`, `ws-handlers/agent-execution.ts` | planning#318 follow-up: settle the outgoing turn at every site that retires a resident process by CLEARING the slot, which bypasses the displacement hook |
 | Wake | `wake-session.ts` | Restore the checkout if missing |
 | Reset | `services/pre-turn-reset.ts` | Explicit mode: setting-blind, idempotent, strict push failure, ownership handback |
 | Prompt | `orchestrator/prompts/self-merge-wake.md` | Co-located template |

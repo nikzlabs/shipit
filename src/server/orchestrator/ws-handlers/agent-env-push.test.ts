@@ -17,33 +17,40 @@
  */
 import { describe, it, expect } from "vitest";
 import type { ServiceManager } from "../service-manager.js";
-import type { CredentialStore } from "../credential-store.js";
 import type { OAuthTokens } from "../../shared/types/mcp-types.js";
+import type { CredentialRoute } from "../../shared/types.js";
+import type { AccountAgentEnvSource } from "../session-agent-env.js";
 import { selectAgentEnvForPush } from "./agent-execution.js";
 
 interface FakeCredentialStoreOptions {
   agentEnv?: Record<string, string>;
   oauthTokens?: Record<string, OAuthTokens>;
+  credentialRoutes?: CredentialRoute[];
+  credentialSecrets?: Record<string, string>;
 }
 
-/** Minimal fake — `selectAgentEnvForPush` only touches these two methods. */
+/** Minimal fake — `selectAgentEnvForPush` only touches these readers. */
 function makeFakeCredentialStore(
   opts: FakeCredentialStoreOptions = {},
-): Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens"> {
+): AccountAgentEnvSource {
   return {
     getAllAgentEnv: () => ({ ...(opts.agentEnv ?? {}) }),
     getAllMcpOAuthTokens: () => ({ ...(opts.oauthTokens ?? {}) }),
+    listCredentialRoutes: () => (opts.credentialRoutes ?? []).map((r) => ({ ...r })),
+    getCredentialSecret: (routeId: string) => opts.credentialSecrets?.[routeId],
   };
 }
 
 function makeFakeServiceManager(
   snapshotAgentValues: Record<string, string>,
+  declaredNames: string[] = [],
 ): Pick<ServiceManager, "getSecretsSnapshot"> {
   return {
     getSecretsSnapshot: () => ({
-      declared: [],
+      declared: declaredNames.map((name) => ({ name, services: [] })),
       missingByService: {},
       missingRequired: [],
+      plugins: [],
       agentNames: Object.keys(snapshotAgentValues).sort(),
       agentValues: { ...snapshotAgentValues },
     }),
@@ -170,5 +177,56 @@ describe("selectAgentEnvForPush — compose regime", () => {
     // expected to opt into agent secrets via `x-shipit-secrets` with
     // `agent: true`.
     expect(result).toEqual({});
+  });
+});
+
+/**
+ * docs/252 phase 2 — a compose snapshot is only as fresh as the last SUCCESSFUL
+ * secrets sync, and that pass returns early on an unparsable compose file. So
+ * revocation cannot be left to depend on the snapshot being current.
+ */
+describe("revoked service credentials never ride a stale compose snapshot", () => {
+  it("drops a catalogue credential the store no longer holds", () => {
+    const serviceManager = makeFakeServiceManager({
+      DATABASE_URL: "postgres://db",
+      DEEPSEEK_API_KEY: "sk-revoked",
+    });
+    const credentialStore = makeFakeCredentialStore();
+    expect(selectAgentEnvForPush({ serviceManager, credentialStore })).toEqual({
+      DATABASE_URL: "postgres://db",
+    });
+  });
+
+  it("keeps one the store still holds", () => {
+    const now = Date.now();
+    const route: CredentialRoute = {
+      id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string",
+      label: "DeepSeek key", isPrimary: true, priority: 0, status: "ready",
+      createdAt: now, updatedAt: now,
+    };
+    const serviceManager = makeFakeServiceManager({ DEEPSEEK_API_KEY: "sk-live" });
+    const credentialStore = makeFakeCredentialStore({
+      credentialRoutes: [route],
+      credentialSecrets: { cred_1: "sk-live" },
+    });
+    expect(selectAgentEnvForPush({ serviceManager, credentialStore })).toEqual({
+      DEEPSEEK_API_KEY: "sk-live",
+      // docs/252 phase 5 — the per-credential name is merged back in when the
+      // snapshot lacks it, because spawn shaping SOURCES from it: a snapshot
+      // taken before those names existed would make a shaped turn find no
+      // credential at all.
+      SHIPIT_CREDENTIAL_CRED_1: "sk-live",
+    });
+  });
+
+  it("keeps one the COMPOSE FILE declares, which is the documented per-repo override", () => {
+    const serviceManager = makeFakeServiceManager(
+      { DEEPSEEK_API_KEY: "sk-repo-owned" },
+      ["DEEPSEEK_API_KEY"],
+    );
+    const credentialStore = makeFakeCredentialStore();
+    expect(selectAgentEnvForPush({ serviceManager, credentialStore })).toEqual({
+      DEEPSEEK_API_KEY: "sk-repo-owned",
+    });
   });
 });

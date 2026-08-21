@@ -1,5 +1,5 @@
 /**
- * Integration test for SHI-307 / docs/249 — a consult card stranded `pending`
+ * Integration test for planning#309 / docs/249 — a consult card stranded `pending`
  * by an orchestrator restart is finished at the next boot.
  *
  * The unit tests in `consult-card-reconcile.test.ts` cover the sweep's policy.
@@ -28,7 +28,7 @@ import {
   createTestDatabaseManager,
 } from "./test-helpers.js";
 
-describe("Integration: consult cards stranded by an orchestrator restart (SHI-307)", () => {
+describe("Integration: consult cards stranded by an orchestrator restart (planning#309)", () => {
   let app: FastifyInstance | undefined;
   let tmpDir: string;
   let dbManager: DatabaseManager;

@@ -4,7 +4,11 @@ import userEvent from "@testing-library/user-event";
 import { SettingsEgress } from "./SettingsEgress.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import type { EgressAllowlistEntry, EgressAllowlistView } from "../../server/shared/types.js";
+import type {
+  EgressAllowlistEntry,
+  EgressAllowlistView,
+  EgressHostGrantOutcome,
+} from "../../server/shared/types.js";
 
 /** Stateful fetch stub returning the effective-allowlist view. */
 function stubFetch(
@@ -14,6 +18,8 @@ function stubFetch(
     withSession?: boolean;
     defaultsCustomized?: boolean;
     enforcementActive?: boolean;
+    /** planning#376 — what the route says the add took effect on. */
+    grant?: EgressHostGrantOutcome;
   } = {},
 ) {
   let entries = [...initial];
@@ -52,6 +58,9 @@ function stubFetch(
     if (url === "/api/egress/hosts" && method === "POST") {
       const source = body?.scope === "global" ? "user-global" : "user-session";
       entries = [...entries, { host: body?.host as string, source, removable: true }];
+      if (opts.grant) {
+        return { ok: true, status: 200, json: async () => ({ grant: opts.grant }) } as Response;
+      }
     }
     if (url === "/api/egress/hosts" && method === "DELETE") entries = entries.filter((e) => e.host !== body?.host);
     return { ok: true, status: 200, json: async () => ({}) } as Response;
@@ -75,7 +84,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("SettingsEgress (docs/172, SHI-90)", () => {
+describe("SettingsEgress (docs/172, planning#92)", () => {
   it("loads on mount and renders the containment toggle", async () => {
     stubFetch([]);
     render(<SettingsEgress />);
@@ -114,6 +123,44 @@ describe("SettingsEgress (docs/172, SHI-90)", () => {
     await userEvent.type(screen.getByTestId("settings-egress-host-input"), "internal.corp");
     await userEvent.click(screen.getByTestId("settings-egress-host-add"));
     await waitFor(() => expect(screen.getByText("internal.corp")).toBeInTheDocument());
+  });
+
+  // planning#376 — a successful add used to say nothing at all, so the user
+  // could not tell whether anything had to restart. It does now, from the
+  // route's own answer rather than from a guess about the scope.
+  describe("reports what the add took effect on", () => {
+    const add = async () => {
+      render(<SettingsEgress />);
+      await waitFor(() => expect(screen.getByTestId("settings-egress-empty")).toBeInTheDocument());
+      await userEvent.type(screen.getByTestId("settings-egress-host-input"), "internal.corp");
+      await userEvent.click(screen.getByTestId("settings-egress-host-add"));
+    };
+
+    it("names the agent and running services, and offers no restart here", async () => {
+      stubFetch([], {
+        grant: {
+          host: "internal.corp",
+          scope: "global",
+          liveNow: ["new-containers"],
+          staleUntilRestart: ["agent", "services"],
+          // App-wide dialog: no session is in scope, so "restart" has no subject.
+          restartSessionId: null,
+          reach: "grantable",
+        },
+      });
+      await add();
+      const note = await screen.findByTestId("settings-egress-grant");
+      expect(note.textContent).toContain("internal.corp");
+      expect(note.textContent).toContain("Sessions already running");
+      expect(screen.queryByText("Restart to apply now")).toBeNull();
+    });
+
+    it("says nothing when the server reported no outcome", async () => {
+      stubFetch([]);
+      await add();
+      await waitFor(() => expect(screen.getByText("internal.corp")).toBeInTheDocument());
+      expect(screen.queryByTestId("settings-egress-grant")).toBeNull();
+    });
   });
 
   it("removes a user-added host", async () => {

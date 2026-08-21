@@ -106,7 +106,7 @@ describe.skipIf(isShipItSandbox)("FileWatcher", () => {
   });
 
   it("reports a shipit.yaml edit (the config file both the compose reconcile and the client's tracker refresh hang off)", async () => {
-    // SHI-321 / #1622 — `shipit.yaml` must survive the ignore matcher: the
+    // planning#323 / #1622 — `shipit.yaml` must survive the ignore matcher: the
     // orchestrator's config re-evaluation and the browser's declared-tracker
     // refresh (docs/248) are both driven by seeing this path in a batch.
     fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: 2048\n");

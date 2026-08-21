@@ -1,5 +1,5 @@
 /**
- * MCP for `RUNTIME_MODE=local` spawns (SHI-298, docs/118 §dogfood, docs/088).
+ * MCP for `RUNTIME_MODE=local` spawns (planning#300, docs/118 §dogfood, docs/088).
  *
  * A containerized turn gets MCP through the session **worker**, in two writes
  * that happen in two different processes:
@@ -24,7 +24,7 @@
  * Closing either gate alone is useless (a config with no secrets, or secrets
  * with nothing configured), so both writes live here, applied at the ONE place
  * local mode already reaches for a per-session spawn decision: the spawn itself.
- * That is the same shape SHI-282 settled on for the credential gap
+ * That is the same shape planning#284 settled on for the credential gap
  * (`local-agent-home.ts` — HOME resolved per spawn, not provisioned per
  * session), and for the same reason: `prepareSessionAgentEnvironment`'s steps
  * all assume a worker to POST to, so un-gating them would be wrong. See the
@@ -49,8 +49,7 @@ import type {
   AgentMcpWriteResult,
   AgentRunParams,
 } from "../shared/types/agent-types.js";
-import type { CredentialStore } from "./credential-store.js";
-import { selectAgentEnvForPush } from "./session-agent-env.js";
+import { selectAgentEnvForPush, type AccountAgentEnvSource } from "./session-agent-env.js";
 import { localAgentOpsSpawnEnv } from "./local-agent-ops.js";
 import { getErrorMessage } from "../shared/utils.js";
 
@@ -81,7 +80,7 @@ export const LOCAL_SHIPIT_BRIDGE: AgentMcpBridge | null = null;
 
 export interface LocalAgentMcpDeps {
   /** Source of the MCP env — the same store the worker push reads from. */
-  credentialStore: Pick<CredentialStore, "getAllAgentEnv" | "getAllMcpOAuthTokens">;
+  credentialStore: AccountAgentEnvSource;
   /**
    * Session whose `/agent-ops` host address should reach the spawn (docs/251).
    * Omit and no `SHIPIT_AGENT_OPS_URL` is set, which is the pre-docs/251

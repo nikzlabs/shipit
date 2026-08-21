@@ -1,15 +1,31 @@
 /**
- * docs/211 — the sandbox invariant at the post-turn commit boundary.
+ * docs/128 / docs/211 — the auto-commit invariant at the post-turn commit
+ * boundary: ShipIt performs NO automatic commit for `kind === "ops"` or
+ * `kind === "sandbox"`.
  *
  * `postTurnCommit` runs `git.autoCommit()` on the session dir unconditionally
- * today, which would error on a sandbox's non-repo root. So a `kind ===
- * "sandbox"` session must skip the whole session-level git flow (commit + push
- * + the PR card it gates) — explicitly by kind, NOT inferred from `remoteUrl`.
+ * otherwise, which would error on a sandbox's non-repo root; for ops it would
+ * write turn commits into a workspace whose agent is told (in its own system
+ * prompt) that it owns git itself. Both skip the whole session-level git flow
+ * (commit + push + the PR card it gates) — explicitly by kind, NOT inferred
+ * from `remoteUrl`. The shared rule lives in `services/auto-commit-gate.ts`.
+ *
+ * This REVERSES docs/128's original "ops COMMITS but never auto-pushes", at the
+ * operator's request.
  */
 
 import { describe, it, expect, vi } from "vitest";
 import { postTurnCommit } from "./post-turn.js";
+import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 import type { SessionInfo } from "../../shared/types.js";
+
+// The real helper walks `.git` on the filesystem. Every case here passes
+// `sessionDir: "/workspace"`, so unmocked it would walk this repo's own
+// checkout twice per test for no assertion's benefit. Mocked, it also becomes
+// observable — which is what the ordering block at the bottom needs.
+vi.mock("../session-worker-uid.js", () => ({
+  chownWorkspaceGitToSessionWorker: vi.fn(),
+}));
 
 function makeCtx(kind?: SessionInfo["kind"]) {
   const autoCommit = vi.fn(async () => ({ commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] }));
@@ -29,25 +45,27 @@ function makeCtx(kind?: SessionInfo["kind"]) {
   return { ctx, autoCommit, scheduleAutoPush, createGitManager };
 }
 
-describe("postTurnCommit — sandbox invariant", () => {
-  it("skips auto-commit/push entirely for a kind=sandbox session", async () => {
-    const { ctx, autoCommit, scheduleAutoPush, createGitManager } = makeCtx("sandbox");
-    const result = await postTurnCommit(ctx, {
-      sessionDir: "/workspace",
-      sessionId: "s1",
-      emit: vi.fn(),
-      turnSummary: "did stuff",
+describe("postTurnCommit — auto-commit gate", () => {
+  for (const kind of ["sandbox", "ops"] as const) {
+    it(`skips auto-commit/push entirely for a kind=${kind} session`, async () => {
+      const { ctx, autoCommit, scheduleAutoPush, createGitManager } = makeCtx(kind);
+      const result = await postTurnCommit(ctx, {
+        sessionDir: "/workspace",
+        sessionId: "s1",
+        emit: vi.fn(),
+        turnSummary: "did stuff",
+      });
+      expect(result).toBeNull();
+      // The gate returns BEFORE constructing a GitManager — the unconditional
+      // autoCommit (which would error on a sandbox's non-repo root) never runs,
+      // and no push is scheduled (so no PR card downstream).
+      expect(createGitManager).not.toHaveBeenCalled();
+      expect(autoCommit).not.toHaveBeenCalled();
+      expect(scheduleAutoPush).not.toHaveBeenCalled();
     });
-    expect(result).toBeNull();
-    // The gate returns BEFORE constructing a GitManager — the unconditional
-    // autoCommit (which would error on the non-repo root) never runs, and no
-    // push is scheduled (so no PR card downstream).
-    expect(createGitManager).not.toHaveBeenCalled();
-    expect(autoCommit).not.toHaveBeenCalled();
-    expect(scheduleAutoPush).not.toHaveBeenCalled();
-  });
+  }
 
-  it("runs the normal commit flow for an ordinary (non-sandbox) session", async () => {
+  it("runs the normal commit flow for an ordinary session", async () => {
     const { ctx, autoCommit } = makeCtx(undefined);
     await postTurnCommit(ctx, {
       sessionDir: "/workspace",
@@ -58,26 +76,14 @@ describe("postTurnCommit — sandbox invariant", () => {
     // No kind → the gate doesn't fire and autoCommit is attempted as usual.
     expect(autoCommit).toHaveBeenCalledTimes(1);
   });
-
-  it("still commits for an ops session — only sandbox skips the commit", async () => {
-    const { ctx, autoCommit } = makeCtx("ops");
-    await postTurnCommit(ctx, {
-      sessionDir: "/workspace",
-      sessionId: "s1",
-      emit: vi.fn(),
-      turnSummary: "did stuff",
-    });
-    expect(autoCommit).toHaveBeenCalledTimes(1);
-  });
 });
 
 /**
- * docs/128 — an ops session commits but never auto-pushes. Its workspace is a
- * throwaway cockpit with no remote and no branch lifecycle; a `gh pr list --repo`
- * that wired an `origin` into it once got its template commits pushed at the real
- * ShipIt repo (rejected only because the histories were unrelated).
+ * The gate must not widen: an ordinary session still commits AND pushes, and
+ * the ops/sandbox refusal reaches the moved-HEAD branch too (where the push is
+ * armed off a HEAD move rather than off a commit we made).
  */
-describe("postTurnCommit — ops sessions never auto-push", () => {
+describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push", () => {
   function makeCommittingCtx(kind?: SessionInfo["kind"]) {
     const autoCommit = vi.fn(async () => ({
       commitHash: "abc1234", conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
@@ -98,29 +104,31 @@ describe("postTurnCommit — ops sessions never auto-push", () => {
     return { ctx, autoCommit, scheduleAutoPush };
   }
 
-  it("commits an ops session's turn but schedules no push", async () => {
+  it("makes no commit and emits no git_committed for an ops session", async () => {
     const emit = vi.fn();
     const { ctx, autoCommit, scheduleAutoPush } = makeCommittingCtx("ops");
     const hash = await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "investigated",
     });
-    expect(hash).toBe("abc1234");
-    expect(autoCommit).toHaveBeenCalledTimes(1);
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "git_committed" }));
+    expect(hash).toBeNull();
+    expect(autoCommit).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "git_committed" }));
     expect(scheduleAutoPush).not.toHaveBeenCalled();
   });
 
-  it("pushes an ordinary session's turn as before", async () => {
-    const { ctx, scheduleAutoPush } = makeCommittingCtx(undefined);
+  it("commits and pushes an ordinary session's turn as before", async () => {
+    const { ctx, scheduleAutoPush, autoCommit } = makeCommittingCtx(undefined);
     await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "did stuff",
     });
+    expect(autoCommit).toHaveBeenCalledTimes(1);
     expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
   });
 
   it("skips the moved-HEAD push for an ops session too", async () => {
-    // The agent ran its own `git commit`, so autoCommit finds a clean tree and
-    // the push is armed off the HEAD move instead. Same gate applies.
+    // The agent ran its own `git commit` — the SUPPORTED way to keep work in an
+    // ops session now. autoCommit would find a clean tree and the push would be
+    // armed off the HEAD move; the gate returns before any of that.
     const autoCommit = vi.fn(async () => ({
       commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
     }));
@@ -144,6 +152,7 @@ describe("postTurnCommit — ops sessions never auto-push", () => {
     await postTurnCommit(ctx, {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "x", turnStartHeadHash: "oldhead",
     });
+    expect(autoCommit).not.toHaveBeenCalled();
     expect(scheduleAutoPush).not.toHaveBeenCalled();
   });
 });
@@ -218,7 +227,7 @@ describe("postTurnCommit — agent self-commit (moved HEAD) secret guard", () =>
 });
 
 /**
- * SHI-295 — a merged session's post-turn auto-push RECREATES the branch GitHub
+ * planning#297 — a merged session's post-turn auto-push RECREATES the branch GitHub
  * deleted at merge, stranding the commit as an orphan that belongs to no pull
  * request. The commit still happens (work is never lost); only the silent push is
  * refused, and the refusal always leaves a persisted notice — the silence is what
@@ -328,7 +337,7 @@ describe("postTurnCommit — merged sessions never silently auto-push", () => {
 });
 
 /**
- * SHI-315 — the refusal has to reach BOTH actors from the real post-turn path,
+ * planning#317 — the refusal has to reach BOTH actors from the real post-turn path,
  * not just the transcript. These pin the wiring; `services/secret-block.test.ts`
  * pins the state machine itself.
  */
@@ -434,5 +443,234 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
     });
 
     expect(setSecretBlock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — the two permission states reach the user, and the
+ * `blocked` one does NOT retire a standing secret block.
+ *
+ * That last part is the subtle one. `blocked` means `git add -A` exited 128 and
+ * staged nothing, so the secret scan never ran — retiring the banner there would
+ * clear it on exactly the lie planning#317's condition exists to prevent. It is
+ * the same reasoning as the conflict/rebase early return, and it is easy to
+ * regress because the happy path looks identical.
+ */
+describe("postTurnCommit — unreadable workspace content", () => {
+  function makeCtx(unreadable: { kind: "omitted" | "blocked"; detail: string } | null, commitHash: string | null) {
+    const autoCommit = vi.fn(async () => ({
+      commitHash, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable,
+    }));
+    const getHeadHash = vi.fn(async () => "head");
+    const setSecretBlock = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({ autoCommit, getHeadHash })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => ({ findings: [], at: 1 })),
+        setSecretBlock,
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, setSecretBlock };
+  }
+
+  it("tells the user a commit is SHORT when a directory was unreadable", async () => {
+    const emit = vi.fn();
+    const { ctx } = makeCtx({ kind: "omitted", detail: "pgdata/" }, "abc1234");
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("pgdata/");
+    expect(notices).toContain("short");
+  });
+
+  /**
+   * `omitted` does NOT imply a commit. When the unreadable directory hides the
+   * turn's only changes, `autoCommit` takes its clean-tree return — null hash,
+   * `unreadable: omitted` — and the notice used to say "this commit is short…
+   * everything else was committed normally" about a commit that does not exist.
+   * That is req 15's outcome wearing req 14's words, which is precisely the
+   * collapse the two requirements were split to prevent.
+   */
+  it("does not call a commit short when the turn produced no commit at all", async () => {
+    const emit = vi.fn();
+    const { ctx } = makeCtx({ kind: "omitted", detail: "pgdata/" }, null);
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("pgdata/");
+    expect(notices).toContain("NO commit");
+    expect(notices).not.toContain("everything else was committed normally");
+  });
+
+  it("tells the user NOTHING was committed when a file was unreadable", async () => {
+    const emit = vi.fn();
+    const { ctx } = makeCtx({ kind: "blocked", detail: "d/server.key" }, null);
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("server.key");
+    expect(notices).toContain("NOT committed");
+  });
+
+  it("does not retire a standing secret block when nothing was staged", async () => {
+    // `blocked` returns before staging and before the scan. Clearing here would
+    // tell the user a secret is gone when nothing looked for it.
+    const { ctx, setSecretBlock } = makeCtx({ kind: "blocked", detail: "d/server.key" }, null);
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    });
+    expect(setSecretBlock).not.toHaveBeenCalledWith("s1", null);
+  });
+
+  it("still retires the block on an `omitted` commit, which DID stage and scan", async () => {
+    const { ctx, setSecretBlock } = makeCtx({ kind: "omitted", detail: "pgdata/" }, "abc1234");
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    });
+    expect(setSecretBlock).toHaveBeenCalledWith("s1", null);
+  });
+});
+
+/**
+ * docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — a commit that failed for a reason ShipIt could
+ * not classify is still a turn that committed nothing, and requirement 15 says
+ * "a log line is not a report".
+ *
+ * This is the half the classifier does not cover, on purpose: `autoCommit`
+ * rethrows anything that is not the measured permission case (an EIO, a file
+ * deleted mid-add, a leftover `index.lock`), and the throw used to reach
+ * `postTurnStep`, which logs and continues. The user saw a finished turn and an
+ * empty branch.
+ */
+describe("postTurnCommit — an auto-commit that threw", () => {
+  function makeThrowingCtx(err: Error) {
+    const append = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit: vi.fn(() => Promise.reject(err)),
+        getHeadHash: vi.fn(async () => "head"),
+      })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, append };
+  }
+
+  it("reports the failure to the user and still rethrows", async () => {
+    const emit = vi.fn();
+    const { ctx, append } = makeThrowingCtx(new Error("fatal: Unable to create '/w/.git/index.lock': File exists."));
+
+    await expect(postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    })).rejects.toThrow("index.lock");
+
+    // Persisted, not just emitted: the user must still find it after a reload.
+    expect(append).toHaveBeenCalled();
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("NOT committed");
+    expect(notices).toContain("index.lock");
+  });
+
+  it("rethrows unchanged when there is no session to report into", async () => {
+    const { ctx, append } = makeThrowingCtx(new Error("boom"));
+    await expect(postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: undefined, emit: vi.fn(), turnSummary: "a turn",
+    })).rejects.toThrow("boom");
+    expect(append).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * docs/266 — `.git` is made writable BEFORE the commit, not only after it.
+ *
+ * This is the whole observable effect of the `.git/COMMIT_EDITMSG` fix, and
+ * nothing else in the suite can fail on it: the ownership tests in
+ * `session-worker-uid.test.ts` prove the helper targets the right uid, but they
+ * pass just as happily if this call site is deleted and only the post-turn
+ * `finally` remains. Ordering is the assertion, so ordering is what is asserted.
+ *
+ * Why it has to be *before*: git raises the permission failure at commit time,
+ * after `git add -A` has already staged the turn's work. Repairing only
+ * afterwards fixes the NEXT turn, and the stranded turn is `CLAUDE.md`
+ * invariant 2's unrecoverable case.
+ */
+describe("postTurnCommit — .git is reconciled before the commit, not only after", () => {
+  const chown = vi.mocked(chownWorkspaceGitToSessionWorker);
+
+  function makeCtxWithCommit(autoCommit: ReturnType<typeof vi.fn>) {
+    return {
+      createGitManager: vi.fn(() => ({ autoCommit, getHeadHash: vi.fn(async () => "head") })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+  }
+
+  it("chowns before autoCommit AND after it", async () => {
+    chown.mockClear();
+    const autoCommit = vi.fn(async () => ({
+      commitHash: "abc123", conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+    }));
+
+    await postTurnCommit(makeCtxWithCommit(autoCommit), {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    });
+
+    expect(chown).toHaveBeenCalledTimes(2);
+    expect(chown.mock.invocationCallOrder[0]).toBeLessThan(autoCommit.mock.invocationCallOrder[0]);
+    expect(chown.mock.invocationCallOrder[1]).toBeGreaterThan(autoCommit.mock.invocationCallOrder[0]);
+  });
+
+  it("still chowns first when the commit throws — the reported production path", async () => {
+    // The `.git/COMMIT_EDITMSG` case itself. The pre-commit repair is what gives
+    // this turn a chance to land at all; the `finally` repair is what stops the
+    // NEXT one failing the same way. Both must fire.
+    chown.mockClear();
+    const err = new Error("fatal: could not open '.git/COMMIT_EDITMSG': Permission denied");
+    const autoCommit = vi.fn(() => Promise.reject(err));
+
+    await expect(postTurnCommit(makeCtxWithCommit(autoCommit), {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    })).rejects.toThrow("COMMIT_EDITMSG");
+
+    expect(chown).toHaveBeenCalledTimes(2);
+    expect(chown.mock.invocationCallOrder[0]).toBeLessThan(autoCommit.mock.invocationCallOrder[0]);
+  });
+
+  it("does not touch .git at all for a kind that never commits", async () => {
+    // The auto-commit gate returns before the lock, so an ops/sandbox session
+    // gains no filesystem work from this change.
+    chown.mockClear();
+    const ctx = {
+      createGitManager: vi.fn(),
+      chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    });
+
+    expect(chown).not.toHaveBeenCalled();
   });
 });

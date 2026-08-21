@@ -1,5 +1,7 @@
+import type { LoginIntegrationId } from "../../server/shared/catalogue/types.js";
 import { create } from "zustand";
-import type { AgentId, PermissionMode, FileContextRef, ProviderAccount, SubAgentDefaults } from "../../server/shared/types.js";
+import type { CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
+import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -22,7 +24,7 @@ import type { AgentAuthPhase } from "../../server/shared/types/ws-server-message
 /**
  * An in-flight sign-in challenge for one connected account.
  *
- * docs/150 req 19 — this replaced a pair of provider-wide slots
+ * docs/150-multiple-provider-subscriptions req 19 — this replaced a pair of provider-wide slots
  * (`codexDeviceAuth` for Codex's device code, `sessionStore.authUrl` for
  * Claude's paste URL) that could only ever describe *one* sign-in per
  * provider. Two rows connecting at once overwrote each other, and neither slot
@@ -34,15 +36,22 @@ import type { AgentAuthPhase } from "../../server/shared/types/ws-server-message
  * `agent_auth_complete` / `agent_auth_failed`. See
  * docs/119-codex-subscription-auth/plan.md and docs/155 Phase 2b.
  */
+/**
+ * Keyed by the LOGIN FLOW that produced the challenge, not by the harness that
+ * will consume the credential — matching the `agent_auth_*` wire shape. The
+ * writer (the SSE handler) and the readers (the Settings rows) must agree on
+ * this key or a challenge silently renders nowhere, which is why the parameter
+ * is typed rather than a bare string.
+ */
 export interface ProviderAccountAuth {
-  provider: AgentId;
+  loginId: LoginIntegrationId;
   accountId: string;
   verificationUri: string;
   userCode?: string;
 }
 
 /**
- * docs/150 req 16 — key for the per-account sign-in maps below.
+ * docs/150-multiple-provider-subscriptions req 16 — key for the per-account sign-in maps below.
  *
  * Sign-in state used to live in a single slot, which was only ever correct
  * because exactly one account could be connecting at a time. Once every
@@ -51,8 +60,8 @@ export interface ProviderAccountAuth {
  * device code on account A's row. Keying by provider *and* account id keeps
  * each row's challenge, error, and completion independent.
  */
-export function providerAccountAuthKey(provider: AgentId, accountId: string): string {
-  return `${provider}:${accountId}`;
+export function providerAccountAuthKey(loginId: LoginIntegrationId, accountId: string): string {
+  return `${loginId}:${accountId}`;
 }
 
 /** Immutably set `key` to `value`, or drop it entirely when `value` is null. */
@@ -97,7 +106,65 @@ export const EMPTY_CLAUDE_AUTH_DIAGNOSTICS: ClaudeAuthDiagnostics = Object.freez
 
 const MAX_CLAUDE_AUTH_DIAGNOSTIC_ENTRIES = 200;
 
+/**
+ * docs/257 req 5 — an inline result or failure on a provider's accounts card.
+ *
+ * Two kinds, because req 5 moves both halves of what used to be a toast: a
+ * failure to report, and the *result* of a successful disconnect ("moved N
+ * sessions", "N sessions have no connected account").
+ */
+export interface ProviderAccountNotice {
+  kind: "error" | "info";
+  message: string;
+}
+
 interface SettingsState {
+  /**
+   * docs/257 req 8 — whether this install can actually run a turn, as computed
+   * by the server (`computeCanRunTurns`). Never re-derived here from
+   * `agentList`: the composer, the starter-prompts gate and (from phase 2) the
+   * onboarding panel must read one fact, and a second derivation in the browser
+   * is exactly how they come to disagree.
+   *
+   * Hydrated from `GET /api/bootstrap` and pushed on every `agent_list` SSE.
+   * The `false` default is only ever read before bootstrap lands, which is why
+   * consumers gate on `bootstrapLoaded` (see `utils/chat-runnable.ts`) rather
+   * than trusting it — a pre-bootstrap `false` would otherwise flash a disabled
+   * composer at an install that is perfectly runnable.
+   */
+  canRunTurns: boolean;
+  /**
+   * docs/257 req 9 — when harness onboarding was first completed (ISO), or
+   * `null` for never.
+   *
+   * The onboarding panel's presence is this being `null` (and the GitHub gate
+   * not being up). It is a HISTORICAL fact, computed and persisted server-side:
+   * removing every credential later leaves it set, so the panel does not come
+   * back for a user who is not new. Hydrated from `GET /api/bootstrap` and
+   * pushed on every `agent_list` SSE.
+   */
+  harnessOnboardingCompletedAt: string | null;
+  /**
+   * docs/257 req 5 — a CARD-level result or failure for one provider's
+   * accounts, keyed by provider.
+   *
+   * **In the store rather than in component state, because every notice that
+   * lands here outlives the thing that produced it.** Three cases, and each one
+   * would be lost in local state:
+   *
+   *  - A refused *duplicate* account arrives as an `agent_auth_failed` SSE, and
+   *    a handler outside React has no other channel into a component it does
+   *    not render (docs/150-multiple-provider-subscriptions req 22).
+   *  - A **successful** disconnect of the LAST account removes the account, and
+   *    `ServicesPanel` then stops rendering that service's card entirely — so a
+   *    notice held in the card's own state unmounts in the same commit that
+   *    sets it, and the user never learns which sessions were stranded. The
+   *    panel keeps a card mounted while it has a notice to show, which is what
+   *    makes this durable rather than merely relocated.
+   *  - A failover cutoff is flushed from an **unmount cleanup**, where the
+   *    component's state and setters are already gone.
+   */
+  providerAccountNotices: Partial<Record<LoginIntegrationId, ProviderAccountNotice>>;
   hasSystemPrompt: boolean;
   systemPromptContent: string;
   /**
@@ -170,23 +237,19 @@ interface SettingsState {
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents: boolean;
   /**
-   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
    * id. Reaching either window's cutoff moves new work to the next eligible
-   * account. Server always sends an entry per registered agent, so the client
-   * never has to know the 90% default.
+   * credential. docs/252 phase 2 — keyed by `credentialModeKey(serviceId,
+   * billingMode)`, with one entry per SUBSCRIPTION mode in the catalogue (keys
+   * do not fail over, so they get none). The server always sends every entry,
+   * so the client never has to know the 90% default.
    */
   failoverCutoffs: Record<string, { session: number; weekly: number }>;
   /**
-   * docs/150 req 21 — per-provider account selection mode, keyed by agent id.
-   * Same contract as `failoverCutoffs`: the server sends an entry per
-   * registered agent, so the client never encodes the "strict" default.
+   * docs/150-multiple-provider-subscriptions req 21 — selection mode. Same key and the same contract as
+   * `failoverCutoffs`, so the client never encodes the "strict" default.
    */
   accountSelectionMode: Record<string, "strict" | "balanced">;
-  /**
-   * docs/217 — per-agent defaults applied when an agent runs as a sub-agent
-   * (Control A), keyed by agent id. Hydrated from bootstrap / settings broadcast.
-   */
-  agentSubAgentDefaults: Record<string, SubAgentDefaults>;
   /**
    * Claude CLI sign-in diagnostics, keyed by provider account id (docs/150).
    *
@@ -198,7 +261,82 @@ interface SettingsState {
    * serialization guard, so a row can only render its own attempt's output.
    */
   claudeAuthDiagnostics: Record<string, ClaudeAuthDiagnostics>;
-  providerAccounts: ProviderAccount[];
+  /**
+   * Which accounts' output buffers the user has opened, keyed by account id.
+   *
+   * Here rather than left to the `<details>` element because the disclosure is
+   * rendered by two different components across one sign-in — the waiting panel
+   * and then the challenge — so the element itself is destroyed and rebuilt at
+   * the moment the code arrives. Uncontrolled, the buffer a user had open
+   * snapped shut under them, and the panel jumped by the height of it.
+   */
+  claudeAuthOutputOpen: Record<string, boolean>;
+  providerAccounts: CredentialRoute[];
+  /**
+   * docs/252 phase 2 — every credential the user holds, keyed by
+   * `(serviceId, billingMode)` and in selection order within each group.
+   * Carries no secret. A superset of `providerAccounts`, which stays while the
+   * docs/150 account flow still speaks the account shape.
+   */
+  credentialRoutes: CredentialRoute[];
+  /**
+   * docs/252 req 9 — the model non-turn work (session naming, pull-request
+   * descriptions) runs on.
+   *
+   * `null` only before the server has ever written one — it seeds the setting
+   * the first time the install can run something, so on any configured install
+   * this holds a triple. It stopped meaning "follow the install" on 2026-08-13:
+   * that was a second state, and no wording for it survived contact with a
+   * reader.
+   */
+  nonTurnModel: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
+  /**
+   * docs/252 phase 7 (req 9) — what non-turn work resolves to right now, pin or
+   * no pin, plus the derived harness. Computed server-side so the client never
+   * re-derives req 9's rule and drifts from what actually runs. `null` when
+   * nothing on this install is runnable.
+   */
+  nonTurnModelResolved:
+    | {
+        serviceId: string;
+        billingMode: "sub" | "key";
+        modelId: string;
+        serviceName: string;
+        label: string;
+        harnessId: string;
+        source: "pinned" | "default";
+      }
+    | null;
+  /**
+   * docs/261 phase 3 (reqs 1, 5, 8) — both reviewer slots, in the user's order,
+   * each labelled pinned or auto-configured and carrying what it resolves to.
+   *
+   * Computed server-side and never re-derived here. Which harness runs a model,
+   * which level it reviews at, and which of the two slots is furthest from the
+   * implementer are reqs 3/4/5's rules; a second implementation in the browser
+   * would let the Reviewer tab promise something other than what reviews.
+   *
+   * Hydrated from `GET /api/bootstrap` and pushed on every `agent_list` SSE —
+   * that second channel is req 8's re-derivation made visible: adding a service
+   * has to improve an auto-configured reviewer while the tab is open, not on
+   * the next reload. Empty only before bootstrap lands.
+   */
+  reviewers: ReviewerSlotView[];
+  /**
+   * docs/264 phase 2 (req 5) — every agent role this install has, sorted by
+   * name, each carrying what it resolves to or why it cannot run.
+   *
+   * Resolved server-side and never re-derived here, for the reason `reviewers`
+   * is: which harness can carry a model and which levels it declares are
+   * catalogue rules, and a second implementation in the browser is how the
+   * Settings screen starts promising something other than what runs.
+   *
+   * Hydrated from `GET /api/bootstrap` and pushed on every `agent_list` SSE —
+   * that second channel is what makes a role go `disconnected` in an open tab
+   * when its service loses its credential, rather than on the next reload.
+   * Empty only before bootstrap lands: the reviewer is always among them.
+   */
+  roles: RoleView[];
   /**
    * In-flight account-scoped sign-in challenges, keyed by
    * {@link providerAccountAuthKey} so concurrent row sign-ins stay independent.
@@ -207,6 +345,12 @@ interface SettingsState {
   /** Last sign-in failure per account, same key space as `providerAccountAuths`. */
   providerAccountAuthErrors: Record<string, string>;
 
+  /** docs/257 — replace the server-computed runnable signal. */
+  setCanRunTurns: (canRun: boolean) => void;
+  /** docs/257 req 9 — replace the server-persisted onboarding-completed stamp. */
+  setHarnessOnboardingCompletedAt: (at: string | null) => void;
+  /** docs/257 req 5 — set or clear a provider's card-level notice. */
+  setProviderAccountNotice: (loginId: LoginIntegrationId, notice: ProviderAccountNotice | null) => void;
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
   setMaxIdleContainers: (n: number) => void;
@@ -235,12 +379,11 @@ interface SettingsState {
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
-  setFailoverCutoffs: (agentId: string, cutoffs: { session: number; weekly: number }) => void;
-  setAccountSelectionMode: (agentId: string, mode: "strict" | "balanced") => void;
+  /** `modeKey` is `credentialModeKey(serviceId, billingMode)` — docs/252 phase 2. */
+  setFailoverCutoffs: (modeKey: string, cutoffs: { session: number; weekly: number }) => void;
+  setAccountSelectionMode: (modeKey: string, mode: "strict" | "balanced") => void;
   setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
-  /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
-  setAgentSubAgentDefaults: (map: Record<string, SubAgentDefaults>) => void;
   setClaudeAuthProgress: (accountId: string, progress: {
     attemptId: string;
     phase: AgentAuthPhase;
@@ -253,11 +396,35 @@ interface SettingsState {
     status: "complete" | "failed",
     message?: string,
   ) => void;
-  setProviderAccounts: (accounts: ProviderAccount[]) => void;
+  setClaudeAuthOutputOpen: (accountId: string, open: boolean) => void;
+  setProviderAccounts: (accounts: CredentialRoute[]) => void;
+  setCredentialRoutes: (routes: CredentialRoute[]) => void;
+  /** docs/252 phase 7 — apply a `/api/settings` response's non-turn fields. */
+  setNonTurnModel: (
+    pinned: SettingsState["nonTurnModel"],
+    resolved: SettingsState["nonTurnModelResolved"],
+  ) => void;
+  /**
+   * docs/261 phase 3 — replace both reviewer slots with the server's answer.
+   *
+   * Whole-array replacement rather than a per-slot merge, and deliberately so:
+   * the two slots are resolved together (slot 2 is ranked against slot 1), so a
+   * partial update could leave the tab showing a pair the server never
+   * produced.
+   */
+  setReviewers: (reviewers: ReviewerSlotView[]) => void;
+  /**
+   * docs/264 phase 2 — replace the whole role list.
+   *
+   * Whole-array replacement, like {@link SettingsState.setReviewers}: the server
+   * resolves every role together against one credential snapshot, so a per-role
+   * merge could leave the tab showing a set the server never produced.
+   */
+  setRoles: (roles: RoleView[]) => void;
   /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
-  setProviderAccountAuth: (provider: AgentId, accountId: string, auth: ProviderAccountAuth | null) => void;
+  setProviderAccountAuth: (loginId: LoginIntegrationId, accountId: string, auth: ProviderAccountAuth | null) => void;
   /** Set (or clear, with `null`) one account's last sign-in failure message. */
-  setProviderAccountAuthError: (provider: AgentId, accountId: string, message: string | null) => void;
+  setProviderAccountAuthError: (loginId: LoginIntegrationId, accountId: string, message: string | null) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
    * scoped to that session only. When `sessionId` is undefined (e.g. on the
@@ -288,6 +455,9 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({
+  canRunTurns: false,
+  harnessOnboardingCompletedAt: null,
+  providerAccountNotices: {},
   hasSystemPrompt: false,
   systemPromptContent: "",
   permissionMode: "auto",
@@ -320,11 +490,29 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   enableSubAgents: false,
   failoverCutoffs: {},
   accountSelectionMode: {},
-  agentSubAgentDefaults: {},
   claudeAuthDiagnostics: {},
+  claudeAuthOutputOpen: {},
   providerAccounts: [],
+  credentialRoutes: [],
+  nonTurnModel: null,
+  nonTurnModelResolved: null,
+  reviewers: [],
+  roles: [],
   providerAccountAuths: {},
   providerAccountAuthErrors: {},
+
+  setCanRunTurns: (canRun) => set({ canRunTurns: canRun }),
+
+  setHarnessOnboardingCompletedAt: (at) => set({ harnessOnboardingCompletedAt: at }),
+
+  setProviderAccountNotice: (loginId, notice) =>
+    set((state) => ({
+      providerAccountNotices: notice === null
+        ? Object.fromEntries(
+            Object.entries(state.providerAccountNotices).filter(([id]) => id !== loginId),
+          )
+        : { ...state.providerAccountNotices, [loginId]: notice },
+    })),
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
 
@@ -433,13 +621,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
-  setFailoverCutoffs: (agentId, cutoffs) =>
-    set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [agentId]: cutoffs } })),
-  setAccountSelectionMode: (agentId, mode) =>
-    set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [agentId]: mode } })),
+  setFailoverCutoffs: (modeKey, cutoffs) =>
+    set((s) => ({ failoverCutoffs: { ...s.failoverCutoffs, [modeKey]: cutoffs } })),
+  setAccountSelectionMode: (modeKey, mode) =>
+    set((s) => ({ accountSelectionMode: { ...s.accountSelectionMode, [modeKey]: mode } })),
   setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
-  setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),
 
   setClaudeAuthProgress: (accountId, progress) =>
     set((state) => {
@@ -500,20 +687,29 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         },
       };
     }),
+  setClaudeAuthOutputOpen: (accountId, open) =>
+    set((state) => ({
+      claudeAuthOutputOpen: { ...state.claudeAuthOutputOpen, [accountId]: open },
+    })),
+
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
-  setProviderAccountAuth: (provider, accountId, auth) =>
+  setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
+  setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
+  setReviewers: (reviewers) => set({ reviewers }),
+  setRoles: (roles) => set({ roles }),
+  setProviderAccountAuth: (loginId, accountId, auth) =>
     set((state) => ({
       providerAccountAuths: withKey(
         state.providerAccountAuths,
-        providerAccountAuthKey(provider, accountId),
+        providerAccountAuthKey(loginId, accountId),
         auth,
       ),
     })),
-  setProviderAccountAuthError: (provider, accountId, message) =>
+  setProviderAccountAuthError: (loginId, accountId, message) =>
     set((state) => ({
       providerAccountAuthErrors: withKey(
         state.providerAccountAuthErrors,
-        providerAccountAuthKey(provider, accountId),
+        providerAccountAuthKey(loginId, accountId),
         message,
       ),
     })),

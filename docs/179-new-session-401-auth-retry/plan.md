@@ -93,6 +93,19 @@ the client doesn't flicker out of its loading state between attempts.
 Net effect: a transient stale-token 401 recovers invisibly — no sign-in card,
 no manual re-send.
 
+### Confirmed account failure fails over in the same logical turn
+
+The forced heal can prove that the captured subscription account is unusable
+(`missing_credentials` / revoked) while another account for the same service
+and billing mode is healthy. That result now enters docs/260's existing
+route-attempt loop instead of settling the turn: the failed captured route id
+is added to the ledger, env preparation selects the next eligible subscription
+route, and the original prompt is dispatched with the shared persistence guard.
+The auth recovery budget is consumed by this hop, so a second authentication
+failure surfaces normally. Reserved routes and metered keys do not enter this
+branch, and the account-qualified `auth_failed` persistence remains owned by
+the refresher.
+
 ### 3. Recognizing the failure at all (the 2026-08 follow-up)
 
 Both mechanisms above hang off one signal: the CLI process emitting
@@ -259,7 +272,7 @@ directions, so all three are closed together.
   a kill+restart. Reachable only with no turn in flight (`dispatchOnRunner`
   enqueues while `running`).
 
-  **Correction (SHI-288, prod incident 2026-08-03).** "Reachable only with no
+  **Correction (planning#290, prod incident 2026-08-03).** "Reachable only with no
   turn in flight" was read at the time as "nothing live is interrupted." It is
   not the same claim, and the difference caused an outage: `running === false`
   does not mean nothing is alive, because a resident streaming process outlives
@@ -323,7 +336,7 @@ migration, and returned immediately on every boot thereafter. It cannot explain
 repair-then-recreation between ordinary turns on an already-migrated install.
 
 What *is* established is narrower, and only about **newly provisioned**
-sessions: docs/150 req 19 stopped creating the root aliases and retires any an
+sessions: docs/150-multiple-provider-subscriptions req 19 stopped creating the root aliases and retires any an
 earlier boot left behind, and `copyCredentialPath` dereferences rather than
 preserving symlinks, so a session provisioned today cannot acquire the leaked
 shape at all. An audit of the current tree found no remaining production path

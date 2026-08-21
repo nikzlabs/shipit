@@ -4,7 +4,7 @@
  * `shipit session notify-on-merge --self` is docs/196's merge-watch pointed back
  * at the same session: the row is the existing `SessionMergeWatch` with
  * `kind: "self"` and `parentSessionId === sessionId`, so the state machine, the
- * SHI-258 retry supervisor, the polling gate and `reconcilePending` all come by
+ * planning#260 retry supervisor, the polling gate and `reconcilePending` all come by
  * inheritance rather than being rebuilt here. This module owns only the two
  * things that ARE new: resolving the anchor PR, and the arm card.
  *

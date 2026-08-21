@@ -29,6 +29,7 @@
 
 import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -284,6 +285,8 @@ export interface PrepareReleaseArgs extends PlanReleaseArgs {
   /** Session id + runner registry — threaded into agentCreatePr's commit flush. */
   sessionId?: string;
   runnerRegistry?: SessionRunnerRegistry;
+  /** Drop the session's pending debounced auto-push once this flow's own push lands. */
+  cancelAutoPush?: (sessionId: string) => void;
   chatHistory?: ChatHistoryManager;
 }
 
@@ -481,6 +484,16 @@ async function prepareFinalRelease(
     await git.mergeOverride(ref);
   }
 
+  // nikzlabs/shipit#2349 — `createBranchFrom` (a `checkout -B`), the cherry-pick and
+  // the merge-override all re-materialize the worktree through the ORCHESTRATOR's
+  // git, whose LFS smudge filter is disabled by design. Without this, preparing a
+  // release in an LFS repo leaves every asset the payload touched as ~130 bytes of
+  // pointer text — and the version-bump commit below is authored on top of that
+  // tree. Best-effort and never throws.
+  await restoreLfsAfterTreeRewrite(args.dir, "Release prepare", (message) =>
+    console.warn(`[release-prepare] ${message}`),
+  );
+
   // Content-free guard (docs/214): a bare `prepare` (no --pick/--from) resets the
   // head branch to `origin/<release-branch>` and adds only a bump commit, so the
   // release would ship the version number with zero code changes — identical to
@@ -533,6 +546,7 @@ async function prepareFinalRelease(
     remoteUrl: args.remoteUrl,
     ...(args.sessionId ? { sessionId: args.sessionId } : {}),
     ...(args.runnerRegistry ? { runnerRegistry: args.runnerRegistry } : {}),
+    ...(args.cancelAutoPush ? { cancelAutoPush: args.cancelAutoPush } : {}),
     ...(args.chatHistory ? { chatHistory: args.chatHistory } : {}),
   });
 

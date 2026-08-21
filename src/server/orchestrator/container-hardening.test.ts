@@ -1,5 +1,5 @@
 /**
- * docs/172 Gap 5 (SHI-97) — unit tests for kernel-tier hardening resolvers and
+ * docs/172 Gap 5 (planning#99) — unit tests for kernel-tier hardening resolvers and
  * the committed seccomp profile's structural invariants.
  *
  * These assert env-gating (default-OFF), fail-closed seccomp resolution, and
@@ -131,7 +131,14 @@ describe("read-only rootfs", () => {
     const tmpfs = readonlyRootfsTmpfs();
     // The image-rootfs writable paths come back as tmpfs; the persistent
     // bind/volume mounts (/workspace, /credentials, …) are NOT re-listed here.
-    expect(Object.keys(tmpfs).sort()).toEqual(["/home/shipit", "/run", "/tmp"]);
+    // docs/262 added /plugins: it holds only the symlinks the worker creates
+    // into the read-only plugin store, so under a read-only rootfs it must be
+    // writable or the agent-facing plugin path cannot exist at all. /plugin-bin
+    // (req 17) is the same story for the generated companion-CLI wrappers.
+    expect(Object.keys(tmpfs).sort()).toEqual(["/home/shipit", "/plugin-bin", "/plugins", "/run", "/tmp"]);
+    // The wrappers are executed, so this one must be `exec` specifically.
+    expect(tmpfs["/plugin-bin"]).toContain("exec");
+    expect(tmpfs["/plugin-bin"]).not.toContain("noexec");
     expect(tmpfs["/tmp"]).toContain("exec");
     expect(tmpfs["/tmp"]).not.toContain("noexec");
     // npm-global installs executables under ~/.npm-global/bin → home must exec.

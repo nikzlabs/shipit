@@ -121,20 +121,16 @@ export function ProjectSettings({
             </div>
           </TabsContent>
 
+          {/* The tab owns its own scroll container and pinned Save footer
+              (SettingsTabPane) — a long secret list must never push Save out
+              of sight. Its intro copy lives inside the component for the same
+              reason: header, rows and footer are one scroll layout. */}
           <TabsContent value="secrets">
-            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="secrets-tab">
-              <div className="space-y-1">
-                <h3 className="text-sm font-medium text-(--color-text-primary)">Environment Variables</h3>
-                <p className="text-xs text-(--color-text-secondary)">
-                  Secrets are injected into the services that declare them in <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>. The agent only sees values you explicitly mark with <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">agent: true</code>.
-                </p>
-              </div>
-              <SecretsTab
-                repoUrl={repoUrl}
-                onSecretsSave={onSecretsSave}
-                onSecretsLoad={onSecretsLoad}
-              />
-            </div>
+            <SecretsTab
+              repoUrl={repoUrl}
+              onSecretsSave={onSecretsSave}
+              onSecretsLoad={onSecretsLoad}
+            />
           </TabsContent>
 
           {/* docs/254 — per-repo appearance. Currently just the sidebar identity

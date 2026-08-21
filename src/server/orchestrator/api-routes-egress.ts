@@ -1,5 +1,5 @@
 /**
- * Egress decision API route (docs/172 Gap 1, SHI-90 — Tier C allow-once).
+ * Egress decision API route (docs/172 Gap 1, planning#92 — Tier C allow-once).
  *
  * Surface:
  *   GET /api/egress/decision?host=<sni>&session=<sessionId>
@@ -16,17 +16,38 @@
  * decision, but it cannot GRANT anything (granting is the browser-only
  * `egress_decision` WS path), so an agent that calls it directly can at most
  * propose a card it can't approve.
+ *
+ * planning#371 — that flag covers the AGENT container only. A Compose service's
+ * proxy asks the same question from the service's own network namespace, and
+ * every Compose-service IP is now denied the whole `/api/*` surface
+ * (`api-container-guard.ts` §0.5) precisely because the service and its proxy
+ * are indistinguishable by address. That query is admitted instead by the token
+ * the sidecar was launched with (`egress-decision-auth.ts`), which is why the
+ * route needs no per-caller change here: the guard decides who reaches it, and
+ * the answer is unchanged for everyone it still admits.
  */
 
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import { isEgressHostAllowed, shouldCardEgressHost } from "./egress-policy.js";
-import { normalizeHost, buildEffectiveAllowlist, isBuiltinDefault } from "./egress-allowlist.js";
+import {
+  normalizeHost,
+  buildEffectiveAllowlist,
+  isBuiltinDefault,
+} from "./egress-allowlist.js";
+import { egressHostReach } from "./egress-host-reach.js";
 import { EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { EgressSettings, EgressSessionSettings, EgressAllowlistView } from "../shared/types.js";
+import type {
+  EgressSettings,
+  EgressSessionSettings,
+  EgressAllowlistView,
+  EgressHostGrantOutcome,
+  EgressHostReach,
+} from "../shared/types.js";
+import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 /** Stable per (session, host) so a re-denied host updates one card, never duplicates. */
@@ -102,23 +123,58 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
   // Whether this deployment can actually ENFORCE containment (enforcement on +
   // sidecar image configured). Resolved once at registration — it's a fixed
   // function of the process env. The honest signal the browser uses to
-  // distinguish containment policy from enforcement (docs/172, SHI-90).
+  // distinguish containment policy from enforcement (docs/172, planning#92).
   const enforcementActive = deps.egressEnforcementActive ?? false;
+  // planning#383 — whether Tier B exists on this deployment at all. Resolved
+  // once here for the same reason: a fixed function of the process env.
+  const dnsControlDeployed = deps.egressDnsControlDeployed;
 
   // The containment a session's LIVE container was actually started with — the
   // source of truth for "pending · restart to apply" (docs/172). `null` when no
   // running container exists (nothing plumbed to diff against, nothing to
   // restart). Reads the in-memory container record (the egress sidecars are a
   // creation-time topology choice recorded there), never the agent's netns, so
-  // this stays on the browser-only surface (SHI-129).
+  // this stays on the browser-only surface (planning#131).
   const liveContained = (sessionId: string): boolean | null => {
     const sc = deps.containerManager?.get(sessionId);
     if (sc?.status !== "running") return null;
     return sc.egressContainedAtStart ?? null;
   };
 
-  // ---- Browser-only egress settings (docs/172, SHI-90) ------------------
-  // NO `containerAccessible` flag: SHI-129's default-deny keeps the contained
+  // planning#376/#380/#383 — can this host be made reachable at all, and by
+  // whom? ONE predicate answers it for every host surface (`egress-host-reach.ts`),
+  // so what the Plugins card said before the click and what this route reports
+  // after it cannot disagree. This used to be a local re-derivation of the
+  // proxy's composition, which is how the three defects each got one case right
+  // and the next one wrong.
+  //
+  // The containment asked about is `isEgressContained`'s own rule — what the
+  // LIVE container started with, else the resolved policy, else the deployment's
+  // enforcement — because that is the rule the Plugins card asks, and the two
+  // stating different things about one host is the whole defect class. (Review
+  // finding: reading the policy alone reported "reaches nothing" for a session
+  // whose running container started Open and is unrestricted right now, while
+  // the card said `allowed` about the same host.) Fails to `grantable` when
+  // nothing is knowable — an unwired resolver must not be rendered as a
+  // positive claim that no grant can work.
+  //
+  // The app-wide Settings editor has NO session, and that is not a special case
+  // either: the same predicate answers it with no config at all, so a
+  // deployment-wide fact still lands (`blocked-by-deployment`) while a host the
+  // Tier A floor admits does not get swept up with it.
+  const reachFor = (sessionId: string | null, host: string): EgressHostReach => {
+    const config = sessionId ? deps.containerManager?.resolveEgress(sessionId) : undefined;
+    const startedContained = sessionId ? liveContained(sessionId) : null;
+    return egressHostReach({
+      contained: startedContained ?? config?.contained ?? enforcementActive,
+      dnsControlDeployed,
+      config,
+      ...(sessionId ? { sessionId } : {}),
+    })(host);
+  };
+
+  // ---- Browser-only egress settings (docs/172, planning#92) ------------------
+  // NO `containerAccessible` flag: planning#131's default-deny keeps the contained
   // agent from reaching these to loosen its own containment. Registered only
   // when a store is wired (test setups without egress can omit it).
   if (store) {
@@ -154,7 +210,14 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     // editor); a session id scopes it to one session. A global add applies at
     // the next container start; a session-scoped add to a running, contained
     // session is reloaded live (resolver DNS + ipset + proxy SNI).
-    app.post<{ Body: { host?: string; scope?: string } }>(
+    //
+    // planning#376 — the response also carries `grant`: what the add actually
+    // took effect on. The two scopes behave very differently and the browser
+    // used to predict the difference in a button tooltip; the route ran the
+    // reload (or didn't) and can see what is running, so it reports instead.
+    // `session` is REPORTING-only: it names the session the outcome describes
+    // for a global add, and never changes where the entry is written.
+    app.post<{ Body: { host?: string; scope?: string; session?: string } }>(
       "/api/egress/hosts",
       async (request, reply) => {
         const host = typeof request.body?.host === "string" ? request.body.host.trim() : "";
@@ -163,6 +226,24 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(400);
           return { error: "host is required" };
         }
+        const isGlobal = scope === EGRESS_GLOBAL_SCOPE;
+        const reportSession = isGlobal
+          ? (typeof request.body?.session === "string" && request.body.session ? request.body.session : null)
+          : scope;
+        // `reloaded` is `reloadEgress`'s own answer, not an assumption from the
+        // scope: it declines for an unenforced deployment, an Open session, and
+        // a deployment with the Tier B/C sidecars off — and in that last one the
+        // agent really is left holding the old list.
+        const grant = (reloaded: boolean): EgressHostGrantOutcome =>
+          computeEgressGrantOutcome({
+            host,
+            scope: isGlobal ? "global" : "session",
+            reloaded,
+            sessionId: reportSession,
+            enforcementActive,
+            startedContained: reportSession ? liveContained(reportSession) : null,
+            reach: reachFor(reportSession, host),
+          });
         // Re-adding a removed built-in default just un-suppresses it (it's a
         // default, not a user entry). Otherwise it's a user-added host.
         if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
@@ -172,11 +253,22 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         }
         deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
         // A per-session add can take effect immediately on a running session.
-        if (scope !== EGRESS_GLOBAL_SCOPE) {
-          void deps.containerManager?.reloadEgress(scope).catch(() => {});
-          return sessionSettings(store, scope, enforcementActive, liveContained(scope));
+        if (!isGlobal) {
+          let reloaded: boolean;
+          try {
+            reloaded = (await deps.containerManager?.reloadEgress(scope)) === true;
+          } catch (error) {
+            console.error(`[egress:${scope}] allowlist saved but live refresh failed closed:`, error);
+            reply.code(503);
+            return {
+              error: "allowlist saved, but live service refresh failed closed",
+              settings: sessionSettings(store, scope, enforcementActive, liveContained(scope)),
+            };
+          }
+          return { ...sessionSettings(store, scope, enforcementActive, liveContained(scope)), grant: grant(reloaded) };
         }
-        return globalSettings(store, enforcementActive);
+        // A global add reloads nothing at all, by design (`plugin-egress.ts`).
+        return { ...globalSettings(store, enforcementActive), grant: grant(false) };
       },
     );
 
@@ -241,6 +333,41 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         reply.code(400).send({ error: "host and session are required" });
         return { allow: false };
       }
+
+      // The verdict is read EXHAUSTIVELY, and that is the point rather than a
+      // formality (review finding): a partial reading left the sealed session
+      // below sealed for an unknown host and open for a lifeline one, which is
+      // two predicates again. `allowed` is the session's own configured reach —
+      // the live answer for a host the proxy's creation-time snapshot lacks;
+      // `grantable` continues to the decision flow below; either `blocked-*` is
+      // refused outright.
+      //
+      // planning#380 — a session no user grant can widen is answered here and
+      // goes no further, and the SAME predicate the Plugins card reads decides
+      // that (planning#383). docs/211's Network-off sandbox is the case that
+      // exists today: its `network` capability "only ever tightens", its reach
+      // is the lifeline, and `sandboxLifelineEgressConfig` ignores the allowlist
+      // store outright. A `blocked-by-deployment` verdict cannot arrive here in
+      // practice — with Tier B off there is no Tier C proxy to ask — and is
+      // refused by the same rule rather than by an exception to it.
+      //
+      // This was a hole, not merely an optimistic answer, because Tier A's ipset
+      // floor is session-INDEPENDENT: `EGRESS_TIER_A_RESOLVE_HOSTS` plus the
+      // GitHub CIDRs are admitted in every session, sandbox included. A workload
+      // that pins a co-tenant IP from that floor (`curl --resolve`, /etc/hosts)
+      // skips the resolver entirely and arrives here with the excluded host's
+      // SNI — and `allow` splices it. That is the CDN co-tenancy case Tier C
+      // exists to refuse.
+      //
+      // No card either, and that is the same rule rather than an omission: the
+      // card's whole content is a grant offer, a durable add is inert in this
+      // session (#2284's grant report already says so), and an allow-once would
+      // widen a session the user sealed. docs/211 places the "allow this host?"
+      // card under Network ON for exactly this reason. The user is not left
+      // guessing in practice — Tier B refuses the name on every ordinary attempt,
+      // so this path is only reached by deliberate IP-pinning.
+      const reach = reachFor(sessionId, host);
+      if (reach !== "grantable") return { allow: reach === "allowed" };
 
       if (isEgressHostAllowed(sessionId, host)) {
         return { allow: true };

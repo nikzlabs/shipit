@@ -9,6 +9,7 @@ import type { BranchAutoResetCard, PrStatusSummary, WsServerMessage } from "../s
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
+import { gitRemoteCredentialResolver } from "./services/github.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 
@@ -36,6 +37,8 @@ import {
   type ExplicitResetOutcome,
 } from "./services/pre-turn-reset.js";
 import { getErrorMessage } from "./validation.js";
+import { restoreLfsAfterTreeRewrite } from "./git-lfs.js";
+import { onWorkspaceRewritten } from "./workspace-rewrite.js";
 
 interface ExplicitResetPresentationDeps {
   runner: SessionRunnerInterface | undefined;
@@ -43,7 +46,7 @@ interface ExplicitResetPresentationDeps {
   sessionId: string;
   prStatus: PrStatusSummary | null | undefined;
   /**
-   * SHI-277 — durable PR identity for the card when the live snapshot is gone.
+   * planning#279 — durable PR identity for the card when the live snapshot is gone.
    * `PrStatusPoller.reArm` nulls `prStatus` on any merged session that gained
    * new work, which is the ordinary state of a session needing a forced reset —
    * and without a fallback the destructive move would leave NO transcript
@@ -158,7 +161,7 @@ export async function registerGitRoutes(
       if (!dir) return;
       const sessionId = request.params.id;
       const prStatus = sessionManager.getPrStatus(sessionId);
-      // SHI-277 — the break-glass. A force with no stated reason is not a
+      // planning#279 — the break-glass. A force with no stated reason is not a
       // break-glass, it is a silent bypass: the reason IS what replaces the gate
       // this mode removes, so it is validated here rather than trusted from the
       // shim (the HTTP route is container-reachable in its own right).
@@ -184,6 +187,14 @@ export async function registerGitRoutes(
         ...(force ? [{ force: { reason } }] as const : []),
       );
       const previous = sessionManager.get(sessionId)?.previousMergedPr;
+
+      // #2429 — a reset that MOVED the branch re-materialized the whole worktree
+      // from the orchestrator, exactly like a rebase, so the live session may now
+      // be running the wrong compose stack and the wrong dependency tree. The
+      // other outcomes (`already-at-base`, `refused`) touched nothing.
+      if (outcome.outcome === "reset") {
+        onWorkspaceRewritten(deps.runnerRegistry.get(sessionId), "reset-to-base");
+      }
 
       recordManualResetAgentNotice({
         setPendingAgentNotice: (id, notice) => sessionManager.setPendingAgentNotice(id, notice),
@@ -245,7 +256,7 @@ export async function registerGitRoutes(
       }
       try {
         const git = createGitManager(dir);
-        return await getTurnDiff(git, from, to);
+        return await getTurnDiff(git, from, to, gitRemoteCredentialResolver(deps.githubAuthManager));
       } catch (err) {
         reply.code(500).send({ error: `Failed to get diff: ${getErrorMessage(err)}` });
       }
@@ -264,7 +275,7 @@ export async function registerGitRoutes(
         || repoDefaultBranch(deps.repoStore, sessionManager.get(request.params.id)?.remoteUrl);
       try {
         const git = createGitManager(dir);
-        return await getDiffVsBranch(git, baseBranch);
+        return await getDiffVsBranch(git, baseBranch, gitRemoteCredentialResolver(deps.githubAuthManager));
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -320,16 +331,20 @@ export async function registerGitRoutes(
       try {
         const git = createGitManager(dir);
         const result = await gitRollback(git, request.body.commitHash);
+        // nikzlabs/shipit#2349 — that rewrite ran through a git with the LFS smudge
+        // filter disabled, so every LFS-tracked path the rollback moved is now
+        // pointer text in a tree that reads clean. Restore it before anything
+        // reads those files.
+        await restoreLfsAfterTreeRewrite(dir, "Rollback", (message) =>
+          console.warn(`[rollback] ${message}`),
+        );
         // A rollback rewrites the working tree from the orchestrator, so the
         // session's `shipit.yaml` / compose file may now describe a different
-        // stack. Re-read it rather than relying on the in-container file
-        // watcher to notice (same reasoning as the rebase path). Best-effort —
-        // never fail a completed rollback on a config re-read.
-        try {
-          deps.runnerRegistry.get(request.params.id)?.reevaluateWorkspaceConfig?.();
-        } catch (err) {
-          console.error("[rollback] config re-evaluation failed:", getErrorMessage(err));
-        }
+        // stack — and its lockfile a different dependency set (#2429). Re-read
+        // both rather than relying on the in-container file watcher to notice
+        // (same reasoning as the rebase path). Best-effort — never fail a
+        // completed rollback on a config re-read.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "rollback");
         return result;
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -387,7 +402,20 @@ export async function registerGitRoutes(
       if (!dir) return;
       try {
         const git = createGitManager(dir);
-        return await gitPull(git, deps.githubAuthManager, request.body?.remote, request.body?.branch);
+        const pulled = await gitPull(git, deps.githubAuthManager, request.body?.remote, request.body?.branch);
+        // nikzlabs/shipit#2349 — a pull is a fetch + MERGE, so it rewrites the worktree
+        // through the smudge-disabled orchestrator git and leaves LFS-tracked
+        // paths as pointer text.
+        await restoreLfsAfterTreeRewrite(dir, "Pull", (message) =>
+          console.warn(`[git-pull] ${message}`),
+        );
+        // #2429 — that merge can bring in a different `shipit.yaml` and a
+        // different lockfile, exactly like a sync. Unconditional rather than
+        // gated on `pulled.success`: a pull that reports failure can still have
+        // merged (the failure may be the push, or the LFS restore), and the
+        // marker gate makes a genuine no-op free.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "git-pull");
+        return pulled;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -405,9 +433,17 @@ export async function registerGitRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        return await mergeSession(
+        const merged = await mergeSession(
           sessionManager, createGitManager, dir, request.body.sourceSessionId,
+          gitRemoteCredentialResolver(deps.githubAuthManager),
         );
+        // #2429 — merging a sibling session's branch rewrites this session's
+        // worktree from the orchestrator, so it can bring in that branch's
+        // `shipit.yaml` and its lockfile. Also on the conflicted path: `git.merge`
+        // aborts, and the abort checks the pre-merge tree back out through the
+        // same filter-less git — a rewrite either way.
+        onWorkspaceRewritten(deps.runnerRegistry.get(request.params.id), "session-merge");
+        return merged;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -462,6 +498,11 @@ export async function registerGitRoutes(
             // docs/221 — manual "Sync with <base>" records a persisted card; the
             // automatic conflict-resolve-on-idle path leaves this unset.
             recordSyncCard: true,
+            // planning#369 — the driver notifies the poller itself after a push
+            // that landed, so the "Merge conflicts" chip clears in seconds
+            // instead of surviving up to a slow tick (or forever, with the
+            // polling gate closed). See `RebaseDriverDeps.prStatusPoller`.
+            prStatusPoller: deps.prStatusPoller,
           },
           baseBranch,
         );
@@ -501,6 +542,16 @@ export async function registerGitRoutes(
         const agent = runner?.getAgent();
         if (agent) {
           agent.kill();
+          // planning#338 — while a rebase FLOW holds the session, this agent is a
+          // resolution turn the driver is awaiting. Clearing the slot below
+          // makes the container relay drop its terminal events as stale, so
+          // without an explicit settle the awaited turn never resolves and the
+          // flow's session hold wedges every later message in the queue.
+          // `superseded` settles it as interrupted; the driver then rejects,
+          // its own abort no-ops against ours, and its `finally` releases the
+          // hold + queue. Guarded on the flag: for an ordinary (non-flow)
+          // agent, the kill's own `done` teardown is the correct path.
+          if (runner?.systemTurnInProgress) agent.emit("superseded");
           if (runner) {
             runner.setAgent(null);
             runner.running = false;
@@ -508,7 +559,30 @@ export async function registerGitRoutes(
         }
 
         const git = createGitManager(dir);
-        await rebaseAbort(git);
+        // planning#338 — the settle above lets the driver's abort race ours; whichever
+        // runs second sees "no rebase in progress". That is success, not failure:
+        // only surface an error when the rebase genuinely survived the abort.
+        try {
+          await rebaseAbort(git);
+        } catch (abortErr) {
+          const stillInProgress = await git.isRebaseInProgress().catch(() => true);
+          if (stillInProgress) throw abortErr;
+        }
+        // nikzlabs/shipit#2349 — an abort checks the pre-rebase tree back out through
+        // the same smudge-disabled orchestrator git, so it leaves LFS pointer
+        // text exactly as the rebase did. The rebase DRIVER's own `finally`
+        // covers a flow-initiated abort; this route also serves an abort of an
+        // agent-initiated in-container rebase, where there is no flow to do it.
+        // The two cannot collide — the restore serializes per workspace.
+        await restoreLfsAfterTreeRewrite(dir, "Rebase abort", (message) =>
+          console.warn(`[rebase-abort] ${message}`),
+        );
+        // #2429 — an abort is a tree rewrite in its own right: it checks the
+        // PRE-rebase tree back out. That matters when the aborted rebase had
+        // already replayed far enough to change a dependency input and something
+        // reinstalled against it, since the abort now reverts that file and the
+        // container holds dependencies for a tree that no longer exists.
+        onWorkspaceRewritten(runner, "rebase-abort");
         if (runner) {
           runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         }

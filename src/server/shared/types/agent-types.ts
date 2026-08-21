@@ -2,11 +2,12 @@
 
 import type { EventEmitter } from "node:events";
 import type { ImageAttachment, PermissionMode } from "./attachment-types.js";
+import type { ApiStyle, BillingMode, CredentialTarget } from "../catalogue/types.js";
 import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
 // ---- Agent identity ----
 
-export type AgentId = "claude" | "codex";
+export type AgentId = "claude" | "codex" | "opencode" | "grok";
 
 /**
  * The permission modes the Claude Code adapter supports (docs/138). Single
@@ -15,6 +16,21 @@ export type AgentId = "claude" | "codex";
  * drift. `guarded` is the classifier-gated mode (CLI `--permission-mode auto`).
  */
 export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
+
+/**
+ * The permission modes the Grok Build adapter supports (docs/274).
+ *
+ * Deliberately its **own** constant rather than a reference to
+ * {@link CLAUDE_PERMISSION_MODES}, even though the two currently hold the same
+ * three values: what they state is not the same fact. Grok's CLI has a *wider*
+ * native set than Claude's (`default | acceptEdits | auto | dontAsk |
+ * bypassPermissions | plan`), and this list is the subset ShipIt's three-mode
+ * vocabulary maps onto — `plan` → `--permission-mode plan`, `guarded` →
+ * `--permission-mode auto` (Grok's classifier-gated mode, the same spelling
+ * Claude uses), `auto` → `--always-approve`. Sharing Claude's constant would
+ * make a later divergence in either CLI silently change the other's row.
+ */
+export const GROK_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guarded"];
 
 // ---- Agent capabilities ----
 
@@ -29,33 +45,518 @@ export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guard
 export interface AgentReasoningCapability {
   /** Control label, e.g. "Reasoning" (claude) or "Reasoning effort" (codex). */
   label: string;
-  /** Selectable effort levels. Does NOT include the implicit "Default"/no-flag entry. */
+  /**
+   * The harness's VOCABULARY: every effort level this CLI understands, with the
+   * label each renders under. Does NOT include the implicit "Default"/no-flag
+   * entry.
+   *
+   * Naming a level here says the CLI accepts the word — **not that every
+   * selection honours it**. That second question is {@link billingModes} and
+   * `ModelDef.reasoningEfforts`, and the three compose in
+   * `catalogue/index.ts`'s `reasoningOptionsFor`, which is the only honest
+   * answer to "what goes in the picker".
+   */
   options: { value: string; label: string }[];
+  /**
+   * docs/274 req 14 — the billing modes under which this harness's CLI actually
+   * SENDS the level, when that is not all of them. Absent means all of them,
+   * which is every harness but one.
+   *
+   * The axis exists because grok needs it and neither of the other two can
+   * express it. `--reasoning-effort` reaches the wire when xAI's SUBSCRIPTION
+   * catalogue authenticated the CLI and is silently discarded under an API key
+   * — both recorder-verified with a negative control (docs/274 Resolved
+   * questions). That gate is the billing mode and nothing else:
+   *
+   *   - **Per-harness ({@link options}) cannot say it.** One list must either
+   *     offer four levels that do nothing under a key, or hide four that work
+   *     under a subscription.
+   *   - **Per-row (`ModelDef.reasoningEfforts`) cannot say it either**, and
+   *     this is the part that looks like it could. A `ModelDef` is per
+   *     *(service, mode, model)* and NOT per harness, while grok shares gateway
+   *     rows (`x-ai/grok-4.6` at OpenRouter and Vercel, DeepSeek and GLM via
+   *     chat-completions) with three harnesses that DO honour levels there. On
+   *     such a row `[]` strips the levels from those three and absent leaks
+   *     grok's four onto a row that drops them — there is no value that is
+   *     right for all four at once.
+   *
+   * So the row field keeps the job only it can do — narrowing WITHIN a mode,
+   * where `grok-4.6` offers `xhigh` and `grok-4.5` does not — and this field
+   * carries the mode gate. Stated as the modes that DO honour it rather than
+   * the ones that do not, so the default (absent) is the permissive, correct
+   * answer for a harness with no such split.
+   */
+  billingModes?: BillingMode[];
+}
+
+/*
+ * docs/261's `SUB_AGENT_ROLES` — a compiled-in list of the roles that exist —
+ * is **deleted** here rather than extended (docs/264-agent-roles reqs 13, 18). A role is now
+ * any name the user typed, stored server-side, so no constant can hold the set
+ * and every caller that checked against one was rejecting the user's own roles.
+ * The name that remains constant is the reserved one: {@link RESERVED_ROLE_NAME},
+ * below. Resolution — and the refusal that names the roles that do exist — is
+ * `services/roles.ts`'s.
+ */
+
+/**
+ * docs/264-agent-roles req 10 — any subset of a role's parameters, named by the caller at
+ * the moment it starts one.
+ *
+ * Every field optional, and that is req 16's "partial is the normal case": a
+ * caller names what it cares about and the **base** supplies the rest. The empty
+ * object is the ordinary path — a bare role name, nothing overridden.
+ *
+ * Shared rather than orchestrator-local because {@link SpawnTarget} carries it
+ * over the wire, and a second declaration is how the two come to disagree about
+ * a field.
+ */
+export interface RoleOverrides {
+  harnessId?: AgentId | undefined;
+  serviceId?: string | undefined;
+  billingMode?: BillingMode | undefined;
+  modelId?: string | undefined;
+  reasoningEffort?: string | undefined;
 }
 
 /**
- * docs/217 — per-agent defaults applied when an agent is invoked as a SUB-agent
- * (`shipit agent run --agent <id>` from inside another session). A grouped
- * object (not a scalar) so the "Sub-agent defaults" section can grow: it started
- * with `reasoningEffort` and now also carries a default `model`. Each field
- * absent ⇒ the sub-agent falls back to the backend's native default (no
- * `--effort` flag; `models[0]` for the model).
+ * docs/264-agent-roles req 16 — what a spawn runs on, in the one vocabulary **both** spawn
+ * commands speak.
+ *
+ * The shape is always *a base plus overrides*, and the three kinds are the three
+ * bases:
+ *
+ *  - **`role`** — a role by name (reqs 3, 4), with any subset of its parameters
+ *    overridden (req 10). Available to both commands. The role supplies
+ *    everything the caller did not name; for the shipped reviewer ShipIt
+ *    resolves the params instead (req 2).
+ *  - **`explicit`** — no base at all, so the call must name every parameter the
+ *    named harness has: the four identity flags always, the reasoning level
+ *    exactly where the harness declares levels (docs/275 req 2). Available to
+ *    both commands. Kept implemented for a repository that holds a complete
+ *    target of its own (req 15), and no longer the shape ShipIt teaches.
+ *  - **`inherit`** — the **parent session** is the base (`shipit session create`
+ *    only, because a one-shot run has no parent). This is the shipped
+ *    `--model X` form docs/261 req 10 guarantees, and it is now one of the
+ *    general cases rather than an exception.
+ *
+ * **The surface is unified; the completion semantics are NOT.** A parent does
+ * not complete a partial call the way a role does — a model id names one
+ * backend's catalogue, so it carries no service, and a harness switch clears the
+ * inherited selection entirely. Those rules are docs/261's and stay exactly as
+ * they are (`services/child-sessions.ts`); this type says only that the two
+ * commands *accept* the same things.
  */
-export interface SubAgentDefaults {
-  /** Reasoning effort the sub-agent runs with (a value from `reasoning.options`). */
+export type SpawnTarget =
+  | {
+      kind: "role";
+      /** Any name the user typed (req 18) — resolved server-side, never checked against a list. */
+      role: string;
+      overrides: RoleOverrides;
+    }
+  | {
+      kind: "explicit";
+      /** The harness that runs (docs/261 req 3's `--agent`). */
+      harnessId: AgentId;
+      /** The `(service, billing mode, model)` triple that identifies a model. */
+      serviceId: string;
+      billingMode: BillingMode;
+      modelId: string;
+      /**
+       * The reasoning level — part of the call, never the harness's default,
+       * wherever the harness declares levels. A harness that declares none has
+       * no level parameter at all (docs/275 req 2), so the field is absent
+       * there — and only there: `resolveSpawnTarget` refuses an omission on a
+       * level-having harness and a named level on a level-less one.
+       */
+      reasoningEffort?: string;
+    }
+  | {
+      kind: "inherit";
+      overrides: RoleOverrides;
+      /**
+       * docs/264-agent-roles req 20 — the caller declined the parent's role
+       * (`--no-role`). The child still inherits the parent's parameters; what it
+       * does not inherit is the role's name and its standing instructions.
+       *
+       * Absent is the default, which inherits the role whole. The flag exists so
+       * that a session working under a brief can still spawn a child for
+       * something else — a brief that cannot be declined is not a default.
+       */
+      noRole?: boolean;
+    };
+
+/**
+ * What a **one-shot** `shipit agent run` runs on: {@link SpawnTarget} minus the
+ * parent base, which it has no access to.
+ *
+ * Expressed as a narrowing rather than a second union so the one place the two
+ * commands differ is stated once, in the type, exactly as req 16 states it.
+ */
+export type SubAgentSpawnTarget = Extract<SpawnTarget, { kind: "role" | "explicit" }>;
+
+/**
+ * docs/261 req 4 — which of the two configured reviewers a slot is.
+ *
+ * The order is the user's, and it is load-bearing in exactly two places: it
+ * breaks a tie when both reviewers are equally distant from the implementer, and
+ * it is what reviewer 2 is derived *against* when neither slot is pinned. It is
+ * NOT a preference — the ranking picks whichever is furthest, so `second` beats
+ * `first` routinely.
+ */
+export type ReviewerSlot = "first" | "second";
+
+/** Both slots, in the user's own order. Iterate this rather than re-listing them. */
+export const REVIEWER_SLOTS: readonly ReviewerSlot[] = ["first", "second"];
+
+/**
+ * docs/261 reqs 1, 3, 5 — a reviewer the user pinned: a model like any other
+ * (`(service, billing mode, model)`, req 3) plus the reasoning level (req 5).
+ *
+ * **The harness is absent on purpose.** Req 3 keeps it derived from the model,
+ * exactly as background work already resolves it — and docs/261 derives it with
+ * one extra preference (avoid the implementer's), so storing it would freeze an
+ * answer that has to be recomputed per review anyway.
+ *
+ * **`reasoningEffort` is present exactly when the derived harness declares
+ * levels, and that is the type-level statement of "pinning is atomic".**
+ * Editing any field of an auto-configured slot pins the whole resolved tuple; a
+ * half-pinned slot — a pinned effort over a derived model — is not expressible,
+ * because the alternative is a slot that silently re-derives half of itself when
+ * a service is added. A reviewer that left the level to the harness's own
+ * default would also fail req 5 outright.
+ *
+ * It became optional in docs/274 and the reason is narrow: Grok Build is the
+ * first harness that declares NO reasoning levels (`reasoning.options: []` — in
+ * API-key mode the CLI silently drops `--reasoning-effort`). Absent here means
+ * "this harness has no level to pin", never "the user did not choose one" —
+ * naming a level on a harness that declares none is still refused, and omitting
+ * one on a harness that declares some is still an incomplete pin. Both halves
+ * are enforced in `reviewer-settings.ts`, because a type cannot say "required
+ * iff a sibling field's harness declares levels".
+ */
+export interface ReviewerPin {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  /** A value from the derived harness's `reasoning.options`; absent iff it declares none. */
   reasoningEffort?: string;
-  /** Model alias/id the sub-agent runs with (a value from the agent's `models`). */
-  model?: string;
 }
 
 /**
- * A write patch for {@link SubAgentDefaults}. An explicit `null` for a field
- * clears it (reverting to the backend's native default); `undefined`/absent
- * leaves it unchanged.
+ * docs/261 phase 3 (req 8) — the complete reviewer a slot currently resolves to.
+ *
+ * Lives beside {@link ReviewerPin} rather than in the orchestrator's service
+ * types because the browser renders it verbatim: it is a wire shape, and the
+ * client re-typing it inline is how the two come to disagree about a field.
  */
-export interface SubAgentDefaultsPatch {
-  reasoningEffort?: string | null;
-  model?: string | null;
+export interface ReviewerResolved {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  serviceName: string;
+  /** Model label, not the raw id — the same string the picker shows. */
+  label: string;
+  /** Derived (req 3), never stored. */
+  harnessId: AgentId;
+  harnessName: string;
+  /**
+   * Req 5 — the pin's level, or the review default derived for what this slot
+   * resolved onto. Absent only for a selection that offers no level (docs/274).
+   */
+  reasoningEffort?: string;
+  /** That level's display label on this selection, when there is one. */
+  reasoningLabel?: string;
+  /**
+   * planning#352 — every harness this reviewer could resolve onto that does
+   * **not** offer the pinned level, and what a review there runs at instead.
+   *
+   * Present only on a pinned slot, and empty (omitted) when the pin applies
+   * everywhere. It exists because a pin is applied *partially*: the pinned model
+   * is kept and the level is re-derived per resolution, so the tab has to say
+   * what the level became rather than report a pin that is not in force. The
+   * harness this view names is included when it is one of them — the tab names
+   * ONE harness while a review derives its own, so a note scoped to the tab's
+   * own resolution would stay silent about the crossing that made this a defect.
+   */
+  effortSubstitutions?: ReviewerEffortElsewhere[];
+}
+
+/** planning#352 — one harness a pinned level does not survive onto. */
+export interface ReviewerEffortElsewhere {
+  harnessId: AgentId;
+  harnessName: string;
+  /** What a review there runs at; absent when that row carries no level at all. */
+  reasoningEffort?: string;
+  reasoningLabel?: string;
+}
+
+/**
+ * docs/261 phase 3 (req 8) — one reviewer slot as the Settings screen sees it.
+ *
+ * Both halves ride together and neither is derivable from the other: `pin` is
+ * what the user chose (absent when the slot is auto-configured), and `resolved`
+ * is what the slot runs on **right now**. The server computes `resolved`,
+ * because the derivation is reqs 4/8's rule and a second implementation in the
+ * browser is how the setting starts disagreeing with what actually reviews.
+ */
+export interface ReviewerSlotView {
+  slot: ReviewerSlot;
+  /** Req 8's visible state: `pinned` is a choice the user made, `auto` re-derives. */
+  source: "pinned" | "auto";
+  /** The stored pin, present exactly when `source === "pinned"`. */
+  pin?: ReviewerPin;
+  /**
+   * What this slot resolves to today, harness and reasoning level included
+   * (req 5 — a derived reviewer is complete). Absent when nothing runnable
+   * answers it, which {@link ReviewerSlotView.unavailableReason} explains.
+   */
+  resolved?: ReviewerResolved;
+  /**
+   * Why there is no `resolved`. `pin_unavailable` means the user's choice lost
+   * its credential or its harness; `nothing_eligible` means the install has
+   * nothing to run a review on at all. They read very differently to the user,
+   * so they are not collapsed into one absence.
+   */
+  unavailableReason?: "pin_unavailable" | "nothing_eligible";
+}
+
+/**
+ * docs/261 phase 3 — a pin edit arriving on `PUT /api/settings`.
+ *
+ * `reasoningEffort` is optional **here and nowhere else**: the stored pin is
+ * always complete (req 5), and omitting the level on the wire means "the model
+ * changed, give me this harness's default" — which the server answers, because
+ * the harness is its derivation and the client must not re-derive it. The
+ * response carries the resulting complete pin, so nothing is filled in
+ * somewhere the caller cannot see.
+ */
+export interface ReviewerPinPatch {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  reasoningEffort?: string;
+}
+
+// ---- Agent roles (docs/264 phase 1) ----------------------------------------
+
+/**
+ * docs/264-agent-roles req 2 — the one role name ShipIt owns.
+ *
+ * Reserved rather than seeded: {@link RoleAutoParams} is rejected for every
+ * other name, this one cannot be renamed or deleted, and `getRoles()`
+ * synthesizes it even on a completely empty store. "Review this" therefore
+ * always has something to resolve to, including on an install nobody has
+ * configured.
+ *
+ * **Reservation is an exact-string match, not a case-insensitive one.** Req 18
+ * says a role may be any name the user types, with only uniqueness enforced and
+ * explicitly "no case rule" — so `Reviewer` is a different name and an ordinary
+ * pinned role. Folding case here would be a restriction nobody asked for, on
+ * the one requirement that says not to add restrictions.
+ */
+export const RESERVED_ROLE_NAME = "reviewer";
+
+/**
+ * docs/264-agent-roles reqs 1, 6 — a role whose params the **user** pinned: the complete
+ * tuple, the harness included.
+ *
+ * `harnessId` is the departure from {@link ReviewerPin}, which deliberately
+ * omits it (docs/261 req 3 derives the harness from the model): a role is a *job
+ * definition*, and which agent performs the job is part of the job — Claude Code
+ * driving a model and Codex driving the same model are different agents. Stored
+ * and frozen, never re-derived per run, so a role whose harness is uninstalled
+ * reports that it cannot run rather than quietly running on another one.
+ *
+ * **`reasoningEffort` is optional, and absent means `Default`** — the level the
+ * named harness runs at when ShipIt passes no flag, exactly as it already means
+ * in {@link AgentSpawnOptions} and in the composer's own picker
+ * (`ReasoningSelector.tsx`, where `Default` has been a listed, selectable option
+ * since docs/217).
+ *
+ * This does not weaken req 1's "a role is complete on its own". `Default` is a
+ * choice the user makes and ShipIt records, not a blank: starting such a role
+ * still needs nothing added to it (req 4), and ShipIt still substitutes nothing
+ * (req 7) — it passes no flag, which is what the role says to do. What made the
+ * level *look* required was the storage encoding (no flag ⇒ no value), and an
+ * editor built on that encoding offered a different option list from the
+ * composer for the same knob. See docs/264 req 1's resolved question.
+ *
+ * **This subsumes docs/274 req 8 rather than competing with it.** That rule
+ * reached the same optionality from the other end — a harness declaring no
+ * reasoning levels has no level for a role to carry, and refusing to define a
+ * role on it at all would be a restriction req 1 never asked for. Such a role is
+ * at `Default`, because `Default` is the only thing it can be; the difference is
+ * that absent is now legal on *every* harness, not only that one. What docs/274
+ * kept as a refusal is kept: naming a level on a harness that declares none is
+ * still false about the harness.
+ *
+ * Contrast {@link ReviewerPin}, where the level stays required: ShipIt derives
+ * the reviewer's harness **per review**, so `Default` there would name no
+ * harness and could mean a different level on each run. A pinned role names its
+ * harness (req 6), so its `Default` is unambiguous.
+ */
+export interface RolePinnedParams {
+  kind: "pinned";
+  /** The harness that runs this role (req 6). Required, stored, never derived. */
+  harnessId: AgentId;
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  /**
+   * A level the *named* harness declares — validated against that one, not a
+   * derived one. Absent ⇒ `Default`: pass no flag, and let the harness use its
+   * own level. Always legal, including on a harness that declares no levels at
+   * all (docs/274 req 8), where it is the only possibility.
+   */
+  reasoningEffort?: string;
+}
+
+/**
+ * docs/264-agent-roles req 2 — params ShipIt resolves per run, rather than params the user
+ * pinned. The shipped reviewer's, and **only** the shipped reviewer's.
+ *
+ * It carries no fields because there is nothing to carry: the answer is
+ * docs/261's two ranked candidate slots, resolved against whatever is
+ * implementing at the moment the review is asked for. "Use whoever is furthest
+ * from the model that wrote this" is a rule evaluated per run, and no fixed set
+ * of params can encode it — which is the whole and only reason this
+ * discriminator exists.
+ */
+export interface RoleAutoParams {
+  kind: "auto";
+}
+
+/** One role's params — pinned by the user (req 1), or resolved by ShipIt (req 2). */
+export type RoleParams = RolePinnedParams | RoleAutoParams;
+
+/**
+ * docs/264 — a named unit of agent work (reqs 1, 2, 6, 8, 9).
+ *
+ * **There is one kind of role.** The variation lives in {@link RoleParams}, not
+ * in two shapes of object: the reviewer is named, started, refused and reported
+ * exactly as every other role is, and differs only in that ShipIt supplies its
+ * params. That is what keeps one store, one lookup, one refusal and one
+ * attribution path.
+ */
+export interface AgentRole {
+  /**
+   * Any name the user typed (req 18). Unique, non-blank, and bounded only by
+   * what storage needs — no token shape, no case rule. A name that needs quoting
+   * on a command line is quoted, exactly as a session title already is.
+   */
+  name: string;
+  /** Req 9 — what the role is for, in one short line. Optional; the name is the fallback. */
+  description?: string;
+  /** Req 8 — standing instructions, joined with the run's own task at spawn. Optional. */
+  prompt?: string;
+  params: RoleParams;
+}
+
+/**
+ * Why a role cannot run right now. **Three states, not two**, because the remedy
+ * differs in each and collapsing them sends the user to the wrong place.
+ *
+ *  - `stranded` — its model, service or harness no longer exists, or the pair
+ *    no longer agrees. It needs a **Settings edit**, and is never silently
+ *    repaired: req 7 rules out re-pointing it, including through a catalogue
+ *    retirement successor. The role's own fault, and the only one of the three
+ *    that is.
+ *  - `disconnected` — the tuple is still structurally valid, but the service it
+ *    names has no usable credential any more. The remedy is to **reconnect the
+ *    service**; telling the user to edit a perfectly good role would be wrong.
+ *    Route selection reports this as `auth_required`.
+ *  - `quota_exhausted` — the subscription is spent. Nothing to fix; it recovers
+ *    when the quota resets, and the tuple is kept exactly. Route selection
+ *    reports this as `all_exhausted`.
+ */
+export type RoleUnavailableReason = "stranded" | "disconnected" | "quota_exhausted";
+
+/** What a pinned role resolves to today, with labels the Settings list renders. */
+export interface RoleResolved {
+  harnessId: AgentId;
+  harnessName: string;
+  serviceId: string;
+  billingMode: BillingMode;
+  serviceName: string;
+  modelId: string;
+  /** Model label, not the raw id — the same string the picker shows. */
+  label: string;
+  /** Absent ⇒ the role runs at `Default` (see {@link RolePinnedParams}). */
+  reasoningEffort?: string;
+  /** That level's display label on this harness, when the harness declares one. */
+  reasoningLabel?: string;
+}
+
+/**
+ * docs/264 phase 1 — one role as the settings payload carries it.
+ *
+ * **The server sends the resolution**, exactly as it does for a reviewer slot
+ * and for the same reason: which harness runs a model and which levels it
+ * declares are catalogue rules, and a second implementation in the browser is
+ * how the Settings screen starts promising something other than what runs.
+ *
+ * `resolved` is absent for the reviewer, and that is not a gap. Its params are
+ * docs/261's **two ranked candidate slots** rather than one tuple, and those
+ * already ride the same payload as `reviewers` — a single `resolved` here would
+ * have to pick one of the two and would misreport whichever it dropped.
+ */
+export interface RoleView {
+  name: string;
+  description?: string;
+  prompt?: string;
+  params: RoleParams;
+  /** True for {@link RESERVED_ROLE_NAME} — it cannot be renamed or deleted (req 2). */
+  reserved: boolean;
+  /** What a pinned role runs on today. Absent when it cannot run, or for the reviewer. */
+  resolved?: RoleResolved;
+  /** Why there is no `resolved`, when the role is pinned and cannot run. */
+  unavailableReason?: RoleUnavailableReason;
+  /**
+   * Which parameter is at fault, for `stranded` — the field the Settings edit has
+   * to change. Names the parameter rather than describing the failure, because
+   * that is what the editor highlights.
+   *
+   * All five of a role's parameters are nameable, so a service that has left the
+   * catalogue is not reported as a bad *model*: rule (d) says the refusal names
+   * the parameter, and an editor that highlighted the wrong field would send the
+   * user to change something that is correct.
+   *
+   * Absent for `disconnected` and `quota_exhausted`, deliberately — the tuple is
+   * intact in both, so there is no field to highlight and no edit to make.
+   */
+  invalidField?: "harnessId" | "service" | "billingMode" | "model" | "reasoningEffort";
+  /** For `quota_exhausted`: when to try again, when routing could say. */
+  earliestResetAt?: string | null;
+}
+
+/**
+ * docs/264 phase 2 (reqs 5, 17, 18) — one role as an **edit** crosses the wire.
+ *
+ * A role is created, renamed, edited and deleted through the existing settings
+ * mutation surface (`PUT /api/settings`), keyed by the name the role will have
+ * afterwards, with `null` for a delete. The whole role is written at once
+ * (req 17): the editor holds a name, a description, standing instructions and
+ * five parameters, and saving it is one write rather than a control-by-control
+ * trickle.
+ *
+ * **`previousName` is what distinguishes a create from an edit**, and the
+ * distinction is req 18's uniqueness rule made checkable. Without it, "create a
+ * role called `deep-dive`" and "edit the existing `deep-dive`" arrive as the
+ * same request, so a create that collides with an existing name would silently
+ * overwrite it instead of being refused. Absent means create; present names the
+ * role being edited, and a `previousName` that differs from the key is a
+ * rename — an ordinary validated write followed by a delete, since nothing holds
+ * a reference to the old name.
+ */
+export interface RoleWrite {
+  /** The role being edited, when one is. Absent ⇒ create; different from the key ⇒ rename. */
+  previousName?: string;
+  /** Req 9 — optional; an empty string clears it. */
+  description?: string;
+  /** Req 8 — optional standing instructions; an empty string clears them. */
+  prompt?: string;
+  params: RoleParams;
 }
 
 export interface AgentCapabilities {
@@ -93,6 +594,32 @@ export interface AgentCapabilities {
    * stream-json; Codex uses turn/steer. (docs/140)
    */
   supportsSteering: boolean;
+  /**
+   * Whether the backend's process stays resident BETWEEN turns and can start a
+   * turn ShipIt never asked for — a `Bash(run_in_background)` job finishing
+   * (docs/235), or a live steer it acked too late to apply to the finishing
+   * turn (docs/140 Phase 6.11). The orchestrator adopts such a turn when it
+   * sees top-level assistant output after a `result`, so this flag is what
+   * keeps that inference off backends where the same shape means something
+   * else.
+   *
+   * **Claude: true** — the streaming CLI is one resident process across turns.
+   * **Codex: false** — the app-server is killed at `turn/completed`, and it
+   * routinely emits the turn's FINAL assistant text *after* `turn/completed`
+   * (see the `pendingCommitLink` comment in `agent-listeners.ts`). Those late
+   * events belong to the turn that just ended; adopting them would mark the
+   * session busy for a turn that will never produce another `result`.
+   *
+   * Deliberately NOT `supportsSteering`: both backends steer, but only one
+   * survives its own turn boundary. Deliberately not read from
+   * `AgentProcess.capabilities` either — `ProxyAgentProcess` hardcodes
+   * defaults; resolve it through the agent registry, as `useStreaming` is.
+   *
+   * Optional, and absent means **false**: adoption is an inference about a
+   * backend's process model, and a backend that has not declared one must not
+   * have it guessed on its behalf.
+   */
+  startsOwnTurns?: boolean;
   /**
    * Whether the agent backend can compact its own context — both summarizing on
    * demand (the `/compact` composer command) and emitting native compaction
@@ -287,13 +814,31 @@ export interface AgentSteerRejectedEvent {
  *
  * A live steer is written to the resident process's stdin while `running` is
  * still `true`, but the CLI only applies a steered message at its next decision
- * point (a tool return). When the model is *wrapping up* there is no next
- * decision point, so a steer injected in that window never lands in the turn —
- * the turn ends with a `result` and the message is silently lost (it stays in
- * the transcript but the agent never acts on it). The CLI echoes every user
- * message it actually accepts into a turn; the orchestrator matches this echo
- * against the steer it sent, and any steer NOT echoed before the turn's
- * `result` is re-queued so it runs as a fresh turn instead of vanishing.
+ * point (a tool return). A steer injected while the model is *wrapping up* has
+ * **three** possible outcomes, not two:
+ *
+ *   1. **It lands in the turn.** The model reaches a decision point, acts on it,
+ *      and the CLI echoes it — the ordinary case.
+ *   2. **It is silently lost.** There is no next decision point left, the turn
+ *      ends with a `result`, and no echo ever arrives. The message would stay in
+ *      the transcript with the agent never acting on it, so the orchestrator
+ *      re-queues every steer NOT echoed before the `result` and runs it as a
+ *      fresh turn instead (`requeueUndeliveredSteers`).
+ *   3. **The CLI takes it and runs it as its OWN turn after the `result`.** The
+ *      echo fires — the CLI accepted the message — but the model applies it in a
+ *      turn that starts *after* the orchestrator has finalized the current one.
+ *      The message is neither lost nor part of the finishing turn, so it must
+ *      NOT be re-queued (that would double-process it); instead the orchestrator
+ *      adopts the follow-on turn when that turn produces its first top-level
+ *      assistant output (`adoptCliStartedTurn` in `agent-listeners.ts`). Nothing
+ *      announces it — the CLI's `init` is emitted for `set_permission_mode` too,
+ *      with no turn behind it — so the model talking is the first proof it
+ *      exists. Observed in production 2026-08-13: the session read as idle for
+ *      5.5 minutes while the agent worked, with no post-turn commit armed for
+ *      its edits.
+ *
+ * So this ack means "the CLI received it", not "the model applied it in the
+ * finishing turn" — outcome 3 is exactly where those two come apart.
  *
  * `text` is the echoed user-message text (the assembled prompt the CLI
  * received). NOT chat content — `agent-listeners` consumes it for ack tracking
@@ -354,7 +899,7 @@ export interface AgentCompactedEvent {
 }
 
 /**
- * SHI-112 / docs/193 — an agent backend is asking the user to approve a gated
+ * planning#114 / docs/193 — an agent backend is asking the user to approve a gated
  * action (a sensitive-file edit, an escalated command, …) that the backend
  * cannot auto-approve in ShipIt's headless model. This is the agent-agnostic
  * canonical shape: the worker's `PermissionBroker` broadcasts it (wrapped in an
@@ -385,6 +930,14 @@ export interface AgentPermissionRequestEvent {
   path?: string;
   /** One-line human description of what is being requested (shown on the card). */
   summary?: string;
+  /**
+   * The gated call in full — the raw `command`, or the pretty-printed tool
+   * input — for the card's expandable disclosure. `summary` is clipped to one
+   * ~100-char line, which for a `sed -i` cuts off the target path; this is what
+   * lets the user actually read what they are approving. Bounded by
+   * `PERMISSION_DETAILS_CHARS`, and omitted when it would only repeat `summary`.
+   */
+  details?: string;
   /** Which agent produced it (display only). */
   agentId?: AgentId;
 }
@@ -528,6 +1081,38 @@ export type AgentContentBlock =
 
 // ---- Run parameters ----
 
+/**
+ * docs/252 phase 3 — how this run is pointed at the selected model's service.
+ *
+ * Present only when there is something to shape: a **string-delivered**
+ * credential, which is every custom service and the env-supplied first-party
+ * routes. Absent for an account-delivered credential, where the CLI's own login
+ * already binds it to its own vendor's endpoint — shaping that would break the
+ * token exchange, not redirect it.
+ *
+ * **No secret travels in this payload.** `credentialSourceEnv` names a variable
+ * the worker's own `process.env` already holds (delivered by the secrets push),
+ * and `credentialTarget` says where the CLI reads it from; the adapter copies
+ * one to the other at spawn. Storage name and spawn target are deliberately
+ * different things — a service's storage name must never be a harness's own
+ * variable, or the route works or fails depending on how the install happens to
+ * be signed in (docs/252 Appendix A).
+ */
+export interface ServiceRouting {
+  serviceId: string;
+  /** Display name, for the provider block Codex wants and for logs. */
+  serviceName: string;
+  billingMode: BillingMode;
+  /** The style resolved from the harness×model overlap — decides the wire format. */
+  style: ApiStyle;
+  /** Base URL for that style. Whether a `/v1` belongs in it is per-style; see the catalogue. */
+  baseUrl: string;
+  /** The variable in the worker's environment that holds the secret. */
+  credentialSourceEnv: string;
+  /** Where this harness reads the credential from. */
+  credentialTarget: CredentialTarget;
+}
+
 export interface AgentRunParams {
   prompt: string;
   sessionId?: string;
@@ -546,6 +1131,12 @@ export interface AgentRunParams {
   mcpServers?: McpServerConfig[];
   /** Model alias or ID to use (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
+  /**
+   * docs/252 phase 3 — base URL and credential for the selected model's service.
+   * Absent ⇒ the CLI runs against its own vendor exactly as it did before this
+   * feature. See {@link ServiceRouting}.
+   */
+  serviceRouting?: ServiceRouting;
   /**
    * Reasoning/effort level for this run, an agent-specific token from the
    * agent's `reasoning.options` (Claude: low…max via `--effort`; Codex:
@@ -574,7 +1165,7 @@ export interface AgentRunParams {
    */
   sandbox?: boolean;
   /**
-   * SHI-265 — when true, the Claude adapter sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1
+   * planning#267 — when true, the Claude adapter sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1
    * in the CLI environment, which arms the managed-settings.json PreToolUse
    * hook's destructive-git rule (`git reset --hard`, `git checkout -f`,
    * force-push). Set only when the session is merged with a recorded
@@ -604,7 +1195,7 @@ export interface AgentRunParams {
 
 /**
  * Resolved launch paths for the consolidated internal MCP bridge
- * (SHI-128 / docs/199). The worker resolves this ONCE (`resolveBridge`,
+ * (planning#130 / docs/199). The worker resolves this ONCE (`resolveBridge`,
  * preferring the precompiled bundle over tsx-on-source) and hands it to the
  * adapter, which writes a single `shipit` MCP server entry. The set of tools
  * that server exposes is selected per agent via the `SHIPIT_MCP_TOOLS` env, not
@@ -636,7 +1227,7 @@ export interface AgentMcpWriteContext {
    */
   servers: McpServerConfig[];
   /**
-   * The consolidated internal MCP bridge (SHI-128 / docs/199), or `null` when
+   * The consolidated internal MCP bridge (planning#130 / docs/199), or `null` when
    * the worker can't locate the bridge files (stripped-down test image). Each
    * adapter writes a single `shipit` MCP server entry pointing at it and selects
    * the tools to expose via the `SHIPIT_MCP_TOOLS` env (Claude:
@@ -697,7 +1288,7 @@ export interface AgentProcessEvents {
    */
   mcp_status: [McpServerStatus[]];
   /**
-   * SHI-316 — this process no longer owns its runner's agent slot: a NEWER
+   * planning#318 — this process no longer owns its runner's agent slot: a NEWER
    * spawn took the slot while this one had not reached a terminal event.
    *
    * Emitted by the RUNNER (not by the adapter) at the moment of displacement,
@@ -792,7 +1383,7 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    */
   setPermissionRequester?(requester: PermissionRequester): void;
   /**
-   * SHI-264 — stamp this turn's durable DELIVERY id onto the next spawn, so the
+   * planning#266 — stamp this turn's durable DELIVERY id onto the next spawn, so the
    * worker can report it back from `/agent/status` and an orchestrator that
    * restarted mid-turn can tell WHICH server-originated delivery the surviving
    * turn belongs to (see `turn-adoption.ts`).
@@ -834,6 +1425,21 @@ export interface WorkerAgentStartBody {
   deliveryId?: string;
 }
 
+/**
+ * Request body of the worker's `POST /agent/kill`. The kill is fire-and-forget
+ * on the orchestrator side and can execute on the worker long after it was
+ * issued — in production (2026-08-09, session 468191f5) a kill aimed at a
+ * retired proxy resolved ~9 minutes late and SIGTERMed the *new* resident
+ * streaming process mid-turn. `runToken` names the intended victim (the same
+ * per-spawn token `/agent/start` records); the worker no-ops when the resident
+ * spawn is not that victim. Optional so legacy callers (recovery paths, the
+ * 409-desync clear) keep today's unconditional kill, and so an old worker that
+ * ignores the body keeps working.
+ */
+export interface WorkerAgentKillBody {
+  runToken?: string;
+}
+
 // ---- Worker agent status (docs/240) ----
 
 /**
@@ -870,7 +1476,7 @@ export interface WorkerAgentStatus {
   /** The spawning proxy's run token, so a re-created proxy can keep the epoch. */
   runToken?: string;
   /**
-   * SHI-264 — the durable DELIVERY id of the turn in flight, when it was
+   * planning#266 — the durable DELIVERY id of the turn in flight, when it was
    * dispatched on behalf of a server-side delivery (a notify-on-merge wake,
    * either `kind`). Ground truth for "is this delivery still live?": a
    * restarted orchestrator reads it here, rebinds the delivery's completion

@@ -72,6 +72,12 @@ export async function createRepoWithTemplate(
     if (template.files["package.json"]) {
       try { await generatePackageLock(scaffoldDir); } catch { /* non-fatal */ }
     }
+    // docs/266 / planning#407 — the `unreadable` result is deliberately not
+    // consulted here, unlike the turn-commit paths. This tree is a fresh
+    // `mkdtemp` the orchestrator wrote itself moments ago: it is root-owned, so
+    // `resolveGitTreeUid` never drops, and no uid but this process's has ever
+    // written into it. There is also no session and no transcript yet to report
+    // into. A failure still throws and fails repo creation loudly.
     await scaffoldGit.autoCommit(`Initial setup: ${template.name}`);
     await scaffoldGit.push("origin", "main");
 
@@ -170,6 +176,19 @@ export async function applyTemplate(
     try { await generatePackageLock(sessionDir); } catch { /* non-fatal */ }
   }
   const git = createGitManager(sessionDir);
+  // Deliberately NOT gated by `services/auto-commit-gate.ts`, even though
+  // `setKind(…, "ops")` ran a few lines above. That gate refuses ShipIt's
+  // *automatic* commits — turn-end, interrupt, late consult, UI edit, eviction.
+  // This is session CREATION, not a turn: it is what gives an ops workspace its
+  // `Apply template: Ops session` baseline, and skipping it would hand the agent
+  // a workspace that is dirty from its first second, with the template's own
+  // files showing as unstaged changes. Kept for every kind.
+  //
+  // docs/266 / planning#407 — `unreadable` is not consulted here either. This is
+  // session CREATION: the workspace holds exactly the template files this
+  // function just wrote, no container has started, and the session has no
+  // transcript for a notice to land in. Every later commit on this workspace
+  // goes through a path that DOES report.
   await git.autoCommit(`Apply template: ${template.name}`);
 
   const session = sessionManager.get(appSessionId);

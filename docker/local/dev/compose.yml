@@ -20,7 +20,7 @@ services:
       - CLIENT_DEV_PORT=3000
       - VITE_API_HOST=localhost:3001
       - USE_CONTAINERS=true
-      # docs/150 (SHI-31) — non-root session worker runtime. See deployment/vps
+      # docs/150 (planning#33) — non-root session worker runtime. See deployment/vps
       # for the rationale; orchestrator HOME stays /root (auth.ts), only the
       # session containers run as shipit(1000).
       - SHIPIT_SESSION_WORKER_UID=1000
@@ -39,10 +39,10 @@ services:
       # on the bridge as the `shipit` service alias. The worker's SHIPIT_HOST is set
       # from this, and the Tier B egress resolver allowlists it — without it, an agent
       # under SESSION_EGRESS_DNS=1 can't resolve the orchestrator callback host
-      # (SHI-90 Tier B host verification). Harmless when egress is off.
+      # (planning#92 Tier B host verification). Harmless when egress is off.
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
-      # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
+      # docs/172 Gap 1 (planning#92) — agent egress containment is ON by default for
       # all instances (fail-closed). The orchestrator runs the privileged
       # installer/resolver/proxy sidecars in the agent netns from this image; it
       # MUST be set or a contained session refuses to start. dev.sh builds the
@@ -50,8 +50,8 @@ services:
       # exporting SESSION_EGRESS_ENFORCE=0 before `up`.
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:dev
       - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
-      # docs/172 Gap 5 (SHI-97) — kernel-tier hardening flags, default-OFF.
-      # Set for live-host verification (SHI-97). Empty unless exported before `up`.
+      # docs/172 Gap 5 (planning#99) — kernel-tier hardening flags, default-OFF.
+      # Set for live-host verification (planning#99). Empty unless exported before `up`.
       - SESSION_SECCOMP=${SESSION_SECCOMP:-}
       - SESSION_SECCOMP_PROFILE=${SESSION_SECCOMP_PROFILE:-}
       - SESSION_READONLY_ROOTFS=${SESSION_READONLY_ROOTFS:-}
@@ -67,14 +67,14 @@ services:
     profiles:
       - build-only
 
-  # Egress firewall sidecar (docs/172 Gap 1, SHI-90). Built into shipit-egress-sidecar:dev
+  # Egress firewall sidecar (docs/172 Gap 1, planning#92). Built into shipit-egress-sidecar:dev
   # and run by the orchestrator in the agent netns. Containment is ON by default
   # (opt out with SESSION_EGRESS_ENFORCE=0).
   # Build-only (like session-worker) — built by dev.sh, never started by `up`. Its
   # build context is `docker/` (the Dockerfile COPYs `egress-sidecar/*`), so the
   # context here is ../.. relative to this compose file. Without this, a change to
   # docker/egress-sidecar/ never reaches the running sidecar — it lags whatever was
-  # last built manually (SHI-90 verification finding, 2026-06-15).
+  # last built manually (planning#92 verification finding, 2026-06-15).
   egress-sidecar:
     build:
       context: ../..

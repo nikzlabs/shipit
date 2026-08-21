@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-86
+issue: planning#88
 title: Agent issue writes — through the unified tracker interface, not MCP
 description: Let the agent comment on, edit, re-status, and re-assign issues across all trackers via one ShipIt-brokered Tracker write interface, with a do-then-surface provenance card. Includes the cross-tracker status/assignee mapping.
 ---
@@ -213,7 +213,7 @@ visible, attributable, and reversible. It composes with docs/176 (so a write the
 agent was *steered* into by malicious issue content is still surfaced and
 undoable) and docs/172 (egress/token isolation).
 
-### Write idempotency across crash/retry (SHI-112)
+### Write idempotency across crash/retry (planning#114)
 
 The write relay (`handleWrite` in `api-routes-issues.ts`) must be **idempotent**
 against turn resume/retry. When a turn crashes (exit 137 / OOM) and is retried —
@@ -287,9 +287,9 @@ to the container.
   surfaced on the read type as `TrackerIssue.assigneeId` (populated from the raw
   API node), so the snapshot captures an exact id rather than the display name.
 
-## Extension — labels + priority on create/edit (SHI-92)
+## Extension — labels + priority on create/edit (planning#94)
 
-`create`/`edit` originally carried only title/body. SHI-92 adds two attribute
+`create`/`edit` originally carried only title/body. planning#94 adds two attribute
 flags, tracker-neutral but explicit about per-tracker capability:
 
 - **`--label NAME`** (repeatable / comma-separated) on both `create` and `edit`.
@@ -314,15 +314,15 @@ write `summary`), `--json` returns the resolved `labels` + `priority`, and the
 `edit` undo snapshot gains `previousLabels` / `previousPriority`. `TrackerIssue`
 gains an optional `labels: string[]` populated by both adapters.
 
-## Extension — `--parent` for sub-issue nesting (SHI-206)
+## Extension — `--parent` for sub-issue nesting (planning#208)
 
 The read model (docs/206) surfaces `parentId` / `parentIdentifier`, but the write
 surface had no way to *set* them — building an umbrella issue with children meant
-dropping into the Linear UI. SHI-206 adds **`--parent <pointer>`** on both
+dropping into the Linear UI. planning#208 adds **`--parent <pointer>`** on both
 `create` and `edit`, tracker-neutral in shape but Linear-only in capability:
 
 - The value is the same tracker-neutral pointer everything else takes (a key like
-  `SHI-204` or a Linear issue URL); the shim resolves it to the parent's issue key
+  `planning#206` or a Linear issue URL); the shim resolves it to the parent's issue key
   via `parseIssueRef`. The Linear adapter resolves that key → the parent's UUID
   (`resolveUuid`) and sets `parentId` on the `issueCreate` / `issueUpdate` input.
 - **Linear-only.** **GitHub issues are flat** (no parent/sub-issue relation), so
@@ -342,7 +342,7 @@ dropping into the Linear UI. SHI-206 adds **`--parent <pointer>`** on both
 folded alongside `labels`/`priority`. The `IssueWriteUndo` `edit` variant carries
 `previousParentId?: string | null`.
 
-## Extension — `comment edit` (SHI-86)
+## Extension — `comment edit` (planning#88)
 
 A comment used to be write-once. `shipit issue comment` posted one and nothing
 took it back, so an agent that posted a wrong or stale comment could only post
@@ -421,13 +421,106 @@ the `issueId` slot, which stays the issue because it doubles as the card's undo
 target. Keying on the issue alone would collapse two edits to *different*
 comments on the same issue — silently dropping the second and returning the
 first's card as if it had succeeded, leaving a comment un-fixed with nothing to
-show for it. Replay of the *same* edit is still absorbed (SHI-112). Pinned by
+show for it. Replay of the *same* edit is still absorbed (planning#114). Pinned by
 `agent-issue-write-idempotency.test.ts`.
 
 The card is a distinct verb (`comment-edit`, "Edited a comment on …") rather than
 a reuse of `comment`, because a rewrite is not a new comment and its undo is a
 different operation. Its second line shows the **new** body; the prior text is
 one Undo click away, and two clamped blockquotes would not fit the two-line card.
+
+## Extension — `label edit` (planning#88)
+
+`label create` (docs/230) was the only label verb, and it refuses a name that
+already exists in any casing. With no edit and no delete, and Undo reaching only
+the most recent write, **a label that existed with the wrong color or casing was
+permanently wrong through ShipIt.** docs/247 hit this for real: `Feature` and
+`priority: high` were minted grey by an earlier reachability probe that passed no
+`--color`, and Linear's `Bug` collided with GitHub's default lowercase `bug` —
+the corpus's two most-used labels, 147 issues between them, and nothing in the
+product could fix them.
+
+```
+shipit issue label edit --tracker NAME --name NAME [--new-name NAME] [--color '#rrggbb'] [--description TEXT] [--json]
+```
+
+`--name` selects the label (matched **case-insensitively**, which is what makes a
+mis-cased label reachable at all); at least one of `--new-name` / `--color` /
+`--description` says what to change. Like `label create` it names its destination
+(req 13) and is do-then-surface, with a `label-edit` provenance card whose Undo
+restores the prior values.
+
+### Rename is in scope — it is not a re-labeling
+
+The open question was whether renaming belonged here at all, on the grounds that
+a recolor is invisible to every issue carrying the label while a rename "silently
+re-labels" them. That framing turns out not to survive contact with either
+backend: **both rename in place** (`PATCH /repos/:o/:r/labels/{name}` with
+`new_name`; Linear's `issueLabelUpdate`). No association is created or destroyed
+— the same label displays a different string. So the blast radius is "147 issues
+now show `Bug` instead of `bug`", which is precisely the intent, and the reverse
+write is exactly symmetric: rename back, again touching nothing else.
+
+It also isn't a new capability. Both trackers let a human rename, recolor and
+delete labels from their own UI; what was missing was doing it inside ShipIt
+(§1/§2 — docs/230 made this same argument for `create`). And the motivating
+incident *requires* rename: a casing collision has no other fix.
+
+Two guards keep it honest. Renaming onto a name a **different** label already
+holds is refused with a 409 rather than merged — neither backend merges cleanly,
+and a silent merge is the one outcome no undo could reverse. A casing-only
+rename (`bug` → `Bug`) is the label itself, not a collision, so it is allowed.
+And an edit that would change nothing is a 409 too, rather than a card whose Undo
+restores what it already was.
+
+### `label create` keeps failing on an existing name
+
+Deliberately not update-if-different. `create` is reachable from
+`--create-missing-labels`, where the name comes from a `--label` value that may
+be a typo; a create that quietly repainted a live label carried by 147 issues is
+the worst outcome a typo could have. Failing keeps the typo protection planning#94
+established, and the rejection is no longer a dead end — it now names `label
+edit`. Correcting a label is a deliberate act, so it gets a deliberate verb.
+
+### The dedup key, and what occupies the `issueId` slot
+
+`handleWrite`'s key is session + tracker + verb + `issueId` + hash(content), and
+a label write is not scoped to an issue at all. Both label verbs go through a
+shared `handleLabelWrite` that keeps the same key shape, with the slot naming
+**the label being written**: empty for a `create` (the label does not exist yet,
+so its name rides in the hashed content alongside color and description) and the
+target's name for an `edit` — the object being mutated, exactly as the slot holds
+the issue for every issue verb. Keying an edit on anything shared would collapse
+two edits to *different* labels into one, silently dropping the second and
+returning the first's card as if it had succeeded — the trap `comment edit`
+avoided by riding the comment id in its hashed content. Replay of the same edit
+is still absorbed (planning#114).
+
+### Undo restores only what changed
+
+The snapshot carries `previousName` / `previousColor` / `previousDescription`
+for exactly the fields the write touched, plus `labelId` — the id **after** the
+write, because on GitHub the name IS the id, so a rename moves it. A field the
+edit never set is absent from the snapshot and is left alone by the undo rather
+than being reset to a guess.
+
+The Linear adapter re-reads the label's team before mutating and refuses another
+team's (`assertOwnTeam`, the guard `deleteUnusedLabel` already applies) — a label
+id is workspace-global, so the check lives in the adapter where a direct relay
+POST cannot bypass it. A workspace-level label (no team) is reachable by every
+team including the declared one, so it is left alone.
+
+## Proposed — deleting a label
+
+Still out of scope, and `label edit` does not change the answer — it removes most
+of the pressure for one. Deleting is a genuinely destructive act on shared
+config, and the asymmetry is worse than `comment delete`'s: re-creating the label
+mints a fresh one that **no issue carries**, so "Undo" would restore the name and
+silently lose every association. An Undo button that lies is worse than no
+button. The honest escape hatch already exists and is a §3 case rather than a
+gap: both trackers delete labels from their own UI, with a warning naming how
+many issues it will be stripped from — a deliberate one-way act, taken with the
+count in hand.
 
 ## Proposed — deleting a comment
 
@@ -451,12 +544,13 @@ it, which removes most of the pressure for a delete.
 
 ## Key files
 
-- `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types; `updateComment` (SHI-86) and `TrackerPermissionError` (a refusal, not a resolution failure → 403).
+- `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types; `updateComment` (planning#88) and `TrackerPermissionError` (a refusal, not a resolution failure → 403).
 - `src/server/orchestrator/trackers/linear/adapter.ts` — `commentCreate`/`issueUpdate` + state/user resolution via `linearGraphql()`.
 - `src/server/orchestrator/trackers/github/adapter.ts` — `addComment`/`deleteComment`/`updateIssue`/state/assignees via the adapter's injectable `fetchImpl` + `githubHeaders` (the `fetchGitHub` header pattern; testable against a fake). `github-auth-issues.ts` is unchanged — it keeps the global-`fetch` `createIssue` for bug-filing only.
-- `src/server/orchestrator/services/issues.ts` — `commentOnIssueForTracker` / `updateIssueForTracker` / `setIssueStatusForTracker` / `setIssueAssigneeForTracker`, each snapshotting prior state for undo.
-- `src/server/orchestrator/api-routes-issues.ts` — session-scoped write routes.
-- `src/server/session/agent-shim/shipit.ts` — `shipit issue comment`/`edit`/`status`/`assign`.
+- `src/server/orchestrator/services/issues.ts` — `commentOnIssueForTracker` / `updateIssueForTracker` / `setIssueStatusForTracker` / `setIssueAssigneeForTracker`, each snapshotting prior state for undo; `updateLabelForTracker` (planning#88) with the 404 / merge-409 / no-op-409 pre-checks.
+- `src/server/orchestrator/api-routes-issues.ts` — session-scoped write routes; `handleLabelWrite` is the shared create/edit label path (runner + dedup + card), `emitLabelCard` mints both label verbs' cards.
+- `src/server/session/agent-shim/shipit.ts` — `shipit issue comment`/`edit`/`status`/`assign`; `shipit-issue.ts`'s `handleIssueLabel` covers `label create`/`edit` and refuses `label delete` with the reason.
+- `src/server/orchestrator/trackers/{linear,github}/adapter.ts` — `findLabel` (case-insensitive lookup carrying id + description) and `updateLabel` (rename in place; Linear re-reads the label's team and refuses another team's).
 - `chat-card-persistence.ts`, `chat-history.ts`, `session-data.ts` — persist + rehydrate the write provenance card; wire undo.
 - `src/client/components/visual-elements.ts` — `buildVisualElements` must include `issueWrite` in its `hasCardContent` allow-list. The provenance card rides on an empty-text, tool-less assistant message (the `issueWrite` field IS the content); if it isn't allow-listed, the grouping layer silently drops the message and the card never renders (regression fixed alongside docs/178's `compaction` card, which had the identical omission). Covered by `visual-elements.test.ts`.
 

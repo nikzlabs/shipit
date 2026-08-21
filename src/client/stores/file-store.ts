@@ -59,6 +59,14 @@ interface FileState {
    * not source, so this only affects the code (Monaco) view.
    */
   previewLine: number | null;
+  /**
+   * Whether the previewed file exists on disk in the session workspace, and so
+   * can be downloaded from the files endpoint. True for `openPreview` (which
+   * reads the file from the server), false for `openPreviewWithContent` (an
+   * in-memory blob — a pasted image, a chat-inlined data URI) that has no path
+   * the download route could resolve.
+   */
+  previewOnDisk: boolean;
 
   // Secondary manual file editing dialog state (docs/174).
   editFile: string | null;
@@ -124,6 +132,7 @@ const initialState = {
   previewLoading: false,
   previewActions: [] as FilePreviewAction[],
   previewLine: null as number | null,
+  previewOnDisk: false,
   editFile: null as string | null,
   editContent: "",
   editOriginalContent: "",
@@ -272,6 +281,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       previewLoading: true,
       previewActions: opts?.actions ?? [],
       previewLine: opts?.line ?? null,
+      previewOnDisk: true,
     });
 
     // Normalize path for URL construction (strip leading slash from upload paths)
@@ -314,6 +324,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       previewLoading: false,
       previewActions: actions ?? [],
       previewLine: null,
+      previewOnDisk: false,
     });
   },
 
@@ -325,6 +336,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       previewLoading: false,
       previewActions: [],
       previewLine: null,
+      previewOnDisk: false,
     });
   },
 
@@ -337,6 +349,7 @@ export const useFileStore = create<FileState>((set, get) => ({
       previewLoading: false,
       previewActions: [],
       previewLine: null,
+      previewOnDisk: false,
       editFile: filePath,
       editContent: "",
       editOriginalContent: "",

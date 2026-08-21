@@ -24,7 +24,7 @@ import type { AgentId } from "../shared/types.js";
  * Codex child whose container had been rescued ran Claude — with Claude's
  * credentials provisioned to match, which is what made it look deliberate.
  *
- * docs/150 req 18 is the requirement this protects: a child session picks its
+ * docs/150-multiple-provider-subscriptions req 18 is the requirement this protects: a child session picks its
  * own account through the normal priority order, which is meaningless if the
  * turn runs on the wrong *provider* to begin with.
  *

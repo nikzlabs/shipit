@@ -42,8 +42,9 @@ import {
   PLAYWRIGHT_MCP_COMMAND,
 } from "../playwright-mcp.js";
 import { CODEX_MODELS, CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { codexProviderArgs } from "./spawn-shaping.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
-import { codexHome } from "../../../shared/agent-home.js";
+import { codexHome, resolveAgentHome } from "../../../shared/agent-home.js";
 import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
 
@@ -165,7 +166,10 @@ export class CodexAdapter
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    supportsImages: false,
+    // Mirrors the catalogue row (docs/252 → `catalogue/harnesses.ts`), where the
+    // live probe is recorded: ShipIt's `<attached_images>` block, opened by
+    // Codex's own image tool, reaches the model as vision (planning#458).
+    supportsImages: true,
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
@@ -176,13 +180,13 @@ export class CodexAdapter
     // Mirror of agent-registry.ts. Keep in sync with the registry; both feed
     // the same picker in the UI.
     models: CODEX_MODELS,
-    // docs/125 — Codex satisfies both ingredients the chat-native review flow
-    // needs: subagents (model spawns them via the `spawn_agent` collab tool on
-    // explicit instruction — exactly what the composed review prompt asks for)
-    // and custom MCP tools (`[mcp_servers.*]` in config.toml). The worker
-    // writes the consolidated `shipit` bridge into the Codex config before spawn
-    // (see CodexAdapter.writeMcpConfig), so the shipit tools are available to the
-    // parent and any subagent it spawns.
+    // docs/266 item 15 — Codex has both ingredients the chat-native review flow
+    // needs: a shell tool (to run `shipit agent run --role reviewer` and read
+    // its stdout) and subagents (model spawns them via the `spawn_agent` collab
+    // tool on explicit instruction — exactly what the composed review prompt's
+    // fallback branch asks for). MCP is NOT one of them, docs/125
+    // notwithstanding: docs/220 deleted the last `submit_review` write path, so
+    // the flow is a plain chat message and calls no ShipIt tool.
     supportsReview: true,
     supportsSteering: true,
     // docs/178 — the app-server exposes `thread/compact/start` and emits
@@ -250,12 +254,48 @@ export class CodexAdapter
     // CODEX_HOME are both set so an inherited CODEX_HOME can't win over the
     // scoped HOME (the CLI prefers CODEX_HOME), and so the child agrees with
     // `codexConfigDir()`, which is where `writeMcpConfig` wrote config.toml.
+    //
+    // planning#390 — set on EVERY spawn, not only when a scoped home applies.
+    // `resolveLocalAgentHome` returns a scoped home only for an `account` route
+    // and deliberately `undefined` for a reserved/string route, which is what
+    // every redirected service resolves to (docs/252). Under the old
+    // `if (scopedHome)` those spawns set neither variable and the child
+    // inherited whatever ambient `HOME` the hosting process had — in the
+    // dogfood inner orchestrator, the image's `HOME=/root`: mode 700 and
+    // root-owned, with the process running as uid 1000. Codex keys its config
+    // root off `$HOME`, so every redirected Codex turn died before starting
+    // with `Failed to read config file /root/.codex/config.toml: Permission
+    // denied (os error 13)` while a subscription turn (an `account` route, so a
+    // scoped home) worked — that asymmetry was the whole bug.
+    //
+    // So the spawn no longer depends on an ambient `HOME` it did not set.
+    // `resolveAgentHome` falls back to `agentHome()` (i.e. `AGENT_HOME`), which
+    // in a session container is the `/home/shipit` the child already inherited
+    // — a no-op there — and in local mode is the writable home compose pins.
+    // `codexConfigDir()` likewise falls back to `codexHome()`, which still
+    // honors an inherited `CODEX_HOME` when one is set. Same HOME/CODEX_HOME
+    // pairing as the warm-up spawn in `orchestrator/agents/codex/home-init.ts`.
+    //
+    // That warm-up is the other half of this change and was NOT already covering
+    // this spawn: its two gates keyed on the account root, so the root an
+    // unscoped turn now lands on had no cold-start serialization at all — and
+    // this fix is what makes that root reachable, since the turn previously died
+    // before it could race the naming CLI for it. `session-agent-env.ts` and
+    // `session-namer.ts` now gate on the same expression this line resolves.
+    // All three have to name one root, or the warm-up initializes a directory
+    // the turn will not read.
     const scopedHome = this.resolveHome?.();
-    if (scopedHome) {
-      env.HOME = scopedHome;
-      env.CODEX_HOME = this.codexConfigDir();
-    }
+    env.HOME = resolveAgentHome(scopedHome);
+    env.CODEX_HOME = this.codexConfigDir();
 
+    // docs/252 phase 3 — a SHAPED turn runs against the selected model's
+    // service, so neither auth path below applies to it: `auth.json`
+    // authenticates OpenAI and nothing else, and the env key is whatever the
+    // catalogue named for this service. Resolved FIRST, and everything below
+    // gated on `shaped`, because otherwise the `hasFileAuth` branch would delete
+    // the very key this turn authenticates with — or, with a ChatGPT login
+    // present, hand a DeepSeek turn an OpenAI credential.
+    //
     // Auth resolution — see docs/119-codex-subscription-auth/plan.md.
     //
     // Two modes:
@@ -271,15 +311,44 @@ export class CodexAdapter
     // Platform API billing — that's exactly the bug this feature exists to
     // fix.
     //
-    // docs/150 req 12 — a spawn scoped to a provider account never falls back
+    // docs/150-multiple-provider-subscriptions req 12 — a spawn scoped to a provider account never falls back
     // to the env key. Failover moves work between subscription accounts only;
     // a scoped account with no `auth.json` is an unusable account, and saying
     // so (`auth_required`) is honest, where quietly billing the orchestrator's
     // Platform key would look like the account had worked.
-    const hasFileAuth = this.hasFileAuth(this.codexConfigDir());
-    const hasEnvAuth = !scopedHome && !!env.OPENAI_API_KEY;
+    const routing = params.serviceRouting;
+    const providerArgs = codexProviderArgs(routing);
+    const shaped = routing !== undefined && providerArgs.length > 0;
+    if (shaped && routing) {
+      const secret = env[routing.credentialSourceEnv];
+      if (routing.credentialTarget.kind === "env") {
+        if (secret) env[routing.credentialTarget.name] = secret;
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the key is a catalogue-declared variable name, not caller input.
+        else delete env[routing.credentialTarget.name];
+      }
+      if (!secret) {
+        this.emit("auth_required");
+        return;
+      }
+      this.emit(
+        "log",
+        "codex",
+        `service routing: ${routing.serviceId}/${routing.billingMode} -> ${routing.baseUrl}`,
+      );
+    } else if (routing) {
+      // The catalogue named a service this CLI cannot be pointed at (a style it
+      // does not speak, or a credential shape it cannot carry). Running against
+      // OpenAI instead would bill the wrong account, so stop and say so.
+      this.emit("error", new Error(
+        `Codex cannot be pointed at ${routing.serviceId} over ${routing.style}.`,
+      ));
+      return;
+    }
 
-    if (!hasFileAuth && !hasEnvAuth) {
+    const hasFileAuth = !shaped && this.hasFileAuth(this.codexConfigDir());
+    const hasEnvAuth = !shaped && !scopedHome && !!env.OPENAI_API_KEY;
+
+    if (!shaped && !hasFileAuth && !hasEnvAuth) {
       this.emit("auth_required");
       return;
     }
@@ -287,7 +356,7 @@ export class CodexAdapter
     if (hasFileAuth) {
       delete env.OPENAI_API_KEY;
       this.emit("log", "codex", "using ChatGPT subscription (~/.codex/auth.json)");
-    } else {
+    } else if (!shaped) {
       this.emit("log", "codex", "using OPENAI_API_KEY (Platform API billing)");
     }
 
@@ -295,10 +364,13 @@ export class CodexAdapter
     // it rides a `-c model_reasoning_effort=…` global override placed BEFORE the
     // `app-server` subcommand. Omitted entirely when unset so Codex uses its own
     // default. The value is validated server-side against the agent's option set
-    // before it reaches here.
-    const args = params.reasoningEffort
-      ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`, "app-server"]
-      : ["app-server"];
+    // before it reaches here. docs/252 phase 3 — the provider block rides the
+    // same position, for the same reason.
+    const args = [
+      ...(params.reasoningEffort ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`] : []),
+      ...providerArgs,
+      "app-server",
+    ];
 
     this.emit("log", "codex", `spawning: codex ${args.join(" ")} | cwd: ${cwd}`);
 
@@ -543,7 +615,7 @@ export class CodexAdapter
       lines.push(`env_vars = ${tomlArray(["PLAYWRIGHT_BROWSERS_PATH"])}`);
     }
 
-    // SHI-128 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
+    // planning#130 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
     // internal tools under the single `shipit` server, instead of five separate
     // processes. The `SHIPIT_MCP_TOOLS` env selects which tools to expose; Codex
     // gets review (docs/125), present (docs/093), voice (docs/163), ask

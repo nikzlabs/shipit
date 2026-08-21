@@ -1,52 +1,36 @@
-import { OnboardingWizard } from "./components/OnboardingWizard.js";
-import type { AgentOption } from "./agent-types.js";
+import { GitHubGate } from "./components/GitHubGate.js";
 
 /**
- * Gates first-run onboarding. The standalone "Authentication Required" overlay
- * that used to render here when `authUrl` was set has been removed: it popped a
+ * Gates first-run setup. The standalone "Authentication Required" overlay that
+ * used to render here when `authUrl` was set has been removed: it popped a
  * blocking modal in every open browser window (the URL arrived over a global
- * SSE broadcast), even tabs unrelated to the session that needed auth. Agent
- * authentication now lives in Settings → Agents — the model selector disables
- * unauthenticated agents, and an unauthenticated turn returns an error pointing
- * there.
+ * SSE broadcast), even tabs unrelated to the session that needed auth.
  *
- * The wizard's agent step no longer takes sign-in props at all: it renders the
- * same per-account connect surface as Settings, which owns its own challenge
- * state keyed by account (docs/150 req 16).
+ * docs/257 — what remains is the **GitHub** half, and only that. Harness
+ * credentials left this overlay entirely: they are connected from
+ * `HarnessOnboardingPanel` in the conversation view (first run) or from
+ * Settings → Services (any time after), neither of which covers the product.
+ * The GitHub step keeps today's blocking behaviour in full, which is why this
+ * container still exists at all.
  */
 interface AuthOverlayContainerProps {
-  showOnboarding: boolean;
-  // Onboarding props
-  /** GitHub not yet connected — start the wizard at step 1 (Connect GitHub). */
-  githubNeeded: boolean;
-  agentList: AgentOption[];
+  /** GitHub is not connected (latched in `App.tsx`) — block the product. */
+  showGitHubGate: boolean;
   onGitHubTokenSubmit: (token: string) => Promise<boolean>;
-  onClaudeApiKeySubmit: (key: string) => Promise<boolean>;
-  onCodexApiKeySubmit: (key: string) => Promise<boolean>;
-  onRefreshAgents: () => Promise<void>;
+  /** Dismiss the gate. Fires when GitHub connects — there is no other exit. */
   onComplete: () => void;
 }
 
 export function AuthOverlayContainer({
-  showOnboarding,
-  githubNeeded,
-  agentList,
+  showGitHubGate,
   onGitHubTokenSubmit,
-  onClaudeApiKeySubmit,
-  onCodexApiKeySubmit,
-  onRefreshAgents,
   onComplete,
 }: AuthOverlayContainerProps) {
   return (
     <>
-      {showOnboarding && (
-        <OnboardingWizard
-          initialStep={githubNeeded ? 1 : 2}
+      {showGitHubGate && (
+        <GitHubGate
           onGitHubTokenSubmit={onGitHubTokenSubmit}
-          agents={agentList}
-          onClaudeApiKeySubmit={onClaudeApiKeySubmit}
-          onCodexApiKeySubmit={onCodexApiKeySubmit}
-          onRefreshAgents={onRefreshAgents}
           onComplete={onComplete}
         />
       )}

@@ -3,7 +3,7 @@ import path from "node:path";
 import { runGit, repoDeclaresLfs, isGitLfsAvailable, PROBE_TIMEOUT_MS } from "./git-lfs.js";
 
 /**
- * Cross-session Git LFS object sharing via the bare repo cache (docs/232, SHI-236).
+ * Cross-session Git LFS object sharing via the bare repo cache (docs/232, planning#238).
  *
  * ## The problem
  *

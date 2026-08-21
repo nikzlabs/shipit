@@ -67,7 +67,7 @@ describe("projectToolResult", () => {
   });
 
   /**
-   * SHI-291. The Ask branch of `MessageToolUse` returns before the output
+   * planning#293. The Ask branch of `MessageToolUse` returns before the output
    * modal, so a sliced answer's tail is unreachable — not behind a click,
    * gone. Found by the independent requirements review: it had been recorded
    * as a requirement-4 shortfall, but it also broke requirement 2 (nothing
@@ -80,6 +80,21 @@ describe("projectToolResult", () => {
 
     expect(projected.content).toBe(longAnswer);
     expect(projected.truncated).toBeUndefined();
+  });
+
+  it("keeps a TaskCreate result — it carries the id the task panel folds on", () => {
+    // The CLI assigns the task id and returns it ONLY here. Emptying this body
+    // strands the task on its provisional key, so every later TaskUpdate misses
+    // it and the panel stops tracking the list after a reload.
+    const content = `Task #7 created successfully: ${"long subject ".repeat(30)}`;
+    const projected = projectToolResult("s1", { toolUseId: "t1", content }, "TaskCreate");
+    expect(projected.content).toBe(content);
+    expect(projected.truncated).toBeUndefined();
+    // Only the head is needed, so it is NOT exempt from slicing — a huge body
+    // still gets bounded, and the `Task #N` prefix survives that.
+    const huge = projectToolResult("s1", { toolUseId: "t2", content: `Task #7 created\n${bigOutput}` }, "TaskCreate");
+    expect(huge.truncated).toBe(true);
+    expect(huge.content.startsWith("Task #7 created")).toBe(true);
   });
 
   it("still slices a long result for `present`, whose id survives the head", () => {
@@ -125,7 +140,7 @@ describe("projectToolResult", () => {
    * The failure mode this branch exists to avoid. A report's normal encoding is
    * a `JSON.stringify`'d block array — ONE line — so the generic slice's line
    * cap never fires and its byte backstop cuts mid-array. The client would then
-   * fail to parse it and render raw JSON at the user, which is SHI-287 all over
+   * fail to parse it and render raw JSON at the user, which is planning#289 all over
    * again.
    */
   it("keeps a block-array report parseable after clamping", () => {
@@ -268,7 +283,7 @@ describe("projectToolUse", () => {
   });
 
   /**
-   * SHI-296. Everything below is what "only Edit/Write are projected" left on
+   * planning#298. Everything below is what "only Edit/Write are projected" left on
    * the wire: a megabyte `Bash` command behind an 80-character summary, a
    * kilobyte subagent prompt behind a collapsed disclosure, an MCP argument
    * object nothing draws at all.
@@ -484,7 +499,7 @@ describe("projectMessagesForWire", () => {
   });
 });
 
-describe("projectConsultCardForWire (SHI-297)", () => {
+describe("projectConsultCardForWire (planning#299)", () => {
   const consultCard = (over: Partial<SubAgentConsultCard> = {}): SubAgentConsultCard => ({
     cardId: "card-1",
     spawnId: "sp-1",
@@ -506,6 +521,24 @@ describe("projectConsultCardForWire (SHI-297)", () => {
     // Everything the card face draws WITHOUT opening the viewer survives.
     expect(projected.status).toBe("success");
     expect(projected.spawnId).toBe("sp-1");
+  });
+
+  // docs/261 phase 4 (req 9) — the attribution is card FACE, not modal content:
+  // it is drawn without a click and there is no endpoint to fetch it back from,
+  // so a projection that dropped it would leave the served card unable to say
+  // what reviewed the work while the stored one still could.
+  it("keeps the run-on attribution on a card whose output it strips", () => {
+    const runOn = {
+      serviceId: "openai",
+      billingMode: "sub" as const,
+      modelId: "gpt-5.6-sol",
+      reasoningEffort: "high",
+    };
+    const review = Array.from({ length: 200 }, (_, i) => `finding ${i}`).join("\n");
+    const projected = projectConsultCardForWire(consultCard({ outputMarkdown: review, runOn }));
+
+    expect(projected.outputTruncated).toBe(true);
+    expect(projected.runOn).toEqual(runOn);
   });
 
   it("re-previewing the server's own preview is a no-op", () => {
@@ -639,7 +672,7 @@ describe("a body only leaves the wire once its row is on disk", () => {
     expect(block.input.content).toBe(bigOutput);
   });
 
-  it("the snapshot strips the part of the turn a boundary already committed (SHI-297)", () => {
+  it("the snapshot strips the part of the turn a boundary already committed (planning#299)", () => {
     // The blanket `allRowsPersisted: false` was conservative for the WHOLE turn,
     // so a mid-turn reconnect re-sent every Edit body and nested result the turn
     // had accumulated — including ones written to disk several boundaries ago.

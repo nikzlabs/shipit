@@ -64,9 +64,9 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
 
     credentialStore = createTestCredentialStore(tmpDir);
     const now = Date.now();
-    credentialStore.upsertProviderAccount({
+    credentialStore.upsertCredentialRoute({
       id: "acct-added-claude",
-      provider: "claude",
+      serviceId: "anthropic", billingMode: "sub", via: "account",
       label: "Added Claude subscription",
       isPrimary: true,
       status: "ready",
@@ -156,7 +156,7 @@ describe("Integration: POST /api/sessions/:id/agent/dispatch", () => {
   it("401 — unauthenticated Claude blocks dispatch", async () => {
     const client = await TestClient.connect(port);
     await client.receive();
-    credentialStore.deleteProviderAccount("claude", "acct-added-claude");
+    credentialStore.deleteCredentialRoute("acct-added-claude");
     stubAuth.authenticated = false;
     const res = await app.inject({
       method: "POST",

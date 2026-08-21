@@ -11,7 +11,7 @@ import { resolveRuntimeMode } from "./app-di.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 
 /**
- * SHI-282 — local mode (`RUNTIME_MODE=local`, the dogfood `dev` service) could
+ * planning#284 — local mode (`RUNTIME_MODE=local`, the dogfood `dev` service) could
  * never authenticate an agent, because every credential-provisioning branch in
  * `session-agent-env.ts` is gated on `runner instanceof ContainerSessionRunner`
  * and local mode has no container. These pin the local-mode replacement.
@@ -239,7 +239,7 @@ describe("linkAgentHomeToCredentials", () => {
  * credential (correctly) stays — but Step 1b used to leave whatever an earlier
  * account-routed turn had linked. The home then carried one route's
  * subscription credentials while the turn ran on another, and only the CLI's
- * env-beats-disk preference kept the billing right. docs/150 req 12.
+ * env-beats-disk preference kept the billing right. docs/150-multiple-provider-subscriptions req 12.
  */
 describe("clearAgentHomeCredentialLinks", () => {
   it("removes a previous account turn's links so an env-authenticated turn has no account credentials", () => {

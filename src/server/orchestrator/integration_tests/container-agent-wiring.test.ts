@@ -93,7 +93,7 @@ async function waitFor(
 }
 
 /**
- * SHI-280 — a runner that can start dispatched turns but never actually runs
+ * planning#282 — a runner that can start dispatched turns but never actually runs
  * one: `runDispatchedTurn` is replaced by a recorder that hangs, which is
  * exactly the field condition (a turn whose every event was dropped, so it never
  * reaches the executor's settling teardown). `dispatchOnRunner` still runs for
@@ -532,6 +532,59 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  // Prod incident 2026-08-09 (session 468191f5): a fire-and-forget
+  // `/agent/kill` aimed at a retired proxy executed on the worker ~9 minutes
+  // late, when the slot (and the worker's resident process) already belonged
+  // to a NEWER spawn mid-turn — and SIGTERMed it, silently killing the live
+  // turn. planning#290 guarded only the orchestrator-side slot clear; the kill
+  // request itself carried no victim identity. Now `ProxyAgentProcess.kill()`
+  // names its own spawn (`runToken`) and the worker no-ops when the resident
+  // is not that victim; the orchestrator likewise refuses to clear a slot
+  // occupied by a different spawn than the one it asked to kill.
+  it("a late kill from a retired proxy does not kill or unhook the newer resident spawn", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-late-kill-wrong-victim",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Spawn A runs and exits normally; the worker slot frees up.
+    const proxyOld = runner.createAgent("claude");
+    proxyOld.run({ prompt: "old spawn", cwd: "/workspace" });
+    await waitFor(() => lastAgent?.runCalled, 3000, "old agent.run()");
+    const oldAgent = lastAgent;
+    oldAgent.emit("done", 0);
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Spawn B is now the resident — the live turn.
+    const proxyNew = runner.createAgent("claude");
+    const newEvents: string[] = [];
+    proxyNew.on("event", (e: { type?: string }) => { if (e.type) newEvents.push(e.type); });
+    proxyNew.run({ prompt: "new spawn", cwd: "/workspace" });
+    await waitFor(
+      () => lastAgent !== oldAgent && lastAgent?.lastParams?.prompt === "new spawn",
+      3000,
+      "new agent.run()",
+    );
+    const newAgent = lastAgent;
+
+    // The retired proxy's kill lands while B owns the slot — the incident's
+    // worker-side execution timing, reproduced by simply issuing it now.
+    proxyOld.kill();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // The live spawn survives, keeps the slot, and its events still route.
+    expect(newAgent.killed).toBe(false);
+    expect(runner.getAgent()).toBe(proxyNew);
+    newAgent.emit("event", { type: "agent_result", status: "success", sessionId: "s-new" });
+    await waitFor(() => newEvents.includes("agent_result"), 3000, "new spawn's events still delivered");
+
+    runner.dispose({ force: true });
+  });
+
   // ---- Sequential agent runs ----
 
   it("supports sequential agent runs (new proxy after done)", async () => {
@@ -941,7 +994,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // SHI-288 (prod incident 2026-08-03, three sessions, every agent event
+  // planning#290 (prod incident 2026-08-03, three sessions, every agent event
   // dropped `(no _agent)` for a whole turn): the retirement blocks in
   // `dispatched-turn.ts` — the system-turn one (docs/179 §4) and the
   // account-failover one (docs/150) — retire a resident process with the
@@ -1026,7 +1079,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
-  // SHI-288 defect 2. With the slot correctly held by the incoming proxy, the
+  // planning#290 defect 2. With the slot correctly held by the incoming proxy, the
   // RETIRED process's late events are no longer dropped — they are routed into
   // whatever proxy occupies the slot, because `agent_event` (unlike
   // `agent_done` / `agent_error` / `agent_auth_required`) carried no `runToken`
@@ -1176,7 +1229,7 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
       runner.dispose();
     });
 
-    // ---- SHI-280 ----
+    // ---- planning#282 ----
     //
     // The reset above is only half a recovery. In the field a session sat wedged
     // for 40+ minutes with a `Child PR #… merged` wake-turn frozen in its queue:

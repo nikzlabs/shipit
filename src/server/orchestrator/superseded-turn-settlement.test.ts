@@ -1,5 +1,5 @@
 /**
- * SHI-316 — a turn that RAN and was then cut short must settle, and must settle
+ * planning#318 — a turn that RAN and was then cut short must settle, and must settle
  * as `interrupted` rather than `no-result`.
  *
  * The production incident: a self-merge wake turn was delivered, the user
@@ -52,7 +52,7 @@ function makeRunnerWithDeps(): {
   return { runner, agents, deps, autoCommit: deps.autoCommit };
 }
 
-describe("a superseded turn settles (SHI-316)", () => {
+describe("a superseded turn settles (planning#318)", () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   it("settles as `interrupted` when a newer turn takes the agent slot", async () => {
@@ -164,6 +164,129 @@ describe("a superseded turn settles (SHI-316)", () => {
     // …and it is NOT retried inside the dispatch path either (a no-result retry
     // would re-run the wake prompt in the same session).
     expect(agents).toHaveLength(1);
+  });
+
+  it("settles the turn whose resident process a drained system turn RETIRES", async () => {
+    // The prod route the `setAgent`-replacement hook above does not cover
+    // (2026-08-10, session 18d04568). Two merge wakes land back to back:
+    //   • wake A runs, produces its `agent_result`, and its post-turn drain
+    //     starts wake B while A's streaming process is still resident;
+    //   • B is a system turn, so it declines to adopt that process and RETIRES
+    //     it — `kill(); setAgent(null); createAgent()`.
+    // The slot is empty by the time B's proxy is installed, so
+    // `supersedeDisplacedAgent` never fires, and A's own `agent_done` is dropped
+    // by the docs/146 stale-spawn guard. A therefore never settled at all: its
+    // merge-watch sat at `merge-observed` and the retry supervisor re-sent the
+    // identical wake three minutes later.
+    const { runner, agents } = makeRunnerWithDeps();
+    const outcomesA: TurnOutcome[] = [];
+
+    runner.dispatch(testDispatch({
+      text: "Child PR #2104 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2104:1",
+      onTurnComplete: (o) => outcomesA.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake A started");
+
+    // The second wake arrives while A is running, so it queues.
+    runner.dispatch(testDispatch({
+      text: "Child PR #2105 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2105:1",
+    }));
+    expect(runner.queueLength).toBe(1);
+
+    // A's result runs its post-turn flow, which drains B on top of A's
+    // still-resident process.
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "wake B started");
+
+    // 1. B really did retire A's process rather than adopt it.
+    expect(agents[0]!.kill).toHaveBeenCalled();
+    // 2. A settled — the property that was missing. `completed` because A's
+    //    `agent_result` had arrived; the outcome that matters is that it is
+    //    NOT `no-result`, which is the only one planning#260's supervisor retries.
+    //    `merge-watch` marks `completed` and `interrupted` alike as delivered.
+    expect(outcomesA).toHaveLength(1);
+    expect(outcomesA[0]!.status).toBe("completed");
+    // 3. …and A's late `agent_done` (the one prod dropped as stale) cannot
+    //    re-settle it into a retryable outcome.
+    agents[0]!.emit("done", 0);
+    await flushTurn();
+    expect(outcomesA).toHaveLength(1);
+    expect(outcomesA[0]!.status).toBe("completed");
+
+    runner.clearQueue();
+    runner.dispose({ force: true });
+  });
+
+  it("settles the retired turn at the ACCOUNT-FAILOVER retirement site too", async () => {
+    // `runOnce` has two retirement blocks, and both clear the slot before
+    // spawning. This is the other one: the next turn needs a different provider
+    // account, so the resident process is retired before env prep rewrites the
+    // credential subtree it reads. Its `removeAllListeners()` is deliberate —
+    // the kill's late `done` must not re-run the retired turn's teardown — which
+    // is exactly why the settle has to happen BEFORE it.
+    const { runner, agents, deps } = makeRunnerWithDeps();
+    const outcomes: TurnOutcome[] = [];
+    let failover = false;
+    deps.needsAccountFailover = () => failover;
+
+    runner.dispatch(testDispatch({
+      text: "Child PR #2104 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2104:1",
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake started");
+
+    // An ordinary user turn queues behind the wake and drains on its result,
+    // by which time the session has failed over to another account.
+    runner.enqueue({ text: "next", execution: "dispatched" });
+    failover = true;
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "user turn started");
+
+    expect(agents[0]!.kill).toHaveBeenCalled();
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("completed");
+
+    runner.clearQueue();
+    runner.dispose({ force: true });
+  });
+
+  it("settles the retired turn when a SPAWN-IDENTITY change releases it", async () => {
+    // The third retirement inside `runOnce`, and the one this fix originally
+    // left open: the session's model / service / credential selection changed
+    // while the wake ran, so the drained turn releases the resident process
+    // through `releaseResidentOnSpawnChange` instead of either block above. Same
+    // clear-then-spawn shape, same stranded settlement.
+    const { runner, agents, deps } = makeRunnerWithDeps();
+    const outcomes: TurnOutcome[] = [];
+    deps.listenerDeps.sessionManager.get = vi.fn().mockReturnValue({ model: "opus" }) as never;
+
+    runner.dispatch(testDispatch({
+      text: "Child PR #2104 merged.",
+      systemTurn: true,
+      deliveryId: "watch-2104:1",
+      onTurnComplete: (o) => outcomes.push(o),
+    }));
+    await waitForTurn(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "wake started");
+
+    // The wake spawned under one identity; the session now selects another. Only
+    // a NON-system turn consults the guard, so the drained turn is a user turn.
+    runner.appliedSpawnIdentity = "claude::fable::default";
+    runner.enqueue({ text: "next", execution: "dispatched" });
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitForTurn(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "user turn started");
+
+    expect(agents[0]!.kill).toHaveBeenCalled();
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.status).toBe("completed");
+
+    runner.clearQueue();
+    runner.dispose({ force: true });
   });
 
   it("still settles as `no-result` when the turn genuinely never ran", async () => {

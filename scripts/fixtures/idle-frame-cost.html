@@ -1,0 +1,109 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>idle frame cost</title>
+<!--
+  Two-ingredient reproduction for docs/265's idle-compositing finding. Drive it
+  with `node scripts/trace-idle-frames.mjs`; each query param toggles one
+  ingredient, and the interesting number is beginMainThreadFramesPerSecond.
+
+    ?spin=1              always-on animation, nothing else   → main frames ~0
+    ?spin=1&io=1         + one live IntersectionObserver     → main frames = display rate
+    ?spin=1&cv=1&n=300   + content-visibility:auto rows      → main frames = display rate
+    ?spin=0&cv=1&n=300   rows but no animation               → no frames at all
+
+  Neither ingredient costs anything alone. Together they run style recalc,
+  pre-paint, the intersection pass and commit every vsync. (Layout and paint do
+  NOT run per frame here — nothing is changing size or pixels on the main
+  thread; the animation's transform is the compositor's business.)
+
+  A third, independent knob for the layer-tree half of docs/265, since Layerize
+  is layer-list construction and should track how many layers exist:
+
+    ?spin=1&io=1&promote=400   400 on-screen composited layers → per-frame commit cost
+    ?spin=1&io=1&chunk=1500    1500 paint chunks, NOT composited → no effect (negative result)
+
+  `promote` puts `will-change: transform` on N small in-viewport boxes, so they
+  are really promoted and really visible. Watch `visibleLayers` against Commit's
+  msPerCall: ~0.399 us per layer per frame here.
+
+  `chunk` instead gives each box its own paint chunk WITHOUT compositing it
+  (`opacity` by default; `&chunkmode=filter|mixblend` for the other two). That is
+  the recorded negative: 1,500 of them leave both `visibleLayers` and Layerize
+  untouched, which is why "many paint chunks" is not the explanation for
+  production's expensive Layerize.
+-->
+<style>
+  @keyframes spin-slow { to { transform: rotate(360deg); } }
+  .tool-spinner { animation: spin-slow 1s linear infinite; }
+  .sp { display: inline-block; width: 12px; height: 12px; border: 1px solid #39f;
+        border-top-color: transparent; border-radius: 9999px; }
+  body { font: 13px system-ui; margin: 0; padding: 8px; }
+  .row { padding: 6px 8px; border-bottom: 1px solid #eee; }
+  .cv > * { content-visibility: auto; contain-intrinsic-size: auto 5rem; }
+  #promoted { position: fixed; inset: 0; pointer-events: none; }
+  #promoted > i { position: absolute; width: 6px; height: 6px; background: #0c0;
+                  will-change: transform; }
+</style>
+<body>
+  <div><span id="spin" class="sp"></span> <span id="label"></span></div>
+  <div id="list"></div>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const rows = Number(q.get("n") ?? 0);
+    const list = document.getElementById("list");
+
+    if (q.get("spin") === "1") document.getElementById("spin").classList.add("tool-spinner");
+    if (q.get("cv") === "1") list.className = "cv";
+
+    for (let i = 0; i < rows; i++) {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `<b>msg ${i}</b><p>${"lorem ipsum dolor sit amet ".repeat(6)}</p><pre>code line</pre>`;
+      list.appendChild(row);
+    }
+
+    // Promoted, on-screen, non-overlapping: each one is a real composited layer.
+    // Offscreen or inside a content-visibility subtree they would be skipped, and
+    // the sweep would measure nothing (which is how an earlier attempt at this
+    // failed to move Layerize at all).
+    const promote = Number(q.get("promote") ?? 0);
+    if (promote > 0) {
+      const holder = document.createElement("div");
+      holder.id = "promoted";
+      const perRow = Math.ceil(Math.sqrt(promote));
+      for (let i = 0; i < promote; i++) {
+        const box = document.createElement("i");
+        box.style.left = `${(i % perRow) * (100 / perRow)}%`;
+        box.style.top = `${Math.floor(i / perRow) * (100 / perRow)}%`;
+        holder.appendChild(box);
+      }
+      document.body.appendChild(holder);
+    }
+
+    // Paint chunks without compositing — the negative control for `promote`.
+    const chunk = Number(q.get("chunk") ?? 0);
+    if (chunk > 0) {
+      const mode = q.get("chunkmode") ?? "opacity";
+      const holder = document.createElement("div");
+      holder.id = "promoted";
+      const perRow = Math.ceil(Math.sqrt(chunk));
+      for (let i = 0; i < chunk; i++) {
+        const box = document.createElement("i");
+        box.style.left = `${(i % perRow) * (100 / perRow)}%`;
+        box.style.top = `${Math.floor(i / perRow) * (100 / perRow)}%`;
+        box.style.willChange = "auto";
+        if (mode === "filter") box.style.filter = "grayscale(0.01)";
+        else if (mode === "mixblend") box.style.mixBlendMode = "multiply";
+        else box.style.opacity = "0.99";
+        holder.appendChild(box);
+      }
+      document.body.appendChild(holder);
+    }
+
+    // A single observer is enough; the cost is per frame, not per observer.
+    if (q.get("io") === "1") new IntersectionObserver(() => {}).observe(list);
+
+    document.getElementById("label").textContent =
+      `spin=${q.get("spin") ?? 0} cv=${q.get("cv") ?? 0} io=${q.get("io") ?? 0} rows=${rows} promote=${promote}`;
+  </script>
+</body>

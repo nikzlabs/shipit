@@ -2,17 +2,35 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import simpleGit, { type SimpleGit } from "simple-git";
+import { type SimpleGit } from "simple-git";
+import { safeSimpleGit, gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
+import {
+  type GitRemoteCredential,
+  gitCredentialConfig,
+  gitCredentialEnv,
+  sanitizeGitEnv,
+} from "../shared/git-remote-credential.js";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
-import { chownTreeToSessionWorker } from "./session-worker-uid.js";
+import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
+import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
+import { ensureSharedTreeOwnedByShipIt } from "./shared-tree-ownership.js";
 import { linkLfsObjectsIntoClone } from "./git-lfs-store.js";
 
 /**
  * Validate a bare cache directory and re-clone it from the remote if it's
  * missing or corrupt. Returns the (possibly-fresh) RepoGit instance.
  *
- * Called by every path that operates on a bare cache (claim-session,
- * unarchive). A cache can go missing for reasons outside the orchestrator's
+ * Called by MOST paths that operate on a bare cache — claim-session, unarchive,
+ * prefetch, plugin fetch. **Not all of them, and this sentence used to say "every
+ * path", which is why the docs/272 ownership gate is not here:**
+ * `warm-pool-manager.ts` builds its `RepoGit` with `createRepoGit(cacheDir)` and
+ * both fetches and clones without passing through this function. Anything that
+ * must hold for every bare-cache operation belongs on the `RepoGit` methods
+ * themselves (verified at the source, 2026-08-17,
+ * docs/272-shared-cache-ownership).
+ *
+ * A cache can go missing for reasons outside the orchestrator's
  * control — manual filesystem wipe, an unmount, an interrupted previous
  * clone — and the database record (status="ready") doesn't notice. Without
  * recovery, the next claim-session falls into a slow-path that immediately
@@ -31,22 +49,68 @@ import { linkLfsObjectsIntoClone } from "./git-lfs-store.js";
 export async function ensureBareCache(
   cacheDir: string,
   repoUrl: string,
-  createRepoGit: (dir: string) => RepoGit,
+  createRepoGit: (dir: string, credential?: GitRemoteCredential) => RepoGit,
+  credential?: GitRemoteCredential,
 ): Promise<{ git: RepoGit; recovered: boolean }> {
   const headPath = path.join(cacheDir, "HEAD");
   // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom (matches the rest of this codebase)
   const valid = await fsp.stat(headPath).then((s) => s.isFile(), () => false);
   if (valid) {
-    return { git: createRepoGit(cacheDir), recovered: false };
+    return { git: createRepoGit(cacheDir, credential), recovered: false };
   }
   console.warn(`[repo-git] Bare cache at ${cacheDir} is missing or corrupt — re-cloning from ${repoUrl}`);
   await fsp.rm(cacheDir, { recursive: true, force: true });
   await fsp.mkdir(cacheDir, { recursive: true });
-  const git = createRepoGit(cacheDir);
+  const git = createRepoGit(cacheDir, credential);
   await git.cloneBare(repoUrl);
   console.log(`[repo-git] Recovered bare cache: ${cacheDir}`);
   return { git, recovered: true };
 }
+
+/**
+ * The URL to hand git, with any embedded credential removed (docs/262 req 19).
+ *
+ * Every RepoGit path that records a remote goes through this, not just the one
+ * that seemed reachable: `clone`/`cloneBare` because the URL git clones from is
+ * the URL it writes to `remote.origin.url`, and `setRemoteUrl`/`cloneFromCache`
+ * because they write that key directly — `cloneFromCache` into the session
+ * clone that becomes `/project`, whose `.git/config` the agent and every plugin
+ * CLI and plugin service can read. Credentials reach git through the per-remote
+ * helper (`gitCredentialConfig`) or the global helper, both of which supply the
+ * token for the life of the operation and write it nowhere.
+ *
+ * The warning is the legible half (req 13): a remote that ONLY authenticates
+ * through its URL now fails, and this line says why instead of leaving an
+ * unexplained authentication error. The URL is logged already-stripped, so the
+ * log itself never carries the secret.
+ */
+function credentialFreeRemote(url: string, context: string): string {
+  if (!hasUrlCredentials(url)) return url;
+  const clean = stripRemoteUrlCredentials(url);
+  console.warn(
+    `[git] ${context}: dropped a credential embedded in the remote URL for ${clean} — `
+    + "ShipIt never records one in a git config. If this remote authenticates only through "
+    + "that URL, the operation will fail to authenticate.",
+  );
+  return clean;
+}
+
+/**
+ * docs/266-orchestrator-git-trust-boundary E3 (planning#404) — the per-remote credential mechanism moved to
+ * `shared/git-remote-credential.ts` so `shared/git.ts` can use the identical
+ * shape for the dropped-uid git on a session workspace. Re-exported here
+ * because this module was its original home (docs/262 req 10) and every
+ * existing importer names it; behaviour is unchanged.
+ */
+export {
+  type GitRemoteCredential,
+  type GitRemoteCredentialResolver,
+  type RemoteOrigin,
+  sanitizeGitEnv,
+  gitCredentialConfig,
+  gitCredentialEnv,
+  parseRemoteOrigin,
+} from "../shared/git-remote-credential.js";
 
 /**
  * RepoGit — bare cache management and per-session clone lifecycle.
@@ -59,9 +123,30 @@ export class RepoGit {
   private git: SimpleGit;
   readonly repoDir: string;
 
-  constructor(repoDir: string) {
+  constructor(repoDir: string, credential?: GitRemoteCredential) {
     this.repoDir = repoDir;
-    this.git = simpleGit(repoDir);
+    this.git = credential
+      ? safeSimpleGit(repoDir, {
+        config: gitCredentialConfig(credential),
+        // The three simple-git guards this path opts out of, none of them
+        // user-supplied: our own credential helper (host validated, token in
+        // the environment), and the `GIT_CONFIG_GLOBAL` / `GIT_EDITOR` this
+        // orchestrator sets on purpose — the same false positive
+        // `git-utils.ts` documents. Everything else it guards is dropped from
+        // the environment instead (see `sanitizeGitEnv`).
+        unsafe: {
+          allowUnsafeConfigPaths: true,
+          allowUnsafeEditor: true,
+          allowUnsafeCredentialHelper: true,
+        },
+      }).env({
+        ...sanitizeGitEnv(process.env),
+        ...gitCredentialEnv(credential),
+        // Fail instead of blocking on a prompt when nothing is supplied or the
+        // credential is refused.
+        GIT_TERMINAL_PROMPT: "0",
+      })
+      : safeSimpleGit(repoDir);
   }
 
   /**
@@ -69,7 +154,7 @@ export class RepoGit {
    * The directory must be empty or non-existent.
    */
   async clone(url: string, branch?: string): Promise<void> {
-    const args = ["clone", url, "."];
+    const args = ["clone", credentialFreeRemote(url, "clone"), "."];
     if (branch) args.push("--branch", branch);
     await this.git.raw(args);
   }
@@ -81,7 +166,7 @@ export class RepoGit {
   async cloneBare(url: string): Promise<void> {
     // Clone bare into the current directory. simple-git operates on repoDir,
     // but `git clone --bare` needs the parent to exist with the target as ".".
-    await this.git.raw(["clone", "--bare", url, "."]);
+    await this.git.raw(["clone", "--bare", credentialFreeRemote(url, "cloneBare"), "."]);
     await this.ensureFetchRefspec();
     console.log("[git] Cloned bare repo:", this.repoDir);
   }
@@ -113,11 +198,13 @@ export class RepoGit {
   }
 
   /**
-   * Update the origin remote URL. Used to refresh embedded credentials
-   * before fetching when tokens rotate.
+   * Update a remote's URL — the normalization every caller uses to put a
+   * cache's origin back into its plain, credential-free form. The URL is
+   * stripped here too (see `credentialFreeRemote`), so this can only ever
+   * REMOVE a credential from a config, never install one.
    */
   async setRemoteUrl(url: string, remote = "origin"): Promise<void> {
-    await this.git.raw(["remote", "set-url", remote, url]);
+    await this.git.raw(["remote", "set-url", remote, credentialFreeRemote(url, "setRemoteUrl")]);
   }
 
   /**
@@ -172,6 +259,13 @@ export class RepoGit {
     } catch {
       // Marker doesn't exist — proceed with fetch
     }
+    // docs/272-shared-cache-ownership req 1 — the cache must be ShipIt's own
+    // BEFORE any git runs in it. This is the site planning#425 fails on: a cache
+    // root owned by uid 1000 makes `safeSimpleGit(this.repoDir)` drop to uid 1000,
+    // which then cannot create `refs/heads/shipit/<branch>.lock` inside a
+    // root-owned subdirectory a pre-drop build left behind. 11 refs failed on
+    // every pass, logged non-fatal. One `lstat` when the cache is already ours.
+    ensureSharedTreeOwnedByShipIt(this.repoDir, "bare-cache fetch");
     // Self-heal caches cloned before the refspec fix: without it `fetch`
     // never advances local heads and the cache HEAD stays frozen (see
     // ensureFetchRefspec). Idempotent, so cheap to run every fetch.
@@ -200,35 +294,105 @@ export class RepoGit {
    * Clone from the bare cache into a session directory using --local
    * for hardlinked objects (fast, disk-efficient on same filesystem).
    * Configures gc.auto=0 to prevent hardlink breakage.
+   *
+   * ## Which tree governs the identity this runs as (planning#428, docs/272-shared-cache-ownership req 6)
+   *
+   * This function spans two trees with two different owners, so "what uid should
+   * git run as" has to be answered for each, and the two answers are not the
+   * same mechanism. The site carried no docstring at all, and that is part of why
+   * three separate audits cleared it — including the docs/266 census, 21/21,
+   * against the build that then broke session creation in production.
+   *
+   * **The DESTINATION was already right.** `handWorkspaceBackToWorker(sessionDir)`
+   * below hands the fresh tree to the session's own identity, object-aware, before
+   * the dropped `git config` writes that follow. The long comment there argues
+   * both the ordering and the object awareness. Nothing about that half changes.
+   *
+   * **The SOURCE is what failed.** The clone below is a bare `safeSimpleGit()` —
+   * no `baseDir`, so no ownership predicate, so it runs as **root** — and ShipIt
+   * grants no `safe.directory`, so root reading a uid-1000 bare cache is
+   * `fatal: detected dubious ownership in repository at '<cache>'`. 6 of 10
+   * production caches were uid 1000, so most repositories could not start a
+   * session; that is what rolled back the first arming attempt, on this line.
+   *
+   * So the question is narrower than "pick a uid": **as which identity may ShipIt
+   * read a shared cache it does not own?** The answer is *as itself, having first
+   * made the cache its own* — `ensureSharedTreeOwnedByShipIt` below, which is the
+   * enforcement of the invariant `resolveGitTreeUid` already assumes when it
+   * declines to drop on a root-owned tree. Both of this operation's hard
+   * constraints are properties of the SOURCE, which is why the source governs:
+   * git's ownership check tests the repository being *read*, and `clone --local`
+   * can only hardlink an object file the cloning identity may link
+   * (`/proc/sys/fs/protected_hardlinks` is 1 on the deploy hosts).
+   *
+   * The alternative — drop to the source's *current* owner and read the cache as
+   * uid 1000 — is refused for two reasons, the second being the one that
+   * generalizes: the destination's parent is a **0700 session directory owned by
+   * the session's own identity** (docs/270 req 1), so a clone running as uid 1000
+   * cannot traverse into the tree it is writing; and adopting a foreign uid to
+   * read ShipIt's own cache would run ShipIt's git as an identity of unknown
+   * provenance, which is the thing the invariant exists to prevent.
+   * `session-fork-merge.ts` drops to its source's uid for the mirror-image reason
+   * — there the source is a session workspace untrusted code can write, so
+   * reading it as root would be the escalation. A shared cache is the opposite
+   * case: nothing untrusted can write it (`buildMounts` binds the workspace,
+   * per-session credentials, uploads, scratch, session state, the plugin store,
+   * the dep cache and the pnpm store — never the cache).
    */
   async cloneFromCache(sessionDir: string, remoteUrl?: string): Promise<void> {
+    // docs/272-shared-cache-ownership req 4 — the source must be ShipIt's own
+    // before root reads it, or git refuses the repository outright. Not "once
+    // armed": ShipIt grants no `safe.directory` (planning#410), so the refusal is
+    // unconditional. One `lstat` when it already is.
+    ensureSharedTreeOwnedByShipIt(this.repoDir, "session clone from bare cache");
     // git clone --local creates hardlinks for objects on the same volume
-    await simpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
+    await safeSimpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
     // docs/232 — `clone --local` hardlinks `.git/objects` but does NOT carry
     // `.git/lfs`, so an LFS repo's clone starts with an empty content store and
     // re-downloads every asset. Extend the same hardlink trick to the LFS store.
     // Best-effort and flag-gated (off by default): anything not seeded here is
     // still fetched by the provisioning `git lfs pull`.
     linkLfsObjectsIntoClone(this.repoDir, sessionDir);
-    // Disable auto-gc in the session clone to prevent hardlink breakage
-    const sessionGit = simpleGit(sessionDir);
-    await sessionGit.raw(["config", "gc.auto", "0"]);
-    // Reset origin to the real remote URL (clone --local sets it to the bare cache path)
-    if (remoteUrl) {
-      await sessionGit.raw(["remote", "set-url", "origin", remoteUrl]);
-    }
     // docs/198 — keep pnpm's relocated `/workspace/.pnpm-store` (a mountpoint at the
     // workspace root for pnpm repos) out of git via `.git/info/exclude`, so the
     // post-turn auto-commit never stages the store's internals. Non-tracked, so the
     // committed tree is unchanged; idempotent + best-effort.
     ensurePnpmStoreGitExcluded(sessionDir);
-    // docs/150 §7 addendum: `git clone --local` + the gc/remote config writes
-    // above all run as the root orchestrator. On a cold session the entrypoint
-    // chowns the mount at boot, but a post-boot reclone (warm-pool warming,
-    // cache recovery) runs after that one-shot — so the whole fresh tree
-    // (worktree + `.git`) would stay root:root and be unwritable to the worker
-    // uid. Chown it here. No-op unless SHIPIT_SESSION_WORKER_UID is set.
-    chownTreeToSessionWorker(sessionDir);
+    // docs/150 §7 addendum: `git clone --local` and the root-side writes above
+    // leave the whole fresh tree (worktree + `.git`) `root:root`. On a cold
+    // session the entrypoint chowns the mount at boot, but a post-boot reclone
+    // (warm-pool warming, cache recovery) runs after that one-shot, so without
+    // this the tree is unwritable to the worker uid.
+    //
+    // docs/270 — this MUST come before the `git config` writes below, and it
+    // MUST be the object-aware handback rather than a plain recursive chown.
+    // Both halves were wrong before per-session uids made them visible:
+    //
+    //   - **Ordering.** Those writes go through `safeSimpleGit(sessionDir)`,
+    //     which now drops to the session's own uid. Run against a tree that is
+    //     still `root:root` they EACCES on `.git/config`, and session creation
+    //     fails. It worked until now only because a root-owned tree meant "do
+    //     not drop", which stopped being true the moment the session directory
+    //     became the record instead of the tree.
+    //   - **Object awareness.** `git clone --local` HARDLINKS `.git/objects`
+    //     from the shared bare cache — measured: the cache and two clones report
+    //     the same inode — and an inode has one owner across every link. A plain
+    //     recursive chown therefore hands THIS session ownership, and so chmod
+    //     and rewrite rights, over object files the cache and every sibling
+    //     clone read. `handWorkspaceBackToWorker` composes the object-aware
+    //     `.git` walk (which chowns object directories but never object files)
+    //     with the worktree walk, which is exactly the split this needs.
+    handWorkspaceBackToWorker(sessionDir);
+    // Disable auto-gc in the session clone to prevent hardlink breakage
+    const sessionGit = safeSimpleGit(sessionDir);
+    await sessionGit.raw(["config", "gc.auto", "0"]);
+    // Reset origin to the real remote URL (clone --local sets it to the bare
+    // cache path). Credential-free: this write lands in the session clone's
+    // `.git/config`, which is `/project/.git/config` inside the session and
+    // plugin containers (docs/262 req 19).
+    if (remoteUrl) {
+      await sessionGit.raw(["remote", "set-url", "origin", credentialFreeRemote(remoteUrl, "cloneFromCache")]);
+    }
     console.log("[git] Cloned from cache:", this.repoDir, "→", sessionDir);
   }
 
@@ -287,8 +451,15 @@ export class RepoGit {
       try {
         const proc = spawn(
           "git",
-          ["merge-base", "--is-ancestor", ancestor, descendant],
-          { cwd: this.repoDir, stdio: "ignore" },
+          gitArgsWithHooksDisabled(["merge-base", "--is-ancestor", ancestor, descendant]),
+          // docs/272-shared-cache-ownership — resolved from the filesystem, not
+          // assumed, and this comment used to assume it: it said "the bare cache
+          // is ShipIt's own and root-owned, so the drop is a no-op". Root-owned
+          // was a claim about the disk that planning#428 disproved. The drop is a
+          // no-op *because* the gate in `fetchCache`/`cloneFromCache` has made
+          // this tree ShipIt's own; a foreign uid resolving here means that
+          // repair failed, and `resolveGitTreeUid` says so once per tree.
+          { cwd: this.repoDir, stdio: "ignore", ...gitSpawnOverridesForTree(this.repoDir) },
         );
         proc.on("error", () => resolve(false));
         proc.on("close", (code) => resolve(code === 0));

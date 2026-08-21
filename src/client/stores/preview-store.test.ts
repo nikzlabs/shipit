@@ -187,3 +187,65 @@ describe("preview-store startup steps", () => {
     });
   });
 });
+
+describe("preview-store remembered paths", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    usePreviewStore.getState().reset();
+    usePreviewStore.getState().clearPreviewPaths();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("survives the session-scoped reset", () => {
+    // `resetSessionState()` calls `reset()` when the route leaves a session for
+    // home — the same moment the desktop layout unmounts the iframe pool. If
+    // reset wiped these, the pool would be recreated at the front page, which
+    // is the one thing this map exists to prevent.
+    usePreviewStore.getState().setPreviewPath("s1:5173", "/orders/8842");
+    usePreviewStore.getState().reset();
+    expect(usePreviewStore.getState().previewPaths["s1:5173"]).toBe("/orders/8842");
+  });
+
+  it("is cleared by clearPreviewPaths, in state and in storage", () => {
+    usePreviewStore.getState().setPreviewPath("s1:5173", "/orders/8842");
+    usePreviewStore.getState().clearPreviewPaths();
+    expect(usePreviewStore.getState().previewPaths).toEqual({});
+    expect(localStorage.getItem("shipit:preview-paths")).toBe("{}");
+  });
+
+  it("rejects paths that the URL parser would resolve to a foreign origin", () => {
+    // WHATWG parsing treats `\` as `/` for http(s) and strips tab/CR/LF
+    // anywhere in the input, so each of these resolves off-origin despite
+    // starting with a single slash. The value is authored by the previewed
+    // page, and it reaches an iframe `src` and the user's clipboard.
+    for (const path of [
+      "//evil.example/x",
+      "/\\evil.example/x",
+      "/\t/evil.example/x",
+      "/\n/evil.example/x",
+      "/\r/evil.example/x",
+      "http://evil.example/x",
+      "javascript:alert(1)",
+      42,
+    ]) {
+      usePreviewStore.getState().setPreviewPath("s1:5173", path);
+      expect(usePreviewStore.getState().previewPaths["s1:5173"]).toBeUndefined();
+    }
+  });
+
+  it("evicts the least-recently-written entry past the cap", () => {
+    for (let i = 0; i < 100; i++) usePreviewStore.getState().setPreviewPath(`s${i}:3000`, `/p${i}`);
+    // Re-writing the oldest key makes it most recent, so the *next* one ages out.
+    usePreviewStore.getState().setPreviewPath("s0:3000", "/refreshed");
+    usePreviewStore.getState().setPreviewPath("s100:3000", "/p100");
+
+    const paths = usePreviewStore.getState().previewPaths;
+    expect(Object.keys(paths)).toHaveLength(100);
+    expect(paths["s0:3000"]).toBe("/refreshed");
+    expect(paths["s1:3000"]).toBeUndefined();
+    expect(paths["s100:3000"]).toBe("/p100");
+  });
+});

@@ -1,5 +1,5 @@
 ---
-issue: roadmap#SHI-328
+issue: planning#330
 title: Reading PR comments through the gh shim
 description: The agent can read review feedback left on its own PR without leaving ShipIt.
 ---

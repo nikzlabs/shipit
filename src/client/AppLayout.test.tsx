@@ -60,8 +60,8 @@ describe("useSubscriptionPillCount", () => {
 
   it("counts connected accounts, including ones that have never reported usage", () => {
     useSettingsStore.getState().setProviderAccounts([
-      { id: "acct-work", provider: "claude", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
-      { id: "acct-personal", provider: "claude", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { id: "acct-personal", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal", isPrimary: false, status: "ready", createdAt: now, updatedAt: now },
     ]);
 
     const { result } = renderHook(() => useSubscriptionPillCount({}));
@@ -72,9 +72,10 @@ describe("useSubscriptionPillCount", () => {
   // snapshot — but it still occupies a pill's worth of header.
   it("counts a reserved route that only the snapshot map knows about", () => {
     const limits: SubscriptionLimitsMap = {
-      claude: {
+      "anthropic:sub": {
         "claude-env-oauth": {
-          agentId: "claude",
+          serviceId: "anthropic",
+          billingMode: "sub",
           routeId: "claude-env-oauth",
           plan: null,
           session: null,

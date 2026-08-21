@@ -247,6 +247,39 @@ issues:
     expect(appended.filter((m) => m.issueWrite)).toHaveLength(1);
   });
 
+  // The production scenario, at the scale it actually happened. Before the
+  // docs/194 Layer 1 guard (4ee77aa5, 2026-06-13) each viewer reconnect wiped the
+  // poller's in-memory `mergedSessions` edge, re-promoted the already-merged PR
+  // and re-ran these writes — SHI-126 and SHI-128 each ended up carrying **89
+  // byte-identical** "Resolved by ShipIt on merge of PR #1294" / "Referenced by
+  // merged PR #1294" comments, posted within a ~3-hour window on 2026-06-12, and
+  // 17 issues were affected in total. It went unnoticed for two months because
+  // nobody scrolls to the bottom of a closed issue; it surfaced only when the
+  // docs/247 Linear migration's write-dedup window collapsed the copies.
+  //
+  // The two tests above lock the guard at N=2. This one asserts the property the
+  // duplicates violated, on the COMMENT bodies specifically rather than on an
+  // aggregate call count: however many times the merge handler re-fires for one
+  // PR, each provenance comment is posted exactly once.
+  it("posts each provenance comment exactly once across many re-fires of one PR", async () => {
+    const { deps, calls, appended } = makeHarness("open");
+    const pr = mergedPr("## Summary\nDone.\n\nCloses octocat/hello-world#42\nRefs octocat/hello-world#43");
+
+    for (let i = 0; i < 89; i++) await applyMergedPrIssueRefs(deps, pr);
+
+    const commentBodies = calls
+      .filter((c) => c.method === "POST" && c.url.includes("/comments"))
+      .map((c) => (c.body as { body: string }).body);
+    expect(commentBodies.filter((b) => b.startsWith("Resolved by ShipIt on merge of PR #7"))).toHaveLength(1);
+    expect(commentBodies.filter((b) => b.startsWith("Referenced by merged PR #7"))).toHaveLength(1);
+    expect(commentBodies).toHaveLength(2);
+
+    // …and the rest of the effects stay single too: one status flip, and one card
+    // each for the close and the progress comment.
+    expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(2);
+  });
+
   // docs/194 Layer 2 — even if the guard regressed, the card id is deterministic
   // (keyed by session + PR + tracker + issue + verb) so the client's
   // idempotent-by-cardId store collapses a re-fire instead of rendering a
@@ -338,5 +371,64 @@ describe("markIssueStartedFromSeed — started at seed time", () => {
       markIssueStartedFromSeed(deps, "s1", { tracker: "github", identifier: "not a pointer", title: "x" }),
     ).resolves.toBeUndefined();
     expect(calls).toHaveLength(0);
+  });
+});
+
+/**
+ * docs/262 req 25 — a declared plugin repository is a feedback destination, so a
+ * project PR's `Closes` must not complete an issue on it: req 7 keeps the plugin
+ * read-only, so whatever that merge contained, it was not the fix.
+ */
+describe("applyMergedPrIssueRefs — a plugin repository is not closable (docs/262 req 25)", () => {
+  const DECLARES_PLUGIN =
+    "plugins:\n  repos:\n    - repo: acme/dev-tools\n      name: tools\n      branch: main\n";
+
+  it("refuses `Closes tools#12`, leaves the issue open, and says why", async () => {
+    const { deps, calls, appended } = makeHarness("open", false, DECLARES_PLUGIN);
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes tools#12"));
+
+    // Nothing was written to the plugin repository at all.
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(0);
+    // …and the refusal is visible, not a log line (req 19's accountability rule).
+    const note = appended.find((m) => m.text.includes("tools#12"));
+    expect(note?.text).toContain("plugin repository");
+    expect(note?.text).toContain("Refs");
+  });
+
+  // `Refs` is what the author meant, and it still works: the plugin maintainer
+  // gets the consumer's merged PR on the report.
+  it("still posts a Refs progress comment on a plugin repository", async () => {
+    const { deps, calls, appended } = makeHarness("open", false, DECLARES_PLUGIN);
+    await applyMergedPrIssueRefs(deps, mergedPr("Refs tools#12"));
+
+    const comment = calls.find((c) => c.method === "POST" && c.url.includes("/comments"));
+    expect(comment?.url).toContain("/repos/acme/dev-tools/issues/12/comments");
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(1);
+  });
+
+  // The guard keys off the NAME the pointer used, so a repository declared both
+  // ways behaves as the pointer asked — both directions.
+  it("refuses the plugin name on a repository declared both ways", async () => {
+    const { deps, calls, appended } = makeHarness(
+      "open",
+      false,
+      `issues:\n  trackers:\n    - kind: github\n      repo: acme/dev-tools\n      name: planning\n${DECLARES_PLUGIN}`,
+    );
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes tools#12"));
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+    expect(appended.find((m) => m.text.includes("tools#12"))?.text).toContain("plugin repository");
+  });
+
+  it("still closes a repository the project also declares as a tracker", async () => {
+    const { deps, calls } = makeHarness(
+      "open",
+      false,
+      `issues:\n  trackers:\n    - kind: github\n      repo: acme/dev-tools\n      name: planning\n${DECLARES_PLUGIN}`,
+    );
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes planning#12"));
+    const patch = calls.find((c) => c.method === "PATCH");
+    expect(patch?.url).toContain("/repos/acme/dev-tools/issues/12");
+    expect(patch?.body).toMatchObject({ state: "closed" });
   });
 });

@@ -87,7 +87,7 @@ export function connectSSE(
       // replay only events the consumer hasn't seen yet.
       path: `${parsedUrl.pathname}${parsedUrl.search}`,
       method: "GET",
-      // SHI-311 — `/events` is orchestrator-facing, so it carries the same
+      // planning#313 — `/events` is orchestrator-facing, so it carries the same
       // per-session worker token the request helpers send. Keyed off the
       // origin, not the full URL, since the registry is per worker base URL.
       headers: { Accept: "text/event-stream", ...workerAuthHeaders(parsedUrl.origin) },

@@ -29,9 +29,9 @@
  *     teardown, `killStaleContainers`) handle the happy path — this is
  *     the safety net for when they didn't run (unclean shutdown).
  *   - **Archived session workspaces** older than `coldArtifactRetentionDays`
- *     (SHI-197). Pure crash-recovery backstop for archives where `fs.rm`
+ *     (planning#199). Pure crash-recovery backstop for archives where `fs.rm`
  *     didn't run — `archiveSession` already drops the workspace synchronously
- *     at archive time (SHI-192) on a healthy host, so this normally finds
+ *     at archive time (planning#194) on a healthy host, so this normally finds
  *     nothing. Chat history, usage, and session metadata are preserved;
  *     `unarchiveSession` re-clones from the bare cache.
  *   - **Dead `dep-cache/<hash>/nm-store` directories** for live repos. The
@@ -41,7 +41,7 @@
  *     the worker never writes nm-store again, so later sweeps no-op — which is
  *     why this one-shot migration cleanup stays here rather than on the periodic
  *     pass (it neither accumulates with the clock nor recovers from a crash).
- *   - **Orphan egress sidecars** (SHI-222) — the Tier B resolver / Tier C SNI
+ *   - **Orphan egress sidecars** (planning#224) — the Tier B resolver / Tier C SNI
  *     proxy (docs/172) share the agent container's network namespace, so when
  *     the agent container dies theirs dies with it and they strand in `Exited`
  *     with nothing to remove them. Identified by parent-liveness, NOT by the
@@ -62,7 +62,7 @@
  * burn cycles doing nothing. Startup is the natural "we just came back
  * from possibly-unclean shutdown — clean up after the previous run" moment.
  *
- * Steady-growth sweeps live elsewhere (SHI-196): the disk reclaim that grows with
+ * Steady-growth sweeps live elsewhere (planning#198): the disk reclaim that grows with
  * the CLOCK — unreferenced repo/dep caches, `repo-memory/`, obsolete overlay bases,
  * stale pnpm stores — moved to `runSteadyStateReclaim` (`steady-state-reclaim.ts`),
  * which rides the periodic disk-tier escalation pass (`escalateDiskTiers`, fired at
@@ -85,18 +85,18 @@
  *     primary cleanup didn't happen.
  *
  * Behavior knobs (env vars):
- *   - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS (SHI-197): the single
+ *   - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS (planning#199): the single
  *     cold-artifact retention, in days, read once in `startup-monitors.ts` and
  *     shared by two consumers. In THIS module it governs the crash-recovery
  *     archived-workspace backstop (user-archived sessions whose `workspaceDir`
  *     survived a crashed synchronous cleanup); the same value also drives the
  *     steady-state cold-cache reclaim (`repo-cache` / `dep-cache` / `pnpm-store`
- *     / `repo-memory`) in `steady-state-reclaim.ts` (SHI-196 moved those sweeps
+ *     / `repo-memory`) in `steady-state-reclaim.ts` (planning#198 moved those sweeps
  *     onto the periodic escalation pass). Replaces the two coincidental
  *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` (default `0`, disabled) +
  *     `DISK_JANITOR_CACHE_DAYS` (default `30`) knobs. Default `30`. The
  *     archived-workspace sweep is no longer independently tunable: it's pure
- *     crash-recovery (SHI-192 frees the workspace synchronously at archive
+ *     crash-recovery (planning#194 frees the workspace synchronously at archive
  *     time), so it rides the same retention.
  *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
  *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
@@ -115,12 +115,17 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type Docker from "dockerode";
 import { reapOrphanEgressSidecars } from "./egress-orphan-reaper.js";
+import { reapOrphanPluginInstalls } from "./plugin-install.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
-import type { RepoGit } from "./repo-git.js";
+import type { RepoGit, GitRemoteCredential } from "./repo-git.js";
+import { getRepoScopedGitCredential } from "./services/github.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 import { sessionCredentialsRoot } from "./session-credentials.js";
+import { bareCacheRoot } from "./session-dir-factory.js";
+import { getCatalogCacheRoot } from "./services/marketplace.js";
+import { reclaimSharedTreesUnder } from "./shared-tree-ownership.js";
 import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 
 export interface DiskJanitorDeps {
@@ -129,14 +134,14 @@ export interface DiskJanitorDeps {
   /** Root that holds the `dep-cache/<hash>/nm-store` subtree this janitor reaps. */
   stateDir: string;
   /**
-   * SHI-197 — the single cold-artifact retention (days). In this module it
+   * planning#199 — the single cold-artifact retention (days). In this module it
    * drives the crash-recovery archived-workspace backstop (sweep archived
-   * session workspaces older than this); post-SHI-196 the cold caches that once
+   * session workspaces older than this); post-planning#198 the cold caches that once
    * shared a knob with it live in `steady-state-reclaim.ts`, but both still read
    * the SAME value (the old `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` +
    * `DISK_JANITOR_CACHE_DAYS` coincidentally-30d pair collapsed into one). The
    * archived-workspace sweep is no longer independently tunable: it's pure
-   * crash-recovery (SHI-192 frees the workspace synchronously at archive time —
+   * crash-recovery (planning#194 frees the workspace synchronously at archive time —
    * see `sweepArchivedWorkspaces`). Defaults to {@link COLD_ARTIFACT_RETENTION_DAYS}.
    */
   coldArtifactRetentionDays?: number;
@@ -170,12 +175,19 @@ export interface DiskJanitorDeps {
    * are wired in `index.ts`.
    */
   githubAuthManager?: GitHubAuthManager;
-  createRepoGit?: (dir: string) => RepoGit;
+  /**
+   * planning#426 — the second parameter is load-bearing, not optional decoration:
+   * the sweep's `push --delete` supplies its own repo-scoped credential rather
+   * than relying on the orchestrator's ambient global helper. A factory that
+   * ignores it (a test fake) still type-checks and still pushes — it just pushes
+   * the way it did before.
+   */
+  createRepoGit?: (dir: string, credential?: GitRemoteCredential) => RepoGit;
   getBareCacheDir?: (repoUrl: string) => string;
   /** Default true. Set false to disable the branch sweep entirely. */
   sweepOrphanBranches?: boolean;
   /**
-   * SHI-222 — Docker client for the orphan egress-sidecar sweep. The Tier B/C
+   * planning#224 — Docker client for the orphan egress-sidecar sweep. The Tier B/C
    * sidecars (docs/172) share the agent container's network namespace, so when
    * the agent dies its sidecars are stranded in `Exited` with nothing to remove
    * them. The crash site itself now reaps them (`container-health.ts`); this
@@ -215,15 +227,23 @@ export interface DiskJanitorResult {
   credentialDirsRemoved: number;
   /** docs/192 — per-session `logs/` dirs removed (archived or untracked sessions). */
   logDirsRemoved: number;
-  /** SHI-222 — egress sidecars (docs/172) whose netns parent is gone or stopped. */
+  /** planning#224 — egress sidecars (docs/172) whose netns parent is gone or stopped. */
   orphanEgressSidecarsRemoved: number;
+  /** docs/262 — plugin install containers left behind by a previous process. */
+  orphanPluginInstallsRemoved: number;
+  /**
+   * docs/272-shared-cache-ownership — nodes under the shared git caches
+   * (`repo-cache/`, `marketplace-cache/`) handed back to the orchestrator's own
+   * identity. Nonzero means drift was found; a steady deployment reports 0.
+   */
+  sharedTreeNodesReclaimed: number;
 }
 
 /**
- * SHI-197 — the one cold-artifact retention default (days). Read once in
+ * planning#199 — the one cold-artifact retention default (days). Read once in
  * `startup-monitors.ts` and shared by both the crash-recovery archived-workspace
  * backstop (here) and the steady-state cold-cache reclaim
- * (`steady-state-reclaim.ts`, SHI-196), which previously had two coincidental
+ * (`steady-state-reclaim.ts`, planning#198), which previously had two coincidental
  * `30`-day knobs that could drift apart.
  */
 export const COLD_ARTIFACT_RETENTION_DAYS = 30;
@@ -244,13 +264,33 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     credentialDirsRemoved: 0,
     logDirsRemoved: 0,
     orphanEgressSidecarsRemoved: 0,
+    orphanPluginInstallsRemoved: 0,
+    sharedTreeNodesReclaimed: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
-  // SHI-197 — the single cold-artifact retention; here it drives the
+  // planning#199 — the single cold-artifact retention; here it drives the
   // archived-workspace crash-recovery backstop (the cold caches that share this
-  // value are swept by `steady-state-reclaim.ts` on the periodic pass, SHI-196).
+  // value are swept by `steady-state-reclaim.ts` on the periodic pass, planning#198).
   const coldDays = deps.coldArtifactRetentionDays ?? COLD_ARTIFACT_RETENTION_DAYS;
+
+  // docs/262 — plugin install containers and their generation volumes. FIRST,
+  // and the order is load-bearing: the volume sweep below filters on
+  // `dangling=true`, so a volume an orphaned install container still holds is
+  // invisible to it — and by the next boot, when it finally is dangling, that
+  // sweep deliberately preserves every volume belonging to a live session.
+  // Reaping here is also liveness-free, unlike the sweeps below: an install
+  // cannot outlive the process that awaited it, so at boot any survivor is an
+  // orphan.
+  if (deps.docker) {
+    try {
+      result.orphanPluginInstallsRemoved = await reapOrphanPluginInstalls(
+        deps.docker, { paceMs },
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] orphan plugin-install sweep failed:", getMessage(err));
+    }
+  }
 
   try {
     result.orphanVolumesRemoved = await sweepOrphanSessionVolumes(
@@ -284,6 +324,21 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     console.warn("[disk-janitor] nm-store sweep failed:", getMessage(err));
   }
 
+  // docs/272-shared-cache-ownership req 1/2 — the shared git trees ShipIt owns
+  // outside any session. Boot-only is the right cadence per CLAUDE.md's split:
+  // ownership drift is leftover state from previous incarnations (a pre-drop build
+  // writing as root inside a uid-1000 tree; a hardlinked chown from a plugin
+  // install), not something that grows with the clock. The cheap gate in
+  // `RepoGit` handles anything that appears while the process is up; this is the
+  // pass that repairs what is already on disk, including the object-file drift no
+  // top-level stat can see. Idempotent — a uniform tree costs one lstat per node
+  // and zero chowns — and inert below root, so every test and local mode skip it.
+  try {
+    result.sharedTreeNodesReclaimed = reclaimSharedTrees(deps.stateDir);
+  } catch (err) {
+    console.warn("[disk-janitor] shared-cache ownership pass failed:", getMessage(err));
+  }
+
   if (deps.credentialsDir) {
     try {
       result.credentialDirsRemoved = await sweepOrphanCredentialDirs(
@@ -304,7 +359,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     }
   }
 
-  // SHI-222 — egress sidecars whose netns parent (the agent container) is gone
+  // planning#224 — egress sidecars whose netns parent (the agent container) is gone
   // or stopped. Unlike every other sweep here, this one needs NO active-sessions
   // cross-reference: parent-liveness is the entire test, so it correctly reaps
   // orphans belonging to sessions that are still very much alive (the common
@@ -347,7 +402,8 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `orphan-branches=${result.orphanBranchesRemoved} `
     + `credential-dirs=${result.credentialDirsRemoved} `
     + `log-dirs=${result.logDirsRemoved} `
-    + `orphan-egress-sidecars=${result.orphanEgressSidecarsRemoved}`,
+    + `orphan-egress-sidecars=${result.orphanEgressSidecarsRemoved} `
+    + `orphan-plugin-installs=${result.orphanPluginInstallsRemoved}`,
   );
   return result;
 }
@@ -359,7 +415,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
  * (provisioned on first turn); they should not outlive the session.
  *
  * Preserved: dirs for **live, non-user-archived** sessions — i.e. sessions
- * still in `allIds()` and NOT user-archived. SHI-179: a disk-EVICTED session
+ * still in `allIds()` and NOT user-archived. planning#181: a disk-EVICTED session
  * (`listArchived()` = `disk_tier = 'evicted'`) is NOT eligible — it is still
  * live state the user can return to (its workspace re-clones from the bare
  * cache on activation), so its credentials must survive. Only genuinely-gone
@@ -382,7 +438,7 @@ async function sweepOrphanCredentialDirs(
   }
 
   const tracked = new Set(sessionManager.allIds());
-  // SHI-179: key off USER-archive state, not `disk_tier = 'evicted'`. A
+  // planning#181: key off USER-archive state, not `disk_tier = 'evicted'`. A
   // disk-evicted but non-user-archived session is live and must keep its
   // credentials; only an explicit user-archive (or a deleted/untracked row)
   // makes them reclaimable.
@@ -422,7 +478,7 @@ async function sweepOrphanCredentialDirs(
  *
  * Preserved: dirs for live, non-user-archived sessions (still in `allIds()` and
  * NOT user-archived), and pinned sessions — mirrors the credential-dir sweep so
- * warm / disk-evicted sessions keep their logs for resume. SHI-179: a
+ * warm / disk-evicted sessions keep their logs for resume. planning#181: a
  * disk-evicted (`listArchived()`) but non-user-archived session is live, so it
  * is NOT eligible for reaping.
  *
@@ -441,7 +497,7 @@ async function sweepOrphanSessionLogs(
   }
 
   const tracked = new Set(sessionManager.allIds());
-  // SHI-179 — key off USER-archive state, not disk eviction (see the
+  // planning#181 — key off USER-archive state, not disk eviction (see the
   // credential-dir sweep): a disk-evicted but non-user-archived session is live.
   const userArchived = new Set(
     sessionManager.listAll().filter((s) => s.userArchived).map((s) => s.id),
@@ -592,12 +648,24 @@ async function sweepOrphanSessionNetworks(
   runDocker: (args: string[]) => Promise<string>,
   paceMs: number,
 ): Promise<number> {
-  const SESSION_NETWORK_RE = /^shipit-session-([a-f0-9-]{12})/;
+  const SESSION_NETWORK_RE = /^shipit-(?:session|egress)-([a-f0-9-]{12})/;
 
   // Preserve networks for every session that still holds on-disk state, i.e.
   // anything not `evicted` (see `sweepOrphanSessionVolumes` for why `list()`
   // is too narrow here).
-  const livePrefixes = new Set(
+  //
+  // Re-read per call rather than snapshotting once: this sweep is
+  // fire-and-forget from boot (`startup-monitors.ts`) and paced, so it can
+  // still be running well after the server starts accepting session creates. A
+  // session created after a one-shot snapshot would be invisible to it, and its
+  // network exists BEFORE its container joins (`container-lifecycle.ts` creates
+  // the network, then prepares overlays, then attaches) — so it is `dangling`
+  // and unprotected for exactly the window that matters. That is the same
+  // create-vs-prune race that made `docker network prune -f` in `deploy.sh`
+  // delete 18 live session networks on 2026-08-10; a narrower window is still
+  // the same bug. The read is a synchronous in-memory/SQLite list against a
+  // 500ms-paced loop, so per-removal is free.
+  const livePrefixes = (): Set<string> => new Set(
     sessionManager.listAll()
       .filter((s) => s.diskTier !== "evicted")
       .map((s) => s.id.slice(0, 12).toLowerCase()),
@@ -607,7 +675,7 @@ async function sweepOrphanSessionNetworks(
   try {
     listOut = await runDocker([
       "network", "ls",
-      "--filter", "name=shipit-session-",
+      "--filter", "name=shipit-",
       "--filter", "dangling=true",
       "--format", "{{.Name}}",
     ]);
@@ -616,21 +684,26 @@ async function sweepOrphanSessionNetworks(
     return 0;
   }
 
-  const toRemove: string[] = [];
+  const candidates: { name: string; prefix: string }[] = [];
+  const listed = livePrefixes();
   for (const raw of listOut.split("\n")) {
     const name = raw.trim();
     if (!name) continue;
     const m = SESSION_NETWORK_RE.exec(name);
     if (!m) continue;
     const prefix = m[1].toLowerCase();
-    if (livePrefixes.has(prefix)) continue;
-    toRemove.push(name);
+    if (listed.has(prefix)) continue;
+    candidates.push({ name, prefix });
   }
 
   let removed = 0;
-  for (const name of toRemove) {
+  for (const { name, prefix } of candidates) {
     try {
       await sleep(paceMs);
+      // Re-check immediately before the destructive call: a session created
+      // since the listing above owns this name now, and its network is
+      // `dangling` until its container attaches.
+      if (livePrefixes().has(prefix)) continue;
       await runDocker(["network", "rm", name]);
       removed += 1;
     } catch {
@@ -650,7 +723,7 @@ async function sweepOrphanSessionNetworks(
  * preserved — `unarchiveSession` re-clones from the bare cache when the
  * user restores the session.
  *
- * SHI-179: `listArchived()` returns `disk_tier = 'evicted'` sessions, which
+ * planning#181: `listArchived()` returns `disk_tier = 'evicted'` sessions, which
  * also covers non-user-archived sessions reclaimed by the docs/161 disk ladder.
  * Those remain live (re-cloned on activation), so the loop skips any session
  * the user did not explicitly archive — the workspace lifecycle is tied to
@@ -681,7 +754,7 @@ async function sweepArchivedWorkspaces(
   let removed = 0;
   for (const session of archived) {
     if (!session.workspaceDir) continue;
-    // SHI-179 — `listArchived()` is `disk_tier = 'evicted'`, which includes
+    // planning#181 — `listArchived()` is `disk_tier = 'evicted'`, which includes
     // non-user-archived sessions reclaimed by the docs/161 disk ladder. Those
     // are LIVE state the user can return to (workspace re-clones from the bare
     // cache on activation), so this safety-net sweep must never reclaim them.
@@ -699,7 +772,7 @@ async function sweepArchivedWorkspaces(
     if (!session.remoteUrl) continue;
     const lastUsedMs = Date.parse(session.lastUsedAt);
     if (!Number.isFinite(lastUsedMs) || lastUsedMs >= cutoffMs) continue;
-    // SHI-192 — reclaim the checkout AND the regenerable overlay/ sibling,
+    // planning#194 — reclaim the checkout AND the regenerable overlay/ sibling,
     // preserving durable siblings (uploads/). The legacy code rm'd only the
     // checkout and orphaned the overlay upper, leaking ~60 GB on prod. Because
     // each target is stat-checked independently, this also catches sessions
@@ -761,6 +834,33 @@ async function sweepDeadNmStores(
     }
   }
   return removed;
+}
+
+/**
+ * docs/272-shared-cache-ownership req 1/2 — hand every shared git tree back to
+ * the orchestrator's own identity.
+ *
+ * Both roots, and both for reasons the class already proved. `repo-cache/` is
+ * where planning#425 and planning#428 live, and it holds the plugin bare caches
+ * too (`getBareCacheDir` is the same helper for both), so one pass covers the
+ * whole of planning#417's cache side. `marketplace-cache/` is planning#418's tree:
+ * that issue made a broken catalog cache *recoverable* but never addressed the
+ * ownership drift that broke it, and its write-up records the cause as
+ * undetermined — a root process getting `insufficient permission for adding an
+ * object`, which is this class's signature.
+ *
+ * Synchronous and unpaced, unlike the reclaims around it. Those delete things and
+ * hammer the Docker daemon; this one `lstat`s and occasionally `lchown`s, both
+ * cheap and neither destructive, and pacing it would stretch a bounded walk
+ * across the window in which the first claim arrives.
+ */
+function reclaimSharedTrees(stateDir: string): number {
+  const roots = [bareCacheRoot(stateDir), getCatalogCacheRoot(stateDir)];
+  let reclaimed = 0;
+  for (const root of roots) {
+    reclaimed += reclaimSharedTreesUnder(root, "boot ownership pass").chowned;
+  }
+  return reclaimed;
 }
 
 /**
@@ -838,15 +938,66 @@ interface ShipitPrStatesQueryResult {
  *     practice — repos without caches were probably already cleaned up
  *     by `sweepOrphanedCaches`).
  *
- * The remote URL on the bare cache is refreshed to embed the current
- * token before pushing, mirroring `unarchiveSession` — without this, a
- * rotated PAT would 401 the push.
+ * ## How the push authenticates (planning#426)
+ *
+ * This docstring used to say the cache's remote URL is "refreshed to embed the
+ * current token before pushing". That has not been true since docs/262 req 19:
+ * `setRemoteUrl` runs every URL through `credentialFreeRemote`, which STRIPS an
+ * embedded credential and can now only ever remove one. The mechanism the
+ * docstring named was deliberately deleted, and nothing replaced it here — so
+ * this push carried no credential of its own and depended entirely on the
+ * orchestrator's ambient global helper being present and readable. When it is
+ * not, the push dies with `fatal: could not read Username for
+ * 'https://github.com'`, which is one of the three paths that produced those
+ * lines in the planning#410 soak.
+ *
+ * It now resolves an explicit repo-scoped credential — the same one every other
+ * deliberate remote op takes (`getRepoScopedGitCredential`), which this sweep is
+ * unusually well placed to ask for because it already knows `owner`/`repo`. Two
+ * things follow, and both are the point:
+ *
+ *   - The push no longer *depends* on ambient config, so it cannot lose its
+ *     credential to a state elsewhere in the process.
+ *   - `RepoGit`'s credentialled path sets `GIT_TERMINAL_PROMPT=0`, so a genuinely
+ *     absent credential fails fast and classifiably instead of stalling into
+ *     git's "could not read Username" — and the log below then names WHICH of the
+ *     two shapes happened: no credential (plumbing) or a refusal (this token
+ *     cannot reach this repository, which is legitimate and still worth saying).
  */
+/**
+ * planning#426 — the credential this sweep's `push --delete` runs with.
+ *
+ * `getRepoScopedGitCredential` is the same resolver the git-credential broker and
+ * every dropped-uid remote op use: a short-lived, single-repo installation token
+ * when a GitHub App is configured, and the PAT when one is not. Scoped to
+ * `https://github.com` and offered to no other origin, which is why the raw PAT
+ * in an ambient host-blind helper was the weaker shape even when it worked.
+ *
+ * Never throws — a resolver failure resolves to `null`, which the caller reads as
+ * "skip this repo and say why". A sweep that cannot authenticate must decline
+ * loudly, not push and let git ask for a username nobody can answer.
+ */
+async function resolveCacheCredential(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+): Promise<GitRemoteCredential | null> {
+  try {
+    const token = await getRepoScopedGitCredential(githubAuthManager, {
+      host: "github.com", owner, repo,
+    });
+    return token ? { origin: "https://github.com", token } : null;
+  } catch (err) {
+    console.warn(`[disk-janitor] resolving a credential for ${owner}/${repo} failed:`, getMessage(err));
+    return null;
+  }
+}
+
 async function sweepOrphanMergedBranches(
   sessionManager: SessionManager,
   repoStore: RepoStore,
   githubAuthManager: GitHubAuthManager,
-  createRepoGit: (dir: string) => RepoGit,
+  createRepoGit: (dir: string, credential?: GitRemoteCredential) => RepoGit,
   getBareCacheDir: (repoUrl: string) => string,
   paceMs: number,
 ): Promise<number> {
@@ -902,7 +1053,23 @@ async function sweepOrphanMergedBranches(
       } catch {
         return null; // No bare cache for this repo — skip.
       }
-      const gitInstance = createRepoGit(cacheDir);
+      // planning#426 — an explicit credential for this repository, rather than
+      // whatever the ambient global helper happens to hold. `null` means the
+      // resolver could not produce one at all (no token for this host, a mint that
+      // failed with no PAT behind it); say so once per repo and skip, because a
+      // push with nothing to authenticate with can only produce the "could not
+      // read Username" line this issue is about.
+      const credential = await resolveCacheCredential(
+        githubAuthManager, parsed.owner, parsed.repo,
+      );
+      if (!credential) {
+        console.warn(
+          `[disk-janitor] no GitHub credential available for ${parsed.owner}/${parsed.repo} — `
+          + `skipping ${eligible.length} orphan-branch deletion(s); reconnect GitHub in Settings`,
+        );
+        return null;
+      }
+      const gitInstance = createRepoGit(cacheDir, credential);
       try {
         // Normalize the cache's origin URL to the plain form. Credentials
         // come from the global git credential helper, not the URL.
@@ -952,10 +1119,17 @@ async function sweepOrphanMergedBranches(
         await git.deleteBranch(fullName);
         removed += 1;
       } catch (err) {
-        console.warn(
-          `[disk-janitor] failed to delete orphan branch ${fullName}:`,
-          getMessage(err),
-        );
+        // planning#426 — name which of the two shapes this was. They need
+        // different fixes and the old single line conflated them: a missing
+        // credential is a plumbing bug on our side, a refusal means the connected
+        // account cannot reach this repository, which is legitimate.
+        const message = getMessage(err);
+        const shape = /could not read Username|terminal prompts disabled/i.test(message)
+          ? " (no credential reached git — this is a ShipIt plumbing fault, please report it)"
+          : /\b401\b|\b403\b|Authentication failed|Permission to .* denied/i.test(message)
+            ? " (GitHub refused the credential — the connected account may not have push access to this repository)"
+            : "";
+        console.warn(`[disk-janitor] failed to delete orphan branch ${fullName}:${shape}`, message);
       }
     }
   }

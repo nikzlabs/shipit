@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-308
+issue: planning#310
 title: Agent messaging repository trust gate
 description: Make repository trust a fail-closed prerequisite for every new agent turn, enforced at the shared runner boundary and reflected in the composer.
 ---

@@ -1,5 +1,5 @@
 /**
- * Untrusted-input lens (SHI-98 — Gap 4 of docs/172 "Agent containment").
+ * Untrusted-input lens (planning#100 — Gap 4 of docs/172 "Agent containment").
  *
  * The agent ingests content that an attacker can influence: files the user
  * uploads, cloned-repo file content, web-fetch results, MCP tool returns, and
@@ -26,7 +26,7 @@
  * calls return straight to the CLI without passing through the orchestrator —
  * cannot be enveloped here; for those the lens is the standing system-prompt
  * rule. The `web` / `mcp` sources exist so that guidance and any future
- * brokered path share one vocabulary. The `issue` source IS enrolled (SHI-85,
+ * brokered path share one vocabulary. The `issue` source IS enrolled (planning#87,
  * `docs/176`): the `shipit issue` shim wraps fetched issue free-text (title /
  * body / comments) with this same envelope at the agent's display/ingestion
  * layer, so both slices speak one vocabulary.
@@ -49,7 +49,7 @@ export const UNTRUSTED_SOURCE_DESCRIPTIONS = {
   web: "a fetched web page",
   /** An MCP tool response (not orchestrator-brokered — see module docstring). */
   mcp: "an MCP tool response",
-  /** Issue-tracker free-text (title/body/comments). Enrolled by SHI-85. */
+  /** Issue-tracker free-text (title/body/comments). Enrolled by planning#87. */
   issue: "an issue tracker",
   /**
    * Pull-request comments, review summaries, and inline review threads, read
@@ -70,9 +70,9 @@ const SOURCE_LABELS: Record<UntrustedSource, string> = {
   pr: "PULL REQUEST CONTENT",
 };
 
-/** Marker that opens an untrusted envelope. Exported for tests / SHI-85. */
+/** Marker that opens an untrusted envelope. Exported for tests / planning#87. */
 export const UNTRUSTED_OPEN_MARKER = "<<UNTRUSTED";
-/** Marker that closes an untrusted envelope. Exported for tests / SHI-85. */
+/** Marker that closes an untrusted envelope. Exported for tests / planning#87. */
 export const UNTRUSTED_CLOSE_MARKER = "<<END UNTRUSTED";
 
 /**

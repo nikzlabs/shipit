@@ -29,6 +29,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { accountServiceForHarness } from "./provider-account-manager.js";
 
 export async function registerContainerRoutes(
   app: FastifyInstance,
@@ -80,10 +81,10 @@ export async function registerContainerRoutes(
             serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
             getLogBuffer: deps.getLogBuffer ?? (() => []),
             getWorkspaceDir: (id) => sessionManager.get(id)?.workspaceDir ?? null,
-            // docs/150 req 11 — which account this session is running on.
+            // docs/150-multiple-provider-subscriptions req 11 — which account this session is running on.
             getSessionRoute: (id) => sessionManager.get(id),
             getAccountLabel: (provider, accountId) =>
-              deps.providerAccountManager.get(provider, accountId)?.label,
+              deps.providerAccountManager.get(accountServiceForHarness(provider), accountId)?.label,
             ...(deps.oomBreaker ? { oomBreaker: deps.oomBreaker } : {}),
           },
           request.params.id,

@@ -73,7 +73,7 @@ const CHILD_NOT_FOUND = "Spawned session not found, or not a descendant of this 
 
 /**
  * docs/233 — the id form of `view`/`message`/`wait` is descendant-scoped, so
- * passing your OWN id 404s. That dead end is exactly what SHI-241 reported, so
+ * passing your OWN id 404s. That dead end is exactly what planning#243 reported, so
  * every such 404 points at the command that does resolve self.
  */
 const WHOAMI_HINT =
@@ -96,8 +96,18 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     values: {
       "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
       "-t": "title", "--title": "title",
+      // docs/264-agent-roles req 16 — the SAME target vocabulary `shipit agent run` takes:
+      // a role by name, any subset of its parameters as overrides, or all five
+      // named. `--agent`/`--model` are two of those five and keep working
+      // exactly as they did; `--role`, `--service`, `--billing-mode` and
+      // `--effort` are new here — a child session could not say a service, a
+      // billing mode or a reasoning level at all before this.
+      "--role": "role",
       "--agent": "agent",
       "--model": "model",
+      "--service": "service",
+      "--billing-mode": "billingMode",
+      "--effort": "effort",
       "--turn": "turn",
       "--repo": "repo", "-R": "repo",
       "--owner": "owner",
@@ -107,6 +117,10 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
       // docs/205 — spawn a completely separate (parentless) session: no
       // linkage, no sidebar nesting, no coordination, no chat card.
       "--detached": "detached",
+      // docs/264-agent-roles req 20 — decline the role this session is running,
+      // which the child would otherwise inherit whole. The child still inherits
+      // the parameters; what it does not inherit is the brief.
+      "--no-role": "noRole",
       // docs/162 — Ops-only: target the ShipIt source repo, branched off the
       // exact deployed commit the Ops session inspected.
       "--shipit-source": "shipitSource",
@@ -171,10 +185,49 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     );
   }
 
+  // docs/264-agent-roles req 16 — the shared vocabulary, in the wire names both spawn
+  // commands use, so one server-side parser reads both bodies. `--billing-mode`
+  // is checked here for the same reason `agent run` checks it: it is the one
+  // field with a closed value set the shim can reject without the catalogue,
+  // which buys a message instead of a round trip. Everything else — an unknown
+  // role, a model this install does not have, a level the harness does not
+  // declare — is resolved server-side, whose refusal names the roles or the
+  // parameter. The shim buys a message for what it can know and does not pretend
+  // to know the rest.
+  const billingMode = parsed.values.billingMode;
+  if (billingMode !== undefined && billingMode !== "sub" && billingMode !== "key") {
+    fail(
+      deps.io,
+      `shipit session create: --billing-mode must be "sub" (a subscription) or "key" (a metered API key), not "${billingMode}".`,
+    );
+  }
+  // docs/264-agent-roles req 20 — `--role` and `--no-role` are contradictory
+  // statements about the same thing, so the pair is refused rather than resolved
+  // by precedence: a caller that wrote both had one of the two in mind, and
+  // guessing which one runs a child on a brief it may have meant to decline.
+  if (parsed.booleans.has("noRole") && parsed.values.role !== undefined) {
+    fail(
+      deps.io,
+      "shipit session create: --no-role and --role name opposite things. Pass --role NAME to run "
+        + "that role, or --no-role to decline the role this session is running.",
+    );
+  }
   const payload: Record<string, unknown> = { prompt };
   if (parsed.values.title) payload.title = parsed.values.title;
-  if (parsed.values.agent) payload.agent = parsed.values.agent;
-  if (parsed.values.model) payload.model = parsed.values.model;
+  // `!== undefined`, NOT a truthiness test — the same rule `shipit agent run`
+  // states at its own payload builder, and for the same reason: a flag the
+  // caller passed with an empty value is something they TRIED to say, and
+  // dropping it here would run the *bare* role (or the bare inheritance)
+  // instead, which is the dropped override req 10 forbids. It rides along and
+  // the server refuses it by name, so both commands answer `--model=""`
+  // identically — one parser, one refusal rule (req 16).
+  if (parsed.values.role !== undefined) payload.role = parsed.values.role;
+  if (parsed.booleans.has("noRole")) payload.noRole = true;
+  if (parsed.values.agent !== undefined) payload.agentId = parsed.values.agent;
+  if (parsed.values.model !== undefined) payload.modelId = parsed.values.model;
+  if (parsed.values.service !== undefined) payload.serviceId = parsed.values.service;
+  if (billingMode !== undefined) payload.billingMode = billingMode;
+  if (parsed.values.effort !== undefined) payload.reasoningEffort = parsed.values.effort;
   if (parsed.values.turn) payload.spawnedByTurn = parsed.values.turn;
   if (parsed.booleans.has("detached")) payload.detached = true;
   if (parsed.booleans.has("shipitSource")) payload.shipitSource = true;
@@ -192,11 +245,20 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
   }
 
   // Plain-text rendering. Keep this stable — the agent learns to parse it.
+  const session = (res.body.session ?? {}) as Record<string, unknown>;
   const lines = [
     `session-id: ${asString(res.body.sessionId)}`,
     `branch:     ${asString(res.body.branch)}`,
     `status:     ${asString(res.body.status) || "running"}`,
   ];
+  // docs/264-agent-roles req 14 — say which role started it, and that this is where the
+  // role's involvement ends: the child routes like any other session afterwards,
+  // so a later "why is it on a different model?" has its answer up front.
+  if (session.originRoleName) {
+    lines.push(
+      `role:       ${asString(session.originRoleName)} (starting point only — the session routes on its own from here)`,
+    );
+  }
   // docs/205 — make it unmistakable that a detached spawn is severed: the agent
   // must not expect to `wait`/`view`/`message` it afterward.
   if (parsed.booleans.has("detached")) {
@@ -373,6 +435,100 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
   success(deps.io, blocks.join("\n\n"));
 }
 
+/**
+ * docs/264 — `shipit session logs <session-id> [--since t] [--until t]
+ * [--lines N] [--json]`.
+ *
+ * Ops-only. Returns another session's orchestrator lifecycle lines — auto-push
+ * outcomes, container recovery, idle disposal, agent process lifecycle. It is
+ * NOT the session's Logs panel: the server returns only lines whose whole text
+ * is one ShipIt itself authored, so agent output, preview errors, install
+ * output, and any line quoting workspace or raw error text are withheld. No
+ * flag reaches them; withheld lines are reported as a count.
+ *
+ * Read from the durable store, so a session whose container is already gone
+ * still answers. The orchestrator's 403 is surfaced verbatim — the shim carries
+ * no second copy of the Ops gate.
+ */
+export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "--since": "since", "-S": "since",
+      "--until": "until", "-U": "until",
+      "--lines": "lines", "-n": "lines",
+      // Muscle-memory alias for the positional id.
+      "--id": "id", "--session": "id",
+    },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session logs: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const target = parsed.positional[0] ?? parsed.values.id;
+  if (!target) {
+    fail(
+      deps.io,
+      "shipit session logs: a session id is required, e.g. `shipit session logs 7bc72326`.\n" +
+        "Resolve one first with `shipit session find --branch|--pr|--container|--id`.",
+    );
+  }
+
+  const params = new URLSearchParams({ target });
+  if (parsed.values.since) params.set("since", parsed.values.since);
+  if (parsed.values.until) params.set("until", parsed.values.until);
+  if (parsed.values.lines) params.set("lines", parsed.values.lines);
+
+  const res = await deps.call(
+    "GET",
+    `/agent-ops/session/host-session-logs?${params.toString()}`,
+    undefined,
+    deps.env,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read session logs"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+
+  const entries = (res.body.entries as Record<string, unknown>[] | undefined) ?? [];
+  const withheld = Number(res.body.withheldUnclassified ?? 0);
+  const header = [
+    `session:   ${asString(res.body.title) || "(untitled)"} (${asString(res.body.sessionId)})`,
+    `container: ${asString(res.body.containerName)}`,
+    `disk:      ${asString(res.body.diskTier)}${res.body.archived === true ? " (archived)" : ""}`,
+    `entries:   ${entries.length}${res.body.truncated === true ? ` of ${asString(res.body.total)} (oldest dropped — raise --lines)` : ""}`,
+  ];
+  // Never silent: these lines exist and were deliberately not returned. Most
+  // carry workspace or raw error text and never will be — but this count is also
+  // the only signal that a producer's wording drifted off its template.
+  if (withheld > 0) {
+    header.push(
+      `withheld:  ${withheld} server line(s) not on the ops-safe template list `
+        + "(they carry workspace or raw error text). Read them with the operator in the session's UI.",
+    );
+  }
+  if (entries.length === 0) {
+    // An empty window and a pruned history look identical in the output but mean
+    // opposite things, so never let the caller guess which one they are reading.
+    header.push(
+      "",
+      res.body.logsRetained === true
+        ? "No server-source log entries in this window. Widen it with --since, or drop --since entirely."
+        : "This session has no durable logs on disk — they are removed when a session is archived, "
+          + "deleted, or fully reset. Absence here is NOT evidence that nothing happened.",
+    );
+    success(deps.io, header.join("\n"));
+    return;
+  }
+  const lines = entries.map((e) => `${asString(e.ts)}  ${asString(e.text)}`);
+  success(deps.io, [...header, "", ...lines].join("\n"));
+}
+
 export async function handleSessionList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--turn": "turn", "--limit": "limit", "--offset": "offset" },
@@ -516,6 +672,12 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
   if (child.model) {
     lines.push(`model:      ${asString(child.model)}`);
   }
+  // docs/264-agent-roles req 14 — what STARTED it, beside what it runs on now. The two can
+  // legitimately differ: a role hands a child its opening tuple and stops being
+  // involved, so a child may have moved on through ordinary routing.
+  if (child.originRoleName) {
+    lines.push(`role:       ${asString(child.originRoleName)} (at creation)`);
+  }
   if (child.spawnedByTurn) {
     lines.push(`turn:       ${asString(child.spawnedByTurn)}`);
   }
@@ -556,6 +718,14 @@ export async function handleSessionMessage(args: string[], deps: RunDeps): Promi
   );
   if (res.status === 404) {
     fail(deps.io, `${CHILD_NOT_FOUND}\n${WHOAMI_HINT}`, 1);
+  }
+  if (res.status === 409 && res.body.reason === "resolved") {
+    if (parsed.booleans.has("json")) {
+      deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+      deps.io.exit(1);
+      return;
+    }
+    fail(deps.io, asString(res.body.error), 1);
   }
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to send message to spawned session"), 1);
@@ -1020,7 +1190,7 @@ async function armSelfMergeWatch(json: boolean, deps: RunDeps): Promise<void> {
   );
 }
 
-// ---- Upward / lateral coordination (docs/233, SHI-241) ----
+// ---- Upward / lateral coordination (docs/233, planning#243) ----
 
 /** Valid `--severity` values, mirrored from the orchestrator's service. */
 const REPORT_SEVERITIES = ["fyi", "warn", "blocker"];
@@ -1219,6 +1389,7 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
   }
 
   const recipients = (res.body.recipients as Record<string, unknown>[] | undefined) ?? [];
+  const skippedRecipients = (res.body.skippedRecipients as Record<string, unknown>[] | undefined) ?? [];
   const wokenCount = recipients.filter((r) => r.woken === true).length;
 
   if (parsed.booleans.has("json")) {
@@ -1239,6 +1410,12 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
       ? "woken"
       : `NOT woken (${asString(r.error) || "unknown error"}) — the card was still posted in its chat`;
     lines.push(`  ${relation} ${asString(r.title)} (${asString(r.sessionId)}): ${outcome}`);
+  }
+  for (const r of skippedRecipients) {
+    lines.push(
+      `  sibling ${asString(r.title)} (${asString(r.sessionId)}): NOT delivered `
+      + "(session is resolved; no message, card, or wake turn was sent)",
+    );
   }
   deps.io.stdout(`${lines.join("\n")}\n`);
   deps.io.exit(wokenCount > 0 ? 0 : 1);

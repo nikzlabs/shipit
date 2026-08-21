@@ -3,7 +3,7 @@ import path from "node:path";
 
 import chokidar, { type FSWatcher } from "chokidar";
 
-import { WORKSPACE_SKIP_DIRS } from "../shared/fs-constants.js";
+import { isWorkspaceSkipDir } from "../shared/fs-constants.js";
 
 /** File-level ignores (specific data files in the workspace root, not directories). */
 const IGNORE_FILES = new Set([".shipit-usage.json", ".vibe-sessions.json"]);
@@ -126,7 +126,7 @@ export class FileWatcher extends EventEmitter {
     if (!rel || rel.startsWith("..")) return false;
 
     const parts = rel.split(path.sep);
-    return parts.some((part) => WORKSPACE_SKIP_DIRS.has(part) || IGNORE_FILES.has(part));
+    return parts.some((part) => isWorkspaceSkipDir(part) || IGNORE_FILES.has(part));
   }
 
   /** Convert an absolute path emitted by chokidar to a workspace-relative one. */

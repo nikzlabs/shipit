@@ -15,6 +15,15 @@ services:
     build:
       context: ../..
       dockerfile: docker/Dockerfile.prod
+      args:
+        # docs/252 req 14 — the harnesses this deployment installs. A build
+        # input, not a setting: changing it means editing SHIPIT_HARNESSES in
+        # /etc/shipit/shipit.env (deploy.sh sources it) and redeploying. The
+        # SAME value must reach the session-worker build below — the
+        # orchestrator decides what the picker offers and runs session naming
+        # locally, the worker is where turns run, and a harness present in one
+        # image but not the other is offered and then cannot run.
+        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
     restart: unless-stopped
     ports:
       - "127.0.0.1:4123:4123"   # Orchestrator API — only via Caddy
@@ -28,10 +37,10 @@ services:
       - NODE_ENV=production
       - PORT=4123
       - USE_CONTAINERS=true
-      # docs/150 (SHI-31) — activate the non-root session worker runtime.
-      # Gates BOTH the orchestrator's §7 chowns + safe.directory (git-config.ts)
-      # AND the session image's gosu drop (entrypoint.sh), so image + flag move
-      # together in one deploy. AGENT_HOME is the session containers' home;
+      # docs/150 (planning#33) — activate the non-root session worker runtime.
+      # Gates BOTH the orchestrator's §7 chowns (git-config.ts,
+      # session-worker-uid.ts) AND the session image's gosu drop
+      # (entrypoint.sh), so image + flag move together in one deploy. AGENT_HOME is the session containers' home;
       # the orchestrator's own HOME stays /root (its OAuth refresher / auth.ts
       # depend on it — see docs/150 §3). Do NOT set HOME here.
       - SHIPIT_SESSION_WORKER_UID=1000
@@ -54,17 +63,17 @@ services:
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
       # Disk janitor — see src/server/orchestrator/startup-janitor.ts. Runs
-      # once at orchestrator startup (no periodic timer). SHI-197 collapsed the
+      # once at orchestrator startup (no periodic timer). planning#199 collapsed the
       # two coincidental 30-day knobs (archived-workspace + cache) into one
       # cold-artifact retention. It governs BOTH the crash-recovery
       # archived-workspace backstop (archiveSession already drops the workspace
-      # synchronously at archive time per SHI-192, so this only catches a crashed
+      # synchronously at archive time per planning#194, so this only catches a crashed
       # cleanup; chat history / usage / metadata are always preserved, unarchive
       # re-clones from the bare cache) AND the cold shared caches (repo-cache /
       # dep-cache / pnpm-store / repo-memory). Matches the in-code default;
       # listed for visibility / easy per-host override.
       - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS=30
-      # Disk-tier escalation (docs/161, SHI-197). The pressure valve escalates
+      # Disk-tier escalation (docs/161, planning#199). The pressure valve escalates
       # LRU sessions early when free disk runs low; the watermarks are fractions
       # of the host's total disk size, so the same config is correct on any disk.
       - DISK_FREE_LOW_PCT=0.10                 # escalate LRU when free disk < 10% of total
@@ -90,6 +99,18 @@ services:
       # docs/241 — hard admission cap for explicit always-on preview
       # reservations. Empty uses the in-code default of one per deployment.
       - MAX_KEEP_PREVIEW_RUNNING=${MAX_KEEP_PREVIEW_RUNNING:-}
+      # planning#370 / planning#378 — the hostnames this deployment answers to.
+      # api-origin-guard.ts derives every hostname docs/254 supports from the
+      # name's own shape (an IP literal, a reserved TLD, an sslip.io name), so
+      # loopback / tailnet / MagicDNS installs leave this empty. A **public
+      # domain** cannot be derived — nothing about `shipit.example.com` says it
+      # is ours rather than a DNS-rebinding attacker's — so the domain in front
+      # of ShipIt must be named here. cloudflare.sh writes it from the domain
+      # the operator already gave it; this line is what carries it into the
+      # container, exactly like OVERLAY_DEP_STORE below. Without it the variable
+      # is read from a process env it never reaches, and the setting silently
+      # does nothing.
+      - SHIPIT_ALLOWED_ORIGINS=${SHIPIT_ALLOWED_ORIGINS:-}
       # Overlay dep store (docs/183) — opt-in passthrough for the canary soak.
       # The orchestrator reads OVERLAY_DEP_STORE from its own process env;
       # without this line, exporting the flag on the host (per the runbook in
@@ -107,7 +128,7 @@ services:
       # SHIPIT_GIT_LFS_TIMEOUT_MS for repos whose pull legitimately exceeds it.
       - SHIPIT_GIT_LFS=${SHIPIT_GIT_LFS:-}
       - SHIPIT_GIT_LFS_TIMEOUT_MS=${SHIPIT_GIT_LFS_TIMEOUT_MS:-}
-      # docs/232 (SHI-236) — cross-session LFS object sharing: fetch LFS into the
+      # docs/232 (planning#238) — cross-session LFS object sharing: fetch LFS into the
       # bare cache and hardlink it into each session clone, so an asset-heavy repo
       # downloads once per host instead of once per session. **On by default** now
       # (empty = on, matching SHIPIT_GIT_LFS's polarity); set
@@ -119,7 +140,7 @@ services:
       - SHIPIT_GIT_LFS_SHARED_STORE=${SHIPIT_GIT_LFS_SHARED_STORE:-}
       - SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS=${SHIPIT_GIT_LFS_CACHE_FETCH_TIMEOUT_MS:-}
       - DISK_JANITOR_LFS_OBJECT_DAYS=${DISK_JANITOR_LFS_OBJECT_DAYS:-}
-      # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
+      # docs/172 Gap 1 (planning#92) — agent egress containment is ON by default for
       # all instances (fail-closed). The orchestrator runs the privileged
       # installer/resolver/proxy sidecars in the agent netns from this image;
       # deploy.sh builds the :prod tag every deploy. A contained session whose
@@ -141,11 +162,14 @@ services:
     build:
       context: ../..
       dockerfile: docker/Dockerfile.session-worker.prod
+      args:
+        # docs/252 req 14 — must match the orchestrator's value above.
+        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
     image: shipit-session-worker:prod
     profiles:
       - build-only
 
-  # Egress firewall sidecar (docs/172 Gap 1, SHI-90). One image, three roles
+  # Egress firewall sidecar (docs/172 Gap 1, planning#92). One image, three roles
   # (Tier A installer / Tier B resolver / Tier C SNI proxy) run by the orchestrator
   # in the agent netns. Build-only (like session-worker) — built by deploy.sh, never
   # started by `up`. Its Dockerfile COPYs `egress-sidecar/*` so the build context is

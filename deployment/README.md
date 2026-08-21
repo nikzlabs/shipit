@@ -8,6 +8,78 @@ Two install paths, deliberately aligned:
 - **VPS** (`deployment/vps/`) — an always-on Linux server with optional Cloudflare Tunnel and/or
   Tailscale access and UI-driven self-updates.
 
+Either path can be run **by an agent** instead of by hand — see
+[Installing with an agent](#installing-with-an-agent).
+
+---
+
+## Installing with an agent
+
+Tell an agent (Claude Code, Codex, or any other) "install ShipIt", and it can do the whole thing
+for you: ask you the questions in chat, then run the install. Nothing here is a separate mode —
+an agent-run install is the ordinary install with the answers already supplied.
+
+**0. How the agent finds this.** `--help` on either installer lists the flags and every answer
+variable, and an installer that is about to skip its questions — no terminal, no answers — says
+so and names `--describe` before it changes anything. So an agent that never read this page still
+has two ways to arrive at the right command. It is not forced, though: an agent that reads
+nothing installs the approved defaults and asks you nothing.
+
+**1. The installer describes its own questions.** `--describe` prints them as JSON and exits. It
+needs no root, installs nothing, writes no file, and clones nothing, so it is safe to run before
+you have decided to install at all:
+
+```bash
+# Local
+bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh) --describe
+
+# VPS (the one-liner shape cannot pass an argument, so use the variable)
+SHIPIT_DESCRIBE=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
+```
+
+Each question carries its options, its default, the variable that answers it, and `askedWhen` —
+which says whether it is always asked or only in one case (the Cloudflare questions, and the
+containment question on a host that cannot contain the agent network). An agent should collect
+the conditional answers up front, because an install that has started cannot stop to ask.
+
+**2. You decide, not the agent.** The document tells the agent to show every question and to use
+your answer. Two of them matter more than the rest:
+
+- **The agent CLIs** are built into the images, so this is an install-time choice. Changing it
+  later means editing the answer and running the deploy or update again.
+- **Agent network containment** is only asked on a host that cannot run the containment sidecar.
+  Answering `off` there means a prompt-injected agent could send your credentials out. With **no**
+  answer the install keeps containment **on** — an agent cannot disable it by leaving the question
+  out.
+
+**3. The install runs with the answers as variables.** Same command everyone else uses:
+
+```bash
+SHIPIT_HARNESSES=claude,codex \
+  bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
+```
+
+An answered question is never asked. A mistyped option id fails in a second, before anything on
+the machine changes.
+
+### Every answer, in one place
+
+| Variable | Installer | Answers |
+|---|---|---|
+| `SHIPIT_HARNESSES` | both | which agent CLIs to install (`claude`, `codex`, `opencode`, `grok`) |
+| `SHIPIT_EGRESS` | both | `on` or `off` — the containment question, asked only on a host that cannot contain the agent network |
+| `SHIPIT_ACCESS` | VPS | `cloudflare`, `tailscale`, both, or `none` |
+| `SHIPIT_CF_DOMAIN` | VPS | the domain Cloudflare publishes ShipIt at |
+| `SHIPIT_CF_API_TOKEN` | VPS | **secret** — the Cloudflare token that creates the Zero Trust application |
+| `SHIPIT_CF_ACCOUNT_ID` | VPS | the Cloudflare account ID |
+| `SHIPIT_CF_ALLOWED_EMAIL` | VPS | who may sign in — an email address or an email domain |
+| `SHIPIT_TAILSCALE_AUTHKEY` | VPS | joins the tailnet without a browser sign-in |
+| `SHIPIT_HOME` | local | where to install (default `~/.shipit`) |
+| `SHIPIT_REPO_URL` | both | install a fork |
+
+The Cloudflare token is a secret. Export it for the one command; do not write it into a file, a
+log, or a commit. The installer never stores it and never echoes it.
+
 ---
 
 ## Local install (macOS + Linux)
@@ -61,6 +133,10 @@ http://100-83-12-47.sslip.io:4123
   names, so clipboard and PWA install are unavailable), and a device whose resolver blocks public
   names pointing into CGNAT `100.64/10` won't resolve it.
 
+**Real HTTPS means terminating TLS yourself** — a wildcard DNS record you own pointed at the tailnet
+address, a wildcard certificate for it, and a reverse proxy in front of ShipIt. The DNS record alone
+is not enough.
+
 To opt out, remove `SHIPIT_TAILNET_BIND` from `~/.shipit/.shipit.env` and re-run `update.sh`.
 
 **macOS: the CLI lives inside the app bundle.** The standalone Tailscale app from
@@ -82,6 +158,39 @@ you control, and don't count on a host firewall to contain it (Docker's publishe
 `ufw` on Linux; the macOS application firewall is off by default).
 
 See [`docs/254-local-bind-and-tailnet-access`](../docs/254-local-bind-and-tailnet-access/plan.md).
+
+However you reach it, `/api/*` and `/ws/*` accept browser requests only from ShipIt's own
+origin — the one in the address bar, whatever hostname that is (loopback, a tailnet IP, a
+MagicDNS name, your domain). Nothing to configure: it is derived per request. Browser requests
+are also checked against the hostname they arrived at, so a name an attacker owns cannot be
+re-pointed at your instance to borrow your browser (DNS rebinding). That check needs no
+configuration either for any hostname this page describes — an IP literal, `localhost`,
+`*.ts.net`, `*.internal`, `*.home.arpa` and `<dashed-ip>.sslip.io` all prove themselves. (An mDNS
+`*.local` name does not: any host on your link can claim one and re-point it, so declare it if
+you use one.)
+
+Set `SHIPIT_ALLOWED_ORIGINS` (comma-separated) in two cases:
+
+- **You point your own domain at ShipIt.** A registrable name proves nothing about who owns it,
+  so it has to be declared. The VPS scripts do this for you from the domain you gave `setup.sh`
+  or `cloudflare.sh` — including on installs that already exist, since `deploy.sh` re-derives it
+  on every update. A hand-rolled reverse proxy (Caddy, nginx, Traefik) or a domain pointed at a
+  local/tailnet install needs the line. If you miss it, ShipIt logs
+  `[origin-guard] refused an API request whose Host is "…"` and every API call answers 403 with
+  the same hint — it does not fail silently.
+- **Your reverse proxy rewrites the `Host` header** to a name other than the browser's, which
+  would otherwise make the browser's own requests look cross-origin. Cloudflare and the
+  Tailscale forwarder both preserve `Host`, so this is rare.
+
+Write the scheme (`https://shipit.example.com`) and it is matched exactly for the cross-origin
+rule; write a bare `host:port` and either scheme is accepted. Either form declares the hostname.
+
+To see the question, and what a real run would do, without installing anything — it needs no
+Docker and writes nothing:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh) --dry-run
+```
 
 Day-to-day, from your checkout (default `~/.shipit`):
 
@@ -114,6 +223,50 @@ updating in place (no host-side systemd watcher locally).
 > Contributing to ShipIt? `docker/local/prod.sh` builds the prod images from your *current checkout*
 > and runs them in the foreground — the prod counterpart of `docker/local/dev.sh` — for testing in a
 > prod-like environment without installing into `~/.shipit`.
+
+---
+
+## Choosing which agent harnesses to install
+
+A **harness** is an agent CLI plus the adapter that normalizes its event stream. ShipIt installs
+**Claude Code, Codex, and OpenCode** by default. A harness added to ShipIt later is offered in the
+installer's list straight away but is not preselected — the default set changes only deliberately, so
+an update never adds an agent CLI to your images behind your back. `SHIPIT_HARNESSES` narrows the
+set, or names one that is not in it:
+
+```bash
+SHIPIT_HARNESSES=codex        # this install runs Codex only
+SHIPIT_HARNESSES=claude,codex # Claude Code and Codex, no OpenCode
+```
+
+Narrowing is worth doing if image size or build time matters to you: each harness is a CLI baked
+into both images.
+
+It is a **build input, not a setting** — the CLIs are baked into the images — so changing it means
+editing the env file and re-running the deploy, and there is nothing in Settings that adds or
+removes a harness:
+
+**Both installers ask the question once** — a checklist you move through with the arrow keys,
+toggle with the space bar, and confirm with Enter — and keep your answer, so an update does not
+change the set you selected. Presetting the variable (`SHIPIT_HARNESSES=codex bash setup.sh`)
+skips the prompt, and so does having an agent run the install for you.
+
+- **VPS**: the answer is persisted as `SHIPIT_HARNESSES` in `/etc/shipit/shipit.env`. To change it
+  later, edit that line and run `bash /opt/shipit/deployment/vps/deploy.sh`.
+- **Local**: the answer is persisted in `~/.shipit/.shipit.env`. To change it later, edit that
+  line and run `deployment/local/update.sh`.
+
+A harness that is not installed offers no models and does not appear in the model picker; a
+deployment must install at least one, and an unrecognized name fails the build rather than quietly
+producing an image without it. Credentials are a separate question — an installed harness still
+needs an account or key connected in Settings before it can run a turn.
+
+> **After changing the set, let existing sessions rotate.** A deploy deliberately does not kill
+> running session containers, and they keep their old image until they go idle — so a session that
+> was already open when you *added* a harness is running a container that does not have it yet, and
+> a turn on the new harness there fails until that container is replaced. New sessions get the new
+> image immediately. Nothing is lost either way; close (or wait out) the open sessions if a
+> just-added harness reports a missing CLI.
 
 ---
 
@@ -151,7 +304,28 @@ ssh root@<server-ip>   # or: ssh <user>@<server-ip> for a sudo-capable user
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
 ```
 
-The script will ask whether to install Cloudflare, Tailscale, both, or neither, then automatically:
+The script first asks how you want to reach ShipIt. Cloudflare and Tailscale are independent
+checkboxes — arrow keys move, the space bar toggles, Enter confirms:
+
+```
+  > [ ] Cloudflare Tunnel  public HTTPS domain, Zero Trust protected
+    [*] Tailscale          private, reachable from your tailnet only
+```
+
+Tailscale is the default: it reaches your own devices and nothing else, with no domain to own and no
+public URL to protect. Tick Cloudflare as well to get both, or tick neither to install ShipIt without
+exposing it and add access later.
+
+To try the questions without provisioning anything, add `--dry-run` (or set `SHIPIT_DRY_RUN=1`, which
+is easier to pass through the one-liner above). The installer asks both questions, prints what a real
+run would do, and exits. It needs no root and writes nothing:
+
+```bash
+SHIPIT_DRY_RUN=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
+```
+A scripted install can pre-answer with `SHIPIT_ACCESS=tailscale` (or `cloudflare,tailscale`, or
+`none`), which skips the question; so does running with no terminal, which keeps the default shown
+above. It then automatically:
 - Install git and clone ShipIt to `/opt/shipit` (installing a fork? prefix the command with `sudo env SHIPIT_REPO_URL=https://github.com/you/shipit.git` — plain `sudo` drops the variable from the environment)
 - Install Docker
 - Configure host limits needed for session containers and file watching
@@ -297,6 +471,8 @@ Requirements and caveats:
 #### Optional — an owned wildcard domain (real HTTPS)
 
 For HTTPS instead of HTTP, point a wildcard DNS record you control (`*.shipit-tail.example.com`) at the node's Tailscale IP and open ShipIt through that hostname — real wildcard TLS via DNS-01, at the cost of owning a domain and a DNS provider.
+
+A domain you own is the one hostname shape ShipIt cannot prove is its own, so **declare it**: put `SHIPIT_ALLOWED_ORIGINS=https://shipit-tail.example.com` in `/etc/shipit/shipit.env` and re-run `deploy.sh`. Without it the app loads and every API call answers 403 (see *Network exposure* above). The sslip.io and MagicDNS URLs need nothing.
 
 For unattended setup, provide an auth key:
 

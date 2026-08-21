@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-100
+issue: planning#102
 title: Inline single-issue detail view
 description: A master-detail issue view inside the Issues tab that the list rows and the agent's chat cards open, keeping issue reading inside ShipIt.
 ---
@@ -108,7 +108,7 @@ was the first listed non-goal; it's now built, mirroring the PR detail tab's
 - **`IssueDetail`** renders the thread (avatar · author · relative-date ·
   markdown body) + a composer below the description.
 
-### Anchor to a specific comment (SHI-103)
+### Anchor to a specific comment (planning#105)
 
 An opener can land the user on one comment, not just the issue. An optional
 `anchorCommentId` rides through `openIssue` → `IssueSelection` → `IssueDetail`;

@@ -25,8 +25,6 @@ import {
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 
-type Source = "human" | "ai";
-
 export async function registerReviewRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -109,28 +107,25 @@ export async function registerReviewRoutes(
   app.post<{
     Params: { sessionId: string; reviewId: string };
     Body:
-      | { kind: "line"; line: number; text: string; source?: Source }
+      | { kind: "line"; line: number; text: string }
       | {
           kind: "selection";
           quotedText: string;
           contextBefore?: string;
           contextAfter?: string;
           text: string;
-          source?: Source;
         };
   }>(
     "/api/sessions/:sessionId/file-reviews/:reviewId/comments",
     async (request, reply) => {
       try {
         const body = request.body;
-        const source: Source = body.source ?? "human";
         if (body.kind === "line") {
           const comment = addLineComment(
             deps.reviewStore!,
             request.params.reviewId,
             body.line,
             body.text,
-            source,
           );
           return comment;
         }
@@ -141,7 +136,6 @@ export async function registerReviewRoutes(
           body.contextBefore ?? "",
           body.contextAfter ?? "",
           body.text,
-          source,
         );
         return comment;
       } catch (err) {
@@ -208,16 +202,25 @@ export async function registerReviewRoutes(
 
   // ----------------------------------------------------------------
   // Send a review (mark sent + return prompt)
+  //
+  // The body carries the send dialog's optional free-text note (docs/260). It
+  // stays optional — a caller that sends no body at all still sends the review.
   // ----------------------------------------------------------------
   app.post<{
     Params: { sessionId: string; reviewId: string };
+    Body: { note?: string } | undefined;
   }>(
     "/api/sessions/:sessionId/file-reviews/:reviewId/send",
     async (request, reply) => {
       const dir = resolveSessionDir(deps.sessionManager, request.params.sessionId, reply);
       if (!dir) return;
+      const note = request.body?.note;
+      if (note !== undefined && typeof note !== "string") {
+        reply.code(400).send({ error: "note must be a string" });
+        return;
+      }
       try {
-        return await sendReview(deps.reviewStore!, request.params.reviewId, dir);
+        return await sendReview(deps.reviewStore!, request.params.reviewId, dir, note);
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

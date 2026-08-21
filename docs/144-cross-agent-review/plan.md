@@ -1,6 +1,6 @@
 ---
 description: Globally-gated `shipit agent` CLI primitive that lets the primary agent spawn any other registered agent with any prompt and get its output back as text. The call blocks, but the run outlives it and stays re-readable. Review is the first consumer.
-issue: https://linear.app/shipit-ai/issue/SHI-37
+issue: planning#39
 ---
 
 # 144 — Sub-agent spawning (cross-agent delegation)
@@ -12,7 +12,7 @@ issue: https://linear.app/shipit-ai/issue/SHI-37
 > persisted, correctly interleaved terminal card; one still running restores
 > the chip against the current transcript instead of retaining a stale footer.
 >
-> **SHI-278 supersedes the chip as the in-flight surface.** The consult card is
+> **planning#280 supersedes the chip as the in-flight surface.** The consult card is
 > now created `pending` at spawn time and patched to its terminal status on
 > completion, so an in-flight consult is durable — it survives a session switch,
 > a reload, and a container restart. See §7a; the chip remains only as live
@@ -172,7 +172,7 @@ Confirmed by reading the code, not extrapolated:
 Nine pieces. The first two are the new surface (CLI command + orchestrator
 brokering); §3–§8 are how each load-bearing concern (credentials, output,
 caps, recursion, attribution, mode) settles under it; §9 is the re-read path
-added by SHI-245 once the primitive had shipped and met real consult
+added by planning#247 once the primitive had shipped and met real consult
 durations.
 
 ### 1. Global setting: `enableSubAgents`
@@ -209,7 +209,7 @@ underlying CLI runs and how it's invoked.
 
 ```
 shipit agent run --agent <agentId> --prompt-file - [--model M] [--json]
-shipit agent result [RUN-ID] [--json]                 # SHI-245, see §9
+shipit agent result [RUN-ID] [--json]                 # planning#247, see §9
 ```
 
 - **`--agent <agentId>`** — the agent to spawn (`claude`, `codex`, …). May
@@ -231,7 +231,7 @@ shipit agent result [RUN-ID] [--json]                 # SHI-245, see §9
   applies the way it would for an MCP tool. The primary continues its turn
   with the text in hand.
 
-  *Superseded in part by SHI-245 (docs/236).* This bullet originally carried a
+  *Superseded in part by planning#247 (docs/236).* This bullet originally carried a
   "typically 30–120s" estimate; that was a pre-ship guess, and the repo's own
   history contradicts it — the wall-clock cap was raised from 5 to 30 minutes
   five days after this design landed because real consults (audits, large-diff
@@ -341,7 +341,7 @@ Flow:
   (`POST /agent/cancel` with `spawnId`); the sub-agent exit triggers the
   wipe; the `shipit agent` command exits non-zero ("cancelled"). Cancelling
   the primary cancels the sub-agent running on its behalf.
-- **The run survives the caller (SHI-245).** Cancel above is an *explicit
+- **The run survives the caller (planning#247).** Cancel above is an *explicit
   user* interrupt. A caller that merely goes away is different: when the shim
   process dies — overwhelmingly because the calling agent's foreground shell
   tool hit its cap and SIGTERMed it (10 min in Claude Code, well under the
@@ -498,7 +498,7 @@ the pinned agent's already-present credentials and provisions nothing).
 ### 6. Output is text; review is an optional renderer
 
 The primitive returns the sub-agent's **answer** as text. (Originally "its
-final assistant message"; SHI-245 widened this to *every* completed assistant
+final assistant message"; planning#247 widened this to *every* completed assistant
 message joined in order — see §9 — because a multi-message adapter made
 "final message" a suffix of the answer.) That is the whole contract. The
 primary reads it and does whatever the task needs — summarize it, act on it,
@@ -527,7 +527,7 @@ draws:
   while the `shipit agent` call is in flight. Emit-only (`sub_agent_spawn` WS +
   the `subAgentSpawns` store), correctly disappears on reload — it is live
   activity, not transcript content. Cleared when the terminal card lands.
-  **Superseded as the in-flight surface by §7a (SHI-278)** — it is now shown only
+  **Superseded as the in-flight surface by §7a (planning#280)** — it is now shown only
   in the brief window before the durable pending card exists.
 - **The "Consulted Codex · 47s" card (persisted transcript content).** The
   record of a spawn IS transcript content — the user expects it to stay
@@ -549,9 +549,9 @@ draws:
   brokered consult is *visible*, not just attested — ShipIt renders what it
   brokers.
 
-#### 7a. The card is created at SPAWN time, not at completion (SHI-278)
+#### 7a. The card is created at SPAWN time, not at completion (planning#280)
 
-The two bullets above described the state before SHI-278, when the card existed
+The two bullets above described the state before planning#280, when the card existed
 only once the run finished. That was defensible while a consult *blocked* the
 primary turn: the user watched a spinner for the duration and the card landed a
 moment later. docs/236 broke the assumption by making **backgrounding the
@@ -656,7 +656,7 @@ a no-op (docs/138). Sub-agent spawning in local mode:
 - Setting gate, per-turn cap, cost cap, recursion cap, and the `shipit agent`
   command all behave identically.
 
-### 9. Re-reading a finished run — `shipit agent result` (SHI-245)
+### 9. Re-reading a finished run — `shipit agent result` (planning#247)
 
 Added after v0 shipped, once the primitive met real consult durations. Full
 rationale in `docs/236-sub-agent-result-delivery`; the parts that belong to
@@ -699,7 +699,7 @@ Route chain, mirroring the spawn path: `shipit agent result` →
 `listSubAgentConsultCards`. It is a cheap read, so the default timeout applies
 (unlike the unbounded spawn leg).
 
-### 10. A consult's work is committed when it outlives its turn (SHI-299)
+### 10. A consult's work is committed when it outlives its turn (planning#301)
 
 §3's "the run outlives its caller" contract has a consequence the v0 design did
 not follow through on: a sub-agent **writes into the session workspace**, and
@@ -781,7 +781,7 @@ persisted output and `shipit agent result` are unaffected.
   contextTokens? }`. Tracks each in-flight spawn so it can
   SIGTERM the subprocess on cancel/timeout. Ends every terminal path by calling
   `commitSubAgentWork` (§10).
-- **New `services/sub-agent-commit.ts` (SHI-299)** — `commitSubAgentWork`:
+- **New `services/sub-agent-commit.ts` (planning#301)** — `commitSubAgentWork`:
   commits (and pushes) work a consult left behind when its parent turn has
   already ended, via `flushPendingTurnCommit` under `withWorkspaceLock`, with
   the sandbox/ops kind gates and a persisted notice. Never throws. Paired with
@@ -934,7 +934,7 @@ Traceability for the product decisions made during design:
    "ask both other models" or a couple of delegations.
 7. **Synchronous, not fire-and-forget.** The `shipit agent` command blocks on
    the result; the primary continues its turn with the text in hand. No
-   "inject into next turn" mechanism needed. *Amended by SHI-245:* the **call**
+   "inject into next turn" mechanism needed. *Amended by planning#247:* the **call**
    still blocks, but the **run** is no longer coupled to it. A caller that
    dies (typically a foreground shell-tool cap) does not cancel the spawn, and
    `shipit agent result` re-reads a finished run's output. Callers are told to
@@ -944,7 +944,7 @@ Traceability for the product decisions made during design:
    sub-agent running on its behalf. No queue, so no "preserve the queue"
    question. This is scoped to an **explicit** user interrupt/kill
    (`cancelAllSpawns`); a caller merely going away is not a cancel (§3,
-   SHI-245). An earlier attempt to make caller disconnect SIGTERM the
+   planning#247). An earlier attempt to make caller disconnect SIGTERM the
    sub-agent was reverted for exactly that reason — the recovery path depends
    on the spawn surviving.
 
@@ -1010,7 +1010,7 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   `database.ts` migration (`sub_agent_consult` column), `visual-elements.ts`
   (`CARD_MESSAGE_FIELDS`), client `message-handlers/sub-agent-consult-card.ts`,
   `MessageList.tsx` (`SubAgentConsultCardRow`).
-- **Re-read path (§9, SHI-245)** — `agent-shim/shipit-agent.ts`
+- **Re-read path (§9, planning#247)** — `agent-shim/shipit-agent.ts`
   (`handleAgentResult`, the run-id footer, and the `onTerminationSignal` handler
   from `agent-shim/shim-common.ts`) → `agent-ops-routes.ts`
   (`GET /agent-ops/agent/result`) → `api-routes-agent.ts`
@@ -1053,7 +1053,7 @@ supersedes `docs/203`. Pre-decision; nothing implemented.
 - `docs/220-cross-agent-review-surfacing` — the content-carrying consult card,
   which is what made the persisted card a full artifact and therefore a usable
   read target for §9.
-- `docs/236-sub-agent-result-delivery` (SHI-245) — one artifact, named and
+- `docs/236-sub-agent-result-delivery` (planning#247) — one artifact, named and
   re-readable. Source of §9, the whole-answer capture amendment to §6, and the
   survives-the-caller contract in §3.
 

@@ -1,5 +1,5 @@
 /**
- * docs/248 req 8 — the Node-pin system note that rides the first turn's prompt.
+ * docs/248-repo-node-version req 8 — the Node-pin system note that rides the first turn's prompt.
  *
  * Exercised through the real `/agent/start` route with a fake agent, because
  * the behaviour being pinned is an interaction between three things: the
@@ -181,5 +181,74 @@ describe("AgentController — Node pin notice on the first turn", () => {
       },
     });
     expect(status.mismatch).toBe(false);
+  });
+});
+
+/**
+ * docs/261 req 7 — the execution boundary refuses a spawn that names no model.
+ *
+ * The orchestrator already refuses an incomplete call at its own edge, but that
+ * edge is not where the blank would be filled: `/agent/spawn` is, because from
+ * here an absent model means "let the CLI pick its own". Enforcing it in both
+ * places is what makes a propagation slip between them fail loudly instead of
+ * quietly reinstating the per-harness default this feature deleted.
+ */
+describe("AgentController — /agent/spawn requires a model (docs/261)", () => {
+  let app: FastifyInstance;
+  let workspace: string;
+  let spawned: FakeAgent[];
+
+  beforeEach(async () => {
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ac-spawn-"));
+    spawned = [];
+    app = Fastify({ logger: false });
+    new AgentController({
+      agentFactory: () => {
+        const a = new FakeAgent();
+        spawned.push(a);
+        return a as unknown as AgentProcess;
+      },
+      workspaceDir: workspace,
+      broadcast: () => {},
+      permissionBroker: new PermissionBroker({ broadcast: () => {} }),
+      mcpConfig: new McpConfigController({ broadcast: () => {} }),
+      latestSseSeq: () => 0,
+    }).registerRoutes(app);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it("400s a spawn with no model, and runs nothing", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: { agentId: "claude", prompt: "review", spawnId: "s-1" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error as string).toMatch(/model is required/);
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("accepts a spawn that names one", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: {
+        agentId: "claude",
+        prompt: "review",
+        spawnId: "s-2",
+        model: "claude-opus-5",
+        timeoutMs: 50,
+      },
+    });
+    // The fake agent never emits `done`, so the run times out — which is a run
+    // that STARTED, and starting is the whole assertion here.
+    expect(res.statusCode).toBe(200);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].lastParams?.model).toBe("claude-opus-5");
   });
 });

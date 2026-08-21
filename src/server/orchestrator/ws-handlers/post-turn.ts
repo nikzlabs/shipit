@@ -7,6 +7,11 @@ import { recordSecretBlock, clearSecretBlock } from "../services/secret-block.js
 import { evaluateMergedBranchPush, formatMergedPushNotice } from "../services/merged-push-guard.js";
 import { scanDiffForSecrets } from "../../shared/secret-scan.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
+import {
+  formatUnreadableWorkspaceNotice,
+  formatUncommittedTurnNotice,
+} from "../services/unreadable-workspace-notice.js";
+import { sessionAutoCommitAllowed } from "../services/auto-commit-gate.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
 /** Minimal handler context — postTurnCommit only needs git + chat history + auto-push + the session kind gate. */
@@ -55,51 +60,80 @@ export async function postTurnCommit(
     runner?: SessionRunnerInterface | null;
   },
 ): Promise<string | null> {
-  // docs/211 — the sandbox invariant: a `kind === "sandbox"` session has NO root
-  // git repo (the agent clones into subdirs), so session-level auto-commit /
-  // auto-push / PR card are skipped *explicitly by kind*, not inferred from
-  // `remoteUrl`. `git.autoCommit()` runs unconditionally below and would error on
-  // the non-repo root otherwise. Returning null also short-circuits the caller's
-  // PR-lifecycle flow (`runCommitAndPr` only runs it when a commit hash comes
-  // back), so no PR card or push fires for a sandbox.
-  if (opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "sandbox") {
+  // docs/128 / docs/211 — ShipIt does not auto-commit an `ops` or `sandbox`
+  // session. The rule and its full rationale live in ONE place,
+  // `services/auto-commit-gate.ts`; this is one of its five consult sites.
+  //
+  // Two kinds, one gate, for two originally-different reasons:
+  //   - **sandbox** has NO root git repo (the agent clones into subdirs), so the
+  //     unconditional `git.autoCommit()` below would error on the non-repo root.
+  //   - **ops** is a throwaway host-debugging cockpit with no remote, no branch
+  //     lifecycle and no PR card. docs/128 originally let it COMMIT (calling the
+  //     workspace history "part of the incident log") while gating only the
+  //     push. That decision is REVERSED at the operator's request: an ops
+  //     session's history is no longer an incident log, and the ops agent is
+  //     told in its system prompt (`prompts/git-workflow-ops.md`) that it owns
+  //     git itself — so anything an investigation wants to keep is committed
+  //     deliberately by the agent, filed as an issue, or carried into a
+  //     `--shipit-source` fix session.
+  //
+  // Gated by KIND, never inferred from `remoteUrl`. Returning null also
+  // short-circuits the caller's PR-lifecycle flow (`runCommitAndPr` only runs it
+  // when a commit hash comes back), so no push and no PR card fire either.
+  //
+  // Only ShipIt's automatic commit is refused. An explicit agent-driven
+  // `gh pr create` still commits + pushes through its own path, so a cwd-scoped
+  // clone inside an ops workspace is unaffected.
+  if (!sessionAutoCommitAllowed(ctx.sessionManager, opts.sessionId)) {
     return null;
   }
-  // docs/128 — an ops session's workspace is a throwaway cockpit (the ops
-  // template's README + prompts, plus whatever the investigation writes). It
-  // has no remote, no branch lifecycle and no PR card, and the way it fixes a
-  // ShipIt bug is by spawning a `--shipit-source` session or filing an issue —
-  // never by pushing itself. So it COMMITS (the workspace is a real repo and
-  // the history is part of the incident log) but never auto-pushes.
-  //
-  // This is the second half of the ops-session push bug: `resolveGitHubRemote`
-  // is no longer able to hand this workspace an `origin` behind a `gh pr list`,
-  // and even if some other path does, the push never fires. Worth having both,
-  // because the failure mode is an ops session pushing its template commits at
-  // whatever repo it acquired, on branch `main` — that one was caught by
-  // unrelated histories, which is luck, not a guarantee.
-  //
-  // Only the debounced POST-TURN push is gated. An explicit agent-driven
-  // `gh pr create` still pushes through its own path, so a cwd-scoped clone
-  // inside an ops workspace is unaffected.
-  const isOpsSession =
-    !!opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "ops";
   return withWorkspaceLock(opts.sessionDir, async () => {
+    // docs/266 — reconcile `.git` BEFORE the commit, not only after it.
+    //
+    // The handback below has always run post-hoc, which was sufficient while
+    // orchestrator git was root and could write a `.git` in any state. Since E1
+    // it drops to the tree's owner, so it can arrive at a `.git` some earlier
+    // root-side write left unwritable and lose the whole turn:
+    // `fatal: could not open '.git/COMMIT_EDITMSG': Permission denied` — raised
+    // AFTER `git add -A` succeeds, so the work is staged and then stranded, which
+    // is `CLAUDE.md` invariant 2's unrecoverable case.
+    //
+    // Post-hoc repair alone converges only on the NEXT turn, and only if there is
+    // one. Running it here as well turns a lost turn into no turn lost. Inside
+    // the lock, so it cannot race a plugin-install `git add` on the same
+    // workspace.
+    //
+    // Cost, stated honestly rather than as the flattering half: this DOUBLES the
+    // per-turn `.git` walk, and there is no "already owned" short-circuit in
+    // `chownGitMetadataRecursive`. Only the object store is O(fanout) — outside
+    // `objects/` the walk is O(metadata nodes), so refs, reflogs and `worktrees/`
+    // all scale with it. Measured ~0.5 ms on this repo's own clone, which is why
+    // it is spent unconditionally; a refs-heavy repo is where to look first if
+    // that ever stops being true.
+    chownWorkspaceGitToSessionWorker(opts.sessionDir);
     try {
       return await commitInLock();
     } finally {
-      // docs/150 §7 addendum: the git ops above run as the root orchestrator and
-      // write into the worker-owned (uid 1000) workspace — `git status` refreshes
-      // `.git/index`, and a commit writes objects/refs/reflogs. Left root:root,
-      // they block the agent's next in-container `git` (which appends to the
-      // root-owned reflog). Hand `.git` back here, on every path (commit, no-op,
-      // throw). No-op unless SHIPIT_SESSION_WORKER_UID is set.
+      // docs/150 §7 addendum: the git ops above write into `.git` — `git status`
+      // refreshes `.git/index`, and a commit writes objects/refs/reflogs. Hand
+      // `.git` back here, on every path (commit, no-op, throw). No-op unless a
+      // uid resolves — see `resolveGitDirOwner`.
+      //
+      // planning#412 — this used to say those ops "run as the root orchestrator"
+      // and leave `.git` `root:root`. Since E1 they run as the tree's own
+      // identity (the paragraph above this `try` is the same fact stated from
+      // the other side), so what this reconciles is `.git`'s owner against
+      // `resolveGitDirOwner` — the identity that will next run git in it, which
+      // is the orchestrator's dropped uid AND the agent's, and the two can
+      // disagree. Left unreconciled the agent's next in-container `git` fails
+      // appending to a reflog it does not own; the ops themselves stay root only
+      // where no identity resolves (local mode, dev, tests).
       chownWorkspaceGitToSessionWorker(opts.sessionDir);
     }
   });
 
   /**
-   * SHI-295 — the single auto-push site for this turn, gated on the merged-branch
+   * planning#297 — the single auto-push site for this turn, gated on the merged-branch
    * guard (`services/merged-push-guard.ts`, which carries the full rationale).
    *
    * A merged session's branch has no open pull request and, on most repos, no
@@ -107,16 +141,18 @@ export async function postTurnCommit(
    * the commit as an orphan nobody reviews. The commit above still stands (work is
    * never lost); only the silent push is refused, and only this one: an explicit
    * `gh pr create` pushes through its own force-pushing path, exactly like the
-   * ops-session gate above.
+   * auto-commit gate above.
    *
    * The refusal is loud by construction — it is the *silence* that made this a
    * user-reported bug twice, so a blocked push always leaves a persisted notice.
+   *
+   * No ops/sandbox check here: those kinds return at the top of `postTurnCommit`
+   * and never reach this function at all.
    */
   async function pushUnlessMerged(
     git: ReturnType<AppCtx["createGitManager"]>,
     commitHash: string | null,
   ): Promise<void> {
-    if (isOpsSession) return;
     const sessionId = opts.sessionId;
     const block = sessionId
       ? await evaluateMergedBranchPush(
@@ -151,13 +187,74 @@ export async function postTurnCommit(
     }
   }
 
+  /**
+   * docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — `git.autoCommit`, with the guarantee that a
+   * turn which committed NOTHING says so in the transcript.
+   *
+   * `autoCommit` returns the two states it can classify (`unreadable`, and the
+   * secret/conflict refusals). Everything else it cannot classify it rethrows —
+   * and a throw here lands in `postTurnStep`, which logs and continues. That is
+   * right for the steps around the commit and wrong for the commit itself:
+   * requirement 15 says a turn whose work was not committed at all must be
+   * REPORTED, and "a log line is not a report".
+   *
+   * Reports, then rethrows unchanged. The throw is what stops the push and the
+   * PR card, and nothing about that control flow should change — the only thing
+   * added is that the user finds out. The notice is best-effort for the same
+   * reason the merged-push one is: losing the notice is bad, replacing git's
+   * error with a chat-history error is worse.
+   */
+  async function autoCommitReportingFailure(
+    git: ReturnType<AppCtx["createGitManager"]>,
+    summary: string,
+  ): Promise<Awaited<ReturnType<typeof git.autoCommit>>> {
+    try {
+      return await git.autoCommit(summary);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error(`[git] auto-commit failed for ${opts.sessionId ?? "(no session)"}:`, reason);
+      if (opts.sessionId) {
+        try {
+          emitNoticePostTurn(
+            opts.emit,
+            ctx.chatHistoryManager,
+            opts.sessionId,
+            formatUncommittedTurnNotice(reason),
+            "warn",
+          );
+        } catch (noticeErr) {
+          console.error(`[git] uncommitted-turn notice failed for ${opts.sessionId}:`, noticeErr);
+        }
+      }
+      throw err;
+    }
+  }
+
   async function commitInLock(): Promise<string | null> {
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
-    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(firstLine);
+    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+      await autoCommitReportingFailure(git, firstLine);
+    // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — orchestrator git now runs as the session's uid, so
+    // for the first time it can hit workspace content it cannot read (a compose
+    // service running at its own explicit `user:`). The two outcomes need
+    // different words, which is why they are two requirements and not one: an
+    // unreadable DIRECTORY leaves a commit that exists and is short, an
+    // unreadable FILE leaves no commit at all. Persisted, not logged — the whole
+    // point is that git's exit codes report success in the first case and
+    // `postTurnStep` would swallow the second into a log line nobody reads.
+    if (unreadable && opts.sessionId) {
+      emitNoticePostTurn(
+        opts.emit,
+        ctx.chatHistoryManager,
+        opts.sessionId,
+        formatUnreadableWorkspaceNotice(unreadable, { committed: commitHash !== null }),
+        "warn",
+      );
+    }
     if (secretFindings.length > 0 && opts.sessionId) {
-      // docs/213 / SHI-315 — the commit was refused because the staged diff
+      // docs/213 / planning#317 — the commit was refused because the staged diff
       // carried a likely secret. `recordSecretBlock` owns all three responses:
       // the persisted redacted notice (as before), the sticky banner state, and
       // a bounded remediation turn so the agent learns its work did not land.
@@ -173,13 +270,26 @@ export async function postTurnCommit(
         secretFindings,
       );
     }
-    // SHI-315 — the scan actually ran and came back clean, so any standing block
+    // planning#317 — the scan actually ran and came back clean, so any standing block
     // is over. Deliberately NOT cleared on the conflict/rebase branch:
     // `autoCommit` returns there BEFORE staging or scanning, so a secret still in
     // the tree would go unscanned and the banner would clear on a lie. Only "no
     // findings, and nothing stopped us from looking" retires the block — which
     // covers both a successful commit and a genuinely clean tree.
-    if (opts.sessionId && secretFindings.length === 0 && conflictedFiles.length === 0 && !rebaseInProgress) {
+    //
+    // docs/266 adds a THIRD such early return, and it belongs on the same side of
+    // this line: `unreadable.kind === "blocked"` means `git add -A` exited 128
+    // and staged nothing, so `stagedDiff` was never scanned either. Clearing the
+    // banner there would retire it on exactly the lie this condition exists to
+    // prevent. The `omitted` kind is different — staging and scanning both ran,
+    // they just saw less of the tree — so it does not block the clear.
+    if (
+      opts.sessionId
+      && secretFindings.length === 0
+      && conflictedFiles.length === 0
+      && !rebaseInProgress
+      && unreadable?.kind !== "blocked"
+    ) {
       clearSecretBlock({
         sessionId: opts.sessionId,
         sessionManager: ctx.sessionManager,

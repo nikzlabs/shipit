@@ -34,5 +34,5 @@
 - [x] Warm pre-install executor covered against a real worker stub (`warm-pool-preinstall.test.ts`): forwards the repo's resolved `agent.install` to `/install`, and — the gate's intent at the helper level — **never touches the worker when there is no install config**. The full standby-level "untrusted *added* repo skips warm pre-install" assertion remains structural (the `isTrusted` gate sits in the standby callback; covered by the `repoStore.isTrusted` unit tests + warm flow staying green), since a worker-call assertion there needs the full standby+container harness.
 
 ## Docs
-- [x] Add a tracker `issue:` pointer to frontmatter (SHI-96)
+- [x] Add a tracker `issue:` pointer to frontmatter (planning#98)
 - [x] Note the trust gate in `src/server/shipit-docs/preview.md` (agent-visible startup behavior)

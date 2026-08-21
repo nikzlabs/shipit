@@ -1,5 +1,5 @@
 /**
- * docs/172 Gap 5 (SHI-97) — kernel-tier hardening for session containers.
+ * docs/172 Gap 5 (planning#99) — kernel-tier hardening for session containers.
  *
  * The container-escape surface left after the Docker-proxy allowlist, child
  * sanitization, and `CapDrop: ["ALL"]` (see docs/172 "What's already solid") is
@@ -29,7 +29,7 @@
  *      {@link readonlyRootfsTmpfs} for why and the home-dir handling.
  *
  * Each is gated so merging this is inert until an operator opts in — the same
- * default-OFF, verify-on-a-live-host-first pattern the egress work (SHI-90) used.
+ * default-OFF, verify-on-a-live-host-first pattern the egress work (planning#92) used.
  */
 
 import fs from "node:fs";
@@ -140,6 +140,17 @@ export function readonlyRootfsTmpfs(): Record<string, string> {
     "/tmp": "rw,exec,nosuid,nodev",
     "/run": "rw,noexec,nosuid,nodev",
     "/home/shipit": "rw,exec,nosuid,nodev",
+    // docs/262 — holds ONLY the per-repo symlinks into the read-only plugin
+    // store, which the worker creates at runtime. Without a tmpfs here a
+    // read-only rootfs would make the agent-facing `/plugins/<name>` path
+    // uncreatable, so plugins would silently not exist for the agent.
+    "/plugins": "rw,exec,nosuid,nodev",
+    // docs/262 req 17 — the generated companion-CLI wrappers, written at
+    // runtime for the same reason and with the same consequence: without a
+    // tmpfs a read-only rootfs leaves the directory uncreatable and every
+    // plugin command silently absent from PATH. `exec` is load-bearing here in
+    // a way it is not for `/plugins` — these files ARE executed.
+    "/plugin-bin": "rw,exec,nosuid,nodev",
   };
 }
 

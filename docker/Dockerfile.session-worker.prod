@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 # ---- Production image ----
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 
-# SHI-194 — bake the pinned base-image digest into the runtime env. The overlay
+# planning#196 — bake the pinned base-image digest into the runtime env. The overlay
 # dep store keys its rolling base scope on THIS (the native-addon ABI surface),
 # not the full worker-image id, so an app-code-only rebuild no longer rotates the
 # scope (no per-deploy ~500 MB base churn, post-deploy installs stay warm).
@@ -102,8 +102,24 @@ RUN corepack enable
 # works" without the agent bootstrapping a package manager. ShipIt provides the
 # tool but never picks the winner: the project's lockfile decides (uv.lock → uv,
 # poetry.lock → Poetry, requirements.txt → pip). See docs/168.
-# TODO: pin like the agent CLIs once a Renovate policy covers it.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+#
+# PINNED, and the pin is load-bearing for build time, not just for supply chain.
+# deploy.sh builds with `--pull`, which force-resolves every external reference
+# against the registry. With the former `:latest` tag, each new uv release (they
+# ship roughly weekly) changed the resolved digest and invalidated EVERY layer
+# below this line — the agent CLIs, Playwright + Chrome, JDK 17, the Android SDK
+# and Gradle, several GB of downloads — on a schedule set by Astral rather than
+# by us. Keep this pin in lockstep with Dockerfile.session-worker.dev.
+#
+# The digest is the OCI image INDEX, not a per-platform manifest, so the pin
+# still resolves linux/amd64 and linux/arm64 the way the tag did. The tag stays
+# alongside it for readability; the digest is what actually binds.
+#
+# Renovate owns the bump (renovate.json, `uv` rule) under the same 7-day cooldown
+# as the agent CLIs. To move it by hand, read the new digest with:
+#   docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>
+# Guarded by src/server/orchestrator/docker-build-cache.test.ts.
+COPY --from=ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 /uv /uvx /usr/local/bin/
 
 # Agent CLIs: lockfile-pinned, integrity-verified, cooldown-aged install.
 # See docs/141-cli-version-strategy. The versions live in
@@ -118,13 +134,19 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # cooldown via minimumReleaseAge) and gated on the CLI contract test — not by a
 # deploy-time cache-bust. Bins land on PATH so the bare-name spawns in
 # claude.ts / codex-adapter.ts / session-worker.ts (playwright-mcp) keep working.
+#
+# docs/252 phase 9 (req 14) — WHICH of them get installed is a build input
+# (SHIPIT_HARNESSES, defaulting to the installer's DEFAULT_HARNESSES), consumed
+# by the shared installer below. The same arg is passed to the ORCHESTRATOR image, which independently
+# installs the same CLIs; both images have to agree, because the orchestrator is
+# what offers a harness in the picker and this image is where turns actually run.
+# Empty = install-agent-clis' DEFAULT_HARNESSES (docs/271). Set to override.
+ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
-RUN --mount=type=cache,target=/root/.npm \
-    (cd /opt/agent-cli && npm ci --ignore-scripts && npm rebuild @anthropic-ai/claude-code)
+COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
+RUN chmod 0755 /usr/local/bin/install-agent-clis
+RUN --mount=type=cache,target=/root/.npm install-agent-clis
 ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
-RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
- && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
- && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
 
 # Install Chrome and its system dependencies for Playwright MCP browser tools.
 # Playwright MCP now defaults to the `chrome-for-testing` channel, so we install
@@ -267,11 +289,14 @@ RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/
 # (feature 119). Persisting it on the credentials volume lets the session
 # container pick up the user's subscription instead of the API key. `chown -h`
 # the symlinks themselves to `shipit` so the runtime user owns the links.
-RUN mkdir -p /workspace /credentials /home/shipit \
+RUN mkdir -p /workspace /credentials /home/shipit /home/shipit/.local/share \
  && ln -s /credentials/.claude /home/shipit/.claude \
  && ln -sf /credentials/.claude.json /home/shipit/.claude.json \
  && ln -s /credentials/.codex /home/shipit/.codex \
- && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex
+ && ln -s /credentials/.local/share/opencode /home/shipit/.local/share/opencode \
+ && ln -s /credentials/.grok /home/shipit/.grok \
+ && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex /home/shipit/.local/share/opencode /home/shipit/.grok \
+ && chown shipit:shipit /home/shipit/.local /home/shipit/.local/share
 
 # docs/150 — the worker's runtime HOME. AGENT_HOME is the single source of truth
 # resolved by agentHome() in the worker, agent CLIs, and terminal. Set here so a
@@ -295,6 +320,12 @@ EXPOSE 9100
 # so the worker's PATH mutation alone does not reach those commands.
 COPY docker/session-worker/profile-node-pin.sh /etc/profile.d/10-shipit-node.sh
 RUN chmod 0644 /etc/profile.d/10-shipit-node.sh
+
+# docs/262 req 17 — same login-shell problem, for the generated companion-CLI
+# wrappers the worker writes into /plugin-bin. Appended rather than prepended;
+# see the snippet for why.
+COPY docker/session-worker/profile-plugin-bin.sh /etc/profile.d/11-shipit-plugin-bin.sh
+RUN chmod 0644 /etc/profile.d/11-shipit-plugin-bin.sh
 
 COPY docker/session-worker/entrypoint.sh /usr/local/bin/shipit-entrypoint
 RUN chmod 0755 /usr/local/bin/shipit-entrypoint

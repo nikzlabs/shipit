@@ -14,7 +14,7 @@ export type ClaudeAuthLogLevel = "debug" | "info" | "warn" | "error";
 export type ClaudeAuthLogSource = "shipit" | "claude_stdout" | "claude_stderr" | "claude_control";
 
 export interface AgentAuthProgressPayload {
-  agentId: "claude";
+  loginId: "anthropic-oauth";
   accountId?: string;
   attemptId: string;
   phase: ClaudeAuthPhase;
@@ -23,7 +23,7 @@ export interface AgentAuthProgressPayload {
 }
 
 export interface AgentAuthLogPayload {
-  agentId: "claude";
+  loginId: "anthropic-oauth";
   accountId?: string;
   attemptId: string;
   timestamp: string;

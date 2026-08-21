@@ -8,14 +8,31 @@ ShipIt surfaces two kinds of skill directories under the workspace:
 - `<workspace>/.codex/skills/<name>/SKILL.md` — Codex agent skills the
   user-or-you authored. Picked up by the composer's `$`-autocomplete and
   resolvable as `$<name>` in chat.
+- `<workspace>/.opencode/skills/<name>/SKILL.md` — OpenCode agent skills,
+  `/`-invoked like Claude's. OpenCode also natively reads `.claude/skills/`,
+  so on an OpenCode session both directories' skills are disclosed.
+- `<workspace>/.grok/skills/<name>/SKILL.md` — Grok Build agent skills,
+  `/`-invoked like Claude's. Grok also natively reads `.claude/skills/`
+  (verified, docs/274), so on a Grok session both directories' skills are
+  disclosed.
 - `<workspace>/<agent-dir>/skills/<plugin>__<skill>/SKILL.md` — skills the user
   installed from a marketplace via **Settings → Skills → Discover**
   (docs/149). These have a sentinel `.shipit-installed.json` file next to the
   `SKILL.md` and invoke under the catalog's namespace (e.g.
   `/commit-commands:commit` for Claude or `$commit-commands:commit` for Codex).
+- `<workspace>/<agent-dir>/skills/plugins--<alias>--<skill>-<hash>/SKILL.md` —
+  skills ShipIt materialized from a **plugin repository** the project declares
+  (docs/262; see `plugins.md`). These carry a `.shipit-plugin-skill.json`
+  marker, and they are **yours, not the user's**: you discover and invoke them
+  like any other skill, but they are deliberately absent from the composer's
+  autocomplete, because a plugin's instructions are not commands the user chose
+  to have. Where one shows in the transcript it is labelled `<alias>/<skill>`.
+  ShipIt writes and removes these — never hand-edit one; change the plugin
+  repository instead.
 
-The two layouts coexist in the same directory; ShipIt distinguishes them by
-the presence of `.shipit-installed.json`.
+The layouts coexist in the same directory; ShipIt distinguishes them by the
+marker file each carries (`.shipit-installed.json`, `.shipit-plugin-skill.json`)
+— never by the directory name, which anyone may write.
 
 ## Do not edit installed skill directories by hand
 
@@ -56,6 +73,7 @@ Look at the workspace at chat time, not at a memory of an earlier state:
 
 - `ls .claude/skills/` shows every Claude skill the agent will see at next spawn.
 - `ls .codex/skills/` shows every Codex project skill ShipIt exposes today.
+- `ls .grok/skills/` shows every Grok Build project skill ShipIt exposes today.
 - Each `<agent-dir>/skills/<dir>/SKILL.md` carries `name:` frontmatter that's
   the canonical invocation token (it's `name:` that matters, not the
   directory name — that's how plugin namespacing with `:` works inside a

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-108
+issue: planning#110
 title: Persistent container logs (agent + services)
 description: A single durable, disk-backed log store so the agent-container Logs tab and preview-service log panels both show full history across container destruction, idle eviction, and orchestrator restart.
 ---

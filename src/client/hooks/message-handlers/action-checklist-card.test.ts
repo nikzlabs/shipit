@@ -30,7 +30,7 @@ beforeEach(() => {
   useSessionStore.setState({ messages: [] });
 });
 
-describe("handleActionChecklistCard (docs/207 / SHI-153)", () => {
+describe("handleActionChecklistCard (docs/207 / planning#155)", () => {
   it("appends a marker message carrying the full immutable payload", () => {
     handleActionChecklistCard(ctx, event());
     const messages = useSessionStore.getState().messages;

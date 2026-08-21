@@ -36,7 +36,7 @@ import {
  * Pattern: {uuid}--{port}.anything[:serverPort]
  * Example: 98f05156-7e64-422d-81bc-ba677fda60e0--5173.localhost:3001
  */
-function parsePreviewSubdomain(
+export function parsePreviewSubdomain(
   host: string | undefined,
 ): { sessionId: string; port: number } | null {
   if (!host) return null;
@@ -76,13 +76,168 @@ const HMR_WS_PATCH = `<script>(function(){` +
   // auth-blocked iframes when behind a reverse proxy like Cloudflare Zero Trust)
   `if(window.parent!==window){` +
     `window.parent.postMessage({source:"shipit-preview",type:"loaded"},"*");` +
+    // Back/forward must stay inside the iframe. `history.back()` traverses the
+    // *joint* session history — this frame's entries nested inside the ShipIt
+    // tab's — so a preview with no entry of its own walks the TOP-LEVEL page
+    // back and drops the user out of their session. `history.length` can't
+    // guard it either: in a frame it reports the joint length (verified in
+    // Chromium: 1 own entry, length 9). The Navigation API's entry list is
+    // scoped to this frame, so `canGoBack` answers the right question and
+    // `back()` cannot move anything but us.
+    // No `history.back()` fallback: there is no way to ask the legacy API
+    // whether *this frame* can go back (its `history.length` is the joint
+    // length), so on a browser without the Navigation API we refuse to
+    // traverse and report `canGoBack:false`, which greys the button out. All
+    // three engines ship the API (Chrome 102, Safari 18.2, Firefox 147), so
+    // this costs a button nobody has rather than keeping the bug alive.
+    `var nav=window.navigation;` +
+    // Navigation API results reject (InvalidStateError, an aborted intercept)
+    // and we never act on the outcome. Swallow both promises rather than
+    // spilling an unhandled rejection into the previewed app's console.
+    `var swallow=function(){};` +
+    // A refusal below is a no-op the page can't see — it gets History's usual
+    // `undefined` and no event, which reads as "the button is broken". Say why,
+    // once, in the console the developer already has open. Deliberately a bare
+    // `console.warn`: ShipIt's error panel only ingests what a page *posts* as
+    // a `shipit-preview` console message, so this reaches devtools without
+    // showing up as an app error or waking auto-fix.
+    // The text is ASCII on purpose, like the rest of this script: it is
+    // injected into whatever the app serves, and a page served without a
+    // charset renders a UTF-8 em dash here as mojibake (seen in Chromium).
+    `var warned=false;` +
+    `var refuse=function(){if(warned)return;warned=true;try{console.warn(` +
+      `"[ShipIt preview] Ignored a history traversal this preview cannot make on its own. "+` +
+      `"The frame has no entry of its own to move to, so the platform would have traversed "+` +
+      `"the ShipIt page instead, switching the user out of their session.")}catch(e5){}};` +
+    `var travel=function(dir){` +
+      `if(!nav){refuse();return}` +
+      `if(dir==="back"?!nav.canGoBack:!nav.canGoForward){refuse();return}` +
+      `var r=nav[dir]();` +
+      `r.committed.catch(swallow);r.finished.catch(swallow)` +
+    `};` +
+    // The previewed PAGE's own back button is the same leak as the toolbar's,
+    // and the toolbar guard above does nothing for it: an app that calls
+    // `history.back()` — a "< Back" control, a router's `goBack()`, a
+    // `javascript:history.back()` link — traverses the joint session history
+    // straight past the frame and walks the ShipIt tab back, switching the
+    // user's active session. So the same frame-scoped traversal is installed
+    // over the three History methods that traverse. This script is first in
+    // <head>, so it wins over any app code that captures them later.
+    // `go(0)` (and a missing/NaN delta) is a reload, not a traversal — that is
+    // what the platform does, and it never leaves the frame.
+    `var jump=function(d){` +
+      // `|0` is exactly the Web IDL `long` conversion the real `go()` performs:
+      // it truncates, folds NaN/undefined/a non-numeric string to 0, and wraps
+      // modulo 2^32 (so `go(4294967295)` is `go(-1)`, as natively). It also
+      // throws on a BigInt, which is what the native conversion does.
+      `d=d|0;` +
+      `if(!d){location.reload();return}` +
+      `if(d===-1){travel("back");return}` +
+      `if(d===1){travel("forward");return}` +
+      // A delta past ±1 has no `canGoBack`-style predicate, so the entry list
+      // itself is the guard: an index outside it is a step the frame cannot
+      // take, and refusing is what keeps it off the top-level page.
+      //
+      // Counting the delta in the FRAME's entries is a deliberate departure
+      // from `history.go`, which counts steps of the *joint* history — a nested
+      // frame's navigation is a step there, so a native `go(-2)` from an app
+      // that made two navigations of its own can land somewhere the app never
+      // was, and past the frame's first entry it lands on the ShipIt page.
+      // Frame-local is both containable and what a router asking for "two of my
+      // entries back" means.
+      `if(!nav||!nav.entries||!nav.traverseTo){refuse();return}` +
+      `try{var es=nav.entries();var ce=nav.currentEntry;` +
+        `if(!es||!ce){refuse();return}` +
+        `var t=es[ce.index+d];if(!t){refuse();return}` +
+        `var r=nav.traverseTo(t.key);` +
+        `r.committed.catch(swallow);r.finished.catch(swallow)` +
+      `}catch(e3){}` +
+    `};` +
+    // Patch the PROTOTYPE, not the instance. An own property on `history`
+    // would leave `History.prototype.back.call(history)` as a live route to the
+    // joint traversal, and would shadow — rather than compose with — a router
+    // or instrumentation library that wraps the prototype method later. Falls
+    // back to the instance where `History` isn't exposed, and an engine that
+    // refuses the write must not take the rest of the script down.
+    `try{var hp=(window.History&&window.History.prototype)||history;` +
+      `hp.back=function(){travel("back")};` +
+      `hp.forward=function(){travel("forward")};` +
+      `hp.go=function(d){jump(d)};` +
+      // `history.length` is the joint length in a frame (measured in Chromium:
+      // one own entry, `length` 9), which is why nothing above can use it as a
+      // guard — and why the `history.length>1` check an app puts in FRONT of
+      // its back button is wrong here, sending it into a refusal. The
+      // Navigation API knows the frame's own count, so report that instead and
+      // the app's own guard starts telling it the truth.
+      `if(nav&&nav.entries)Object.defineProperty(hp,"length",{configurable:true,` +
+        `get:function(){try{return nav.entries().length}catch(e6){return 1}}})` +
+    `}catch(e4){}` +
+    // Dispatch an event the browser would have fired for a navigation it
+    // performed itself. Guarded per call: an engine missing one of the
+    // constructors must not take the rest of `go` down with it.
+    `var fire=function(C,n,i){try{window.dispatchEvent(new C(n,i))}catch(e2){}};` +
+    // Send the frame to an agent-authored pointer's destination (docs/258).
+    // The parent could assign our `src` instead — cross-origin blocks reading
+    // `location`, not navigating a frame — but that is always a document load,
+    // so a pointer at a place *inside* the page the user is already on tore the
+    // app down and rebuilt it. In here we can see where the page actually is,
+    // so a destination on the page we are already showing becomes the
+    // same-document navigation it really is (req 13).
+    `var go=function(u){try{` +
+      // A non-string resolves against our own origin ("/undefined") instead of
+      // throwing, so it has to be rejected before the parser sees it.
+      `if(typeof u!=="string")return;` +
+      `var c=new URL(location.href);var t=new URL(u,c);` +
+      // Same second check the parent makes. What follows is a navigation, and
+      // this side is the one that can compare against the live location.
+      `if(t.origin!==c.origin||t.href===c.href)return;` +
+      // Same path = the page the user is already on, so every remaining
+      // difference is that page's own state. The path is where the line sits:
+      // a different one is plausibly a different document (an MPA's
+      // /about.html), while a query on the same path is what a page uses to say
+      // where it is within itself.
+      `if(t.pathname===c.pathname){` +
+        // Fragment alone: the platform's own same-document path. It fires
+        // hashchange and scrolls, so nothing has to be synthesized.
+        `if(t.search===c.search&&t.hash){location.hash=t.hash;return}` +
+        // Anything else on this page has no browser-provided same-document
+        // route — a fragment REMOVAL is not covered (the navigation algorithm
+        // takes its fragment path only for a non-null destination fragment) and
+        // a query change is cross-document by default. So rewrite the entry and
+        // then fire what the browser would have. `pushState` is the wrapped one,
+        // so the parent's path report follows.
+        `history.pushState(history.state,"",t.href);` +
+        // `popstate` is what every mainstream client-side router listens on, so
+        // this is what re-renders the app in place. A page that reads
+        // `location.search` once at load and never routes hears nothing and
+        // keeps its old content under the new URL — the accepted cost of not
+        // reloading (docs/258 requirements, 2026-08-10).
+        `if(t.search!==c.search)fire(PopStateEvent,"popstate",{state:history.state});` +
+        `if(t.hash!==c.hash)fire(HashChangeEvent,"hashchange",{oldURL:c.href,newURL:t.href});` +
+        `return` +
+      `}` +
+      // A different path is left as a real navigation, and reloads — unless the
+      // app runs its own router on the Navigation API, which gets to intercept
+      // this and stay same-document.
+      // A rejection here is swallowed rather than recovered from: the causes are
+      // an interceptor deliberately aborting (an unsaved-changes guard) and a
+      // superseding navigation, and forcing `location.assign` would override the
+      // app in the first case and fight it in the second.
+      `if(nav&&nav.navigate){var r=nav.navigate(t.href);` +
+        `r.committed.catch(swallow);r.finished.catch(swallow);return}` +
+      `location.assign(t.href)` +
+    `}catch(e){}};` +
     // Let the preview toolbar drive the embedded browser's session history.
     // The iframe is cross-origin (preview subdomain / a different port), so the
     // parent can't touch `contentWindow.history` directly — it asks us to here.
     `window.addEventListener("message",function(e){` +
       `var d=e.data;if(!d||d.source!=="shipit-toolbar")return;` +
-      `if(d.type==="back")history.back();` +
-      `else if(d.type==="forward")history.forward();` +
+      // Only ShipIt drives these. The commands come from the window that embeds
+      // us, so anything else posting them is not the toolbar.
+      `if(e.source!==window.parent)return;` +
+      `if(d.type==="back")travel("back");` +
+      `else if(d.type==="forward")travel("forward");` +
+      `else if(d.type==="navigate")go(d.url);` +
       // Refresh must reload whatever page the preview is currently on. The
       // parent can only re-assign the iframe's `src`, which is the slot's
       // original entry URL — that would throw away any client-side route the
@@ -91,9 +246,12 @@ const HMR_WS_PATCH = `<script>(function(){` +
     `});` +
     // Report the current path (never the host) so the toolbar can show where
     // the preview is. The parent cannot read this itself — the iframe is
-    // cross-origin — so the page has to push it out.
+    // cross-origin — so the page has to push it out. `canGoBack` rides along
+    // so the toolbar can disable Back when there is nothing behind us — false
+    // without the Navigation API, matching `travel`'s refusal to traverse.
     `var rp=function(){try{window.parent.postMessage({source:"shipit-preview",` +
-      `type:"path",path:location.pathname+location.search+location.hash},"*")}catch(e){}};` +
+      `type:"path",path:location.pathname+location.search+location.hash,` +
+      `canGoBack:nav?nav.canGoBack:false},"*")}catch(e){}};` +
     `rp();` +
     // A load-time read alone goes stale the instant a client-side router moves
     // without a navigation, so wrap the two History methods that do it. We patch
@@ -103,7 +261,14 @@ const HMR_WS_PATCH = `<script>(function(){` +
       `history[n]=function(){var r=o.apply(this,arguments);rp();return r}};` +
     `wrap("pushState");wrap("replaceState");` +
     `window.addEventListener("popstate",rp);` +
-    `window.addEventListener("hashchange",rp)` +
+    `window.addEventListener("hashchange",rp);` +
+    // An app that drives the Navigation API directly (`navigation.navigate()`,
+    // or a router in navigation-API mode) changes the current entry without
+    // touching the History methods we wrapped, so neither the path nor
+    // `canGoBack` would ever update. `currententrychange` fires after any
+    // same-document entry change and is the one signal that covers all of
+    // them; duplicate reports are free, since the parent compares values.
+    `if(nav)nav.addEventListener("currententrychange",rp)` +
   `}` +
   `})()</script>`;
 
@@ -446,19 +611,23 @@ export function registerPreviewProxy(
   const reportError = createPreviewErrorReporter(runnerRegistry);
 
   /**
-   * Resolve the container IP for a session + port combination.
-   * Checks compose service containers first (by port), falls back to agent container.
+   * Resolve the container address behind a preview subdomain's port.
+   *
+   * Compose services first, then the agent container. The returned port is
+   * always the one in the subdomain: every service — the project's own and a
+   * plugin's alike — serves on one number that is both its container port and
+   * its preview origin (docs/266-plugin-service-ports req 10). A plugin service used to carry a
+   * second, pinned number here; the port is now the consuming project's to
+   * write, so nothing can move it behind a session's back and the indirection
+   * is gone.
    */
-  function resolveContainerIp(sessionId: string, port: number): string | null {
-    // Check compose services for a container listening on this port
+  function resolveTarget(sessionId: string, port: number): { ip: string; port: number } | null {
     const mgr = serviceManagers.get(sessionId);
-    if (mgr) {
-      const ip = mgr.getContainerIpForPort(port);
-      if (ip) return ip;
-    }
+    const target = mgr?.resolvePreviewTarget(port);
+    if (target) return { ip: target.containerIp, port: target.port };
     // Fall back to the agent container
     const sc = containerManager.get(sessionId);
-    return sc?.containerIp ?? null;
+    return sc?.containerIp ? { ip: sc.containerIp, port } : null;
   }
 
   // --- Subdomain-based proxy (intercepts before Fastify routing) ----------
@@ -474,13 +643,16 @@ export function registerPreviewProxy(
       return;
     }
 
-    const { sessionId, port: targetPort } = parsed;
-    const containerIp = resolveContainerIp(sessionId, targetPort);
-    if (!containerIp) {
+    const { sessionId, port: originPort } = parsed;
+    const target = resolveTarget(sessionId, originPort);
+    if (!target) {
       reply.code(404).send({ error: "Session container not found" });
       done();
       return;
     }
+    // Errors are reported against the ORIGIN's port, which is what the user's
+    // address bar and the health poller both use.
+    const { ip: containerIp, port: targetPort } = target;
 
     reply.hijack();
     proxyHttp(
@@ -491,8 +663,8 @@ export function registerPreviewProxy(
       request.headers,
       request.raw,
       reply.raw,
-      (msg) => reportError(sessionId, targetPort, msg, false),
-      () => reportError.success(sessionId, targetPort),
+      (msg) => reportError(sessionId, originPort, msg, false),
+      () => reportError.success(sessionId, originPort),
     );
     done();
   });
@@ -506,18 +678,22 @@ export function registerPreviewProxy(
     "/api/preview-health/:sessionId/:port",
     async (request, reply) => {
       const params = request.params as { sessionId: string; port: string };
-      const targetPort = Number(params.port);
+      const originPort = Number(params.port);
       if (
-        !Number.isInteger(targetPort) ||
-        targetPort < 1 ||
-        targetPort > 65535
+        !Number.isInteger(originPort) ||
+        originPort < 1 ||
+        originPort > 65535
       ) {
         return reply.send({ ready: false });
       }
-      const containerIp = resolveContainerIp(params.sessionId, targetPort);
-      if (!containerIp) {
+      // The poller asks about the origin it is going to load, so the probe has
+      // to follow the same mapping the proxy does — otherwise a plugin service
+      // whose fragment moved its port would report "not ready" forever.
+      const target = resolveTarget(params.sessionId, originPort);
+      if (!target) {
         return reply.send({ ready: false });
       }
+      const { ip: containerIp, port: targetPort } = target;
       // Quick HTTP probe to the container's dev server
       const ready = await new Promise<boolean>((resolve) => {
         const probe = http.request(
@@ -569,21 +745,21 @@ export function registerPreviewProxy(
       // Try subdomain-based first
       const subdomainParsed = parsePreviewSubdomain(req.headers.host);
       if (subdomainParsed) {
-        const { sessionId, port: targetPort } = subdomainParsed;
-        const containerIp = resolveContainerIp(sessionId, targetPort);
-        if (!containerIp) {
-          reportError(sessionId, targetPort, "Container not found for HMR upgrade", true);
+        const { sessionId, port: originPort } = subdomainParsed;
+        const target = resolveTarget(sessionId, originPort);
+        if (!target) {
+          reportError(sessionId, originPort, "Container not found for HMR upgrade", true);
           socket.destroy();
           return;
         }
         proxyWebSocket(
-          containerIp,
-          targetPort,
+          target.ip,
+          target.port,
           req.url || "/",
           req.headers,
           socket,
-          (msg) => reportError(sessionId, targetPort, msg, true),
-          () => reportError.success(sessionId, targetPort),
+          (msg) => reportError(sessionId, originPort, msg, true),
+          () => reportError.success(sessionId, originPort),
         );
         return;
       }

@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>User-selectable roles — picker prototype</title>
+<style>
+  /*
+   * Token values are copied from the real themes — `src/client/themes/claude-light.css`
+   * and `claude.css`. Nothing here is invented, and the page carries both so the
+   * design is checked on a light surface and a dark one. ShipIt is multi-theme.
+   */
+  .claude-light {
+    --bg-primary: #faf5ef; --bg-secondary: #f0e8de; --bg-tertiary: #e6dcd0;
+    --bg-elevated: #faf5ef; --bg-hover: rgba(180,100,60,.06);
+    --text-primary: #2a2018; --text-secondary: #5c5040; --text-tertiary: #9a8c78;
+    --border-primary: #e4d8c8; --border-secondary: #d0c0ac;
+    --accent: #d97757; --accent-subtle: rgba(217,119,87,.12); --accent-text: #fff;
+    --success: #3a8a50; --warning: #b87020; --warning-subtle: rgba(184,112,32,.1);
+    --error: #c43838; --error-subtle: rgba(196,56,56,.1);
+    --shadow: rgba(90,70,50,.18);
+  }
+  .claude {
+    --bg-primary: #1a1410; --bg-secondary: #241c16; --bg-tertiary: #2e2519;
+    --bg-elevated: #241c16; --bg-hover: rgba(217,119,87,.1);
+    --text-primary: #f0e6dc; --text-secondary: #a89a8c; --text-tertiary: #7a6c5c;
+    --border-primary: #2e2519; --border-secondary: #43382c;
+    --accent: #d97757; --accent-subtle: rgba(217,119,87,.16); --accent-text: #fff;
+    --success: #5cb075; --warning: #d4922f; --warning-subtle: rgba(212,146,47,.14);
+    --error: #e05a5a; --error-subtle: rgba(224,90,90,.14);
+    --shadow: rgba(0,0,0,.55);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 34px 26px 90px;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg-primary); color: var(--text-primary);
+    transition: background .18s, color .18s;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; }
+  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.7; margin: 0; max-width: 82ch; }
+  .req { color: var(--accent); font-size: 12px; font-weight: 600; }
+  code.k {
+    background: var(--bg-secondary); border: 1px solid var(--border-primary);
+    padding: 1px 5px; border-radius: 4px; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .themebar { display: flex; gap: 8px; align-items: center; margin: 18px 0 0; }
+  .themebar button {
+    font: inherit; font-size: 11.5px; cursor: pointer;
+    background: var(--bg-secondary); color: var(--text-secondary);
+    border: 1px solid var(--border-primary); border-radius: 7px; padding: 4px 11px;
+  }
+  .themebar button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .section { margin: 40px 0 0; padding-top: 24px; border-top: 1px solid var(--border-primary); }
+  .section-label {
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); margin: 0 0 16px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-label .n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--bg-secondary); border: 1px solid var(--border-primary);
+    color: var(--text-secondary); font-size: 10px; letter-spacing: 0;
+  }
+  .note {
+    font-size: 12px; color: var(--text-secondary); line-height: 1.7;
+    background: var(--bg-secondary); border: 1px solid var(--border-primary);
+    border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0;
+    padding: 10px 14px; margin: 14px 0 0; max-width: 84ch;
+  }
+  .note.warn { border-left-color: var(--warning); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+  .stack { display: flex; flex-direction: column; gap: 22px; }
+  .flow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .arrow { color: var(--text-tertiary); font-size: 18px; flex: none; }
+
+  /* ---- composer ---- */
+  .composer {
+    background: var(--bg-elevated); border: 1px solid var(--border-primary);
+    border-radius: 14px; padding: 13px 14px 11px;
+  }
+  .composer.lit { border-color: var(--accent); }
+  .composer .field { color: var(--text-tertiary); font-size: 14px; padding: 3px 2px 18px; }
+  .toolbar { display: flex; align-items: center; gap: 2px; }
+  .ctl {
+    display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+    color: var(--text-secondary); font-size: 13px;
+    padding: 4px 7px; border-radius: 7px;
+  }
+  .ctl .car { color: var(--text-tertiary); font-size: 9px; }
+  .ctl .ic { color: var(--text-tertiary); font-size: 12px; }
+  .ctl.icon-only { color: var(--text-tertiary); padding: 4px 6px; }
+  .ctl .lock { font-size: 10px; color: var(--text-tertiary); }
+  .spacer { flex: 1; }
+  .clipgroup { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+  .dial { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px; font-size: 12.5px; }
+  .ring {
+    width: 13px; height: 13px; border-radius: 50%; flex: none;
+    background: conic-gradient(var(--success) 0 42%, var(--border-secondary) 42% 100%);
+    -webkit-mask: radial-gradient(circle, transparent 52%, #000 54%);
+            mask: radial-gradient(circle, transparent 52%, #000 54%);
+  }
+  .dial .tok { color: var(--text-primary); font-weight: 500; }
+  .dial .cost { color: var(--accent); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  /* the role, as a single named control */
+  .rolectl {
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+    font-size: 13px; padding: 4px 9px; border-radius: 999px;
+    color: var(--accent); background: var(--accent-subtle);
+    border: 1px solid transparent;
+  }
+  .rolectl .dia { display: inline-flex; }
+  .rolectl .car { font-size: 9px; opacity: .8; }
+  .rolectl.open { border-color: var(--accent); }
+  .rolectl.empty { color: var(--text-tertiary); background: transparent; padding: 4px 6px; }
+  .rolectl.empty .dia { color: var(--text-tertiary); }
+  .stop, .send {
+    width: 30px; height: 30px; border-radius: 8px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 12px;
+  }
+  .stop { background: var(--error); color: #fff; margin-left: 6px; }
+  .send { background: var(--accent-subtle); color: var(--accent); margin-left: 4px; }
+  .mg { font-size: 9px; letter-spacing: -1px; font-variant-emoji: text; }
+  .strike { position: relative; }
+
+  /* ---- menu ---- */
+  .menu {
+    width: 330px; background: var(--bg-elevated); border: 1px solid var(--border-primary);
+    border-radius: 12px; padding: 6px; box-shadow: 0 18px 44px var(--shadow);
+  }
+  .menu.narrow { width: 252px; }
+  .group-label {
+    font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); padding: 9px 10px 5px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .group-label .hint { text-transform: none; letter-spacing: 0; font-size: 10.5px; opacity: .85; }
+  .divider { height: 1px; background: var(--border-primary); margin: 5px 6px; }
+  .row {
+    display: flex; align-items: flex-start; gap: 9px;
+    padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--text-primary);
+  }
+  .row.sel { background: var(--accent-subtle); }
+  .row .body { flex: 1; min-width: 0; }
+  .row .name { display: flex; align-items: center; gap: 7px; }
+  .row .desc { display: block; font-size: 11.5px; color: var(--text-secondary); line-height: 1.55; margin-top: 2px; }
+  .row .params { display: block; font-size: 11px; color: var(--text-tertiary); margin-top: 4px; font-family: ui-monospace, Menlo, monospace; }
+  .row.disabled { opacity: .6; }
+  .check { color: var(--accent); font-size: 12px; width: 12px; flex: none; padding-top: 2px; }
+  .check.blank { color: transparent; }
+  .pill {
+    font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase;
+    border-radius: 999px; padding: 1.5px 6px; border: 1px solid var(--border-secondary);
+    color: var(--text-tertiary); background: var(--bg-secondary); white-space: nowrap;
+  }
+  .pill.warn { color: var(--warning); border-color: var(--warning); background: var(--warning-subtle); }
+  .pill.danger { color: var(--error); border-color: var(--error); background: var(--error-subtle); }
+  .vendor {
+    width: 16px; height: 16px; border-radius: 4px; flex: none; margin-top: 1px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700; color: #fff;
+  }
+  .v-a { background: #d97757; } .v-o { background: #6b7280; }
+  .v-role { background: transparent; border: 1px solid var(--accent); color: var(--accent); }
+
+  /* ---- phone ---- */
+  .phone {
+    width: 290px; background: var(--bg-elevated); border: 1px solid var(--border-primary);
+    border-radius: 14px; padding: 6px; box-shadow: 0 18px 44px var(--shadow);
+  }
+  .panel-head {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px 9px;
+    border-bottom: 1px solid var(--border-primary); margin-bottom: 5px;
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .rootrow .ic { color: var(--text-tertiary); display: inline-flex; flex: none; }
+  .rootrow { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 8px; font-size: 13px; }
+  .rootrow.sub { padding-left: 26px; }
+  .rootrow .lab { flex: 1; }
+  .rootrow .val { font-size: 11.5px; color: var(--text-tertiary); }
+  .rootrow .val.accent { color: var(--accent); }
+  .caption { font-size: 11.5px; color: var(--text-tertiary); margin: 9px 2px 0; line-height: 1.6; max-width: 40ch; }
+  .ab { display: flex; gap: 8px; align-items: baseline; margin-bottom: 9px; flex-wrap: wrap; }
+  .ab .tag {
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
+    color: var(--text-secondary); background: var(--bg-secondary);
+    border: 1px solid var(--border-primary); border-radius: 6px; padding: 2px 7px;
+  }
+  .ab .tag.rec { color: var(--success); border-color: var(--success); background: transparent; }
+  .ab .why { font-size: 11.5px; color: var(--text-secondary); }
+</style>
+</head>
+<body class="claude-light">
+<div class="wrap">
+
+  <h1 class="page-title">User-selectable roles — picker prototype</h1>
+  <p class="page-sub">
+    Prototype for <code class="k">docs/272-user-selectable-roles</code>. A selected role shows
+    <strong>its name alone</strong> — the harness, model and reasoning level are what the role is
+    made of, and restating them says nothing the user did not just decide (req 5). The name opens
+    the <em>roles</em>, as every other control opens what it chooses between (req 14); the replaced
+    controls come back from inside that list, and changing one is the whole of leaving the role
+    (req 15). The name reports the user's <em>choice</em> — setting the same three values by hand
+    never names a role (req 13). Roles are <strong>not</strong> in the model menu: a role is not a model, and that list
+    is long already (req 16). Colours are the real <code class="k">claude-light</code> and
+    <code class="k">claude</code> tokens; the composer is drawn from
+    <code class="k">MessageInput.tsx</code>. The role mark is Phosphor's
+    <code class="k">BaseballCapIcon</code> — chosen 2026-08-17 for the idiom “which hat you're
+    wearing”, over <code class="k">BriefcaseIcon</code> and a set of drawn marks.
+  </p>
+  <div class="themebar">
+    <button class="on" onclick="document.body.className='claude-light';this.classList.add('on');this.nextElementSibling.classList.remove('on')">Claude Light</button>
+    <button onclick="document.body.className='claude';this.classList.add('on');this.previousElementSibling.classList.remove('on')">Claude Dark</button>
+  </div>
+
+  <!-- 1 ............................................................. -->
+  <div class="section">
+    <p class="section-label"><span class="n">1</span> The composer, role selected <span class="req">req 5</span></p>
+
+    <div class="stack" style="max-width: 900px;">
+
+      <div>
+        <div class="ab"><span class="tag">no roles configured</span><span class="why">
+          Byte-identical to today. A user who has never made a role is shown nothing at all — not
+          even the mark (req 16).
+        </span></div>
+        <div class="composer">
+          <div class="field">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <span class="ctl icon-only">＋</span>
+            <span class="ctl icon-only">🎙</span>
+            <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
+            <span class="spacer"></span>
+            <span class="clipgroup">
+              <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
+              <span class="ctl">Claude Code <span class="lock">🔒</span></span>
+              <span class="ctl">Opus 5 <span class="car">▾</span></span>
+              <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
+            </span>
+            <span class="stop">■</span><span class="send">↑</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="ab"><span class="tag">roles exist · none selected</span><span class="why">
+          The mark alone, no label — the cheapest form the control has. Attach, voice and mode sit
+          left; the labelled controls sit right. The padlock means the session has pinned its harness.
+        </span></div>
+        <div class="composer">
+          <div class="field">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <span class="ctl icon-only">＋</span>
+            <span class="ctl icon-only">🎙</span>
+            <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
+            <span class="spacer"></span>
+            <span class="clipgroup">
+              <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
+              <span class="rolectl empty"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span></span>
+              <span class="ctl">Claude Code <span class="lock">🔒</span></span>
+              <span class="ctl">Opus 5 <span class="car">▾</span></span>
+              <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
+            </span>
+            <span class="stop">■</span><span class="send">↑</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="ab"><span class="tag rec">role selected</span><span class="why">
+          The three controls are gone. The role name stands in their place, because it decided all
+          three. The row is <strong>shorter</strong> than today, not longer.
+        </span></div>
+        <div class="composer">
+          <div class="field">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <span class="ctl icon-only">＋</span>
+            <span class="ctl icon-only">🎙</span>
+            <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
+            <span class="spacer"></span>
+            <span class="clipgroup">
+              <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
+              <span class="rolectl"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span> Deep dive <span class="car">▾</span></span>
+            </span>
+            <span class="stop">■</span><span class="send">↑</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="ab"><span class="tag">parameters shown</span><span class="why">
+          Reached from <strong>“Adjust parameters…”</strong> at the foot of the roles list — not by
+          clicking the name, which opens the list like every other control opens its own (req 14).
+          The controls come back live and changeable, beside the role they belong to.
+        </span></div>
+        <div class="composer lit">
+          <div class="field">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <span class="ctl icon-only">＋</span>
+            <span class="ctl icon-only">🎙</span>
+            <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
+            <span class="spacer"></span>
+            <span class="clipgroup">
+              <span class="dial"><span class="ring"></span><span class="tok">114.9K</span></span>
+              <span class="rolectl open"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span> Deep dive <span class="car">▴</span></span>
+              <span class="ctl">Claude Code <span class="lock">🔒</span></span>
+              <span class="ctl">Opus 5 <span class="car">▾</span></span>
+              <span class="ctl"><span class="ic">◍</span> Think hard <span class="car">▾</span></span>
+            </span>
+            <span class="stop">■</span><span class="send">↑</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="ab"><span class="tag">changed → left the role</span><span class="why">
+          Reasoning moved from <em>think hard</em> to <em>medium</em>, so the user has left Deep
+          dive. The role name stops being shown because it is no longer true. The row is exactly
+          today's, and the way back is the same control it always was.
+        </span></div>
+        <div class="composer">
+          <div class="field">Describe what to build… (type @ to attach files)</div>
+          <div class="toolbar">
+            <span class="ctl icon-only">＋</span>
+            <span class="ctl icon-only">🎙</span>
+            <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
+            <span class="spacer"></span>
+            <span class="clipgroup">
+              <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
+              <span class="rolectl empty"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span></span>
+              <span class="ctl">Claude Code <span class="lock">🔒</span></span>
+              <span class="ctl">Opus 5 <span class="car">▾</span></span>
+              <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
+            </span>
+            <span class="stop">■</span><span class="send">↑</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="note">
+      <strong>The collapse is what pays for the control.</strong> docs/261 decided the composer row
+      does not grow, and req 5 sets that aside deliberately. It is affordable because the growth is
+      only in the state where <em>no</em> role is selected: choosing one removes three labels and
+      adds one. The width problem that dominated the previous draft — the
+      <code class="k">min-w-0 overflow-hidden</code> clip group whose labels are cut between 700 and
+      ~808px — is not made worse by a role, and is relieved while one is selected.
+    </p>
+    <p class="note warn">
+      <strong>The mark alone, and only for someone who has a role</strong> (req 16). No label, no
+      caret — matching the three bare controls at the left of the row, which also open menus without
+      one. A user with no roles sees today's composer exactly, so the feature costs nothing until it
+      is wanted. And the mark is learned in Settings, where it appears beside the word "Roles", so
+      nobody meets it bare without having met it labelled. Neither half stands alone: an unlabelled
+      mark nobody has seen is a puzzle, and using it in only one of the two places teaches nothing.
+    </p>
+  </div>
+
+  <!-- 2 ............................................................. -->
+  <div class="section">
+    <p class="section-label"><span class="n">2</span> The role menu — its own, not the model's <span class="req">req 16, req 9, req 10</span></p>
+    <div class="cols">
+      <div>
+        <div class="menu">
+          <div class="group-label">Roles <span class="hint">— sets harness, model and reasoning</span></div>
+
+          <div class="row sel">
+            <span class="check">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span>
+            <span class="body">
+              <span class="name">Deep dive</span>
+              <span class="desc">Long architectural investigations. Reads widely before proposing.</span>
+              <span class="params">Claude Code · Opus 5 · think hard</span>
+            </span>
+          </div>
+
+          <div class="row">
+            <span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span>
+            <span class="body">
+              <span class="name">Docs writer</span>
+              <span class="desc">Writes and edits prose. Never touches source files.</span>
+              <span class="params">Claude Code · Sonnet 5 · think</span>
+            </span>
+          </div>
+
+          <div class="row">
+            <span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span>
+            <span class="body">
+              <span class="name">Triage</span>
+              <span class="desc">Cheap first pass on a bug report.</span>
+              <span class="params">Codex · gpt-5-mini · low</span>
+            </span>
+          </div>
+
+          <div class="row disabled">
+            <span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span>
+            <span class="body">
+              <span class="name">Cheap sweep <span class="pill danger">disconnected</span></span>
+              <span class="desc">DeepSeek is not connected. Reconnect it in Settings → Services.</span>
+            </span>
+          </div>
+
+          <div class="row disabled">
+            <span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span>
+            <span class="body">
+              <span class="name">Old reliable <span class="pill warn">stranded</span></span>
+              <span class="desc">Its model was retired. Edit the role in Settings to pick another.</span>
+            </span>
+          </div>
+
+          <div class="divider"></div>
+          <div class="row">
+            <span class="check blank">✓</span>
+            <span class="vendor v-role" style="border:0; color:var(--text-tertiary);">⚙</span>
+            <span class="body"><span class="name" style="color:var(--text-secondary)">Adjust parameters…</span>
+              <span class="desc">Bring back the harness, model and reasoning controls.</span></span>
+          </div>
+        </div>
+        <div class="menu" style="margin-top:18px">
+          <div class="group-label" style="color:var(--text-secondary);font-size:12px;letter-spacing:0;text-transform:none;gap:7px">
+            <span style="color:var(--accent);display:inline-flex"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span> Settings → Roles
+          </div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span>
+            <span class="body"><span class="name">Deep dive</span>
+            <span class="params">Claude Code · Opus 5 · think hard</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-role"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span>
+            <span class="body"><span class="name">Docs writer</span>
+            <span class="params">Claude Code · Sonnet 5 · think</span></span></div>
+        </div>
+        <p class="caption" style="max-width:46ch">
+          The same mark in Settings, where roles are made and where it appears <em>with its name</em>.
+          This is the half that makes the bare mark in the composer legible (req 16).
+        </p>
+        <p class="caption">
+          The role menu — what the role name opens. The footer is how the replaced controls come
+          back (req 15). There is no "No role" entry: leaving a role means changing how the session
+          runs, not un-naming it.
+        </p>
+      </div>
+
+      <div>
+        <div class="menu">
+          <div class="group-label">Anthropic <span class="hint">— subscription</span></div>
+          <div class="row sel"><span class="check">✓</span><span class="vendor v-a">A</span>
+            <span class="body"><span class="name">Opus 5</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-a">A</span>
+            <span class="body"><span class="name">Sonnet 5</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-a">A</span>
+            <span class="body"><span class="name">Haiku 4.5</span></span></div>
+          <div class="group-label">OpenAI <span class="hint">— api</span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-o">O</span>
+            <span class="body"><span class="name">gpt-5-mini</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-o">O</span>
+            <span class="body"><span class="name">gpt-5</span></span></div>
+        </div>
+        <p class="caption">The model menu — untouched. No Roles group, nothing added to a list that is already long.</p>
+
+        <p class="note">
+          <strong>Two menus, because they answer different questions.</strong> A role carries a
+          harness, a reasoning level and standing instructions that no model row can express. Listed
+          among models it would read as a kind of model, and would crowd the one list users open
+          most (req 16).
+        </p>
+        <p class="note">
+          <strong>Unavailable roles stay, and say why</strong> (req 9) — with the reason and the fix,
+          unselectable. The <code class="k">reviewer</code> is absent (req 10).
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3 ............................................................. -->
+  <div class="section">
+    <p class="section-label"><span class="n">3</span> Below 700px — folded into the one menu <span class="req">req 15, docs/260</span></p>
+    <div class="flow" style="align-items: flex-start;">
+
+      <div>
+        <div class="phone">
+          <div class="rootrow"><span class="mg">&#9656;&#9656;</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
+          <div class="rootrow"><span class="ic"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span><span class="lab">Role</span><span class="val accent">Deep dive</span><span class="car">›</span></div>
+        </div>
+        <p class="caption">
+          Role selected — <strong>two</strong> rows. Harness, model and reasoning are not listed,
+          for the same reason they leave the wide row: the role decided them.
+        </p>
+      </div>
+
+      <span class="arrow">→</span>
+
+      <div>
+        <div class="phone">
+          <div class="panel-head">‹ Role</div>
+          <div class="row sel"><span class="check">✓</span><span class="body">
+            <span class="name">Deep dive</span><span class="params">Claude Code · Opus 5 · think hard</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="body">
+            <span class="name">Docs writer</span><span class="params">Claude Code · Sonnet 5 · think</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="body">
+            <span class="name">Triage</span><span class="params">Codex · gpt-5-mini · low</span></span></div>
+          <div class="row disabled"><span class="check blank">✓</span><span class="body">
+            <span class="name">Old reliable <span class="pill warn">stranded</span></span></span></div>
+          <div class="divider"></div>
+          <div class="row"><span class="check blank">✓</span><span class="body">
+            <span class="name" style="color:var(--text-secondary)">Adjust parameters…</span></span></div>
+        </div>
+        <p class="caption">
+          The Role panel — the same list, the same three parameters and the same footer as the
+          wide menu. The harness is named here because switching role can switch it, and after the
+          first message it cannot be changed back.
+        </p>
+      </div>
+
+      <span class="arrow">→</span>
+
+      <div>
+        <div class="phone">
+          <div class="rootrow"><span class="mg">&#9656;&#9656;</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
+          <div class="rootrow"><span class="ic"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span><span class="lab">Role</span><span class="val">—</span><span class="car">›</span></div>
+          <div class="rootrow"><span>▣</span><span class="lab">Harness</span><span class="val">Claude Code</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◇</span><span class="lab">Model</span><span class="val">Opus 5</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◍</span><span class="lab">Reasoning</span><span class="val">Medium</span><span class="car">›</span></div>
+        </div>
+        <p class="caption">
+          No role chosen — the four rows docs/260 already has, plus Role. This is the only state
+          where the menu is longer than today.
+        </p>
+      </div>
+    </div>
+
+    <p class="note">
+      <strong>The narrow layout now states the same rule as the wide one</strong>, which the
+      previous draft did not: a role replaces the controls it set, at both widths. The five-row root
+      list is no longer the standing shape — it is what the user sees when no role is selected.
+    </p>
+    <p class="note warn">
+      <strong>Open, and worth your view:</strong> "Adjust parameters…" is two taps from the composer
+      at this width — open the menu, open Role, choose it — where changing a model with no role
+      selected is one tap plus a pick. That is the price of the collapse, and it is paid only by
+      someone who wants a role's model but not its reasoning level.
+    </p>
+  </div>
+
+  <!-- 4 ............................................................. -->
+  <div class="section">
+    <p class="section-label"><span class="n">4</span> Quick capture <span class="req">req 11, req 12</span></p>
+    <div class="cols" style="grid-template-columns: 430px 1fr;">
+      <div>
+        <div class="composer">
+          <div class="field">What do you want to ship?</div>
+          <div class="toolbar">
+            <span class="ctl icon-only">＋</span>
+            <span class="spacer"></span>
+            <span class="rolectl"><span class="dia"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor" style="vertical-align:-2px;flex:none" aria-hidden="true"><path d="M128,24h0A104.12,104.12,0,0,0,24,128v56a24,24,0,0,0,24,24,24.11,24.11,0,0,0,14.18-4.64C74.33,194.53,95.6,184,128,184s53.67,10.52,65.81,19.35A24,24,0,0,0,232,184V128A104.12,104.12,0,0,0,128,24Zm88,104v8.87a166,166,0,0,0-40.94-18.22A167,167,0,0,0,146.19,41.9,88.14,88.14,0,0,1,216,128ZM128,44.27a152.47,152.47,0,0,1,30.4,70.46,170.85,170.85,0,0,0-60.84,0A153.31,153.31,0,0,1,128,44.27ZM109.81,41.9a167,167,0,0,0-28.87,76.76A166,166,0,0,0,40,136.88V128A88.14,88.14,0,0,1,109.81,41.9ZM211.66,191.11a8,8,0,0,1-8.44-.69C189.16,180.2,164.7,168,128,168S66.84,180.2,52.78,190.42a8,8,0,0,1-8.44.69A7.77,7.77,0,0,1,40,184V156.07a152,152,0,0,1,176,0V184A7.77,7.77,0,0,1,211.66,191.11Z"/></svg></span> Deep dive <span class="car">▾</span></span>
+            <span class="send">↑</span>
+          </div>
+        </div>
+        <p class="caption" style="max-width:52ch">
+          One control instead of two. The overlay is the surface where the collapse pays best — it
+          is the narrowest, and the least suited to four labelled controls.
+        </p>
+      </div>
+      <div>
+        <p class="note" style="margin-top:0">
+          <strong>Start-from-issue and fork get nothing of their own</strong> — neither starts a
+          turn, so the user lands in a session and selects the role in its composer (req 4, req 11).
+        </p>
+        <p class="note">
+          <strong>The role is remembered</strong> (req 12): the next new session opens showing
+          "Deep dive". Changing any parameter leaves it.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

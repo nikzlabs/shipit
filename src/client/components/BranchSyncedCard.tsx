@@ -1,7 +1,10 @@
 /**
- * BranchSyncedCard — inline record that a manual "Sync with <base>" rebased the
- * session branch onto `origin/<base>` and/or fast-forwarded the session clone's
- * local `<base>` ref (docs/221).
+ * BranchSyncedCard — inline record that a sync rebased the session branch onto
+ * `origin/<base>` and/or fast-forwarded the session clone's local `<base>` ref
+ * (docs/221). Emitted by the manual "Sync with <base>" action AND by the
+ * automatic conflict-resolve-on-idle path, which is the case that most needs a
+ * durable "your branch came out of this fine" — the user never asked for it.
+ * The copy is deliberately trigger-neutral for that reason.
  *
  * Unlike the transient rebase banner/toast, this is durable scrollback: a lasting
  * record that the sync happened, with the concrete `was → now` SHAs for both the
@@ -75,6 +78,13 @@ export function BranchSyncedCard({ card }: BranchSyncedCardProps) {
                 This branch already includes the latest{" "}
                 <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>.
               </>
+            )}
+            {/* planning#369 — a sync that rebased nothing can still have pushed:
+                the branch held commits origin had never seen, which is what kept
+                the pull request marked conflicting. Say so, or the card reads as
+                "nothing happened" while the PR state just changed. */}
+            {!headMoved && card.forcePushed && (
+              <> Pushed local commits missing from the remote.</>
             )}
           </div>
         </div>

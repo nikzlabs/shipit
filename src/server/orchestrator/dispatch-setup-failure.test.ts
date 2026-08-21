@@ -1,5 +1,5 @@
 /**
- * SHI-263 — a dispatched turn that throws during SETUP must settle, restore the
+ * planning#265 — a dispatched turn that throws during SETUP must settle, restore the
  * runner, and release the queue.
  *
  * docs/240 made completion a settlement resolved exactly once from a `finally`
@@ -8,7 +8,7 @@
  * inputs, attachment resolution, `createAgent`), and `dispatchOnRunner`
  * fire-and-forgot the whole thing with no rejection handler. A throw there left
  * the handle unresolved, `running` stuck true, and — the reason this blocks
- * docs/239 — SHI-258's `isDeliveryInFlight` reading a live runner as "still
+ * docs/239 — planning#260's `isDeliveryInFlight` reading a live runner as "still
  * pending", so the watch was never retried and never reached `delivery-failed`.
  *
  * The last test is the one that matters: it drives the real MergeWatchManager
@@ -30,7 +30,7 @@ function makeRunner(): SessionRunner {
   return new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
 }
 
-describe("dispatch setup failure (SHI-263)", () => {
+describe("dispatch setup failure (planning#265)", () => {
   let runner: SessionRunner;
 
   beforeEach(() => { runner = makeRunner(); });
@@ -108,9 +108,9 @@ describe("dispatch setup failure (SHI-263)", () => {
 
 /**
  * The compounding failure the issue is really about: without the settlement,
- * SHI-258's supervisor treats a dead dispatch as permanently in flight.
+ * planning#260's supervisor treats a dead dispatch as permanently in flight.
  */
-describe("a merge-watch delivery whose dispatch dies at setup reaches delivery-failed (SHI-263)", () => {
+describe("a merge-watch delivery whose dispatch dies at setup reaches delivery-failed (planning#265)", () => {
   it("is retried to `delivery-failed` with no orchestrator restart", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const db = new DatabaseManager(":memory:");

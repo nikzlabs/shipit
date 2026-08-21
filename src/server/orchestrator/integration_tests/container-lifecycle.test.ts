@@ -93,7 +93,7 @@ function createFakeDocker() {
  *
  * Mirrors `createSessionDirFactory`: the clone is `<sessionDir>/workspace`, with
  * ShipIt's state dir as its sibling. Container creation resolves the state dir
- * from the clone path and refuses anything else (docs/246 / SHI-286), so the
+ * from the clone path and refuses anything else (docs/246 / planning#288), so the
  * layout is load-bearing here, not cosmetic.
  */
 async function createSession(
@@ -197,25 +197,41 @@ describe("container lifecycle integration", () => {
     client.close();
   });
 
-  it("destroys containers when app shuts down", async () => {
+  // docs/113 — this test asserted the opposite until 2026-08-10 ("destroys
+  // containers when app shuts down"), which is precisely the bug: shutting the
+  // orchestrator down destroyed every session container, so an `Update Now`
+  // killed every running session ~9s before Compose even replaced the
+  // orchestrator. Session containers MUST outlive the process that manages
+  // them — the next orchestrator re-adopts them (`rediscoverContainers()` +
+  // `reattachInFlightTurns()`). This is the end-to-end guard: it runs the real
+  // `onClose` hook against the real container manager.
+  it("leaves containers running when the app shuts down", async () => {
     const { id: sessionId } = await createSession(sessionManager, sessionsDir, "Shutdown Test");
 
     const client = await TestClient.connect(port, sessionId);
     await new Promise((r) => setTimeout(r, 500));
 
     expect(containerManager.size).toBeGreaterThanOrEqual(1);
+    const before = [...fakeDocker._containers.keys()];
+    expect(before.length).toBeGreaterThanOrEqual(1);
 
     client.close();
     await new Promise((r) => setTimeout(r, 100));
 
-    // Closing the app should clean up containers via dispose
     await app.close();
-    expect(containerManager.size).toBe(0);
+
+    // Nothing was stopped or removed on the Docker side: `remove()` deletes
+    // from the fake's map and `stop()` clears `started`, so both survive.
+    expect([...fakeDocker._containers.keys()]).toEqual(before);
+    expect([...fakeDocker._containers.values()].every((c) => c.started)).toBe(true);
+    // And the manager still records them as the survivors they are.
+    expect(containerManager.size).toBeGreaterThanOrEqual(1);
+    expect(containerManager.get(sessionId)?.status).toBe("running");
   });
 
   it("orphan cleanup removes stale containers", async () => {
     // Simulate an orphan container from a previous orchestrator run. Real paths:
-    // `create` mkdirs the state dir, unconditionally since SHI-286, so a
+    // `create` mkdirs the state dir, unconditionally since planning#288, so a
     // `/workspace/...` literal is an EACCES wherever that isn't writable.
     const orphanDir = path.join(sessionsDir, "orphan");
     await containerManager.create({

@@ -20,7 +20,7 @@ import { ServiceError } from "./types.js";
 import type { BootstrapData, GlobalSettings } from "./types.js";
 import type { RuntimeMode } from "../../shared/types.js";
 import { listSessions } from "./session.js";
-import { listAgents, getGlobalSettings } from "./settings.js";
+import { resolveHarnessOnboarding, listAgents, getGlobalSettings } from "./settings.js";
 import { getGitHubStatus } from "./github.js";
 import { listRepos } from "./repos.js";
 import { sessionCredentialsRoot } from "../session-credentials.js";
@@ -88,6 +88,14 @@ export async function getBootstrapData(deps: {
     getGlobalSettings(deps.agentRegistry, deps.workspaceDir, deps.credentialStore, deps.providerAccountManager).catch((err: unknown): GlobalSettings => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
+        // docs/257 reqs 8 + 9 — computed rather than defaulted even in the
+        // failure fallback: it reads the agent registry, which is in memory and
+        // did not fail here, so a hard-coded `false` would disable the composer
+        // on a perfectly runnable install just because the settings file was
+        // unreadable. The onboarding stamp rides along for the same reason —
+        // omitting it here would put the panel back over an install that
+        // completed onboarding long ago.
+        ...resolveHarnessOnboarding(deps.agentRegistry, deps.credentialStore),
         gitIdentity: { name: "", email: "" },
         systemPrompt: "",
         agents: listAgents(deps.agentRegistry),
@@ -106,10 +114,30 @@ export async function getBootstrapData(deps: {
         autoFixCi: false,
         autoResetMergedBranch: true,
         enableSubAgents: false,
-        agentSubAgentDefaults: {},
         voiceDeliveryMode: "native",
         voiceWebhookConfigured: false,
         providerAccounts: [],
+        // docs/252 — same reasoning again: "settings could not be read" must not
+        // be reported as "you have no credentials", so this stays empty rather
+        // than being reconstructed from a store the read above already failed on.
+        credentialRoutes: [],
+        // docs/261 — the two slots are still reported, as unresolved. An empty
+        // array would say "this build has no reviewers", which is a different
+        // and untrue statement; two `nothing_eligible` slots say what actually
+        // happened, which is that the settings read failed and nothing could be
+        // resolved from it.
+        reviewers: [
+          { slot: "first", source: "auto", unavailableReason: "nothing_eligible" },
+          { slot: "second", source: "auto", unavailableReason: "nothing_eligible" },
+        ],
+        // docs/264-agent-roles req 2 — **the reviewer is always present**, including here.
+        // It is synthesized rather than stored, so its existence does not depend
+        // on the read that just failed, and asserting it costs nothing. The
+        // roles the user created are the part this cannot know, and they are
+        // simply absent: an install with six roles reports one here, which
+        // understates the list rather than contradicting the requirement that
+        // makes "review this" always resolvable.
+        roles: [{ name: "reviewer", params: { kind: "auto" }, reserved: true }],
       };
     }),
     readTailnetPreviewHost(),

@@ -5,7 +5,7 @@
  * URL. The orchestrator resolves them against `x-shipit-secrets` declarations
  * in the user's docker-compose.yml and writes per-service env files at
  * `<serviceEnvDir>/<sessionId>/.env.<service>` — outside the session's git clone
- * (docs/183, SHI-290) — referenced by the compose override via absolute
+ * (docs/183, planning#292) — referenced by the compose override via absolute
  * `env_file:` paths. See feature 087 for the full pipeline.
  *
  * Follows the same structural pattern as DeploymentStore: SQLite via
@@ -14,6 +14,7 @@
 
 import type { DatabaseManager } from "../shared/database.js";
 import { isEncrypted, type SecretCipher } from "./secret-cipher.js";
+import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 
 interface SecretRow {
   repo_url: string;
@@ -146,5 +147,51 @@ export class SecretStore {
   /** Delete all secrets for a repo. */
   deleteSecrets(repoUrl: string): void {
     this.db.prepare("DELETE FROM secrets WHERE repo_url = ?").run(repoUrl);
+  }
+
+  /**
+   * docs/262 req 19 — re-key rows an earlier build stored under a credentialed
+   * repo URL. Returns the number of rows moved. Called once at boot by
+   * `startup-tasks.ts:runRemoteCredentialScrub`.
+   *
+   * Two things go wrong without it, and the second is the one an independent
+   * review caught: the URL itself is a stored credential (`repo_url` is the raw
+   * string the repo was added with), AND every lookup now arrives with the
+   * scrubbed URL, so the user's saved service and plugin secrets would still be
+   * on disk under a key nothing asks for — silently missing rather than
+   * visibly gone.
+   *
+   * A key already present under the clean URL WINS: the clean row is what the
+   * user has been editing since, so the credentialed row's value is the older
+   * one. Its row is dropped either way, so the credential does not survive the
+   * collision. Values are moved as stored — encrypted stays encrypted, since
+   * this touches only the key column.
+   */
+  scrubCredentialedRepoUrls(): number {
+    const urls = (this.db.prepare("SELECT DISTINCT repo_url FROM secrets").all() as Pick<SecretRow, "repo_url">[])
+      .map((r) => r.repo_url)
+      .filter((url) => hasUrlCredentials(url));
+    if (urls.length === 0) return 0;
+    let moved = 0;
+    const tx = this.db.transaction(() => {
+      for (const url of urls) {
+        const clean = stripRemoteUrlCredentials(url);
+        const rows = this.db.prepare("SELECT * FROM secrets WHERE repo_url = ?").all(url) as SecretRow[];
+        for (const row of rows) {
+          const taken = this.db.prepare(
+            "SELECT 1 FROM secrets WHERE repo_url = ? AND key = ? LIMIT 1",
+          ).get(clean, row.key);
+          if (!taken) {
+            this.db.prepare(
+              "INSERT INTO secrets (repo_url, key, value) VALUES (?, ?, ?)",
+            ).run(clean, row.key, row.value);
+            moved++;
+          }
+        }
+        this.db.prepare("DELETE FROM secrets WHERE repo_url = ?").run(url);
+      }
+    });
+    tx();
+    return moved;
   }
 }

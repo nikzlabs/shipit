@@ -17,7 +17,7 @@ import { Button } from "./ui/button.js";
 import { ServiceList } from "./ServiceList.js";
 import { LogView } from "./LogView.js";
 import { buildSubdomainUrl } from "../hooks/usePreviewHealthPoller.js";
-import { usePreviewStore, type ManagedServiceState } from "../stores/preview-store.js";
+import { usePreviewStore, isServicesDrawerOpen, type ManagedServiceState } from "../stores/preview-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { resolvePreviewHost } from "../utils/preview-host.js";
 import { useLogStore } from "../stores/log-store.js";
@@ -245,6 +245,13 @@ interface PreviewServicesDrawerProps {
   onSendToAgent: (serviceName: string, status: string, logs: string) => void;
   /** Pivot the preview iframe to a service's port (clicking its `:port` chip). */
   onSelectPreviewPort: (port: number) => void;
+  /**
+   * Whether a preview is live above the drawer. With none, the drawer opens
+   * itself — see {@link isServicesDrawerOpen}. Passed in rather than read from
+   * the store so it is the same *derived* status the PreviewFrame shows
+   * (`deriveEffectivePreviewStatus`), which `preview_status` alone can lag.
+   */
+  previewRunning: boolean;
 }
 
 /**
@@ -255,7 +262,8 @@ interface PreviewServicesDrawerProps {
  * expanded it shows the service list, or a single service's xterm log view.
  *
  * Open/closed state and drawer height persist to localStorage so the layout
- * survives reloads and session switches.
+ * survives reloads and session switches — except while no preview is running,
+ * where the drawer opens regardless (`isServicesDrawerOpen`).
  */
 export function PreviewServicesDrawer({
   services,
@@ -264,9 +272,13 @@ export function PreviewServicesDrawer({
   send,
   onSendToAgent,
   onSelectPreviewPort,
+  previewRunning,
 }: PreviewServicesDrawerProps) {
-  const expanded = usePreviewStore((s) => s.servicesDrawerExpanded);
-  const setExpanded = usePreviewStore((s) => s.setServicesDrawerExpanded);
+  const savedExpanded = usePreviewStore((s) => s.servicesDrawerExpanded);
+  const idleCollapsed = usePreviewStore((s) => s.servicesDrawerIdleCollapsed);
+  const setSavedExpanded = usePreviewStore((s) => s.setServicesDrawerExpanded);
+  const setIdleCollapsed = usePreviewStore((s) => s.setServicesDrawerIdleCollapsed);
+  const expanded = isServicesDrawerOpen({ previewRunning, expanded: savedExpanded, idleCollapsed });
   const tailnetPreviewHost = useUiStore((s) => s.tailnetPreviewHost);
   const [height, setHeight] = useState(loadHeight);
   const [selectedService, setSelectedService] = useState<string | null>(null);
@@ -279,9 +291,20 @@ export function PreviewServicesDrawer({
     services.length > 1 && selectedService && services.some((s) => s.name === selectedService) ? selectedService : null;
   const selectedSvc = effectiveService ? services.find((s) => s.name === effectiveService) ?? null : null;
 
+  // A toggle still states the saved preference, as it always did. It also ends
+  // (or begins) the current no-preview dismissal, so pressing the caret twice
+  // leaves the drawer where the user put it instead of springing back open.
   const toggleExpanded = useCallback(() => {
-    setExpanded(!expanded);
-  }, [expanded, setExpanded]);
+    setSavedExpanded(!expanded);
+    setIdleCollapsed(expanded);
+  }, [expanded, setSavedExpanded, setIdleCollapsed]);
+
+  // A preview coming up closes that episode: the next time one stops, the
+  // drawer opens again even though the user collapsed it earlier.
+  // eslint-disable-next-line no-restricted-syntax -- reacts to the async preview-status stream
+  useEffect(() => {
+    if (previewRunning && idleCollapsed) setIdleCollapsed(false);
+  }, [previewRunning, idleCollapsed, setIdleCollapsed]);
 
   // Pull a service's recent lines straight from the log-store (docs/192) — the
   // same model `<LogView>` renders, so "Send to Agent" ships exactly what's on

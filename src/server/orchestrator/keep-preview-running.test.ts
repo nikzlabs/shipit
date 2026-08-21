@@ -36,6 +36,14 @@ describe("keep-preview-running lifecycle", () => {
     expect(d.getOrCreate).toHaveBeenCalledWith("s1", "/workspace/s1", "claude");
   });
 
+  it("skips an archived session whose reservation flag was never cleared", () => {
+    // An archived session has no workspace left (archive evicts it), so a stale
+    // flag must not resurrect its container at every startup.
+    const d = deps(session({ userArchived: true, archived: true }));
+    expect(restoreReservedPreviews(d.value)).toEqual([]);
+    expect(d.getOrCreate).not.toHaveBeenCalled();
+  });
+
   it("does not duplicate a rediscovered running container", () => {
     const d = deps();
     d.containers.set("s1", { status: "running" });

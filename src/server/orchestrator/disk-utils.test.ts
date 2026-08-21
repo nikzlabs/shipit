@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { reclaimRegenerableSessionDirs, reclaimBlockedSessionCaches, REGENERABLE_SESSION_SUBDIRS } from "./disk-utils.js";
 
-describe("reclaimRegenerableSessionDirs (SHI-192)", () => {
+describe("reclaimRegenerableSessionDirs (planning#194)", () => {
   let tmpDir: string;
   let sessionRoot: string;
   let workspaceDir: string;
@@ -65,7 +65,7 @@ describe("reclaimRegenerableSessionDirs (SHI-192)", () => {
     expect(failed).toEqual([]);
   });
 
-  // SHI-293 — this used to assert the CONTENTS of REGENERABLE_SESSION_SUBDIRS,
+  // planning#295 — this used to assert the CONTENTS of REGENERABLE_SESSION_SUBDIRS,
   // which is worthless as a guard: the reclaim built its target list by hand and
   // never read the constant, so docs/246's addition of `state` passed the test
   // and changed nothing. The marker kept outliving the clone it describes.
@@ -98,10 +98,10 @@ describe("reclaimRegenerableSessionDirs (SHI-192)", () => {
   });
 });
 
-// SHI-294 — the partial reclaim used when an eviction is blocked because the
+// planning#296 — the partial reclaim used when an eviction is blocked because the
 // checkout is the only copy of some work: take the regenerable install-delta
 // cache, leave everything that can't be restored.
-describe("reclaimBlockedSessionCaches (SHI-294)", () => {
+describe("reclaimBlockedSessionCaches (planning#296)", () => {
   let tmpDir: string;
   let sessionRoot: string;
   let workspaceDir: string;

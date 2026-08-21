@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -20,31 +20,31 @@ describe("CredentialStore", () => {
     return tmpDir;
   }
 
-  // ---- Proactive failover cutoffs (docs/150 reqs 4-6) ----
+  // ---- Proactive failover cutoffs (docs/150-multiple-provider-subscriptions reqs 4-6) ----
 
   describe("failover cutoffs", () => {
     it("defaults both windows to 90% (req 5)", () => {
       const store = new CredentialStore(createTmpDir());
-      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 90, weekly: 90 });
+      expect(store.getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 90, weekly: 90 });
     });
 
     it("persists per provider, independently", () => {
       const dir = createTmpDir();
       const store = new CredentialStore(dir);
-      store.setFailoverCutoffs("claude", { session: 70 });
+      store.setFailoverCutoffs("anthropic", "sub", { session: 70 });
 
-      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 70, weekly: 90 });
-      expect(store.getFailoverCutoffs("codex")).toEqual({ session: 90, weekly: 90 });
+      expect(store.getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 70, weekly: 90 });
+      expect(store.getFailoverCutoffs("openai", "sub")).toEqual({ session: 90, weekly: 90 });
       // Survives a reload — a restart must not silently revert the user's setting.
-      expect(new CredentialStore(dir).getFailoverCutoffs("claude")).toEqual({ session: 70, weekly: 90 });
+      expect(new CredentialStore(dir).getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 70, weekly: 90 });
     });
 
     it("leaves the other window alone on a partial update", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setFailoverCutoffs("claude", { session: 50, weekly: 60 });
-      store.setFailoverCutoffs("claude", { weekly: 80 });
+      store.setFailoverCutoffs("anthropic", "sub", { session: 50, weekly: 60 });
+      store.setFailoverCutoffs("anthropic", "sub", { weekly: 80 });
 
-      expect(store.getFailoverCutoffs("claude")).toEqual({ session: 50, weekly: 80 });
+      expect(store.getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 50, weekly: 80 });
     });
 
     // Clamping on READ as well as write: a hand-edited config with a bad value
@@ -55,78 +55,153 @@ describe("CredentialStore", () => {
         path.join(dir, "shipit-credentials.json"),
         JSON.stringify({ failoverCutoffs: { claude: { session: 0, weekly: 150 } } }),
       );
-      expect(new CredentialStore(dir).getFailoverCutoffs("claude")).toEqual({ session: 1, weekly: 100 });
+      expect(new CredentialStore(dir).getFailoverCutoffs("anthropic", "sub")).toEqual({ session: 1, weekly: 100 });
     });
   });
 
   // ---- Sub-agent defaults (docs/217) ----
 
-  describe("agentSubAgentDefaults", () => {
-    it("returns an empty object for an unset agent", () => {
+  // ---- Benching a string-delivered credential (docs/252 phase 5, req 12) ----
+
+  describe("markCredentialRouteExhausted", () => {
+    const routeOf = (id: string, billingMode: "sub" | "key") => ({
+      id,
+      serviceId: "zai",
+      billingMode,
+      via: "string" as const,
+      label: id,
+      isPrimary: false,
+      status: "ready" as const,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    it("benches a subscription credential", () => {
       const store = new CredentialStore(createTmpDir());
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({});
+      store.upsertCredentialRouteWithSecret(routeOf("cred_a", "sub"), "k");
+      expect(store.markCredentialRouteExhausted("cred_a", 5_000)?.exhaustedUntil).toBe(5_000);
     });
 
-    it("set/get round-trips and persists across reloads", () => {
-      const dir = createTmpDir();
-      const store = new CredentialStore(dir);
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "high" });
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "high" });
-
-      const reloaded = new CredentialStore(dir);
-      expect(reloaded.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "high" });
-    });
-
-    it("keeps per-agent entries independent", () => {
+    it("refuses a metered key — it has no subscription window to exhaust", () => {
+      // req 12: keys do not fail over, so benching one would take a session off
+      // the credential it selected with nowhere it is allowed to go.
       const store = new CredentialStore(createTmpDir());
-      store.setAgentSubAgentDefaults("claude", { reasoningEffort: "xhigh" });
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "low" });
-      expect(store.getAllAgentSubAgentDefaults()).toEqual({
-        claude: { reasoningEffort: "xhigh" },
-        codex: { reasoningEffort: "low" },
-      });
+      store.upsertCredentialRouteWithSecret(routeOf("cred_k", "key"), "k");
+      expect(store.markCredentialRouteExhausted("cred_k", 5_000)).toBeNull();
+      expect(store.getCredentialRoute("cred_k")?.exhaustedUntil).toBeUndefined();
     });
 
-    it("clears the entry when reasoningEffort is set to null", () => {
+    it("the newest refusal's stated reset wins, even when it is earlier", () => {
+      // docs/260-turn-level-account-routing req 9 — a re-probe answered with a short, precise reset must
+      // supersede an older long estimate; otherwise the credential stays
+      // benched for the full 30-minute re-probe cap instead of the five
+      // minutes the provider just named. Same rule as `markAccountExhausted`.
       const store = new CredentialStore(createTmpDir());
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "high" });
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: null });
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({});
-      expect(store.getAllAgentSubAgentDefaults()).toEqual({});
+      store.upsertCredentialRouteWithSecret(routeOf("cred_a", "sub"), "k");
+      store.markCredentialRouteExhausted("cred_a", 9_000);
+      store.markCredentialRouteExhausted("cred_a", 1_000);
+      expect(store.getCredentialRoute("cred_a")?.exhaustedUntil).toBe(1_000);
     });
 
-    it("round-trips a model default and persists it", () => {
-      const dir = createTmpDir();
-      const store = new CredentialStore(dir);
-      store.setAgentSubAgentDefaults("codex", { model: "gpt-5.5" });
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ model: "gpt-5.5" });
-
-      const reloaded = new CredentialStore(dir);
-      expect(reloaded.getAgentSubAgentDefaults("codex")).toEqual({ model: "gpt-5.5" });
-    });
-
-    it("merges reasoningEffort and model independently", () => {
+    it("ignores an unknown id", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setAgentSubAgentDefaults("claude", { reasoningEffort: "high" });
-      store.setAgentSubAgentDefaults("claude", { model: "opus" });
-      expect(store.getAgentSubAgentDefaults("claude")).toEqual({ reasoningEffort: "high", model: "opus" });
-
-      // Clearing one field leaves the other intact.
-      store.setAgentSubAgentDefaults("claude", { reasoningEffort: null });
-      expect(store.getAgentSubAgentDefaults("claude")).toEqual({ model: "opus" });
-    });
-
-    it("drops the entry only once both fields are cleared", () => {
-      const store = new CredentialStore(createTmpDir());
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "low", model: "gpt-5.5" });
-      store.setAgentSubAgentDefaults("codex", { model: null });
-      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "low" });
-      store.setAgentSubAgentDefaults("codex", { reasoningEffort: null });
-      expect(store.getAllAgentSubAgentDefaults()).toEqual({});
+      expect(store.markCredentialRouteExhausted("cred_gone", 5_000)).toBeNull();
     });
   });
 
   // ---- Agent env ----
+
+  // ---- planning#358: a supplied secret refused for auth ----
+
+  describe("credential route auth_failed", () => {
+    const stringRoute = (id: string) => ({
+      id,
+      serviceId: "anthropic",
+      billingMode: "sub" as const,
+      via: "string" as const,
+      label: id,
+      isPrimary: false,
+      status: "ready" as const,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    const accountRoute = (id: string) => ({ ...stringRoute(id), via: "account" as const });
+
+    it("marks a refused supplied secret, so the row stops reading ready", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      expect(store.markCredentialRouteAuthFailed("cred_a")).toBe(true);
+      expect(store.getCredentialRoute("cred_a")?.status).toBe("auth_failed");
+    });
+
+    it("leaves an account row alone — its sign-in flow owns its status", () => {
+      // Two writers for one row is how the two come to disagree.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRoute(accountRoute("acct_a"));
+      expect(store.markCredentialRouteAuthFailed("acct_a")).toBe(false);
+      expect(store.getCredentialRoute("acct_a")?.status).toBe("ready");
+    });
+
+    it("reports no change on a second mark, so callers can skip the broadcast", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      store.markCredentialRouteAuthFailed("cred_a");
+      expect(store.markCredentialRouteAuthFailed("cred_a")).toBe(false);
+    });
+
+    it("clears on proof by use, so a recovered credential stops demanding attention", () => {
+      // The account twin exists because a row marked once stayed auth_failed
+      // forever while the credential worked again; this is that guard.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      store.markCredentialRouteAuthFailed("cred_a");
+      expect(store.clearCredentialRouteAuthFailed("cred_a")).toBe(true);
+      expect(store.getCredentialRoute("cred_a")?.status).toBe("ready");
+    });
+
+    it("clearing a ready row is a no-op, so the success path costs no write", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      expect(store.clearCredentialRouteAuthFailed("cred_a")).toBe(false);
+    });
+
+    it("a replaced secret clears the previous value's verdict", () => {
+      // Pasting a fresh token is a complete remedy: the row returns to ready
+      // immediately rather than staying marked until a turn happens to run.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "stale");
+      store.markCredentialRouteAuthFailed("cred_a");
+      store.setCredentialSecret("cred_a", "fresh");
+      expect(store.getCredentialRoute("cred_a")?.status).toBe("ready");
+      expect(store.getCredentialSecret("cred_a")).toBe("fresh");
+    });
+
+    it("survives a reload — the verdict is persisted, not in-memory", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      store.markCredentialRouteAuthFailed("cred_a");
+      expect(new CredentialStore(dir).getCredentialRoute("cred_a")?.status).toBe("auth_failed");
+    });
+
+    it("does not bench the route — 358 asks for surfaced state, not exclusion", () => {
+      // A single 401 must not hide a credential with no self-expiry; the
+      // time-boxed bench on the set-aside path is the mechanism for that.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      store.markCredentialRouteAuthFailed("cred_a");
+      const route = store.getCredentialRoute("cred_a");
+      expect(route?.exhaustedUntil ?? null).toBeNull();
+      expect(store.getCredentialSecret("cred_a")).toBe("tok");
+    });
+
+    it("ignores an unknown id rather than inventing a row", () => {
+      const store = new CredentialStore(createTmpDir());
+      expect(store.markCredentialRouteAuthFailed("cred_gone")).toBe(false);
+      expect(store.clearCredentialRouteAuthFailed("cred_gone")).toBe(false);
+    });
+  });
 
   describe("agentEnv", () => {
     it("returns undefined for unset key", () => {
@@ -156,10 +231,13 @@ describe("CredentialStore", () => {
 
     it("new instance reads back saved env", () => {
       const dir = createTmpDir();
-      new CredentialStore(dir).setAgentEnv("OPENAI_API_KEY", "sk-persisted");
+      // docs/252 — a name the catalogue does NOT claim as a mode's `storageEnv`.
+      // A claimed one (`OPENAI_API_KEY`) is deliberately migrated out of this
+      // slot on the next load; that behaviour has its own test below.
+      new CredentialStore(dir).setAgentEnv("mcp__acme__TOKEN", "sk-persisted");
 
       const store2 = new CredentialStore(dir);
-      expect(store2.getAgentEnv("OPENAI_API_KEY")).toBe("sk-persisted");
+      expect(store2.getAgentEnv("mcp__acme__TOKEN")).toBe("sk-persisted");
     });
   });
 
@@ -221,6 +299,10 @@ describe("CredentialStore", () => {
       expect(raw).toEqual({
         agentEnv: { OPENAI_API_KEY: "sk-abc" },
         githubToken: "ghp_xyz",
+        // docs/252 — the migration runs on construction and writes the (empty)
+        // route list, which is what marks it as done: its absence is what makes
+        // a later boot re-import the frozen legacy `providerAccounts` blob.
+        credentialRoutes: [],
       });
     });
 
@@ -474,7 +556,7 @@ describe("CredentialStore", () => {
       const cipher = new SecretCipher(crypto.randomBytes(32));
       const store = new CredentialStore(dir, cipher);
       store.setGithubToken("ghp_secret");
-      store.setAgentEnv("OPENAI_API_KEY", "sk-secret");
+      store.setAgentEnv("mcp__acme__TOKEN", "sk-secret");
 
       // The raw file is opaque ciphertext — no plaintext token survives.
       const raw = fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8");
@@ -485,7 +567,7 @@ describe("CredentialStore", () => {
       // A new instance with the SAME cipher reads it back.
       const reloaded = new CredentialStore(dir, cipher);
       expect(reloaded.getGithubToken()).toBe("ghp_secret");
-      expect(reloaded.getAgentEnv("OPENAI_API_KEY")).toBe("sk-secret");
+      expect(reloaded.getAgentEnv("mcp__acme__TOKEN")).toBe("sk-secret");
     });
 
     it("keeps mode 0600 on the encrypted file", () => {
@@ -545,5 +627,400 @@ describe("CredentialStore", () => {
       new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32)));
       expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     });
+  });
+});
+
+/**
+ * docs/252 phase 7 (req 9 + req 13) — the non-turn pin.
+ *
+ * The store's job is only to say what the user chose; deciding what to RUN is
+ * `resolveNonTurnModel`'s. The distinction is load-bearing for a **retired**
+ * model: filtering it out here made req 13's read-time successor resolution
+ * unreachable, so a retirement silently discarded the user's choice instead of
+ * following it through. Found by cross-backend review.
+ */
+describe("CredentialStore — non-turn model (docs/252 phase 7)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-nonturn-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("round-trips a pin and clears it with null", () => {
+    const store = new CredentialStore(dir);
+    expect(store.getNonTurnModel()).toBeUndefined();
+
+    store.setNonTurnModel({ serviceId: "anthropic", billingMode: "sub", modelId: "haiku" });
+    expect(store.getNonTurnModel()).toEqual({
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "haiku",
+    });
+
+    store.setNonTurnModel(null);
+    expect(store.getNonTurnModel()).toBeUndefined();
+  });
+
+  it("refuses a triple the catalogue does not carry", () => {
+    const store = new CredentialStore(dir);
+    expect(() =>
+      store.setNonTurnModel({ serviceId: "anthropic", billingMode: "sub", modelId: "not-a-model" }),
+    ).toThrow();
+  });
+
+  // The read has to SURVIVE a retirement, because `resolveNonTurnModel` is where
+  // req 13's successor lookup lives. Reading it as unset would silently hand the
+  // user the derived default instead.
+  it("still reports a pin whose model has been retired", () => {
+    const store = new CredentialStore(dir);
+    store.setNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" });
+    // Write a retired id straight into the file the store reads, since `set`
+    // (correctly) refuses one — this is the shape an install carries after a
+    // catalogue revision, not something the API can produce.
+    const file = path.join(dir, "shipit-credentials.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    data.nonTurnModel = { serviceId: "openai", billingMode: "key", modelId: "gpt-5.6" };
+    fs.writeFileSync(file, JSON.stringify(data));
+
+    expect(new CredentialStore(dir).getNonTurnModel()).toEqual({
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.6",
+    });
+  });
+
+  it("reads a pin naming nothing at all as unset", () => {
+    const store = new CredentialStore(dir);
+    store.setNonTurnModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.4-mini" });
+    const file = path.join(dir, "shipit-credentials.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    data.nonTurnModel = { serviceId: "no-such-service", billingMode: "key", modelId: "nope" };
+    fs.writeFileSync(file, JSON.stringify(data));
+
+    expect(new CredentialStore(dir).getNonTurnModel()).toBeUndefined();
+  });
+});
+
+describe("CredentialStore — the two reviewers (docs/261 phase 1)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-reviewer-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const pin = {
+    serviceId: "anthropic",
+    billingMode: "sub" as const,
+    modelId: "haiku",
+    reasoningEffort: "high",
+  };
+
+  it("round-trips a pin per slot and clears it with null", () => {
+    const store = new CredentialStore(dir);
+    // Unset is the auto-configured STATE (req 8), not a missing value — the
+    // store never resolves it, so the two stay distinguishable up to the UI.
+    expect(store.getReviewerPin("first")).toBeUndefined();
+    expect(store.getReviewerPin("second")).toBeUndefined();
+
+    store.setReviewerPin("first", pin);
+    expect(store.getReviewerPin("first")).toEqual(pin);
+    expect(store.getReviewerPin("second")).toBeUndefined();
+
+    store.setReviewerPin("first", null);
+    expect(store.getReviewerPin("first")).toBeUndefined();
+  });
+
+  it("keeps the two slots independent, and reports both", () => {
+    const store = new CredentialStore(dir);
+    store.setReviewerPin("first", pin);
+    store.setReviewerPin("second", { ...pin, modelId: "claude-opus-5", reasoningEffort: "max" });
+    expect(store.getReviewerPins()).toEqual({
+      first: pin,
+      second: { ...pin, modelId: "claude-opus-5", reasoningEffort: "max" },
+    });
+  });
+
+  it("survives a reload", () => {
+    new CredentialStore(dir).setReviewerPin("second", pin);
+    expect(new CredentialStore(dir).getReviewerPin("second")).toEqual(pin);
+  });
+
+  it("refuses a triple the catalogue does not carry", () => {
+    const store = new CredentialStore(dir);
+    expect(() => store.setReviewerPin("first", { ...pin, modelId: "not-a-model" })).toThrow();
+  });
+
+  // req 5 — the reasoning level is PART of the reviewer, so a pin without one is
+  // not a reviewer. Pinning is atomic: the whole tuple lands or none of it does.
+  it("refuses a pin with no reasoning level", () => {
+    const store = new CredentialStore(dir);
+    expect(() => store.setReviewerPin("first", { ...pin, reasoningEffort: "  " })).toThrow();
+  });
+
+  // Same rule as the non-turn pin: a retirement must be FOLLOWED (docs/252
+  // req 13), not silently replaced by the derived default.
+  it("still reports a pin whose model has been retired", () => {
+    const store = new CredentialStore(dir);
+    store.setReviewerPin("first", {
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.4-mini",
+      reasoningEffort: "high",
+    });
+    const file = path.join(dir, "shipit-credentials.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    data.reviewers = {
+      first: {
+        serviceId: "openai",
+        billingMode: "key",
+        modelId: "gpt-5.6",
+        reasoningEffort: "high",
+      },
+    };
+    fs.writeFileSync(file, JSON.stringify(data));
+
+    expect(new CredentialStore(dir).getReviewerPin("first")?.modelId).toBe("gpt-5.6");
+  });
+
+  it("reads a pin naming nothing at all as unset", () => {
+    const store = new CredentialStore(dir);
+    store.setReviewerPin("first", pin);
+    const file = path.join(dir, "shipit-credentials.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown>;
+    data.reviewers = {
+      first: {
+        serviceId: "no-such-service",
+        billingMode: "key",
+        modelId: "nope",
+        reasoningEffort: "high",
+      },
+    };
+    fs.writeFileSync(file, JSON.stringify(data));
+
+    expect(new CredentialStore(dir).getReviewerPin("first")).toBeUndefined();
+  });
+
+  // The stored sub-agent defaults are DROPPED, not migrated (requirements.md's
+  // 2026-08-10 receipt). docs/261 phase 2 deleted the store that wrote them, so
+  // the legacy key is written by hand here — which is exactly what an install
+  // that had configured one looks like on disk after upgrading. It must load
+  // without error, seed nothing, and leave both slots auto-configured.
+  it("does not seed a slot from the sub-agent defaults it replaces", () => {
+    const file = path.join(dir, "shipit-credentials.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        agentSubAgentDefaults: {
+          codex: { model: "gpt-5.4-mini", serviceId: "openai", billingMode: "sub", reasoningEffort: "high" },
+        },
+      }),
+    );
+    expect(new CredentialStore(dir).getReviewerPins()).toEqual({});
+  });
+});
+
+/**
+ * docs/264 phase 1 (reqs 1, 2, 18) — the role store.
+ *
+ * Three properties carry most of the weight here: uniqueness is the map's rather
+ * than a check's, the reviewer is **synthesized** so an empty store still has
+ * it, and a name is whatever the user typed.
+ */
+describe("CredentialStore — agent roles (docs/264 phase 1)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-roles-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const pinned = {
+    kind: "pinned" as const,
+    harnessId: "claude" as const,
+    serviceId: "anthropic",
+    billingMode: "key" as const,
+    modelId: "claude-opus-5",
+    reasoningEffort: "high",
+  };
+
+  // ---- The synthesized reviewer (req 2) ----
+
+  it("yields the reviewer on a completely empty store, with automatic params", () => {
+    const store = new CredentialStore(dir);
+    expect(store.getRoles()).toEqual([{ name: "reviewer", params: { kind: "auto" } }]);
+    // No record was written to get it — the point of synthesizing rather than
+    // seeding is that there is nothing to migrate, nothing to upgrade
+    // idempotently, and nothing an install could have deleted before the
+    // reserved-name rule existed.
+    const file = path.join(dir, "shipit-credentials.json");
+    const onDisk = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+    expect(onDisk.roles).toBeUndefined();
+  });
+
+  it("carries the reviewer's editable metadata without ever storing its params", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("reviewer", {
+      name: "reviewer",
+      description: "The second opinion",
+      prompt: "Review the diff for correctness only.",
+      params: { kind: "auto" },
+    });
+    expect(store.getRole("reviewer")).toEqual({
+      name: "reviewer",
+      description: "The second opinion",
+      prompt: "Review the diff for correctness only.",
+      params: { kind: "auto" },
+    });
+    // On disk it is metadata only: `params` is never written, which is what
+    // keeps the reviewer's params resolved rather than pinned.
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf8"));
+    expect(onDisk.roles.reviewer).toEqual({
+      description: "The second opinion",
+      prompt: "Review the diff for correctness only.",
+    });
+    expect(new CredentialStore(dir).getRole("reviewer")?.description).toBe("The second opinion");
+  });
+
+  it("refuses to delete the reviewer or to pin its params (req 2)", () => {
+    const store = new CredentialStore(dir);
+    expect(() => store.setRole("reviewer", null)).toThrow(/cannot be deleted/);
+    expect(() => store.setRole("reviewer", { name: "reviewer", params: pinned })).toThrow(
+      /resolved by ShipIt and cannot be pinned/,
+    );
+  });
+
+  it("rejects automatic params for every name but the reserved one", () => {
+    const store = new CredentialStore(dir);
+    expect(() =>
+      store.setRole("deep-dive", { name: "deep-dive", params: { kind: "auto" } }),
+    ).toThrow(/Only the "reviewer" role may have automatic params/);
+  });
+
+  // ---- Ordinary roles ----
+
+  it("round-trips a pinned role and deletes it with null", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("deep-dive", { name: "deep-dive", description: "Thorough", params: pinned });
+    expect(store.getRole("deep-dive")).toEqual({
+      name: "deep-dive",
+      description: "Thorough",
+      params: pinned,
+    });
+    expect(new CredentialStore(dir).getRole("deep-dive")?.params).toEqual(pinned);
+
+    store.setRole("deep-dive", null);
+    expect(store.getRole("deep-dive")).toBeUndefined();
+    // The reviewer is untouched by a delete of something else.
+    expect(store.getRoles().map((r) => r.name)).toEqual(["reviewer"]);
+  });
+
+  it("sorts by name at read time, with no stored rank", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("zebra", { name: "zebra", params: pinned });
+    store.setRole("alpha", { name: "alpha", params: pinned });
+    expect(store.getRoles().map((r) => r.name)).toEqual(["alpha", "reviewer", "zebra"]);
+  });
+
+  it("keeps uniqueness by name — a second write to one name replaces it", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("deep-dive", { name: "deep-dive", description: "first", params: pinned });
+    store.setRole("deep-dive", { name: "deep-dive", description: "second", params: pinned });
+    expect(store.getRoles().filter((r) => r.name === "deep-dive")).toHaveLength(1);
+    expect(store.getRole("deep-dive")?.description).toBe("second");
+  });
+
+  // ---- Req 18: any name the user types ----
+
+  it("accepts any name the user types — spaces, case, punctuation, non-Latin", () => {
+    const store = new CredentialStore(dir);
+    for (const name of ["deep dive", "Deep-Dive", "код-ревью", "reviewer #2", "🔍 scan"]) {
+      store.setRole(name, { name, params: pinned });
+      expect(store.getRole(name)?.params).toEqual(pinned);
+    }
+  });
+
+  /**
+   * Reservation is an **exact-string** match. Req 18 says "no case rule", so
+   * `Reviewer` is a different name and an ordinary pinned role — folding case
+   * would be a restriction nobody asked for, on the one requirement that says
+   * not to add restrictions.
+   */
+  it("treats a differently-cased `Reviewer` as an ordinary role", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("Reviewer", { name: "Reviewer", params: pinned });
+    expect(store.getRole("Reviewer")?.params).toEqual(pinned);
+    // …and the reserved one is still automatic, still undeletable.
+    expect(store.getRole("reviewer")?.params).toEqual({ kind: "auto" });
+    expect(() => store.setRole("reviewer", null)).toThrow();
+  });
+
+  /**
+   * The name is stored **exactly as typed** — no trimming, no normalization.
+   * Req 18 enforces uniqueness and nothing else, and a rewritten key is a rule
+   * the user cannot see: it silently merges two names they meant to keep apart,
+   * and it can walk a name into the reserved one.
+   */
+  it("stores the name verbatim, so surrounding whitespace is part of it", () => {
+    const store = new CredentialStore(dir);
+    store.setRole(" deep dive ", { name: " deep dive ", params: pinned });
+    expect(store.getRole(" deep dive ")?.params).toEqual(pinned);
+    expect(store.getRole("deep dive")).toBeUndefined();
+    // The sharp end of the same rule: a padded "reviewer" is an ordinary role,
+    // not the reserved one, so it can be pinned and deleted like any other.
+    store.setRole(" reviewer ", { name: " reviewer ", params: pinned });
+    expect(store.getRole(" reviewer ")?.params).toEqual(pinned);
+    expect(store.getRole("reviewer")?.params).toEqual({ kind: "auto" });
+    store.setRole(" reviewer ", null);
+    expect(store.getRole(" reviewer ")).toBeUndefined();
+  });
+
+  it("refuses a name that is blank once whitespace is discounted", () => {
+    const store = new CredentialStore(dir);
+    expect(() => store.setRole("   ", { name: "   ", params: pinned })).toThrow(/cannot be blank/);
+  });
+
+  it("refuses only a pathological length, not a length a human would type", () => {
+    const store = new CredentialStore(dir);
+    // 500 characters is absurd for a name and still accepted: the bound is a
+    // guard on the store, not a product rule (req 18).
+    const long = "x".repeat(500);
+    store.setRole(long, { name: long, params: pinned });
+    expect(store.getRole(long)?.params).toEqual(pinned);
+
+    const absurd = "x".repeat(10_001);
+    expect(() => store.setRole(absurd, { name: absurd, params: pinned })).toThrow(
+      /longer than 10000/,
+    );
+  });
+
+  it("bounds the stored description and standing instructions", () => {
+    const store = new CredentialStore(dir);
+    expect(() =>
+      store.setRole("a", { name: "a", description: "x".repeat(501), params: pinned }),
+    ).toThrow(/description cannot be longer/);
+    expect(() =>
+      store.setRole("a", { name: "a", prompt: "x".repeat(20_001), params: pinned }),
+    ).toThrow(/standing instructions cannot be longer/);
+  });
+
+  it("ignores a stored entry that carries no params — it is metadata, not a role", () => {
+    // Hand-written on disk: the shape the reserved key uses, under a name that
+    // is not reserved. Returning it as a role would produce one with nothing to
+    // run on.
+    fs.writeFileSync(
+      path.join(dir, "shipit-credentials.json"),
+      JSON.stringify({ roles: { orphan: { description: "left behind" } } }),
+    );
+    const store = new CredentialStore(dir);
+    expect(store.getRole("orphan")).toBeUndefined();
+    expect(store.getRoles().map((r) => r.name)).toEqual(["reviewer"]);
   });
 });

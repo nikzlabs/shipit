@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import type { CredentialStore } from "./credential-store.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
-import { GitHubAppTokenMinter } from "./github-app-token.js";
+import { GitHubAppTokenMinter, type AppTokenMintResult } from "./github-app-token.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
@@ -24,6 +24,8 @@ import { createIssue as createIssueImpl } from "./github-auth-issues.js";
 import type { CreateIssueResult } from "./github-auth-issues.js";
 import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl, submitPullRequestReview as submitPullRequestReviewImpl } from "./github-auth-review-threads.js";
 import type { PullRequestReviewThreadDraft } from "./github-auth-review-threads.js";
+import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -146,7 +148,7 @@ export class GitHubAuthManager extends EventEmitter {
   private workspaceDir: string;
   /**
    * Mints short-lived, repo-scoped GitHub App installation tokens (docs/172
-   * Gap 2-R / SHI-79). Inert until an operator supplies App credentials, in
+   * Gap 2-R / planning#81). Inert until an operator supplies App credentials, in
    * which case {@link mintRepoScopedToken} becomes the broker's preferred
    * credential source over the long-lived PAT.
    */
@@ -301,7 +303,7 @@ export class GitHubAuthManager extends EventEmitter {
 
   /**
    * Whether short-lived, repo-scoped GitHub App installation tokens are
-   * available (docs/172 Gap 2-R / SHI-79). When true the credential broker
+   * available (docs/172 Gap 2-R / planning#81). When true the credential broker
    * prefers a minted installation token over the long-lived PAT, shrinking the
    * blast radius of an extracted credential to a single repo and a bounded TTL.
    * False on every deployment that hasn't configured a GitHub App — those fall
@@ -323,11 +325,27 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Mint a **read-only**, single-repo installation token, keeping the reason a
+   * failed mint failed (docs/262 reqs 7, 10, 13).
+   *
+   * This is the plugin-repository path. A plugin declaration is a standing
+   * grant to fetch that repository and nothing more, so the token ShipIt mints
+   * for it carries `contents: read` and cannot push — the read-only checkout of
+   * req 7 is then a property of the credential, not of nobody calling
+   * `git push`. And a plugin repository is a *different* repository from the
+   * session's own, so "the App is not installed there" is a real, nameable
+   * state that the project being authorized says nothing about.
+   */
+  async mintReadOnlyRepoToken(owner: string, repo: string): Promise<AppTokenMintResult> {
+    return this.appTokenMinter.getRepoTokenResult(owner, repo, "read");
+  }
+
+  /**
    * Point a workspace repo's *local* `.git/config` at the brokering
    * `shipit-git-credential` helper so push/pull resolve the token at git-time
    * instead of embedding it.
    *
-   * SECURITY (docs/172 Gap 2 / SHI-72): this method used to write an inline
+   * SECURITY (docs/172 Gap 2 / planning#74): this method used to write an inline
    * shell helper — `!f() { echo "password=<PAT>"; … }; f` — into the local
    * config. That was wrong in two compounding ways:
    *   1. The literal `ghp_…` token landed in plaintext in `/workspace/.git/config`,
@@ -371,10 +389,14 @@ export class GitHubAuthManager extends EventEmitter {
     // (path: 'git') that looks like git is missing. Skip cleanly instead.
     if (!existsSync(cwd)) return;
     try {
+      // docs/266 — as root this would both execute the tree's own config and
+      // leave `.git/config` owned by root inside a worker-owned `.git`, which
+      // breaks the agent's in-container `git config` on the next turn. Drop to
+      // the tree's owner: the file we are writing is one that user owns anyway.
       execFileSync(
         "git",
-        ["config", "--replace-all", "credential.helper", CONTAINER_CREDENTIAL_HELPER],
-        { cwd, stdio: "pipe" },
+        gitArgsWithHooksDisabled(["config", "--replace-all", "credential.helper", CONTAINER_CREDENTIAL_HELPER]),
+        { cwd, stdio: "pipe", ...gitSpawnOverridesForTree(cwd) },
       );
       // User identity is inherited from global git config (set by setToken/loadUserInfo).
     } catch (err) {

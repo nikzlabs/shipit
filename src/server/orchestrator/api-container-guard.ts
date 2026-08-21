@@ -1,5 +1,5 @@
 /**
- * docs/201 / SHI-129 — container ↔ browser trust boundary on the orchestrator API.
+ * docs/201 / planning#131 — container ↔ browser trust boundary on the orchestrator API.
  *
  * Session containers reach the orchestrator over the Docker bridge network with
  * no caller authentication. Without a gate, a prompt-injected agent can `curl`
@@ -12,7 +12,25 @@
  * cannot spoof another. Browser/host callers (which arrive via the deployment
  * access layer, never from a session container's bridge IP) are left untouched.
  *
- * For a container-originated request the guard is **default-deny**: it passes
+ * **That last sentence is a premise, not a fact, and it has to be maintained.**
+ * "Not a known session container" is read as "browser or host", so a container
+ * ShipIt runs but never registers is treated as MORE trusted than a session —
+ * it skips all three layers below. docs/262's plugin install container found
+ * that edge: it runs third-party code and is on its own network, so it is in
+ * no session's IP map. {@link registerUntrustedContainerNetwork} is the
+ * counterpart for that class of caller — a whole subnet declared untrusted, so
+ * a container is denied from the moment it can send a packet rather than from
+ * whenever the orchestrator gets around to registering its address. Any future
+ * container that runs code ShipIt did not write belongs on such a network.
+ *
+ * **Only the session's own AGENT container gets the opt-in table below**
+ * (planning#371). Every OTHER container of a session — a Compose service, the
+ * project's own as much as a plugin's — is denied the whole `/api/*` surface,
+ * with one exception admitted by a secret rather than by an address: the Tier C
+ * egress decision query, made by the SNI proxy sidecar from inside the service's
+ * network namespace (`egress-decision-auth.ts`). See §0.5 in the hook.
+ *
+ * For an agent-originated request the guard is **default-deny**: it passes
  * only `/api/sessions/<its-own-session>/<allowlisted-suffix>`, where the
  * allowlist is the set of routes that opted in with
  * `config: { containerAccessible: true }`. Three layers, in order:
@@ -31,6 +49,12 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { parsePreviewSubdomain } from "./preview-proxy.js";
+import {
+  isEgressDecisionPath,
+  presentedEgressDecisionToken,
+  verifyEgressDecisionToken,
+} from "./egress-decision-auth.js";
 
 // ---------------------------------------------------------------------------
 // Fastify type augmentation
@@ -73,6 +97,10 @@ const HARD_DENY_PREFIXES = [
   "/api/secrets",
   "/api/mcp-servers",
   "/api/provider-accounts",
+  // docs/252 phase 2 — the same class of surface as `/api/provider-accounts`,
+  // and it must carry the same backstop for the same reason: it manages the
+  // user's credentials for every service.
+  "/api/credential-routes",
   "/api/trackers",
   "/api/updates",
 ] as const;
@@ -101,6 +129,69 @@ export function normalizeRemoteIp(remoteAddress: string | undefined): string | n
   return remoteAddress.replace(/^::ffff:/, "");
 }
 
+// ---------------------------------------------------------------------------
+// Untrusted container networks (§0 — denied outright)
+// ---------------------------------------------------------------------------
+
+/**
+ * IPv4 CIDRs whose traffic is denied the whole `/api/*` surface.
+ *
+ * A **subnet**, registered when the network is created, rather than a
+ * per-container IP registered after the container starts: the container could
+ * otherwise make its first request before the orchestrator learned its address,
+ * and that request is exactly the one worth making.
+ *
+ * Process-wide rather than a guard dep, because the network is created lazily —
+ * long after `buildApp()` wired this hook.
+ */
+const untrustedCidrs = new Set<string>();
+
+/** Declare a subnet untrusted. Idempotent; a non-IPv4 CIDR is rejected. */
+export function registerUntrustedContainerNetwork(cidr: string): boolean {
+  if (!parseCidr(cidr)) return false;
+  untrustedCidrs.add(cidr);
+  return true;
+}
+
+/** Test seam — the registry is process-wide by design. */
+export function clearUntrustedContainerNetworks(): void {
+  untrustedCidrs.clear();
+}
+
+/** Whether `ip` falls in any registered untrusted subnet. */
+export function isUntrustedContainerIp(ip: string): boolean {
+  const addr = ipv4ToInt(ip);
+  if (addr === null) return false;
+  for (const cidr of untrustedCidrs) {
+    const parsed = parseCidr(cidr);
+    if (parsed && (addr & parsed.mask) === (parsed.base & parsed.mask)) return true;
+  }
+  return false;
+}
+
+function parseCidr(cidr: string): { base: number; mask: number } | null {
+  const [addr, bitsRaw] = cidr.split("/");
+  const base = addr ? ipv4ToInt(addr) : null;
+  const bits = Number.parseInt(bitsRaw ?? "", 10);
+  if (base === null || !Number.isInteger(bits) || bits < 0 || bits > 32) return null;
+  // `-1 << 32` is 0 in JS's 32-bit shift, not the all-ones a /0 needs.
+  const mask = bits === 0 ? 0 : (-1 << (32 - bits)) >>> 0;
+  return { base, mask };
+}
+
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const n = Number(part);
+    if (n > 255) return null;
+    value = (value * 256) + n;
+  }
+  return value >>> 0;
+}
+
 /**
  * Extract the session id from the `/api/sessions/<id>/...` path segment, or
  * `null` if the path isn't session-scoped. Used for the own-session check.
@@ -126,6 +217,8 @@ export interface ContainerGuardDeps {
    */
   containerManager?: {
     getSessionByContainerIp(ip: string): { sessionId: string } | undefined;
+    getSessionByAnyContainerIp?(ip: string): Promise<{ sessionId: string } | undefined>;
+    isLikelySessionContainerIp?(ip: string): boolean;
   };
 }
 
@@ -161,15 +254,91 @@ export function registerContainerOriginGuard(
   const { containerManager } = deps;
 
   app.addHook("onRequest", async (request, reply) => {
+    const ip = normalizeRemoteIp(request.socket.remoteAddress);
+
+    // §0 — a declared-untrusted network gets nothing at all, not even the
+    // per-route opt-in. Checked BEFORE the container-manager guard below, so it
+    // holds in every runtime mode: the caller runs third-party code, and there
+    // is no `/api/*` route it has a reason to reach.
+    if (ip && isUntrustedContainerIp(ip)) {
+      return reply
+        .code(403)
+        .send({ error: "This endpoint is not available to session containers." });
+    }
+
     // Inert without an IP→session map (no real containers to gate).
     if (!containerManager) return;
 
-    const ip = normalizeRemoteIp(request.socket.remoteAddress);
-    const caller = ip ? containerManager.getSessionByContainerIp(ip) : undefined;
-    // Not a known session container → browser/host origin → unchanged.
-    if (!caller) return;
+    // The session's AGENT container, and — only when the IP is not that — any
+    // OTHER container of a session: a Compose service, or a sidecar borrowing
+    // one's network namespace. The two are deliberately kept apart (planning#371).
+    // `getSessionByContainerIp` reads the manager's own record of the container
+    // ShipIt created and runs the agent in; `getSessionByAnyContainerIp`
+    // (`session-container.ts:1228`) resolves anything carrying the
+    // `shipit-parent-session` label, which `compose-generator.ts:1113` stamps on
+    // every generated service — the project's own and a plugin's alike.
+    let caller: { sessionId: string } | undefined;
+    let otherContainer: { sessionId: string } | undefined;
+    try {
+      caller = ip ? containerManager.getSessionByContainerIp(ip) : undefined;
+      if (ip && !caller) {
+        otherContainer = await containerManager.getSessionByAnyContainerIp?.(ip);
+      }
+    } catch {
+      if (ip && containerManager.isLikelySessionContainerIp?.(ip)) {
+        return reply.code(403).send({ error: "Container origin could not be verified." });
+      }
+      return;
+    }
+    // Neither → browser/host origin → unchanged.
+    if (!caller && !otherContainer) return;
 
     const pathname = (request.url ?? "/").split("?")[0];
+    const ownerSessionId = (caller ?? otherContainer)!.sessionId;
+
+    // Preserve same-session preview traffic. The preview proxy handles this
+    // host before any API route, but this guard's root hook runs first.
+    //
+    // The Host header is the caller's to set, so this looks like a way around
+    // everything below — it is not: `registerPreviewProxy`'s own `onRequest`
+    // hook (`preview-proxy.ts:639`) hijacks EVERY request whose Host matches
+    // `{uuid}--{port}.`, whatever its path, and proxies it to the container. A
+    // request that takes this early return therefore never reaches an API route.
+    const previewOwner = parsePreviewSubdomain(request.headers.host)?.sessionId.toLowerCase();
+    if (previewOwner === ownerSessionId.toLowerCase()) return;
+
+    // §0.5 planning#371 — a Compose service container reaches NO `/api/*` route.
+    //
+    // Not a narrowed opt-in table, not a third caller class: a service needs no
+    // orchestrator API at all. Reading it as "a container of this session" gave
+    // any service — including a plugin's, which is third-party code the user
+    // declared and does not necessarily read — the session's whole
+    // container-accessible table, and `POST /api/sessions/:id/git/credential`
+    // (`api-routes-github.ts:479`) is in it. The own-session comparison was no
+    // obstacle: a service's workspace mount is a volume subpath, so
+    // `/proc/self/mountinfo` names the full session id.
+    //
+    // The ONE query that legitimately comes from here is the Tier C egress
+    // decision (docs/172) — issued by the SNI proxy sidecar INSIDE the service's
+    // network namespace, which is exactly why no IP rule can separate the two.
+    // It is admitted by the token that sidecar was launched with instead
+    // (`egress-decision-auth.ts`), scoped to its own session by the token, not
+    // by a string the caller supplies.
+    if (otherContainer) {
+      if (isEgressDecisionPath(pathname)) {
+        const token = presentedEgressDecisionToken(request.headers);
+        const scoped = new URLSearchParams((request.url ?? "").split("?")[1] ?? "").get("session");
+        if (token && scoped === otherContainer.sessionId
+          && await verifyEgressDecisionToken(otherContainer.sessionId, token)) {
+          return;
+        }
+      }
+      return reply
+        .code(403)
+        .send({ error: "This endpoint is not available to session containers." });
+    }
+    // Narrowed by the check above; the three layers below are the agent's.
+    if (!caller) return;
 
     // §1 hard-deny backstop — independent of the opt-in flag.
     if (isHardDeniedGlobal(pathname)) {

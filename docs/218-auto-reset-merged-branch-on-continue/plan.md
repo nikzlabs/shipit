@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-189
+issue: planning#191
 title: Auto-update a merged session's branch to latest base when work continues
 description: When a user resumes a merged session, offer (checked by default) to reset the branch to the latest base before the turn runs, tell the agent, and record the move with a transcript card.
 ---
@@ -127,12 +127,23 @@ A hard reset is destructive, so it fires **only** when the branch carries nothin
 that isn't already merged AND the repo is in a plain, resettable state. The full
 gate (all clauses; any failure → skip the reset, run the turn on the un-moved branch):
 
-> session merged **AND** `mergedHeadSha` recorded **AND** `HEAD === mergedHeadSha`
-> **AND** working tree clean **AND** HEAD is on `session.branch` (not detached)
+> session merged **AND** a base branch is known **AND** working tree clean
+> **AND** HEAD is on `session.branch` (not detached)
 > **AND** no rebase/merge/cherry-pick/revert in progress
+> **AND** ( HEAD is contained in `origin/<base>` **OR**
+> `mergedHeadSha` recorded **AND** `HEAD === mergedHeadSha` )
 > **AND** the user did not untick the control.
 
-- **`HEAD === mergedHeadSha`** is the load-bearing clause. The tempting "derive it
+- **HEAD contained in `origin/<base>`** is a *proof*, not a heuristic: every commit
+  reachable from the branch is already reachable from the base, so the reset discards
+  nothing by construction — no stored anchor and no operator trust required. It is the
+  general case of the `HEAD === origin/<base>` idempotence short-circuit in
+  `resetBranchToBaseExplicit`, which only ever caught the exact-equality instant and so
+  refused a branch merely sitting *behind* an advanced base. This is **not** the rejected
+  shortcut below: a commit made without rebasing puts a commit on HEAD that is not in the
+  base, so containment is false and the anchor clause decides as it always did. It reads
+  `origin/<base>`, so it is evaluated after the caller's fetch.
+- **`HEAD === mergedHeadSha`** is the load-bearing *stored* clause. The tempting "derive it
   from existing git state" shortcut (`!advancedBeyondMergedBase && !headIsAtBase` →
   resettable) has a **data-loss hole**: a user who commits new work *without
   rebasing first* leaves merge-base ≠ base tip (not "progressed") and HEAD ≠ base tip
@@ -178,6 +189,22 @@ migration, `SessionRow` + `fromRow` parse + `SessionInfo.mergedHeadSha`, a sette
 auto-reset — the user falls back to today's manual flow (still picked up by
 docs/202/216).
 
+**…but the anchor must survive a re-arm.** `clearMerged` nulls `merged_at` and
+`merged_head_sha` in one statement, and `PrStatusPoller.reArm` nulls the live PR snapshot
+in the same beat, so a re-armed session (docs/202 / docs/216 — the ordinary
+keep-working-after-a-merge path) lost every input the gate reads. The automatic reset is
+right to stop firing — the session is no longer *in* the merged state — but the explicit
+`shipit branch reset-to-base` reads the same clauses, so the same clear made every
+re-armed session **force-only forever**: it could never satisfy the gate again no matter
+what its branch looked like, and it refused naming a clause about unshipped work when the
+real one was `not-merged`. So `PreviousMergedPr` now carries `mergedHeadSha` alongside
+`baseBranch` (both re-arm paths copy it before the clear, `pr-rearm.ts`), and
+`computeResetBlocker` falls back to the breadcrumb for the merged fact, the base, and the
+anchor. The merged **state** is gone after a re-arm; the merged **fact** is not. The
+breadcrumb copy is still the SHA GitHub merged — never refreshed from local HEAD, for the
+reason above. Commit `84f866b8` made the base lookup durable for exactly this population
+and left the gate reading the cleared columns; this finishes it.
+
 ### Recovery / data-loss posture
 
 No explicit recovery ref. A merged change *is* the permanent record; the branch's
@@ -200,6 +227,22 @@ unrecoverable case: uncommitted edits.)
 > (`HEAD@{1}`) remains the recovery source; the lease refuses to clobber a remote
 > that moved unexpectedly (false-merge guard preserved). See the heal block in
 > `pre-turn-reset.ts`.
+
+**Known limitation of the heal — it is local-side proof only.** Every clause of the
+gate reasons about the LOCAL branch; the heal then force-pushes. `forcePush` leases
+against the tip it reads from the remote at that moment, so a commit that exists
+only on the remote is treated as the expected tip and overwritten rather than
+refused. This is a property of the heal as designed (the whole point is to clobber
+a remote still holding the merged commits), and it predates the containment clause —
+but that clause makes it reachable for off-anchor branches too, so state it rather
+than leave it implicit. It is bounded by how a session branch is written: only this
+clone's auto-push and the PR-create force-push write it, so "remote-only work" means
+the local clone was rewound while the remote kept a commit — which is recoverable
+from the local reflog. Cross-agent review (Codex) raised it; the fix considered and
+rejected for now was gating the heal on the remote tip being absent / equal to the
+merged anchor / itself contained in the base, because a refusal at that point is too
+late (the local reset has already happened) and moving the check earlier costs a
+network round-trip on every reset to cover a state nothing in ShipIt produces.
 
 ## The two messaging surfaces
 
@@ -256,17 +299,44 @@ durable record. Control = intent (before); card = record (after).
 
 ## Path coverage
 
-**Interactive path only** (`runAgentWithMessage` in `agent-execution.ts`). A human
-resuming is the real signal. **Queued user messages count as interactive** —
-`drainNextQueuedMessage` recurses back into `runAgentWithMessage`, so a message
-queued before the merge was detected still flows through this hook (and the gate
-re-validates, so the first eligible message resets and the rest run on the moved,
-no-longer-eligible branch). System/dispatch turns (CI auto-fix never runs on a merged
-PR; programmatic `shipit session message` is niche) are out of scope — a destructive
-reset underneath an automated message is more surprising than helpful. If we later
-want programmatic continues to reset too, factor a shared helper then. Documented here
-as a deliberate scope boundary (unlike docs/202/216, which wire both paths because
-their detection is cheap and idempotent; ours is a destructive action).
+**Every turn that starts, whichever transport starts it.**
+
+The original scope was the interactive path only (`runAgentWithMessage` in
+`agent-execution.ts`), on the reasoning that "a destructive reset underneath an
+automated message is more surprising than helpful", with the note *"if we later
+want programmatic continues to reset too, factor a shared helper then."*
+**planning#333 did exactly that** — see "Phase 5" under As built. The wiring now lives
+in `pre-turn-reset-hook.ts` (`applyPreTurnReset`) and both adapters call it:
+
+- **Interactive** (`runAgentWithMessage`) — a typed message, and any **queued**
+  user message (`drainNextQueuedMessage` recurses back through it).
+- **Dispatched** (`runDispatchedTurn`) — an Agent Interface SDK message
+  (docs/242), `shipit session message`, a notify-on-merge wake, a Create-PR
+  button, and every queue drain on that side.
+
+Nothing narrows by *who sent it*, because **the safety gate already is the
+narrowing**: a CI-fix turn's session is not merged (`not-merged`), and a branch
+carrying unshipped work fails `head-moved`. A second, caller-keyed gate could
+only disagree with the first one.
+
+The per-send tick box stays a composer concept: a dispatched turn passes no
+intent, so it follows the global `autoResetMergedBranch` setting.
+
+**Two exclusions, both about what the turn *is* rather than which transport
+carried it:**
+
+- **`/compact`** (interactive) — a maintenance command, not a continuation of
+  work. See Edge cases.
+- **`postTurn: "none"`** (dispatched) — a step *inside* a git operation the
+  driver owns: docs/146's rebase-conflict resolution turn, which commits via
+  `rebase --continue` and force-pushes once the flow ends. No reset could fire
+  there (the tree is conflicted), but the planning#297 skip machinery would still
+  persist "this branch still sits on the already-merged commits" and point the
+  agent at `shipit branch reset-to-base` while its actual job is to edit the
+  conflicted files. Note the clause it would report is **`dirty-tree`, not
+  `rebase-in-progress`** — `computeResetBlocker` checks `isClean()` first, and a
+  conflicted rebase has an unclean tree — so this exclusion is load-bearing
+  rather than belt-and-braces.
 
 ## Composition with docs/202 / docs/216 — no new PR-card logic
 
@@ -282,7 +352,7 @@ This feature's net addition is the **pre-turn reset + the explicit control + the
 agent prefix + the persisted user card**. The PR-card lifecycle (docs/202/216) is
 treated as corroborating, not as the user-facing signal of record.
 
-**A false docs/202 re-arm used to disable this feature (SHI-238).** The composition
+**A false docs/202 re-arm used to disable this feature (planning#240).** The composition
 above runs in one direction, but there was a feedback edge in the other: docs/202's
 detection reads `origin/<base>` from the session clone, which nothing on the merge
 path fetches, and a stale base ref makes `advancedBeyondMergedBase` report progress
@@ -390,7 +460,9 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
 - **`mergedHeadSha` is the PR's `head.sha`, captured in `verifyMissingPr`** — not
   local HEAD (which can advance to unmerged work in the merge-vs-detection window).
   Fail closed if absent (no SHA → no auto-reset).
-- **Interactive path only.**
+- ~~**Interactive path only.**~~ **Superseded by planning#333** — every turn, whichever
+  transport starts it, with one exclusion (`postTurn: "none"`, a step inside the
+  driver's own git operation). See "Path coverage".
 - **No recovery ref** — a merged change is the permanent record; the reflog covers
   recovery; clean-tree clause covers the unrecoverable (uncommitted) case.
 - **Heal the remote at reset (force-with-lease).** Supersedes the original "never
@@ -511,7 +583,7 @@ rather than throwing — the reset still stands and the turn runs). This reverse
 "never force-push at reset" decision (see the superseded note above). Tests in
 `pre-turn-reset.test.ts` (heal called on success; best-effort on failure).
 
-**SHI-295 — a skipped reset is no longer silent, and a merged session no longer
+**planning#297 — a skipped reset is no longer silent, and a merged session no longer
 silently auto-pushes.** Two halves of one user-facing failure ("my session's PR
 merged and nothing said so"), from a production incident where a turn ran two
 minutes after the merge, the reset did not fire, and the post-turn auto-push
@@ -550,6 +622,147 @@ the second time they had reported "changes are missing from the merged PR".
   set at commit time, because the docs/202 re-arm that clears it runs *after* —
   so gating on `mergedAt` alone would have blocked and mis-explained a
   legitimate pre-PR push.
+
+**Phase 5 (planning#333) — programmatic messages continue on the fresh base too, and
+the card is unconditional.** The Agent Interface SDK (docs/242) turns a click
+inside a page the agent built into a real agent turn — dispatched, not typed. It
+therefore reached `runDispatchedTurn`, which had none of this feature's wiring,
+so on a merged session the turn ran on a branch still sitting on already-shipped
+commits with no prefix and no card. Two changes:
+
+- **The wiring is shared.** `pre-turn-reset-hook.ts#applyPreTurnReset` holds
+  everything that used to be inline in `agent-execution.ts` — the reset call, the
+  branch-updated card, the planning#297 skip notice, the docs/216 re-arm, and the
+  `reset_eligible: false` push. `runAgentWithMessage` calls it directly;
+  `runDispatchedTurn` calls it through the optional `SystemTurnDeps.preTurnReset`
+  dep (wired in `runner-registry-factory.ts`, the same lazy-poller shape
+  `postTurnReArmReset` uses). One implementation, so the transports cannot drift
+  — which is the same reason the gate itself was collapsed into one function in
+  planning#297.
+- **The record has two triggers, latched.** The card is delivered at its
+  transcript anchor (`afterUserMessagePersisted`), *or*, if the turn dies before
+  it reaches that anchor — an admission refusal, a spawn failure, a throw in env
+  prep — by `ensureRecorded` from the caller's `finally`. Whichever runs first
+  latches; the other is a no-op. A branch that moved always leaves evidence,
+  because the card is the only durable record that a destructive move happened
+  at all.
+
+On the dispatch side the hook runs **once per message**, outside the no-result
+retry loop, so a retried turn neither re-resets nor duplicates the card.
+
+Three things the cross-agent review (Codex) caught, each a way the "always
+recorded" guarantee was still hollow:
+
+- **Post-reset bookkeeping must not reject.** The branch is already moved and
+  force-pushed by the time the docs/216 re-arm runs, and that re-arm catches only
+  its own git checks — `clearMerged` / `reArm` / SSE / emit can still throw. The
+  throw propagated out of `applyPreTurnReset`, *past* both callers'
+  `try/finally` (which are established only after it returns), aborting the turn
+  and destroying the delivery callbacks with it. Now wrapped: the PR card and the
+  composer control are self-healing post-turn; the transcript record is not.
+- **The latch closes on success, not on attempt.** `emitChatCard` emits *before*
+  it records or persists, so a throwing WS listener consumed the only delivery
+  and left the card in neither `recordedCards` nor durable history — the
+  emit-only failure class CLAUDE.md prohibits — while `ensureRecorded` no-opped
+  on an already-flipped latch. A failed attempt now leaves the latch open for the
+  fallback's direct append.
+- **The dispatched post-turn path never recomputed `reset_eligible`.** Only a
+  turn that *moved* the branch emitted `false`, so a dispatched turn that skipped
+  the reset and then committed left an activation-time `eligible: true` standing,
+  and the composer kept offering a reset the server would refuse.
+  `runner-registry-factory.ts`'s `postTurnReArmReset` now recomputes and pushes
+  the signal, matching what the WS adapter already did.
+
+### Phase 8 — planning#341: the eligibility signal stops going stale, and the refusal names the files
+
+An Ops investigation into a refused reset. A session whose PR had merged; an
+agent-built preview compose service mounted the workspace read-write, wrote two
+tracked files when the user clicked Approve in that page, and then called
+`window.shipit.agent.sendMessage()`. The user saw the composer's "start from the
+latest base" checkbox, sent, and got "Branch not updated to the latest base."
+
+Two visibility defects, no change to the gate. **The refusal itself was correct** —
+a hard reset would have destroyed the uncommitted edit — and no clause of
+{@link computeResetBlocker} was touched. That a write-then-send action can never
+satisfy the clean-tree gate on a merged session is a real product limit (ShipIt
+deliberately never stashes on auto-paths, docs/146), not something this phase
+tries to fix.
+
+- **The `reset_eligible` signal is recomputed when the workspace changes.** It
+  was computed at exactly three moments — WS activation, post-turn, merge
+  detection — and never in between, so anything that dirtied the tree of a
+  merged, untouched session left the client holding a `true` the server would no
+  longer honour: the UI painted a control for an operation the pre-turn gate then
+  refused with `dirty-tree`. The things that dirty a tree between turns are not
+  things a user thinks of as work (a terminal command, a compose service writing
+  to the mounted workspace, a dev server materialising a generated file), and
+  none of them ends a turn. New `reset-eligible-watch.ts` wires a debounced
+  recompute onto the runner's existing `files_changed` stream, from
+  `onRunnerCreated`.
+- **Why the watcher rather than re-validating at send time.** The server already
+  re-validates at send time — `autoResetMergedBranchOnContinue` evaluates the full
+  gate twice and, since planning#297, reports the clause that refused. A second,
+  client-driven pre-send check would be a round trip that changes nothing about
+  correctness and still leaves the control painted for as long as the user looks
+  at it before sending. The defect is that the *painted* control outlives the fact
+  it depicts, so the fix belongs where the fact changes.
+- **Three gates keep a chatty watcher cheap**, since `isResetEligible` shells out
+  to git: it only recomputes for sessions with a merged pull request (the signal
+  is a constant `false` for everything else); it collapses a burst into one
+  recompute (750 ms); and it skips while a turn is running, because the agent
+  rewrites files continuously and the post-turn recompute fires immediately
+  afterwards anyway.
+- **The debounce is capped at 5 s, because a trailing edge alone starves.** Every
+  `files_changed` replaces the pending timer, so a writer producing changes more
+  often than the window postpones the recompute forever and the control stays
+  stale indefinitely — this module's own failure mode, reintroduced by its
+  optimisation. Not hypothetical: the worker's file watcher already collapses
+  events on a 300 ms trailing debounce, so anything writing on a 300–750 ms
+  cadence emits a stream that never leaves a quiet window. The recompute now
+  fires at the latest 5 s after the *first* change of a run.
+- **No emitter deduplicates a push against a value it remembers privately.** A
+  watcher-local "I already said `false`" check was written and deleted: the
+  client holds ONE value per session and takes whichever message arrived last, so
+  a private check reasons about state the unconditional emitters may have
+  overwritten since. Concretely — watcher says `false`; a turn runs and its
+  post-turn emitter says `true`; a service dirties the tree; the watcher computes
+  `false`, matches its own remembered `false`, and suppresses the only message
+  that would have corrected the client. The saving was one WS message and one log
+  line, never the git work — the comparison could only happen after the recompute.
+- **The `dirty-tree` refusal names the files.** "The working tree has uncommitted
+  changes" is unactionable when you did not knowingly change anything — in the
+  incident the writer was a compose service, not the user. `computeResetBlocker`
+  now appends the paths from the existing `GitManager.uncommittedPaths()` to the
+  clause's `detail`, capped at 10 with a `+N more` count and sorted for stability.
+  `detail` is the single string every skip surface is built from, so this reaches
+  the `console.warn`, the persisted transcript notice and the agent prompt prefix
+  at once. Fail-safe (a throw degrades to the bare sentence rather than losing the
+  refusal) and charged only to the refusal path — the healthy path never makes the
+  second `git status` call.
+- **`reset_eligible` is logged, with its origin and its reason.** The
+  investigation could not distinguish "the client held a stale `true`" from "the
+  tree became dirty later", because neither the emitted value nor its reason was
+  recorded anywhere. The four recompute sites now go through one
+  `emitResetEligible` helper that logs `reset_eligible=<value> for <id> (<origin>)`
+  plus the refusing clause and detail — merged sessions only, so a fleet-wide
+  constant `false` cannot bury the interesting lines. A git failure is logged as
+  such rather than collapsing into an unexplained `false`: `computeResetEligibility`
+  keeps the `merged` flag it learned before the throw and carries the error, so the
+  one case the log exists to disambiguate cannot itself go dark.
+- **Cross-agent review (Codex) — three signal-correctness bugs, all fixed:** the
+  watcher-local dedupe described above (which could wedge a client at the opposite
+  value); the starving trailing-edge debounce; and a change that landed *during* an
+  in-flight recompute being dropped — the in-flight result was read from a tree
+  predating it, and nothing was scheduled to correct it, so the watcher now
+  re-runs once the in-flight one settles. Also from that review: a git throw no
+  longer erases its own log line, and the wiring hands back the one
+  max-listener slot its permanent `message` listener consumes (each attached
+  viewer registers up to two, so without it a five-viewer session starts printing
+  a `MaxListenersExceededWarning` that reads like a leak). Accepted as a known
+  cost: a dirty merged session runs two `git status` calls per recompute
+  (`isClean()` then `uncommittedPaths()`). Deriving cleanliness from the path list
+  would collapse them into one, but that changes what the *gate* means by clean,
+  and this phase does not touch the gate.
 
 ## Review notes
 

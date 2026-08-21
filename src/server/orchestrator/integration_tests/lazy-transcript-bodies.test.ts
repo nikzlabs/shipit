@@ -1,5 +1,5 @@
 /**
- * Integration test for lazy transcript bodies (docs/244, SHI-267).
+ * Integration test for lazy transcript bodies (docs/244, planning#269).
  *
  * Drives the real orchestrator so the whole round-trip is exercised: a
  * transcript containing a megabyte tool output, a Write with a big file body,
@@ -23,6 +23,7 @@ import { SessionManager } from "../sessions.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import { GitManager } from "../../shared/git.js";
 import type { CredentialStore } from "../credential-store.js";
+import { parseSubagentReport } from "../../shared/subagent-report.js";
 import {
   StubAuthManager,
   FakeClaudeProcess,
@@ -43,11 +44,11 @@ const SCREENSHOT = Buffer.from("x".repeat(200_000)).toString("base64");
 // nothing at all — so the assertions below can only tell the two cases apart if
 // their bodies differ.
 const SUBAGENT_REPORT = Array.from({ length: 5_000 }, (_, i) => `finding ${i}`).join("\n");
-// A cross-agent consult's verbatim output (SHI-297). Deliberately distinct from
+// A cross-agent consult's verbatim output (planning#299). Deliberately distinct from
 // SUBAGENT_REPORT above, whose head still ships in the same payload — so an
 // "is it on the wire?" assertion can tell the two apart.
 const CONSULT_OUTPUT = Array.from({ length: 5_000 }, (_, i) => `review note ${i}`).join("\n");
-// SHI-296 — the input side. A heredoc command and a subagent prompt are both
+// planning#298 — the input side. A heredoc command and a subagent prompt are both
 // routinely kilobytes, and the transcript draws 80 characters of the first and
 // none of the second.
 const HEAVY_COMMAND = `gh pr create --body-file - <<'EOF'\n${Array.from({ length: 800 }, (_, i) => `body line ${i}`).join("\n")}\nEOF`;
@@ -56,7 +57,7 @@ const TASK_PROMPT = Array.from({ length: 400 }, (_, i) => `instruction ${i}`).jo
 // (`findPlanContent` → `PlanApproval`), so it must survive the projection.
 const PLAN_BODY = Array.from({ length: 300 }, (_, i) => `## Step ${i}`).join("\n");
 
-describe("Integration: lazy transcript bodies (SHI-267)", () => {
+describe("Integration: lazy transcript bodies (planning#269)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let dbManager: DatabaseManager;
@@ -157,7 +158,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(body).not.toContain(FILE_BODY.slice(-200));
     expect(body).not.toContain("stdout line 0");
     expect(body).not.toContain("stdout line 39999");
-    // …and the same for the input side (SHI-296): the command's tail and the
+    // …and the same for the input side (planning#298): the command's tail and the
     // subagent's prompt are behind clicks too.
     expect(body).not.toContain("body line 799");
     expect(body).not.toContain("instruction 399");
@@ -218,7 +219,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
   });
 
   /**
-   * SHI-296. Everything below this comment is the input side of requirement 1:
+   * planning#298. Everything below this comment is the input side of requirement 1:
    * before it, a megabyte `Bash` command shipped whole behind an 80-character
    * summary and a `Task` prompt shipped whole behind a collapsed disclosure.
    */
@@ -270,7 +271,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
   });
 
   it("serves the whole stored input from the fetch endpoint", async () => {
-    // The response is the input verbatim (SHI-296), not the three Edit/Write
+    // The response is the input verbatim (planning#298), not the three Edit/Write
     // fields it used to name: the projection now shortens or removes keys for
     // every tool, so what a caller needs back depends on the tool.
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-inputs/write-1` });
@@ -428,6 +429,71 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     expect(res.rawPayload.toString("base64")).toBe(png);
   });
 
+  it("substitutes images in the fetched tool-result body instead of re-sending base64", async () => {
+    // The tool-call modal fetches this endpoint to draw a screenshot result's
+    // TEXT — the image beside it is already painted from /images/:hash. Serving
+    // the stored bytes verbatim put the whole base64 payload back on the wire
+    // the moment the modal opened, undoing the transfer this feature exists to
+    // remove, and handed the client a raw block array to render as text.
+    const png = Buffer.from("modal-fetch-png-bytes").toString("base64");
+    history.append(sessionId, {
+      role: "assistant",
+      text: "shot",
+      toolUse: [{ type: "tool_use", id: "shot-3", name: "mcp__playwright__browser_take_screenshot", input: {} }],
+      toolResults: [{
+        toolUseId: "shot-3",
+        content: JSON.stringify([
+          { type: "text", text: "### Result\ncaptured the viewport" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+        ]),
+      }],
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/shot-3` });
+    expect(res.statusCode).toBe(200);
+    const { content } = res.json() as { content: string };
+    expect(content).not.toContain(png);
+    // The text the fetch exists to deliver is whole, and the image is still
+    // reachable — through the URL, which is the point.
+    expect(content).toContain("captured the viewport");
+    const url = (JSON.parse(content) as { source?: { shipit_url?: string } }[])
+      .find((b) => b.source?.shipit_url)!.source!.shipit_url!;
+    const img = await app.inject({ method: "GET", url });
+    expect(img.statusCode).toBe(200);
+    expect(img.rawPayload.toString("base64")).toBe(png);
+  });
+
+  it("keeps a report's accounting footer a separate block when substituting its images", async () => {
+    // `parseSubagentReport` recognizes the CLI's footer ONLY as the last text
+    // block, so the image substitution must not restructure the array around it.
+    // The collapse that `projectBlockArray` applies when it *slices* would turn
+    // the footer into prose and drop the header chips it feeds.
+    const png = Buffer.from("report-png-bytes").toString("base64");
+    const footer = "subagent_tokens: 4210\ntool_uses: 7\nduration_ms: 91000";
+    history.append(sessionId, {
+      role: "assistant",
+      text: "task",
+      toolUse: [{ type: "tool_use", id: "task-img", name: "Task", input: { description: "d" } }],
+      toolResults: [{
+        toolUseId: "task-img",
+        content: JSON.stringify([
+          { type: "text", text: "Here is what I found.\nIt took a while." },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+          { type: "text", text: footer },
+        ]),
+      }],
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/tool-results/task-img` });
+    expect(res.statusCode).toBe(200);
+    const { content } = res.json() as { content: string };
+    expect(content).not.toContain(png);
+
+    const { text, meta } = parseSubagentReport(content);
+    expect(meta).toBe(footer);
+    expect(text).toBe("Here is what I found.\nIt took a while.");
+  });
+
   it("does not 304 an image that doesn't exist", async () => {
     // A conditional request carries the client's own ETag, so matching on it
     // alone answers "not modified" for anything — including a hash the session
@@ -451,7 +517,7 @@ describe("Integration: lazy transcript bodies (SHI-267)", () => {
     }
   });
 
-  it("serves a sub-agent consult as its preview line, with the output behind a fetch (SHI-297)", async () => {
+  it("serves a sub-agent consult as its preview line, with the output behind a fetch (planning#299)", async () => {
     // A cross-agent review is routinely tens of kilobytes and the card face
     // draws one 140-character line of it, so the rest is modal-only content —
     // the same shape as a tool result, and the same treatment.

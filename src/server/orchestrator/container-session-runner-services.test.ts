@@ -47,6 +47,8 @@ interface FakeManagerOptions {
   onStart?: (name: string) => Partial<ManagedService>;
   startError?: Error;
   logs?: string;
+  /** planning#382 — why the project's compose file yielded no services. */
+  projectComposeFailure?: { kind: "refused" | "malformed"; message: string };
 }
 
 /**
@@ -60,6 +62,7 @@ function makeManager(opts: FakeManagerOptions) {
 
   const mgr = {
     calls,
+    projectComposeFailure: opts.projectComposeFailure ?? null,
     getServices: (): ManagedService[] =>
       [...rows.values()].map((svc) =>
         svc.status === "running" && svc.containerIp && svc.port
@@ -156,6 +159,32 @@ describe("handleServiceRequest — list", () => {
     const mgr = makeManager({ services: [svc("web", { status: "error", error: "exit 127" })] });
     const { result } = await request(mgr, "list");
     expect((result!.services as Record<string, unknown>[])[0].error).toBe("exit 127");
+  });
+
+  /**
+   * planning#382 — an empty list must be able to say why it is empty. Without
+   * this the bridge answered a refused compose file with a bare `[]`, and
+   * `shipit service list` rendered that as "No services defined. Add them to
+   * docker-compose.yml" — advice for a project that has no stack, given to one
+   * whose stack ShipIt declined.
+   */
+  it("carries the project's compose failure beside an empty list", async () => {
+    const mgr = makeManager({
+      services: [],
+      projectComposeFailure: { kind: "refused", message: "Service `web`: `privileged: true` is not allowed." },
+    });
+    const { result } = await request(mgr, "list");
+    expect(result!.services).toEqual([]);
+    expect(result!.failure).toEqual({
+      kind: "refused",
+      message: "Service `web`: `privileged: true` is not allowed.",
+    });
+  });
+
+  it("omits the failure key entirely when the file parsed", async () => {
+    const mgr = makeManager({ services: [svc("web")] });
+    const { result } = await request(mgr, "list");
+    expect(result).not.toHaveProperty("failure");
   });
 });
 

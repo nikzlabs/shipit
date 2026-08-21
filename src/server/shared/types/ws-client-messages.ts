@@ -1,6 +1,7 @@
 import type { ImageAttachment, FileContextRef, PermissionMode, UploadRef } from "./attachment-types.js";
 import type { AgentId } from "../../session/agents/agent-process.js";
 import type { IssueRef } from "./domain-types/issue.js";
+import type { BillingMode } from "../catalogue/types.js";
 import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsSubscribeLogs, WsLogClear } from "./terminal-types.js";
 
 export interface WsSendMessage {
@@ -27,11 +28,11 @@ export interface WsSendMessage {
    */
   resetMergedBranch?: boolean;
   /**
-   * SHI-320 — the tracker issue this session was started from, carried on the
+   * planning#322 — the tracker issue this session was started from, carried on the
    * FIRST message only (the Issues tab's "Start session" prefills the composer
    * rather than dispatching, so creation and the first message are two separate
    * user actions). Acted on solely by warm graduation, which pins the branch to
-   * the reference-derived name (docs/248 req 22) and fires the one-shot
+   * the reference-derived name (docs/248-declared-issue-trackers req 22) and fires the one-shot
    * `→ started` transition. A message to an already-graduated session ignores
    * it — the ref describes how the session was *created*, not what this message
    * is about.
@@ -89,10 +90,22 @@ export interface WsSetAgentMessage {
   agentId: AgentId;
 }
 
-/** Client → Server: set the model for the next turn. */
+/**
+ * Client → Server: set the model for the next turn.
+ *
+ * docs/252 — a selection is really the triple `(serviceId, billingMode,
+ * modelId)`, because a bare id cannot say which service is billing you when two
+ * of them offer the same id. The two new fields are OPTIONAL and the client does
+ * not send them yet: the picker has no service axis until phase 3 groups it by
+ * service, so the server resolves the missing pair from the catalogue (biased
+ * toward the active harness's own vendor). Accepting them now means phase 3 is
+ * a client change rather than a protocol change.
+ */
 export interface WsSetModelMessage {
   type: "set_model";
   model: string;
+  serviceId?: string;
+  billingMode?: BillingMode;
 }
 
 /**
@@ -102,6 +115,34 @@ export interface WsSetModelMessage {
 export interface WsSetReasoningMessage {
   type: "set_reasoning";
   effort: string | null;
+}
+
+/**
+ * docs/272-user-selectable-roles reqs 1, 4, 18 — Client → Server: start this session on a
+ * configured role, or take the role off it.
+ *
+ * **`null` is "No role"** (req 18), and it took a reversal to get here. This
+ * message carried no `null` on the reasoning that leaving a role is never an act
+ * of its own — only a consequence of moving one of the three controls the role
+ * set. That reasoning survived the rule it was built on: while the role name was
+ * *derived* from the parameters, clearing it could not do anything, because the
+ * parameters still matched and the name came straight back. Since req 13 made the
+ * name report the user's **choice**, un-choosing has a real effect — the role's
+ * standing instructions stop applying — and it is an effect no parameter can
+ * express, because no parameter carries the instructions.
+ *
+ * Clearing changes the name and the instructions and **nothing else**: the
+ * session goes on running the harness, model and level the role set, which are
+ * the last values the user chose.
+ *
+ * Both directions are refused once the session has taken its first turn (req 4):
+ * standing instructions describe what a session is *for*, a session already under
+ * way is already for something, and by then the instructions have been delivered,
+ * so un-naming them afterwards states nothing the transcript does not show.
+ */
+export interface WsSetRoleMessage {
+  type: "set_role";
+  roleName: string | null;
 }
 
 // ---- Interrupt messages ----
@@ -196,6 +237,19 @@ export interface WsSubmitBugReport {
 }
 
 /**
+ * Client → Server: decline a bug report (docs/164 / nikzlabs/shipit#2350). Sent when the
+ * user clicks "Cancel" on the inline consent card. Nothing is filed — the
+ * round-trip exists so the decision is durable (the card stays collapsed across
+ * a reload instead of returning as an editable draft) and so the session's
+ * agent is told the report was declined rather than left thinking it is still
+ * awaiting the user.
+ */
+export interface WsDismissBugReport {
+  type: "dismiss_bug_report";
+  cardId: string;
+}
+
+/**
  * Client → Server: undo a previously-recorded issue write (docs/177). Sent
  * when the user clicks "Undo" on the provenance card. The server recovers the
  * tracker + undo snapshot from the persisted card (keyed by `cardId`) and
@@ -208,7 +262,7 @@ export interface WsUndoIssueWrite {
 
 /**
  * Client → Server: answer a sensitive-action permission request (docs/193 /
- * SHI-112). Sent when the user clicks Approve / Deny on the inline
+ * planning#114). Sent when the user clicks Approve / Deny on the inline
  * `PermissionRequestCard`. The server forwards the decision to the worker's
  * broker (keyed by `requestId`), which unblocks the held bridge/RPC call.
  * `remember` (approve only) adds the file path to the session allow-set so the
@@ -222,7 +276,7 @@ export interface WsResolvePermission {
 }
 
 /**
- * Client → Server: resolve an egress allow-once card (docs/172 / SHI-90). Sent
+ * Client → Server: resolve an egress allow-once card (docs/172 / planning#92). Sent
  * when the user clicks Allow once / Add to allowlist / Deny on the inline
  * `EgressPromptCard`. The server updates the per-session egress policy (keyed by
  * `host`) so the agent's retried connection is allowed, and patches the card to
@@ -239,6 +293,7 @@ export interface WsEgressDecision {
 export type WsClientMessage =
   | WsSendMessage
   | WsSubmitBugReport
+  | WsDismissBugReport
   | WsUndoIssueWrite
   | WsResolvePermission
   | WsEgressDecision
@@ -248,6 +303,7 @@ export type WsClientMessage =
   | WsSetAgentMessage
   | WsSetModelMessage
   | WsSetReasoningMessage
+  | WsSetRoleMessage
   | WsTerminalStart
   | WsTerminalInput
   | WsTerminalResize

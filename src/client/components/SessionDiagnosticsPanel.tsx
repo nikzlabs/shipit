@@ -106,12 +106,23 @@ interface OomBreakerState {
   windowMs: number;
 }
 
-/** docs/150 req 11 — the provider account this session is running on. */
+/** docs/150-multiple-provider-subscriptions req 11 — the provider account this session is running on. */
 interface ProviderRouteDiagnostic {
   agentId: string | null;
   kind: "account" | "reserved" | null;
   routeId: string | null;
   label: string;
+}
+
+/**
+ * Present when `agent.install` resolves no dependency-input set — the
+ * content-keyed install skip is off, and so is the dependency re-check after a
+ * tree rewrite ShipIt performs. The server renders the whole explanation +
+ * remedy, so the panel never has to restate the rule.
+ */
+interface InstallContentKeyOff {
+  commands: string[];
+  notice: string;
 }
 
 interface DiagnosticsPayload {
@@ -126,6 +137,7 @@ interface DiagnosticsPayload {
   oomBreaker: OomBreakerState | null;
   providerRoute: ProviderRouteDiagnostic | null;
   nodeRuntime: NodeRuntimeStatus | null;
+  installContentKeyOff: InstallContentKeyOff | null;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -217,6 +229,7 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
                       ? data.health.bootedLimits
                       : null
                   }
+                  contentKeyOff={data.installContentKeyOff}
                 />
               </Section>
 
@@ -377,10 +390,18 @@ function RunnerRows({ runner }: { runner: RunnerDiagnostic }) {
 function ParsedConfigRows({
   config,
   bootedLimits,
+  contentKeyOff,
 }: {
   config: ParsedShipitConfig | null;
   /** Docker-units limits the container actually booted with — see ContainerHealth.bootedLimits. */
   bootedLimits: { memoryLimit: number; cpuQuota: number; pidsLimit: number } | null;
+  /**
+   * Set when this session's `agent.install` resolves no dependency-input set —
+   * the content-keyed install skip and the post-rewrite dependency re-check are
+   * both off. Rendered here because it is a fact about the parsed config, not
+   * an incident: nothing has failed yet.
+   */
+  contentKeyOff: InstallContentKeyOff | null;
 }) {
   if (!config) {
     return (
@@ -445,6 +466,20 @@ function ParsedConfigRows({
         }
       />
       {version !== undefined && <KvRow label="version" value={String(version)} />}
+      {contentKeyOff && (
+        <>
+          <KvRow
+            label="install content key"
+            value="off — ShipIt cannot tell which files this install consumes"
+            valueClass="text-(--color-warning)"
+          />
+          <div className="mt-1 rounded border border-(--color-warning) bg-(--color-warning)/10 p-2">
+            <p className="text-(--color-text-secondary) whitespace-pre-wrap break-words">
+              {contentKeyOff.notice}
+            </p>
+          </div>
+        </>
+      )}
       {warnings.length > 0 && (
         <div className="mt-1 rounded border border-(--color-warning) bg-(--color-warning)/10 p-2 space-y-1">
           <div className="text-(--color-warning) font-semibold uppercase tracking-wide text-[11px]">
@@ -462,7 +497,7 @@ function ParsedConfigRows({
 }
 
 /**
- * docs/150 req 11 — "which account is this session on right now?".
+ * docs/150-multiple-provider-subscriptions req 11 — "which account is this session on right now?".
  *
  * The account's *name* is the answer; `route id` is below it for bug reports,
  * where the opaque `acct_…` is what correlates with the server logs.

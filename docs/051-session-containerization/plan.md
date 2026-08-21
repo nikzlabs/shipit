@@ -765,7 +765,7 @@ Limits are configurable via `AppDeps` for different deployment environments.
 - **Idle timeout:** Same 10-minute timeout as current `SessionRunner`. Container stopped + removed when no viewers and no running agent.
 - **Orphan cleanup:** On orchestrator startup, scan for containers with label `shipit-session` and remove any that don't match active sessions.
 - **OOM kill:** Docker kills the container. Orchestrator detects exit, notifies attached viewers with an error, cleans up.
-- **Graceful shutdown:** On server SIGTERM, call `destroyAll()` which sends SIGTERM to each container with a 5s grace period before SIGKILL.
+- **Graceful shutdown:** ~~On server SIGTERM, call `destroyAll()` which sends SIGTERM to each container with a 5s grace period before SIGKILL.~~ **Superseded by docs/113 (2026-08-10).** SIGTERM must leave session containers running so an update replaces only the orchestrator and the next boot re-adopts them; `destroyAll()` has been deleted and `dispose()` releases orchestrator-side resources only.
 
 ### Scaling considerations
 

@@ -215,8 +215,78 @@ describe("buildVisualElements", () => {
       expect(elements[1]).toMatchObject({ kind: "message", index: 1, hideTools: false });
     });
 
-    it("STANDALONE_TOOLS contains exactly AskUserQuestion, TodoWrite, EnterPlanMode, and ExitPlanMode", () => {
-      expect(STANDALONE_TOOLS).toEqual(new Set(["AskUserQuestion", "TodoWrite", "EnterPlanMode", "ExitPlanMode"]));
+    it("STANDALONE_TOOLS contains the plan/question tools plus every to-do list tool", () => {
+      expect(STANDALONE_TOOLS).toEqual(new Set([
+        "AskUserQuestion",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        // Never groupable: the panel draws them, so a clipped tool group would
+        // scroll away calls that already render as nothing.
+        "TodoWrite",
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskList",
+        "TaskGet",
+      ]));
+    });
+
+    it("leaves the background-task tools groupable — they are not to-do list tools", () => {
+      // TaskStop / TaskOutput share the prefix and act on a running shell or
+      // agent, so they stay ordinary tool lines.
+      expect(STANDALONE_TOOLS.has("TaskStop")).toBe(false);
+      expect(STANDALONE_TOOLS.has("TaskOutput")).toBe(false);
+    });
+
+    it("emits the task panel as its own element, after the anchoring message", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "TaskCreate", { subject: "Do the thing" })], {
+          results: [{ toolUseId: "t1", content: "Task #1 created successfully: Do the thing" }],
+        }),
+      ]);
+      const panel = elements.find((el) => el.kind === "task-panel");
+      expect(panel).toMatchObject({ kind: "task-panel", messageIndex: 0 });
+      if (panel?.kind === "task-panel") {
+        expect(panel.tasks).toEqual([{ id: "1", subject: "Do the thing", status: "pending" }]);
+      }
+    });
+
+    it("emits the panel even when the anchoring message also carries an ordinary tool", () => {
+      // The regression this element kind exists for: with the panel anchored to
+      // a message bubble, a TaskCreate sharing its message with a Bash produced
+      // a tool-group and no bubble — so the panel disappeared.
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Bash", { command: "ls" }), tool("t2", "TaskCreate", { subject: "Do it" })]),
+      ]);
+      expect(elements.map((el) => el.kind)).toEqual(["tool-group", "task-panel"]);
+    });
+
+    it("emits exactly one panel however many task calls there are", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "TaskCreate", { subject: "One" })]),
+        toolMsg([tool("t2", "TaskCreate", { subject: "Two" })]),
+        toolMsg([tool("t3", "TaskUpdate", { taskId: "pending-t1", status: "completed" })]),
+      ]);
+      const panels = elements.filter((el) => el.kind === "task-panel");
+      expect(panels).toHaveLength(1);
+      expect(panels[0]).toMatchObject({ messageIndex: 2 });
+    });
+
+    it("hides the bubble's tools when a task call shares its message with a subagent", () => {
+      // Otherwise the subagent draws twice — a generic tool line in the bubble
+      // plus its own card — because the task call kept the bubble's tools visible.
+      const elements = buildVisualElements([
+        toolMsg([
+          tool("t1", "TaskCreate", { subject: "Do it" }),
+          tool("t2", "Agent", { description: "Investigate" }),
+        ]),
+      ]);
+      expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: true });
+      expect(elements.map((el) => el.kind)).toEqual(["message", "subagent", "task-panel"]);
+    });
+
+    it("emits no panel when the list is empty", () => {
+      const elements = buildVisualElements([toolMsg([tool("t1", "TodoWrite", { todos: [] })])]);
+      expect(elements.some((el) => el.kind === "task-panel")).toBe(false);
     });
 
     it("SUBAGENT_TOOLS contains exactly Task, Skill, and Agent", () => {
@@ -364,7 +434,7 @@ describe("buildVisualElements", () => {
     const presentNames = [
       "present",
       "mcp__shipit__present",
-      "mcp__shipit-present__present", // legacy per-tool server (pre-SHI-128)
+      "mcp__shipit-present__present", // legacy per-tool server (pre-planning#130)
     ];
 
     for (const name of presentNames) {
@@ -804,5 +874,89 @@ describe("buildVisualElements", () => {
       ]);
       expect(elements).toEqual([{ kind: "message", index: 0, hideTools: false }]);
     });
+  });
+});
+
+/**
+ * planning#375 — before this, every call allocated fresh element objects, so
+ * nothing in the transcript was ever referentially equal between two renders
+ * and `React.memo` on a row could never bail out. A streaming turn therefore
+ * re-rendered all ~2,000 rows per token, measured at 92 ms a time.
+ */
+describe("buildVisualElements — reuses unchanged elements (stable identity)", () => {
+  it("returns the same objects when nothing changed", () => {
+    const messages = [userMsg("hi"), assistantMsg("hello"), userMsg("again")];
+    const first = buildVisualElements(messages);
+    const second = buildVisualElements(messages, first);
+    expect(second).toHaveLength(first.length);
+    second.forEach((el, i) => expect(el).toBe(first[i]));
+  });
+
+  it("keeps the prefix stable when a message is appended", () => {
+    const base = [userMsg("one"), assistantMsg("two")];
+    const first = buildVisualElements(base);
+    const grown = [...base, userMsg("three")];
+    const second = buildVisualElements(grown, first);
+
+    expect(second).toHaveLength(first.length + 1);
+    // Every pre-existing row is the SAME object — those rows bail out.
+    first.forEach((el, i) => expect(second[i]).toBe(el));
+    // The new row is genuinely new.
+    expect(second[second.length - 1]).not.toBe(first[first.length - 1]);
+  });
+
+  it("gives a fresh object to the row whose message changed, and keeps the rest", () => {
+    const base = [userMsg("one"), assistantMsg("partial")];
+    const first = buildVisualElements(base);
+    // The streaming bubble grows: a new ChatMessage object at the same index.
+    const updated = [base[0], { ...base[1], text: "partial text now longer" }];
+    const second = buildVisualElements(updated, first);
+
+    expect(second[0]).toBe(first[0]);
+    // The element for the changed message is positionally identical, so it is
+    // reused too — the ROW re-renders because it takes `messages[index]` as its
+    // own prop, not because this element changed. That split is deliberate.
+    expect(second).toHaveLength(first.length);
+  });
+
+  it("hands back a fresh tool-group when its tool objects change", () => {
+    const t1 = tool("t1", "Read");
+    const first = buildVisualElements([toolMsg([t1])]);
+    const t2 = tool("t1", "Read", { file: "x" });
+    const second = buildVisualElements([toolMsg([t2])], first);
+    expect(second[0]).not.toBe(first[0]);
+  });
+
+  it("does not reuse across a streaming-flag flip", () => {
+    const t1 = tool("t1", "Read");
+    const first = buildVisualElements([toolMsg([t1], { streaming: true })]);
+    expect((first[0] as { streaming: boolean }).streaming).toBe(true);
+    const second = buildVisualElements([toolMsg([t1], { streaming: false })], first);
+    expect(second[0]).not.toBe(first[0]);
+    expect((second[0] as { streaming: boolean }).streaming).toBe(false);
+  });
+
+  it("never mutates an element the previous render still holds", () => {
+    // Two streaming tool messages: the post-process clears `streaming` on all
+    // but the last. If the reuse pass ran before that mutation, it would
+    // rewrite an object the previous render is still rendering.
+    const a = tool("a", "Read");
+    const b = tool("b", "Bash");
+    const first = buildVisualElements([toolMsg([a], { streaming: true })]);
+    const snapshot = JSON.parse(JSON.stringify(first)) as unknown[];
+    buildVisualElements([toolMsg([a], { streaming: true }), toolMsg([b], { streaming: true })], first);
+    expect(JSON.parse(JSON.stringify(first))).toEqual(snapshot);
+  });
+
+  it("produces exactly what a from-scratch build produces", () => {
+    const messages = [
+      userMsg("q"),
+      toolMsg([tool("t1", "Read")], { text: "looking" }),
+      assistantMsg("answer"),
+    ];
+    const first = buildVisualElements([messages[0]]);
+    const incremental = buildVisualElements(messages, first);
+    const scratch = buildVisualElements(messages);
+    expect(incremental).toEqual(scratch);
   });
 });

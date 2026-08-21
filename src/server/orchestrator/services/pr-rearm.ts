@@ -24,7 +24,7 @@
  * scope inside `emitPrLifecycleAfterCommit` (its deps only carry the WS `emit`).
  */
 
-import type { SessionInfo, WsServerMessage } from "../../shared/types.js";
+import type { PrStatusSummary, SessionInfo, WsServerMessage } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -55,6 +55,48 @@ async function unmovedSinceMerge(session: SessionInfo, git: GitManager): Promise
   if (!anchor) return false;
   const head = await git.getHeadHash();
   return head !== null && head === anchor;
+}
+
+/**
+ * The prior MERGED pull request, or undefined when there isn't one to un-merge.
+ *
+ * Both re-arm paths take the PR they are un-merging from the poller's live
+ * snapshot, and both then hand it to `clearMerged` as the `previousMergedPr`
+ * breadcrumb. `session.mergedAt` alone does NOT license that read: the two are
+ * written by different subsystems and can disagree. `setPrStatus` overwrites the
+ * snapshot with whatever PR the poller currently sees while clearing only
+ * `closed_at`, never `merged_at` — so a session carrying a stale merge record
+ * next to a freshly-opened PR presents an OPEN snapshot here, and the re-arm
+ * would stamp that open PR into the durable `previous_merged_pr` column as if it
+ * had merged.
+ *
+ * That is not a cosmetic mislabel. The breadcrumb seeds
+ * `PrStatusPoller.reArm(sessionId, number)` → `supersededPrNumbers`, and
+ * `loadPersisted` re-seeds it from the column on every restart; `verifyMissingPr`
+ * then reports a terminal result carrying that number as `"suppressed"`. Naming
+ * the session's *live* PR there means the poller refuses to promote it when it
+ * genuinely merges, and the suppression only lifts once a DIFFERENT-numbered PR
+ * appears — merge detection silently off until someone edits the database.
+ * Observed in production on 2026-08-19 (session 72f83d85), where a stale
+ * `merged_at` survived an unarchive and the re-arm wrote the live open PR #2484
+ * as the previously-merged one.
+ *
+ * The unarchive path that created that stale record is fixed at its source
+ * (`clearPriorPrState`); this guard is independent of it, because "the merge
+ * record and the live snapshot disagree" must never be resolved in favour of the
+ * snapshot. Fail safe: stay merged and let the state be corrected elsewhere.
+ */
+function priorMergedPr(deps: ReArmDeps, sessionId: string): PrStatusSummary | undefined {
+  const prior = deps.prStatusPoller.getStatus(sessionId);
+  if (!prior?.baseBranch) return undefined;
+  if (prior.prState !== "merged") {
+    console.warn(
+      `[pr-rearm] ${sessionId} is marked merged but its PR snapshot (#${prior.prNumber}) `
+      + `is ${prior.prState} — staying merged rather than recording an unmerged PR as the prior one`,
+    );
+    return undefined;
+  }
+  return prior;
 }
 
 /**
@@ -124,10 +166,12 @@ export async function detectAndReArmMergedSession(args: {
   if (!session?.mergedAt) return false;
 
   // The prior merged PR drives both the detection base and the breadcrumb.
-  // `getStatus` holds the merged snapshot (seeded from persisted on restart).
-  const prior = deps.prStatusPoller.getStatus(sessionId);
-  const baseBranch = prior?.baseBranch;
-  if (!prior || !baseBranch) return false; // no known base — fail safe, stay merged
+  // `getStatus` holds the merged snapshot (seeded from persisted on restart) —
+  // but only a snapshot that actually says "merged" may be used (see
+  // {@link priorMergedPr}).
+  const prior = priorMergedPr(deps, sessionId);
+  if (!prior) return false; // no known base, or a non-merged snapshot — fail safe
+  const baseBranch = prior.baseBranch;
 
   let progressed: boolean;
   try {
@@ -149,6 +193,11 @@ export async function detectAndReArmMergedSession(args: {
     url: prior.prUrl,
     title: prior.prTitle,
     baseBranch,
+    // Carry the merged-tip anchor across the clear (see `PreviousMergedPr
+    // .mergedHeadSha`): the column is nulled here, and the explicit
+    // reset-to-base gate reads it, so without this a re-armed session is
+    // force-only forever.
+    ...(session.mergedHeadSha ? { mergedHeadSha: session.mergedHeadSha } : {}),
   });
   deps.prStatusPoller.reArm(sessionId, prior.prNumber);
   deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
@@ -200,10 +249,11 @@ export async function detectAndReArmResetSession(args: {
   const session = deps.sessionManager.get(sessionId);
   if (!session?.mergedAt) return false;
 
-  // The prior merged PR drives both the detection base and the breadcrumb.
-  const prior = deps.prStatusPoller.getStatus(sessionId);
-  const baseBranch = prior?.baseBranch;
-  if (!prior || !baseBranch) return false; // no known base — fail safe, stay merged
+  // The prior merged PR drives both the detection base and the breadcrumb, and
+  // only a snapshot that says "merged" qualifies (see {@link priorMergedPr}).
+  const prior = priorMergedPr(deps, sessionId);
+  if (!prior) return false; // no known base, or a non-merged snapshot — fail safe
+  const baseBranch = prior.baseBranch;
 
   let atBase: boolean;
   try {
@@ -226,7 +276,13 @@ export async function detectAndReArmResetSession(args: {
     title: prior.prTitle,
     baseBranch,
   };
-  deps.sessionManager.clearMerged(sessionId, previousMergedPr);
+  // The stored breadcrumb also carries the merged-tip anchor — see the sibling
+  // call in `detectAndReArmMergedSession`. The card below deliberately does not:
+  // the anchor is gate state, not something the client renders.
+  deps.sessionManager.clearMerged(sessionId, {
+    ...previousMergedPr,
+    ...(session.mergedHeadSha ? { mergedHeadSha: session.mergedHeadSha } : {}),
+  });
   deps.prStatusPoller.reArm(sessionId, prior.prNumber);
   deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
 

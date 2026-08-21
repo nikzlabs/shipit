@@ -1,4 +1,14 @@
-import { forwardRef, type ComponentPropsWithoutRef, type ComponentRef, type ReactNode } from "react";
+import {
+  forwardRef,
+  useCallback,
+  // eslint-disable-next-line no-restricted-imports -- useEffect: document pointerdown subscription with cleanup (browser API subscription)
+  useEffect,
+  useRef,
+  type ComponentPropsWithoutRef,
+  type ComponentRef,
+  type ReactNode,
+  type Ref,
+} from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { cn } from "../../utils/cn.js";
 
@@ -25,13 +35,115 @@ type DropdownMenuContentProps = ComponentPropsWithoutRef<typeof DropdownMenuPrim
   portaled?: boolean;
 };
 
+/** Forward a ref of either shape, so a wrapper can also use the node itself. */
+function assignRef<T>(ref: Ref<T> | undefined, node: T | null): void {
+  if (typeof ref === "function") ref(node);
+  else if (ref) (ref as { current: T | null }).current = node;
+}
+
 const DropdownMenuContent = forwardRef<
   ComponentRef<typeof DropdownMenuPrimitive.Content>,
   DropdownMenuContentProps
->(({ className, sideOffset = 4, collisionPadding = 8, portaled = true, ...props }, ref) => {
+>((
+  {
+    className,
+    sideOffset = 4,
+    collisionPadding = 8,
+    portaled = true,
+    // Pulled out of the spread so the guards below cannot be overwritten by a
+    // caller's own capture handler — they compose with it instead.
+    onPointerDownCapture,
+    onPointerUpCapture,
+    onClickCapture,
+    ...props
+  },
+  ref,
+) => {
+  // ── The tap that OPENS a menu must never also activate a row ──────────────
+  //
+  // The trigger opens on `pointerdown`, but a touch produces its `click` a
+  // moment later — and that click is dispatched at the touch COORDINATES, at
+  // whatever is under them by then. On a phone that is routinely a menu row:
+  // tapping the composer's settings anchor moves focus off the textarea, the
+  // on-screen keyboard retracts, the layout grows back, and the menu — anchored
+  // above the trigger — slides DOWN across the point the finger touched. The
+  // ghost click then lands on the menu's bottom row and the menu appears to
+  // open already inside a sub-panel (measured in Quick Capture: the Reasoning
+  // row, every time). Radix has the same hole one layer down: `MenuItem`
+  // synthesizes a click on any `pointerup` it receives without a matching
+  // `pointerdown`.
+  //
+  // So a row is activated only by a gesture that BEGAN inside this menu.
+  // Anything else — a click with pointer coordinates (`detail > 0`) whose
+  // pointerdown we never saw — is the opening gesture spilling over, and is
+  // swallowed. Keyboard activation is unaffected: `element.click()` carries
+  // `detail === 0`.
+  //
+  // Press-drag-release from the trigger onto a row still works with a MOUSE,
+  // which is where that idiom comes from: a mouse drag ends with a real
+  // `pointerup` INSIDE the menu, and we accept that as "the gesture is here
+  // now". A touch never delivers one (the pointer is implicitly captured by the
+  // trigger), which is exactly the difference this leans on.
+  //
+  // The flag is armed by a pointerdown inside and CONSUMED by the click it
+  // belongs to, rather than cleared per opening: Radix keeps the same content
+  // node alive through the close animation, so a menu closed and reopened
+  // quickly is not guaranteed a remount (and `forceMount`, which no call site
+  // uses today, would never remount at all). One pointerdown authorises exactly
+  // one activation, which needs no notion of "this opening" to be correct.
+  const gestureStartedInside = useRef(false);
+  const contentNodeRef = useRef<ComponentRef<typeof DropdownMenuPrimitive.Content> | null>(null);
+  const setContentRef = useCallback(
+    (node: ComponentRef<typeof DropdownMenuPrimitive.Content> | null) => {
+      contentNodeRef.current = node;
+      assignRef(ref, node);
+    },
+    [ref],
+  );
+
+  // The flag is armed by a pointerdown INSIDE the menu and consumed by the
+  // click it belongs to. It must survive every re-render of the content:
+  // Radix's composed refs make React re-apply this ref (and therefore any
+  // reset in the callback above) on each render, and a touch tap re-renders
+  // the content between `pointerup` and `click` (the tap focuses the row). A
+  // reset there used to wipe a legitimate in-progress gesture, so the click
+  // looked like a ghost and was swallowed — the "two taps to close" bug. The
+  // clear belongs on the gesture this guard actually exists for: a pointerdown
+  // OUTSIDE the menu (the opening tap), which also clears a stale flag left
+  // by an aborted gesture across a quick close+reopen on the same node.
+  // eslint-disable-next-line no-restricted-syntax -- document pointerdown subscription with cleanup (browser API subscription)
+  useEffect(() => {
+    const clearOnOutsidePointerDown = (event: PointerEvent) => {
+      const node = contentNodeRef.current;
+      if (!node || !(event.target instanceof Node) || !node.contains(event.target)) {
+        gestureStartedInside.current = false;
+      }
+    };
+    document.addEventListener("pointerdown", clearOnOutsidePointerDown, true);
+    return () => document.removeEventListener("pointerdown", clearOnOutsidePointerDown, true);
+  }, []);
+
   const content: ReactNode = (
     <DropdownMenuPrimitive.Content
-      ref={ref}
+      ref={setContentRef}
+      onPointerDownCapture={(e) => {
+        gestureStartedInside.current = true;
+        onPointerDownCapture?.(e);
+      }}
+      onPointerUpCapture={(e) => {
+        if (e.pointerType !== "touch") gestureStartedInside.current = true;
+        else if (!gestureStartedInside.current) e.stopPropagation();
+        onPointerUpCapture?.(e);
+      }}
+      onClickCapture={(e) => {
+        if (e.detail > 0 && !gestureStartedInside.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        gestureStartedInside.current = false;
+        onClickCapture?.(e);
+      }}
       sideOffset={sideOffset}
       collisionPadding={collisionPadding}
       className={cn(

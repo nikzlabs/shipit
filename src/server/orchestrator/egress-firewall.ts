@@ -1,12 +1,12 @@
 /**
- * Egress firewall — Tier A allow-set construction (docs/172 Gap 1, SHI-90).
+ * Egress firewall — Tier A allow-set construction (docs/172 Gap 1, planning#92).
  *
  * Tier A is the un-bypassable floor: a default-deny `iptables OUTPUT` policy plus
  * an `ipset` of permitted destination IPs/CIDRs, installed **inside the agent
  * container's network namespace** by a short-lived privileged sidecar
  * (`--network container:<agent> --cap-add NET_ADMIN`) — see
  * `docs/172-agent-containment/egress-control.md`. The agent itself has no
- * `NET_ADMIN` (and, since SHI-31, runs non-root), so it can neither install nor
+ * `NET_ADMIN` (and, since planning#33, runs non-root), so it can neither install nor
  * flush these rules.
  *
  * This module owns the **data** half — what goes in the ipset — which is pure,
@@ -41,10 +41,23 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "api.anthropic.com",
   "console.anthropic.com",
   "statsig.anthropic.com",
+  "platform.claude.com", // Claude Code subscription authentication
   // Agent APIs — Codex / OpenAI
   "api.openai.com",
   "auth.openai.com",
   "chatgpt.com",
+  // Catalogue provider APIs — exact endpoints, not vendor-wide suffixes
+  "api.deepseek.com",
+  "api.z.ai",
+  "openrouter.ai",
+  "ai-gateway.vercel.sh",
+  "opencode.ai",
+  // docs/274 — xAI inference, the `grok` harness's key-billed mode.
+  "api.x.ai",
+  // planning#435 — Grok's subscription mode: the OIDC device-code/refresh host
+  // and the chat proxy subscription turns actually POST to.
+  "auth.x.ai",
+  "cli-chat-proxy.grok.com",
   // Package registries
   "registry.npmjs.org",
   "registry.yarnpkg.com",
@@ -144,7 +157,7 @@ export function parseGitHubMetaCidrs(meta: unknown): string[] {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Intra-session subnet extraction (SHI-90 — preview reachability)
+// Intra-session subnet extraction (planning#92 — preview reachability)
 // ---------------------------------------------------------------------------
 
 /**

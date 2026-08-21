@@ -16,18 +16,23 @@ import {
   renameSessionByAgent,
   setSessionPinned,
   setKeepPreviewRunning,
+  setSessionMuted,
   reorderSessionPins,
   archiveSession,
   applyTemplate,
   createSandboxSession,
   forkSession,
+  forkReportSinks,
+  gitRemoteCredentialResolver,
   createHeadlessSession,
   ServiceError,
   createClaimSessionService,
 } from "./services/index.js";
 import type { AgentId, IssueRef } from "../shared/types.js";
+import type { BillingMode } from "../shared/catalogue/index.js";
 import { getErrorMessage } from "./validation.js";
 import { markIssueStartedFromSeed } from "./issue-lifecycle.js";
+import { dismissNonTurnFailure } from "./services/non-turn-work.js";
 
 export async function registerSessionCrudRoutes(
   app: FastifyInstance,
@@ -50,6 +55,11 @@ export async function registerSessionCrudRoutes(
     // singleton root (which aliases to the migrated default account).
     providerAccountManager: deps.providerAccountManager,
     ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
+    // docs/252 phase 7 (req 9) — naming runs on the model chosen for non-turn
+    // work, records what it spent, and surfaces a durable notice when it fails.
+    credentialStore: deps.credentialStore,
+    chatHistoryManager: deps.chatHistoryManager,
+    usageManager: deps.usageManager,
   };
 
   // Single shared claim service for every surface that mints a repo-backed
@@ -105,11 +115,12 @@ export async function registerSessionCrudRoutes(
           deps.githubAuthManager,
           deps.repoStore,
           request.params.id,
+          // Dropping the previous PR — snapshot AND merge record — is part of
+          // the unarchive itself, not a step the route performs afterwards.
+          // Threading the poller in is what keeps the two halves from drifting
+          // apart again (`clearPriorPrState` in services/session.ts).
+          deps.prStatusPoller,
         );
-        // Clear the persisted PR snapshot — unarchive starts a fresh branch,
-        // so the previous PR no longer applies. Also drops the stale row from
-        // the SSE `getAllStatuses()` snapshot for new clients.
-        deps.prStatusPoller?.clearPersisted(request.params.id);
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return result;
       } catch (err) {
@@ -119,6 +130,34 @@ export async function registerSessionCrudRoutes(
         }
         reply.code(500).send({ error: `Failed to unarchive session: ${getErrorMessage(err)}` });
       }
+    },
+  );
+
+  // POST /api/sessions/:id/non-turn-failure/:cardId/dismiss — docs/252 phase 7
+  // (req 9). Dismissal is a PATCH of the persisted card, never a delete: the
+  // row is the record that the failure happened, and losing it on acknowledge
+  // would make "I read this" and "it never happened" the same state after a
+  // reload.
+  app.post<{ Params: { id: string; cardId: string } }>(
+    "/api/sessions/:id/non-turn-failure/:cardId/dismiss",
+    async (request, reply) => {
+      if (!deps.chatHistoryManager) {
+        reply.code(503).send({ error: "Chat history is unavailable" });
+        return;
+      }
+      const dismissed = dismissNonTurnFailure(
+        {
+          getRunnerRegistry: () => deps.runnerRegistry,
+          chatHistoryManager: deps.chatHistoryManager,
+        },
+        request.params.id,
+        request.params.cardId,
+      );
+      if (!dismissed) {
+        reply.code(404).send({ error: "No such notice in this session" });
+        return;
+      }
+      return { dismissed: true };
     },
   );
 
@@ -248,6 +287,40 @@ export async function registerSessionCrudRoutes(
     },
   );
 
+  // PUT /api/sessions/:id/muted — docs/277 mute toggle. The runner answers
+  // req 6's server-side half ("its agent is not working"): a running turn, a
+  // turn held at a permission prompt, or outstanding background work all mean
+  // the session will speak again on its own and so cannot be muted.
+  app.put<{ Params: { id: string }; Body: { muted?: unknown } }>(
+    "/api/sessions/:id/muted",
+    async (request, reply) => {
+      try {
+        if (typeof request.body?.muted !== "boolean") {
+          throw new ServiceError(400, "muted must be a boolean");
+        }
+        const runner = deps.runnerRegistry.get(request.params.id);
+        const agentWorking = !!runner
+          && (runner.running
+            || runner.awaitingPermissionIds.size > 0
+            || runner.backgroundWorkDescriptions.length > 0);
+        const result = setSessionMuted(
+          sessionManager,
+          request.params.id,
+          request.body.muted,
+          agentWorking,
+        );
+        deps.sseBroadcast("session_list", { sessions: result.sessions });
+        return { session: result.session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to update session mute: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
   // POST /api/sessions/pin-order — reorder a repo's pinned sessions (docs/110 Phase 2)
   app.post<{ Body: { remoteUrl: string; ids: string[] } }>(
     "/api/sessions/pin-order",
@@ -353,6 +426,12 @@ export async function registerSessionCrudRoutes(
           request.params.id, dir,
           request.body.branchName, request.body.startPoint, undefined,
           graduationDeps,
+          // planning#426 — the fork's `fetch origin` and `git lfs pull` run on a
+          // session workspace with dropped uid, so they need a credential of their
+          // own; and a fork whose LFS content did not resolve must say so rather
+          // than present as complete.
+          gitRemoteCredentialResolver(deps.githubAuthManager),
+          forkReportSinks({ sessionManager, sseBroadcast: deps.sseBroadcast }),
         );
         // session_list SSE broadcast is owned by graduateSession (docs/156).
         return result;
@@ -370,14 +449,21 @@ export async function registerSessionCrudRoutes(
   //
   // Accepts either JSON (no attachments) or multipart/form-data when the
   // overlay attached files. Multipart shape: `repoUrl`, `initialPrompt`,
-  // `branch?`, `agent?`, `model?` as form fields plus one or more `file`
-  // parts. Files are saved into the new session's uploads dir before the
-  // first turn fires so the agent sees them. See docs/145.
+  // `agent?`, `model?` as form fields plus one or more `file` parts. Files are
+  // saved into the new session's uploads dir before the first turn fires so the
+  // agent sees them. See docs/145.
+  //
+  // There is deliberately no `branch` field (planning#413). A caller-supplied
+  // name is used verbatim, so two calls carrying one name land on a single
+  // remote branch — the collision this route's issue seed was just fixed to
+  // make impossible. Nothing in ShipIt sent one, and `child-sessions.ts` had
+  // already dropped the same option from agent-driven spawns for a second
+  // reason: supplied names drifted outside the `shipit/` namespace. The branch
+  // is now always derived here — from the issue pointer, or generated.
   app.post<{
     Body: {
       repoUrl?: string;
       initialPrompt?: string;
-      branch?: string;
       agent?: AgentId;
       model?: string;
       /**
@@ -399,6 +485,21 @@ export async function registerSessionCrudRoutes(
        */
       armAutoMerge?: boolean;
       /**
+       * docs/252 — the rest of the selected model's identity. A bare `model`
+       * cannot say which service is billing you once two of them offer the same
+       * id, and Quick Capture's seed (the browser's `vibe-model-id` slot) holds
+       * the full triple. Ignored unless the pair names a real catalogue row.
+       */
+      serviceId?: string;
+      billingMode?: BillingMode;
+      /**
+       * docs/272-user-selectable-roles reqs 1, 11 — the role the user picked in the overlay.
+       * Resolved server-side and applied OVER the five fields above, which
+       * describe controls the role replaced. Refused by name when it is unknown,
+       * reserved, or cannot run (req 8 — nothing is ever substituted).
+       */
+      role?: string;
+      /**
        * docs/144 — the prompt was dictated by voice (quick-capture Mode B), so
        * the first turn's prompt carries the `<dictated_input>` hint. Multipart
        * sends it as the string "true"/"false".
@@ -410,10 +511,12 @@ export async function registerSessionCrudRoutes(
     async (request, reply) => {
       let repoUrl = "";
       let initialPrompt = "";
-      let branch: string | undefined;
       let agent: AgentId | undefined;
       let model: string | undefined;
+      let serviceId: string | undefined;
+      let billingMode: BillingMode | undefined;
       let reasoning: string | undefined;
+      let role: string | undefined;
       let issueRef: IssueRef | undefined;
       let armAutoMerge = false;
       let dictated = false;
@@ -435,17 +538,23 @@ export async function registerSessionCrudRoutes(
               case "initialPrompt":
                 initialPrompt = value;
                 break;
-              case "branch":
-                branch = value;
-                break;
               case "agent":
                 agent = value as AgentId;
                 break;
               case "model":
                 model = value;
                 break;
+              case "serviceId":
+                serviceId = value;
+                break;
+              case "billingMode":
+                if (value === "sub" || value === "key") billingMode = value;
+                break;
               case "reasoning":
                 reasoning = value;
+                break;
+              case "role":
+                role = value;
                 break;
               case "armAutoMerge":
                 armAutoMerge = value === "true";
@@ -465,10 +574,12 @@ export async function registerSessionCrudRoutes(
         const body = request.body ?? {};
         repoUrl = body.repoUrl ?? "";
         initialPrompt = body.initialPrompt ?? "";
-        branch = body.branch;
         agent = body.agent;
         model = body.model;
+        serviceId = body.serviceId;
+        billingMode = body.billingMode;
         reasoning = body.reasoning;
+        role = body.role;
         issueRef = body.issueRef;
         if (body.armAutoMerge !== undefined && typeof body.armAutoMerge !== "boolean") {
           reply.code(400).send({ error: "armAutoMerge must be a boolean" });
@@ -491,10 +602,12 @@ export async function registerSessionCrudRoutes(
             repoUrl,
             prompt: initialPrompt,
             ...(issueRef !== undefined ? { issueRef } : {}),
-            ...(branch !== undefined ? { branch } : {}),
             ...(agent !== undefined ? { agent } : {}),
             ...(model !== undefined ? { model } : {}),
+            ...(serviceId !== undefined ? { serviceId } : {}),
+            ...(billingMode !== undefined ? { billingMode } : {}),
             ...(reasoning !== undefined ? { reasoning } : {}),
+            ...(role !== undefined && role !== "" ? { role } : {}),
             ...(uploadInputs.length > 0 ? { uploads: uploadInputs } : {}),
             armAutoMerge,
             ...(dictated ? { dictated: true } : {}),

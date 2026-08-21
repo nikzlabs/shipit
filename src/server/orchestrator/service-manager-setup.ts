@@ -12,11 +12,17 @@ import type { LogSource, SessionInfo } from "../shared/types.js";
 import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { resolveDepsHashInputs } from "../shared/deps-hash.js";
+import { evaluateContentKeyReport, type ContentKeyConfig } from "./install-content-key.js";
 import { agentLogAppend } from "./log-emit.js";
-import { collectMcpAgentEnv } from "./secret-resolver.js";
+import { collectAccountAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
 import { isOverlayEligible } from "./overlay-session.js";
+import { volumeExists } from "./overlay-volume.js";
+import { clearActivationState } from "./services/plugin-activation.js";
+import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
+import type { PluginComposeService } from "./plugin-compose.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -40,6 +46,149 @@ export function handleStackError(
     sessionId: runner.sessionId,
     message: err.message,
   });
+}
+
+/**
+ * nikzlabs/shipit#2426 — give the ServiceManager the dep-dir overlay volumes the
+ * agent container actually has, so a compose service that mounts the workspace
+ * nests the SAME overlay at `<service-target>/<dep-dir>` instead of resolving that
+ * path to the plain directory underneath.
+ *
+ * Getting this wrong is invisible and unrecoverable from inside the session: the
+ * `up` still succeeds, and the service simply gets a second, empty dependency
+ * tree that its own install then fills. Nothing the agent does to `node_modules`
+ * afterwards can reach it, and nothing says so. Hence two rules here.
+ *
+ * **The container record is the source of truth, not a re-derivation.** What the
+ * agent has mounted was decided at container-create time. Re-deciding it now reads
+ * the LIVE workspace — `shipit.yaml`'s `dep-dirs`, the pnpm signals, `git
+ * check-ignore` — every one of which the agent can change mid-session, and any
+ * disagreement yields zero mounts. Re-derivation survives only as the fallback for
+ * a container we have no record of (rediscovered / re-adopted), where it is the
+ * only answer available.
+ *
+ * **A dropped mount is announced.** The `volumeExists` filter stays — a stale
+ * record naming a removed volume would fail the whole `compose up` on an
+ * `external` reference, which is worse than one plain dep dir — but anything it
+ * drops now reaches the session's Logs panel instead of only orchestrator stdout.
+ *
+ * Idempotent, and safe to call again on the adoption path: a new agent container
+ * means a newly-created overlay volume set, and the manager that outlived the old
+ * runner is still holding the old answer. Returns whether the manager's set
+ * actually CHANGED — on a live stack that is the caller's signal to reconcile,
+ * since nothing but `start()`/`reconcile()` rewrites the override.
+ *
+ * Exported for `service-manager-overlay-mounts.test.ts` — driving it through
+ * `setupServiceManager` would need a whole container runtime to reach four lines
+ * of decision.
+ */
+export async function applyOverlayDepDirs(
+  runner: SessionRunnerInterface,
+  mgr: ServiceManager,
+  deps: {
+    containerManager: SessionContainerManager | null;
+    session?: SessionInfo;
+    workspaceDir: string;
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
+  },
+): Promise<boolean> {
+  const { containerManager, session, workspaceDir, broadcastLog } = deps;
+  // A pure env+session pre-gate, so flag-off / ineligible sessions leave the
+  // override and the compose start timing byte-for-byte unchanged.
+  if (!containerManager || !session || !isContainerRunner(runner) || !isOverlayEligible(session)) return false;
+
+  const warn = (text: string): void => {
+    console.warn(`[overlay:${runner.sessionId}] ${text}`);
+    if (broadcastLog) broadcastLog(runner.sessionId, "server", `[compose] ${text}`);
+  };
+
+  try {
+    // Orders us after container creation — the volumes are created just before
+    // the container. `dispose()` also resolves it, hence the `disposed` re-check.
+    await runner.whenWorkerReady();
+    if (runner.disposed) return false;
+
+    const provisioned = containerManager.provisionedOverlayDepDirs(runner.sessionId);
+    const pairs = provisioned ?? (await containerManager.prepareOverlaySpecs({
+      sessionId: runner.sessionId,
+      workspaceDir,
+      session,
+      requireProvisioned: true,
+    })).map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }));
+
+    // `[]` from the record is authoritative ("this container has no overlay"), so
+    // it is applied as-is. `[]` from the fallback is a guess, and clobbering a
+    // manager that already holds a good answer with a guess is the failure this
+    // whole function exists to prevent.
+    //
+    // Both branches SAY so. The empty return used to be the only silent one, and
+    // that is how a fleet-wide "0 of 35 compose services got an overlay mount"
+    // regression survived a deploy with not one line to grep for: every other
+    // branch here warns, so the log read exactly like a fleet with no overlay
+    // sessions on it.
+    if (pairs.length === 0) {
+      if (provisioned) {
+        mgr.setOverlayDepDirs([]);
+        // Not a `warn`: legitimately empty for a pnpm repo (`prepareOverlaySpecs`
+        // skips those by design) or a container built before the feature, and
+        // those sessions must not get a scary Logs entry on every activation.
+        console.log(
+          `[overlay:${runner.sessionId}] agent container has no dependency overlay — ` +
+          `compose services use the plain workspace directories`,
+        );
+      } else {
+        warn(
+          `could not tell which dependency overlays the agent container has (no container ` +
+          `record, and re-derivation found none) — compose services may see different ` +
+          `dependency directories than the agent.`,
+        );
+      }
+      return false;
+    }
+
+    const docker = containerManager.dockerClient;
+    const usable: { depDir: string; volumeName: string }[] = [];
+    for (const pair of pairs) {
+      if (await volumeExists(docker, pair.volumeName)) usable.push(pair);
+      else {
+        warn(
+          `${pair.depDir} is overlay-mounted in the agent container but its volume ` +
+          `(${pair.volumeName}) is gone, so compose services get the plain directory ` +
+          `instead — they will not see the agent's installed dependencies there.`,
+        );
+      }
+    }
+    const changed = mgr.setOverlayDepDirs(usable);
+    // The ops finding of 2026-08-19 — the set is not the only thing that can make
+    // the running stack wrong. When the base generation rotated, container creation
+    // removed the Compose siblings holding the old volumes so they could be
+    // recreated over the new generation (`releaseOverlayVolumeHolders`). The set is
+    // unchanged by that (the volume name is keyed on session + dep dir), so
+    // `changed` says no reconcile is needed — but the service containers are gone,
+    // and a container freezes its mounts at create time, so only a reconcile can
+    // bring them back over the generation the agent is now on.
+    const recreated = containerManager.consumeOverlayVolumesRecreated(runner.sessionId);
+    if (recreated) {
+      // Said in the session's own Logs panel, not just orchestrator stdout: the
+      // reconcile below brings back auto and install-gated services, but a
+      // `manual` service the user had started stays stopped, and "my dev server
+      // vanished on restart" with no explanation anywhere is the worse half of
+      // this trade. The alternative was leaving it running against an upper layer
+      // that no longer exists on the host, where its writes ENOENT.
+      warn(
+        `the dependency base advanced, so the compose services holding the previous ` +
+        `overlay were recreated over the new one. Services set to start automatically ` +
+        `come back on their own; a manually-started service needs starting again.`,
+      );
+    }
+    return changed || recreated;
+  } catch (err) {
+    warn(
+      `could not resolve the dependency overlay (${getErrorMessage(err)}) — compose ` +
+      `services may see different dependency directories than the agent.`,
+    );
+    return false;
+  }
 }
 
 /** Typeguard for the ContainerSessionRunner subclass without an instanceof import here. */
@@ -69,7 +218,7 @@ export function adoptExistingServiceManager(
     composeStopPromises: Map<string, Promise<void>>;
     containerManager: SessionContainerManager | null;
     broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
-    installPromise: Promise<{ ok: boolean }> | null;
+    installPromise: Promise<{ ok: boolean; withheld?: boolean }> | null;
     /**
      * Fresh closure that reads the session's latest secrets (the OLD
      * closure baked into `mgr` references the disposed runner; safe today
@@ -78,6 +227,18 @@ export function adoptExistingServiceManager(
      * secret store wrapper, or a remoteUrl change between disposals).
      */
     secretsLoader?: () => Promise<Record<string, string>>;
+    containServicesFn?: (serviceNames: string[]) => Promise<void>;
+    containServiceDns?: boolean;
+    containServiceProxy?: boolean;
+    resetSessionNetwork?: () => Promise<void>;
+    prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>;
+    /**
+     * #2426 — the session + its clone, so the adopted manager can be re-pointed at
+     * the NEW agent container's overlay volumes. Optional only because the older
+     * test doubles for this handoff predate it.
+     */
+    session?: SessionInfo;
+    workspaceDir?: string;
   },
 ): void {
   const { serviceManagers, composeStopPromises, containerManager, broadcastLog, installPromise, secretsLoader } = deps;
@@ -95,6 +256,33 @@ export function adoptExistingServiceManager(
     mgr.setSecretsLoader(secretsLoader);
   }
 
+  // Bind errors before starting any asynchronous adoption work so a policy
+  // transition failure is visible to the session.
+  const stackErrorListener = (err: Error) => {
+    handleStackError(runner, err, broadcastLog);
+  };
+  mgr.on("stack_error", stackErrorListener);
+
+  // Some injected test doubles predate this optional lifecycle seam.
+  const containmentChanged = typeof mgr.updateEgressContainment === "function"
+    ? mgr.updateEgressContainment(
+        deps.containServicesFn,
+        deps.containServiceDns ?? false,
+        deps.containServiceProxy ?? false,
+        deps.prepareContainedStartFn,
+      )
+    : false;
+  // Stop the old-policy stack immediately. In particular, Open→Contained must
+  // not leave repository services on their old NAT networks while a new worker
+  // is still starting. `stop()` preserves volumes; reconcile starts the stack
+  // again only after the network mode is reset.
+  const policyTransition = containmentChanged
+    ? mgr.stop().catch((error: unknown) => {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        mgr.emit("stack_error", normalized);
+        throw normalized;
+      })
+    : Promise.resolve();
   // 2. Reconnect the new agent container to the existing compose network.
   //    The old container was destroyed; the network outlived it (compose
   //    only removes networks on `down`, which we deliberately skipped).
@@ -120,24 +308,76 @@ export function adoptExistingServiceManager(
     // eslint-disable-next-line no-restricted-syntax -- fire-and-forget after async readiness signal
     void runner
       .whenWorkerReady()
-      .then(() => containerManager.connectToNetwork(runner.sessionId, networkName))
+      .then(async () => {
+        // #2426 — BEFORE the reconcile below, which regenerates the compose
+        // override. The manager outlived the previous runner, so it is still
+        // holding whatever that runner resolved; the container it was resolved
+        // from is gone.
+        //
+        // An UNCHANGED set needs no reconcile, and for a specific reason worth
+        // stating: an overlay volume is named
+        // `shipit-<sid12>_overlay-<hash(depDir)>` (`overlay-session.ts` →
+        // `overlayVolumeName`), so the name depends on the SESSION and the dep
+        // dir, never on the container. A recreate mints a new volume under the
+        // same name, and the standing `external` reference keeps resolving — the
+        // override the previous runner wrote is still correct.
+        //
+        // A CHANGED set does need one, which that reasoning does not cover: the
+        // override is written by `start()`/`reconcile()` and by nothing else, so
+        // re-pointing the manager alone leaves the stale file on disk and every
+        // later `compose up` — the install gate releasing, a user pressing start
+        // — keeps handing compose the old mounts. A service container freezes
+        // its mount set at CREATE time, so those `up`s see an unchanged config
+        // and merely `start` the container that has the wrong mounts, forever.
+        let overlayChanged = false;
+        if (deps.workspaceDir !== undefined) {
+          overlayChanged = await applyOverlayDepDirs(runner, mgr, {
+            containerManager,
+            session: deps.session,
+            workspaceDir: deps.workspaceDir,
+            broadcastLog,
+          });
+          if (overlayChanged) {
+            console.log(
+              `[overlay:${runner.sessionId}] dependency overlay mounts changed for the new ` +
+              `agent container — reconciling so compose services pick them up`,
+            );
+          }
+        }
+        if (containmentChanged) {
+          await policyTransition;
+          await deps.resetSessionNetwork?.();
+        }
+        if (containmentChanged || overlayChanged) {
+          // On the stack queue, like every other reconcile. This is the one
+          // that was left off it: the adopted stack is deliberately still
+          // RUNNING (`preserveComposeOnDispose`), and the new container's
+          // `agent.install` is in flight alongside — so this reconcile's
+          // `compose up` can land in the middle of the install gate's release,
+          // which is exactly the collision the queue exists to prevent
+          // (review finding).
+          await serializeStackOp(runner.sessionId, () => mgr.reconcile());
+        }
+        await containerManager.connectToNetwork(runner.sessionId, networkName);
+      })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("already exists")) {
-          console.warn(
-            `[compose:${runner.sessionId}] reconnect to ${networkName} failed:`,
-            msg,
-          );
-        }
+        if (msg.includes("already exists")) return;
+        const error = err instanceof Error ? err : new Error(msg);
+        mgr.emit("stack_error", error);
       });
+  } else if (containmentChanged) {
+    void (async () => {
+      await policyTransition;
+      await deps.resetSessionNetwork?.();
+      await serializeStackOp(runner.sessionId, () => mgr.reconcile());
+    })().catch((error: unknown) => {
+      mgr.emit("stack_error", error instanceof Error ? error : new Error(getErrorMessage(error)));
+    });
   }
 
   // 3. Re-bind stack_error to the new runner so error logs route to the
   //    right place.
-  const stackErrorListener = (err: Error) => {
-    handleStackError(runner, err, broadcastLog);
-  };
-  mgr.on("stack_error", stackErrorListener);
 
   // 4. Re-arm the install-running gate for the new container's install.
   //    Same race story as initial setup: a compose service that reads
@@ -176,6 +416,20 @@ export function adoptExistingServiceManager(
  * preferable to never recovering.
  */
 export const COMPOSE_STOP_WAIT_TIMEOUT_MS = 15_000;
+
+/**
+ * docs/262 — the placeholder compose configuration a project that declares only
+ * plugins runs under. The manager is told there is NO project compose file, so
+ * this path is never opened and never put on a command line; it exists because
+ * `ComposeConfig` is not optional downstream, and it names the conventional file
+ * only so a log line reads sensibly.
+ *
+ * It must NOT become "run `docker-compose.yml` if it happens to be there": a
+ * repository that adds a plugin has not asked ShipIt to start a stack it never
+ * declared, and the collision domain (req 20) would not know about those
+ * services either (review finding).
+ */
+const DEFAULT_COMPOSE_CONFIG = { file: "docker-compose.yml", dockerSocket: false } as const;
 
 /**
  * Register an in-flight `mgr.stop()` so the next `mgr.start()` for the
@@ -256,11 +510,34 @@ export interface ServiceSetupDeps {
   /**
    * docs/183 — orchestrator-private root for per-service compose env files,
    * outside the agent's workspace mount. Passed to `ServiceManager`, which
-   * requires it (SHI-290): there is no in-clone fallback to omit it in favour of.
+   * requires it (planning#292): there is no in-clone fallback to omit it in favour of.
    */
   serviceEnvDir: string;
   /** docs/192 — durable log store, forwarded to `ServiceManager` for service-log persistence. */
   logStore?: LogStore;
+  /**
+   * docs/262 — bring the session's declared plugin repositories to their
+   * declared versions (checkout + activation + atomic activation). Called on the
+   * same two triggers as compose configuration: session activation and a
+   * `shipit.yaml` edit. Fire-and-forget, so a slow plugin fetch never delays
+   * the session opening (req 13). Constructed in `bootstrap-managers.ts`,
+   * where the bare-cache helpers are in scope; absent in test setups.
+   */
+  activatePluginRepos?: (
+    sessionId: string,
+    workspaceDir: string,
+    onSettled?: (sessionId: string) => void,
+  ) => void;
+  /**
+   * docs/262 reqs 3, 5, 16 — resolve the plugin services this session surfaces
+   * (`services/plugin-services.ts`). Constructed in `bootstrap-managers.ts`,
+   * where Docker and the daemon-side path roots are in scope; absent in test
+   * setups and in local mode, which has no Compose at all.
+   */
+  resolvePluginServices?: (
+    sessionId: string,
+    workspaceDir: string,
+  ) => Promise<PluginComposeService[]>;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** docs/088 — account-level MCP secrets store. */
   credentialStore?: CredentialStore;
@@ -344,6 +621,20 @@ export function setupServiceManager(
     runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
   }
 
+  // docs/262 — bring declared plugin repositories to their declared versions.
+  // Runs beside install for the same reason install runs regardless of compose
+  // config: a project can declare plugins without declaring a stack. Sits
+  // BELOW the trust gate on purpose — fetching and activating a repository a
+  // `shipit.yaml` names is repo-declared behaviour exactly like `agent.install`,
+  // so an untrusted remote must not get it (docs/178). Activation itself runs
+  // no plugin-authored code; when install lands it will run in its own
+  // container, and this gate is what keeps an untrusted remote from reaching
+  // even the fetch.
+  deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner, deps));
+  // The activation state map is process-lived and keyed by session; drop this
+  // session's entries when its runner goes away so session churn can't grow it.
+  runner.on("disposed", () => clearActivationState(runner.sessionId));
+
   // Fire install on the agent container regardless of compose config — projects
   // without a compose stack (like ShipIt itself) still need their dependencies
   // installed. Non-blocking; progress streams via SSE.
@@ -353,7 +644,7 @@ export function setupServiceManager(
   // window around it below so dev servers that race install on a shared
   // bind mount get retried instead of latching to `error`.
   const installCommands = shipitConfig.agent.install;
-  let installPromise: Promise<{ ok: boolean }> | null = null;
+  let installPromise: Promise<{ ok: boolean; withheld?: boolean }> | null = null;
   // docs/183 — orchestrator-observed install wall-clock for the overlay
   // measurement line below. Captured at kickoff; a marker-skip resolves in ~ms,
   // a real install in seconds, so duration classifies the warm-vs-cold scenario.
@@ -369,10 +660,23 @@ export function setupServiceManager(
     // `agent.install` this session is currently running, which
     // `applyShipitConfigChange` diffs against when `shipit.yaml` changes. An
     // empty list still means "no auto-reinstall", exactly as before.
+    //
+    // docs/271 — this records the config's list, which the gate below may then
+    // withhold, so `appliedInstallCommands` means "what `shipit.yaml` declares",
+    // NOT "what ran". That is the right meaning for its one consumer (the
+    // config-change diff): recording the withheld list is what stops the same
+    // change re-triggering on every read, and a revert to an accepted list still
+    // differs from it and so re-runs.
     runner.setDepReinstallInputs(
       installCommands,
       resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs) ?? [],
     );
+    // An input set that resolved to nothing means the content key is off — no
+    // install skip across commits, and no dependency re-check after a rewrite
+    // ShipIt performs. Both are the right defaults; being told only once
+    // something has already failed is not. Recorded here, the same place the
+    // input set is resolved.
+    reportContentKeyState(runner.sessionId, workspaceDir, shipitConfig.agent);
   }
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
     installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
@@ -394,6 +698,13 @@ export function setupServiceManager(
     const s = session;
     void (async () => {
       const res = await p;
+      // docs/271 — a WITHHELD install ran nothing, so publishing would stamp the
+      // rolling base pointer's `markerStamp.installCommands` with a command list
+      // that never executed (`overlay-publish.ts:200-212`). A later fresh session
+      // at the same commit would then get a pre-stamped marker asserting those
+      // commands installed — which is precisely the anchor this gate reads, so
+      // the gate would launder the plugin's list into its own accepted list.
+      if (res.withheld) return;
       try {
         const outcomes = await publishOverlayBases({
           runner: r,
@@ -435,7 +746,16 @@ export function setupServiceManager(
     }
   }
 
-  if (!shipitConfig.compose) {
+  // docs/262 req 5 — a project that declares plugins gets their services whether
+  // or not it declares a stack of its own: wiring a plugin in costs ONE
+  // declaration, and requiring an otherwise-empty `compose:` block plus a
+  // docker-compose.yml to hang it on would be exactly the per-project
+  // boilerplate that requirement rules out. The manager is created for the
+  // declaration, not for the services — which repository has been fetched, and
+  // what it exports, is not knowable here (activation is fire-and-forget), so
+  // `start()` is what finds nothing to run and says so.
+  const pluginsMayProvideServices = shipitConfig.plugins.uses.length > 0;
+  if (!shipitConfig.compose && !pluginsMayProvideServices) {
     composeNotConfigured.add(runner.sessionId);
     runner.emitMessage({ type: "compose_not_configured", sessionId: runner.sessionId });
     runner.on("disposed", () => composeNotConfigured.delete(runner.sessionId));
@@ -443,6 +763,7 @@ export function setupServiceManager(
   }
   // Compose is now configured — clear stale not-configured flag
   composeNotConfigured.delete(runner.sessionId);
+  const composeConfig = shipitConfig.compose ?? DEFAULT_COMPOSE_CONFIG;
 
   // Workspace volume info for compose volume rewriting: user `.:/workspace`
   // bind mounts must map to the same storage as the agent container.
@@ -464,12 +785,26 @@ export function setupServiceManager(
       }
     : undefined;
 
-  // docs/088 — account-level MCP secrets (`mcp__*` keys). Read fresh from
-  // CredentialStore on every compose start/reconcile so a server added while
-  // the session was idle is picked up on next sync.
-  const mcpAgentEnvLoader = credentialStore
-    ? () => collectMcpAgentEnv(credentialStore)
+  // docs/088 — account-level MCP secrets (`mcp__*` keys), and docs/252 phase 2
+  // — the user's stored service credentials under their catalogue `storageEnv`
+  // names. Read fresh from CredentialStore on every compose start/reconcile so
+  // anything added while the session was idle is picked up on the next sync.
+  //
+  // The service credentials are the half that was MISSING: this loader used to
+  // be `mcp__*`-only, which is precisely why a key saved in Settings reached a
+  // compose-less session and not a compose-backed one (Appendix A).
+  const accountAgentEnvLoader = credentialStore
+    ? () => collectAccountAgentEnv(credentialStore)
     : undefined;
+
+  // docs/262 req 23 — the credential NAMES this session's activated plugins
+  // declare. Read fresh on every secrets pass, from each repository's LIVE
+  // manifest, so a `shipit plugin refresh` that adds a credential shows up
+  // without recreating the session. Names only: satisfaction is decided
+  // against `secretsLoader`'s map — the consuming project's own store — and
+  // never against `accountAgentEnvLoader`, which holds ShipIt's platform
+  // credentials (req 23's boundary).
+  const pluginCredentialsLoader = () => collectPluginCredentialDeclarations(workspaceDir);
 
   // ---- Adoption path: orphaned ServiceManager from a previous runner ----
   //
@@ -491,6 +826,9 @@ export function setupServiceManager(
   // See docs/127-restart-agent for the full flow.
   const existing = serviceManagers.get(runner.sessionId);
   if (existing) {
+    const containServicesFn = containerManager?.isEgressContained(runner.sessionId)
+      ? async (serviceNames: string[]) => containerManager.containComposeServices(runner.sessionId, serviceNames)
+      : undefined;
     adoptExistingServiceManager(runner, existing, {
       serviceManagers,
       composeStopPromises,
@@ -498,6 +836,18 @@ export function setupServiceManager(
       broadcastLog,
       installPromise,
       secretsLoader,
+      containServicesFn,
+      containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
+      containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
+      resetSessionNetwork: containerManager
+        ? async () => containerManager.resetSessionNetwork(runner.sessionId)
+        : undefined,
+      prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
+        ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
+        : undefined,
+      // #2426 — what the re-point needs to reach the new container's overlay.
+      session,
+      workspaceDir,
     });
     // Clear any stale migration warning — compose is now set up (still).
     composeWarnings.delete(runner.sessionId);
@@ -507,13 +857,15 @@ export function setupServiceManager(
   const mgr = new ServiceManager({
     sessionId: runner.sessionId,
     workspaceDir,
-    composeConfig: shipitConfig.compose,
+    composeConfig,
+    ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
     stackName: process.env.DOCKER_STACK,
     opsSession: session?.kind === "ops",
     secretsLoader,
-    mcpAgentEnvLoader,
+    accountAgentEnvLoader,
+    pluginCredentialsLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(logStore ? { logStore } : {}),
@@ -545,6 +897,19 @@ export function setupServiceManager(
       ? async (networkName: string) => {
           await containerManager.ensureConnectedToSessionNetwork(runner.sessionId, networkName);
         }
+      : undefined,
+    containServicesFn: containerManager?.isEgressContained(runner.sessionId)
+      ? async (serviceNames: string[]) => {
+          await containerManager.containComposeServices(runner.sessionId, serviceNames);
+      }
+      : undefined,
+    containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
+    containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
+    ensureSessionNetworkModeFn: containerManager
+      ? async (internal: boolean) => containerManager.ensureSessionNetworkMode(runner.sessionId, internal)
+      : undefined,
+    prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
+      ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
       : undefined,
   });
 
@@ -619,77 +984,54 @@ export function setupServiceManager(
     // Gate on any prior runner's pending compose-stop for this session.
     // Bounded to avoid hanging start() forever if `compose down` wedges.
     await awaitComposeStop(composeStopPromises, runner.sessionId);
-    // docs/183 Phase 5 — resolve the session's overlay dep-dir volumes and hand
-    // them to the manager BEFORE the first start(), so compose services that
-    // share the workspace also mount each dep dir's overlay volume nested at
-    // `<service-target>/<dep-dir>`. The `isOverlayEligible` pre-gate is a pure
-    // env+session check, so for flag-off / ineligible sessions this block is
-    // inert and the override (and compose start timing) is byte-for-byte
-    // unchanged.
-    //
-    // The override references each overlay volume as `external: true`, and the
-    // volumes are created at agent-container-create time — so compose may only
-    // mount what that container was actually built with. Re-deriving
-    // eligibility here can disagree with the provisioned state (observed live:
-    // a container created before OVERLAY_DEP_STORE was enabled has no overlay
-    // volumes, and the recomputed reference failed the whole `compose up` with
-    // "external volume not found"). `whenWorkerReady()` orders us after
-    // container creation (volumes are created just before the container — and
-    // dispose also resolves it, hence the `disposed` re-check), then
-    // `requireProvisioned` keeps only specs whose volume really exists.
-    if (
-      containerManager && session && runner instanceof ContainerSessionRunner &&
-      isOverlayEligible(session)
-    ) {
+    // docs/183 Phase 5 — hand the session's overlay dep-dir volumes to the
+    // manager BEFORE the first start(), so compose services that share the
+    // workspace also mount each dep dir's overlay volume nested at
+    // `<service-target>/<dep-dir>`.
+    await applyOverlayDepDirs(runner, mgr, { containerManager, session, workspaceDir, broadcastLog });
+    // docs/262 — resolve the plugin services this session surfaces before the
+    // first `start()`, so a plugin whose repository is already checked out comes
+    // up with the project's own stack rather than one reconcile later. A
+    // repository still being fetched settles afterwards and reaches the stack
+    // through `emitPluginReposUpdated`.
+    // Resolution AND the start go through the session's stack queue together
+    // (see `serializeStackOp`): a plugin round that settles between them would
+    // otherwise reconcile into a start that is still running.
+    await serializeStackOp(runner.sessionId, async () => {
+      await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps);
+      // The awaits above (a prior stack's `compose down`, worker readiness) can
+      // each outlive the runner. Its `disposed` handler has by then dropped the
+      // manager from `serviceManagers` and stopped it — but `start()` resets
+      // `_disposed` and re-arms the poll loop, so going ahead here would leave an
+      // orphaned manager polling Docker for a session nobody owns, with nothing
+      // left to stop it. Checked as late as possible, immediately before the call.
+      if (runner instanceof ContainerSessionRunner && runner.disposed) {
+        console.log(`[compose:${runner.sessionId}] runner disposed before compose start — skipping`);
+        return;
+      }
       try {
-        await runner.whenWorkerReady();
-        if (!runner.disposed) {
-          const specs = await containerManager.prepareOverlaySpecs({
-            sessionId: runner.sessionId,
-            workspaceDir,
-            session,
-            requireProvisioned: true,
-          });
-          if (specs.length > 0) {
-            mgr.setOverlayDepDirs(specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })));
-          }
-        }
+        await mgr.start();
+        console.log(`[compose:${runner.sessionId}] Compose stack started`);
       } catch (err) {
-        console.error(`[overlay:${runner.sessionId}] dep-dir spec resolution failed:`, getErrorMessage(err));
+        const errMsg = getErrorMessage(err);
+        console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, errMsg);
+        mgr.startError = errMsg;
+        runner.emitMessage({
+          type: "compose_error",
+          sessionId: runner.sessionId,
+          message: errMsg,
+        });
+        // Also record into the per-session log ring so the Logs panel and the
+        // future diagnostics endpoint (docs/124-session-rescue-and-diagnostics)
+        // see the failure. Without this, the user gets the PreviewFrame banner
+        // but the Logs panel is silent — a viewer who attaches after the fact
+        // (or files a bug report) has no record of why the stack didn't come
+        // up.
+        if (broadcastLog) {
+          broadcastLog(runner.sessionId, "server", `[compose] Failed to start: ${errMsg}`);
+        }
       }
-    }
-    // The awaits above (a prior stack's `compose down`, worker readiness) can
-    // each outlive the runner. Its `disposed` handler has by then dropped the
-    // manager from `serviceManagers` and stopped it — but `start()` resets
-    // `_disposed` and re-arms the poll loop, so going ahead here would leave an
-    // orphaned manager polling Docker for a session nobody owns, with nothing
-    // left to stop it. Checked as late as possible, immediately before the call.
-    if (runner instanceof ContainerSessionRunner && runner.disposed) {
-      console.log(`[compose:${runner.sessionId}] runner disposed before compose start — skipping`);
-      return;
-    }
-    try {
-      await mgr.start();
-      console.log(`[compose:${runner.sessionId}] Compose stack started`);
-    } catch (err) {
-      const errMsg = getErrorMessage(err);
-      console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, errMsg);
-      mgr.startError = errMsg;
-      runner.emitMessage({
-        type: "compose_error",
-        sessionId: runner.sessionId,
-        message: errMsg,
-      });
-      // Also record into the per-session log ring so the Logs panel and the
-      // future diagnostics endpoint (docs/124-session-rescue-and-diagnostics)
-      // see the failure. Without this, the user gets the PreviewFrame banner
-      // but the Logs panel is silent — a viewer who attaches after the fact
-      // (or files a bug report) has no record of why the stack didn't come
-      // up.
-      if (broadcastLog) {
-        broadcastLog(runner.sessionId, "server", `[compose] Failed to start: ${errMsg}`);
-      }
-    }
+    });
   })();
 }
 
@@ -756,6 +1098,145 @@ function composeRemovalIsTrustworthy(workspaceDir: string): boolean {
  *  - **`compose:` changed / unchanged** → adopt the new block (if any) and
  *    reconcile, which re-parses the compose file and brings up new services.
  */
+/**
+ * docs/262 — tell attached viewers an activation round settled. `emitMessage`
+ * (not `ctx.send`) so every viewer sees it and a reconnecting one replays it.
+ */
+/**
+ * What a settled activation round needs to reach the rest of the session: the
+ * session's ServiceManager (req 23 — a round can change WHICH credential names
+ * the plugins declare, and `secrets_status` samples that only inside its own
+ * sync pass) and the resolver that says what its plugin services now are
+ * (reqs 3, 12).
+ */
+export type PluginServiceRefreshDeps = Pick<
+  ServiceSetupDeps,
+  "sessionManager" | "serviceManagers" | "resolvePluginServices"
+>;
+
+export function emitPluginReposUpdated(
+  runner: SessionRunnerInterface,
+  deps: PluginServiceRefreshDeps,
+): (sessionId: string) => void {
+  return (sessionId: string) => {
+    runner.emitMessage({ type: "plugin_repos_updated", sessionId });
+    // req 23 — without this the Secrets rows keep the previous declaration
+    // until an unrelated reconcile. Container-free — see `refreshSecretsStatus`.
+    void deps.serviceManagers.get(sessionId)?.refreshSecretsStatus().catch((err: unknown) => {
+      console.warn(`[plugins:${sessionId}] secrets status resync failed:`, getErrorMessage(err));
+    });
+    // The generation is published by the time this fires, so the container can
+    // safely link it. Optional call, not an `in` guard: local
+    // mode has no container to prepare, and that is the correct answer there
+    // rather than a missing capability to work around.
+    const container = runner as SessionRunnerInterface & { preparePlugins?: () => Promise<void> };
+    void container.preparePlugins?.();
+    // docs/262 reqs 3, 12 — and the same for the session's SERVICES. This is
+    // what makes `shipit plugin refresh` reach a running plugin service: the
+    // round has just published a new generation, so the fragment, its overlay
+    // volume and its commit env are all different from what the stack is
+    // running. Reconciling only on an actual change keeps an ordinary round —
+    // one fires on every session activation and every `shipit.yaml` edit — from
+    // restarting containers that nothing happened to.
+    void refreshPluginServices(runner, deps);
+  };
+}
+
+/**
+ * Bring a live stack's plugin services up to date with what is now activated.
+ *
+ * Fire-and-forget and never throws: the activation round is already over, the
+ * card already reports what happened, and a session whose plugin services could
+ * not be reconciled still has its own (req 13).
+ */
+async function refreshPluginServices(
+  runner: SessionRunnerInterface,
+  deps: PluginServiceRefreshDeps,
+): Promise<void> {
+  const mgr = deps.serviceManagers.get(runner.sessionId);
+  if (!mgr || !deps.resolvePluginServices) return;
+  const session = deps.sessionManager.get(runner.sessionId);
+  const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
+  try {
+    // Inside the queue, not before it: this rounds's answer must be compared
+    // against what the stack has ACTUALLY consumed. Resolving first and queueing
+    // second would compare against a `start()` that has not read the services
+    // yet, and then reconcile a stack that already has them.
+    await serializeStackOp(runner.sessionId, async () => {
+      const { changed, count } = await resolvePluginServicesInto(
+        runner.sessionId, workspaceDir, mgr, deps,
+      );
+      if (!changed) return;
+      console.log(
+        `[plugins:${runner.sessionId}] plugin services changed (${count}) — reconciling`,
+      );
+      await mgr.reconcile();
+    });
+  } catch (err) {
+    console.error(`[plugins:${runner.sessionId}] plugin service reconcile failed:`, getErrorMessage(err));
+  }
+}
+
+/**
+ * Re-resolve the plugin services this session surfaces and hand them to its
+ * manager. Reports whether the surfaced set actually changed, and how many
+ * services it now holds.
+ *
+ * **The caller must already hold the session's stack op** ({@link
+ * serializeStackOp}, which is not reentrant). The answer is only worth as much
+ * as its adjacency to the `start()` that consumes it: resolved outside the
+ * queue, it is compared against a stack that may not have read the previous
+ * answer yet.
+ *
+ * A resolution that throws leaves the previous set in place. This is the LAST
+ * resort, not the failure policy: the resolver's own contract is that it never
+ * fails a session, and its one daemon round-trip degrades to a per-repository
+ * reason on the card instead of throwing (`resolveSessionPluginServices`), so
+ * reaching this catch means a fault nothing can attribute. Then the previous set
+ * is the least-bad answer — refusing the project's own reconcile over a plugin
+ * fault inverts req 14, and dropping every repository's services over a fault
+ * none of them can be blamed for takes working siblings away, which is the
+ * asymmetry `plugin-preflight.ts` already establishes. `changed: false` likewise
+ * when no resolver is wired at all: local mode has no Compose, and most unit
+ * setups have no Docker.
+ */
+async function resolvePluginServicesInto(
+  sessionId: string,
+  workspaceDir: string,
+  mgr: ServiceManager,
+  deps: Pick<ServiceSetupDeps, "resolvePluginServices">,
+): Promise<{ changed: boolean; count: number }> {
+  if (!deps.resolvePluginServices) return { changed: false, count: 0 };
+  try {
+    const services = await deps.resolvePluginServices(sessionId, workspaceDir);
+    return { changed: mgr.setPluginServices(services), count: services.length };
+  } catch (err) {
+    console.error(`[plugins:${sessionId}] service resolution failed:`, getErrorMessage(err));
+    return { changed: false, count: 0 };
+  }
+}
+
+/**
+ * Bring the session's content-key record up to date, and log when the state is
+ * newly reportable. Detection and reporting only — nothing here changes which
+ * installs run (`install-content-key.ts`).
+ *
+ * Called from both config paths, so the log line is one per *distinct*
+ * `agent.install`, not one per container recreate or activation.
+ */
+function reportContentKeyState(
+  sessionId: string,
+  workspaceDir: string,
+  agent: ContentKeyConfig,
+): void {
+  if (!evaluateContentKeyReport(workspaceDir, agent)) return;
+  console.warn(
+    `[install:${sessionId}] agent.install is not content-keyable and agent.install-inputs is ` +
+      "not declared — the cross-commit install skip and the post-rewrite dependency re-check " +
+      "are both off for this session (see session diagnostics)",
+  );
+}
+
 export function applyShipitConfigChange(
   runner: SessionRunnerInterface,
   deps: ServiceSetupDeps,
@@ -800,9 +1281,21 @@ export function applyShipitConfigChange(
     runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
   }
 
+  // ---- plugin declarations delta (docs/262) ----
+  // Unconditional: activation is a no-op when the resolved commit is already
+  // live, so the cheap check lives there rather than in a config diff here.
+  // Trust is inherited — this path only runs once a ServiceManager exists,
+  // which `setupServiceManager` creates only past the gate.
+  deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner, deps));
+
   // ---- agent.install delta ----
   if (runner instanceof ContainerSessionRunner) {
     const nextCommands = shipitConfig.agent.install;
+    // Outside the delta below on purpose: adding `agent.install-inputs` is the
+    // remedy the diagnostics notice names, and it leaves `agent.install`
+    // untouched — so gating this on a changed command list would leave the
+    // panel reporting a state the user has just fixed.
+    reportContentKeyState(runner.sessionId, workspaceDir, shipitConfig.agent);
     if (!sameCommands(runner.appliedInstallCommands, nextCommands)) {
       console.log(
         `[install:${runner.sessionId}] agent.install changed — re-running (${nextCommands.length} command(s))`,
@@ -819,7 +1312,7 @@ export function applyShipitConfigChange(
   }
 
   // ---- compose delta ----
-  if (!shipitConfig.compose) {
+  if (!shipitConfig.compose && shipitConfig.plugins.uses.length === 0) {
     if (!composeRemovalIsTrustworthy(workspaceDir)) {
       console.warn(
         `[compose:${runner.sessionId}] shipit.yaml unreadable — keeping the running stack`,
@@ -838,12 +1331,45 @@ export function applyShipitConfigChange(
   }
 
   composeNotConfigured.delete(runner.sessionId);
-  if (mgr.updateComposeConfig(shipitConfig.compose)) {
+  // docs/262 — with the `compose:` block gone but plugins still declared, the
+  // stack is the plugin services alone; the project's own file is then allowed
+  // to be absent (req 5, see `setupServiceManager`).
+  const nextComposeConfig = shipitConfig.compose ?? DEFAULT_COMPOSE_CONFIG;
+  if (mgr.updateComposeConfig(nextComposeConfig, { noProjectCompose: !shipitConfig.compose })) {
     console.log(
-      `[compose:${runner.sessionId}] compose config changed — reconciling against ${shipitConfig.compose.file}`,
+      `[compose:${runner.sessionId}] compose config changed — reconciling against ${nextComposeConfig.file}`,
     );
   }
-  void mgr.reconcile().catch((err: unknown) => {
+  // Through the same queue as the first start and the plugin-settled reconcile:
+  // `reconcile()` clears the service map, the poller, the log followers and the
+  // in-flight bookkeeping before calling `start()`, so two of them overlapping
+  // is not a harmless duplicate refresh (review finding). A burst of file events
+  // is coalesced into an ordered sequence.
+  void serializeStackOp(runner.sessionId, async () => {
+    // docs/262 req 20 — the project's OWN service names are an input to the
+    // plugin service set (`collectPluginFragments` seeds the name domain with
+    // them, and they always win), and this is the one moment they can change.
+    // Without this the reconcile below would merge the plugin set resolved
+    // against the PREVIOUS project file with the file it is about to run, so a
+    // service name the project just took would be handed to Compose as two
+    // definitions of one name — the plugin's overlaying the user's — and the
+    // collision would only be computed when some later activation round
+    // happened to settle, which for a repository that has to be fetched is
+    // network-far away. Req 20 asks for the report BEFORE the ambiguous one
+    // runs, so the computation has to run before the override is generated,
+    // not after it is up. It is the existing computation, not a second one:
+    // this re-resolves through `resolveSessionPluginServices`, whose collision
+    // domain is seeded by a fresh read of the project's compose file.
+    if ((await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps)).changed) {
+      // The withholding without the report is half of req 20 — a plugin's
+      // service would simply vanish from the list. The Plugins card recomputes
+      // the collision itself on every snapshot (`api-routes-plugin-repos.ts`),
+      // so telling viewers to refetch is what makes the reason arrive with the
+      // change rather than whenever the fetch behind the next round finishes.
+      runner.emitMessage({ type: "plugin_repos_updated", sessionId: runner.sessionId });
+    }
+    await mgr.reconcile();
+  }).catch((err: unknown) => {
     const errMsg = getErrorMessage(err);
     console.error(`[compose:${runner.sessionId}] Reconcile after config change failed:`, errMsg);
     mgr.startError = errMsg;

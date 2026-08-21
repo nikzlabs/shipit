@@ -8,18 +8,23 @@ import {
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
+  UP_SILENCE_TIMEOUT_MS,
+  UP_STALLED_MESSAGE,
+  COMPOSE_LOG_PREFIX,
+  MAX_COMPOSE_LOG_LINE,
   type ComposeRunner,
   type ComposeQuery,
   type SecretsStatusInternalSnapshot,
 } from "./service-manager.js";
 import { SESSION_WORKSPACE_SUBDIR, SESSION_STATE_SUBDIR } from "./session-state-dir.js";
+import { serializeStackOp } from "./stack-op-queue.js";
 
 /**
  * Create a real session layout in a temp dir: the clone at
  * `<sessionDir>/workspace`, ShipIt's state dir at its `state/` sibling.
  *
  * `ServiceManager` resolves the state dir from the clone path (docs/246), and
- * since SHI-286 it REFUSES a clone that doesn't sit at `workspace/` rather than
+ * since planning#288 it REFUSES a clone that doesn't sit at `workspace/` rather than
  * falling back to writing into the clone — so a bare temp dir is no longer a
  * valid workspace. Returns the session dir; the clone is its `workspace/` child.
  */
@@ -37,7 +42,7 @@ function stateOf(workspaceDir: string): string {
 /**
  * The orchestrator-private service-env root for a clone produced by
  * {@link makeSessionDir} — a sibling of `workspace/`, so it is outside the
- * clone. `ServiceManager` requires one (SHI-290): there is no longer an
+ * clone. `ServiceManager` requires one (planning#292): there is no longer an
  * in-clone `.shipit/.env.<svc>` fallback, and a root that resolves inside the
  * clone is refused outright.
  */
@@ -104,6 +109,44 @@ describe("ServiceManager", () => {
     const mgr = createManager(dir);
     expect(mgr.getServices()).toEqual([]);
     expect(mgr.started).toBe(false);
+  });
+
+  it("reports whether setOverlayDepDirs changed the set (#2426)", () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(dir);
+    const pairs = [{ depDir: "node_modules", volumeName: "shipit-abc_overlay-aaaa" }];
+
+    // The adoption path reconciles on this answer, so an identical re-point must
+    // read as unchanged (no stack restart on every agent restart) and a real
+    // change must not be swallowed (the override on disk is otherwise stale).
+    expect(mgr.setOverlayDepDirs(pairs)).toBe(true);
+    expect(mgr.setOverlayDepDirs([...pairs])).toBe(false);
+    expect(mgr.setOverlayDepDirs([])).toBe(true);
+    expect(mgr.setOverlayDepDirs([])).toBe(false);
+  });
+
+  it("detaches stale egress before up and contains the service after up", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    user: \"1001:1001\"\n    x-shipit-preview: manual\n");
+    const events: string[] = [];
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: async (args) => {
+        if (args.includes("up")) events.push("up");
+      },
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+      prepareContainedStartFn: async () => { events.push("prepare"); },
+      containServicesFn: async () => { events.push("contain"); },
+    });
+    await mgr.start();
+    await mgr.startService("web");
+    expect(events).toEqual(["prepare", "up", "contain"]);
+    await mgr.stop();
   });
 
   it("rejects invalid compose files during start", async () => {
@@ -679,6 +722,181 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     expect(mgr.startError).toBeNull();
   });
 
+  /**
+   * planning#382 — an empty service list must be able to say WHY.
+   *
+   * The defect these pin: a compose file ShipIt declines throws out of
+   * `start()`, which reaches the Preview pane as `compose_error` and reaches
+   * every reader of the service list as nothing at all. So the list read as
+   * "this project declares no services" when the truth was "refused, here is
+   * the line to change" — and docs/263's containment rules decline a STOCK
+   * compose file, so that was a project's FIRST answer, not an edge case.
+   */
+  describe("projectComposeFailure", () => {
+    it("is null while the compose file parses", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+      const mgr = createMockedManager(dir);
+      await mgr.start();
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+
+    it("records a REFUSED file with the rule's own message", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      const mgr = createMockedManager(dir);
+
+      await expect(mgr.start()).rejects.toThrow(/privileged/);
+
+      // The list is empty, and this is the whole of what makes that empty list
+      // legible: the classification says the file was understood and declined,
+      // and the message is the parser's own — it names the service and the fix.
+      expect(mgr.getServices()).toEqual([]);
+      expect(mgr.projectComposeFailure?.kind).toBe("refused");
+      expect(mgr.projectComposeFailure?.message).toContain("web");
+      expect(mgr.projectComposeFailure?.message).toContain("privileged");
+    });
+
+    it("records a file it could not parse as MALFORMED, not refused", async () => {
+      const dir = setup();
+      // Valid YAML, not a compose document — the "could not understand it"
+      // half, which must NOT claim its message names a fix.
+      writeCompose(dir, "not-a-compose-file: true\n");
+      const mgr = createMockedManager(dir);
+
+      await expect(mgr.start()).rejects.toThrow();
+      expect(mgr.projectComposeFailure?.kind).toBe("malformed");
+    });
+
+    it("retracts the failure once the file parses again", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      const mgr = createMockedManager(dir);
+      await expect(mgr.start()).rejects.toThrow();
+      expect(mgr.projectComposeFailure).not.toBeNull();
+
+      // The user fixes the file and the stack reconciles. A stale refusal here
+      // would keep telling the agent to edit a line it has already edited.
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+      await mgr.reconcile();
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+
+    it("drops a stale failure when the project stops declaring a compose file", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      const mgr = createMockedManager(dir);
+      await expect(mgr.start()).rejects.toThrow();
+
+      // `noProjectCompose` means `start()` never parses, so nothing else would
+      // clear the record — the session would report a refusal against a stack
+      // that no longer exists.
+      mgr.updateComposeConfig(
+        { file: "other-compose.yml", dockerSocket: false },
+        { noProjectCompose: true },
+      );
+      await mgr.reconcile();
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+
+    /**
+     * Review finding — the config change drops it IMMEDIATELY, not one
+     * reconcile later. Its production caller queues the reconcile
+     * asynchronously (`service-manager-setup.ts`), so anything in between
+     * would read a rule quoted against a file this session has stopped
+     * declaring.
+     */
+    it("drops the failure the moment the compose config changes, before any reconcile", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      const mgr = createMockedManager(dir);
+      await expect(mgr.start()).rejects.toThrow();
+      expect(mgr.projectComposeFailure).not.toBeNull();
+
+      mgr.updateComposeConfig({ file: "deploy/compose.yml", dockerSocket: false });
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+
+    /**
+     * Review finding — the mirror image, and the reason `reconcile()` does NOT
+     * clear the record itself. `start()` can throw before it ever reaches the
+     * parse; clearing optimistically at the top of the reconcile would erase a
+     * refusal that is still true, and the list would go back to reading as an
+     * empty project with no reason at all.
+     */
+    it("keeps the failure when a reconcile dies before it reaches the parse", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      // `ensureSessionNetworkModeFn` runs first thing in `start()`, before the
+      // compose file is read at all — so the second call models a daemon that
+      // goes away between the first start and the reconcile.
+      let networkCalls = 0;
+      const mgr = new ServiceManager({
+        sessionId: "test-session",
+        workspaceDir: dir,
+        serviceEnvDir: serviceEnvOf(dir),
+        composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+        composeRunner: () => Promise.resolve(),
+        composeQuery: () => Promise.resolve(""),
+        pollIntervalMs: 0,
+        ensureSessionNetworkModeFn: () =>
+          ++networkCalls > 1 ? Promise.reject(new Error("daemon unreachable")) : Promise.resolve(),
+      });
+
+      await expect(mgr.start()).rejects.toThrow(/privileged/);
+      const recorded = mgr.projectComposeFailure;
+      expect(recorded?.kind).toBe("refused");
+
+      await expect(mgr.reconcile()).rejects.toThrow("daemon unreachable");
+      expect(mgr.projectComposeFailure).toEqual(recorded);
+    });
+
+    /**
+     * Review finding — `refreshSecretsStatus` was a SECOND inline copy of the
+     * same parse, so it neither recorded a refusal it discovered nor retracted
+     * one the user had since fixed. It runs whenever a plugin activation round
+     * settles, so a stale reason there had nothing to clear it.
+     */
+    it("retracts the failure when the secrets-status refresh re-reads a fixed file", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      const mgr = createMockedManager(dir);
+      await expect(mgr.start()).rejects.toThrow();
+      expect(mgr.projectComposeFailure).not.toBeNull();
+
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+      await mgr.refreshSecretsStatus();
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+
+    it("records a refusal the secrets-status refresh is the first to see", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+      const mgr = createMockedManager(dir);
+      await mgr.start();
+      expect(mgr.projectComposeFailure).toBeNull();
+
+      // Third-party plugin code has the workspace read-write (docs/262), so the
+      // file really can change under a running stack.
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      await mgr.refreshSecretsStatus();
+      expect(mgr.projectComposeFailure?.kind).toBe("refused");
+    });
+
+    it("files no reason against a project that declares no compose file at all", async () => {
+      const dir = setup();
+      const mgr = createMockedManager(dir);
+      mgr.updateComposeConfig(
+        { file: "docker-compose.yml", dockerSocket: false },
+        { noProjectCompose: true },
+      );
+      // No file on disk. Parsing the path anyway would file a `malformed`
+      // reason against a plugin-only project, which declares no stack.
+      await mgr.refreshSecretsStatus();
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+  });
+
   it("getLogBuffer returns empty string for unknown service", () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");
@@ -795,7 +1013,7 @@ services:
     expect(webEnv).toContain("STRIPE_KEY=sk_test_123");
     expect(apiEnv).toContain("DATABASE_URL=postgres://x");
 
-    // SHI-290 — and nowhere near the user's clone.
+    // planning#292 — and nowhere near the user's clone.
     expect(fs.existsSync(path.join(dir, ".shipit"))).toBe(false);
 
     // Scoping: web should not see api's secrets and vice versa
@@ -1001,7 +1219,7 @@ services:
 
     const override = fs.readFileSync(path.join(stateOf(dir), "compose.override.yml"), "utf-8");
     expect(override).toContain("env_file:");
-    // SHI-290 — the reference is the absolute out-of-clone path, never
+    // planning#292 — the reference is the absolute out-of-clone path, never
     // `.shipit/.env.api` inside the user's repository.
     expect(override).toContain(serviceEnvFile(dir, "test-session", "api"));
     expect(override).not.toContain(".shipit/.env.api");
@@ -1150,9 +1368,9 @@ services:
     // No .env.api in the workspace — agent can't read it
     expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
 
-    // SHI-285 — the entrypoint wrapper is staged in the secrets root, NOT in
+    // planning#287 — the entrypoint wrapper is staged in the secrets root, NOT in
     // the clone, where the post-turn `git add -A` would commit it into the
-    // user's repository (docs/246 req 1).
+    // user's repository (docs/246-shipit-state-out-of-clone req 1).
     const stagedWrapper = path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh");
     expect(fs.existsSync(stagedWrapper)).toBe(true);
     expect(fs.statSync(stagedWrapper).mode & 0o777).toBe(0o755);
@@ -1169,7 +1387,7 @@ services:
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
 
-  // SHI-285 / docs/246 req 1 — the whole point: a Docker-secrets session leaves
+  // planning#287 / docs/246-shipit-state-out-of-clone req 1 — the whole point: a Docker-secrets session leaves
   // the git clone untouched. Before the fix this test failed on
   // `.shipit/secrets-entrypoint.sh`.
   it("Docker-secrets mode writes nothing into the clone", async () => {
@@ -1529,6 +1747,83 @@ services:
     expect(last.declared.map((d) => d.name).sort()).toEqual(["DATABASE_URL", "SENTRY_DSN"]);
     expect(last.missingRequired).toEqual(["DATABASE_URL"]);
     expect(last.agentNames).toEqual([]); // no value resolved → empty
+  });
+
+  // docs/262 req 23 — a settled plugin activation changes WHICH credential
+  // names are declared, and `secrets_status` samples that only in its own sync.
+  it("refreshSecretsStatus re-publishes plugin needs without touching containers", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+`);
+    // The first sync sees no live generation; the second sees one.
+    let declarations: { repo: string; plugin: string; alias: string; credentials: string[] }[] = [];
+    const composeCalls: string[][] = [];
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
+      composeRunner: (args: string[]) => {
+        composeCalls.push(args);
+        return Promise.reject(new Error("no docker"));
+      },
+      secretsLoader: async () => ({}),
+      pluginCredentialsLoader: () => declarations,
+      pollIntervalMs: 0,
+    });
+
+    const snapshots: SecretsStatusInternalSnapshot[] = [];
+    mgr.on("secrets_status", (snap: SecretsStatusInternalSnapshot) => snapshots.push(snap));
+
+    try { await mgr.start(); } catch { /* expected — no docker */ }
+    expect(snapshots.at(-1)?.plugins).toEqual([]);
+
+    declarations = [{ repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] }];
+    const callsBefore = composeCalls.length;
+    await mgr.refreshSecretsStatus();
+
+    expect(snapshots.at(-1)?.plugins).toEqual([
+      {
+        repo: "art-kit",
+        plugin: "palette",
+        alias: "artk",
+        credentials: [{ name: "FAL_KEY", satisfied: false }],
+      },
+    ]);
+    // The whole point of the narrow method: no `compose up`, so a plugin
+    // refresh never restarts the user's services.
+    expect(composeCalls.length).toBe(callsBefore);
+  });
+
+  it("refreshSecretsStatus leaves the snapshot alone when the compose file will not parse", async () => {
+    // Syncing an empty service list would sweep the env files of services that
+    // are still running.
+    const dir = setup();
+    writeCompose(dir, "services:\n  api:\n    image: node:20\n");
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
+      composeRunner: () => Promise.reject(new Error("no docker")),
+      secretsLoader: async () => ({}),
+      pluginCredentialsLoader: () => [
+        { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] },
+      ],
+      pollIntervalMs: 0,
+    });
+
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), "services: [unclosed\n  - broken");
+    const seen: SecretsStatusInternalSnapshot[] = [];
+    mgr.on("secrets_status", (snap: SecretsStatusInternalSnapshot) => seen.push(snap));
+    await mgr.refreshSecretsStatus();
+    expect(seen).toEqual([]);
   });
 });
 
@@ -2098,6 +2393,61 @@ services:
     expect(rmCalls.flat()).not.toContain("resolver-id");
   });
 
+  it("reconcile of a running stack does not sweep its own healthy containers", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
+
+    const rmCalls: string[][] = [];
+    const composeRunner: ComposeRunner = () => Promise.resolve();
+    const composeQuery: ComposeQuery = (args) => {
+      if (args[0] === "rm") {
+        rmCalls.push(args.slice());
+        return Promise.resolve("");
+      }
+      if (args[0] === "ps") {
+        // Keep-label queries for the egress sidecars — neither is present.
+        if (args.some((a) => a.includes("shipit-egress-"))) return Promise.resolve("");
+        if (args.includes("--format")) return Promise.resolve(""); // poll
+        // The broad `shipit-parent-session` sweep query. Answering it with a
+        // container id is the whole point: on a reconcile this is the session's
+        // OWN live preview container, and `rm -f` on it is a SIGKILL with no
+        // preceding SIGTERM — the exit 137 the user sees on every edit to
+        // `docker-compose.yml`.
+        return Promise.resolve("live-preview-id\n");
+      }
+      if (args.includes("inspect")) {
+        return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    // Cold start still sweeps: anything carrying this session's label there is
+    // left over from a previous orchestrator run or agent-container incarnation.
+    await mgr.start();
+    expect(rmCalls.find((c) => c.includes("live-preview-id"))).toEqual([
+      "rm", "-f", "live-preview-id",
+    ]);
+
+    // A reconcile is a config change against a LIVE stack. Compose's own
+    // recreate (plus `--remove-orphans`, plus the surgical conflict recovery)
+    // owns the transition; no broad `rm -f` may run.
+    rmCalls.length = 0;
+    await mgr.reconcile();
+    expect(rmCalls).toEqual([]);
+
+    await mgr.stop();
+  });
+
   it("startService surfaces the original error if the squatter can't be removed", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
@@ -2192,8 +2542,14 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
   /**
    * Build a manager that records the service names passed to each `up` and
    * each `stop`, and serves a configurable `docker compose ps` response.
+   *
+   * `sessionId` is overridable because the stack queue (`serializeStackOp`) is a
+   * module-level map keyed on it, shared by every test in this file. A test that
+   * holds the queue — or fails before releasing it — would otherwise stall every
+   * later test that opens the install gate. Any test that touches the queue
+   * takes an id of its own.
    */
-  function makeManager(dir: string) {
+  function makeManager(dir: string, sessionId = "test-session") {
     const upCalls: string[][] = [];
     const stopCalls: string[] = [];
     let psResponse = "";
@@ -2213,7 +2569,7 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
     };
 
     const mgr = new ServiceManager({
-      sessionId: "test-session",
+      sessionId,
       workspaceDir: dir,
       serviceEnvDir: serviceEnvOf(dir),
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
@@ -2276,6 +2632,48 @@ describe("ServiceManager install gate (x-shipit-depends-on-install)", () => {
     // poll sees it running.
     setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
     mgr.setInstallRunning(false);
+    await flushMicrotasks();
+
+    expect(upNames(upCalls)).toContain("web");
+    expect(mgr.getService("web")?.status).toBe("running");
+  });
+
+  it("holds the gated start behind an in-flight stack op instead of racing it", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    // Its own session id: this test parks the module-level stack queue, and a
+    // failure before `release()` would otherwise stall every later test that
+    // opens the install gate.
+    const sessionId = "test-session-gate-queue";
+    const { mgr, upCalls, setPsResponse } = makeManager(dir, sessionId);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    expect(upNames(upCalls)).not.toContain("web");
+
+    // Stand in for the plugin-service reconcile a session activation runs
+    // concurrently with `agent.install`: it holds the session's stack op, which
+    // in production is a `docker compose up` mid-recreate.
+    let release!: () => void;
+    const reconcile = new Promise<void>((r) => { release = r; });
+    const queued = serializeStackOp(sessionId, () => reconcile);
+
+    try {
+      setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      mgr.setInstallRunning(false);
+      await flushMicrotasks();
+
+      // The gate is open — the service reads as `starting` — but no compose
+      // command has gone out, because the queue is busy. Unserialized, this `up`
+      // landed inside the reconcile's recreate: compose failed with "removal of
+      // container … is already in progress", the container was force-removed
+      // (exit 137), and the service walked to `stopped` 30s later.
+      expect(mgr.getService("web")?.status).toBe("starting");
+      expect(upNames(upCalls)).not.toContain("web");
+    } finally {
+      release();
+    }
+    await queued;
     await flushMicrotasks();
 
     expect(upNames(upCalls)).toContain("web");
@@ -3078,5 +3476,692 @@ describe("ServiceManager starting-state address hygiene (#2044)", () => {
     expect(mgr.getService("web")?.status).toBe("error");
 
     await mgr.stop();
+  });
+});
+
+/**
+ * Compose-up output reaches the service's log stream.
+ *
+ * `startService` writes `starting`, awaits `docker compose up -d --build`, and
+ * only then spawns the log follower. With a cold layer cache that `up` is a full
+ * image build — minutes during which the service sat at `starting` with an empty
+ * log panel and no diagnostic anywhere, because the runner dropped its own
+ * output and `withUpInFlight` (correctly) exempts an in-flight `up` from both
+ * the missing-container reconciliation and the `starting` watchdog. The user
+ * reads that as "Start does nothing".
+ */
+describe("ServiceManager — compose up output reaches the service log", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const MANUAL_COMPOSE = `
+services:
+  dev:
+    image: node:24
+    ports: ["3000:3000"]
+    x-shipit-preview: manual
+`;
+
+  /**
+   * A manager whose `up` emits build-shaped progress, plus a log store spy. The
+   * chunk boundaries deliberately split a line — compose writes in arbitrary
+   * chunks and the sink has to buffer to whole lines before prefixing.
+   */
+  function makeBuildingManager(dir: string) {
+    const logs: { name: string; text: string }[] = [];
+    const stored: string[] = [];
+    /** Ring-buffer contents sampled WHILE the `up` is still running. */
+    let bufferDuringUp = "";
+    /** What a panel opened mid-build would be served. */
+    let snapshotDuringUp = "";
+
+    const composeRunner: ComposeRunner = async (args, _cwd, onOutput) => {
+      if (!args.includes("up")) return;
+      onOutput?.("#4 [2/9] RUN apt-get update\n#4 sha256:abc 0.4s done\n");
+      onOutput?.("#5 [3/9] RUN playwright ");
+      onOutput?.("install-deps chromium\n");
+      // Compose's last record often has no trailing newline. `ComposeCli.run`
+      // flushes at the process boundary so it isn't dropped.
+      onOutput?.("#5 DONE 92.1s");
+      bufferDuringUp = mgr.getLogBuffer("dev");
+      snapshotDuringUp = await mgr.snapshotLogs("dev");
+    };
+
+    const logStore = {
+      hasChannel: () => false,
+      append: (_sid: string, _channel: string, text: string) => { stored.push(text); },
+      snapshotText: () => "",
+    } as unknown as ConstructorParameters<typeof ServiceManager>[0]["logStore"];
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+      ...(logStore ? { logStore } : {}),
+    });
+    mgr.on("service_log", (name: string, text: string) => { logs.push({ name, text }); });
+
+    return {
+      mgr, logs, stored,
+      getBufferDuringUp: () => bufferDuringUp,
+      getSnapshotDuringUp: () => snapshotDuringUp,
+    };
+  }
+
+  it("relays build progress line by line while the container does not exist yet", async () => {
+    tmpDir = makeSessionDir("service-mgr-");
+    const dir = path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), MANUAL_COMPOSE);
+    const { mgr, logs, getBufferDuringUp, getSnapshotDuringUp } = makeBuildingManager(dir);
+
+    await mgr.start();
+    logs.length = 0;
+    await mgr.startService("dev");
+
+    expect(logs.map(l => l.text)).toEqual([
+      "[compose] #4 [2/9] RUN apt-get update\n",
+      "[compose] #4 sha256:abc 0.4s done\n",
+      "[compose] #5 [3/9] RUN playwright install-deps chromium\n",
+      // Flushed at the process boundary — the command never wrote its last "\n".
+      "[compose] #5 DONE 92.1s\n",
+    ]);
+    expect(logs.every(l => l.name === "dev")).toBe(true);
+    expect(getBufferDuringUp()).toContain("[compose] #5 [3/9] RUN playwright install-deps chromium");
+    // A panel opened mid-build is served the same lines: with no persisted
+    // history for this channel yet — the cold-build case — `snapshotLogs` falls
+    // back to the ring buffer while `docker compose logs` has no container to
+    // answer for.
+    expect(getSnapshotDuringUp()).toContain("[compose] #4 [2/9] RUN apt-get update");
+
+    await mgr.stop();
+  }, 15_000);
+
+  it("emits a record that never ends, instead of buffering it without bound", async () => {
+    tmpDir = makeSessionDir("service-mgr-");
+    const dir = path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), MANUAL_COMPOSE);
+
+    const logs: string[] = [];
+    const composeRunner: ComposeRunner = (args, _cwd, onOutput) => {
+      if (args.includes("up")) {
+        // No newline anywhere. The sink's buffer lives outside MAX_LOG_BUFFER's
+        // cap, so without a bound this grows for the length of the build.
+        for (let i = 0; i < 5; i++) onOutput?.("x".repeat(MAX_COMPOSE_LOG_LINE / 2));
+      }
+      return Promise.resolve();
+    };
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+    });
+    mgr.on("service_log", (_name: string, text: string) => { logs.push(text); });
+
+    await mgr.start();
+    logs.length = 0;
+    await mgr.startService("dev");
+
+    // One emit when the buffer passed the cap mid-stream, one on the flush —
+    // rather than 10 KB sitting in `pending` until the command ended.
+    expect(logs.length).toBe(2);
+    expect(logs.every(t => t.startsWith(COMPOSE_LOG_PREFIX))).toBe(true);
+    expect(logs.reduce((n, t) => n + t.length, 0)).toBeGreaterThan(MAX_COMPOSE_LOG_LINE);
+
+    await mgr.stop();
+  });
+
+  it("does not persist compose output to the durable log store", async () => {
+    tmpDir = makeSessionDir("service-mgr-");
+    const dir = path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), MANUAL_COMPOSE);
+    const { mgr, logs, stored } = makeBuildingManager(dir);
+
+    await mgr.start();
+    await mgr.startService("dev");
+
+    // Non-vacuous: output DID flow (otherwise "nothing was persisted" would be
+    // true for the uninteresting reason).
+    expect(logs.filter(l => l.text.includes("[compose]")).length).toBeGreaterThan(0);
+    // docs/192: `streamLogs` picks `--tail 1000` vs `--tail 0` by asking whether
+    // the store already holds this channel. Seeding it with build output would
+    // flip that predicate before the container was ever followed, losing the
+    // container's first lines for good.
+    expect(stored.filter(t => t.includes("[compose]"))).toEqual([]);
+
+    await mgr.stop();
+  });
+});
+
+/**
+ * docs/121 — the three remaining service-lifecycle gaps, all of them about a
+ * service that ends up in a state the user cannot get out of by any means the
+ * UI offers.
+ *
+ *   - requirement 2: a `docker compose up` that never returns pinned the
+ *     service at `starting` forever, because the (correct) exemption an
+ *     in-flight `up` gets from the watchdog had no outer bound.
+ *   - requirement 4: the log follower dies with the container it follows, and
+ *     nothing re-attached it on the AUTOMATIC recreate paths — so a service
+ *     that recovered on its own showed an empty log panel until the user
+ *     restarted it by hand.
+ *   - requirement 5: `stopService` ran `docker compose stop` while an earlier
+ *     `startService`'s `up` was still running, so the container came back after
+ *     the user asked for it to be gone.
+ */
+describe("ServiceManager service-lifecycle resilience (docs/121)", () => {
+  let tmpDir: string;
+
+  function setup() {
+    tmpDir = makeSessionDir("service-mgr-121-");
+    return path.join(tmpDir, SESSION_WORKSPACE_SUBDIR);
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function writeCompose(dir: string, content: string): void {
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), content);
+  }
+
+  const MANUAL_COMPOSE =
+    "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n    x-shipit-preview: manual\n";
+
+  interface ManagerOpts {
+    /**
+     * Runs in place of `docker compose up`. Receives the output sink, so a test
+     * can model a build that talks as well as one that has gone silent.
+     */
+    up?: (onOutput?: (chunk: string) => void) => Promise<void>;
+    /** Runs in place of `docker compose stop`. */
+    stop?: () => Promise<void>;
+    pollIntervalMs?: number;
+  }
+
+  function makeManager(dir: string, opts: ManagerOpts = {}) {
+    let psResponse = "";
+    const upCalls: string[][] = [];
+    const stopCalls: string[] = [];
+
+    const composeRunner: ComposeRunner = (args, _cwd, onOutput) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) {
+        upCalls.push(args.slice(upIdx));
+        return opts.up?.(onOutput) ?? Promise.resolve();
+      }
+      const stopIdx = args.indexOf("stop");
+      if (stopIdx >= 0) {
+        stopCalls.push(args[stopIdx + 1]);
+        return opts.stop?.() ?? Promise.resolve();
+      }
+      return Promise.resolve();
+    };
+
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(psResponse);
+      if (key === "inspect") {
+        return Promise.resolve(JSON.stringify([{
+          State: { OOMKilled: false },
+          NetworkSettings: { Networks: { "shipit-session-test-session": { IPAddress: "172.16.0.9" } } },
+        }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: opts.pollIntervalMs ?? 0,
+    });
+
+    return {
+      mgr,
+      upCalls,
+      stopCalls,
+      poll: () => (mgr as unknown as { poller: { pollOnce(): Promise<void> } }).poller.pollOnce(),
+      logProcesses: () =>
+        (mgr as unknown as { logProcesses: Map<string, ChildProcess> }).logProcesses,
+      setPsResponse: (s: string) => { psResponse = s; },
+    };
+  }
+
+  const runningPs = JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 });
+  const exitedPs = (exitCode: number) =>
+    JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: exitCode });
+
+  // -------------------------------------------------------------------------
+  // Requirement 2 — an in-flight `up` is exempt only while it is talking
+  // -------------------------------------------------------------------------
+
+  it("reports a compose up that has gone silent and never returned", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // A wedged daemon: the `up` neither returns nor says anything.
+    const { mgr } = makeManager(dir, { up: () => new Promise<void>(() => {}) });
+
+    await mgr.start();
+    const startPromise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    await vi.advanceTimersByTimeAsync(UP_SILENCE_TIMEOUT_MS + STARTING_WATCHDOG_MS);
+
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toBe(UP_STALLED_MESSAGE);
+    // No address may survive it — the container it described is unverifiable.
+    expect(mgr.getServices().find(s => s.name === "web")?.url).toBeUndefined();
+    void startPromise;
+  });
+
+  it("never bounds a build that is still producing output", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // A cold image build: minutes long, but talking the whole way through.
+    // Requirement 2's non-requirements rule out putting a clock on this.
+    let emit: ((chunk: string) => void) | undefined;
+    const { mgr } = makeManager(dir, {
+      up: (onOutput) => new Promise<void>(() => { emit = onOutput; }),
+    });
+
+    await mgr.start();
+    void mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Four silence windows' worth of build, with progress arriving throughout.
+    for (let i = 0; i < 8; i++) {
+      await vi.advanceTimersByTimeAsync(UP_SILENCE_TIMEOUT_MS / 2);
+      emit?.(`#${i} [2/9] RUN npm ci\n`);
+    }
+    expect(mgr.getService("web")?.status).toBe("starting");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+
+    // The moment it stops talking, the bound applies.
+    await vi.advanceTimersByTimeAsync(UP_SILENCE_TIMEOUT_MS + STARTING_WATCHDOG_MS);
+    expect(mgr.getService("web")?.status).toBe("error");
+    expect(mgr.getService("web")?.error).toBe(UP_STALLED_MESSAGE);
+  });
+
+  it("recovers on its own if the slow up eventually succeeds", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    let finishUp: (() => void) | undefined;
+    const { mgr, setPsResponse } = makeManager(dir, {
+      up: () => new Promise<void>((resolve) => { finishUp = resolve; }),
+    });
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    const startPromise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(UP_SILENCE_TIMEOUT_MS + STARTING_WATCHDOG_MS);
+    expect(mgr.getService("web")?.status).toBe("error");
+
+    // The `up` was never cancelled — the error is a report, not a verdict.
+    finishUp?.();
+    await startPromise;
+    expect(mgr.getService("web")?.status).toBe("running");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Requirement 4 — the log follower survives an automatic recovery
+  // -------------------------------------------------------------------------
+
+  it("re-attaches a log follower when a service comes back on its own", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const first = logProcesses().get("web");
+    expect(first).toBeDefined();
+
+    // The container is recreated by an automatic path (a retry, an OOM
+    // recovery, the gated batch): the follower dies with its predecessor.
+    first!.emit("close", 0);
+    expect(logProcesses().has("web")).toBe(false);
+
+    // The service leaves and re-enters `running` — the transition every
+    // automatic recovery route ends at.
+    setPsResponse(exitedPs(1));
+    await poll();
+    setPsResponse(runningPs);
+    await poll();
+
+    const second = logProcesses().get("web");
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+  });
+
+  it("re-attaches even when the follower dies after the recovery poll", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const first = logProcesses().get("web");
+
+    // The replacement container is observed running BEFORE the old follower's
+    // `close` arrives. A check gated on the non-running -> running transition
+    // would no-op here and never get another chance.
+    setPsResponse(exitedPs(1));
+    await poll();
+    setPsResponse(runningPs);
+    await poll();
+    first!.emit("close", 0);
+
+    // The next ordinary poll of a still-running service re-attaches.
+    await poll();
+    const second = logProcesses().get("web");
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+  });
+
+  it("does not replace a follower that is still alive", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, logProcesses, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const follower = logProcesses().get("web");
+
+    // Replacing a live follower would clear the ring buffer `streamLogs` wipes
+    // on every spawn — throwing away the very backlog requirement 4 is about.
+    setPsResponse(exitedPs(0));
+    await poll();
+    setPsResponse(runningPs);
+    await poll();
+
+    expect(logProcesses().get("web")).toBe(follower);
+  });
+
+  it("retires a follower that exits so its liveness answer stays honest", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, logProcesses } = makeManager(dir);
+
+    await mgr.start();
+    const cleanup = mgr.streamLogs("web");
+    const proc = logProcesses().get("web");
+    expect(proc).toBeDefined();
+    expect(proc!.listenerCount("close")).toBeGreaterThan(0);
+
+    proc!.emit("close", 0);
+    expect(logProcesses().has("web")).toBe(false);
+    cleanup();
+  });
+
+  // -------------------------------------------------------------------------
+  // Requirement 5 — the user's last instruction is the one that holds
+  // -------------------------------------------------------------------------
+
+  it("leaves a service stopped when the stop lands during an in-flight start", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    let finishUp: (() => void) | undefined;
+    const { mgr, stopCalls, setPsResponse } = makeManager(dir, {
+      up: () => new Promise<void>((resolve) => { finishUp = resolve; }),
+    });
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    const startPromise = mgr.startService("web");
+    await Promise.resolve();
+
+    // Stop arrives while the `up` is still running — the exact moment a user
+    // reaches for Stop, because the service looks wedged.
+    const stopPromise = mgr.stopService("web");
+    await Promise.resolve();
+    // It does not wait for the build before acting.
+    expect(stopCalls).toEqual(["web"]);
+
+    // The stop reports its verdict without waiting for the build.
+    await stopPromise;
+    expect(mgr.getService("web")?.status).toBe("stopped");
+
+    finishUp?.();
+    await startPromise;
+
+    // A second stop follows in the background, against whatever the `up`
+    // created or restarted.
+    await vi.waitFor(() => expect(stopCalls).toEqual(["web", "web"]));
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("does not hang the stop on an up that never returns", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // The wedged-daemon case requirement 2 is about. Awaiting this `up` before
+    // reporting the stop would turn it into a requirement 5 failure too: Stop
+    // would never return and the service would never be reported stopped.
+    const { mgr, stopCalls } = makeManager(dir, { up: () => new Promise<void>(() => {}) });
+
+    await mgr.start();
+    void mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(0);
+
+    await mgr.stopService("web");
+
+    expect(stopCalls).toEqual(["web"]);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("waits out every overlapping up, not just the last one", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // A user-initiated start racing a retry attempt: two `up` calls in flight
+    // for one service. The follow-up stop has to come after the LAST of them —
+    // if the shorter call's completion retired the record, the stop would fire
+    // early and the longer call would put the container back unopposed.
+    const events: string[] = [];
+    const releases: (() => void)[] = [];
+    const { mgr } = makeManager(dir, {
+      up: () => new Promise<void>((resolve) => {
+        const idx = releases.length;
+        releases.push(() => { events.push(`up${idx}-done`); resolve(); });
+      }),
+      stop: () => { events.push("stop"); return Promise.resolve(); },
+    });
+
+    await mgr.start();
+    const firstUp = mgr.startService("web");
+    await Promise.resolve();
+    const secondUp = mgr.startService("web");
+    await Promise.resolve();
+    expect(releases).toHaveLength(2);
+
+    await mgr.stopService("web");
+
+    // The second (shorter) call settles first.
+    releases[1]();
+    await secondUp;
+    releases[0]();
+    await firstUp;
+
+    await vi.waitFor(() => expect(events.filter(e => e === "stop")).toHaveLength(2));
+    expect(events).toEqual(["stop", "up1-done", "up0-done", "stop"]);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("abandons a restart when the stop lands during its own compose stop", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    // `compose stop` can burn the full 10s SIGTERM grace, and a Stop arriving in
+    // that window registers no in-flight `up` to chase — so the restart has to
+    // check for itself before recreating the container.
+    let releaseStop: (() => void) | undefined;
+    let stopSeen = 0;
+    const { mgr, upCalls, setPsResponse } = makeManager(dir, {
+      stop: () => {
+        stopSeen += 1;
+        // Only the restart's own leading stop blocks.
+        return stopSeen === 1
+          ? new Promise<void>((resolve) => { releaseStop = resolve; })
+          : Promise.resolve();
+      },
+    });
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    const upsBefore = upCalls.length;
+
+    const restartPromise = mgr.restartService("web");
+    await Promise.resolve();
+    const stopPromise = mgr.stopService("web");
+    releaseStop?.();
+    await restartPromise;
+    await stopPromise;
+
+    // The restart must not have brought the container back.
+    expect(upCalls.length).toBe(upsBefore);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("leaves a gated service the user stopped alone when the gate opens", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, upCalls } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    // Stopped while the install gate held it.
+    await mgr.stopService("web");
+    const upsBefore = upCalls.length;
+
+    // The gate opening is an automatic lifecycle event, not a newer instruction
+    // from the user, so it must not undo the stop.
+    mgr.setInstallRunning(false);
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(upCalls.length).toBe(upsBefore);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("does not report the stop's own SIGKILL as a crash", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    await mgr.stopService("web");
+
+    // `docker compose stop` SIGTERMs and then SIGKILLs a service that doesn't
+    // forward the signal, so the container exits 137/143. Read at face value
+    // that walked the service the user just stopped straight to `error`.
+    setPsResponse(exitedPs(137));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("stopped");
+    expect(mgr.getService("web")?.error).toBeUndefined();
+
+    setPsResponse(exitedPs(143));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("corrects a running claim that raced the stop", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    await mgr.stopService("web");
+
+    // A poll that landed before compose had finished killing the container
+    // writes `running` back over the stop.
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("running");
+
+    // The exit is now the ONLY thing that can correct that claim, and it is the
+    // exit our own stop produced — so ignoring it outright would leave a
+    // stopped service reporting `running` forever (requirement 3).
+    setPsResponse(exitedPs(137));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("does not let an already-scheduled retry undo the stop", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(
+      dir,
+      "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n    x-shipit-depends-on-install: false\n",
+    );
+    const { mgr, upCalls, poll, setPsResponse } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    // Crash during the install window → a backoff retry is scheduled.
+    setPsResponse(exitedPs(1));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    await mgr.stopService("web");
+    const upsAtStop = upCalls.length;
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(upCalls.length).toBe(upsAtStop);
+    expect(mgr.getService("web")?.status).toBe("stopped");
+  });
+
+  it("treats a later start as the newest instruction", async () => {
+    const dir = setup();
+    writeCompose(dir, MANUAL_COMPOSE);
+    const { mgr, poll, setPsResponse } = makeManager(dir);
+
+    await mgr.start();
+    setPsResponse(runningPs);
+    await mgr.startService("web");
+    await mgr.stopService("web");
+    await mgr.startService("web");
+    expect(mgr.getService("web")?.status).toBe("running");
+
+    // The suppression is gone with the stop that armed it: a genuine crash
+    // after the restart is reported normally.
+    setPsResponse(exitedPs(1));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("error");
+    expect(mgr.getService("web")?.error).toContain("Exited with code 1");
   });
 });

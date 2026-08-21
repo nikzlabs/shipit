@@ -23,8 +23,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // prompt-without-title spawn here would fork a real `claude`/`codex`
 // process (15s timeout each) and race against the AI rename — the per-turn
 // quota test alone would spawn four real processes.
+// docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
+// `{ name: null }` is "naming produced no title", which is what these tests want.
 vi.mock("../session-namer.js", () => ({
-  generateSessionName: vi.fn().mockResolvedValue(null),
+  generateSessionName: vi.fn().mockResolvedValue({ name: null }),
 }));
 
 import fs from "node:fs";
@@ -39,6 +41,7 @@ import { RepoStore } from "../repo-store.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { CredentialStore } from "../credential-store.js";
 import { DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN } from "../services/child-sessions.js";
 import {
   StubAuthManager,
@@ -84,6 +87,8 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   /** Capture every FakeClaudeProcess the orchestrator creates so Phase 3
    *  tests can drive them to `finish()` and assert idle/archive behavior. */
   let createdClaudes: FakeClaudeProcess[];
+  /** docs/264 — hoisted so the role tests can write a role and a credential. */
+  let credentialStore: CredentialStore;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -103,7 +108,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     // writes the `insteadOf` redirect into it, and we need that done before
     // any `git fetch SPAWN_REPO_URL` fires (i.e. before buildApp's startup
     // warming runs).
-    const credentialStore = createTestCredentialStore(tmpDir);
+    credentialStore = createTestCredentialStore(tmpDir);
 
     // Spawn always routes through the home-screen claim service — the parent
     // must be backed by a "ready" registered repo. The helper seeds the bare
@@ -233,6 +238,46 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(reloaded?.spawnedByTurn).toBe("turn-1");
     expect(reloaded?.rootSessionId).toBe(parentId);
     expect(reloaded?.branch).toBe(body.branch);
+  });
+
+  it("docs/252 — a child inherits the parent's SELECTION, retirement resolved", { timeout: 15_000 }, async () => {
+    // Two things at once, because the spawn path is where they compound.
+    //
+    // The parent is on a RETIRED model under OpenAI's **key** mode — a row
+    // written before the model left the catalogue. Copying its bare model id
+    // would lose the triple twice over: `setModel` cannot place a retired id at
+    // all, so the child would start with no service, and the id would then
+    // re-resolve to whichever mode sorts first — OpenAI's `sub`. A parent paying
+    // per token would silently seed a child onto a subscription, which is the
+    // cross-mode move reqs 12 and 13 both refuse, arriving through the spawn.
+    //
+    // No WebSocket is involved here, which is the point: this path resolves
+    // before any connect-time reader runs.
+    const parentId = await createParentSession("Retired parent");
+    sessionManager.setAgentId(parentId, "codex");
+    sessionManager.setModelSelection(parentId, {
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.6",
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Do the thing", title: "Child of a retired parent" },
+    });
+    expect(res.statusCode).toBe(200);
+    const { sessionId: childId } = res.json() as { sessionId: string };
+
+    const child = sessionManager.get(childId);
+    expect(child?.model).toBe("gpt-5.6-sol");
+    expect(child?.serviceId).toBe("openai");
+    expect(child?.billingMode).toBe("key");
+
+    // …and the parent moved too, since resolving its row is what produced the
+    // seed. Both sessions now report what they actually run (req 11).
+    expect(sessionManager.get(parentId)?.model).toBe("gpt-5.6-sol");
+    expect(sessionManager.get(parentId)?.billingMode).toBe("key");
   });
 
   it("docs/201 — a grandchild inherits the root ancestor, not its immediate parent", { timeout: 20_000 }, async () => {
@@ -908,6 +953,588 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(cp.lastModel).toBe("claude-opus-4-7");
   });
 
+  it("docs/217 — spawned session inherits the parent's reasoning level", { timeout: 15_000 }, async () => {
+    // The level has to reach the CHILD'S FIRST TURN, not just its row: a child
+    // never connects a WebSocket, so the `?reasoning=` connect param that seeds
+    // a browser-driven session cannot cover this path. An unset row means the
+    // harness default, so "not inherited" is silently quieter thinking.
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+    sessionManager.setReasoning(parentId, "high");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Inherit reasoning" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.reasoningEffort).toBe("high");
+
+    const deadline = Date.now() + 3000;
+    while (createdClaudes.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cp = createdClaudes[createdClaudes.length - 1];
+    const runDeadline = Date.now() + 3000;
+    while (!cp.runCalled && Date.now() < runDeadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(cp.lastReasoningEffort).toBe("high");
+  });
+
+  it("docs/217 — a level the child's harness doesn't offer is dropped, not forwarded", { timeout: 15_000 }, async () => {
+    // `max` is a Claude level; Codex's set stops at `xhigh`. The child is routed
+    // to Codex by the model, so forwarding the parent's level verbatim would put
+    // an unknown value on the CLI's config flag. Dropping falls back to the
+    // harness default, which is the same rule the connect param follows.
+    //
+    // Asserted against a level the child's harness DOES offer, spawned in the
+    // same shape: without that contrast this passes under "inherit nothing at
+    // all", which is the behaviour the test above exists to forbid.
+    const parentId = await createParentSession();
+    sessionManager.setReasoning(parentId, "max");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Cross-harness reasoning", model: "gpt-5.5" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.agentId).toBe("codex");
+    expect(sessionManager.get(childId)?.reasoningEffort).toBeUndefined();
+
+    // `high` is in BOTH sets — same spawn, same cross-harness route, and it
+    // carries. So the `undefined` above is the validation rejecting `max`, not
+    // the spawn dropping every level it is handed.
+    sessionManager.setReasoning(parentId, "high");
+    const ok = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Cross-harness reasoning ok", model: "gpt-5.5" },
+    });
+    expect(ok.statusCode).toBe(200);
+    const okChildId = (ok.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(okChildId)?.reasoningEffort).toBe("high");
+  });
+
+  it("a bare --agent switch does not carry the parent's model onto the new backend", { timeout: 15_000 }, async () => {
+    // Cross-backend review (Codex) found this: the model inheritance was
+    // disabled only by an explicit `--model`, so `--agent codex` from a
+    // Claude/Opus parent pinned the child to Codex AND to `claude-opus-4-7`,
+    // and its first turn spawned the Codex CLI with a model it cannot run.
+    // `--agent` alone documents "that backend's default model" — an empty row.
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Switch backend", agent: "codex" },
+    });
+    expect(res.statusCode).toBe(200);
+    // Read the spawn's own snapshot of the child row, not the row as it stands
+    // now: the response carries what `spawnChildSession` wrote, taken before the
+    // first turn is dispatched. On an install holding a non-native credential,
+    // turn preparation resolves an empty selection to its first eligible model
+    // (planning#353, `session-agent-env.ts`) — a correct write that would race
+    // this assertion and make "no model was inherited" read as a failure.
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    const child = (res.json() as { session: { model?: string; serviceId?: string } }).session;
+    // The harness is read from the live row — env prep pins it inside the spawn,
+    // so it is settled by the time the response returns and nothing later moves
+    // it. The snapshot carries no `agentId` for exactly that reason.
+    expect(sessionManager.get(childId)?.agentId).toBe("codex");
+    expect(child.model).toBeUndefined();
+    expect(child.serviceId).toBeUndefined();
+
+    // Staying on the parent's own harness still inherits — the guard above is a
+    // harness-switch rule, not a blanket "an explicit --agent drops the model".
+    const same = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Same backend", agent: "claude" },
+    });
+    expect(same.statusCode).toBe(200);
+    expect((same.json() as { session: { model?: string } }).session.model).toBe("claude-opus-4-7");
+  });
+
+  // -------------------------------------------------------------------------
+  // docs/264 phase 3 (reqs 8, 11, 14, 16) — one spawn vocabulary
+  //
+  // The tests above are the regression set for the completion semantics this
+  // phase deliberately did NOT unify: `--model X` inherits no service or
+  // billing mode, a harness switch clears the selection, an inherited level
+  // carries only where the child's harness declares it, and the stored child
+  // target stays partially optional. They now run through the shared parser, so
+  // they are also the evidence that unifying the SURFACE left them alone.
+  //
+  // What follows is what the surface gained.
+  // -------------------------------------------------------------------------
+
+  /** A role the install can actually run: Claude Code on Anthropic's metered key. */
+  function seedPinnedRole(name: string, prompt?: string): void {
+    credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "anthropic-key",
+        serviceId: "anthropic",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "test",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-test",
+    );
+    credentialStore.setRole(name, {
+      name,
+      description: "Slow, thorough review",
+      ...(prompt ? { prompt } : {}),
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+        reasoningEffort: "high",
+      },
+    });
+  }
+
+  it("a role seeds the child's COMPLETE tuple, not just an agent and a model", { timeout: 15_000 }, async () => {
+    // The thing `--agent`/`--model` could not express: a service, a billing mode
+    // and a reasoning level. Passing a role through those two options would drop
+    // three of the five, which is why the resolved target is handed over directly.
+    seedPinnedRole("deep dive");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Role spawn", role: "deep dive" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    const child = sessionManager.get(childId);
+    expect(child?.agentId).toBe("claude");
+    expect(child?.model).toBe("claude-opus-5");
+    expect(child?.serviceId).toBe("anthropic");
+    expect(child?.billingMode).toBe("key");
+    expect(child?.reasoningEffort).toBe("high");
+    // req 14 — provenance: which role started it.
+    expect(child?.originRoleName).toBe("deep dive");
+  });
+
+  it("keeps originRoleName as a snapshot when the role is edited or deleted", { timeout: 15_000 }, async () => {
+    // req 11 — a role decides what a child STARTS as, not what it is bound to.
+    // A live link would make a deleted role rewrite history; this is provenance,
+    // so it survives its subject.
+    seedPinnedRole("deep dive");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Role spawn", role: "deep dive" },
+    });
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    credentialStore.setRole("deep dive", null);
+    expect(sessionManager.get(childId)?.originRoleName).toBe("deep dive");
+    // And what it runs on is untouched: the role stopped being involved the
+    // moment the child was created.
+    expect(sessionManager.get(childId)?.model).toBe("claude-opus-5");
+  });
+
+  it("joins a role's standing instructions onto the child's first prompt (req 8)", { timeout: 15_000 }, async () => {
+    seedPinnedRole("deep dive", "Check the code against requirements.md.");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Review PR 12", title: "Role spawn", role: "deep dive" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const deadline = Date.now() + 3000;
+    while (createdClaudes.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cp = createdClaudes[createdClaudes.length - 1];
+    const runDeadline = Date.now() + 3000;
+    while (!cp.runCalled && Date.now() < runDeadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // Labelled, so the callee can tell the standing brief from the task it was
+    // given now — the two arrive on one channel and unlabelled concatenation
+    // reads as a single instruction.
+    expect(cp.lastPrompt).toContain("Check the code against requirements.md.");
+    expect(cp.lastPrompt).toContain("Review PR 12");
+    expect(cp.lastPrompt).toContain("Standing instructions");
+  });
+
+  // docs/264-agent-roles req 20 — a child inherits its parent's ROLE, not only
+  // the three parameters that role set.
+  //
+  // What these pin is the half that has no other way in: the standing
+  // instructions. The parameters were already inherited, so a child of a
+  // role-running parent always ran the right model — and always ran it under no
+  // brief, with nothing on either side saying so.
+  describe("inheriting the parent's role (req 20)", () => {
+    /** A parent that is itself running `deep dive`, as a user-selected role leaves it. */
+    async function roleRunningParent(prompt?: string): Promise<string> {
+      seedPinnedRole("deep dive", prompt ?? "Read the whole subsystem first.");
+      const parentId = await createParentSession();
+      sessionManager.setAgentId(parentId, "claude");
+      sessionManager.setModelSelection(parentId, {
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+      });
+      sessionManager.setReasoning(parentId, "high");
+      sessionManager.setRoleName(parentId, "deep dive");
+      return parentId;
+    }
+
+    /** The prompt the child's agent was actually started with. */
+    async function firstPromptOf(): Promise<string> {
+      const deadline = Date.now() + 3000;
+      while (createdClaudes.length === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      const cp = createdClaudes[createdClaudes.length - 1];
+      const runDeadline = Date.now() + 3000;
+      while (!cp.runCalled && Date.now() < runDeadline) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      return cp.lastPrompt ?? "";
+    }
+
+    it("carries the name, the record and the standing instructions", { timeout: 15_000 }, async () => {
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "Port the API", title: "Inherited role" },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      // Both fields, because they answer different questions: what it STARTED as
+      // (provenance, req 14) and what it is running now (docs/272 req 5, which is
+      // what the child's own composer names).
+      expect(child?.originRoleName).toBe("deep dive");
+      expect(child?.roleName).toBe("deep dive");
+      const prompt = await firstPromptOf();
+      expect(prompt).toContain("Read the whole subsystem first.");
+      expect(prompt).toContain("Port the API");
+    });
+
+    it("keeps the role when the spawn overrides a parameter", { timeout: 15_000 }, async () => {
+      // The user's rule, and the same one `--role NAME --model X` already
+      // follows: an override changes that parameter and says nothing about the
+      // brief. The two spawn shapes would otherwise disagree about what an
+      // override means.
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", title: "Overridden", modelId: "claude-sonnet-5" },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      expect(child?.model).toBe("claude-sonnet-5");
+      expect(child?.roleName).toBe("deep dive");
+      expect(await firstPromptOf()).toContain("Read the whole subsystem first.");
+    });
+
+    it("declines it on --no-role, keeping the parameters", { timeout: 15_000 }, async () => {
+      // The escape hatch that makes the inheritance a default rather than a
+      // sentence: a session under a brief spawning a child for something else.
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "Fix the unrelated logging bug", title: "No role", noRole: true },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      expect(child?.roleName).toBeUndefined();
+      expect(child?.originRoleName).toBeUndefined();
+      // …and it still inherited what the parent RUNS ON. `--no-role` declines a
+      // brief, not a configuration.
+      expect(child?.agentId).toBe("claude");
+      expect(child?.model).toBe("claude-opus-5");
+      const prompt = await firstPromptOf();
+      expect(prompt).not.toContain("Read the whole subsystem first.");
+      expect(prompt).toContain("Fix the unrelated logging bug");
+    });
+
+    it("refuses --no-role alongside --role rather than picking one", { timeout: 15_000 }, async () => {
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", title: "Both", role: "deep dive", noRole: true },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/opposite things/);
+    });
+
+    it("inherits nothing role-shaped when the role has since been deleted", { timeout: 15_000 }, async () => {
+      // The parent's row still names it, and there is nothing behind the name.
+      // A child recorded as started on a role whose instructions never reached
+      // it would be a provenance line that means the opposite of what it says.
+      const parentId = await roleRunningParent();
+      credentialStore.setRole("deep dive", null);
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", title: "Ghost role" },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      expect(child?.roleName).toBeUndefined();
+      expect(child?.originRoleName).toBeUndefined();
+      expect(child?.model).toBe("claude-opus-5");
+    });
+
+    it("leaves a complete explicit target role-less", { timeout: 15_000 }, async () => {
+      // docs/275 — naming every parameter states what the child runs on
+      // completely, and that statement has always been role-less. Inheritance is
+      // for the case where the PARENT is the base.
+      const parentId = await roleRunningParent();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: {
+          prompt: "x",
+          title: "Explicit",
+          agentId: "claude",
+          serviceId: "anthropic",
+          billingMode: "key",
+          modelId: "claude-sonnet-5",
+          reasoningEffort: "high",
+        },
+      });
+      expect(res.statusCode).toBe(200);
+      const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+      expect(child?.roleName).toBeUndefined();
+      expect(child?.originRoleName).toBeUndefined();
+    });
+  });
+
+  it("still refuses an empty prompt when the role carries standing instructions", { timeout: 15_000 }, async () => {
+    // The join must not make an empty task look non-empty. Standing instructions
+    // say what the job IS; they are never a substitute for what to do now, and a
+    // child spawned holding only a brief has nothing to work on.
+    seedPinnedRole("deep dive", "Check the code against requirements.md.");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "   ", title: "Empty", role: "deep dive" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toMatch(/prompt is required/);
+  });
+
+  it("refuses an unknown role and names the roles that do exist (req 13)", { timeout: 15_000 }, async () => {
+    seedPinnedRole("deep dive");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Bad role", role: "critic" },
+    });
+    expect(res.statusCode).toBe(400);
+    const err = (res.json() as { error: string }).error;
+    expect(err).toContain("critic");
+    // The list IS the remedy — the agent learns what it could have said.
+    expect(err).toContain("deep dive");
+    expect(err).toContain("reviewer");
+  });
+
+  /**
+   * docs/264-agent-roles reqs 7, 10, 16 — **an override the caller named EMPTY is refused,
+   * not dropped**, on the child path exactly as on `agent run`.
+   *
+   * The HTTP wrapper had its own truthiness test in front of the shared parser,
+   * so `{ role, modelId: "" }` reached `spawnChildSession` as the bare role and
+   * spawned a child nobody asked for. Both layers now preserve presence and the
+   * one refusal rule answers, naming the flag at fault.
+   */
+  for (const [field, flag] of [
+    ["agentId", "--agent"],
+    ["modelId", "--model"],
+    ["serviceId", "--service"],
+    ["reasoningEffort", "--effort"],
+    // The legacy keys the shim has sent since docs/117 take the same path.
+    ["agent", "--agent"],
+    ["model", "--model"],
+  ] as const) {
+    it(`refuses a child spawn whose ${field} is present but empty`, { timeout: 15_000 }, async () => {
+      seedPinnedRole("deep dive");
+      const parentId = await createParentSession();
+      const before = sessionManager.list().length;
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", title: "Empty override", role: "deep dive", [field]: "" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect((res.json() as { error: string }).error).toContain(flag);
+      // The point of the refusal: no child ran the bare role instead.
+      expect(sessionManager.list().length).toBe(before);
+    });
+  }
+
+  /**
+   * docs/264-agent-roles reqs 3, 4, 7, 18 — a role named with spaces round it is that role.
+   * The parser used to trim, so this spawn either ran ShipIt's automatic reviewer
+   * (for `" reviewer "`) or was refused as unknown while existing.
+   */
+  it("starts a role whose name has spaces round it, exactly as stored", { timeout: 15_000 }, async () => {
+    seedPinnedRole(" deep dive ");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Spaced role", role: " deep dive " },
+    });
+    expect(res.statusCode).toBe(200);
+    const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+    expect(child?.originRoleName).toBe(" deep dive ");
+    expect(child?.model).toBe("claude-opus-5");
+  });
+
+  it("lets a child name a COMPLETE target, which it could not do before", { timeout: 15_000 }, async () => {
+    seedPinnedRole("unused");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: {
+        prompt: "x",
+        title: "Explicit target",
+        agentId: "claude",
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+        reasoningEffort: "high",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+    expect(child?.serviceId).toBe("anthropic");
+    expect(child?.billingMode).toBe("key");
+    expect(child?.reasoningEffort).toBe("high");
+    // No role was named, so there is no provenance to record.
+    expect(child?.originRoleName).toBeUndefined();
+  });
+
+  it("refuses a complete target whose harness cannot speak to its model", { timeout: 15_000 }, async () => {
+    // The check used to live only on the one-shot path, so a child naming this
+    // pair was accepted, persisted, and left for its first turn to fail on.
+    // Claude Code speaks `anthropic-messages`; a GPT model does not.
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: {
+        prompt: "x",
+        title: "Incoherent",
+        agentId: "claude",
+        serviceId: "openai",
+        billingMode: "sub",
+        modelId: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toMatch(/cannot run/);
+  });
+
+  it("files a role-started spawn's telemetry under the harness the ROLE chose", { timeout: 15_000 }, async () => {
+    // The dimension is meant to say which CLI drives the spawned session. It was
+    // computed from the request and the parent, before role resolution — so a
+    // Claude parent starting a Codex role recorded Claude, and the counter said
+    // the opposite of what the child row says.
+    credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "openai-key",
+        serviceId: "openai",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "test",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-test",
+    );
+    credentialStore.setRole("gpt reviewer", {
+      name: "gpt reviewer",
+      params: {
+        kind: "pinned",
+        harnessId: "codex",
+        serviceId: "openai",
+        billingMode: "key",
+        modelId: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      },
+    });
+    const parentId = await createParentSession();
+    resetSpawnTelemetry();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Codex role", role: "gpt reviewer" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(sessionManager.get((res.json() as { sessionId: string }).sessionId)?.agentId).toBe("codex");
+    expect(getSpawnTelemetrySnapshot().byAgent.codex).toBe(1);
+    expect(getSpawnTelemetrySnapshot().byAgent.claude ?? 0).toBe(0);
+  });
+
+  it("does NOT refuse a partial call over a parent — the refusal narrowed (req 16)", { timeout: 15_000 }, async () => {
+    // The regression this phase most has to avoid. `agent run` refuses a call
+    // naming only `--effort` because it has nothing to complete it from; a child
+    // has a parent, so the same call is ordinary here. Refusing it would delete
+    // the shipped behaviour docs/261 req 10 guarantees.
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Level only", reasoningEffort: "high" },
+    });
+    expect(res.statusCode).toBe(200);
+    const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+    expect(child?.reasoningEffort).toBe("high");
+    // The rest still came from the parent, which is what "partial over a base"
+    // means.
+    expect(child?.model).toBe("claude-opus-4-7");
+  });
+
+  it("refuses a NAMED level the child's harness does not declare, rather than dropping it", { timeout: 15_000 }, async () => {
+    // The contrast with the inherited case above is the point: an inherited
+    // level is dropped when it does not fit (the caller merely happens to have
+    // it), and a level the caller NAMED is refused (a dropped override runs
+    // something other than what was asked for). `max` is Claude's; Codex stops
+    // at `xhigh`.
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Bad level", agentId: "codex", reasoningEffort: "max" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toContain("max");
+  });
+
   it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const res = await app.inject({
@@ -947,6 +1574,77 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const childId = (res.json() as { sessionId: string }).sessionId;
     expect(sessionManager.get(childId)?.agentId).toBe("codex");
     expect(sessionManager.get(childId)?.model).toBe("gpt-5.5");
+  });
+
+  it("planning#304 — inheritance cannot hand a child a model its harness can't run", { timeout: 15_000 }, async () => {
+    // The cross-backend rejection above inspects the flags the caller passed, and
+    // the harness-switch rule inspects parent-harness vs child-harness. Neither
+    // asks the question that decides whether the child can run: can the harness
+    // about to spawn run the model on the child's row? This asserts the invariant
+    // at the boundary, so the state is written directly — today's live writers
+    // prevent an incoherent parent row (`set_model` refuses a cross-harness model
+    // on a pinned session, WS connect self-heals a legacy one), which is exactly
+    // why nothing else here can produce one. Without the guard the child inherits
+    // `gpt-5.5` onto Claude Code and its first turn dies the way #304 reported.
+    const parentId = await createParentSession();
+    sessionManager.setAgentId(parentId, "claude");
+    sessionManager.setAgentPinned(parentId);
+    sessionManager.setModel(parentId, "gpt-5.5");
+    expect(sessionManager.get(parentId)?.model).toBe("gpt-5.5");
+
+    // Every assertion reads the spawn response's snapshot of the child row —
+    // what `spawnChildSession` wrote, before the first turn is dispatched. Reading
+    // the row later races turn preparation, which legitimately fills an empty
+    // selection from the install's first eligible model (planning#353).
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Incoherent parent row" },
+    });
+    expect(res.statusCode).toBe(200);
+    // Keep the harness, drop the model — the same self-heal the WS connect path
+    // applies to a pinned session's incoherent row. The empty row resolves to
+    // what this install can actually run at turn time.
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    const child = (res.json() as {
+      session: { model?: string; serviceId?: string; billingMode?: string };
+    }).session;
+    // Harness from the live row (pinned by env prep inside the spawn), selection
+    // from the snapshot (written before the first turn could refine it).
+    expect(sessionManager.get(childId)?.agentId).toBe("claude");
+    expect(child.model).toBeUndefined();
+    expect(child.serviceId).toBeUndefined();
+    expect(child.billingMode).toBeUndefined();
+
+    // Contrast: a coherent parent row on the same harness still inherits, so the
+    // assertions above are the guard firing rather than inheritance being off.
+    sessionManager.setModel(parentId, "claude-sonnet-5");
+    const ok = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Coherent parent row" },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect((ok.json() as { session: { model?: string } }).session.model).toBe("claude-sonnet-5");
+
+    // And an id NO harness lists still inherits: the guard proves a mismatch from
+    // the child harness's own catalogue list, so an unproven id is passed through
+    // exactly as the explicit `--model` check passes a versioned one. (The reason
+    // it asks membership rather than `agentIdForModel`'s single owner is a case
+    // this catalogue cannot yet express — one model offered by both harnesses,
+    // which the ownership answer assigns to whichever sorts first. No fixture can
+    // exercise it while the two lists are disjoint; `catalogue.test.ts` is where a
+    // future overlap would first become visible.)
+    sessionManager.setModel(parentId, "claude-opus-5-20260401");
+    const fwd = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Unlisted parent model" },
+    });
+    expect(fwd.statusCode).toBe(200);
+    expect((fwd.json() as { session: { model?: string } }).session.model).toBe(
+      "claude-opus-5-20260401",
+    );
   });
 
   it("GET /children/:childId surfaces the child's resolved agent + model", { timeout: 15_000 }, async () => {
@@ -991,9 +1689,12 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       sessionManager,
     };
 
+    // docs/260 — only a TURN (enforceAccountRouting) scaffolds and stamps;
+    // a warm-up call is account-neutral and pins nothing.
     await prepareSessionAgentEnvironment(runner, {
       sessionId: parentId,
       agentId: "claude",
+      enforceAccountRouting: true,
       deps,
     });
     expect(sessionManager.get(parentId)?.agentPinned).toBe(true);
@@ -1003,6 +1704,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     await prepareSessionAgentEnvironment(runner, {
       sessionId: parentId,
       agentId: "claude",
+      enforceAccountRouting: true,
       deps,
     });
     expect(sessionManager.get(parentId)?.agentPinned).toBe(true);

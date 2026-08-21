@@ -70,7 +70,7 @@ describe("FileReviewStore", () => {
   // Add comments (line + selection)
   // ------------------------------------------------------------------
 
-  it("adds a selection-anchored comment with the right kind, source, and quoted text", () => {
+  it("adds a selection-anchored comment with the right kind and quoted text", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
     const comment = store.addSelectionComment(
       draft.id,
@@ -78,7 +78,6 @@ describe("FileReviewStore", () => {
       "## Intro\n\n",
       " section explains",
       "Needs more detail",
-      "human",
     );
 
     expect(comment.kind).toBe("selection");
@@ -87,7 +86,6 @@ describe("FileReviewStore", () => {
     expect(comment.contextBefore).toBe("## Intro\n\n");
     expect(comment.contextAfter).toBe(" section explains");
     expect(comment.text).toBe("Needs more detail");
-    expect(comment.source).toBe("human");
 
     const review = store.getReview(draft.id);
     expect(review!.comments).toHaveLength(1);
@@ -96,7 +94,7 @@ describe("FileReviewStore", () => {
 
   it("adds a line-anchored comment with the right kind and line", () => {
     const draft = store.createDraft("s1", "src/foo.ts", "code", "h");
-    const comment = store.addLineComment(draft.id, 42, "SQL injection risk", "human");
+    const comment = store.addLineComment(draft.id, 42, "SQL injection risk");
 
     expect(comment.kind).toBe("line");
     if (comment.kind !== "line") throw new Error("expected line");
@@ -109,8 +107,8 @@ describe("FileReviewStore", () => {
 
   it("supports both line and selection comments inside the same review", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
-    store.addSelectionComment(draft.id, "the intro", "", "", "selection one", "human");
-    store.addLineComment(draft.id, 1, "line one", "human");
+    store.addSelectionComment(draft.id, "the intro", "", "", "selection one");
+    store.addLineComment(draft.id, 1, "line one");
 
     const review = store.getReview(draft.id);
     const kinds = review!.comments.map((c) => c.kind).sort();
@@ -123,14 +121,13 @@ describe("FileReviewStore", () => {
 
   it("updates comment text and preserves anchor fields", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
-    const comment = store.addSelectionComment(draft.id, "anchored phrase", "", "", "Original", "human");
+    const comment = store.addSelectionComment(draft.id, "anchored phrase", "", "", "Original");
     store.updateComment(draft.id, comment.id, "Updated");
 
     const review = store.getReview(draft.id);
     expect(review!.comments[0].text).toBe("Updated");
     if (review!.comments[0].kind !== "selection") throw new Error("expected selection");
     expect(review!.comments[0].quotedText).toBe("anchored phrase");
-    expect(review!.comments[0].source).toBe("human");
   });
 
   // ------------------------------------------------------------------
@@ -139,8 +136,8 @@ describe("FileReviewStore", () => {
 
   it("deletes a comment without affecting siblings", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
-    const c1 = store.addSelectionComment(draft.id, "one", "", "", "first", "human");
-    const c2 = store.addSelectionComment(draft.id, "two", "", "", "second", "ai");
+    const c1 = store.addSelectionComment(draft.id, "one", "", "", "first");
+    const c2 = store.addSelectionComment(draft.id, "two", "", "", "second");
 
     store.deleteComment(draft.id, c1.id);
 
@@ -155,13 +152,47 @@ describe("FileReviewStore", () => {
 
   it("marks a review as sent with sentAt populated", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
-    store.addSelectionComment(draft.id, "anchor", "", "", "feedback", "human");
+    store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
 
     store.markSent(draft.id);
 
     const review = store.getReview(draft.id);
     expect(review!.status).toBe("sent");
     expect(review!.sentAt).toBeTruthy();
+  });
+
+  // docs/260 — the send dialog's note rides along with markSent and comes back
+  // on the sent review, which is what "Past reviews" reads.
+  it("stores the send note on the sent review", () => {
+    const draft = store.createDraft("s1", "plan.md", "markdown", "h");
+    store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
+
+    store.markSent(draft.id, "  Keep the structure.  ");
+
+    expect(store.getReview(draft.id)!.note).toBe("Keep the structure.");
+  });
+
+  it("stores no note when the note is absent or whitespace only", () => {
+    const a = store.createDraft("s1", "a.md", "markdown", "h");
+    store.markSent(a.id);
+    expect(store.getReview(a.id)!.note).toBeUndefined();
+
+    const b = store.createDraft("s1", "b.md", "markdown", "h");
+    store.markSent(b.id, "   \n  ");
+    expect(store.getReview(b.id)!.note).toBeUndefined();
+  });
+
+  // The atomic half of the double-send guard: sendReview's status check happens
+  // before an awaited file read, so only this UPDATE can separate two
+  // concurrent sends of the same draft.
+  it("refuses to mark an already-sent review sent again", () => {
+    const draft = store.createDraft("s1", "plan.md", "markdown", "h");
+    store.addSelectionComment(draft.id, "anchor", "", "", "feedback");
+
+    expect(store.markSent(draft.id, "first")).toBe(true);
+    expect(store.markSent(draft.id, "second")).toBe(false);
+    // …and the loser did not overwrite the winner's note.
+    expect(store.getReview(draft.id)!.note).toBe("first");
   });
 
   it("starts a fresh draft after the previous one is sent", () => {
@@ -180,7 +211,7 @@ describe("FileReviewStore", () => {
 
   it("deletes a draft and its comments", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
-    store.addSelectionComment(draft.id, "anchor", "", "", "x", "human");
+    store.addSelectionComment(draft.id, "anchor", "", "", "x");
 
     store.deleteDraft(draft.id);
 
@@ -222,7 +253,7 @@ describe("FileReviewStore", () => {
 
   it("persists data across store instances sharing the same database", () => {
     const draft = store.createDraft("s1", "plan.md", "markdown", "h");
-    store.addSelectionComment(draft.id, "anchor", "", "", "Persisted", "human");
+    store.addSelectionComment(draft.id, "anchor", "", "", "Persisted");
 
     const store2 = new FileReviewStore(dbManager);
     const review = store2.getReview(draft.id);
@@ -239,8 +270,8 @@ describe("FileReviewStore", () => {
   it("isolates reviews between sessions", () => {
     const a = store.createDraft("s1", "plan.md", "markdown", "h");
     const b = store.createDraft("s2", "plan.md", "markdown", "h");
-    store.addSelectionComment(a.id, "anchor", "", "", "for s1", "human");
-    store.addSelectionComment(b.id, "anchor", "", "", "for s2", "human");
+    store.addSelectionComment(a.id, "anchor", "", "", "for s1");
+    store.addSelectionComment(b.id, "anchor", "", "", "for s2");
 
     expect(store.listReviews("s1", "plan.md")[0].comments[0].text).toBe("for s1");
     expect(store.listReviews("s2", "plan.md")[0].comments[0].text).toBe("for s2");
@@ -273,5 +304,43 @@ describe("FileReviewStore", () => {
     if (c.kind !== "selection") throw new Error("expected selection");
     expect(c.quotedText).toBe("Old");
     expect(c.text).toBe("legacy feedback");
+  });
+
+  // ------------------------------------------------------------------
+  // Vestigial `source` column (docs/203, docs/220)
+  // ------------------------------------------------------------------
+
+  it("leaves the retained source column at its 'human' default on insert", () => {
+    // The inserts omit `source`, which is still `NOT NULL` in SQLite. The
+    // column default is what makes that legal — and what keeps a downgrade to
+    // an older ShipIt (which reads the column) working. If a future schema
+    // change drops the default, this test is the one that fails.
+    const draft = store.createDraft("s1", "plan.md", "markdown", "h");
+    const selection = store.addSelectionComment(draft.id, "anchor", "", "", "note");
+    const codeDraft = store.createDraft("s1", "src/foo.ts", "code", "h");
+    const line = store.addLineComment(codeDraft.id, 3, "note");
+
+    const sources = dbManager.db.prepare(
+      "SELECT id, source FROM file_review_comments WHERE id IN (?, ?)",
+    ).all(selection.id, line.id) as { id: string; source: string }[];
+
+    expect(sources).toHaveLength(2);
+    for (const row of sources) expect(row.source).toBe("human");
+  });
+
+  it("reads a historical source='ai' row back as an ordinary comment", () => {
+    // Sent reviews written before the AI write path was removed can still hold
+    // `source = 'ai'` rows (migration 21 swept only drafts). They carry no
+    // author discriminator any more — they read back like any other comment.
+    const draft = store.createDraft("s1", "plan.md", "markdown", "h");
+    dbManager.db.prepare(`
+      INSERT INTO file_review_comments
+        (id, review_id, kind, quoted_text, context_before, context_after, text, source, created_at)
+      VALUES (?, ?, 'selection', 'Old', '', '', 'robot said this', 'ai', ?)
+    `).run("ai-1", draft.id, new Date().toISOString());
+
+    const comment = store.getReview(draft.id)!.comments[0];
+    expect(comment.text).toBe("robot said this");
+    expect(comment).not.toHaveProperty("source");
   });
 });

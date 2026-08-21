@@ -29,6 +29,7 @@
  * `git fetch` children racing on the same bare cache.
  */
 
+import fs from "node:fs";
 import type { RepoStore } from "./repo-store.js";
 import { ensureBareCache, type RepoGit } from "./repo-git.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -71,6 +72,49 @@ export interface RepoPrefetcher {
    * false so the claim falls back to a correct (if slower) synchronous fetch.
    */
   coveredRecently(repoUrl: string): boolean;
+}
+
+/**
+ * Anything that reads as "git could not write where it needed to".
+ *
+ * Both spellings are load-bearing and neither is guessed: the ref-lock form
+ * (`cannot lock ref … Permission denied`) is what planning#425 produced on every
+ * prefetch pass, and the object-database form
+ * (`insufficient permission for adding an object to repository database`) is what
+ * planning#418 produced in the marketplace cache. Same cause, different subsystem
+ * of git reporting it. `dubious ownership` is git's own ownership check, which is
+ * the armed-mode face of the same disagreement.
+ */
+const OWNERSHIP_SHAPED = /permission denied|insufficient permission|dubious ownership|operation not permitted/i;
+
+/**
+ * When a bare-cache failure is ownership-shaped, say so with the identities
+ * involved (docs/272-shared-cache-ownership req 5).
+ *
+ * The facts are gathered *here*, at the failure, and not left for whoever reads
+ * the log later: they cannot get them afterwards. The orchestrator API is closed
+ * to session containers and the user has no shell on the orchestrator volume
+ * (§1), so "what owned that directory at the time" is unrecoverable the moment
+ * the process moves on — which is precisely why planning#418 could not determine
+ * its own cause.
+ */
+function describeOwnershipFailure(cacheDir: string, err: unknown): void {
+  if (!OWNERSHIP_SHAPED.test(getErrorMessage(err))) return;
+  let owner = "unreadable";
+  try {
+    const st = fs.statSync(cacheDir);
+    owner = `${st.uid}:${st.gid}`;
+  } catch {
+    // Left as "unreadable" — itself a fact worth logging.
+  }
+  console.error(
+    `[prefetch] ${cacheDir} could not be updated for an OWNERSHIP reason, so this cache is now `
+    + `lagging silently: refs stop advancing and anything served from it is stale. Process uid `
+    + `${process.getuid?.() ?? "?"}:${process.getgid?.() ?? "?"}, cache owner ${owner}. A root `
+    + "process getting a permission error means it DROPPED uid (docs/266) and the tree is not "
+    + "uniformly owned — not that the privilege is missing. The repair runs on the next fetch "
+    + "(shared-tree-ownership.ts); if this line repeats, that repair is failing too.",
+  );
 }
 
 export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
@@ -120,6 +164,12 @@ export function createRepoPrefetcher(deps: RepoPrefetcherDeps): RepoPrefetcher {
       // Best-effort: a transient fetch failure just means the claim path
       // falls back to its synchronous fetch until the next sweep succeeds.
       console.warn(`[prefetch] Bare-cache fetch failed for ${repoUrl} (non-fatal):`, getErrorMessage(err));
+      // docs/272-shared-cache-ownership req 5 — non-fatal is right for a prefetch;
+      // anonymous is not. An ownership failure here means the cache silently lags
+      // — refs stop advancing, every operation served from it gets a stale answer,
+      // and the line above says none of that. planning#425 ran for weeks in
+      // production on exactly that line.
+      describeOwnershipFailure(getBareCacheDir(repoUrl), err);
     } finally {
       inFlight.delete(repoUrl);
     }

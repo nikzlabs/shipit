@@ -1,3 +1,4 @@
+import type { LoginIntegrationId } from "../../shared/catalogue/types.js";
 import type { WsServerMessage, LogSource } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -19,6 +20,7 @@ import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
 import type { SubscriptionLimitsMap } from "../../shared/types.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry, QueuedMessage } from "../session-runner.js";
+import type { GenerateText } from "../non-turn-model.js";
 
 // Re-export so existing consumers of types.ts don't break
 export type { QueuedMessage };
@@ -111,7 +113,7 @@ export interface AppCtx {
    * `auth_required` dispatch in `agent-listeners.ts` — the failing turn's
    * backend gets its own auth flow restarted, not Claude's.
    */
-  authManagers: Map<AgentId, AgentAuthManager>;
+  authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   /**
    * Per-agent run-params prep hooks (docs/155 Phase 3). Each backend's hook
    * injects its own Claude-only / Codex-only fields onto `AgentRunParams`
@@ -140,20 +142,20 @@ export interface AppCtx {
   warmSessionForRepo: (repoUrl: string) => Promise<void>;
 
   /**
-   * docs/172 (SHI-90) — durable egress allowlist + containment store. The Tier C
+   * docs/172 (planning#92) — durable egress allowlist + containment store. The Tier C
    * card's "Add to allowlist" writes through here so the grant outlives the
    * session. Optional — test / local contexts that don't exercise egress omit it.
    */
   egressAllowlistStore?: EgressAllowlistStore;
   /**
-   * docs/172 (SHI-90) — used to reload a running session's egress sidecars after
+   * docs/172 (planning#92) — used to reload a running session's egress sidecars after
    * an "Add to allowlist" so the new host takes effect without a restart.
    * Optional — null in local/test runtimes (the add still persists).
    */
   containerManager?: SessionContainerManager;
 
   // Factories
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: GenerateText;
   getSharedRepoDir: (repoUrl: string) => string;
 
   // PR lifecycle
@@ -181,6 +183,18 @@ export interface AppCtx {
      * account. Omitted only where no session owns the turn.
      */
     sessionId?: string,
+    /**
+     * docs/252 req 10 — the credential route the reporting turn ACTUALLY ran
+     * on, when the caller resolved one of its own.
+     *
+     * A sub-agent consult resolves its route independently of the session's
+     * pinned one (`services/sub-agent.ts`), and can fail over mid-run. Without
+     * this the fallback re-derives a route from the session, which is a
+     * different credential — and since req 10 files a snapshot against the
+     * `(service, mode)` that OWNS the route, a consult on a key would be filed
+     * as the session's subscription quota.
+     */
+    routeId?: string,
   ) => void;
   /**
    * Latest subscription-limits snapshot from the limits registry. Used to
@@ -188,13 +202,13 @@ export interface AppCtx {
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
   /**
-   * docs/150 req 7 — bench the provider account a session is pinned to until
+   * docs/150-multiple-provider-subscriptions req 7 — bench the provider account a session is pinned to until
    * `until` (epoch ms), because the provider just failed that session's turn
    * saying the subscription is spent. Makes the router skip the account so the
    * next turn fails over instead of hitting the same wall. Optional — test
    * contexts and non-WS callers don't wire it.
    */
-  markSessionAccountExhausted?: (sessionId: string, until: number) => void;
+  markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
   /**
    * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
    * refresher. Invoked from the session-level `auth_required` handler so that

@@ -163,7 +163,7 @@ describe("GitHubTracker", () => {
     ]);
   });
 
-  it("maps created_at onto the tracker-neutral createdAt (docs/247 req 9)", async () => {
+  it("maps created_at onto the tracker-neutral createdAt (docs/247-shipit-private-planning req 9)", async () => {
     const tracker = new GitHubTracker({
       token: "t",
       repo: REPO,
@@ -243,7 +243,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(init?.body as string)).toEqual({ title: "New doc", body: "tracks docs/187" });
   });
 
-  it("creates with labels validated against the repo's labels (SHI-92)", async () => {
+  it("creates with labels validated against the repo's labels (planning#94)", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = url as string;
       if ((init?.method ?? "GET") === "GET" && u.includes("/labels")) {
@@ -258,7 +258,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(post[1]?.body as string).labels).toEqual(["security"]);
   });
 
-  it("rejects an unknown label with the repo's candidate list (SHI-92)", async () => {
+  it("rejects an unknown label with the repo's candidate list (planning#94)", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL) =>
       (url as string).includes("/labels") ? jsonResponse([{ name: "security" }]) : issueResponse(),
     );
@@ -269,7 +269,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     });
   });
 
-  it("rejects --priority on GitHub (no native priority field) (SHI-92)", async () => {
+  it("rejects --priority on GitHub (no native priority field) (planning#94)", async () => {
     const fetchImpl = vi.fn(async () => issueResponse());
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.createIssue({ title: "New", body: "", priority: "high" })).rejects.toMatchObject({
@@ -279,7 +279,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("rejects --parent on GitHub (issues are flat, no sub-issues) (SHI-206)", async () => {
+  it("rejects --parent on GitHub (issues are flat, no sub-issues) (planning#208)", async () => {
     const fetchImpl = vi.fn(async () => issueResponse());
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.createIssue({ title: "New", body: "", parent: "octo/repo#1" })).rejects.toMatchObject({
@@ -290,7 +290,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("surfaces labels with normalized colors on a read (SHI-92 + foundation)", async () => {
+  it("surfaces labels with normalized colors on a read (planning#94 + foundation)", async () => {
     const tracker = new GitHubTracker({
       token: "t",
       repo: REPO,
@@ -333,7 +333,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl.mock.calls[0][0] as string).toContain("/repos/octocat/hello-world/labels");
   });
 
-  it("creates a repo label with a #-stripped color and name-as-id (SHI-230)", async () => {
+  it("creates a repo label with a #-stripped color and name-as-id (planning#232)", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ name: "t3code", color: "0ea5e9" }),
     );
@@ -349,7 +349,48 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(init?.body as string)).toEqual({ name: "t3code", color: "0ea5e9", description: "T3 code area" });
   });
 
-  it("deletes an unused label on undo (SHI-230)", async () => {
+  it("finds a label by name case-insensitively, carrying its description (planning#88)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse([{ name: "Bug", color: "d73a4a", description: "Something broken" }]),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    // Matching ignores casing precisely so a label whose CASING is wrong is
+    // reachable — that is the thing `label edit` exists to fix.
+    expect(await tracker.findLabel("bug")).toEqual({
+      id: "Bug",
+      name: "Bug",
+      color: "#d73a4a",
+      description: "Something broken",
+    });
+    expect(await tracker.findLabel("nope")).toBeNull();
+  });
+
+  it("renames a label in place via new_name, with a #-stripped color (planning#88)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ name: "Bug", color: "d73a4a", description: "Broken" }),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    const label = await tracker.updateLabel("bug", { name: "Bug", color: "#d73a4a", description: "Broken" });
+    // The name IS the id on GitHub, so a rename moves it — the returned id is
+    // the post-rename address the undo snapshot has to carry.
+    expect(label).toEqual({ id: "Bug", name: "Bug", color: "#d73a4a", description: "Broken" });
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toContain("/repos/octocat/hello-world/labels/bug");
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(init?.body as string)).toEqual({ new_name: "Bug", color: "d73a4a", description: "Broken" });
+  });
+
+  it("sends only the fields a label edit touched (planning#88)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ name: "Feature", color: "8b5cf6" }),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await tracker.updateLabel("Feature", { color: "8b5cf6" });
+    // No `new_name` — a recolor must not restate (and so risk rewriting) the name.
+    expect(JSON.parse(fetchImpl.mock.calls[0][1]?.body as string)).toEqual({ color: "8b5cf6" });
+  });
+
+  it("deletes an unused label on undo (planning#232)", async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "GET") {
         expect(url as string).toContain("issues?labels=t3code&state=all&per_page=1");
@@ -363,7 +404,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(del[0]).toContain("/labels/t3code");
   });
 
-  it("refuses to delete a label that issues now carry, naming a carrier (SHI-230)", async () => {
+  it("refuses to delete a label that issues now carry, naming a carrier (planning#232)", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse([{ number: 42 }]),
     );
@@ -448,7 +489,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(init?.method).toBe("DELETE");
   });
 
-  // ---- comment edit (SHI-86) ----------------------------------------------
+  // ---- comment edit (planning#88) ----------------------------------------------
   //
   // A comment id is repository-global, so the adapter reads the comment by id
   // first and checks two things before writing: that it hangs off the issue the
@@ -476,7 +517,7 @@ describe("GitHubTracker writes (docs/177)", () => {
       return jsonResponse({ id: 555, body: JSON.parse(init?.body as string).body, html_url: "http://c" });
     });
 
-  it("edits a comment via PATCH and returns the body it replaced (SHI-86)", async () => {
+  it("edits a comment via PATCH and returns the body it replaced (planning#88)", async () => {
     const fetchImpl = commentEditFetch();
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     const { comment, previousBody } = await tracker.updateComment("42", "555", "new text");
@@ -489,7 +530,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(patch[1]?.body as string)).toEqual({ body: "new text" });
   });
 
-  it("refuses to edit a comment on a different issue than the one named (SHI-86)", async () => {
+  it("refuses to edit a comment on a different issue than the one named (planning#88)", async () => {
     const fetchImpl = commentEditFetch({
       comment: { issue_url: "https://api.github.com/repos/octocat/hello-world/issues/99" },
     });
@@ -498,7 +539,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
   });
 
-  it("refuses to edit a comment written by someone else (SHI-86)", async () => {
+  it("refuses to edit a comment written by someone else (planning#88)", async () => {
     const fetchImpl = commentEditFetch({ comment: { user: { login: "some-human" } } });
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.updateComment("42", "555", "new")).rejects.toMatchObject({
@@ -514,7 +555,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     await expect(tracker.updateComment("42", "555", "new")).resolves.toMatchObject({ previousBody: "old text" });
   });
 
-  it("reports a missing comment as missing, not as an unreachable repo (SHI-86)", async () => {
+  it("reports a missing comment as missing, not as an unreachable repo (planning#88)", async () => {
     const fetchImpl = vi.fn(async () => new Response("", { status: 404 }));
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.updateComment("42", "555", "new")).rejects.toThrow(
@@ -565,5 +606,208 @@ describe("GitHubTracker writes (docs/177)", () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ message: "Validation Failed: not a collaborator" }, 422));
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     await expect(tracker.setAssignee("42", "stranger")).rejects.toThrow(/not a collaborator/);
+  });
+});
+
+/**
+ * docs/247 — a rate limit is not an access failure. The migration replayed ~1,390
+ * comments through this adapter; at ~870 writes in 15 minutes GitHub applied a
+ * secondary rate limit, and every write after that was reported as "the
+ * repository either does not exist or the connected GitHub credential cannot
+ * access it". Nothing about that was true, and it named the two fixes that could
+ * not possibly help. Both directions are pinned here: a throttle 403 must say
+ * throttle, and a plain access 403 must keep its existing message.
+ */
+describe("GitHubTracker rate limits (docs/247)", () => {
+  function errorResponse(body: unknown, status: number, headers: Record<string, string> = {}): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json", ...headers },
+    });
+  }
+
+  /** The message of the rejection, failing the test if the call resolves. */
+  async function rejection(call: Promise<unknown>): Promise<string> {
+    try {
+      await call;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error("expected the call to reject, but it resolved");
+  }
+
+  const SECONDARY_BODY = {
+    message: "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+    documentation_url: "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
+  };
+
+  function trackerReturning(res: () => Response): GitHubTracker {
+    return new GitHubTracker({ token: "t", repo: REPO, fetchImpl: vi.fn(async () => res()) });
+  }
+
+  it("names a secondary rate limit as a throttle, with how long to wait", async () => {
+    const tracker = trackerReturning(() =>
+      errorResponse(SECONDARY_BODY, 403, { "Retry-After": "60", "x-ratelimit-remaining": "4287" }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/secondary rate limit/);
+    expect(message).toMatch(/60 seconds/);
+    // The point of the fix: it must NOT send you to check the slug or the grant.
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("classifies a throttle on the write path too — the one the migration hit", async () => {
+    const tracker = trackerReturning(() => errorResponse(SECONDARY_BODY, 403, { "Retry-After": "900" }));
+    const message = await rejection(tracker.addComment("42", "hi"));
+    expect(message).toMatch(/secondary rate limit/);
+    expect(message).toMatch(/15 minutes/);
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("treats a Retry-After on an otherwise unrecognized 403 as a throttle", async () => {
+    // GitHub does not send Retry-After on an authorization failure, so the
+    // header alone is enough even when the body says nothing we match.
+    const tracker = trackerReturning(() => errorResponse({ message: "Forbidden" }, 403, { "Retry-After": "30" }));
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/throttling requests/);
+    expect(message).toMatch(/30 seconds/);
+  });
+
+  it("reports a spent primary quota as a quota, with the reset time", async () => {
+    const reset = String(Math.floor(Date.now() / 1000) + 600);
+    const tracker = trackerReturning(() =>
+      errorResponse({ message: "API rate limit exceeded for user ID 1." }, 403, {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/quota for the connected credential is exhausted/);
+    expect(message).toMatch(/resets in 10 minutes/);
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("treats a bare 429 as a throttle even with no corroborating signal", async () => {
+    const tracker = trackerReturning(() => errorResponse({ message: "Too Many Requests" }, 429));
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/throttling requests/);
+    expect(message).toMatch(/a few minutes/);
+  });
+
+  it("REGRESSION: a plain access 403 keeps the repository-missing-or-inaccessible message", async () => {
+    // No Retry-After, a non-zero remaining, and a body about permissions — the
+    // shape of a real access failure. Mislabelling this as a throttle would tell
+    // the user to wait for something that never clears.
+    const accessDenied = () =>
+      errorResponse(
+        {
+          message: "Resource not accessible by integration",
+          documentation_url: "https://docs.github.com/rest/issues/issues#create-an-issue",
+        },
+        403,
+        { "x-ratelimit-remaining": "4999", "x-ratelimit-reset": "9999999999" },
+      );
+    const read = await rejection(trackerReturning(accessDenied).listIssues());
+    expect(read).toMatch(/either does not exist or/);
+    expect(read).not.toMatch(/rate limit/);
+    // Same on the write path.
+    expect(await rejection(trackerReturning(accessDenied).addComment("42", "hi"))).toMatch(
+      /either does not exist or/,
+    );
+  });
+
+  it("REGRESSION: 401 and 404 are untouched by the throttle classification", async () => {
+    expect(await rejection(trackerReturning(() => errorResponse({}, 401)).listIssues())).toMatch(
+      /rejected the token/,
+    );
+    expect(await rejection(trackerReturning(() => errorResponse({}, 404)).listIssues())).toMatch(
+      /either does not exist or/,
+    );
+  });
+
+  it("leaves a non-throttle failed write on GitHub's own message", async () => {
+    // A 422 never enters the throttle path at all — pinned so the classification
+    // added above cannot start swallowing GitHub's own validation messages.
+    const tracker = trackerReturning(() => errorResponse({ message: "Validation Failed: bad label" }, 422));
+    expect(await rejection(tracker.addComment("42", "hi"))).toMatch(/Validation Failed: bad label/);
+  });
+
+  it("classifies on the body alone, with no rate-limit headers at all", async () => {
+    const tracker = trackerReturning(() => errorResponse(SECONDARY_BODY, 403));
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/secondary rate limit/);
+    expect(message).toMatch(/a few minutes/);
+    expect(message).not.toMatch(/does not exist/);
+  });
+
+  it("classifies on the headers alone, with no message it recognizes", async () => {
+    const reset = String(Math.floor(Date.now() / 1000) + 1800);
+    const tracker = trackerReturning(() =>
+      errorResponse({ message: "Forbidden" }, 403, {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/quota for the connected credential is exhausted/);
+    expect(message).toMatch(/resets in 30 minutes/);
+  });
+
+  it("reads a non-JSON body rather than giving up on it", async () => {
+    const tracker = trackerReturning(
+      () =>
+        new Response("You have exceeded a secondary rate limit. Please wait a few minutes.", {
+          status: 403,
+          headers: { "Content-Type": "text/plain" },
+        }),
+    );
+    expect(await rejection(tracker.listIssues())).toMatch(/secondary rate limit/);
+  });
+
+  it("reports the LONGER wait when Retry-After and a spent quota disagree", async () => {
+    // A secondary limit hit while the hourly quota is also spent: retrying after
+    // the 60s Retry-After would just hit the quota, so the wait must satisfy both.
+    const reset = String(Math.floor(Date.now() / 1000) + 1200);
+    const tracker = trackerReturning(() =>
+      errorResponse(SECONDARY_BODY, 403, {
+        "Retry-After": "60",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/secondary rate limit/); // the body still names the kind
+    expect(message).toMatch(/20 minutes/);
+    expect(message).not.toMatch(/60 seconds/);
+  });
+
+  it("does not read x-ratelimit-reset while the quota still has requests left", async () => {
+    // `reset` is the end of the current window and rides on every response —
+    // treating it as a wait would inflate a 60-second throttle to 40 minutes.
+    const reset = String(Math.floor(Date.now() / 1000) + 2400);
+    const tracker = trackerReturning(() =>
+      errorResponse(SECONDARY_BODY, 403, {
+        "Retry-After": "60",
+        "x-ratelimit-remaining": "4287",
+        "x-ratelimit-reset": reset,
+      }),
+    );
+    expect(await rejection(tracker.listIssues())).toMatch(/60 seconds/);
+  });
+
+  it("does not claim access is healthy when a spent quota accompanies a permission body", async () => {
+    // A spent quota proves the credential is out of requests and NOTHING about
+    // whether it may touch the repository — the two can coincide. The message
+    // must say retry-then-check, not "the credential is fine".
+    const tracker = trackerReturning(() =>
+      errorResponse({ message: "Resource not accessible by integration" }, 403, {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 300),
+      }),
+    );
+    const message = await rejection(tracker.listIssues());
+    expect(message).toMatch(/quota for the connected credential is exhausted/);
+    expect(message).toMatch(/only if it still fails check that the credential can access/);
+    expect(message).not.toMatch(/credential are fine|nothing to fix/);
   });
 });

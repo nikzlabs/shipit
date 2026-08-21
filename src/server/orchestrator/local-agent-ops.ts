@@ -11,7 +11,7 @@
  * forwards it to the orchestrator's session-scoped `/api/sessions/:id/…` routes
  * and pipes the response back 1:1, holding no state of its own. (The tools that
  * genuinely need a worker — `present`, `permission_prompt`, `ask` — are served
- * by the worker itself and are NOT in scope here; they remain SHI-303.) So the
+ * by the worker itself and are NOT in scope here; they remain planning#305.) So the
  * only thing standing between local mode and a working `gh` is something that
  * accepts those paths and knows which session is asking.
  *
@@ -37,7 +37,7 @@
  * listening on its own loopback port; the shim is pointed at it through
  * `SHIPIT_AGENT_OPS_URL` in that session's spawn env. The session is therefore
  * a property of the LISTENER, not of the request, which is what the worker's
- * broker guarantees via its `SESSION_ID` env and what SHI-303's sketch (mount
+ * broker guarantees via its `SESSION_ID` env and what planning#305's sketch (mount
  * `/agent-ops` on the orchestrator keyed by a path segment) would have given up.
  *
  * Honest scope of that guarantee: it makes the sanctioned path session-bound.
@@ -48,6 +48,8 @@
  * problem than this one, and it is not made worse here.
  */
 
+import http from "node:http";
+import https from "node:https";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { getErrorMessage } from "../shared/utils.js";
@@ -68,6 +70,33 @@ const EXACT_ROUTES: Readonly<Record<string, string>> = {
   "run/rerun": "actions/runs/rerun",
   "workflow/list": "actions/workflows",
   "workflow/view": "actions/workflows/view",
+  // docs/262 req 12 — `shipit plugin refresh`. Local mode has no container, so
+  // this host IS the agent-ops surface there; without the entry the shim is
+  // denied in the dogfood instance while working in production, which is
+  // exactly the drift the parity test exists to catch.
+  //
+  // NECESSARY, NOT SUFFICIENT — measured in the dogfood on 2026-08-14, so the
+  // next reader does not conclude from this entry that the verb is exercisable
+  // there. `Dockerfile.dogfood` installs the `gh` shim and DELIBERATELY not the
+  // `shipit` one (planning#305), so an inner turn answers
+  // `shipit: command not found` while `SHIPIT_AGENT_OPS_URL` is set and this
+  // host is listening. The orchestrator route below it does work locally
+  // (driven directly: fetch, publish, prune, an `activated` row with
+  // before ≠ after). What is untested end to end in the dogfood is the shim
+  // hop alone, and installing that shim is a decision planning#305 owns.
+  "plugin/refresh": "plugin/refresh",
+  // docs/262 req 17 — `shipit plugin exec`, the target of every generated
+  // companion-CLI wrapper. Local mode has no Docker, so the orchestrator route
+  // answers with a plain "this runtime cannot run plugin commands" rather than
+  // a 403 that looks like a missing surface.
+  "plugin/exec": "plugin/exec",
+  // docs/266-plugin-install-diagnosability reqs 1–4 — `shipit plugin status`. A read, so local mode serves it
+  // as completely as production does: the declaration, the live generation and
+  // the install record are all on disk, and none of the three needs a container.
+  // It is the verb an inner-instance session reaches for when a plugin is live
+  // and nothing works, which is precisely the situation local mode is used to
+  // reproduce.
+  "plugin/status": "plugin/status",
 };
 
 /** Per-PR operations reachable as `pr/<number>/<op>`. */
@@ -97,6 +126,47 @@ export function mapAgentOpsPath(path: string): string | null {
   if (op && NUMBERED_OPS.has(op[2])) return `pr/${op[1]}/${op[2]}`;
 
   return null;
+}
+
+/**
+ * Relay one request with NO response deadline.
+ *
+ * `fetch` cannot express this: undici's `headersTimeout`/`bodyTimeout` default
+ * to 300s and are per-dispatcher, not per-request, and undici is not a declared
+ * dependency of this package. `node:http` has no such default, and it is what
+ * `orchestrator-client.ts` already reaches for on its own unbounded path.
+ */
+function requestUnbounded(
+  target: string,
+  method: string,
+  payload: string | undefined,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(target);
+    const mod = url.protocol === "https:" ? https : http;
+    const headers: Record<string, string | number> = { "Content-Type": "application/json" };
+    if (payload !== undefined) headers["Content-Length"] = Buffer.byteLength(payload);
+    const req = mod.request(
+      { hostname: url.hostname, port: url.port, path: url.pathname + url.search, method, headers },
+      (res: http.IncomingMessage) => {
+        let data = "";
+        res.setEncoding("utf-8");
+        res.on("data", (chunk: string) => { data += chunk; });
+        res.on("end", () => {
+          let parsed: unknown;
+          try {
+            parsed = data ? JSON.parse(data) : {};
+          } catch {
+            parsed = {};
+          }
+          resolve({ status: res.statusCode ?? 502, body: parsed });
+        });
+      },
+    );
+    req.on("error", reject);
+    if (payload !== undefined) req.write(payload);
+    req.end();
+  });
 }
 
 /** The orchestrator's own address, as seen from inside its own container. */
@@ -145,18 +215,15 @@ export async function startLocalAgentOpsHost(
       ? undefined
       : JSON.stringify(request.body);
     try {
-      const res = await fetch(target, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        ...(payload !== undefined ? { body: payload } : {}),
-      });
-      let parsed: unknown;
-      try {
-        parsed = await res.json();
-      } catch {
-        parsed = {};
-      }
-      return await reply.code(res.status).send(parsed ?? {});
+      // No response deadline. `fetch` here would abort a long operation at
+      // undici's 300s default while the orchestrator kept working — the shim
+      // prints a failure and the change lands afterwards, which is exactly the
+      // misleading outcome the unbounded transport exists to prevent. It bit
+      // `plugin/refresh` first (a fetch, a checkout, and a plugin's install),
+      // but nothing relayed here is inherently quick, so the deadline goes for
+      // the whole relay rather than one route (review finding).
+      const res = await requestUnbounded(target, method, payload);
+      return await reply.code(res.status).send(res.body ?? {});
     } catch (err) {
       // Requirement 4 (docs/251): name the reason. The shim renders this
       // verbatim, so an unreachable orchestrator must not read as "no PR".

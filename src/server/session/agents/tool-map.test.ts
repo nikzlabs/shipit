@@ -1,7 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { canonicalizeTool, agentToolName } from "./tool-map.js";
+import {
+  CLAUDE_TOOL_NAMES,
+  CODEX_TOOL_NAMES,
+  OPENCODE_TOOL_NAMES,
+} from "../../shared/agent-tool-names.js";
 
 describe("canonicalizeTool", () => {
+  // A tool the CLI advertises but this map has never heard of degrades in
+  // silence: no canonical name, so no activity label and no special renderer,
+  // just the generic fallback. That is how the TodoWrite → Task* rename went
+  // unnoticed. This makes the two lists prove they agree.
+  it("has a canonical name for every advertised tool", () => {
+    for (const name of CLAUDE_TOOL_NAMES) {
+      expect(canonicalizeTool("claude", name), `claude tool ${name}`).not.toBeNull();
+    }
+    for (const name of CODEX_TOOL_NAMES) {
+      expect(canonicalizeTool("codex", name), `codex tool ${name}`).not.toBeNull();
+    }
+    for (const name of OPENCODE_TOOL_NAMES) {
+      expect(canonicalizeTool("opencode", name), `opencode tool ${name}`).not.toBeNull();
+    }
+  });
+
   it("maps Claude CLI tool names to canonical names", () => {
     expect(canonicalizeTool("claude", "Agent")).toBe("agent");
     expect(canonicalizeTool("claude", "Read")).toBe("file_read");
@@ -26,6 +47,11 @@ describe("canonicalizeTool", () => {
     expect(canonicalizeTool("claude", "PushNotification")).toBe("notification");
     expect(canonicalizeTool("claude", "Skill")).toBe("skill");
     expect(canonicalizeTool("claude", "TaskCreate")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskUpdate")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskList")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskGet")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskStop")).toBe("task");
+    expect(canonicalizeTool("claude", "TaskOutput")).toBe("task");
     expect(canonicalizeTool("claude", "TodoWrite")).toBe("todo");
     expect(canonicalizeTool("claude", "ToolSearch")).toBe("tool_search");
     expect(canonicalizeTool("claude", "Workflow")).toBe("workflow");
@@ -39,11 +65,27 @@ describe("canonicalizeTool", () => {
     expect(canonicalizeTool("codex", "mcpToolCall")).toBe("mcp");
     expect(canonicalizeTool("codex", "dynamicToolCall")).toBe("mcp");
     expect(canonicalizeTool("codex", "collabToolCall")).toBe("agent");
+    expect(canonicalizeTool("codex", "collabAgentToolCall")).toBe("agent");
     expect(canonicalizeTool("codex", "spawn_agent")).toBe("agent");
+    expect(canonicalizeTool("codex", "spawnAgent")).toBe("agent");
     expect(canonicalizeTool("codex", "webSearch")).toBe("web_search");
     expect(canonicalizeTool("codex", "imageView")).toBe("image_view");
     expect(canonicalizeTool("codex", "tool_search")).toBe("tool_search");
     expect(canonicalizeTool("codex", "AskUserQuestion")).toBe("ask_user");
+    // Collab lifecycle tools observed in a real 0.147.0 turn (docs/272 run).
+    expect(canonicalizeTool("codex", "wait")).toBe("agent");
+    expect(canonicalizeTool("codex", "closeAgent")).toBe("agent");
+  });
+
+  it("maps OpenCode CLI tool names to canonical names", () => {
+    expect(canonicalizeTool("opencode", "bash")).toBe("shell");
+    expect(canonicalizeTool("opencode", "edit")).toBe("file_edit");
+    expect(canonicalizeTool("opencode", "read")).toBe("file_read");
+    expect(canonicalizeTool("opencode", "write")).toBe("file_write");
+    expect(canonicalizeTool("opencode", "webfetch")).toBe("web_fetch");
+    expect(canonicalizeTool("opencode", "task")).toBe("agent");
+    expect(canonicalizeTool("opencode", "todowrite")).toBe("todo");
+    expect(canonicalizeTool("opencode", "skill")).toBe("skill");
   });
 
   it("does not keep removed Codex compatibility aliases", () => {
@@ -84,6 +126,12 @@ describe("agentToolName", () => {
     expect(agentToolName("codex", "shell")).toBe("shell");
     expect(agentToolName("codex", "file_edit")).toBe("fileChange");
     expect(agentToolName("codex", "agent")).toBe("Agent");
+  });
+
+  it("reverse-maps canonical names to OpenCode CLI tool names", () => {
+    expect(agentToolName("opencode", "shell")).toBe("bash");
+    expect(agentToolName("opencode", "todo")).toBe("todowrite");
+    expect(agentToolName("opencode", "agent")).toBe("task");
   });
 
   it("returns null for unmapped canonical names", () => {

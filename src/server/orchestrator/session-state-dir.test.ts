@@ -20,7 +20,7 @@ describe("sessionStateDirForWorkspace (docs/246)", () => {
     );
   });
 
-  // SHI-286 — the pre-`workspace/` flat layout (sessionDir === workspaceDir) is
+  // planning#288 — the pre-`workspace/` flat layout (sessionDir === workspaceDir) is
   // no longer serviceable. It must NOT degrade into a bare `path.dirname`: that
   // yields `<sessionsRoot>/state` for every flat session on the host — one
   // directory, one shared `.install-done` between all of them. Nor may it return

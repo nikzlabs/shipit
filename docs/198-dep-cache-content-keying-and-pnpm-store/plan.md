@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-122
+issue: planning#124
 title: Dep-cache evolution — content-keyed install skip + pnpm shared store
 description: Content-keyed install skip (GH-Actions-style lockfile hashing) and a shared pnpm store volume, replacing overlay for pnpm repos.
 ---
@@ -145,8 +145,34 @@ skip and the store mount derive from one decision.
 - Keyed by runtimeKey hash → an image rebuild starts a fresh store (same ABI argument
   as overlay scope rotation, docs/183 precondition (c)).
 - Reclaim: disk-janitor sweeps store dirs whose runtimeKey is no longer current and
-  untouched stores past the cold-artifact retention (`DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS`, SHI-197).
+  untouched stores past the cold-artifact retention (`DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS`, planning#199).
   pnpm's own `store prune` can run as part of the sweep for the live store.
+- Ownership (planning#2286): the orchestrator chowns the store dir to
+  `SHIPIT_SESSION_WORKER_UID` when it creates it (`ensurePnpmStoreDir`,
+  container-lifecycle.ts), and **drops the mount** if the handoff cannot be verified.
+  This is the one writable mount the entrypoint's chown loop does not own: it is
+  nested at `/workspace/.pnpm-store`, so it is chowned only as collateral of the
+  `chown -R /workspace` walk. That walk *does* traverse the nested mount, but it is
+  sentinel-gated on the **workspace**, so it never revisits the store once the
+  session's first boot has stamped `.shipit-uid-<uid>`. A store dir created after that
+  boot (container recreated post-idle, runtime-key rotation, a janitor sweep that
+  reclaimed the previous store) stayed `root:root` and dead-ended `pnpm install` on
+  EACCES with no in-session recovery — the agent has no `sudo`, and a mount point can
+  be neither chowned nor removed from inside. Three properties:
+  - The chown runs on **every** container create, so the first pnpm container created
+    after a deploy also repairs a store left root-owned by an earlier build — for
+    every session sharing that store, including already-running ones.
+  - It is **verified**: `chownToSessionWorker` logs and swallows failures, which here
+    would reproduce the unrecoverable EACCES, so the result is re-`lstat`ed and a
+    failed handoff drops the mount. pnpm then relocates into the workspace's own
+    `.pnpm-store` (already in the template gitignore) — per-session and slower, but
+    working.
+  - It is **non-recursive**. Root-owned *contents* require a root worker, i.e. the
+    legacy runtime with the variable unset; setting it later rotates the workspace
+    sentinel, so the next boot's `chown -R /workspace` walks the nested store and
+    repairs them. Walking a multi-gigabyte content-addressed store on every container
+    create to cover a case the entrypoint already handles is not worth the startup
+    cost.
 - Known caveat (document in shipit-docs): in-place mutation of hardlinked store files
   (patch-package style) — pnpm's own ecosystem answer (copy-on-patch via
   `pnpm patch`) applies; the store is also integrity-checked by pnpm on link, so

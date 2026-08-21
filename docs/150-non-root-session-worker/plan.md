@@ -1,7 +1,7 @@
 ---
 title: Non-root session worker runtime
 description: Run the session worker, agent CLI, terminal, install hooks, and MCP servers as an unprivileged user instead of root.
-issue: https://linear.app/shipit-ai/issue/SHI-31
+issue: planning#33
 ---
 
 # 150 — Non-root Session Worker Runtime
@@ -409,7 +409,7 @@ guaranteed on the underlying volume.
 The orchestrator must run with capabilities to chown to a different UID
 (it does today — it runs as root). No new privilege is needed.
 
-#### 7.1 Addendum — `safe.directory` and the post-boot git/compose writers (SHI-31 activation blocker)
+#### 7.1 Addendum — `safe.directory` and the post-boot git/compose writers (planning#33 activation blocker)
 
 A deploy validation with `SHIPIT_SESSION_WORKER_UID=1000` (the "validate the
 orchestrator-coupled paths" rollout step) surfaced two gaps this section's
@@ -432,7 +432,25 @@ Rationale for *where* and *what*:
 
 - **Global config, not `-c`.** Git honors `safe.directory` **only** from system
   or global config — never from a repo-local config or a `-c safe.directory=`
-  command-line override (its own anti-spoofing rule). So it must live in
+  command-line override (its own anti-spoofing rule).
+
+  **Correction (2026-08-16, docs/266-orchestrator-git-trust-boundary E2 / planning#403).** The repo-local half is
+  right and is what the docs/266 design rests on; the `-c` half is **wrong**.
+  Measured against git 2.39.5 with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`. The rule,
+  rather than a list that keeps being falsified: git honours `safe.directory`
+  from its *protected configuration* — the system and global files, the command
+  line, **and the config environment protocols** — so anything ShipIt puts in a
+  git process's argv or environment can re-grant trust, and only the
+  repository's own config cannot. It does not change this feature's fix — the entry still belongs
+  in `GIT_CONFIG_GLOBAL` for every reason below — and it is **not a hole**: a
+  `-c` and an env var come from ShipIt's own argv and environment, never from the
+  repository, so the untrusted side still cannot grant itself trust. What it
+  changes is a maintenance rule, now enforced as a lint rather than a sentence
+  (`git-hooks-guard-coverage.test.ts`; planning#409). Corrected here as well as
+  in docs/266, because this is where the claim originated and fixing only the
+  copies is how it reached three places.
+
+  So it must live in
   `GIT_CONFIG_GLOBAL`, which every orchestrator git invocation already inherits
   (`GitManager`/`simpleGit`, the `git-utils` helpers that forward `process.env`,
   and the `gh`/PR path which shells `git`). One write covers all of them.
@@ -473,7 +491,7 @@ wired. Completed in this PR (all gated, all no-ops when the flag is unset):
   **whole workspace** (`.git` AND the worktree) back after its git ops via
   `handWorkspaceBackToWorker`.
 
-  **SHI-145 — these paths must hand the *worktree* back, not just `.git`.** The
+  **planning#147 — these paths must hand the *worktree* back, not just `.git`.** The
   early assumption (below) that "the worktree files are always written by the
   agent as the worker, so only `.git` needs the handoff" holds for the *post-turn
   auto-commit* but is **false for session setup**: the root orchestrator's
@@ -680,7 +698,7 @@ runtime. `chmod a+rX` (capital X = "directory or already-executable") gives
 the runtime user read+traverse access without making every file
 executable.
 
-#### 8.1 Addendum — the read-only browser store breaks the MCP's *profile* dir (SHI-145 regression)
+#### 8.1 Addendum — the read-only browser store breaks the MCP's *profile* dir (planning#147 regression)
 
 A live session surfaced a gap this section's reasoning missed. The §8 design
 correctly makes the browser *binary* read-only and readable by `shipit` — but
@@ -706,7 +724,7 @@ profile `mkdir` fails with EACCES. The browser binary itself
 names it `chromium`, title "Chrome for Testing") is correctly pre-installed and
 readable; there is **no runtime download**. The `mcp-chrome-for-testing-<hash>`
 name is the *profile* dir, not a browser revision — the `mcp-` prefix and
-cwd-hash suffix are the tell. Before SHI-145 the worker ran as root and the
+cwd-hash suffix are the tell. Before planning#147 the worker ran as root and the
 profile `mkdir` into the root-owned store silently succeeded, which is why this
 only surfaced after the non-root move.
 
@@ -812,11 +830,11 @@ After validation, audit `CapAdd` and remove `DAC_OVERRIDE` and
 `NET_BIND_SERVICE` if no regressions surface in the worker, terminal, or
 MCP tool exercises.
 
-## Writable paths (groundwork for SHI-97 — ReadonlyRootfs/seccomp)
+## Writable paths (groundwork for planning#99 — ReadonlyRootfs/seccomp)
 
-SHI-97 makes the container root filesystem read-only (`ReadonlyRootfs: true`)
+planning#99 makes the container root filesystem read-only (`ReadonlyRootfs: true`)
 with explicit writable mounts. That work needs an exact inventory of every path
-the non-root worker writes to. Enumerated here as part of SHI-31 so SHI-97 can
+the non-root worker writes to. Enumerated here as part of planning#33 so planning#99 can
 flip the rootfs without a write-permission scavenger hunt:
 
 | Path | Writer | Notes |
@@ -825,10 +843,10 @@ flip the rootfs without a write-permission scavenger hunt:
 | `/uploads` | orchestrator (chowned), agent | Mount. |
 | `/credentials` | orchestrator (chowned §7), agent CLIs | Mount; per-session subtree. |
 | `/dep-cache` | package managers | Mount; shared per-repo. |
-| `/tmp` | agent, Playwright MCP (`/tmp/.playwright-mcp`) | tmpfs candidate for SHI-97. Must stay **exec** (npm lifecycle scripts); a `noexec` tmpfs breaks installs. |
+| `/tmp` | agent, Playwright MCP (`/tmp/.playwright-mcp`) | tmpfs candidate for planning#99. Must stay **exec** (npm lifecycle scripts); a `noexec` tmpfs breaks installs. |
 | `/home/shipit` | agent CLIs, npm | Includes `~/.claude`, `~/.codex` (symlinks into `/credentials`), `~/.claude.json`, `~/.npm-global` (global installs), `~/.npm` (npm cache), `~/.cache` (tool caches). Needs its own writable mount/tmpfs under ReadonlyRootfs. |
 
-Read-only and **must stay** so under SHI-97 (never written at runtime):
+Read-only and **must stay** so under planning#99 (never written at runtime):
 `/app`, `/app/node_modules`, `/opt/agent-cli`, `/opt/playwright-browsers`
 (installed `a+rX` at build time), `/usr/local/bin` shims, `/etc/shipit`
 (agent hooks + managed settings). The worker process is exec'd from `/app` and
@@ -953,9 +971,25 @@ behavior with the new UID, then remove add-backs one by one with targeted tests.
 - Dogfood/local mode (`RUNTIME_MODE=local`) still resolves agent credentials
   with the orchestrator container running as root (no `shipit` user, HOME =
   `/root`).
+  **Superseded — the dogfood container is not root.** With
+  `SHIPIT_SESSION_WORKER_UID` set on the deployment, the compose generator forces
+  `user: <uid>:<uid>` onto every service without an explicit one, so the `dev`
+  and `onboarding` services run as uid 1000 against a `/root` they cannot write.
+  planning#284 moved `AGENT_HOME` to the bind-mounted state dir for that reason;
+  planning#390 moved `HOME` alongside it, because the half of the container that
+  keys off `$HOME` rather than `$AGENT_HOME` — Codex's config root above all —
+  was still landing on `/root`. Do not read this criterion as license to
+  hardcode `/root` anywhere new. The *production* orchestrator container is a
+  separate question and is still root, which is what the "Out of scope" list
+  above is about — but check that list against the tree before relying on it:
+  of the four files it names only `session-namer.ts` still exists, and its
+  `process.env.HOME ?? "/root"` fallback is therefore the one place where the
+  two runtimes' answers still differ (`agentHome()` would be right in dogfood
+  and wrong in the prod orchestrator, which pins neither `HOME` nor
+  `AGENT_HOME`). Untouched by planning#390 for exactly that reason.
 - `src/server/shipit-docs/environment.md` documents the non-root runtime home.
 
-## Implementation note — what is actually flag-gated (SHI-31)
+## Implementation note — what is actually flag-gated (planning#33)
 
 The implementation deviates from the original Rollout step 1 below in one
 deliberate way, because ShipIt ships the orchestrator **and** the session-worker
@@ -1041,3 +1075,52 @@ session at a time. A deliberate downgrade sets
 `SHIPIT_SESSION_WORKER_UID_ALLOW_DOWNGRADE=1` (after archiving/resetting the
 affected sessions). The marker is not overwritten on a fatal, so re-setting
 the var on the next boot recovers cleanly.
+
+### The variable may not name a reserved egress UID (docs/263)
+
+Two values are refused outright: `911` (the Tier B resolver) and `912` (the
+Tier C SNI proxy). `docker/egress-sidecar/init-firewall.sh` writes its rules as
+`-m owner ! --uid-owner <uid>` — the DNS redirect at `:202-205` and the `:443`
+SNI redirect at `:229-230` both skip the sidecar's own uid so its upstream dials
+are not re-redirected into itself, and `:161` gives 911 raw port-53 egress.
+Those are not identity checks, so a *workload* holding either uid inherits the
+exemption and runs past the tier that names it.
+
+This variable is that uid for two contained surfaces at once — the agent
+container (forwarded at `container-lifecycle.ts:510`, `gosu`'d at
+`entrypoint.sh:23`) and plugin CLI/install containers — so the refusal lives at
+the single parse site, `sessionWorkerUid()`, which throws
+`ReservedWorkerUidError`, plus an unconditional `assertWorkerUidNotReserved()`
+as the FIRST statement of `buildApp` (ahead of `initializeManagers`, so a boot
+about to be refused cannot migrate the database or write credentials on its way
+out). Compose services are reached by the variable too, contained ones included,
+and the boot refusal above is what makes that safe: the fill-in resolves through
+`sessionWorkerUid()`, which throws on a reserved value rather than returning one.
+*(This paragraph used to say compose services were "not a third such surface"
+because a contained service had to declare its own non-reserved numeric `user:`.
+[docs/271](../271-compose-workspace-writability/plan.md) deleted that requirement
+— github#2374 — so the premise is gone while the conclusion stands on the
+refusal instead. Corrected 2026-08-18.)*
+
+A reserved value is **not** degraded to `null` the way other invalid input is:
+the entrypoint reads the same raw variable, so the orchestrator would act
+legacy-root while the worker still dropped to 911. There is no override env var
+— unlike the downgrade above, no deployment legitimately wants its workloads to
+hold the uid that disables the tier. `assertWorkerUidConsistency` still covers
+rollback drift only; it resolves the current uid through the same parse and so
+inherits this refusal rather than repeating it.
+
+**What the refusal does not retire.** It validates the environment, not the
+containers already running in it. A session container created under a reserved
+uid survives an orchestrator restart by design (`shutdown-manager.ts`), is
+rediscovered without its stored `SHIPIT_SESSION_WORKER_UID` being compared to
+the current one (`container-discovery.ts`), and is reconnected to rather than
+recreated (`app-lifecycle.ts`). So a deployment that ran 911, upgraded, and
+corrected the variable boots clean while its inherited containers keep the
+exempt uid until they are disposed. Left as-is deliberately: the exposure
+belongs to the old configuration, which was uncontained on every surface for its
+whole life, and forcing recreation at rediscovery would kill a live session's
+container to repair a config the operator has already fixed. Archiving or
+resetting those sessions retires them; a fresh container gets the corrected uid,
+and the handoff sentinel is UID-stamped (`entrypoint.sh:75`) so it re-chowns
+once on creation.

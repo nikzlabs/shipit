@@ -1,15 +1,70 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: fetches the consult output the serve-path projection stripped (docs/244, SHI-297) when the viewer opens, with cancellation on close — an external-system read with cleanup.
+// eslint-disable-next-line no-restricted-imports -- useEffect: fetches the consult output the serve-path projection stripped (docs/244, planning#299) when the viewer opens, with cancellation on close — an external-system read with cleanup.
 import { useState, useEffect } from "react";
 import { ArrowsOutSimpleIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import type { SubAgentConsultCard as SubAgentConsultCardData } from "../../../../server/shared/types.js";
 import { subAgentPreviewLine } from "../../../../server/shared/transcript-slice.js";
+import { getHarness, getModel } from "../../../../server/shared/catalogue/index.js";
+import { billingModeLabel, serviceLabel } from "../../../utils/service-label.js";
 import type { SubAgentSpawnChip } from "../../../stores/session-store.js";
 import { useSessionStore } from "../../../stores/session-store.js";
 import { MarkdownContent } from "../../message-markdown.js";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../../ui/dialog.js";
 
 /** Display names for the spawn chip / consult card. */
-const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex" };
+const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode", grok: "Grok Build" };
+
+/**
+ * docs/261 phase 4 (req 9) — what the consult ran on, as the card says it.
+ *
+ * Two lines out of four facts, because they answer two different questions and
+ * only one of them belongs in the summary:
+ *
+ *  - `subject` is what goes after the verb. It is the **model**, because the
+ *    model is what reviewed the work. "Consulted Claude" names a CLI, and since
+ *    Claude Code can drive a non-Anthropic model that sentence can be true while
+ *    being wrong about everything the reader cares about.
+ *  - `attribution` is the quieter second line: service, billing mode, the
+ *    harness that drove it, the reasoning level (req 5 — part of the reviewer, so
+ *    it is part of the report), and — docs/264-agent-roles req 14 — the **role** the run was
+ *    started as, when one was.
+ *
+ * The role leads that line because it is what the caller actually asked for, and
+ * it is not recoverable from the tuple beside it: two roles can resolve to the
+ * same model, and the reviewer's resolves per run, so a card showing only the
+ * tuple cannot answer "was this the reviewer, or `deep-dive`?" — which is the
+ * question a reader of the transcript has.
+ *
+ * Every id is resolved through the catalogue and falls back to itself, so a
+ * model or service the catalogue has since dropped renders as a raw id rather
+ * than disappearing — an old consult's provenance is exactly the thing worth
+ * keeping. A card written before this phase carries no `runOn` at all and keeps
+ * the harness as its subject with no second line.
+ */
+function describeRun(card: SubAgentConsultCardData): { subject: string; attribution: string | null } {
+  const harness = SUB_AGENT_DISPLAY_NAMES[card.subAgentId] ?? card.subAgentId;
+  const runOn = card.runOn;
+  if (!runOn) return { subject: harness, attribution: null };
+
+  // An absent level is **Default** — the run passed no reasoning flag (a role at
+  // Default, docs/264 req 1). It is a level the user chose, so the card names it
+  // rather than dropping the segment.
+  const reasoning = getHarness(card.subAgentId)?.capabilities.reasoning;
+  const effort =
+    runOn.reasoningEffort === undefined
+      ? "Default"
+      : (reasoning?.options.find((o) => o.value === runOn.reasoningEffort)?.label
+        ?? runOn.reasoningEffort);
+  return {
+    subject: getModel(runOn)?.label ?? runOn.modelId,
+    attribution: [
+      ...(card.roleName ? [`as ${card.roleName}`] : []),
+      serviceLabel(runOn.serviceId),
+      billingModeLabel(runOn.billingMode),
+      harness,
+      `${effort} reasoning`,
+    ].join(" · "),
+  };
+}
 
 /**
  * docs/144 — transient in-flight "Asking Codex…" spinner, rendered at the bottom
@@ -32,12 +87,32 @@ export function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
 /**
  * Collapse the verbatim output into a single-line preview for the card face.
  *
- * docs/244 / SHI-297 — shared with the server, which now BUILDS this line: a
+ * docs/244 / planning#299 — shared with the server, which now BUILDS this line: a
  * consult's output is modal-only past the preview, so the wire copy carries the
  * preview and nothing else. Applying it again to the server's own preview is a
  * no-op, so this call site is correct for both a whole card and a projected one.
  */
 const previewLine = subAgentPreviewLine;
+
+/**
+ * The quiet second line: service, billing mode, harness, reasoning level.
+ *
+ * Rendered smaller and dimmer than the summary because it is provenance, not
+ * news — the reader who wants to know which credential paid and how hard the
+ * reviewer thought finds it, and everyone else reads the line above it.
+ * Renders nothing for a card written before docs/261 phase 4.
+ */
+function RunAttribution({ text }: { text: string | null }) {
+  if (!text) return null;
+  return (
+    <div
+      className="mt-0.5 text-[11px] text-(--color-text-tertiary)"
+      data-testid="sub-agent-consult-run-on"
+    >
+      {text}
+    </div>
+  );
+}
 
 /** The verb that opens the summary line, derived from the card's status. */
 function statusVerb(status: SubAgentConsultCardData["status"]): string {
@@ -65,13 +140,13 @@ function statusVerb(status: SubAgentConsultCardData["status"]): string {
  */
 export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData }) {
   const [open, setOpen] = useState(false);
-  const name = SUB_AGENT_DISPLAY_NAMES[card.subAgentId] ?? card.subAgentId;
+  const { subject, attribution } = describeRun(card);
   const secs = card.durationMs ? Math.round(card.durationMs / 1000) : null;
   const cost = card.costUsd && card.costUsd > 0 ? `$${card.costUsd.toFixed(2)}` : null;
   const verb = statusVerb(card.status);
   const pending = card.status === "pending";
 
-  const parts = [`${verb} ${name}`];
+  const parts = [`${verb} ${subject}`];
   if (pending) parts.push("in progress");
   if (secs !== null) parts.push(`${secs}s`);
   if (cost) parts.push(cost);
@@ -80,7 +155,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
 
   const output = card.outputMarkdown?.trim() ? card.outputMarkdown : null;
 
-  // SHI-278 — the durable in-flight row. Unlike the transient spinner chip this
+  // planning#280 — the durable in-flight row. Unlike the transient spinner chip this
   // is persisted, so it stays put across a session switch, a reload, and a
   // container restart, and it is anchored at the call site rather than pinned to
   // the bottom of the transcript.
@@ -89,17 +164,20 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
       <div
         data-testid="sub-agent-consult-card"
         data-pending="true"
-        className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)"
+        className="flex items-start gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)"
       >
-        <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
-        {summary}
+        <CircleNotchIcon size={14} className="mt-0.5 shrink-0 animate-spin text-(--color-text-tertiary)" />
+        <div className="min-w-0">
+          {summary}
+          <RunAttribution text={attribution} />
+        </div>
       </div>
     );
   }
 
   // No output (e.g. a transport failure or empty result) — keep the compact,
   // non-interactive one-liner exactly as before, plus ShipIt's own explanation
-  // when there is one (SHI-307: a consult cancelled by an orchestrator restart
+  // when there is one (planning#309: a consult cancelled by an orchestrator restart
   // is otherwise indistinguishable from one the user cancelled).
   if (!output) {
     return (
@@ -108,6 +186,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
         className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)"
       >
         {summary}
+        <RunAttribution text={attribution} />
         {card.statusDetail && (
           <div className="mt-1 text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-status-detail">
             {card.statusDetail}
@@ -132,6 +211,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
             className="shrink-0 text-(--color-text-tertiary) opacity-60 group-hover:opacity-100"
           />
         </div>
+        <RunAttribution text={attribution} />
         <div className="mt-1 truncate text-xs text-(--color-text-secondary)" data-testid="sub-agent-consult-preview">
           {previewLine(output)}
         </div>
@@ -140,7 +220,7 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
       {open && (
         <ConsultOutputDialog
           card={card}
-          title={`${verb} ${name}`}
+          title={`${verb} ${subject}`}
           preview={output}
           onClose={() => setOpen(false)}
         />
@@ -150,10 +230,10 @@ export function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData
 }
 
 /**
- * The verbatim-output viewer. docs/244 / SHI-297 — opening it IS the click
+ * The verbatim-output viewer. docs/244 / planning#299 — opening it IS the click
  * requirement 8 licenses a loading state for: the transcript payload carries
  * only the preview line, and the full markdown is fetched here. A card that
- * arrived whole (short output, or a pre-SHI-297 row) renders immediately and
+ * arrived whole (short output, or a pre-planning#299 row) renders immediately and
  * issues no request at all.
  */
 function ConsultOutputDialog({ card, title, preview, onClose }: {

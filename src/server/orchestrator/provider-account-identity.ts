@@ -1,5 +1,5 @@
 /**
- * docs/150 req 22 — the provider's own identity for a connected account.
+ * docs/150-multiple-provider-subscriptions req 22 — the provider's own identity for a connected account.
  *
  * ShipIt's account rows are user-facing labels over a credential directory, and
  * until now that was *all* they were: two rows could hold credentials for the
@@ -30,8 +30,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { AgentId, ProviderAccount } from "../shared/types.js";
+import type { AgentId, CredentialRoute } from "../shared/types.js";
+import { nativeServiceForHarness } from "../shared/catalogue/index.js";
 import { extractCodexIdentity } from "./agents/codex/auth-manager.js";
+import { extractXaiIdentity } from "./agents/grok/auth-manager.js";
 
 export interface ProviderAccountIdentity {
   /** The provider's stable id for this account. Used for duplicate detection. */
@@ -59,6 +61,18 @@ export function readCodexAccountIdentity(credentialRoot: string): ProviderAccoun
   return extractCodexIdentity(auth);
 }
 
+/**
+ * Read `<credentialRoot>/.grok/auth.json`'s xAI account id (planning#435).
+ *
+ * `user_id` rather than the email, for the reason the Claude reader gives:
+ * an email can change under one account, so it is a label and never the key.
+ */
+export function readGrokAccountIdentity(credentialRoot: string): ProviderAccountIdentity | null {
+  const auth = readJsonObject(path.join(credentialRoot, ".grok", "auth.json"));
+  if (!auth) return null;
+  return extractXaiIdentity(auth);
+}
+
 /** Identity for whichever provider owns this credential root, or null. */
 export function readProviderAccountIdentity(
   provider: AgentId,
@@ -66,6 +80,10 @@ export function readProviderAccountIdentity(
 ): ProviderAccountIdentity | null {
   if (provider === "claude") return readClaudeAccountIdentity(credentialRoot);
   if (provider === "codex") return readCodexAccountIdentity(credentialRoot);
+  if (provider === "grok") return readGrokAccountIdentity(credentialRoot);
+  // OpenCode still has no provider accounts (docs/268 req 5) — it is key-mode
+  // only, with no `account` credential target — so there is no auth.json
+  // identity to extract for it.
   return null;
 }
 
@@ -77,26 +95,28 @@ export function readProviderAccountIdentity(
  * identity) and so the policy is testable without a credential store on disk.
  */
 export interface ProviderAccountIdentityStore {
+  /** Harness-keyed: the on-disk credential root (`provider-accounts/<harness>/…`). */
   resolveCredentialRoot(provider: AgentId, accountId: string): string;
+  /** Service-keyed, like every other credential-row verb (planning#342). */
   findByExternalId(
-    provider: AgentId,
+    serviceId: string,
     externalId: string,
     exceptAccountId?: string,
-  ): ProviderAccount | undefined;
+  ): CredentialRoute | undefined;
   recordAccountIdentity(
-    provider: AgentId,
+    serviceId: string,
     accountId: string,
     identity: ProviderAccountIdentity,
-  ): ProviderAccount;
+  ): CredentialRoute;
   refuseDuplicateConnect(
-    provider: AgentId,
+    serviceId: string,
     accountId: string,
-    matched: ProviderAccount,
+    matched: CredentialRoute,
   ): "deleted" | "reset";
 }
 
 /**
- * docs/150 req 22 — apply the identity a just-completed sign-in reported.
+ * docs/150-multiple-provider-subscriptions req 22 — apply the identity a just-completed sign-in reported.
  *
  * Returns `null` when the connect may proceed (having recorded the identity and
  * possibly adopted the reported email as the label), or the message to show the
@@ -112,6 +132,11 @@ export function refuseIfAlreadyConnected(
   accountId: string,
   accounts: ProviderAccountIdentityStore,
 ): string | null {
+  // The sign-in event names a harness; the row verbs are keyed by service
+  // (planning#342). A harness with no catalogue vendor has no account rows to
+  // collide with, so there is nothing to refuse.
+  const serviceId = nativeServiceForHarness(provider);
+  if (!serviceId) return null;
   const root = accounts.resolveCredentialRoot(provider, accountId);
   const identity = readProviderAccountIdentity(provider, root);
   if (!identity) {
@@ -125,13 +150,13 @@ export function refuseIfAlreadyConnected(
   // `accountId` is excluded so a row signing back into its own account — the
   // repair path for a stale or revoked row — is not refused as a duplicate of
   // itself.
-  const matched = accounts.findByExternalId(provider, identity.externalId, accountId);
+  const matched = accounts.findByExternalId(serviceId, identity.externalId, accountId);
   if (!matched) {
-    accounts.recordAccountIdentity(provider, accountId, identity);
+    accounts.recordAccountIdentity(serviceId, accountId, identity);
     return null;
   }
 
-  const disposition = accounts.refuseDuplicateConnect(provider, accountId, matched);
+  const disposition = accounts.refuseDuplicateConnect(serviceId, accountId, matched);
   const who = identity.email ? `That account (${identity.email})` : "That account";
   const tail =
     disposition === "deleted"

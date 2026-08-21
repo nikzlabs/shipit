@@ -506,7 +506,7 @@ export async function listPullRequests(
  *
  * `base`/`head` are ShipIt's original names and stay; `baseRefName`/
  * `headRefName` are the real-`gh` spellings, carried as aliases so an agent's
- * existing habits transfer (docs/255 req 7). The `author`/`labels`/timestamp
+ * existing habits transfer (docs/255-pr-comment-reads req 7). The `author`/`labels`/timestamp
  * fields exist for the same reason: `--json` field names are now validated
  * strictly, so the error should fire on genuinely unsupported names rather than
  * on ordinary ones.
@@ -749,7 +749,7 @@ function mapComment(c: RawConversationComment): PrConversationComment {
  *
  * Returns a discriminated result rather than `null` so a *failed* read can
  * never be rendered as "no comments" — the caller surfaces the error instead
- * (docs/255 req 5). A review still in `PENDING` state (an unsubmitted draft
+ * (docs/255-pr-comment-reads req 5). A review still in `PENDING` state (an unsubmitted draft
  * review, visible only to its author) is dropped: it isn't feedback yet.
  */
 export async function viewPullRequestConversation(

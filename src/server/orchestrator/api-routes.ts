@@ -5,6 +5,7 @@
  * the original `registerApiRoutes()` signature for backwards compatibility.
  */
 
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
@@ -33,6 +34,7 @@ import type { SessionLoopDetector } from "./loop-detector.js";
 import type { RuntimeMode } from "../shared/types.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { ModelRunner } from "./services/redaction.js";
+import type { LogStoreReader } from "./services/host-session-logs.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -63,11 +65,15 @@ import { registerBugReportRoutes } from "./api-routes-bug-report.js";
 import { registerProposeActionsRoutes } from "./api-routes-propose-actions.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
+import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
+import type { PluginRefreshResult } from "./services/plugin-refresh.js";
+import type { PluginCliRequest, PluginCliResult } from "./plugin-cli-run.js";
 import type { SecretStore } from "./secret-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { FileReviewStore } from "./review-store.js";
 import type { PresentStore } from "./present-store.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
+import type { GenerateText } from "./non-turn-model.js";
 
 /**
  * Dependencies needed by API routes. A subset of AppDeps — only the
@@ -111,6 +117,50 @@ export interface ApiDeps {
   credentialsDir?: string;
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
+  /**
+   * docs/262 req 12 — run a plugin-repository refresh and WAIT for it, for the
+   * agent's `shipit plugin refresh`. A runtime that cannot refresh supplies
+   * `undefined` and the route says so rather than pretending it worked.
+   *
+   * **The key is REQUIRED even though the value may be `undefined`**, and that
+   * is the whole point (found by dogfooding, 2026-08-14). Both of these hooks
+   * were declared optional here, produced by `bootstrapManagers`, and then
+   * never forwarded by `route-registry.ts` — which type-checked, so the routes
+   * answered `501 This runtime cannot refresh plugin repositories.` on EVERY
+   * deployment, production included, while every co-located test passed because
+   * each injects the hook directly. A required key makes the omission a build
+   * error; `| undefined` keeps the honest "this runtime has none" answer.
+   */
+  refreshPluginReposForSession: ((
+    sessionId: string,
+    workspaceDir: string,
+    repoName?: string,
+    /**
+     * docs/266-plugin-install-diagnosability reqs 5, 6 — re-stage and re-install the version already live.
+     * Refused by the service without `repoName`.
+     */
+    force?: boolean,
+  ) => Promise<PluginRefreshResult>) | undefined;
+  /**
+   * docs/262 req 17 — run one imported plugin's companion CLI in an invocation
+   * container (`plugin-cli-run.ts`). `undefined` where there is no Docker
+   * (local mode, tests), which is the honest answer rather than running the
+   * command somewhere it must not run (plan §1b). Required key for the reason
+   * spelled out on `refreshPluginReposForSession` above.
+   */
+  runPluginCommandForSession: ((
+    sessionId: string,
+    workspaceDir: string,
+    request: PluginCliRequest,
+  ) => Promise<PluginCliResult>) | undefined;
+  /**
+   * Drop a session's pending debounced auto-push (`services/auto-push-scheduler.ts`).
+   * Only ever called after a synchronous push has replaced it — the agent's own
+   * `gh pr create`. Optional so tests and local runtimes can omit it; a missing
+   * hook leaves the debounce armed, which is the safe direction (a redundant
+   * push, never a lost one).
+   */
+  cancelAutoPush?: (sessionId: string) => void;
   chatHistoryManager: ChatHistoryManager;
   authManager: AuthManager;
   codexAuthManager: CodexAuthManager;
@@ -119,7 +169,7 @@ export interface ApiDeps {
    * the WS `AppCtx` (built from `ApiDeps`) can dispatch `auth_required` to
    * the failing turn's backend instead of always restarting Claude OAuth.
    */
-  authManagers: Map<AgentId, AgentAuthManager>;
+  authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   /**
    * docs/155 Phase 3 — per-agent run-params prep hooks. Threaded through so
    * the WS path can inject the right backend-specific fields (Claude's
@@ -139,10 +189,21 @@ export interface ApiDeps {
    * then 503s.
    */
   refreshSubscriptionLimits?: (
-    agentId: AgentId,
+    /** docs/252 req 10 — `${serviceId}:${billingMode}`, the key quota is reported under. */
+    modeKey: string,
     reason: "manual" | "seed",
     routeId?: string,
   ) => Promise<LimitsRefreshResult[]>;
+  /**
+   * planning#339 — forget one route's cached quota reading and rebroadcast.
+   *
+   * The counterpart of the seed above, for a **string-delivered** credential:
+   * removing one has no sign-out event to ride on, so without this the reading
+   * it produced stays in the registry's cache until some unrelated event
+   * happens to sweep it, leaving a usage pill for a credential that no longer
+   * exists. Omitted in test mode (no `LimitsRegistry`).
+   */
+  forgetSubscriptionLimits?: (modeKey: string, routeId: string) => void;
   /**
    * docs/144 — push a sub-agent consult's carried-back rate-limit snapshot into
    * the matching `LimitsProvider`. Same closure the WS turn path uses; threaded
@@ -153,6 +214,14 @@ export interface ApiDeps {
     agentId: AgentId,
     session: { usedPct: number | null; resetAt: string } | null,
     weekly: { usedPct: number | null; resetAt: string } | null,
+    sessionId?: string,
+    /**
+     * docs/252 req 10 — the credential route the reporting turn ACTUALLY ran
+     * on, when the caller resolved one of its own. A consult routes
+     * independently of the session's pin, and the snapshot is filed against
+     * whatever `(service, mode)` owns the route.
+     */
+    routeId?: string,
   ) => void;
   /**
    * docs/164 — override for the bug-report Stage-2 (LLM) redaction pass. When
@@ -165,7 +234,7 @@ export interface ApiDeps {
   getSharedRepoDir: (repoUrl: string) => string;
   createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>;
   // Phase 3 additions
-  generateText: (prompt: string, cwd: string) => Promise<string>;
+  generateText: GenerateText;
   sessionsRoot: string;
   /** Warm a session for a repo (called after clone, after graduation, etc.). */
   warmSessionForRepo?: (repoUrl: string) => Promise<void>;
@@ -195,19 +264,30 @@ export interface ApiDeps {
   /** Secret store — per-repo env var secrets for preview containers. */
   secretStore?: SecretStore;
   /**
-   * docs/172 (SHI-90) — durable egress allowlist + containment toggle store.
+   * docs/172 (planning#92) — durable egress allowlist + containment toggle store.
    * Backs the browser-only egress Settings routes. Omitted in test setups that
    * don't exercise egress settings.
    */
   egressAllowlistStore?: EgressAllowlistStore;
   /**
-   * docs/172 (SHI-90) — whether this deployment can actually ENFORCE egress
+   * docs/172 (planning#92) — whether this deployment can actually ENFORCE egress
    * containment (enforcement enabled AND the sidecar image configured). Surfaced
    * to the browser so the Settings → Network egress panel distinguishes
    * containment *policy* from *enforcement*. Defaults to false when omitted (test
    * setups / deployments without egress wiring).
    */
   egressEnforcementActive?: boolean;
+  /**
+   * docs/172 Tier B (planning#383) — whether this deployment installs the
+   * controlled resolver at all (`egressDnsEnabled()`). False
+   * (`SESSION_EGRESS_DNS=0`) means a contained session runs the fixed Tier A IP
+   * floor alone, so NO allowlist entry and no user grant can widen it, in any
+   * session. Every host surface reads it through `egressHostReach`, which
+   * defaults it to true when omitted — a pure env read is never unknowable in
+   * production, and a test runtime must not be told its deployment can grant
+   * nothing.
+   */
+  egressDnsControlDeployed?: boolean;
   /** File review store — unified review surface persistence (per session/file). */
   reviewStore?: FileReviewStore;
   /**
@@ -259,6 +339,18 @@ export interface ApiDeps {
    * is archived/deleted. Optional; the disk-janitor sweep is the backstop.
    */
   removeSessionLogs?: (sessionId: string) => void;
+  /**
+   * docs/192 durable per-session log store. Read by the docs/264 Ops route,
+   * which needs the on-disk backlog rather than the in-memory ring so a session
+   * whose container is already gone still answers.
+   *
+   * **Required key, `| undefined` value** — same reason as
+   * `refreshPluginReposForSession` above: an optional key here type-checks when
+   * `route-registry.ts` forgets to forward it, and the route then answers 503 on
+   * every deployment while its co-located tests (which inject the store
+   * directly) stay green. A required key makes the omission a build error.
+   */
+  logStore: LogStoreReader | undefined;
   /**
    * OOM circuit breaker — passed into recovery service handlers so
    * user-initiated restarts reset the trip, and into the diagnostics
@@ -329,7 +421,7 @@ export async function registerApiRoutes(
     done();
   });
 
-  // ---- Container ↔ browser trust boundary (docs/201 / SHI-129) ----
+  // ---- Container ↔ browser trust boundary (docs/201 / planning#131) ----
   // Registered before the domain route modules so its `onRoute` hook observes
   // their `containerAccessible` opt-ins and its `onRequest` hook gates them.
   registerContainerOriginGuard(app, { containerManager: deps.containerManager });
@@ -390,6 +482,7 @@ export async function registerApiRoutes(
   await registerProposeActionsRoutes(app, deps);
   await registerEgressRoutes(app, deps);
   await registerIssueRoutes(app, deps);
+  await registerPluginRepoRoutes(app, deps);
   await registerLimitsRoutes(app, deps);
 
   // Marketplace catalogs (docs/149). Wired only when a store is provided so

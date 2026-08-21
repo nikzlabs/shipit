@@ -1,7 +1,7 @@
 /**
- * Egress sidecar orphan reaper (SHI-222).
+ * Egress sidecar orphan reaper (planning#224).
  *
- * The Tier B resolver and Tier C SNI proxy (docs/172, SHI-90) are long-lived
+ * The Tier B resolver and Tier C SNI proxy (docs/172, planning#92) are long-lived
  * sidecars launched with `NetworkMode: container:<agentContainerId>` — they have
  * no network stack of their own, they *borrow* the agent container's. That makes
  * the agent container their **netns parent**, and it makes them useless the moment

@@ -1,4 +1,5 @@
 import type { SecretRequirement } from "../domain-types.js";
+import type { PluginCredentialGroup } from "../../plugin-credentials.js";
 
 // ---- Install status messages (server → client) ----
 
@@ -41,7 +42,34 @@ export interface WsInstallLog {
 export type ComposeServiceStatus = "stopped" | "starting" | "running" | "error";
 export type ComposeServicePreviewMode = "auto" | "manual";
 
-/** Server → Client: status update for a single compose service. */
+/**
+ * docs/262 req 3 — where a surfaced service came from, when it is not the
+ * project's own compose file. Plugin services are first-class everywhere else,
+ * so this is the only thing that distinguishes them: services keep `name` as
+ * their client identity (it is already collision-checked across the project and
+ * every plugin, req 20, and it is today's control and log address).
+ */
+export interface ComposeServiceOriginView {
+  kind: "plugin";
+  /** The declared plugin repository, as the Plugins card names it. */
+  repo: string;
+  /** The import's local name (`use.alias`). */
+  alias: string;
+  /** The exported plugin's name in that repository's manifest. */
+  plugin: string;
+}
+
+/**
+ * Server → Client: status update for a single compose service.
+ *
+ * `port` is the **browser's** routing key — the number the preview origin
+ * carries (`{sessionId}--{port}.<host>`), which is the container port for a
+ * project service and the pinned published port for a plugin one (docs/262
+ * req 18). The orchestrator resolves it back to the real container port when it
+ * proxies. The agent-facing `url` on `GET /api/sessions/:id/services` is the
+ * other half of that pair and carries the container port, because it is a direct
+ * connection with no proxy in it.
+ */
 export interface WsServiceStatus {
   type: "service_status";
   sessionId: string;
@@ -50,6 +78,8 @@ export interface WsServiceStatus {
   port?: number;
   preview: ComposeServicePreviewMode;
   error?: string;
+  /** docs/262 — present only for a service a plugin provides. */
+  origin?: ComposeServiceOriginView;
 }
 
 /** Server → Client: full list of compose services for a session. */
@@ -59,10 +89,28 @@ export interface WsServiceList {
   services: {
     name: string;
     status: ComposeServiceStatus;
+    /** The browser's routing key — see {@link WsServiceStatus.port}. */
     port?: number;
     preview: ComposeServicePreviewMode;
     error?: string;
+    /** docs/262 — present only for a service a plugin provides. */
+    origin?: ComposeServiceOriginView;
   }[];
+}
+
+/**
+ * docs/262 — Server → Client: this session's plugin repositories finished an
+ * activation round, so the browser should refetch `GET /api/plugin-repos`.
+ *
+ * A signal, not a payload: the snapshot is the single authoritative shape and
+ * re-deriving it here would be a second source of truth. It exists because
+ * activation is fire-and-forget — without a push the client can only poll, and
+ * a poll with any budget eventually gives up on a slow fetch and leaves the
+ * card stuck on "activating".
+ */
+export interface WsPluginReposUpdated {
+  type: "plugin_repos_updated";
+  sessionId: string;
 }
 
 /** Server → Client: Docker Compose stack failed to start. */
@@ -117,8 +165,14 @@ export interface WsComposeNotConfigured {
 export interface WsSecretsStatus {
   type: "secrets_status";
   sessionId: string;
-  /** All declared secrets across all services, de-duplicated by name. */
-  declared: (SecretRequirement & { services: string[] })[];
+  /**
+   * All declared secrets, de-duplicated by name: every service's
+   * `x-shipit-secrets` entries, plus every credential name an activated plugin
+   * declares (docs/262 req 23). A name claimed by both is ONE row carrying
+   * both claimant lists — deliberately, because it is one stored secret.
+   * `services` is empty on a row only a plugin claims.
+   */
+  declared: (SecretRequirement & { services: string[]; plugins?: string[] })[];
   /** Service name → secret names declared but not present (required + optional). */
   missingByService: Record<string, string[]>;
   /**
@@ -126,6 +180,19 @@ export interface WsSecretsStatus {
    * value was found. Empty list = no banner.
    */
   missingRequired: string[];
+  /**
+   * docs/262 req 23 — plugin-declared credentials GROUPED per activated
+   * plugin, each name carrying whether this project has a value for it. The
+   * grouping is what makes a missing key a *named* gap ("`artk` needs
+   * `FAL_KEY`") instead of an anonymous entry in a flat list.
+   *
+   * Values come from the consuming project's own secret store and nothing
+   * else; ShipIt's platform credentials can never satisfy one of these.
+   *
+   * Not part of `missingRequired`: that list drives the preview's blocking
+   * "configure secrets" banner, which is about the project's own services.
+   */
+  plugins: PluginCredentialGroup[];
 }
 
 /**

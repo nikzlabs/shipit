@@ -1,5 +1,5 @@
 ---
-issue: roadmap#SHI-327
+issue: planning#329
 title: Local install — bind address and Tailscale access
 description: Bind the local install to loopback by default, with an opt-in best-effort tailnet binding and sslip.io previews.
 ---

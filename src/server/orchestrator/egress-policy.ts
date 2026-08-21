@@ -1,5 +1,5 @@
 /**
- * Egress allow-once policy — Tier C decision state (docs/172 Gap 1, SHI-90).
+ * Egress allow-once policy — Tier C decision state (docs/172 Gap 1, planning#92).
  *
  * The policy decision point for the Tier C SNI proxy's allow-once flow. The
  * proxy queries the orchestrator for a host not in its static allowlist; this
@@ -9,8 +9,14 @@
  *   - `carded`   — hosts already surfaced as a card, so a re-denied host doesn't
  *                  spam a new card every retry.
  *
- * Scope (C2): per-session and **in-memory** — a decision lasts the session/runner
- * lifetime. "Add to allowlist" reuses the same set; durable, cross-restart
+ * Scope (C2): per-session and **in-memory** — a decision lasts the ORCHESTRATOR
+ * PROCESS's lifetime, not the runner's. This said "the session/runner lifetime"
+ * and that is not what the code does: {@link clearEgressPolicy} exists for it but
+ * has no production caller, so a decision survives runner disposal and container
+ * recreation, and is snapshotted into plugin containers launched long after
+ * (`plugin-egress.ts`). Recorded rather than changed — narrowing it would re-card
+ * hosts after a routine idle disposal, which is a product call, not a cleanup.
+ * "Add to allowlist" reuses the same set; durable, cross-restart
  * persistence + an editor is the Settings-UI follow-up (see checklist). The chat
  * card itself persists (chat history), so the user's decision is never lost from
  * the transcript; only the live allow-set is ephemeral. A module-level Map is the
@@ -53,15 +59,46 @@ function get(sessionId: string): SessionPolicy {
   return p;
 }
 
-/** Has the user allowed this host for the session (matches suffix entries too)? */
-export function isEgressHostAllowed(sessionId: string, host: string): boolean {
+/**
+ * Has the user allowed this host for the session **in memory** (allow-once /
+ * add), ignoring the durable allowlist? The predicate form of
+ * {@link listEgressAllowedHosts}, and it answers for the same reason that
+ * enumerator exists: this set is what a launcher SNAPSHOTS into a container's
+ * static allowlist, so it is the layer that is true of a session no matter how
+ * that session's config was resolved.
+ *
+ * The durable-reconciled {@link isEgressHostAllowed} is NOT that, and a reader
+ * that wants "what does this session actually reach" must not use it —
+ * planning#380: docs/211's Network-off sandbox resolves to a lifeline config
+ * carrying no user hosts, so a durable entry exists while the session's own
+ * resolver and proxy were never launched with it. Composed with a caller's own
+ * `ResolvedEgressConfig` entries, this predicate is exactly the static host set
+ * `plugin-egress.ts` launches a plugin container with.
+ */
+export function isEgressAllowOnceHost(sessionId: string, host: string): boolean {
   const h = normalizeHost(host);
   const p = policies.get(sessionId);
-  if (p) {
-    for (const entry of p.allowed) {
-      if (hostMatchesEntry(h, entry)) return true;
-    }
+  if (!p) return false;
+  for (const entry of p.allowed) {
+    if (hostMatchesEntry(h, entry)) return true;
   }
+  return false;
+}
+
+/**
+ * Has the user allowed this host for the session (matches suffix entries too)?
+ *
+ * The **decision point's** answer: the in-memory allow-once set reconciled with
+ * the durable allowlist, so a host the user added durably is allowed even if
+ * this runner never carded it. That reconciliation is right for the Tier C
+ * decision endpoint — the proxy asking it was launched from the same resolved
+ * config those durable hosts feed — and wrong for a reader asking what a session
+ * reaches. Such a reader wants {@link isEgressAllowOnceHost} plus its own
+ * `ResolvedEgressConfig` entries (see that function's docstring).
+ */
+export function isEgressHostAllowed(sessionId: string, host: string): boolean {
+  const h = normalizeHost(host);
+  if (isEgressAllowOnceHost(sessionId, h)) return true;
   // Reconcile with the durable allowlist (global + per-session). A host the
   // user added durably is allowed even if this runner never carded it.
   if (durableSource) {
@@ -70,6 +107,35 @@ export function isEgressHostAllowed(sessionId: string, host: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * The hosts this session's user allowed **in memory** (allow-once / add), as a
+ * list rather than a predicate.
+ *
+ * Exists for a caller that has to hand a static allowlist to a resolver and an
+ * SNI proxy it launches ITSELF, rather than ask a question per host: docs/262's
+ * plugin containers (`plugin-egress.ts`), which are on a network denied the whole
+ * `/api/*` surface and so cannot reach the Tier C decision endpoint the agent's
+ * proxy queries live. Snapshotting the set at launch is what makes such a
+ * container reach the same hosts the agent does.
+ *
+ * Deliberately NOT reconciled with {@link durableSource}, unlike
+ * {@link isEgressHostAllowed}: for an ordinary session the durable hosts are
+ * already in the caller's `ResolvedEgressConfig.extraHosts` (`index.ts` composes
+ * both from `egressAllowlistStore.effectiveHosts`), so folding them in here
+ * would be a second copy that could drift.
+ *
+ * It once said that made "config entries ∪ this set" exactly "config entries ∪
+ * `isEgressHostAllowed`". That is false, and planning#380 is what it cost: a
+ * config can EXCLUDE the durable hosts rather than contain them — docs/211's
+ * Network-off sandbox resolves to a lifeline base with empty extras — so the
+ * two differ by exactly the entries such a session cannot reach. This set is
+ * the one that is true of any session; {@link isEgressAllowOnceHost} is its
+ * predicate form, and a reader must use that, not the reconciled one.
+ */
+export function listEgressAllowedHosts(sessionId: string): string[] {
+  return [...(policies.get(sessionId)?.allowed ?? [])];
 }
 
 /** Record a user allow decision for a host (allow-once or add-to-allowlist). */
@@ -82,6 +148,11 @@ export function allowEgressHost(sessionId: string, host: string): void {
  * host is not already allowed AND hasn't been carded yet — and marks it carded so
  * the proxy's retry loop (it re-queries after a short negative cache) doesn't emit
  * a fresh card each time. A subsequent user "deny" leaves it carded (no re-card).
+ *
+ * Only reached for a session that CAN grant: the decision route answers a
+ * session admitting no user hosts (`ResolvedEgressConfig.userHostsExcluded`,
+ * planning#380) before it gets here, because there the card would offer a grant
+ * that cannot take effect.
  */
 export function shouldCardEgressHost(sessionId: string, host: string): boolean {
   const h = normalizeHost(host);

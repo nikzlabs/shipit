@@ -10,8 +10,9 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
+import { holdsActiveReservation } from "../sessions.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
 import { projectMessagesForWire } from "../transcript-projection.js";
 import type { UsageManager } from "../usage.js";
@@ -23,14 +24,14 @@ import type { SessionInfo } from "../../shared/types.js";
 import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
-import { chownTreeToSessionWorker } from "../session-worker-uid.js";
+import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { materializeLfsWithWarning } from "../git-lfs.js";
 import { reclaimRegenerableSessionDirs } from "../disk-utils.js";
 import { ServiceError } from "./types.js";
 import { validateString, validateStringArray } from "./validation.js";
 
 // Re-exports so external consumers continue to resolve these from "./session.js".
-export { forkSession, mergeSession } from "./session-fork-merge.js";
+export { forkSession, forkReportSinks, mergeSession, type ForkReportSinks } from "./session-fork-merge.js";
 export {
   DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS,
   DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN,
@@ -41,6 +42,7 @@ export {
   listSpawnedChildren,
   getSpawnedChild,
   sendChildMessage,
+  ResolvedChildMessageError,
   waitForChildIdle,
   assertArchivableChild,
   registerMergeWatch,
@@ -162,7 +164,39 @@ async function materializeLfsAndChown(workspaceDir: string, repoUrl: string | un
   );
   // Only re-chown when the pull actually wrote files — a non-LFS repo shouldn't
   // pay for a full-tree ownership walk on every restore.
-  if (result.status === "materialized") chownTreeToSessionWorker(workspaceDir);
+  //
+  // docs/270 — the object-aware handback, not a plain recursive chown. A session
+  // clone's `.git/objects` are HARDLINKS into the shared bare cache (`git clone
+  // --local`), and an inode has one owner across every link, so chowning object
+  // files hands this session rewrite rights over content every other clone of
+  // the repo reads. Invisible while all sessions shared one uid.
+  if (result.status === "materialized") handWorkspaceBackToWorker(workspaceDir);
+}
+
+/**
+ * The half of the unarchive decision that drops the previous pull request.
+ * Structural, not incidental: unarchive cuts a NEW branch off the default
+ * branch, so nothing about the old PR survives — not its live snapshot, not the
+ * merge record, not the breadcrumb. All three are cleared HERE, in one place,
+ * because they are one decision and were previously two: the route nulled
+ * `pr_status` and nobody nulled `merged_at`, leaving a merge record attached to
+ * a branch that had never had a PR (see `SessionManager.clearPriorPrRecord`).
+ */
+function clearPriorPrState(
+  sessionManager: SessionManager,
+  prStatusPoller: UnarchivePrStatusPoller | undefined,
+  sessionId: string,
+): void {
+  // Merge record + breadcrumb + merged-tip anchor (DB).
+  sessionManager.clearPriorPrRecord(sessionId);
+  // Live snapshot (DB + poller memory), and the SSE removal that drops the
+  // stale PR card from connected clients.
+  prStatusPoller?.clearPersisted(sessionId);
+}
+
+/** The one poller capability `unarchiveSession` needs. */
+export interface UnarchivePrStatusPoller {
+  clearPersisted(sessionId: string): void;
 }
 
 /** Unarchive (restore) a session, recreating clone if needed. */
@@ -173,6 +207,7 @@ export async function unarchiveSession(
   githubAuthManager: GitHubAuthManager,
   repoStore: RepoStore,
   sessionId: string,
+  prStatusPoller?: UnarchivePrStatusPoller,
 ): Promise<{ session: SessionInfo; sessions: SessionInfo[] }> {
   const session = sessionManager.get(sessionId);
   if (!session || (session.diskTier !== "evicted" && !session.userArchived)) {
@@ -254,7 +289,7 @@ export async function unarchiveSession(
 
     const branchArgs = ["checkout", "-b", newBranch];
     if (startPoint) branchArgs.push(startPoint);
-    await simpleGit(session.workspaceDir).raw(branchArgs);
+    await safeSimpleGit(session.workspaceDir).raw(branchArgs);
 
     // Configure credentials
     if (githubAuthManager.authenticated) {
@@ -264,11 +299,21 @@ export async function unarchiveSession(
     // docs/231 — the `checkout -b` above wrote LFS pointer stubs (the
     // orchestrator's smudge filter is off by design), so restore real content.
     // Runs after the credential helper is in place — a private repo's LFS
-    // endpoint needs it — and re-chowns because the pull writes as root.
+    // endpoint needs it — and re-chowns after it. planning#412: not because the
+    // pull writes as root (since docs/266-orchestrator-git-trust-boundary E1 it
+    // drops to this session's identity, `git-lfs.ts`), but because the pull
+    // rewrites worktree content and `.git/lfs` metadata, which is exactly what
+    // `handWorkspaceBackToWorker` reconciles.
     await materializeLfsAndChown(session.workspaceDir, session.remoteUrl);
 
     sessionManager.setBranch(sessionId, newBranch);
   }
+
+  // Unconditional, mirroring the `clearPersisted` call this replaces: a session
+  // with no remote can never have had a PR, so there is nothing to distinguish.
+  // Runs BEFORE the reads below so the returned session + list (which the route
+  // broadcasts over SSE) already show the session un-merged.
+  clearPriorPrState(sessionManager, prStatusPoller, sessionId);
 
   sessionManager.unarchive(sessionId);
   const updated = sessionManager.get(sessionId);
@@ -277,7 +322,7 @@ export async function unarchiveSession(
 }
 
 /**
- * docs/161 / SHI-179 — re-materialize a LIVE (non-user-archived) session's
+ * docs/161 / planning#181 — re-materialize a LIVE (non-user-archived) session's
  * workspace that is missing on disk, so activating it boots a container against
  * a real bind-mount source instead of 404-looping.
  *
@@ -409,7 +454,7 @@ async function restoreSessionWorkspaceImpl(
   // unrecoverable (never pushed, cache too stale), (re-)create it off the
   // default branch so the session is at least usable rather than dead.
   if (session.branch) {
-    const wsGit = simpleGit(session.workspaceDir);
+    const wsGit = safeSimpleGit(session.workspaceDir);
     try {
       await wsGit.raw(["checkout", session.branch]);
     } catch {
@@ -428,9 +473,19 @@ async function restoreSessionWorkspaceImpl(
         + `recreated off ${startPoint ?? "HEAD"}; unpushed commits (if any) were lost`,
       );
     }
-    // `git checkout` rewrote the worktree as the root orchestrator; hand it back
-    // to the worker uid so the non-root agent can edit tracked files (docs/150 §7).
-    chownTreeToSessionWorker(session.workspaceDir);
+    // `git checkout` rewrote the worktree; hand it back so the non-root agent
+    // can edit tracked files (docs/150 §7). docs/270 — object-aware, for the
+    // hardlink reason above.
+    //
+    // planning#412 — that checkout does NOT run as the root orchestrator. It
+    // goes through `safeSimpleGit(session.workspaceDir)`, which since
+    // docs/266-orchestrator-git-trust-boundary E1 drops to the session's
+    // identity on this existing tree. The root git on this path is
+    // `cloneFromCache`'s bare `safeSimpleGit()` clone above, which names no
+    // directory to stat and so lands `root:root` — and which hands its own tree
+    // over before returning (`repo-git.ts`). This call reconciles `.git` with
+    // `resolveGitDirOwner` and the worktree with the container's identity.
+    handWorkspaceBackToWorker(session.workspaceDir);
   }
 
   if (githubAuthManager.authenticated) {
@@ -500,6 +555,52 @@ export function resolveMaxKeepPreviewRunning(env: NodeJS.ProcessEnv = process.en
 }
 
 /**
+ * docs/241 — the sessions that actually hold a reservation, and so the ones the
+ * cap admits against.
+ *
+ * An archived session is excluded even when its row still carries the flag.
+ * `SessionManager.archive` clears it now, but rows archived before that fix
+ * exist in deployed databases, and such a row is unreachable: `listAll()`
+ * returns archived sessions, while the toggle that would release one is only
+ * rendered on a non-archived sidebar row. Counting it made the deployment's
+ * only slot permanently unavailable. Excluding it here heals those rows without
+ * a migration — the same predicate answers "who holds the slot".
+ */
+export function listActiveReservations(sessionManager: SessionManager): SessionInfo[] {
+  return sessionManager.listAll().filter(holdsActiveReservation);
+}
+
+/**
+ * docs/241 — the refusal message, which names the session(s) holding the slots.
+ *
+ * A bare "capacity is full (1/1)" states the count the user already inferred
+ * from the refusal and withholds the one fact they need to act. Titles come
+ * from the same rows the cap counted, so the message cannot name a session the
+ * user has no way to reach.
+ *
+ * A cap of 0 (the operator disabling the feature) is about the cap rather than
+ * any holder, and a raised cap can have several holders, so the sentence is
+ * built rather than templated. The cap is checked FIRST: lowering the cap to 0
+ * does not release reservations already granted, so `reserved` can be non-empty
+ * there — and the holder-shaped sentence would then promise that turning one
+ * off frees a slot, which at capacity 0 it never does.
+ */
+export function buildReservationFullMessage(reserved: SessionInfo[], maxReservations: number): string {
+  if (maxReservations === 0) {
+    return "Always-on previews are disabled on this deployment (capacity 0). Raise MAX_KEEP_PREVIEW_RUNNING to enable one.";
+  }
+  // Unreachable from the admission check (0 >= a positive cap is false), but
+  // the function stays total for any other caller.
+  if (reserved.length === 0) return "Always-on preview capacity is full.";
+  const inUse = `${reserved.length} of ${maxReservations} in use`;
+  if (reserved.length === 1) {
+    return `Always-on preview is reserved by "${reserved[0].title}". Turn it off there to free the only slot (${inUse}).`;
+  }
+  const titles = reserved.map((s) => `"${s.title}"`).join(", ");
+  return `Always-on preview capacity is full (${inUse}). Reserved by ${titles} — turn one off first.`;
+}
+
+/**
  * docs/241 — reserve/release a live preview slot. Admission is checked before
  * mutation. Enabling activates through the ordinary runner factory, whose
  * onRunnerCreated hook owns install + Compose auto-preview reconciliation.
@@ -524,18 +625,54 @@ export function setKeepPreviewRunning(
   }
 
   if (enabled && !current.keepPreviewRunning) {
-    const reserved = sessionManager.listAll().filter((s) => s.keepPreviewRunning).length;
-    if (reserved >= maxReservations) {
-      throw new ServiceError(
-        409,
-        `Always-on preview capacity is full (${reserved}/${maxReservations}). Disable another reservation first.`,
-      );
+    const reserved = listActiveReservations(sessionManager);
+    if (reserved.length >= maxReservations) {
+      throw new ServiceError(409, buildReservationFullMessage(reserved, maxReservations));
     }
   }
 
   const updated = sessionManager.setKeepPreviewRunning(sessionId, enabled);
   if (!updated) throw new ServiceError(404, "Session not found");
   if (enabled) activate(updated);
+  return { session: updated, sessions: sessionManager.list() };
+}
+
+/**
+ * docs/277 — mute or unmute a session (reqs 1, 5).
+ *
+ * `agentWorking` is resolved by the caller from the session's runner and carries
+ * req 6's server-side half: a session whose agent is working cannot be muted. It
+ * covers three states that all mean "the agent will speak again on its own" —
+ * a running turn, a turn held at a permission prompt (the agent IS running,
+ * blocked inside the gated tool call), and outstanding background work.
+ *
+ * Req 6's other half — "is asking for the user's attention" — is deliberately
+ * NOT re-derived here. Attention is computed in the browser from PR/CI state the
+ * orchestrator does not hold in that shape, and docs/260 req 9 requires exactly
+ * one definition of it; a second one here could disagree with the marker the
+ * user is looking at. The client enforces that half by only offering the
+ * control on a row that needs attention.
+ *
+ * Unmuting is never gated: a mute that could not be lifted because the session
+ * started working would outlive the state that justified it — and a turn start
+ * clears it anyway.
+ */
+export function setSessionMuted(
+  sessionManager: SessionManager,
+  sessionId: string,
+  muted: boolean,
+  agentWorking: boolean,
+  now = new Date(),
+): { session: SessionInfo; sessions: SessionInfo[] } {
+  const current = sessionManager.get(sessionId);
+  if (!current) throw new ServiceError(404, "Session not found");
+  if (muted && agentWorking) {
+    throw new ServiceError(409, "A session whose agent is working cannot be muted");
+  }
+
+  // `setMuted` returns null when the row is already in the requested state, so
+  // fall back to the row we just read rather than treating a no-op as a 404.
+  const updated = sessionManager.setMuted(sessionId, muted ? now.toISOString() : null) ?? current;
   return { session: updated, sessions: sessionManager.list() };
 }
 
@@ -680,7 +817,7 @@ export async function archiveSession(
   // re-creates it from scratch on restore. Template sessions (no remoteUrl)
   // have no recovery path, so we preserve their workspace dir.
   if (session?.remoteUrl && session?.workspaceDir) {
-    // SHI-192 — reclaim the checkout AND the regenerable overlay/ upper sibling,
+    // planning#194 — reclaim the checkout AND the regenerable overlay/ upper sibling,
     // preserving durable siblings (uploads/, restored on unarchive). Removing
     // only the checkout orphaned the overlay upper — the bulk of the disk —
     // which the bare cache + unarchive flow rebuilds on the next install.

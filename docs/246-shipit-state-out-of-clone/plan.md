@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-279
+issue: planning#281
 title: Keep ShipIt's generated state out of the user's repository
 description: Move ShipIt's generated session artifacts out of the git clone into a per-session state dir, with a container mount for the two the agent must read.
 ---
@@ -60,7 +60,7 @@ strictly worse than the bug this feature fixes: it isn't under `.shipit/`, so th
 req-7 guard test would not notice it.
 
 That is why `sessionStateDirForWorkspace()` derives ONLY from the
-`<sessionDir>/workspace` shape and **throws** on anything else (SHI-286). The
+`<sessionDir>/workspace` shape and **throws** on anything else (planning#288). The
 earlier posture — a containment check in `resolveContainerStateDir()` returning
 `null`, with the worker told via `SHIPIT_SESSION_STATE_DIR` to keep the legacy
 in-clone location — is gone: a production census found no flat-layout session, so
@@ -89,7 +89,7 @@ yields `sessionsRoot` and every session's state collides in one directory.
 
 The first implementation avoided that by computing the path once in the caller
 that knew both and **threading it as an explicit option** (as docs/183 threaded
-`serviceEnvDir`). SHI-286 replaced the threading with a single shared resolver:
+`serviceEnvDir`). planning#288 replaced the threading with a single shared resolver:
 consumers — `ServiceManager`, the container config, the secret resolver,
 `claim-session` — each call `sessionStateDirForWorkspace(workspaceDir)`, which
 enforces the `<sessionDir>/workspace` contract and throws on anything else. That
@@ -163,7 +163,7 @@ here starts moving where an artifact is written, it has gone too far.
 Note `.shipit/system-prompt.md` is **not** in a clone: it is a global setting
 living at the orchestrator's own workspace root, above every session, so the
 cleanup has no carve-out to make and a clone's `.shipit/` can disappear
-entirely. SHI-290 made that legible in the code rather than only here — see
+entirely. planning#292 made that legible in the code rather than only here — see
 below.
 
 ### Making it stay fixed (req 7)
@@ -174,7 +174,7 @@ user-authored file left in a clone's `.shipit/`, the invariant is
 unconditional — `.shipit/` inside a session clone is a bug — which is what makes
 it mechanically checkable rather than a review convention.
 
-**The guard has no allowlist (SHI-290).** It asserts "no source file composes an
+**The guard has no allowlist (planning#292).** It asserts "no source file composes an
 in-clone `.shipit` path", not "only these files may". The exemption map it used
 to carry was worse than it looked: granularity was per FILE, so a new forbidden
 writer added to an already-listed file passed silently. Emptying it took
@@ -192,13 +192,13 @@ different in kind:
   stops matching as a consequence.
 - **One was a genuine in-clone writer, and it was deleted.** See below.
 
-### docs/183's in-workspace env-file fallback is gone (SHI-290)
+### docs/183's in-workspace env-file fallback is gone (planning#292)
 
 `ServiceSecretsResolver` used to fall back to writing `.shipit/.env.<svc>` into
 the clone when neither Docker-secrets mode nor `serviceEnvDir` was configured.
 Production never took it — `bootstrap-managers.ts` always computes
 `serviceEnvDir` (`SHIPIT_SERVICE_ENV_DIR ?? <stateDir>/service-env`) — so it was
-reachable only from tests, which is exactly the shape SHI-286 deleted for the
+reachable only from tests, which is exactly the shape planning#288 deleted for the
 flat layout. `serviceEnvDir` is now **required** on `ServiceSecretsResolver`,
 `ServiceManager`, `setupServiceManager` and `createRunnerRegistry`, so "service
 secrets never land in the clone" is a property of the type rather than of the

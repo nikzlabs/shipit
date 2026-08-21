@@ -6,9 +6,9 @@ it has been cut — see the plan's "Resolved decisions".
 
 ## Prerequisite
 
-- [x] **SHI-262** — the finished turn's commit completes before a queued turn starts ✅ merged
-- [x] **SHI-263** — a dispatch that throws during setup settles `errored`, restores the runner,
-      and releases the queue (`dispatchOnRunner`), so a failed delivery reaches the SHI-258
+- [x] **planning#264** — the finished turn's commit completes before a queued turn starts ✅ merged
+- [x] **planning#265** — a dispatch that throws during setup settles `errored`, restores the runner,
+      and releases the queue (`dispatchOnRunner`), so a failed delivery reaches the planning#260
       supervisor instead of looking permanently in flight
 
 ## Watch
@@ -65,23 +65,28 @@ it has been cut — see the plan's "Resolved decisions".
 - [x] Reset: refuses on dirty tree / moved HEAD / detached / sequencer
 - [x] Reset: second invocation → already-at-base; runs with the docs/218 setting off
 - [x] Reset: force-push failure is not success; agent can edit files afterwards
-- [x] SHI-263: a dispatch whose setup throws settles `errored` and is retried to
+- [x] planning#265: a dispatch whose setup throws settles `errored` and is retried to
       `delivery-failed` without an orchestrator restart
-- [x] SHI-316: a wake turn whose agent slot is taken by a newer turn settles
+- [x] planning#318: a wake turn whose agent slot is taken by a newer turn settles
       (`interrupted`) instead of hanging, and runs no teardown of its own
-- [x] SHI-316: a user-interrupted wake settles `interrupted`, not `no-result`;
+- [x] planning#318: a user-interrupted wake settles `interrupted`, not `no-result`;
       a genuinely-never-ran wake still settles `no-result`
-- [x] SHI-316: an `interrupted` wake is terminal — the retry supervisor never re-sends it
-- [x] SHI-316: a retry defers while the worker reports a turn in flight, and proceeds
+- [x] planning#318: an `interrupted` wake is terminal — the retry supervisor never re-sends it
+- [x] planning#318: a retry defers while the worker reports a turn in flight, and proceeds
       once the session is idle
 
-## Duplicate-wake fix (SHI-316)
+## Duplicate-wake fix (planning#318)
 
 - [x] Runner emits `superseded` when a newer spawn displaces a live proxy (both runners)
 - [x] `executeAgentTurn` settles on `superseded` — settlement only, no teardown
 - [x] `interrupted` `TurnOutcome`; `no-result` reserved for "never ran"
 - [x] `merge-watch` treats `interrupted` as terminal (`delivered`), not retryable
 - [x] `retryStalledDeliveries` gates on the worker's `turnActive` (`hasTurnInFlight`)
+- [x] Follow-up (2026-08-10): a turn whose resident process is RETIRED at a spawn
+      boundary (`kill(); setAgent(null); createAgent()`) settles too — the retirement
+      sites clear the slot first, so the displacement hook never saw them
+- [x] Follow-up: the rule holds at every clear-then-spawn site — both `runOnce` blocks,
+      the two `resident-spawn-guard.ts` helpers, and the WS failover release
 
 ## Docs
 

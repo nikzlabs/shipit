@@ -1,10 +1,10 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-311
+issue: planning#313
 title: Session-worker trust boundary
 description: Authenticate the session worker's HTTP surface so one session's container cannot drive another session's worker.
 ---
 
-# Session-worker trust boundary (SHI-311)
+# Session-worker trust boundary (planning#313)
 
 Implements [requirements.md](./requirements.md).
 
@@ -115,7 +115,7 @@ per bridge IP) and is written at the three points where a
 
 `RUNTIME_MODE=local` (the dogfood `dev` service) has no session worker and no
 `/agent-ops` host at all — see `local-agent-mcp.ts:LOCAL_SHIPIT_BRIDGE` — so the
-confused-deputy path does not exist there. The related note on SHI-311, that
+confused-deputy path does not exist there. The related note on planning#313, that
 `api-container-guard.ts`'s runtime denial is inert without a container manager,
 is accurate and deliberately unchanged: a local agent runs in the orchestrator's
 own process and filesystem and can read/write the SQLite database directly, so an
@@ -127,12 +127,14 @@ HTTP-layer session check would not be a boundary.
   layers so the header name, the loopback test and the loopback-only prefix list
   cannot drift. `decideWorkerRequest()` is pure and holds the whole decision.
 - **`src/server/session/worker-auth-guard.ts`** (new) —
-  `registerWorkerAuthGuard(app, { token, env, log })`: the Fastify `onRequest`
-  wiring plus the "no token configured" startup warning. Registered **first** in
-  `SessionWorker.buildApp()`. `env` defaults to `process.env` and exists so the
-  no-token branch is testable — see [Token resolution](#token-resolution).
-- **`src/server/session/session-worker.ts`** — registers the guard; new
-  `workerToken` dep (defaults to the container env).
+  `registerWorkerAuthGuard(app, { token, log })`: the Fastify `onRequest` wiring
+  plus the "no token configured" startup warning. Registered **first** in
+  `SessionWorker.buildApp()`. Also `requireWorkerToken(env)` /
+  `MissingWorkerTokenError` (planning#421), the container's one reader of
+  `SHIPIT_WORKER_TOKEN`.
+- **`src/server/session/session-worker.ts`** — registers the guard; `workerToken`
+  dep, resolved by the container entry point via `requireWorkerToken`, which
+  exits the process when the variable is missing or empty.
 - **`src/server/orchestrator/worker-auth.ts`** (new) — token generation, the
   base-URL→token registry, `workerAuthHeaders()`, and
   `workerTokenFromContainerEnv()` for adoption.
@@ -164,7 +166,16 @@ construction — the "someone forgot the annotation" failure mode cannot occur.
   (a peer container IP is the attack, loopback is the agent, an orchestrator IP +
   token is the orchestrator), the registry, and the env read-back.
 - `worker-auth-guard.test.ts` asserts against the **real** `SessionWorker` app,
-  not a hand-built one, so reordering `buildApp` turns the build red.
+  not a hand-built one, so reordering `buildApp` turns the build red. It also
+  runs the container entry point as a subprocess exactly as the container's `Cmd`
+  does (`node --import tsx session-worker.ts`) and asserts it exits 1 without
+  binding a port when `SHIPIT_WORKER_TOKEN` is absent (planning#421) — the top-level
+  `if (import.meta.url.endsWith(argv[1]))` block is unreachable in-process. Only
+  the refusal direction is tested there: the positive one would bind 9100, which
+  collides with the worker of any container the suite runs in. It needs no test
+  of its own — an entry point that stopped passing the token would leave every
+  production worker refusing the orchestrator outright, which is loud, where
+  before planning#421 the same slip silently *ungated* it.
 - `npm test` — the worker integration tests exercise a real worker over
   `127.0.0.1` and are the regression guard for req 3.
 - Manual smoke (containerized): from session A,
@@ -172,44 +183,68 @@ construction — the "someone forgot the annotation" failure mode cannot occur.
   → 403; from A's own agent, `shipit`/`gh` shims and the `present`/`voice_note`
   tools still work.
 
-## Token resolution
+## Token resolution, and failing closed (planning#421, req 6)
 
-The guard resolves its token as `deps.token ?? env[WORKER_TOKEN_ENV]`, and the
-env half is the **production** path, not a convenience default: `SessionWorker`
-always passes the `token` key, and its own `workerToken` dep is unset in the
-standalone entry point, so a live worker is gated only because the fallback
-fires. That rules out "distinguishing an explicit `undefined` from an absent
-key" as a way to make the no-token case unambiguous — an `in`-based check would
-leave every real worker ungated.
+**One reader.** The container entry point (`session-worker.ts`, the
+`import.meta.url === argv[1]` block) calls `requireWorkerToken(process.env)`
+before it builds anything, and hands the result to `SessionWorker`. The guard
+itself reads no environment: `registerWorkerAuthGuard` gates on `deps.token`
+alone. That block is the only place that knows this process is a real container —
+an in-process test worker never runs it — which is what lets the requirement be
+absolute there without softening it everywhere else.
 
-Two consequences worth knowing before editing this file:
+**Closed means the container does not serve.** A worker that cannot authenticate
+its orchestrator cannot tell it from a peer container, so there is no useful
+state for it to serve from: `requireWorkerToken` throws, the entry point logs one
+line naming `SHIPIT_WORKER_TOKEN` and exits 1 before the server listens, so
+`/health` never answers and creation fails at `waitForWorkerHealth`
+(`container-lifecycle.ts:691`, a 30s poll that throws). The alternative — serve,
+but refuse the orchestrator-facing routes — leaves a container that is up,
+adopted, and answering `/health` while being unable to do anything the
+orchestrator asks; the failure then surfaces as a session that mysteriously does
+nothing rather than as a container that failed to start.
 
-- **An empty env value means "no token", not an unmatchable one.** The
-  orchestrator's `workerTokenFromContainerEnv` maps `SHIPIT_WORKER_TOKEN=` to
-  `undefined` and so sends no header. A worker that held `""` as its expected
-  token would 403 every orchestrator call — the bricked session that D3/step 5
-  exists to prevent, reached through an empty value instead of an absent one.
-  No orchestrator-created container hits it (`generateWorkerToken()` never
-  returns empty, and a peer cannot alter another worker's environment), but a
-  hand-configured container or a standalone worker launched with
-  `SHIPIT_WORKER_TOKEN=` does. Note this moves a malformed-config worker from
-  fail-*closed* to the D3 fail-open policy — deliberate: it is the same
-  compatibility choice D3 already makes for an absent value, and the loopback-only
-  rule that closes the reported hole needs no token either way.
-- **`WORKER_TOKEN_ENV` is set in every session container, so a test asserting the
-  no-token branch is not hermetic by default.** It passed in CI and failed
-  in-container: `token: undefined` fell straight through to the ambient token and
-  the branch was never exercised. `server-test-setup.ts` now strips the var
-  suite-wide (the same treatment as the `GIT_CONFIG_*` injection), and
-  `worker-auth-guard.test.ts` additionally pins `env` so the file does not depend
-  on that setup. Tests cover both halves of the resolution.
+**The policy layer fails closed too**, as the second layer rather than the first:
+`decideWorkerRequest` step 6 denies every non-loopback caller when no token is
+configured. That is the rule
+[`docs/271-agent-install-trust-boundary`](../271-agent-install-trust-boundary/plan.md)
+depends on and does not own — its `agent.install` gate sits at `runInstall`, not
+on the worker's `/install` route, and `compose-service-egress.ts` lets a
+contained plugin service reach the agent container. `worker-auth.test.ts` and
+`worker-auth-guard.test.ts` (the latter against the real `SessionWorker` route
+table) now fail if that rule is relaxed, which a paragraph in a plan could not.
+
+**Why this cannot brick a session (req 5).** The skew req 5 is about is a
+container that outlives a deploy — and such a container keeps running the image
+it was created from, so it never runs this code. The reverse pairing, this worker
+image created by an orchestrator with no token to inject, needs an orchestrator
+older than v0.3.0 (2026-08-04, when `container-lifecycle.ts` started injecting
+the token unconditionally) *and* a container created inside that deploy's build
+window — `deployment/vps/deploy.sh` builds the image before restarting the
+orchestrator, so the window exists, but only on an upgrade crossing that release.
+There, creating a session fails during the build window and succeeds on the next
+attempt; nothing running is affected.
+
+**An empty value is "no token", not an unmatchable one.** The orchestrator's
+`workerTokenFromContainerEnv` maps `SHIPIT_WORKER_TOKEN=` to `undefined` and so
+sends no header, so a worker holding `""` would 403 every orchestrator call while
+looking healthy. `requireWorkerToken` treats it as absent and refuses to start —
+the same outcome for a malformed config as for a missing one, and a much easier
+one to read in the logs.
+
+**Test hermeticity.** `WORKER_TOKEN_ENV` is set in every session container, so
+before planning#421 a test meaning "a worker with no token" silently picked up the
+ambient value through the guard's env fallback — passing in CI, failing in a
+dogfood container. With the fallback gone, `token: undefined` means what it says.
+`server-test-setup.ts` still strips the var suite-wide as cheap insurance for any
+future code that reads it from `process.env`.
 
 ## Known limitations
 
-- The token gates the orchestrator-facing routes only when the worker was created
-  by an orchestrator that injects it (D3). Containers created before this change
-  keep their old behavior on those routes until they are recreated; req 1 does
-  not depend on this.
+- A container created by an orchestrator that predates the token keeps its old
+  behavior on the orchestrator-facing routes, because it also keeps running its
+  old worker image; req 1 does not depend on this, and planning#421's fail-closed
+  rule applies from the image that carries it onward.
 - `SECURITY-MODEL.md` previously claimed sessions "cannot reach each other's
   containers" on the strength of per-session networks. That was wrong for agent
   containers, which share one bridge; the claim is corrected there to describe

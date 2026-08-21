@@ -21,8 +21,11 @@ import {
   dispatchAgentMessage,
   materializeRunner,
   runSubAgent,
+  parseSubAgentSpawnTarget,
   getSubAgentResult,
   waitForSubAgentResult,
+  listRolesForAgent,
+  listSpawnParameters,
   DEFAULT_SUB_AGENT_WAIT_MS,
   MAX_SUB_AGENT_WAIT_MS,
   ServiceError,
@@ -118,19 +121,32 @@ export async function registerAgentRoutes(
   // forwards the body. Blocks until the sub-agent exits, then returns its final
   // text. Errors map to the shim's non-zero exit (disabled, unknown agent, cap
   // exceeded, recursion, crash, …).
+  //
+  // docs/261 reqs 6 + 7 — the body carries the spawn TARGET: either `role`, or
+  // all five explicit fields. `parseSubAgentSpawnTarget` is the authority on
+  // which (the shim's own check only buys a better message), and it refuses an
+  // incomplete explicit call rather than completing it. The four model fields
+  // are new here: until this phase the route declared `{agentId, prompt, depth}`
+  // only, so the shim's `--model` was parsed and then silently dropped.
   app.post<{
     Params: { id: string };
-    Body: { agentId?: AgentId; prompt?: string; depth?: number };
+    Body: {
+      prompt?: string;
+      depth?: number;
+      role?: string;
+      agentId?: AgentId;
+      serviceId?: string;
+      billingMode?: string;
+      modelId?: string;
+      reasoningEffort?: string;
+    };
   }>(
     "/api/sessions/:id/agent/spawn",
     { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         const body = request.body ?? {};
-        if (!body.agentId) {
-          reply.code(400).send({ error: "agentId is required" });
-          return;
-        }
+        const target = parseSubAgentSpawnTarget(body);
         const result = await runSubAgent(
           {
             sessionManager: deps.sessionManager,
@@ -142,13 +158,13 @@ export async function registerAgentRoutes(
             chatHistoryManager: deps.chatHistoryManager,
             ...(deps.recordAgentRateLimits ? { recordAgentRateLimits: deps.recordAgentRateLimits } : {}),
             ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
-            // SHI-299 — lets the service commit work a backgrounded consult left
+            // planning#301 — lets the service commit work a backgrounded consult left
             // behind once its parent turn has already ended.
             createGitManager: deps.createGitManager,
           },
           request.params.id,
           {
-            subAgentId: body.agentId,
+            target,
             prompt: body.prompt ?? "",
             depth: typeof body.depth === "number" ? body.depth : 0,
           },
@@ -164,9 +180,57 @@ export async function registerAgentRoutes(
     },
   );
 
+  // GET /api/sessions/:id/agent/roles — docs/264-agent-roles req 12, the first of the two
+  // reads: the roles this install has, so the agent can map an intent onto one
+  // (req 3), tell the user what exists, and name one it knows is there rather
+  // than guessing at a name the refusal would then have to correct.
+  //
+  // Session-scoped like every other agent-ops route (the worker injects the
+  // trusted SESSION_ID), though the answer is global: roles are a ShipIt-wide
+  // setting. The scoping is the container-access contract, not a filter.
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/roles",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = deps.sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      reply.send({
+        roles: listRolesForAgent({
+          credentialStore: deps.credentialStore,
+          ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
+        }),
+      });
+    },
+  );
+
+  // GET /api/sessions/:id/agent/params — docs/264-agent-roles req 12's second read: the
+  // parameters an override may name (req 10), for THIS install — the harnesses
+  // it installed, each one's reasoning levels, and the models it holds a
+  // credential for.
+  //
+  // The two ship together deliberately: an agent allowed to override a parameter
+  // but unable to see which parameters exist would fill the gap from memory, and
+  // a remembered model is indistinguishable from a supplied one by the time it
+  // reaches ShipIt.
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/params",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = deps.sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      reply.send(listSpawnParameters(deps.agentRegistry));
+    },
+  );
+
   // GET /api/sessions/:id/agent/result?spawnId=…[&wait=true&timeout=N&segment=S]
   //
-  // SHI-245. Re-read a completed spawn's persisted consult card (the artifact
+  // planning#247. Re-read a completed spawn's persisted consult card (the artifact
   // the UI renders) so the invoking agent can verify parity, or recover output
   // whose delivery was lost when its `shipit agent run` was killed mid-flight.
   // Reached via the worker's `/agent-ops/agent/result` broker, which injects the

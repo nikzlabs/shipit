@@ -51,11 +51,20 @@ export interface CodexItem {
     url?: string | null;
     pattern?: string | null;
   } | null;
-  // collabToolCall — subagent orchestration (spawn_agent, send_input, wait, …)
+  // collabAgentToolCall — subagent orchestration (spawnAgent, sendInput, wait, …)
   prompt?: string;
+  senderThreadId?: string;
+  receiverThreadIds?: string[];
+  agentsStates?: Record<string, { status?: string; message?: string | null }>;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  // Legacy fields accepted for old persisted/test fixtures.
   receiverThreadId?: string;
   newThreadId?: string;
   agentStatus?: string;
+  agentThreadId?: string;
+  agentPath?: string;
+  kind?: string;
 }
 
 /**

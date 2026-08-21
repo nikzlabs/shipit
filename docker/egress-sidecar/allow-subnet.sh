@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Intra-session subnet allow — docs/172-agent-containment Gap 1 (SHI-90).
+# Intra-session subnet allow — docs/172-agent-containment Gap 1 (planning#92).
 #
 # Companion to init-firewall.sh. Runs in a SHORT-LIVED PRIVILEGED SIDECAR that
 # shares the agent container's network namespace:
@@ -31,7 +31,7 @@
 # NOT fail-close on a non-zero exit here: failing to open the preview subnet only
 # degrades the agent's own browser reachability, it never weakens containment.
 #
-# Verified on a live Docker host (the SHI-90 checklist), not in unit tests — the
+# Verified on a live Docker host (the planning#92 checklist), not in unit tests — the
 # orchestrator-side wiring that feeds it is unit-tested in egress-firewall-install.test.ts.
 
 set -euo pipefail
@@ -46,6 +46,12 @@ allow_one() {
       || ip6tables -A OUTPUT -d "$cidr" -j ACCEPT 2>/dev/null \
       || { log "WARN: could not add ip6 rule for $cidr"; return 0; }
   else
+    # Keep same-session HTTPS inside the session. This RETURN must precede the
+    # catch-all Tier C redirect in nat/OUTPUT, or service names such as `api`
+    # are treated as public SNI and rejected by the allowlist proxy.
+    iptables -t nat -C OUTPUT -d "$cidr" -p tcp --dport 443 -j RETURN 2>/dev/null \
+      || iptables -t nat -I OUTPUT 1 -d "$cidr" -p tcp --dport 443 -j RETURN \
+      || { log "WARN: could not exempt HTTPS for $cidr"; return 0; }
     iptables -C OUTPUT -d "$cidr" -j ACCEPT 2>/dev/null \
       || iptables -A OUTPUT -d "$cidr" -j ACCEPT \
       || { log "WARN: could not add rule for $cidr"; return 0; }

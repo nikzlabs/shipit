@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-110
+issue: planning#112
 description: Evaluate and (optionally) migrate ShipIt's root toolchain from npm to pnpm — reframed once npm v11.10 shipped its own install-age gate, making the migration an efficiency/strictness upgrade rather than a security necessity.
 ---
 

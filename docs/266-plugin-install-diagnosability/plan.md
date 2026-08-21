@@ -1,0 +1,256 @@
+---
+issue: planning#393
+title: Plugin install diagnosability and forced re-install — design
+description: How `shipit plugin status`, the refresh warning line, and `refresh --force` are built, and why each reuses machinery that already exists.
+---
+
+# Plugin install diagnosability and forced re-install — design
+
+Implements [requirements.md](requirements.md). Requirements are cited as
+`(req N)`; nothing here is a requirement that is not there.
+
+## The shape of the problem
+
+Everything the reporter needed already exists somewhere. Verified on
+2026-08-16, and the reason this is three small changes rather than a subsystem:
+
+| The fact | Where it lives today | Why a session cannot read it |
+|---|---|---|
+| "this version is active but was not installed" | the live generation's `manifestWarnings` (`plugin-generations.ts`) | reaches the Plugins card and the tab's HTTP snapshot only — deliberately not the refresh row, which carries this round's own warning |
+| a failed install's output tail | the activation outcome's `reason` (`plugin-install.ts` `logTail`) | returned to the round that failed; a session opening onto an already-broken version has no round of its own |
+| a withheld command, a rejected fragment, a settings mismatch | the same snapshot the card renders | the tab is a browser surface; `shipit plugin` has `refresh` and `exec` |
+| "run the install again" | nothing | `activateGeneration` returns `unchanged` before staging when the resolved commit is the live one |
+
+So: one **read** surface that reports what the card knows (reqs 1, 2, 9, 10),
+one **durable** record for the install outcome that no generation survives to
+carry (reqs 3, 4), one line in refresh's existing output (req 7), and one flag
+that skips exactly one short-circuit (reqs 5, 6).
+
+## 1. `shipit plugin status [name] [--json]` (reqs 1–4, 9, 10)
+
+A read. It fetches nothing, activates nothing, and changes nothing that is live
+— the property the browser snapshot GET already has, and the reason `status` is
+not a flag on `refresh`.
+
+**It reuses the tab's snapshot builder rather than defining a second notion of
+"degraded"** (req 10). `api-routes-plugin-repos.ts` assembles credentials, host
+reach, compose fragments, settings and command verdicts into
+`buildPluginReposSnapshot`; that body is extracted into one helper both routes
+call, so a reason that appears on the card cannot fail to appear here. A second
+implementation would drift, and the drift would be invisible from exactly the
+side that needs it.
+
+Surface: `GET /api/sessions/:id/plugin/status`, `containerAccessible: true`
+(orchestrator routes are default-denied to containers; the guard's session
+scoping is what stops one session reading another's). Relayed by the worker's
+`/agent-ops/plugin/status`, like refresh and exec.
+
+The shim prints one block per declared repository: the declared ref, the live
+commit, the last install's outcome, and every issue the card would show. `--json`
+emits the same object for a machine reader. The docstring in
+`agent-shim/shipit-plugin.ts` that says a `status` verb "was reviewed out of the
+design" is corrected in place: it is true that the tab answers "what is live",
+and this issue is the case that was missed — a session cannot read the tab, and
+the version the reporter had to diagnose was degraded in a way only the tab
+showed.
+
+## 2. The durable last-install record (reqs 3, 4)
+
+A failed install publishes no generation, so there is nowhere on the generation
+to record it — which is why the reporter's session could see nothing. The
+install runner writes `plugins/<repo>/last-install.json` beside the generations
+root, on every terminal path, holding: the commit, the timestamp, one of
+`succeeded | failed | skipped-stamp | skipped-store | not-run`, and the detail
+string the round would have reported (`exited 1` plus the log tail, bounded as
+`logTail` already bounds it).
+
+It is written by the install runner rather than by the activation round because
+the two "skipped" outcomes are decisions the runner makes and the round never
+sees: an install skipped by the stamp and one skipped by a shared-store hit are
+both `ok: true`, and telling them apart from a real run is precisely the
+question the reporter could not answer.
+
+Two things it deliberately does NOT record, both named because "every terminal
+path writes a record" was an overclaim in the first draft (review finding).
+A repository whose exports declare no install writes nothing — the absence is
+the honest answer, and it is rendered as an absence with both of its causes
+named rather than as "fine". And the record is the last attempt **for the
+repository**, which is not necessarily the version that is live: a failed
+refresh to B leaves A serving, so every reader compares the record's commit
+against the live one before drawing a verdict from it (`describesLive`).
+
+It is **per repository, not per generation**, and last-writer-wins: the question
+is "what happened the last time ShipIt tried to install this repository", and a
+record keyed by a generation that was never published cannot answer it.
+
+### 2a. The successful install's output (req 11)
+
+The record gains one field, `output`: the tail of what the install **printed**,
+written on the success path as well as the failure one. `runInstallContainer`
+already read that tail — only after a non-zero exit — so this changes *when it
+is kept*, not how it is collected. The bounds are the existing ones and are not
+widened: `LOG_TAIL_LINES = 40` per command, `REASON_MAX_CHARS = 2000` per
+command **and once more over the whole run**, so a repository with several
+installing exports cannot retain N times what one may. The elision mark on a
+clipped tail is load-bearing: silently truncated output reads as complete
+output.
+
+Stated precisely, because the first draft of the docs rounded it off (review
+finding): the LINE half is per command, so a repository with three installing
+exports can retain three 40-line tails — the character half is what bounds the
+whole run, and it is the one that bounds what reaches agent context. The agent-
+facing docs say "a bounded tail, 40 lines per install command, clipped to 2000
+characters over the run" rather than "the last 40 lines".
+
+It is a field beside `detail` rather than an extension of it. The two answer
+different questions — `detail` is why the round failed and is absent when it did
+not; `output` is what the command said, whatever the outcome — so the failing
+command's tail appears in both. That overlap is the price of `output` meaning
+one thing: a machine reader that had to parse it back out of a prose reason is a
+reader that will get it wrong. Nothing is written for the outcomes where nothing
+ran (`skipped-*`, `not-run`), and that absence is part of the answer.
+
+The tail is read on **every** outcome that produced a container, including the
+timeout and the cancellation. `waitForContainerExit` kills and reaps before
+returning either, so there is a stopped container to read — and a build that
+prints half its work and then hangs is exactly the one whose partial output is
+the diagnostic.
+
+**One skip carries output forward, and it is the retention shape's own defect
+being closed** (review finding). The record is last-writer-wins, so on the
+re-stage path — install succeeds for C and records what it printed, the publish
+then fails, C re-stages and hits the install stamp — a `skipped-stamp` written
+with no output would erase the artifact at the moment that version goes live.
+The stamp branch therefore carries the previous record's `output` forward when
+it is for the **same commit**, and the outcome stays `skipped-stamp` so "it ran"
+and "it did not run this time" remain distinguishable. It is not applied to the
+store hit: a stamp hit reuses the exact tree the recorded output describes, while
+a store hit mounts a tree built somewhere else, which that output does not
+describe.
+
+**Retained, in the record that already exists.** Two other shapes were
+available. A file per generation is the one the issue named, and it costs a
+sweep: this subsystem's rule is to prune where the leak happens, and a bounded
+file that accumulates one per commit on a tracked branch is a leak with an
+owner. Returning the output only to the invocation that produced it is free and
+answers only inside the turn that ran the refresh — while the session that has
+to diagnose a broken plugin characteristically opens onto an already-installed
+version and runs no round of its own, which is the wall this whole feature
+exists to remove. One bounded field in one existing per-repository file buys the
+retention with no new file and no new sweep. What it does not buy is history;
+the record is the LAST install, and every reader compares its `commit` against
+the live one before drawing a verdict (`describesLive`).
+
+**It rides `--json` on `refresh` as well as on `status` (req 11).** §1 says
+`status` is a verb rather than a flag on `refresh` because a diagnostic must not
+be coupled to the action that fetches — that argument is about not making the
+reader *run* an activation to ask a question, and it does not apply to a field
+on an answer they are already reading. The reader who needs this does not yet
+suspect the install, so it has to be where they already are. It is JSON-only on
+both: a tail of repo-authored text is a diagnostic on demand, and printing it
+on every human-readable refresh would be noise that trains a reader to skim.
+
+## 3. The refresh warning line (req 7)
+
+`services/plugin-refresh.ts` builds each row from this round's own outcome.
+A second field is added — the live version's own degradation — so a refresh that
+finds nothing to do still says the live version is not usable. It has **two**
+sources, and needs both: the generation record's `manifestWarnings` carry
+"active but not installed", and the durable install record carries a FAILED
+install for the live commit, which no generation can carry because the round
+that failed published none. Reading only the first left a plain refresh silent
+after a failed forced retry (review finding). The exit code is unchanged: a
+round that did what it was asked exits 0 (user, 2026-08-16), and the shim
+already exits non-zero when a row's own status is `failed`.
+
+## 4. `shipit plugin refresh <name> --force` (reqs 5, 6)
+
+> **Superseded in part by docs/273-plugin-generation-rebuild** (nikzlabs/shipit#2411).
+> This section's safety argument — "the deletion claim refuses, so a force
+> cannot pull a tree out from under a running container" — is sound about
+> corruption and wrong about reachability: for a plugin that declares a service
+> the claim can never be granted, because the hold is taken per DECLARED
+> fragment and a stopped container still pins its volume. So `--force` was
+> refused every time for exactly the plugins it was written for. The rejected
+> alternative below — "give a forced re-install its own generation id" — is what
+> shipped; the four keyed paths it was priced at are the four it threads
+> through. What survives here unchanged: force skips the already-live
+> short-circuit and both install shortcuts, and it needs a repository name.
+
+**It skips exactly one thing: the "already live" short-circuit.** Everything
+after that is the ordinary round — stage, install, validate, publish, swap,
+prune — so every property the subsystem already has holds unchanged.
+
+The safety that makes this possible is `plugin-leases.ts`, which the re-stage
+path already takes before it clears anything:
+
+- the deletion claim **refuses** while any consumer holds this generation (a
+  plugin service container, an in-flight companion CLI), so a force cannot pull
+  a tree out from under a running container — it reports "still in use" and
+  changes nothing;
+- while the claim is held, `holdGeneration` returns `null`, so no NEW consumer
+  can mount the version mid-round;
+- the claim removes the runtime overlay volume, which is what lets the rebuilt
+  layer be picked up: the volume is named per `(session, repo, commit)`, so
+  without that removal a forced re-install would leave every consumer attached
+  to the old one.
+
+That last point is why force needs no new generation identity. An earlier
+sketch gave a forced re-install its own generation id so it could stage
+alongside the live one; it was dropped because it would have had to thread that
+id through the generation directory, the work directory, the install stamp and
+the overlay volume name — four keyed paths — to buy a property the deletion
+claim already provides.
+
+**That reasoning was wrong, and docs/273-plugin-generation-rebuild reverses
+it.** The claim provides the property only when it is *granted*, and the case
+`--force` exists for is precisely the one where it never is: the version is
+held by the plugin's own service, which is failing because the install is
+broken. "Refuses and changes nothing" is the right answer to a race and the
+wrong answer to a deadlock.
+
+**Force also bypasses the install runner's two shortcuts**, or it is not a
+retry: the install stamp (`recorded.stamp === stamp` → "install already done")
+and the shared dependency store's `adoptPluginDepBases` hit (mount the store's
+tree, run nothing). Both are correct for an ordinary activation and both would
+make `--force` a no-op that reports success — the exact failure this feature
+exists to stop.
+
+**What force costs, stated because a consumer has to be able to weigh it.**
+(Also revised by docs/273-plugin-generation-rebuild: this cost is now paid only
+when the live version is *unheld*, because a rebuild beside a held one installs
+into a layer of its own and a failure discards it whole.)
+`prepareLayer` clears the writable layer before the install writes, so a forced
+round that then fails leaves the version live with its install output gone —
+or, precisely, replaced by whatever the failed attempt wrote before it died
+(review finding; an earlier draft said only "without its install output"). That
+is the state the consumer was already in or slightly worse, they are forcing
+because the version is unusable, it is recorded in the last-install record from
+§2, and every later refresh row says it. It is not a silent downgrade, and
+`--force` is refused without an explicit repository name so it can never be a
+blanket retry across every declared repository.
+
+**The publish window had to change for this, and that is a real edit to a path
+every activation takes** (review finding). Publish was `rm(finalDir)` then
+`rename(staging, finalDir)`. For an ordinary round `finalDir` is absent or a
+leftover, so the order did not matter; under force it IS the live generation,
+and a recursive `rm` of a large checkout leaves `active` pointing at a
+directory being emptied for seconds. A crash there left the repository with
+NOTHING live — worse than the documented cost. It is now rename-aside,
+rename-into-place, then delete: the gap is between two renames on one
+filesystem, and a failed second rename puts the live version back. A leftover
+`.replaced-*` is not a SHA, so the existing prune sweeps it.
+
+## Key files
+
+| File | Change |
+|---|---|
+| `session/agent-shim/shipit-plugin.ts` | `status` verb, `--force` flag, rendering, corrected docstring |
+| `session/agent-ops-routes.ts` | `/agent-ops/plugin/status`; `force` on the refresh relay |
+| `orchestrator/api-routes-plugin-repos.ts` | `GET /api/sessions/:id/plugin/status`; snapshot assembly extracted for reuse |
+| `orchestrator/services/plugin-status.ts` (new) | the agent-shaped projection: live version, last install, issues |
+| `orchestrator/plugin-install-record.ts` (new) | write/read `last-install.json`; the `output` field (req 11) |
+| `orchestrator/plugin-install.ts` | write the record on every terminal path; honour `force`; capture the output tail on success too, bounded once over the run (req 11) |
+| `orchestrator/plugin-generations.ts` | `force` skips the already-live short-circuit and reaches the install job |
+| `orchestrator/services/plugin-activation.ts`, `plugin-refresh.ts` | thread `force`; add the live-degradation field to each row; carry the last install record on each row (req 11) |
+| `shipit-docs/plugins.md` | the two verbs, what force costs, and what a consumer does with a broken version |

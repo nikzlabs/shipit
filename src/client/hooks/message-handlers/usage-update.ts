@@ -7,7 +7,10 @@ export const handleUsageUpdate: Handler<WsUsageUpdate> = (_ctx, data) => {
   const update = data;
   ui.setCurrentSessionUsage({
     sessionId: update.sessionId,
-    totalCostUsd: update.totalCostUsd,
+    totals: update.totals,
+    // docs/252 req 16 — carried live, so a turn does not blank the "by service"
+    // split that `/history` hydrated.
+    groups: update.groups,
     totalDurationMs: update.totalDurationMs,
     turnCount: update.turnCount,
   });

@@ -1,19 +1,40 @@
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   AccountSelectionMode,
   AgentId,
+  CredentialRoute,
+  CredentialStatus,
   FailoverCutoffs,
-  ProviderAccount,
   ProviderRouteKind,
+  SubscriptionLimits,
   SubscriptionLimitsMap,
 } from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
+import {
+  allServices,
+  harnessForNativeService,
+  modeCredentialFor,
+  loginIntegrationForService,
+  nativeServiceForHarness,
+} from "../shared/catalogue/index.js";
+import { credentialModeKey, orderCredentialRoutes, refusalBlockedUntil } from "../shared/types/domain-types/credential-route.js";
+import { subscriptionWindowIsCurrent } from "../shared/types/usage-limits-types.js";
+import { probeNestedString } from "./agents/agent-auth-base.js";
 
-/** Persisted, non-derived account statuses (see {@link ProviderAccount}). */
-export type ProviderAccountStatus = ProviderAccount["status"];
+/**
+ * The billing mode an account-delivered credential always has.
+ *
+ * A login account IS a subscription — that is what the login buys — so every
+ * question this manager asks belongs to one `(service, "sub")` group. Written
+ * as a constant rather than a parameter because a *second* value here would be
+ * a claim nothing in the catalogue makes: no mode of kind `key` declares a
+ * `via: "account"` credential, and req 12 says the two modes never mix anyway.
+ */
+const ACCOUNT_BILLING_MODE = "sub" as const;
 
 /**
  * Subdirectory under the credentials root holding one credential root per
@@ -27,6 +48,8 @@ export const PROVIDER_ACCOUNTS_SUBDIR = "provider-accounts";
 const PROVIDER_LABEL: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
+  grok: "Grok Build",
 };
 
 /**
@@ -38,6 +61,12 @@ const PROVIDER_LABEL: Record<AgentId, string> = {
 const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly LegacyCredentialPath[]> = {
   claude: [{ rel: ".claude", kind: "dir" }, { rel: ".claude.json", kind: "file" }],
   codex: [{ rel: ".codex", kind: "dir" }],
+  // OpenCode is new in docs/268 — no install ever held pre-account OpenCode
+  // credentials, so there is nothing to migrate and nothing to alias.
+  opencode: [],
+  // Same for Grok Build (docs/274): no install predates its row, so there are
+  // no pre-account credentials to migrate.
+  grok: [],
 };
 
 interface LegacyCredentialPath {
@@ -67,11 +96,104 @@ const LEGACY_CREDENTIAL_MARKERS: Record<AgentId, readonly string[]> = {
     path.join(".claude", "auth.json"),
   ],
   codex: [path.join(".codex", "auth.json")],
+  opencode: [],
+  grok: [],
 };
 
 export interface ProviderRoute {
   kind: ProviderRouteKind;
   id: string;
+}
+
+/**
+ * The env-delivered credentials a **service** may have, in the order they are
+ * preferred, with the route id each has always been known by.
+ *
+ * Keyed by service rather than by harness (planning#342) — the variables belong
+ * to a vendor's API, not to a CLI. The order is Anthropic's alone and is load
+ * bearing: `ANTHROPIC_AUTH_TOKEN` is a *subscription* delivered as a string, so
+ * it outranks the metered `ANTHROPIC_API_KEY` for exactly req 12's reason.
+ *
+ * The ids are ShipIt's historical ones rather than anything derived. A session
+ * row already holds them, so re-deriving would orphan every session pinned
+ * before docs/252 (`service-routing.ts` states the same rule for the stored
+ * side, and `envRouteIdFor` is its reader).
+ */
+const RESERVED_ENV_ROUTES: Record<string, readonly { env: string; id: string }[]> = {
+  anthropic: [
+    { env: "ANTHROPIC_AUTH_TOKEN", id: "claude-env-oauth" },
+    { env: "ANTHROPIC_API_KEY", id: "claude-api-key" },
+  ],
+  openai: [{ env: "OPENAI_API_KEY", id: "codex-api-key" }],
+};
+
+/**
+ * The `(service, billing mode)` group a set of accounts routes within, as a
+ * tuple so call sites can spread it into the store's two-argument accessors
+ * without naming the pair twice.
+ *
+ * Order, spreading and the failover cutoffs are all answers to "which of these
+ * credentials next?", and req 12 keeps that question inside one subscription
+ * mode. Nothing here consults a `key` mode's settings, and nothing should —
+ * keys do not fail over, so there is no group.
+ */
+function routingSettingsKeyFor(serviceId: string): [string, typeof ACCOUNT_BILLING_MODE] {
+  return [serviceId, ACCOUNT_BILLING_MODE];
+}
+
+/**
+ * Every catalogue service whose subscription is delivered by a **login
+ * account**, in catalogue order.
+ *
+ * Read from the catalogue rather than written down as `["anthropic", "openai"]`
+ * so a service that grows a login flow is picked up by declaring one, which is
+ * the whole point of the catalogue. Today it resolves to exactly those two, in
+ * that order — which is the order the pre-planning#342 code produced by walking
+ * `["claude", "codex"]`, so the unnarrowed {@link ProviderAccountManager.list}
+ * keeps returning accounts in the order every wire reader already sees.
+ */
+function accountServiceIds(): string[] {
+  return allServices()
+    .filter((service) => modeCredentialFor(service.id, ACCOUNT_BILLING_MODE, "account") !== undefined)
+    .map((service) => service.id);
+}
+
+/**
+ * The harness whose credential root belongs to this service — the axis that is
+ * genuinely still per-harness.
+ *
+ * The auth MANAGER is no longer among them: login flows are keyed by
+ * `LoginIntegrationId` (see `AgentAuthManager`). What remains harness-keyed is
+ * where the credentials land, because the
+ * credentials it writes land under `provider-accounts/<harness>/<id>`, so these
+ * cannot be keyed by service without moving every install's credentials on
+ * disk. Everything *else* — which credential a turn takes, the order, the
+ * cutoffs, the benching — is keyed by `(service, billing mode)` and never asks
+ * this question.
+ */
+function harnessFor(serviceId: string): AgentId | undefined {
+  return harnessForNativeService(serviceId);
+}
+
+function requireHarness(serviceId: string): AgentId {
+  const harness = harnessFor(serviceId);
+  if (!harness) throw new Error(`No account-backed harness for service: ${serviceId}`);
+  return harness;
+}
+
+/**
+ * The service a harness's login accounts live under — the bridge for the
+ * callers that legitimately hold only an `AgentId`: an auth event from a CLI, a
+ * session's pinned harness, a `shipit agent run` naming a backend.
+ *
+ * Exported so those conversions are one named step rather than a
+ * `nativeServiceForHarness(...) ?? something` improvised per call site, each
+ * free to pick a different fallback. A harness with no catalogue vendor has no
+ * account rows at all, so the empty string — which matches no service — makes
+ * every lookup answer "none" instead of throwing or, worse, matching.
+ */
+export function accountServiceForHarness(provider: AgentId): string {
+  return nativeServiceForHarness(provider) ?? "";
 }
 
 export interface ProviderAccountManagerOptions {
@@ -88,7 +210,7 @@ export interface ProviderAccountManagerOptions {
 }
 
 /**
- * Why an account could not be selected (docs/150 req 13). A bare `null` could
+ * Why an account could not be selected (docs/150-multiple-provider-subscriptions req 13). A bare `null` could
  * not express either of these, and req 13 is specifically about *telling the
  * user which one happened* — "everything is exhausted until 14:30" and "nothing
  * is connected" are different problems with different fixes.
@@ -113,36 +235,63 @@ export type AccountSelection =
   | { ok: true; route: ProviderRoute }
   | ({ ok: false } & AccountSelectionFailure);
 
-/**
- * Why a route a session is **already pinned to** can no longer run its turn
- * (docs/150 reqs 6, 7, 11). See {@link ProviderAccountManager.classifyRouteForTurn}.
- *
- * `over_cutoff` is deliberately not a flavour of `exhausted`: the account still
- * has quota, it has only crossed the threshold the *user* configured, and req 6
- * says that moves work rather than stopping it.
- */
-export type RouteUnusableReason =
-  /** A quota window is at 100%, or a hard exhaustion was stamped mid-turn. */
-  | "exhausted"
-  /** Past a configured cutoff, with an account genuinely under one to move to. */
-  | "over_cutoff"
-  /** Disconnected, signed out, or otherwise not in a usable state. */
-  | "unavailable";
-
 export interface SelectAccountOptions {
   /**
-   * Routes already tried and failed this turn. Mid-turn failover (req 14)
-   * passes the exhausted route so the retry cannot pick it again.
+   * Routes already tried and failed this turn. The attempt loop (docs/260
+   * req 6) passes every refused route so a retry cannot pick it again.
    */
   exclude?: readonly string[];
+  /**
+   * docs/260-turn-level-account-routing req 8 — the credential route backing the session's resident CLI
+   * process, when one is alive (an account id, or a stored string-credential
+   * id). Under `balanced` the mode spreads **sessions**, not turns: while this
+   * credential is eligible, unblocked, and under its cutoff it is chosen
+   * outright, because least-recently-used ordering would otherwise alternate
+   * a two-credential install every turn and restart the resident process each
+   * time. Under `strict` this is ignored — the strategy is absolute and the
+   * session moves back the turn a better credential recovers.
+   */
+  residentRouteId?: string;
+  /**
+   * docs/260-turn-level-account-routing req 12 — set by callers that will actually ATTEMPT the result
+   * (the turn's attempt loop). When every non-excluded account is
+   * refusal-blocked, an optimistic selection returns the best blocked one
+   * instead of failing, so a resend after an all-refused turn re-tries every
+   * account. Non-optimistic callers (voice, naming — work that cannot
+   * attempt) get the `all_exhausted` failure and simply don't run: req 12
+   * names the user's resend as the force-retry boundary, and background work
+   * is not that resend.
+   */
+  optimistic?: boolean;
 }
 
 /**
- * App-scoped provider-account registry for docs/150 Phase 1.
+ * App-scoped registry and turn router for **account-delivered** credentials:
+ * the docs/150 login accounts, which are `via: "account"` rows of a service's
+ * subscription mode. It owns their storage paths, the legacy default-account
+ * migration, the account-scoped auth flows, and the quota-aware walk that picks
+ * which of them a turn runs on.
  *
- * Later phases add account-scoped auth flows, quota ranking, and failover. This
- * first slice owns the stable storage paths, default-account migration, primary
- * account selection, and coarse authConfigured predicate used by AgentRegistry.
+ * ## Two axes, and which one a method takes (planning#342)
+ *
+ * docs/252's premise is that `AgentId` conflated three things, one of which is
+ * "which credential authenticates this". This manager used to be keyed by it
+ * throughout and read an account-shaped projection over `CredentialRoute`;
+ * planning#342 deleted the projection and split the axes:
+ *
+ *   - **`serviceId: string`** — every question about a credential *row*: which
+ *     ones exist, their order, which one a turn takes, benching, cutoffs,
+ *     status. The group is always `(serviceId, "sub")`; see
+ *     {@link ACCOUNT_BILLING_MODE}.
+ *   - **`provider: AgentId`** — only where a *harness* is genuinely the subject:
+ *     the on-disk credential root (`provider-accounts/<harness>/…`), the login
+ *     flow (one `AgentAuthManager` per CLI), and "does this harness have any
+ *     credential of its own vendor's".
+ *
+ * Both are strings at runtime, so the discipline is in the types: the harness
+ * parameters are the `AgentId` union, which a service id cannot satisfy. The
+ * other direction is unchecked — `list("claude")` compiles and answers `[]` —
+ * and {@link ProviderAccountManager.list} says so where a reader will meet it.
  */
 export class ProviderAccountManager {
   private credentialsDir: string;
@@ -153,7 +302,7 @@ export class ProviderAccountManager {
    * account-scoped login/cancel/sign-out flows. `null` until attached — the
    * scoped-auth methods throw a clear error if invoked before wiring.
    */
-  private authManagers: Map<AgentId, AgentAuthManager> | null = null;
+  private authManagers: Map<LoginIntegrationId, AgentAuthManager> | null = null;
 
   private getSubscriptionLimits: (() => SubscriptionLimitsMap) | undefined;
 
@@ -168,6 +317,28 @@ export class ProviderAccountManager {
    * manager (it needs the agent runtime), so the wiring cannot be a constructor
    * argument in the real app.
    */
+  /**
+   * The quota snapshots of one `(service, billing mode)`, keyed by route id.
+   *
+   * Public because the STRING-delivered twin of the account walk needs exactly
+   * the same map (`stringSelectionFor`). Quota is recorded per route and gated
+   * only on the mode being a subscription (`bootstrap-managers.ts` →
+   * `credentialOwnerForRouteId`), so a supplied Anthropic plan token reports
+   * quota just as an account does — the map has never been accounts-only, only
+   * its readers were.
+   *
+   * Lives here rather than being threaded through `SelectRouteDeps` from six
+   * call sites because this manager already holds the accessor, and a
+   * per-call-site parameter is a parameter a site can forget: absence would
+   * read as "no quota", silently dropping a failover tier.
+   */
+  subscriptionLimitsFor(
+    serviceId: string,
+    billingMode: "sub" | "key",
+  ): Record<string, SubscriptionLimits> {
+    return this.getSubscriptionLimits?.()?.[credentialModeKey(serviceId, billingMode)] ?? {};
+  }
+
   attachSubscriptionLimits(getSubscriptionLimits: () => SubscriptionLimitsMap): void {
     this.getSubscriptionLimits = getSubscriptionLimits;
   }
@@ -177,7 +348,7 @@ export class ProviderAccountManager {
    * account-scoped login flows (docs/150). Called once from `index.ts` after
    * `buildAgentRuntime`.
    */
-  attachAuthManagers(authManagers: Map<AgentId, AgentAuthManager>): void {
+  attachAuthManagers(authManagers: Map<LoginIntegrationId, AgentAuthManager>): void {
     this.authManagers = authManagers;
   }
 
@@ -190,6 +361,36 @@ export class ProviderAccountManager {
     // the invariant. Idempotent, so the second call is free.
     this.backfillPriority();
     this.removeLegacyAliases();
+  }
+
+  /**
+   * Quarantine Claude rows whose account roots contain the exact same OAuth
+   * access token. Two distinct connected accounts cannot legitimately share
+   * one bearer; this means a stale session subtree was written back to the
+   * wrong account root. There is no safe way to infer which label owns the
+   * token, so every row in the duplicate group must be reconnected.
+   *
+   * Returns opaque route-id groups for diagnostics. Token material never
+   * leaves this method and is never logged.
+   */
+  quarantineDuplicateClaudeCredentials(): string[][] {
+    const byToken = new Map<string, string[]>();
+    for (const account of this.list("anthropic")) {
+      const root = this.resolveCredentialRoot("claude", account.id);
+      const token = LEGACY_CREDENTIAL_MARKERS.claude
+        .map((rel) => readClaudeAccessToken(path.join(root, rel)))
+        .find((candidate): candidate is string => candidate !== null);
+      if (!token) continue;
+      const ids = byToken.get(token) ?? [];
+      ids.push(account.id);
+      byToken.set(token, ids);
+    }
+
+    const duplicates = [...byToken.values()].filter((ids) => ids.length > 1);
+    for (const ids of duplicates) {
+      for (const id of ids) this.setAccountStatus("anthropic", id, "auth_failed");
+    }
+    return duplicates;
   }
 
   /**
@@ -239,7 +440,8 @@ export class ProviderAccountManager {
       // the directory anyway invented on-disk state that the next boot's
       // migration then read back as an account. Leaving the path absent is
       // exactly the state such an install had before req 19.
-      const migrated = this.list(provider).length > 0;
+      const serviceId = nativeServiceForHarness(provider);
+      const migrated = serviceId !== undefined && this.list(serviceId).length > 0;
       for (const { rel, kind } of LEGACY_CREDENTIAL_PATHS[provider]) {
         const aliasPath = path.join(this.credentialsDir, rel);
         try {
@@ -268,9 +470,9 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 2 — every account for a provider, **in the user's fallback
-   * order**: ascending `priority`, ties broken by stored order so the sort is
-   * stable.
+   * docs/150-multiple-provider-subscriptions req 2 — every account-delivered credential of `serviceId`'s
+   * subscription, **in the user's fallback order**: ascending `priority`, ties
+   * broken by stored order so the sort is stable.
    *
    * The order lives here rather than at each call site because this is the only
    * order an account list has. `reorder` writes `priority` and the router reads
@@ -284,42 +486,53 @@ export class ProviderAccountManager {
    * Sorting at the source instead of at the ~8 wire boundaries means a new
    * broadcast site cannot reintroduce it by forgetting to sort.
    *
-   * docs/150 req 19 — `isPrimary` is **derived here**, not read from disk.
-   * "Primary" only ever meant "first in the fallback order": `makePrimary` is
-   * implemented as a `reorder`, and `reorder` wrote `isPrimary: index === 0`.
-   * Two fields encoding one fact is two fields that can disagree, so the
-   * stored flag is now ignored on read and stamped from position instead. The
-   * wire shape is unchanged, so the client still reads `account.isPrimary`.
+   * docs/150-multiple-provider-subscriptions req 19 — `isPrimary` is **derived here**, not read from disk.
+   * "Primary" only ever meant "first in the fallback order": every writer
+   * stores `false`, and `reorder` used to stamp `isPrimary: index === 0`. Two
+   * fields encoding one fact is two fields that can disagree, so the stored
+   * flag is ignored on read and stamped from position instead.
+   *
+   * docs/252 req 21 finished the thought and deleted the *setter*. `makePrimary`
+   * was `reorder([this, …rest])` behind a button beside the reorder controls —
+   * one fact with two affordances — and dragging a row to the top now says the
+   * same thing. The derived field stays on the wire; nothing in the UI reads it.
    *
    * A row with no `priority` sorts after every row that has one, by stored
    * order. In practice there are none — {@link backfillPriority} runs at boot
    * and `create` always assigns one — but sorting them last beats treating a
    * missing value as 0 and silently promoting a legacy row to primary.
+   *
+   * **`serviceId` is a catalogue service, not a harness** (planning#342). Both
+   * are bare strings, so `list("claude")` compiles — and answers `[]`, because
+   * no service has that id. The manager's own axis is the service; the harness
+   * survives only where a login flow or a credential root is involved, and
+   * those parameters are typed `AgentId` so the two cannot be transposed.
    */
-  list(provider?: AgentId): ProviderAccount[] {
-    if (!provider) {
-      return (["claude", "codex"] as AgentId[]).flatMap((id) => this.list(id));
+  list(serviceId?: string): CredentialRoute[] {
+    if (serviceId === undefined) {
+      return accountServiceIds().flatMap((id) => this.list(id));
     }
-    return this.credentialStore.listProviderAccounts(provider)
-      .map((account, index) => ({ account, index }))
-      .sort((a, b) => rankForOrder(a) - rankForOrder(b) || a.index - b.index)
-      .map((entry, index) => ({ ...entry.account, isPrimary: index === 0 }));
+    return orderCredentialRoutes(
+      this.credentialStore
+        .listCredentialRoutes(serviceId, ACCOUNT_BILLING_MODE)
+        .filter((route) => route.via === "account"),
+    );
   }
 
-  get(provider: AgentId, accountId: string): ProviderAccount | undefined {
+  get(serviceId: string, routeId: string): CredentialRoute | undefined {
     // Through `list` so `isPrimary` is the derived value, not the stale stored
     // one — a caller must not see a different answer depending on which
     // accessor it happened to use.
-    return this.list(provider).find((account) => account.id === accountId);
+    return this.list(serviceId).find((route) => route.id === routeId);
   }
 
   /** The account at the head of the fallback order, if any. */
-  getPrimary(provider: AgentId): ProviderAccount | undefined {
-    return this.list(provider)[0];
+  getPrimary(serviceId: string): CredentialRoute | undefined {
+    return this.list(serviceId)[0];
   }
 
   /**
-   * docs/150 req 19 — give every stored row an explicit `priority`, once.
+   * docs/150-multiple-provider-subscriptions req 19 — give every stored row an explicit `priority`, once.
    *
    * Rows minted before `priority` existed (and the migrated `claude-default` /
    * `codex-default` rows) have none, which forced {@link list} to carry a
@@ -332,41 +545,43 @@ export class ProviderAccountManager {
    * this is a no-op on every boot after the first.
    */
   backfillPriority(): void {
-    for (const provider of ["claude", "codex"] as AgentId[]) {
-      const stored = this.credentialStore.listProviderAccounts(provider);
+    for (const serviceId of accountServiceIds()) {
+      const stored = this.credentialStore
+        .listCredentialRoutes(serviceId, ACCOUNT_BILLING_MODE)
+        .filter((route) => route.via === "account");
       if (stored.length === 0 || stored.every((a) => typeof a.priority === "number")) continue;
       // The order these rows resolve to TODAY, under the legacy rule, so the
       // backfill records what the user already had rather than reshuffling it.
       const primaryId = stored.find((a) => a.isPrimary)?.id ?? stored[0]?.id;
       const ordered = stored
-        .map((account, index) => ({ account, index }))
+        .map((route, index) => ({ route, index }))
         .sort((a, b) => legacyRank(a, primaryId) - legacyRank(b, primaryId) || a.index - b.index)
-        .map((entry) => entry.account);
-      ordered.forEach((account, index) => {
-        this.credentialStore.upsertProviderAccount({ ...account, priority: index });
+        .map((entry) => entry.route);
+      ordered.forEach((route, index) => {
+        this.credentialStore.upsertCredentialRoute({ ...route, priority: index });
       });
     }
   }
 
   /**
-   * docs/150 req 2 — kept as the name the router reads, so the intent is
+   * docs/150-multiple-provider-subscriptions req 2 — kept as the name the router reads, so the intent is
    * explicit at the call site. {@link list} is already this order; the two are
    * deliberately the same list, because an account list has no other order.
    */
-  accountsInSelectionOrder(provider: AgentId): ProviderAccount[] {
-    return this.list(provider);
+  accountsInSelectionOrder(serviceId: string): CredentialRoute[] {
+    return this.list(serviceId);
   }
 
   /**
-   * docs/150 req 2 — persist an explicit fallback order.
+   * docs/150-multiple-provider-subscriptions req 2 — persist an explicit fallback order.
    *
    * Takes the complete list rather than a move-one-account verb: an ordering is
    * only meaningful as a whole, and requiring the full set makes a stale client
    * (one that never saw an account added in another tab) fail loudly instead of
    * silently dropping that account to the end.
    */
-  reorder(provider: AgentId, orderedIds: readonly string[]): ProviderAccount[] {
-    const accounts = this.list(provider);
+  reorder(serviceId: string, orderedIds: readonly string[]): CredentialRoute[] {
+    const accounts = this.list(serviceId);
     const known = new Set(accounts.map((account) => account.id));
     const requested = new Set(orderedIds);
     if (requested.size !== orderedIds.length) {
@@ -380,18 +595,21 @@ export class ProviderAccountManager {
       // req 19 — `priority` is the whole record of the order. `isPrimary` used
       // to be written in step with position 0 here; it is derived on read now,
       // so writing it would just be a second copy that can drift.
-      this.credentialStore.upsertProviderAccount({ ...account, priority: index });
+      this.credentialStore.upsertCredentialRoute({ ...account, priority: index });
     });
-    return this.accountsInSelectionOrder(provider);
+    return this.accountsInSelectionOrder(serviceId);
   }
 
-  create(provider: AgentId, label?: string): ProviderAccount {
+  create(serviceId: string, label?: string): CredentialRoute {
+    const provider = requireHarness(serviceId);
     const now = Date.now();
-    const existing = this.list(provider);
+    const existing = this.list(serviceId);
     const supplied = normalizeLabel(label);
-    const account: ProviderAccount = {
+    const account: CredentialRoute = {
       id: `acct_${randomUUID()}`,
-      provider,
+      serviceId,
+      billingMode: ACCOUNT_BILLING_MODE,
+      via: "account",
       label: supplied ?? generatedAccountLabel(provider, existing),
       // req 22 — a generated label is ShipIt's placeholder until the provider
       // reports who this account actually is; a supplied one is the user's.
@@ -411,26 +629,26 @@ export class ProviderAccountManager {
       updatedAt: now,
     };
     fs.mkdirSync(this.resolveCredentialRoot(provider, account.id), { recursive: true });
-    this.credentialStore.upsertProviderAccount(account);
-    return this.get(provider, account.id) ?? account;
+    this.credentialStore.upsertCredentialRoute(account);
+    return this.get(serviceId, account.id) ?? account;
   }
 
-  rename(provider: AgentId, accountId: string, label: string): ProviderAccount {
-    const account = this.require(provider, accountId);
+  rename(serviceId: string, accountId: string, label: string): CredentialRoute {
+    const account = this.require(serviceId, accountId);
     const normalized = normalizeLabel(label);
     if (!normalized) throw new Error("Provider account label cannot be empty");
     if (normalized.length > 120) throw new Error("Provider account label is too long (max 120 characters)");
     // req 22 — once the user names a row, a later connect must not rename it
     // back to the provider's email.
-    this.credentialStore.upsertProviderAccount({
+    this.credentialStore.upsertCredentialRoute({
       ...account,
       label: normalized,
       labelIsGenerated: false,
     });
-    return this.require(provider, accountId);
+    return this.require(serviceId, accountId);
   }
 
-  // ---- Account identity (docs/150 req 22) ----
+  // ---- Account identity (docs/150-multiple-provider-subscriptions req 22) ----
 
   /**
    * The row already holding this provider-reported account id, if any.
@@ -441,11 +659,11 @@ export class ProviderAccountManager {
    * rows that most need to reconnect.
    */
   findByExternalId(
-    provider: AgentId,
+    serviceId: string,
     externalId: string,
     exceptAccountId?: string,
-  ): ProviderAccount | undefined {
-    return this.list(provider).find(
+  ): CredentialRoute | undefined {
+    return this.list(serviceId).find(
       (account) => account.externalId === externalId && account.id !== exceptAccountId,
     );
   }
@@ -457,18 +675,18 @@ export class ProviderAccountManager {
    * Idempotent — re-authenticating the same account rewrites the same values.
    */
   recordAccountIdentity(
-    provider: AgentId,
+    serviceId: string,
     accountId: string,
     identity: { externalId: string; email?: string },
-  ): ProviderAccount {
-    const account = this.require(provider, accountId);
+  ): CredentialRoute {
+    const account = this.require(serviceId, accountId);
     const adoptLabel = account.labelIsGenerated === true && identity.email !== undefined;
-    this.credentialStore.upsertProviderAccount({
+    this.credentialStore.upsertCredentialRoute({
       ...account,
       externalId: identity.externalId,
       ...(adoptLabel ? { label: identity.email! } : {}),
     });
-    return this.require(provider, accountId);
+    return this.require(serviceId, accountId);
   }
 
   /**
@@ -492,27 +710,28 @@ export class ProviderAccountManager {
    * not quietly move credentials onto it either).
    */
   refuseDuplicateConnect(
-    provider: AgentId,
+    serviceId: string,
     accountId: string,
-    matched: ProviderAccount,
+    matched: CredentialRoute,
   ): "deleted" | "reset" {
-    const account = this.require(provider, accountId);
+    const provider = requireHarness(serviceId);
+    const account = this.require(serviceId, accountId);
     console.warn(
       `[provider-accounts] refusing ${provider} sign-in on ${accountId}: `
       + `already connected as "${matched.label}" (${matched.id})`,
     );
     if (account.externalId === undefined) {
-      this.delete(provider, accountId);
+      this.delete(serviceId, accountId);
       return "deleted";
     }
     fs.rmSync(this.resolveCredentialRoot(provider, accountId), { recursive: true, force: true });
     fs.mkdirSync(this.resolveCredentialRoot(provider, accountId), { recursive: true });
-    this.setAccountStatus(provider, accountId, "auth_failed");
+    this.setAccountStatus(serviceId, accountId, "auth_failed");
     return "reset";
   }
 
   /**
-   * docs/150 req 21 — stamp an account as used, now.
+   * docs/150-multiple-provider-subscriptions req 21 — stamp an account as used, now.
    *
    * This is the write that makes `balanced` mean anything: `lastUsedAt` was
    * declared on `ProviderAccount` from the start but never written by anything,
@@ -533,8 +752,8 @@ export class ProviderAccountManager {
    * rather than a throw, because failing a turn over a bookkeeping write would
    * be a strictly worse outcome than a slightly stale sort key.
    */
-  markAccountUsed(provider: AgentId, accountId: string): void {
-    const account = this.get(provider, accountId);
+  markAccountUsed(serviceId: string, accountId: string): void {
+    const account = this.get(serviceId, accountId);
     if (!account) return;
     // Strictly greater than every sibling's stamp, not simply `Date.now()`.
     // `Date.now()` is millisecond-granular, so two sessions pinning inside the
@@ -547,30 +766,17 @@ export class ProviderAccountManager {
     // The value stays a wall-clock timestamp in the ordinary case and only
     // runs ahead during a burst, by at most the burst's length in
     // milliseconds — it is a sort key, and nothing displays it.
-    const peak = this.list(provider).reduce((max, a) => Math.max(max, a.lastUsedAt ?? 0), 0);
-    this.credentialStore.upsertProviderAccount({
+    const peak = this.list(serviceId).reduce((max, a) => Math.max(max, a.lastUsedAt ?? 0), 0);
+    this.credentialStore.upsertCredentialRoute({
       ...account,
       lastUsedAt: Math.max(Date.now(), peak + 1),
     });
   }
 
-  /**
-   * Promote an account to the front of the fallback order. Kept as its own verb
-   * (rather than "reorder with this id first") because it is the one-click
-   * affordance the account rows already offer, and expressing it through
-   * `reorder` means "primary" has exactly one definition: position 0.
-   */
-  makePrimary(provider: AgentId, accountId: string): ProviderAccount {
-    this.require(provider, accountId);
-    const rest = this.accountsInSelectionOrder(provider)
-      .map((account) => account.id)
-      .filter((id) => id !== accountId);
-    this.reorder(provider, [accountId, ...rest]);
-    return this.require(provider, accountId);
-  }
 
-  delete(provider: AgentId, accountId: string): void {
-    this.require(provider, accountId);
+  delete(serviceId: string, accountId: string): void {
+    const provider = requireHarness(serviceId);
+    this.require(serviceId, accountId);
     // Deleting the row that owns the in-flight login must also end that login.
     // Otherwise the CLI keeps running against a credential root we are about to
     // remove, and the manager keeps reporting the deleted account as the active
@@ -578,15 +784,18 @@ export class ProviderAccountManager {
     // provider is refused by a row that no longer exists and therefore has no
     // Cancel button. The provider would be locked out of sign-in until the
     // process exited or the orchestrator restarted.
-    const mgr = this.authManagers?.get(provider);
+    const loginId = loginIntegrationForService(serviceId);
+    const mgr = loginId ? this.authManagers?.get(loginId) : undefined;
     if (mgr?.getActiveAccountId() === accountId) mgr.cancel();
+    // `provider` (the harness), not `loginId`: the credential root is the CLI's
+    // own home directory. See `harnessesForLoginIntegration` in the catalogue.
     fs.rmSync(this.resolveCredentialRoot(provider, accountId), { recursive: true, force: true });
-    this.credentialStore.deleteProviderAccount(provider, accountId);
+    this.credentialStore.deleteCredentialRoute(accountId);
   }
 
-  require(provider: AgentId, accountId: string): ProviderAccount {
-    const account = this.get(provider, accountId);
-    if (!account) throw new Error(`Provider account not found: ${provider}/${accountId}`);
+  require(serviceId: string, accountId: string): CredentialRoute {
+    const account = this.get(serviceId, accountId);
+    if (!account) throw new Error(`Provider account not found: ${serviceId}/${accountId}`);
     return account;
   }
 
@@ -601,7 +810,7 @@ export class ProviderAccountManager {
    * null while `hasAnyAuthForProvider` still reported true, and with
    * `ANTHROPIC_API_KEY` set in the environment it silently routed the turn onto
    * metered Platform API billing instead of the working subscription. That
-   * contradicts docs/150 req 3 (continue on another connected account) and
+   * contradicts docs/150-multiple-provider-subscriptions req 3 (continue on another connected account) and
    * req 12 (never route onto pay-as-you-go billing because a subscription is
    * unavailable).
    *
@@ -610,19 +819,26 @@ export class ProviderAccountManager {
    * later phases; this is the eligibility walk they will extend, not the final
    * policy.
    */
-  selectRouteForTurn(provider: AgentId): ProviderRoute | null {
-    const selection = this.selectAccountForTurn(provider);
+  selectRouteForTurn(serviceId: string): ProviderRoute | null {
+    const selection = this.selectAccountForTurn(serviceId);
     return selection.ok ? selection.route : null;
   }
 
-  /** Metered env/API-key fallback for a provider, if one is configured. */
-  private reservedRouteFor(provider: AgentId): ProviderRoute | null {
-    if (provider === "claude") {
-      if (process.env.ANTHROPIC_AUTH_TOKEN?.trim()) return { kind: "reserved", id: "claude-env-oauth" };
-      if (process.env.ANTHROPIC_API_KEY?.trim()) return { kind: "reserved", id: "claude-api-key" };
-    }
-    if (provider === "codex" && process.env.OPENAI_API_KEY?.trim()) {
-      return { kind: "reserved", id: "codex-api-key" };
+  /**
+   * The env-delivered fallback for a service, if the deployment configured one.
+   *
+   * Deliberately **not** narrowed to this manager's own subscription mode: for
+   * Anthropic it will name the metered `claude-api-key` when no OAuth token is
+   * set. That is the pre-feature behaviour and the only path that still reaches
+   * it is the one where the session names no `(service, mode)` selection at all
+   * (`service-routing.ts` → `selectRouteForSelection`), where there is no mode
+   * to be narrowed to. A session that DOES name a mode never sees this: that
+   * caller takes an account answer or resolves the string-delivered credential
+   * of its own mode, which is what closed req 12's `sub` → metered leak.
+   */
+  private reservedRouteFor(serviceId: string): ProviderRoute | null {
+    for (const candidate of RESERVED_ENV_ROUTES[serviceId] ?? []) {
+      if (process.env[candidate.env]?.trim()) return { kind: "reserved", id: candidate.id };
     }
     return null;
   }
@@ -643,57 +859,89 @@ export class ProviderAccountManager {
    * req 12 keeps failover from *choosing* them; they are only reachable when no
    * stored account is usable at all, which is the manual-selection case.
    */
-  selectAccountForTurn(provider: AgentId, opts: SelectAccountOptions = {}): AccountSelection {
+  selectAccountForTurn(serviceId: string, opts: SelectAccountOptions = {}): AccountSelection {
     const exclude = new Set(opts.exclude ?? []);
+    const mode = this.credentialStore.getSelectionMode(...routingSettingsKeyFor(serviceId));
+    const eligible = this.accountsInSelectionOrder(serviceId).filter(
+      (account) => account.status === "ready" || account.status === "authenticating",
+    );
     const connected = orderForSelectionMode(
-      this.accountsInSelectionOrder(provider).filter(
-        (account) =>
-          (account.status === "ready" || account.status === "authenticating") &&
-          !exclude.has(account.id),
-      ),
-      this.credentialStore.getSelectionMode(provider),
+      eligible.filter((account) => !exclude.has(account.id)),
+      mode,
     );
 
-    const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
+    // docs/252 req 10 — quota is keyed by `(service, billing mode)` now.
+    // Accounts are always subscriptions, so this manager's group is exactly
+    // `routingSettingsKeyFor`'s, which is where its cutoffs already come from.
+    const limits = this.subscriptionLimitsFor(...routingSettingsKeyFor(serviceId));
     const now = Date.now();
+    const cutoffs = this.credentialStore.getFailoverCutoffs(...routingSettingsKeyFor(serviceId));
 
-    // docs/150 reqs 4–6 — three tiers, not two. An account past its cutoff is
-    // still perfectly capable of running the turn; it has just stopped being
-    // the *first* choice. Collapsing "past cutoff" into "exhausted" would make
-    // a 90% setting strictly worse than no failover at all: once every account
-    // crossed 90%, every turn would fail with `all_exhausted` while ten percent
-    // of quota sat unused on each one.
-    const cutoffs = this.credentialStore.getFailoverCutoffs(provider);
-    const overCutoff: ProviderAccount[] = [];
-    const exhaustedResets: number[] = [];
-    for (const account of connected) {
-      const resetAt = exhaustedUntil(limits[account.id], account, now);
-      if (resetAt !== null) {
-        exhaustedResets.push(resetAt);
+    // docs/260-turn-level-account-routing reqs 5, 9 — four tiers, and only the last one skips. Telemetry
+    // (a snapshot claiming 100%) ORDERS an account to the back but cannot
+    // block it: an account whose data says it is spent is still tried, last —
+    // that is req 9's "try once to confirm". The only skip is refusal memory:
+    // a refusal the harness itself reported, remembered until the stated
+    // reset and re-probed within REFUSAL_REPROBE_MS.
+    const clear: CredentialRoute[] = [];
+    const overCutoff: CredentialRoute[] = [];
+    const looksSpent: CredentialRoute[] = [];
+    const blocked: CredentialRoute[] = [];
+    const blockedResets: number[] = [];
+    for (let account of connected) {
+      // req 9's early clear, applied lazily at the read: the live snapshot map
+      // already carries whatever the refresh button or a probe turn fetched,
+      // so a blocked account with a newer healthy reading unblocks right here
+      // — no separate reconciliation pass, no event ordering to get wrong.
+      if (
+        refusalBlockedUntil(account, now) !== null
+        && this.clearRefusalOnHealthyReading(serviceId, account.id, limits[account.id])
+      ) {
+        account = this.get(serviceId, account.id) ?? account;
+      }
+      const blockedUntil = refusalBlockedUntil(account, now);
+      if (blockedUntil !== null) {
+        blocked.push(account);
+        blockedResets.push(blockedUntil);
         continue;
       }
-      if (isOverCutoff(limits[account.id], cutoffs)) {
+      if (snapshotExhaustedResetAt(limits[account.id], now) !== null) {
+        looksSpent.push(account);
+        continue;
+      }
+      if (isOverCutoff(limits[account.id], cutoffs, now)) {
         overCutoff.push(account);
         continue;
       }
-      return { ok: true, route: { kind: "account", id: account.id } };
+      clear.push(account);
     }
-    // Nothing under its cutoff, but these still work. Preferring the first in
-    // the mode's own order keeps the choice stable rather than hunting for
-    // whichever account is marginally least used — and under `balanced` that
-    // order is already least-recently-used, so the tier degrades the same way
-    // the tier above it does.
-    const fallback = overCutoff[0];
-    if (fallback) return { ok: true, route: { kind: "account", id: fallback.id } };
 
-    // req 12 — a *spent* subscription must never silently roll onto
-    // pay-as-you-go billing. The reserved env/API-key route is only reachable
-    // when the user has no usable subscription at all (the manual-auth case),
-    // never as the next hop after one runs out. Ordering this check after the
-    // reserved fallback would spend the user's money on their behalf, which is
-    // the one outcome this feature must not produce.
-    if (exhaustedResets.length > 0) {
-      const earliest = Math.min(...exhaustedResets);
+    // docs/260-turn-level-account-routing req 8 — `balanced` spreads SESSIONS, not turns: the account
+    // backing a live resident process keeps serving its session while it is
+    // clear. Only the clear tier qualifies — a resident account that is over
+    // its cutoff or looks spent has stopped being "equally ranked" and the
+    // normal walk decides. Under `strict` the strategy is absolute, so the
+    // option is not consulted at all.
+    if (mode === "balanced" && opts.residentRouteId) {
+      const resident = clear.find((account) => account.id === opts.residentRouteId);
+      if (resident) return { ok: true, route: { kind: "account", id: resident.id } };
+    }
+
+    const pick = clear[0] ?? overCutoff[0] ?? looksSpent[0];
+    if (pick) return { ok: true, route: { kind: "account", id: pick.id } };
+
+    // Everything left is refusal-blocked (or was excluded after refusing this
+    // very turn). req 7 — a spent subscription must never silently roll onto
+    // pay-as-you-go billing, so the reserved env/API-key fallback is dead
+    // whenever any subscription account exists; it serves only installs with
+    // no accounts at all.
+    if (blocked.length > 0 || eligible.length > connected.length) {
+      // req 12 — a caller that will actually ATTEMPT the result may take the
+      // best blocked account anyway; only refusals from real attempts this
+      // turn may produce the terminal failure.
+      const probe = blocked[0];
+      if (opts.optimistic && probe) return { ok: true, route: { kind: "account", id: probe.id } };
+      const earliest = Math.min(...blockedResets);
       return {
         ok: false,
         reason: "all_exhausted",
@@ -702,83 +950,38 @@ export class ProviderAccountManager {
     }
     // No connected subscription at all — fall back to reserved routes so
     // env/API-key users keep working.
-    const reserved = this.reservedRouteFor(provider);
+    const reserved = this.reservedRouteFor(serviceId);
     if (reserved && !exclude.has(reserved.id)) return { ok: true, route: reserved };
     return { ok: false, reason: "auth_required" };
   }
 
   /**
-   * docs/150 reqs 3, 7, 8 — can the route a session is **already pinned to**
-   * still run a turn?
+   * Does this **harness** have any credential of its own vendor's?
    *
-   * `selectAccountForTurn` cannot answer this: it returns the *best* route in
-   * priority order, so a session healthily pinned to a secondary account would
-   * see it name the primary and read that as "you have been skipped." The
-   * eligibility rules are the same, asked about one route instead of all of
-   * them.
-   *
-   * Reserved env/API-key routes are always usable. They are metered billing,
-   * not a subscription window, so there is nothing to exhaust — and req 12
-   * means nothing may move a turn off them for quota reasons either.
-   * A pinned account that has since been deleted or signed out reports
-   * unusable, which sends the caller back through the router.
+   * The one predicate that stays keyed by harness, because it is asked by
+   * harness-shaped callers ("can I drive this CLI at all?") and answered from
+   * the harness's own vendor. Everything about *choosing* between credentials
+   * is keyed by service; this only asks whether the vendor's set is empty.
    */
-  isRouteUsableForTurn(provider: AgentId, route: ProviderRoute): boolean {
-    return this.classifyRouteForTurn(provider, route) === null;
+  hasAnyAuthForProvider(provider: AgentId): boolean {
+    const serviceId = nativeServiceForHarness(provider);
+    if (serviceId && this.list(serviceId).some((account) => account.status === "ready")) return true;
+    return (RESERVED_ENV_ROUTES[serviceId ?? ""] ?? []).some(
+      (candidate) => Boolean(process.env[candidate.env]?.trim()),
+    );
   }
 
   /**
-   * The same question as {@link isRouteUsableForTurn}, answered with **why**:
-   * `null` when the route can still run a turn, otherwise the reason it cannot.
-   *
-   * The reason exists because the user-facing consequences differ. A move at a
-   * configured cutoff (req 6) leaves the account with quota to spare — telling
-   * the user it is "out of quota" is simply false, and misreads a threshold
-   * they chose as a provider limit they hit. Hard exhaustion (req 7) and an
-   * account that has been disconnected or lost its sign-in are three different
-   * stories, and `failoverPinnedSession` needs to tell them apart to say the
-   * true one (req 11).
-   *
-   * Selection itself does not branch on this — it only ever needs the boolean.
+   * The account row behind a bare route id, whatever service it belongs to.
+   * For callers that hold only the id (notice labels, attempt ledgers) —
+   * everything that knows its service keeps asking `get(serviceId, id)`.
    */
-  classifyRouteForTurn(provider: AgentId, route: ProviderRoute): RouteUnusableReason | null {
-    if (route.kind !== "account") return null;
-    const account = this.get(provider, route.id);
-    if (!account) return "unavailable";
-    if (account.status !== "ready" && account.status !== "authenticating") return "unavailable";
-    const limits = this.getSubscriptionLimits?.()?.[provider] ?? {};
-    if (exhaustedUntil(limits[route.id], account, Date.now()) !== null) return "exhausted";
-
-    // docs/150 req 6 — past a cutoff, this session should move to the next
-    // eligible account. But only if there IS somewhere better: reporting
-    // "unusable" when every account is above its cutoff would hand
-    // `failoverPinnedSession` a different over-cutoff account each turn and
-    // churn the session between them for no benefit, killing the resident
-    // process every time. A cutoff is a preference, so it can only displace a
-    // session onto an account that is actually under one.
-    const cutoffs = this.credentialStore.getFailoverCutoffs(provider);
-    if (!isOverCutoff(limits[route.id], cutoffs)) return null;
-    // "Somewhere better" means an account genuinely UNDER its cutoff — not
-    // merely whichever account the selector would name first. Asking the
-    // selector here would compare against its over-cutoff fallback, so a
-    // session pinned to the second over-cutoff account would be displaced onto
-    // the first one, then back, killing the resident process each turn.
-    const now = Date.now();
-    const hasBetter = this.accountsInSelectionOrder(provider).some((candidate) => {
-      if (candidate.id === route.id) return false;
-      if (candidate.status !== "ready" && candidate.status !== "authenticating") return false;
-      if (exhaustedUntil(limits[candidate.id], candidate, now) !== null) return false;
-      return !isOverCutoff(limits[candidate.id], cutoffs);
-    });
-    return hasBetter ? "over_cutoff" : null;
-  }
-
-  hasAnyAuthForProvider(provider: AgentId): boolean {
-    if (this.list(provider).some((account) => account.status === "ready")) return true;
-    if (provider === "claude") {
-      return Boolean(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
+  getByRouteId(routeId: string): CredentialRoute | undefined {
+    for (const serviceId of accountServiceIds()) {
+      const account = this.get(serviceId, routeId);
+      if (account) return account;
     }
-    return Boolean(process.env.OPENAI_API_KEY?.trim());
+    return undefined;
   }
 
   resolveCredentialRoot(provider: AgentId, accountId: string): string {
@@ -786,7 +989,7 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 7 — stamp an account as out of quota until `until` (epoch ms).
+   * docs/150-multiple-provider-subscriptions req 7 — stamp an account as out of quota until `until` (epoch ms).
    *
    * This is the *hard* exhaustion signal: the provider failed a turn saying the
    * subscription is spent. It has to be persisted rather than inferred from the
@@ -795,27 +998,84 @@ export class ProviderAccountManager {
    * freshly connected account may not exist at all. Without the stamp the
    * router would keep choosing the account that just refused the turn.
    *
-   * Only ever moves the stamp *later*, so a second failure carrying a vaguer
-   * reset can't shorten a lockout the provider already told us the end of.
-   * Reserved routes are not accounts and are silently ignored (req 12 — metered
-   * billing has no subscription window).
+   * The NEWEST refusal's stated reset wins outright (docs/260-turn-level-account-routing req 9): a
+   * re-probe answered with "resets in five minutes" must supersede an older
+   * week-long estimate, and `refusalBlockedUntil`'s 30-minute cap bounds the
+   * cost of the reverse direction (a vaguer short fallback replacing a longer
+   * stated reset re-probes once more, nothing worse). Reserved routes are not
+   * accounts and are silently ignored (req 12 — metered billing has no
+   * subscription window).
    */
-  markAccountExhausted(provider: AgentId, accountId: string, until: number): ProviderAccount | null {
-    const account = this.get(provider, accountId);
+  markAccountExhausted(serviceId: string, accountId: string, until: number): CredentialRoute | null {
+    const account = this.get(serviceId, accountId);
     if (!account) return null;
-    if (typeof account.exhaustedUntil === "number" && account.exhaustedUntil >= until) {
-      return account;
+    this.credentialStore.upsertCredentialRoute({
+      ...account,
+      exhaustedUntil: until,
+      // Refresh this clock on every hard failure — `refusalBlockedUntil`
+      // reads `min(until, at + cap)`, so the clock is what re-arms the
+      // 30-minute re-probe window.
+      exhaustedAt: Date.now(),
+    });
+    return this.get(serviceId, accountId) ?? null;
+  }
+
+  /**
+   * Clear a hard-exhaustion stamp after the credential behind an account row
+   * has been replaced by a successful scoped sign-in. The stamp belongs to
+   * the old credential, not to the stable row that holds labels and routing
+   * preferences.
+   */
+  clearAccountExhaustion(serviceId: string, accountId: string): CredentialRoute {
+    const account = this.require(serviceId, accountId);
+    if (account.exhaustedUntil === null || account.exhaustedUntil === undefined) return account;
+    this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null, exhaustedAt: null });
+    return this.require(serviceId, accountId);
+  }
+
+  /**
+   * docs/260-turn-level-account-routing req 9 — a quota reading that is newer than a refusal and shows
+   * the account healthy clears the refusal memory immediately, so "user
+   * upgrades their plan and presses the refresh button" re-opens the account
+   * on the very next turn instead of waiting out the re-probe cap.
+   *
+   * The trust bar is deliberately low — `usedPct: null` counts as healthy
+   * (the provider only reports a number above a warning threshold), and no
+   * completeness proof is demanded — because a wrong clear now costs one
+   * refused attempt (req 5), not a wrongly-run turn. Called from the two
+   * places readings arrive: the rate-limit event push and the usage-API
+   * refresh (`bootstrap-managers.ts`).
+   */
+  clearRefusalOnHealthyReading(
+    serviceId: string,
+    accountId: string,
+    snapshot: { session?: unknown; weekly?: unknown; fetchedAt?: unknown } | undefined,
+  ): boolean {
+    const account = this.get(serviceId, accountId);
+    if (!account) return false;
+    if (account.exhaustedUntil === null || account.exhaustedUntil === undefined) return false;
+    if (!snapshot || typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
+    const observedAt = typeof account.exhaustedAt === "number" ? account.exhaustedAt : 0;
+    if (snapshot.fetchedAt <= observedAt) return false;
+    const now = Date.now();
+    for (const key of ["session", "weekly"] as const) {
+      const window = snapshot[key] as { usedPct?: unknown; resetAt?: unknown } | null | undefined;
+      // A newer snapshot can still carry one window the provider did not
+      // re-report; if that window has since rolled over, its 100% must not
+      // hold the refusal open against the reading the user just asked for.
+      if (!subscriptionWindowIsCurrent(window, now)) continue;
+      if (typeof window?.usedPct === "number" && window.usedPct >= 100) return false;
     }
-    this.credentialStore.upsertProviderAccount({ ...account, exhaustedUntil: until });
-    return this.get(provider, accountId) ?? null;
+    this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null, exhaustedAt: null });
+    return true;
   }
 
   /** Overwrite the persisted status of an account (idempotent). */
-  setAccountStatus(provider: AgentId, accountId: string, status: ProviderAccountStatus): ProviderAccount {
-    const account = this.require(provider, accountId);
+  setAccountStatus(serviceId: string, accountId: string, status: CredentialStatus): CredentialRoute {
+    const account = this.require(serviceId, accountId);
     if (account.status === status) return account;
-    this.credentialStore.upsertProviderAccount({ ...account, status });
-    return this.require(provider, accountId);
+    this.credentialStore.upsertCredentialRoute({ ...account, status });
+    return this.require(serviceId, accountId);
   }
 
   // ---- Account-scoped auth flows (docs/150) ----
@@ -828,9 +1088,10 @@ export class ProviderAccountManager {
    * eventual `complete`/`failed` event (handled in `app-lifecycle`) flips it
    * to `ready`/`auth_failed`.
    */
-  startAccountAuth(provider: AgentId, accountId: string): ProviderAccount {
-    this.require(provider, accountId);
-    const mgr = this.requireAuthManager(provider);
+  startAccountAuth(serviceId: string, accountId: string): CredentialRoute {
+    const provider = requireHarness(serviceId);
+    this.require(serviceId, accountId);
+    const mgr = this.requireAuthManager(serviceId);
     // There is ONE login process per provider, so two rows cannot sign in at
     // once. Without this guard the second `Add account` marked its own row
     // `authenticating` and then either inherited the first row's challenge
@@ -840,14 +1101,14 @@ export class ProviderAccountManager {
     // honest outcome: the user finishes or cancels the other sign-in first.
     const inFlight = mgr.getActiveAccountId();
     if (inFlight && inFlight !== accountId) {
-      const label = this.get(provider, inFlight)?.label ?? inFlight;
+      const label = this.get(serviceId, inFlight)?.label ?? inFlight;
       throw new Error(
         `${PROVIDER_LABEL[provider]} is already signing in on "${label}". Finish or cancel that sign-in first.`,
       );
     }
     const credentialDir = this.resolveCredentialRoot(provider, accountId);
     fs.mkdirSync(credentialDir, { recursive: true });
-    const account = this.setAccountStatus(provider, accountId, "authenticating");
+    const account = this.setAccountStatus(serviceId, accountId, "authenticating");
     try {
       mgr.start({ accountId, credentialDir });
     } catch (err) {
@@ -855,7 +1116,7 @@ export class ProviderAccountManager {
       // the guard above, a phantom `authenticating` row blocks every other
       // account's sign-in, and the caller only sees an error string. Put the
       // row back and release any scope the manager took before throwing.
-      this.setAccountStatus(provider, accountId, "unavailable");
+      this.setAccountStatus(serviceId, accountId, "unavailable");
       try { mgr.cancel(); } catch { /* best effort — the flow may never have started */ }
       throw err;
     }
@@ -866,9 +1127,10 @@ export class ProviderAccountManager {
    * Cancel an in-flight scoped login. Resets the row's status to `ready` when
    * the account already has on-disk credentials, otherwise `unavailable`.
    */
-  cancelAccountAuth(provider: AgentId, accountId: string): ProviderAccount {
-    this.require(provider, accountId);
-    const mgr = this.requireAuthManager(provider);
+  cancelAccountAuth(serviceId: string, accountId: string): CredentialRoute {
+    const provider = requireHarness(serviceId);
+    this.require(serviceId, accountId);
+    const mgr = this.requireAuthManager(serviceId);
     // Only kill the CLI if it is *this* account's flow. An unconditional
     // cancel let one row's Cancel button abort another row's sign-in — and
     // since the status reset below only touches the row that was clicked, the
@@ -878,17 +1140,18 @@ export class ProviderAccountManager {
     const inFlight = mgr.getActiveAccountId();
     if (!inFlight || inFlight === accountId) mgr.cancel();
     const credentialDir = this.resolveCredentialRoot(provider, accountId);
-    const status: ProviderAccountStatus = mgr.isConfigured({ credentialDir }) ? "ready" : "unavailable";
-    return this.setAccountStatus(provider, accountId, status);
+    const status: CredentialStatus = mgr.isConfigured({ credentialDir }) ? "ready" : "unavailable";
+    return this.setAccountStatus(serviceId, accountId, status);
   }
 
   /**
    * Submit a verification code into an in-flight scoped Claude login. No-op
    * for providers whose flow has no paste-code step (Codex device-auth).
    */
-  submitAccountCode(provider: AgentId, accountId: string, code: string): void {
-    this.require(provider, accountId);
-    const mgr = this.requireAuthManager(provider);
+  submitAccountCode(serviceId: string, accountId: string, code: string): void {
+    const provider = requireHarness(serviceId);
+    this.require(serviceId, accountId);
+    const mgr = this.requireAuthManager(serviceId);
     if (typeof mgr.submitCode !== "function") {
       throw new Error(`${PROVIDER_LABEL[provider]} login has no code-submission step`);
     }
@@ -900,7 +1163,7 @@ export class ProviderAccountManager {
     // silently went nowhere.
     const inFlight = mgr.getActiveAccountId();
     if (inFlight !== accountId) {
-      const label = inFlight ? this.get(provider, inFlight)?.label ?? inFlight : null;
+      const label = inFlight ? this.get(serviceId, inFlight)?.label ?? inFlight : null;
       throw new Error(
         label
           ? `${PROVIDER_LABEL[provider]} is already signing in on "${label}". Finish or cancel that sign-in first.`
@@ -915,12 +1178,13 @@ export class ProviderAccountManager {
    * the account row itself in place; callers decide whether to also delete
    * the row. Marks the row `unavailable`.
    */
-  signOutAccount(provider: AgentId, accountId: string): ProviderAccount {
-    this.require(provider, accountId);
-    const mgr = this.requireAuthManager(provider);
+  signOutAccount(serviceId: string, accountId: string): CredentialRoute {
+    const provider = requireHarness(serviceId);
+    this.require(serviceId, accountId);
+    const mgr = this.requireAuthManager(serviceId);
     const credentialDir = this.resolveCredentialRoot(provider, accountId);
     mgr.signOut({ credentialDir });
-    return this.setAccountStatus(provider, accountId, "unavailable");
+    return this.setAccountStatus(serviceId, accountId, "unavailable");
   }
 
   /**
@@ -944,23 +1208,37 @@ export class ProviderAccountManager {
    * the CLI in its container actually reads. Call the service-layer
    * `signOutProvider` (`services/settings.ts`) instead — it carries the
    * running-turn guard, retires resident agent processes, revokes the
-   * per-session copies, and then calls this (SHI-283).
+   * per-session copies, and then calls this (planning#285).
    */
   signOutProvider(provider: AgentId): void {
-    for (const account of this.list(provider)) {
-      this.delete(provider, account.id);
+    const serviceId = nativeServiceForHarness(provider);
+    for (const account of serviceId ? this.list(serviceId) : []) {
+      this.delete(serviceId!, account.id);
     }
-    this.requireAuthManager(provider).signOut();
+    if (serviceId) this.requireAuthManager(serviceId).signOut();
   }
 
-  private requireAuthManager(provider: AgentId): AgentAuthManager {
-    const mgr = this.authManagers?.get(provider);
-    if (!mgr) throw new Error(`No auth manager wired for provider: ${provider}`);
+  /**
+   * The login flow that authenticates `serviceId`.
+   *
+   * Keyed by `LoginIntegrationId`, which the catalogue declares on the mode's
+   * account credential — NOT by `requireHarness(serviceId)`. The harness answers
+   * a different question ("whose home directory do these credentials live in"),
+   * and it only doubles as the login key while every harness has exactly one
+   * native service. Callers that need the harness still ask for it separately;
+   * `resolveCredentialRoot` is the one that must.
+   */
+  private requireAuthManager(serviceId: string): AgentAuthManager {
+    const loginId = loginIntegrationForService(serviceId);
+    const mgr = loginId ? this.authManagers?.get(loginId) : undefined;
+    if (!mgr) throw new Error(`No auth manager wired for service: ${serviceId}`);
     return mgr;
   }
 
   private migrateProviderDefault(provider: AgentId, accountId: string, label: string): void {
-    if (this.list(provider).length > 0) return;
+    const serviceId = nativeServiceForHarness(provider);
+    if (!serviceId) return;
+    if (this.list(serviceId).length > 0) return;
 
     // The legacy migration belongs to the ORCHESTRATOR's credentials volume.
     // Inside a session container `/credentials` is that session's own agent
@@ -1033,9 +1311,11 @@ export class ProviderAccountManager {
     }
 
     const now = Date.now();
-    this.credentialStore.upsertProviderAccount({
+    this.credentialStore.upsertCredentialRoute({
       id: accountId,
-      provider,
+      serviceId,
+      billingMode: ACCOUNT_BILLING_MODE,
+      via: "account",
       label,
       // req 19 — the migrated row is the only account at migration time, so it
       // leads the order. `isPrimary` is derived from that on read.
@@ -1074,7 +1354,7 @@ export function providerDisplayLabel(provider: AgentId): string {
  * Suffixes skip labels already in use — including user-typed ones — so a row
  * renamed to "Claude" doesn't collide with the next generated placeholder.
  */
-function generatedAccountLabel(provider: AgentId, existing: readonly ProviderAccount[]): string {
+function generatedAccountLabel(provider: AgentId, existing: readonly CredentialRoute[]): string {
   const base = PROVIDER_LABEL[provider];
   const taken = new Set(existing.map((account) => account.label));
   if (!taken.has(base)) return base;
@@ -1138,7 +1418,7 @@ function isNonEmptyFile(filePath: string): boolean {
  * unusable forever.
  */
 /**
- * docs/150 req 21 — reorder the eligible accounts according to the provider's
+ * docs/150-multiple-provider-subscriptions req 21 — reorder the eligible accounts according to the provider's
  * selection mode. Called once, before the eligibility walk, so every tier of
  * that walk (under-cutoff, then over-cutoff) inherits the same order.
  *
@@ -1163,39 +1443,58 @@ function isNonEmptyFile(filePath: string): boolean {
  * list on an install where nothing has run yet — keep the user's priority order.
  * That makes `balanced` degrade to `strict` rather than to something arbitrary.
  */
-export function orderForSelectionMode(
-  accounts: ProviderAccount[],
+export function orderForSelectionMode<T extends { lastUsedAt?: number }>(
+  accounts: readonly T[],
   mode: AccountSelectionMode,
-): ProviderAccount[] {
-  if (mode !== "balanced") return accounts;
+): T[] {
+  if (mode !== "balanced") return [...accounts];
   return [...accounts].sort((a, b) => (a.lastUsedAt ?? 0) - (b.lastUsedAt ?? 0));
 }
 
-function exhaustedUntil(
+/**
+ * docs/260-turn-level-account-routing req 5 — what the TELEMETRY claims about a window, used only to
+ * order an account to the back of the walk ("looks spent, try last"), never
+ * to skip it. The refusal memory in `refusalBlockedUntil` (shared,
+ * `credential-route.ts`) is the only thing that skips.
+ */
+export function snapshotExhaustedResetAt(
   limits: { session?: unknown; weekly?: unknown } | undefined,
-  account: ProviderAccount,
   now: number,
 ): number | null {
   const resets: number[] = [];
-  if (typeof account.exhaustedUntil === "number" && account.exhaustedUntil > now) {
-    resets.push(account.exhaustedUntil);
-  }
   for (const key of ["session", "weekly"] as const) {
     const window = limits?.[key] as { usedPct: number | null; resetAt: string } | null | undefined;
     if (window === null || window === undefined) continue;
     if (window.usedPct === null || window.usedPct < 100) continue;
-    const at = Date.parse(window.resetAt);
-    // An exhausted window whose reset already passed is stale, not blocking.
-    if (Number.isNaN(at)) resets.push(Number.POSITIVE_INFINITY);
-    else if (at > now) resets.push(at);
+    // A spent window that no longer describes now is stale, not spent — and an
+    // unusable `resetAt` is the worse half of that: it never expires, so it
+    // parked the account in the last tier for the life of the snapshot with no
+    // clock to end it. Both are "not evidence"; the harness's own refusal is
+    // what may bench an account (req 5).
+    if (!subscriptionWindowIsCurrent(window, now)) continue;
+    resets.push(Date.parse(window.resetAt));
   }
   if (resets.length === 0) return null;
   return Math.min(...resets);
 }
 
+function readClaudeAccessToken(file: string): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    return probeNestedString(
+      parsed as Record<string, unknown>,
+      ["accessToken", "access_token"],
+      "claudeAiOauth",
+    );
+  } catch {
+    return null;
+  }
+}
+
 
 /**
- * docs/150 reqs 4–6 — has this account crossed either proactive cutoff?
+ * docs/150-multiple-provider-subscriptions reqs 4–6 — has this account crossed either proactive cutoff?
  *
  * Separate from {@link exhaustedUntil} on purpose: that answers "can this
  * account run a turn at all", this answers "should it be the first choice".
@@ -1206,31 +1505,26 @@ function exhaustedUntil(
  * "unknown counts as usable" rule the exhaustion check uses, for the same
  * reason: Claude reports `usedPct` only above a warning threshold, so treating
  * silence as "past 90%" would demote every healthy account.
+ *
+ * A window that no longer describes now (`subscriptionWindowIsCurrent`) is not
+ * over its cutoff either (docs/260-turn-level-account-routing req 8). Without that rule an account that
+ * hit its 5h limit stayed demoted after the limit reset — permanently, under
+ * strict priority, because the demotion is exactly what kept turns off the
+ * account whose turns are the only source of a fresher reading, and a demoted
+ * account is never reached at all while any account is clear.
  */
-function isOverCutoff(
+export function isOverCutoff(
   limits: { session?: unknown; weekly?: unknown } | undefined,
   cutoffs: FailoverCutoffs,
+  now: number,
 ): boolean {
   for (const [key, cutoff] of [["session", cutoffs.session], ["weekly", cutoffs.weekly]] as const) {
-    const window = limits?.[key] as { usedPct: number | null } | null | undefined;
+    const window = limits?.[key] as { usedPct: number | null; resetAt?: unknown } | null | undefined;
     if (window?.usedPct === null || window?.usedPct === undefined) continue;
+    if (!subscriptionWindowIsCurrent(window, now)) continue;
     if (window.usedPct >= cutoff) return true;
   }
   return false;
-}
-
-/**
- * Sort key for {@link ProviderAccountManager.accountsInSelectionOrder}.
- * An explicit `priority` wins; without one, the legacy primary leads and
- * everything else falls back to stored order.
- */
-/**
- * docs/150 req 2 — the fallback order is `priority`, ascending. A row without
- * one sorts last (see {@link ProviderAccountManager.list}); `backfillPriority`
- * means there shouldn't be any.
- */
-function rankForOrder(entry: { account: ProviderAccount }): number {
-  return entry.account.priority ?? Number.POSITIVE_INFINITY;
 }
 
 /**
@@ -1238,12 +1532,17 @@ function rankForOrder(entry: { account: ProviderAccount }): number {
  * ONLY to seed {@link ProviderAccountManager.backfillPriority}, so the
  * one-time backfill records the order an existing install already had instead
  * of reshuffling it. Nothing on the read path uses this.
+ *
+ * The read path's own rule (`priority` ascending, a missing one sorting last,
+ * `isPrimary` stamped from position) is `orderCredentialRoutes` and lives with
+ * the type — one implementation, shared with the string-delivered credentials
+ * that never had a second one.
  */
 function legacyRank(
-  entry: { account: ProviderAccount; index: number },
+  entry: { route: CredentialRoute; index: number },
   primaryId: string | undefined,
 ): number {
-  if (typeof entry.account.priority === "number") return entry.account.priority;
-  if (entry.account.id === primaryId) return Number.NEGATIVE_INFINITY;
+  if (typeof entry.route.priority === "number") return entry.route.priority;
+  if (entry.route.id === primaryId) return Number.NEGATIVE_INFINITY;
   return entry.index;
 }

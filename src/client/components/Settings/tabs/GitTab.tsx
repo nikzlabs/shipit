@@ -1,5 +1,6 @@
 import { useState, useRef } from "react";
 import { Button } from "../../ui/button.js";
+import { SettingsTabPane } from "../SettingsTabPane.js";
 
 export function GitTab({
   gitIdentity,
@@ -21,7 +22,23 @@ export function GitTab({
   }
 
   return (
-    <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
+    <SettingsTabPane
+      footer={
+        <Button
+          variant="primary"
+          size="md"
+          onClick={() => {
+            onGitIdentitySave(gitName.trim(), gitEmail.trim());
+            setGitSaved(true);
+          }}
+          disabled={!gitName.trim() || !gitEmail.trim()}
+          className="rounded-md"
+          data-testid="settings-git-save"
+        >
+          {gitSaved ? "Saved" : "Save"}
+        </Button>
+      }
+    >
       <div className="space-y-4">
         <p className="text-sm text-(--color-text-secondary)">
           Git identity used for automatic commits in all sessions.
@@ -50,21 +67,7 @@ export function GitTab({
             data-testid="settings-git-email"
           />
         </div>
-
-        <Button
-          variant="primary"
-          size="lg"
-          onClick={() => {
-            onGitIdentitySave(gitName.trim(), gitEmail.trim());
-            setGitSaved(true);
-          }}
-          disabled={!gitName.trim() || !gitEmail.trim()}
-          className="w-full rounded-lg"
-          data-testid="settings-git-save"
-        >
-          {gitSaved ? "Saved" : "Save"}
-        </Button>
       </div>
-    </div>
+    </SettingsTabPane>
   );
 }

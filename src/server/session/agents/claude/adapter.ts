@@ -4,13 +4,18 @@
  *
  * When params.useStreaming is true (live steering enabled), run() creates a
  * StreamingClaudeProcess that keeps the process alive across turns. Otherwise
- * it creates the legacy PTY ClaudeProcess. (docs/140)
+ * it creates the one-shot ClaudeProcess. (docs/140)
  */
 
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
-import type { ClaudeEvent, ClaudeMcpServerInit, PermissionMode } from "../../../shared/types.js";
+import type {
+  ClaudeEvent,
+  ClaudeMcpServerInit,
+  ClaudeUsageIteration,
+  PermissionMode,
+} from "../../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../../shared/types.js";
 import { CLAUDE_MODELS, CLAUDE_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import type {
@@ -73,6 +78,29 @@ export class ClaudeAdapter
   private rateLimitSession: SubscriptionLimitsWindow | null = null;
   private rateLimitWeekly: SubscriptionLimitsWindow | null = null;
 
+  /**
+   * Context occupancy from the latest top-level API call in this turn — the
+   * fallback for Claude-compatible providers that omit
+   * `result.usage.iterations`.
+   *
+   * Two events feed it, because no single one covers every provider:
+   *
+   *  - the `assistant` event's `message.usage` (DeepSeek populates it), and
+   *  - the `message_delta` SSE frame under `--include-partial-messages`
+   *    (Z.ai/GLM reports usage ONLY there — its assistant events are zeroed).
+   *
+   * Both describe the same thing, the prompt size of one model call, so the
+   * later one simply wins. The real wire order within a call is `assistant`
+   * first, then the closing `message_delta`, so the winner is the delta — the
+   * protocol's FINAL figure for that call, which is the one to prefer. That
+   * ordering is measured, not assumed, and so is the agreement: on DeepSeek
+   * with the flag both sources read exactly 168 + 25,216 on the last call
+   * (2026-08-17). Zero and output-only readings are ignored rather than
+   * written, so a provider that zeroes one source cannot empty a reading the
+   * other supplied — which is the whole GLM case.
+   */
+  private latestCallContextTokens: number | undefined;
+
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
     supportsImages: true,
@@ -81,8 +109,9 @@ export class ClaudeAdapter
     supportedPermissionModes: CLAUDE_PERMISSION_MODES,
     toolNames: [...CLAUDE_TOOL_NAMES],
     models: CLAUDE_MODELS,
-    // Claude Code has both a subagent primitive (the Task tool) and custom
-    // MCP tool registration via mcpConfigPath, which 125 needs.
+    // docs/266 item 15 — the chat-native review flow needs a shell tool and a
+    // subagent primitive; since docs/220 it needs no MCP surface. Claude Code
+    // has Bash and Task.
     supportsReview: true,
     supportsSteering: true,
     // docs/178 — the CLI exposes `/compact` and emits `system/compact_boundary`
@@ -154,6 +183,21 @@ export class ClaudeAdapter
     proc.on("log", (source: string, text: string) => {
       this.emit("log", source, text);
     });
+  }
+
+  /**
+   * Record one model call's prompt size from whichever event carried it.
+   * See {@link latestCallContextTokens} for why there are two sources.
+   */
+  private recordCallContext(usage: ClaudeUsageIteration | undefined): void {
+    if (!usage) return;
+    const contextTokens =
+      (usage.input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0);
+    // An output-only, zeroed or empty usage object has no context reading. Do
+    // not turn it into an authoritative zero that empties the dial.
+    if (contextTokens > 0) this.latestCallContextTokens = contextTokens;
   }
 
   /** Convert a raw ClaudeEvent into the normalized AgentEvent schema. */
@@ -244,11 +288,41 @@ export class ClaudeAdapter
             // them too would mean maintaining a second, weaker view of the same
             // state.
             return null;
+          case "task_progress":
+            // Deliberately dropped, same reasoning as task_started/task_updated:
+            // a per-task liveness ping ({task_id, tool_use_id, description,
+            // usage, last_tool_name}) for a running background task, superseded
+            // by the `background_tasks_changed` list and the task_notification
+            // completion edge. Nothing in the transcript draws per-tick
+            // subagent progress today.
+            return null;
+          case "thinking_tokens":
+            // Deliberately dropped. A per-tick thinking-token estimate
+            // ({estimated_tokens, estimated_tokens_delta}) — the most frequent
+            // event in a real stream (50+ per turn). Authoritative token usage
+            // arrives once, on `result`; mapping these would stream a second,
+            // estimated counter nothing consumes.
+            return null;
           default:
             return null;
         }
 
+      case "stream_event":
+        // Raw SSE passthrough (`--include-partial-messages`, service-routed
+        // spawns only). Nothing here reaches the orchestrator — the CLI's own
+        // `assistant` events already carry the content — but `message_delta`
+        // is the only place some providers state a call's token usage.
+        // The `parent_tool_use_id` guard is defensive: the CLI's schema carries
+        // the field on these frames, but every frame observed under the flag —
+        // including on a turn that ran a subagent — had it null, so subagent
+        // calls appear not to be re-emitted at all.
+        if (!raw.parent_tool_use_id && raw.event?.type === "message_delta") {
+          this.recordCallContext(raw.event.usage);
+        }
+        return null;
+
       case "assistant":
+        if (!raw.parent_tool_use_id) this.recordCallContext(raw.message.usage);
         return {
           type: "agent_assistant",
           content: raw.message.content,
@@ -291,7 +365,16 @@ export class ClaudeAdapter
             (lastIter.input_tokens ?? 0) +
             (lastIter.cache_read_input_tokens ?? 0) +
             (lastIter.cache_creation_input_tokens ?? 0);
+        } else {
+          // DeepSeek, GLM and other Claude-compatible providers omit the
+          // result-level iteration list (GLM sends `iterations: []`), so the
+          // last top-level API call seen in the stream is the final prompt
+          // size. Do not fall back to the result totals: those are sums across
+          // calls and overstate context by roughly the call count — that is
+          // exactly how a GLM turn reported 2.1M against a 1M window.
+          contextTokens = this.latestCallContextTokens;
         }
+        this.latestCallContextTokens = undefined;
         // Authoritative context window comes from `modelUsage.<model>.contextWindow`
         // (e.g. Opus 4.7 reports 1_000_000). Falls back to the static map on
         // the receiving end when undefined.
@@ -312,7 +395,7 @@ export class ClaudeAdapter
         // `error_max_turns`. `"error"` — what this used to test for — is a
         // value the real CLI never emits, so `error` here was ALWAYS undefined
         // and everything gated on it was dead in production: the docs/182
-        // turn-errored flag and the docs/150 req 7 quota-exhaustion stamp that
+        // turn-errored flag and the docs/150-multiple-provider-subscriptions req 7 quota-exhaustion stamp that
         // makes the next turn fail over to another account. Normalize both
         // signals into the adapter-neutral success/error status instead.
         const errored = raw.is_error === true || raw.subtype !== "success";
@@ -373,6 +456,10 @@ export class ClaudeAdapter
   }
 
   run(params: AgentRunParams): void {
+    // A resident streaming adapter serves many turns. Clear any reading left
+    // by an abnormal prior turn that ended without a result event before the
+    // next turn starts, or a result with no assistant usage could reuse it.
+    this.latestCallContextTokens = undefined;
     if (params.useStreaming) {
       if (this._isStreaming) {
         // Persistent streaming process is already alive — send the next turn
@@ -402,12 +489,14 @@ export class ClaudeAdapter
         ?.filter((s) => s.enabled)
         .map((s) => s.name),
       model: params.model,
+      // docs/252 phase 3 — base URL + credential for the selected model's service.
+      serviceRouting: params.serviceRouting,
       reasoningEffort: params.reasoningEffort,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,
       // docs/211 — sets SHIPIT_SANDBOX=1 so the branch-block hook self-gates off.
       sandbox: params.sandbox,
-      // SHI-265 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 so the same hook blocks
+      // planning#267 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 so the same hook blocks
       // hand-rolled destructive git while the session sits on a merged branch.
       guardDestructiveGit: params.guardDestructiveGit,
       // docs/193 — set when writeMcpConfig registered the permission bridge.
@@ -416,6 +505,9 @@ export class ClaudeAdapter
   }
 
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
+    // Persistent streaming turns enter through this method, not run(). Clear
+    // a reading left by an abnormal prior turn before accepting new input.
+    this.latestCallContextTokens = undefined;
     if (this.inner instanceof StreamingClaudeProcess) {
       console.log(
         `[claude-adapter] sendUserMessage → streaming (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
@@ -425,7 +517,7 @@ export class ClaudeAdapter
     }
     // docs/140 — the orchestrator's steering gate (`runner.isStreamingActive`)
     // should have routed around this branch when the resident process is a
-    // one-shot PTY ClaudeProcess. If we got here, the gate disagrees with the
+    // one-shot ClaudeProcess. If we got here, the gate disagrees with the
     // adapter — silent no-op would make the user's message disappear with no
     // feedback. Log loudly, emit a server-facing log (so the Logs panel shows
     // a clear failure), and emit an `error` so wireAgentListeners surfaces
@@ -462,7 +554,7 @@ export class ClaudeAdapter
 
   /**
    * Change permission mode on the resident process. Only meaningful for the
-   * persistent streaming process — the one-shot PTY path re-applies the mode
+   * persistent streaming process — the one-shot path re-applies the mode
    * at every spawn, so there's nothing to do here. ShipIt → CLI mapping
    * matches what `ClaudeProcess` / `StreamingClaudeProcess` push as
    * `--permission-mode` at spawn: `plan` → `"plan"`, `guarded` → `"auto"`
@@ -480,7 +572,7 @@ export class ClaudeAdapter
    * docs/178 — trigger a context compaction on the resident process by sending
    * the CLI's `/compact` slash command as a user message. Only meaningful on the
    * persistent streaming process (where a message can be injected mid/between
-   * turn without a respawn) — the one-shot PTY path has no resident process to
+   * turn without a respawn) — the one-shot path has no resident process to
    * talk to between turns, so the orchestrator routes that case through
    * `run({ compact: true })` (a fresh `claude -p "/compact" --resume` turn)
    * instead and never calls this. When called on a non-streaming inner we log
@@ -528,7 +620,7 @@ export class ClaudeAdapter
       },
     };
 
-    // SHI-128 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
+    // planning#130 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
     // internal tools under the single `shipit` server, instead of five separate
     // processes. The bridge (`mcp-shipit-bridge`) is launched via
     // node/tsx-by-absolute-path (mirroring the `gh`/`shipit` shim install — bare

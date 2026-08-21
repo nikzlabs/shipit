@@ -9,7 +9,7 @@
  * keyed by repo URL. After a save, the orchestrator rewrites the per-service
  * env files for every active session backed by that repo — at
  * `<serviceEnvDir>/<sessionId>/.env.<service>`, outside the session's git clone
- * (docs/183, SHI-290) — and runs `docker compose up -d` so compose recreates
+ * (docs/183, planning#292) — and runs `docker compose up -d` so compose recreates
  * the affected containers with the new env values.
  */
 

@@ -1,5 +1,8 @@
 import fs from "node:fs/promises";
+import path from "node:path";
+import crypto from "node:crypto";
 import { existsSync } from "node:fs";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
@@ -12,9 +15,12 @@ import type { SessionLoopDetector } from "./loop-detector.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { agentLogAppend } from "./log-emit.js";
+import { persistTurnInProgress, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { deleteSession } from "./services/session.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
+import { reclaimRegenerableSessionDirs } from "./disk-utils.js";
+import { hasUrlCredentials, repoUrlToHash, stripRemoteUrlCredentials } from "./git-utils.js";
 
 // ---- Migration + startup ----
 
@@ -72,6 +78,301 @@ export async function runRepoMigration(
 }
 
 /**
+ * docs/262 req 19 — remove credentials an EARLIER build stored in a remote URL.
+ *
+ * Strip-on-write (`RepoStore.add`, `SessionManager.setRemoteUrl`, `RepoGit`)
+ * covers everything written from now on and nothing already on disk. An
+ * installation that added `https://x-access-token:<pat>@github.com/o/r.git`
+ * before this landed has that token in three places, and only the third is
+ * reachable by plugin code — which is why all three are swept here rather than
+ * just the rows:
+ *
+ *   1. the repo row,
+ *   2. the session row (`remote_url`),
+ *   3. **the session's own checkout**, `<workspaceDir>/.git/config` — mounted
+ *      at `/project` in the session container, and readable by every plugin CLI
+ *      and (once that surface ships) every plugin service.
+ *
+ *   4. every **secret** stored for it (`secrets.repo_url` is the raw URL), and
+ *   5. every per-repo DIRECTORY, each named after a hash of that URL — the bare
+ *      cache, the dependency cache, and the agent's per-repo memory.
+ *
+ * 4 and 5 are here because the rename is not only a strip: a URL that changes
+ * changes every key derived from it. Left alone, the user's stored service
+ * secrets and the agent's accumulated memory for that repository would still
+ * exist, keyed by a string nothing looks up any more — silently gone, and with
+ * the credential still in them. So the sweep carries them across rather than
+ * cleaning one key and orphaning the rest (independent review, findings 3 & 6).
+ *
+ * **Warm sessions are included** (`listAllIncludingWarm`): `listAll` filters
+ * `warm = 0`, and a warm row is a real pre-provisioned checkout that a later
+ * claim hands to a user — skipping it left the token in the one workspace most
+ * likely to be handed out next (independent review, finding 2). At boot there
+ * are now none left to find: {@link retireWarmSessions} runs earlier and deletes
+ * every warm row *and* its checkout, which reaches the same end more thoroughly.
+ * The clause stays because this function does not depend on that ordering — a
+ * warm row present when it runs is still scrubbed.
+ *
+ * Boot-only and idempotent: a clean installation reads a few tiny queries and
+ * one small file per session, and rewrites nothing. It converges within one
+ * restart, which every deploy performs.
+ *
+ * Two limits, stated rather than closed. A directory is carried across only
+ * when the destination does not already exist — where both spellings have one,
+ * the clean one is authoritative and the stale twin is left on disk for the
+ * ordinary disk sweeps, because merging two caches is not something this can do
+ * safely. And an *archived* session whose checkout was reclaimed has no config
+ * to fix; when it is restored, it is re-cloned from the scrubbed row.
+ */
+export async function runRemoteCredentialScrub(
+  deps: {
+    repoStore: RepoStore;
+    sessionManager: SessionManager;
+    secretStore?: { scrubCredentialedRepoUrls: () => number };
+    /**
+     * Resolvers for the directories named after a repo URL's HASH — bare cache,
+     * dep cache, per-repo memory. Keyed by hash rather than by URL because the
+     * *old* directory carries the hash of the credentialed URL, which
+     * `repoUrlToHash` deliberately no longer produces. Passed in rather than
+     * imported so this stays a pure function over its dependencies, and so a
+     * caller with no such directories (tests, local mode) can omit them.
+     */
+    repoKeyedDirs?: ((repoHash: string) => string)[];
+  },
+): Promise<{ repoRows: number; sessionRows: number; workspaces: number; secrets: number; dirs: number }> {
+  const result = { repoRows: 0, sessionRows: 0, workspaces: 0, secrets: 0, dirs: 0 };
+
+  let renamed: { from: string; to: string }[] = [];
+  try {
+    renamed = deps.repoStore.scrubCredentialedUrls();
+    result.repoRows = renamed.length;
+  } catch (err) {
+    console.warn("[credential-scrub] repo rows failed:", getErrorMessage(err));
+  }
+
+  for (const { from, to } of renamed) {
+    const oldHash = hashAsAnOlderBuildDid(from);
+    const newHash = repoUrlToHash(to);
+    for (const resolve of deps.repoKeyedDirs ?? []) {
+      try {
+        if (await moveKeyedDir(resolve(oldHash), resolve(newHash))) result.dirs++;
+        // A bare cache carried across still holds the credential in its OWN
+        // origin — the older build cloned it with the credentialed URL.
+        await scrubGitRemotes(resolve(newHash));
+      } catch (err) {
+        console.warn("[credential-scrub] could not carry a per-repo directory across:", getErrorMessage(err));
+      }
+    }
+  }
+
+  try {
+    result.secrets = deps.secretStore?.scrubCredentialedRepoUrls() ?? 0;
+  } catch (err) {
+    console.warn("[credential-scrub] secrets failed:", getErrorMessage(err));
+  }
+
+  for (const session of deps.sessionManager.listAllIncludingWarm()) {
+    try {
+      if (session.remoteUrl && hasUrlCredentials(session.remoteUrl)) {
+        // `setRemoteUrl` strips — passing the credentialed value back in IS
+        // the fix, and keeps one implementation of what a credential is.
+        deps.sessionManager.setRemoteUrl(session.id, session.remoteUrl);
+        result.sessionRows++;
+      }
+      if (session.workspaceDir && await scrubGitRemotes(session.workspaceDir)) {
+        result.workspaces++;
+      }
+    } catch (err) {
+      console.warn(`[credential-scrub] session ${session.id} failed:`, getErrorMessage(err));
+    }
+  }
+
+  if (result.repoRows || result.sessionRows || result.workspaces || result.secrets || result.dirs) {
+    console.log(
+      `[credential-scrub] removed stored remote credentials: ${result.repoRows} repo row(s), `
+      + `${result.sessionRows} session row(s), ${result.workspaces} checkout(s), `
+      + `${result.secrets} secret(s), ${result.dirs} per-repo directory(ies) carried across`,
+    );
+  }
+  return result;
+}
+
+/**
+ * The directory hash an OLDER build produced for a URL: a plain sha256 of the
+ * string as typed, credential and all.
+ *
+ * Deliberately inlined rather than shared with `repoUrlToHash`, which now
+ * hashes the STRIPPED URL so a credentialed spelling and a clean one address
+ * one cache. That is the right rule going forward and the wrong one for finding
+ * what is already on disk — this copy must keep reproducing a historical layout
+ * forever, exactly like the docs/252 rule `sessions.ts` inlines for the same
+ * reason. Changing `repoUrlToHash` must not change this.
+ */
+function hashAsAnOlderBuildDid(repoUrl: string): string {
+  return crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
+}
+
+/**
+ * Carry a per-repo directory from the old URL's hash to the new one. Returns
+ * true when it moved. Declines when the source is absent (the ordinary case) or
+ * the destination already exists (see the "two limits" note above).
+ */
+async function moveKeyedDir(from: string, to: string): Promise<boolean> {
+  if (from === to) return false;
+  // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
+  const sourceExists = await fs.stat(from).then(() => true, () => false);
+  if (!sourceExists) return false;
+  // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
+  const destExists = await fs.stat(to).then(() => true, () => false);
+  if (destExists) {
+    console.warn(`[credential-scrub] left ${from} in place — ${to} already exists`);
+    return false;
+  }
+  await fs.mkdir(path.dirname(to), { recursive: true });
+  await fs.rename(from, to);
+  console.log(`[credential-scrub] carried ${from} → ${to}`);
+  return true;
+}
+
+/**
+ * Rewrite every remote in `dir`'s git config that carries an embedded
+ * credential — fetch URL **and** push URL. Returns true when something was
+ * rewritten. Handles a working tree (`.git/config`) and a bare cache
+ * (`config`), because both hold a remote and only the first is mounted into a
+ * container.
+ *
+ * Reads the config file first and only spawns git when it actually contains a
+ * credentialed URL, so the common (clean) case costs one small read and no
+ * process. The rewrite goes through `git remote set-url` rather than editing
+ * the file, so git owns the format — and `--push` is passed for a distinct push
+ * URL, which a fetch-only rewrite silently left credentialed (independent
+ * review, finding 4).
+ */
+async function scrubGitRemotes(dir: string): Promise<boolean> {
+  let configPath = path.join(dir, ".git", "config");
+  let text = await fs.readFile(configPath, "utf8").catch(() => null);
+  if (text === null) {
+    configPath = path.join(dir, "config"); // bare repository
+    text = await fs.readFile(configPath, "utf8").catch(() => null);
+  }
+  if (text === null) return false; // Not a git directory (reclaimed, or a plain dir).
+  // Cheap pre-filter: `url = <scheme>://<userinfo>@host…`, `pushurl = …`, or a
+  // credential in the query. The authoritative test is `hasUrlCredentials` per
+  // remote below.
+  if (!/^\s*(push)?url\s*=\s*\S*(:\/\/[^\s/@]+@|\?)/m.test(text)) return false;
+
+  const git = safeSimpleGit(dir);
+  const remotes = await git.getRemotes(true);
+  let changed = false;
+  for (const remote of remotes) {
+    const fetchUrl = remote.refs.fetch;
+    const pushUrl = remote.refs.push;
+    if (fetchUrl && hasUrlCredentials(fetchUrl)) {
+      await git.raw(["remote", "set-url", remote.name, stripRemoteUrlCredentials(fetchUrl)]);
+      changed = true;
+    }
+    // Only a DISTINCT push URL needs its own rewrite. With no `pushurl` set,
+    // git reports the fetch URL in both slots, and `set-url --push` would then
+    // ADD a `pushurl` line that was never there.
+    if (pushUrl && pushUrl !== fetchUrl && hasUrlCredentials(pushUrl)) {
+      await git.raw(["remote", "set-url", "--push", remote.name, stripRemoteUrlCredentials(pushUrl)]);
+      changed = true;
+    }
+  }
+  if (changed) {
+    console.log(`[credential-scrub] rewrote credentialed remote(s) in ${configPath}`);
+  }
+  return changed;
+}
+
+/**
+ * A warm session does not survive an orchestrator restart. Retire every
+ * `warm = 1` row — the pool sessions a repo points at, and the
+ * claimed-but-never-graduated drafts nothing points at — clearing each repo's
+ * `warmSessionId` and reclaiming the clone.
+ *
+ * The point is the **standby container**. A standby is a container nobody has
+ * claimed, built by the *previous* process from the *previous* worker image,
+ * and it is invisible to every mechanism that would otherwise reap it: the idle
+ * enforcer skips standbys by design (`idle-enforcer.ts`), and boot's
+ * `rediscoverContainers` re-adopts it standby flag and all. So before this it
+ * survived indefinitely, and a user claiming that warm session after a deploy
+ * got a grandfathered worker — with a pre-install and an overlay base built
+ * under the image the deploy just replaced. Grandfathering a *real* session's
+ * container across a deploy is deliberate (docs/113: never kill work in
+ * flight); a standby has no work in flight, so the same argument says the
+ * opposite for it.
+ *
+ * This kills no container itself — `reapStandbyContainers` does, by label, from
+ * `setupContainerManager`. What this owns is the ROW, and the ordering is still
+ * load-bearing: **it must run before `setupContainerManager`.** Those rows are
+ * what `cleanupOrphanContainers` and `rediscoverContainers` read
+ * (`sessionManager.allIds()`), so retiring first means the sweep treats each
+ * standby as an orphan and adoption never re-registers one that is about to be
+ * reaped. Run it afterwards and the boot ends with adopted, tracked containers
+ * whose sessions no longer exist. Guard:
+ * `integration_tests/standby-container.test.ts`.
+ *
+ * The pool is not left cold: every ready repo now has no `warmSessionId`, so
+ * {@link scheduleStartupTasks}'s re-warm loop — which already handles exactly
+ * that state — makes a fresh warm session with a fresh standby on the new
+ * image. Discarding the clone rather than keeping it and re-booting only the
+ * container is deliberate: `warmSessionForRepo` is one path that clones AND
+ * boots AND pre-installs, so reusing it costs a local hardlinked clone and adds
+ * no second warm mechanism to keep in step with the first.
+ *
+ * Never rejects — a failure here must not stop the orchestrator from booting.
+ * Returns the number of warm sessions retired.
+ */
+export async function retireWarmSessions(deps: {
+  repoStore: RepoStore;
+  sessionManager: SessionManager;
+  chatHistoryManager?: ChatHistoryManager;
+  usageManager?: UsageManager;
+  presentStore?: { deleteSession: (sessionId: string) => void };
+}): Promise<number> {
+  let retired = 0;
+  try {
+    for (const repo of deps.repoStore.list()) {
+      if (repo.warmSessionId) deps.repoStore.setWarmSessionId(repo.url, undefined);
+    }
+    // `listAll` filters `warm = 0`, so the rows this is about are precisely the
+    // ones it cannot see.
+    for (const session of deps.sessionManager.listAllIncludingWarm()) {
+      if (!session.warm) continue;
+      try {
+        if (session.workspaceDir) {
+          // planning#194's helper, not a blanket `rm` of the session root: it
+          // takes the checkout AND the overlay upper (the expensive half every
+          // hand-rolled reclaim has historically orphaned) and preserves
+          // `uploads/`, which a claimed-but-ungraduated draft can already hold.
+          const { failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
+          for (const f of failed) {
+            console.warn(`[warm] Could not reclaim ${f.dir} for retired warm session ${session.id}: ${f.message}`);
+          }
+        }
+        deleteSession(
+          deps.sessionManager, session.id,
+          deps.chatHistoryManager, deps.usageManager, undefined, deps.presentStore,
+        );
+        retired += 1;
+      } catch (err) {
+        console.warn(`[warm] Failed to retire warm session ${session.id}:`, getErrorMessage(err));
+      }
+    }
+  } catch (err) {
+    console.error("[warm] Warm-session retirement failed:", getErrorMessage(err));
+  }
+  if (retired > 0) {
+    console.log(
+      `[warm] Retired ${retired} warm session(s) from the previous process — `
+      + "their standby containers are reaped as orphans by the boot sweep, and the pool re-warms on the new image",
+    );
+  }
+  return retired;
+}
+
+/**
  * docs/088 Phase 2 follow-up: refresh any MCP OAuth tokens whose access
  * tokens are within the safety margin of expiry.
  *
@@ -116,6 +417,13 @@ export async function runMcpOAuthStartupRefresh(opts: {
 /**
  * Schedule startup tasks: validate warm sessions, re-warm missing, clean up zombies.
  * Returns the timer handle so it can be cleared on shutdown.
+ *
+ * Runs after {@link retireWarmSessions}, which has already dropped every
+ * `warm = 1` row and cleared every repo's `warmSessionId`. So on a normal boot
+ * the two sweeps below find nothing and the re-warm loop does all the work —
+ * they are kept for the rows retirement cannot recognise (a zombie whose warm
+ * flag was already cleared, identifiable only by its title) and for a warm
+ * session created *after* retirement by some other path.
  */
 export function scheduleStartupTasks(
   startupDeps: StartupDeps,
@@ -254,7 +562,12 @@ export function handleContainerExited(
   const runner = runnerRegistry.get(sessionId);
   if (runner) {
     if (chatHistoryManager) {
-      preservePartialTurnOnContainerExit(sessionId, runner, chatHistoryManager, exitDetail);
+      preservePartialTurnOnWorkerLoss(
+        sessionId,
+        runner,
+        chatHistoryManager,
+        `Session container exited unexpectedly${exitDetail}. The agent's progress up to this point has been preserved.`,
+      );
     }
     runner.emitMessage({
       type: "session_status",
@@ -270,39 +583,52 @@ export function handleContainerExited(
 
 /**
  * Flush a runner's in-flight turn state to chat history before its container
- * is torn down. Mirrors the `agent.on("error")` rescue in
- * `wireAgentListeners` — see `handleContainerExited` for why we can't rely
- * on that path when the container dies without emitting `agent_error`.
+ * is torn down, then append `notice` as a visible assistant error. Mirrors
+ * the `agent.on("error")` rescue in `wireAgentListeners` — see
+ * `handleContainerExited` for why we can't rely on that path when the
+ * container dies without emitting `agent_error`.
+ *
+ * `notice` is the caller's complete sentence rather than a detail fragment
+ * because the two callers describe genuinely different discoveries: a Docker
+ * `die` we received, and (docs/121 gap E) a container the missing-container
+ * reconciler found gone with no exit event at all. Both must leave the same
+ * kind of mark — a persisted transcript row, not just a log line — or the
+ * user is left with a spinner that stopped for no stated reason.
  */
-function preservePartialTurnOnContainerExit(
+export function preservePartialTurnOnWorkerLoss(
   sessionId: string,
   runner: SessionRunnerInterface,
   chatHistoryManager: ChatHistoryManager,
-  exitDetail: string,
+  notice: string,
 ): void {
   try {
     if (runner.running) {
-      const groups = runner.chatMessageGroups;
-      const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
-      const partialMessages = persistableGroups.map((g) => ({
-        role: "assistant" as const,
-        text: g.text,
-        toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-        toolResults: g.toolResults?.length ? g.toolResults : undefined,
-        subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
-      }));
-      chatHistoryManager.replaceInProgress(sessionId, partialMessages);
+      // The canonical snapshot, not a groups-only rebuild.
+      // `replaceInProgress` deletes EVERY in-progress row first, so writing
+      // only the assistant groups silently drops the turn's live-steered user
+      // messages (docs/140) and its recorded side-channel cards — a voice
+      // note, a bug-report card, a sub-agent consult. `persistTurnInProgress`
+      // is the one place that re-interleaves all three at their true
+      // positions.
+      persistTurnInProgress(chatHistoryManager, runner, sessionId);
     }
     // Even when the runner is idle or there are no in-memory groups (e.g.
     // this runner reconnected to a container whose prior turn left
     // in_progress=1 rows in the DB), finalize so those rows are preserved
     // instead of being deleted by the next turn's replaceInProgress.
     chatHistoryManager.finalizeInProgress(sessionId);
-    chatHistoryManager.append(sessionId, {
-      role: "assistant",
-      text: `Session container exited unexpectedly${exitDetail}. The agent's progress up to this point has been preserved.`,
-      isError: true,
-    });
+    // Emit AND persist. An `append` alone reaches only a future reload: the
+    // attached viewer would watch the spinner stop with no explanation,
+    // because `session_status.error` is rendered nowhere on the client. Runs
+    // after `finalizeInProgress`, so there is no in-progress set for this row
+    // to join and the post-turn append is the correct shape.
+    emitNoticePostTurn(
+      (m) => runner.emitMessage(m),
+      chatHistoryManager,
+      sessionId,
+      notice,
+      "warn",
+    );
   } catch (err) {
     // Never let a chat-history write failure block the dispose path — that
     // would leak the runner. Log and move on.

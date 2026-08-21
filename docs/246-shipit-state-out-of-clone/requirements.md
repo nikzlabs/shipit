@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-279
+issue: planning#281
 title: Keep ShipIt's generated state out of the user's repository
 description: ShipIt writes its own runtime artifacts into each session's git clone, where the post-turn auto-commit stages them into the user's repo.
 ---

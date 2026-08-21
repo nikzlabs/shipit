@@ -5,15 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import { LogStore } from "./log-store.js";
 
-// Append is async (serialised per channel); give the chain a tick to flush
-// before asserting on disk / snapshotting.
-function flush(): Promise<void> {
-  return new Promise((r) => setTimeout(r, 20));
-}
-
 describe("LogStore", () => {
   let root: string;
   let store: LogStore;
+
+  // Append is async (serialised per channel), so wait on the chain itself
+  // before asserting on disk / snapshotting. This used to be a fixed 20 ms
+  // sleep, which the rotation case (~1.5 MB across 15 chained appends) outran
+  // on a loaded CI box — a flake with no bearing on the code under test.
+  function flush(): Promise<void> {
+    return store.drain();
+  }
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "logstore-"));

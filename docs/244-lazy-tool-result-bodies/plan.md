@@ -1,12 +1,12 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-267
+issue: planning#269
 title: Lazy-load heavy chat-history row bodies
 description: Keep what the transcript actually draws inline and fetch the rest on demand, so a history load transfers kilobytes instead of megabytes.
 ---
 
 # Lazy-load heavy chat-history row bodies
 
-Paging (SHI-266, not yet built) bounds how many **rows** a transcript load
+Paging (planning#268, not yet built) bounds how many **rows** a transcript load
 transfers. It does not bound **bytes**: a window of ten turns containing several
 near-1 MB tool outputs is still a heavy payload. This feature bounds the bytes.
 
@@ -36,13 +36,13 @@ visible without a click*. There is no byte target to tune against.
 > used to read as though it did** (correction from the independent review,
 > 2026-08-04). Four things still transferred without a click: modal-only results
 > at or under the 200-byte floor, ~~every tool input that is not Edit/Write~~
-> (fixed, SHI-296 — see *2. Tool inputs* below),
-> ~~`sub_agent_consult_card.outputMarkdown`~~ (fixed, SHI-297), and the
+> (fixed, planning#298 — see *2. Tool inputs* below),
+> ~~`sub_agent_consult_card.outputMarkdown`~~ (fixed, planning#299), and the
 > full-resolution bytes behind each 96×96 image thumbnail. ~~The live and
 > reconnect paths relax it further.~~ The reconnect path no longer relaxes it
-> for the committed part of a turn (SHI-297); the live path still does, and
+> for the committed part of a turn (planning#299); the live path still does, and
 > must. All are listed in `checklist.md` → *Known gaps*; the two that were
-> undisclosed are SHI-291 and SHI-292. Two of the four are now closed; the
+> undisclosed are planning#293 and planning#294. Two of the four are now closed; the
 > criterion stands as the goal, and the claim that the design achieves it still
 > does not.
 
@@ -76,7 +76,7 @@ top-level tools, so fixing tool results and Write/Edit bodies covers its innards
 for free. It did still carry unprojected payload — a collapsed subagent prompt
 is a `Task` input, and non-Edit/Write inputs were not projected at all — so
 "needs none of its own", as this sentence originally read, was too strong
-(independent review, 2026-08-04). SHI-296 closed that: the prompt is now
+(independent review, 2026-08-04). planning#298 closed that: the prompt is now
 dropped and fetched on expand, and every tool's input goes through the policy
 below. What remains on a subagent row is per-step text, which is small.
 
@@ -89,9 +89,43 @@ below. What remains on a subagent row is per-step text, which is small.
   lazy with no visible change at all.
 * **The image itself, at today's resolution** — user-row images draw at 96×96
   (`message-media.tsx:53`) behind a click-to-full-size; tool-result images draw
-  at up to 256px (`max-h-64`, `ToolResult.tsx:252`) with **no click affordance
-  at all**. `ChatMessageImage` already carries an optional `src?: string`
-  (`MessageList/types.ts:59`), so a URL-backed path exists in the type today.
+  with **no click affordance at all**. `ChatMessageImage` already carries an
+  optional `src?: string` (`MessageList/types.ts:59`), so a URL-backed path
+  exists in the type today.
+
+  Tool-result images used to carry a 256px height cap (`max-h-64`) on top of
+  that. **They now carry no size bound at all** — natural size, scrolling
+  sideways when wider than the modal. `ToolResult` renders only inside the
+  tool-call modal, which is a click and already scrollable in both axes, so
+  there was never a transcript to keep tidy; the cap simply reduced a 1280×720
+  screenshot to an unreadable strip.
+
+  Fitting the width (`max-w-full`) was the intermediate step and is also wrong,
+  for a subtler reason worth keeping: **a resampled screenshot is
+  indistinguishable from a faithful one**, so a reader squinting at a blurry
+  control cannot tell whether the blur is in the page or in the render. A
+  scrollbar answers that; a silent resample does not. `max-w-none` on the image
+  is load-bearing — Tailwind preflight's `img { max-width: 100% }` would
+  otherwise re-fit it and leave a scrollbar that never scrolls.
+
+  The same argument then applies in the *other* direction, which "natural size"
+  alone does not cover: these screenshots are 1× (headless Chromium runs at
+  `deviceScaleFactor: 1`), so on a high-DPI display an image pixel laid out as a
+  CSS pixel is smeared across `dpr²` physical ones — magnified, beside text the
+  same display renders sharply. The fix is a `srcSet` density descriptor
+  carrying the viewer's own ratio, which lays the image out at
+  `naturalWidth / dpr` and lands each image pixel on exactly one physical pixel.
+  Verified in Chromium rather than assumed, because the mechanism is easy to get
+  backwards: **the descriptor sets the layout size outright**, it is not a hint
+  weighed against the display (`srcset="X 2x"` halves X even at `dpr === 1`), and
+  `src` naming the same URL neither overrides it nor costs a second request.
+  `1.5x`, `3x` and a Windows-scaling `1.7647…x` all divide exactly. Two
+  consequences: the descriptor must carry the *live* ratio, so
+  `useDevicePixelRatio` re-arms its media query on every change instead of
+  reading `devicePixelRatio` once — there is no fallback if it goes stale; and at
+  `dpr === 1` the whole thing is a no-op. A base64 `data:` URL is safe in
+  `srcset` (candidates split on commas that follow whitespace, and base64 has
+  none) where a `utf8,<svg …>` one is not.
 
 ### One thing that must never be truncated
 
@@ -103,7 +137,7 @@ below. What remains on a subagent row is per-step text, which is small.
 The other three consumers the issue flags read values that *usually* fit inside
 a slice — but `AskUserQuestion` is not bounded by its producer, and a free-form
 answer over 16 KB is sliced with no modal and no fetch path to recover the tail
-(SHI-291). "All read short values" was an assumption about typical input, not a
+(planning#293). "All read short values" was an assumption about typical input, not a
 property of the code (independent review, 2026-08-04): `AskUserQuestion`
 (`resolvedAnswer={result?.content}`,
 `message-tools.tsx:137`), `ExitPlanMode` (`resolved={!!result}`, `:162`), and
@@ -150,9 +184,61 @@ A body that is *not* a content-block array (a tool returning an ordinary JSON
 array) still takes the raw cap unchanged. Guard tests:
 `agent-event.test.ts` → *the cap never breaks an MCP content-block array*.
 
-## The SHI-266 dependency is not real
+## And so did the lazy fetch — the third instance
 
-SHI-267 was sequenced after SHI-266 "because it depends on `rowId` being on the
+Same bug class, third surface, reported from the field: opening the tool-call
+modal on a `browser_take_screenshot` result drew the screenshot **and**, beneath
+it, the whole `JSON.stringify`'d array with its base64 payload as the text panel.
+Two independent defects, either sufficient on its own:
+
+* **`/api/sessions/:id/tool-results/:toolUseId` served the stored bytes
+  verbatim.** A caller reaches it because something wants the body's *text*; the
+  images in it are already on screen, painted from `/images/:hash` out of that
+  same row. So the endpoint re-sent every screenshot as base64 the moment a modal
+  opened — the exact transfer this feature exists to remove, on the one path that
+  had never been projected. It now applies `substituteResultImages`, the same
+  function the report branch of `projectToolResult` already ran for the same
+  reason.
+* **`ToolResult` handed the previews a lazy body in the wrong units.**
+  `useExpandable` prefers `lazy.full` over its `content` prop, and for a block
+  array the two are different kinds of thing: `content` is the text
+  `parseContentForImages` unwrapped out of the blocks, `lazy.full` is the raw
+  array. The raw one won, so the fetched payload rendered as the text preview.
+  `ToolResult` now substitutes `parsed.text` into the lazy body before passing it
+  down.
+
+The lesson the first two instances already taught, restated: **a content-block
+array must be unwrapped before any text-shaped code touches it** — slicing,
+capping, serving, or previewing. Guard tests: `lazy-transcript-bodies.test.ts` →
+*substitutes images in the fetched tool-result body instead of re-sending
+base64*; `ToolResult.test.tsx` → *draws the unwrapped text, not the raw block
+array, once an image result's body arrives*.
+
+Cross-backend review of that fix surfaced three more, two of them in code the
+fix newly depended on:
+
+* **`projectBlockArray`'s `keep` mode was collapsing text blocks.** It changes no
+  text, so it had no business changing the array's shape either — but it emitted
+  one text block regardless of mode. `parseSubagentReport` recognizes the CLI's
+  accounting footer *only* as a separate final text block, so an image-bearing
+  subagent report came back from the endpoint with its footer glued onto the
+  prose: metadata rendered to the reader, header chips gone. Latent on the serve
+  path before this (the report branch already called `substituteResultImages`);
+  routing the fetch through the same function is what would have made it visible.
+  `keep` now passes text blocks through untouched.
+* **A failed body fetch on an image result was silent.** A projected screenshot is
+  an emptied text block plus a URL-backed image, so `hasImages` carries it past
+  both the loading and the error branch: the picture rendered and the body that
+  never loaded left no trace. The miss is now reported beside the image rather
+  than in place of it.
+* **`capContentBlocks` measured `totalLines` in the wrong units** — over the
+  serialized array rather than the text inside it. A stringified block array is
+  one physical line, so a capped result advertised *"Show all 1 lines"* for a body
+  of thousands. Same mismatch as the two above, one layer down.
+
+## The planning#268 dependency is not real
+
+planning#269 was sequenced after planning#268 "because it depends on `rowId` being on the
 wire". Neither mechanism needs one:
 
 * Tool results and Write/Edit inputs are addressed by `toolUseId`, already on
@@ -228,7 +314,7 @@ lines fails the build") claimed a guarantee the test does not provide
 is still meaningful, but its subject moved: those previews now render inside the
 output modal rather than in the transcript.
 
-### 2. Tool inputs — a per-tool, per-key policy (SHI-296)
+### 2. Tool inputs — a per-tool, per-key policy (planning#298)
 
 The first implementation projected exactly two tool names, `Edit` and `Write`,
 and `projectToolUse` opened with `if (!DIFF_INPUT_TOOLS.has(tool.name)) return
@@ -293,7 +379,7 @@ Two supporting pieces:
 **Unchanged: when the projection is allowed to run.** Widening *what* the policy
 covers did not widen *when* it applies. An input still only leaves the wire once
 the row holding it is committed — on the history path always, and on the
-reconnect snapshot for the ids SHI-297's `committedBodyIds.toolInputs` records
+reconnect snapshot for the ids planning#299's `committedBodyIds.toolInputs` records
 as already written by a boundary. The live emit still ships every input whole,
 because an `agent_assistant` row is not committed until the next tool-result
 boundary. `projectToolUse` is called from behind those gates and knows nothing
@@ -368,7 +454,7 @@ through the ordinary bound. With this change it goes further and ships no body
 at all, since nothing renders its result content either.
 
 
-## The five browser-facing paths (SHI-297)
+## The five browser-facing paths (planning#299)
 
 The design named three projection sites. Two more carry transcript payload of
 their own and reach the browser without passing through any of them — a
@@ -413,7 +499,7 @@ the card face draws and sets `outputTruncated`; the viewer fetches the rest.
 `subAgentPreviewLine` is **shared with the client** rather than reimplemented —
 the server now builds the line the client used to derive, and a byte-different
 preview would change the card face on reload. The stored card stays whole, which
-is what keeps SHI-245's "the agent's copy and the user's copy are one artifact"
+is what keeps planning#247's "the agent's copy and the user's copy are one artifact"
 true: the preview is transport, not a second extraction.
 
 ## Key files
@@ -422,23 +508,23 @@ Added by this feature:
 
 * `src/server/shared/transcript-slice.ts` — `sliceBody`, `TRANSCRIPT_SLICE_LINES` (40), `TRANSCRIPT_SLICE_BYTES` (16 KB); UTF-8-safe, dependency-free so the client can import the constants
 * `src/server/shared/transcript-slice-tools.ts` — `SUBAGENT_TOOL_NAMES`, the one exemption set, re-exported by `visual-elements.ts` so the renderer and the projection cannot disagree
-* `src/server/shared/transcript-input-policy.ts` — SHI-296: `inputKeyTreatment`, `isPlanDocumentWrite`, `COMMAND_SUMMARY_CHARS`, `PLAN_DOC_PATH_MARKER`, `INPUT_STRIP_FLOOR_BYTES`. Imported by the client too, so the renderer's bounds and the projection's are the same numbers
+* `src/server/shared/transcript-input-policy.ts` — planning#298: `inputKeyTreatment`, `isPlanDocumentWrite`, `COMMAND_SUMMARY_CHARS`, `PLAN_DOC_PATH_MARKER`, `INPUT_STRIP_FLOOR_BYTES`. Imported by the client too, so the renderer's bounds and the projection's are the same numbers
 * `src/server/orchestrator/transcript-projection.ts` — the serve-path projection: `projectMessagesForWire` (history), `projectAgentEventForWire` (live), `projectToolResult`, `projectToolUse`, `imageHash`
 * `src/server/orchestrator/api-routes-lazy-bodies.ts` — the four fetch endpoints (results, inputs, images, sub-agent consults); scans top-level *and* `subagent_events`
-* `src/client/hooks/useLazyToolInput.ts` — SHI-296: the one fetch behind all three views that display a removed input key
+* `src/client/hooks/useLazyToolInput.ts` — planning#298: the one fetch behind all three views that display a removed input key
 
 Touched:
 
 * `src/server/orchestrator/services/session.ts` — `getChatHistory`, the history projection site
 * `src/server/orchestrator/ws-handlers/agent-listeners.ts` — live emit site; projects the wire copy only, `event` stays whole for persistence
 * `src/server/orchestrator/route-registry.ts` — `turn_snapshot`, the reconnect projection site (req 6); passes `runner.committedBodyIds`
-* `src/server/orchestrator/session-runner.ts` + `turn-accumulator.ts` — `committedBodyIds`, cleared by `resetRunnerTurnState` (SHI-297)
+* `src/server/orchestrator/session-runner.ts` + `turn-accumulator.ts` — `committedBodyIds`, cleared by `resetRunnerTurnState` (planning#299)
 * `src/server/orchestrator/chat-card-persistence.ts` — `persistTurnInProgress` marks what it wrote
-* `src/server/orchestrator/services/sub-agent.ts` — the consult card: persist whole, emit projected (SHI-297)
+* `src/server/orchestrator/services/sub-agent.ts` — the consult card: persist whole, emit projected (planning#299)
 * `src/client/components/MessageList/cards/SubAgentCards.tsx` — fetch-on-open for the consult output
 * `src/server/orchestrator/chat-history.ts` — `PersistedMessage`, `fromRow` (do not slice here)
 * `src/server/orchestrator/ws-handlers/agent-event-normalizer.ts` — `extractToolResults`, the uncapped persist path
-* `src/server/orchestrator/ws-handlers/send-message.ts` — the `message_steered` echo, projected in place (SHI-297)
+* `src/server/orchestrator/ws-handlers/send-message.ts` — the `message_steered` echo, projected in place (planning#299)
 * `src/server/orchestrator/api-routes-session-spawn.ts:85` — `GET /api/sessions/:id/history`
 * `src/client/components/ToolResult.tsx` — the four preview/expand render paths
 * `src/client/components/DiffBlock.tsx` — the `+N -M` summary and the diff modal
@@ -464,7 +550,7 @@ No open decisions remain; implementation is unblocked.
 * **Thumbnail storage — no new store.** Falls away with the thumbnail. Image
   bytes stay in SQLite where they already are; only the wire format changes,
   and the hash is computed at serve time, so there is no migration, no
-  backfill, and no new disk surface for the janitor (SHI-196) to own.
+  backfill, and no new disk surface for the janitor (planning#198) to own.
 
 The through-line: each of the three resolutions removes mechanism rather than
 adding it. The first replaced an arbitrary byte budget with a number derived

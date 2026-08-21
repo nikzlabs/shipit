@@ -54,6 +54,7 @@
 
 ## Phase 2 — Inline Quota Per Account
 
+- [x] Clear credential-owned bench and quota state before a reauthenticated account row becomes selectable, then seed only the replacement account.
 - [x] Change `SubscriptionLimitsMap` wire shape to provider -> account-or-route -> limits.
 - [x] Update `LimitsPoller` cache, state, delta detection, and SSE broadcast for account-keyed snapshots.
 - [x] Poll Claude quota per stored Claude provider account.
@@ -249,8 +250,8 @@ account to move them to").
 - [x] Unit: the per-session token file is gone and the resident agent is killed and cleared after a last-account disconnect.
 - [x] Unit: the resume files survive the revoke (req 9 — a disconnect is not a reason to end the conversation).
 - [x] Integration: `DELETE /api/provider-accounts/...` on the last account returns 200 with `strandedSessionIds` (this test previously asserted the 409), and a mid-turn pinned session still gets a 409 naming the session.
-- [x] Follow-up, not req 23: provider-wide sign-out (`signOutProvider`) has the same per-session-copy gap — it erases source credentials only. Filed as [SHI-283](https://linear.app/shipit-ai/issue/SHI-283); the fix belongs to that issue, not this branch.
-- [x] SHI-283 landed: both sign-out routes go through the service-layer `signOutProvider` (guard → retire agent → revoke per-session copy → drop rows), sharing `retireSessionProviderAccount` with the disconnect path. Scoped to `account`-route sessions on an account being signed out (reserved routes untouched, archived sessions included).
+- [x] Follow-up, not req 23: provider-wide sign-out (`signOutProvider`) has the same per-session-copy gap — it erases source credentials only. Filed as planning#285; the fix belongs to that issue, not this branch.
+- [x] planning#285 landed: both sign-out routes go through the service-layer `signOutProvider` (guard → retire agent → revoke per-session copy → drop rows), sharing `retireSessionProviderAccount` with the disconnect path. Scoped to `account`-route sessions on an account being signed out (reserved routes untouched, archived sessions included).
 - [x] Unit (`services/provider-signout.test.ts`): per-session copies revoked, resident agent retired, conversation state preserved, reserved/other-provider/dangling routes untouched, archived included, mid-turn refusal revokes nothing.
 - [x] Integration: the sign-out test that encoded the leak now asserts the per-session token is gone, the resume file survives, and the dangling pin is still left in place.
 
@@ -272,3 +273,6 @@ sitting idle.
 - [x] Unit (`agent-listeners.test.ts`): a success-subtype turn whose assistant text is the notice benches the account and ends errored; an ordinary success turn does neither.
 - [x] Integration (`quota-exhaustion-retry.test.ts`): the same shape re-runs the turn on a fresh agent and does not commit the exhausted attempt; a retry that also exhausts in text ends errored rather than successful; a success turn whose text merely mentions limits still ends as one successful turn.
 - [x] Unit (`sub-agent.test.ts`): a consult whose final text is the notice benches and retries on the next subscription; with no account left it fails rather than returning the notice as its answer; a non-quota error alongside notice-shaped text benches nothing.
+- [x] Preserve Claude and Codex conversation state when temporary reviewer,
+  non-turn, failover, cancellation, and sign-out cleanup removes authentication
+  and config material (reqs 9, 20).

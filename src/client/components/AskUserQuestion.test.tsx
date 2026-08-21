@@ -224,6 +224,148 @@ describe("AskUserQuestion", () => {
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Cache" }, "Cache");
     });
 
+    it("keeps the checked options when Other is turned on", () => {
+      // The reported bug: clicking "Other" on a multi-select question blanked
+      // every checked box. "Other" is one more checkbox, not a mode switch.
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-Cache"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      // Still visibly checked.
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).toContain("bg-(--color-accent-subtle)");
+      // And still part of the answer, with the free text appended.
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(onAnswer).toHaveBeenCalledWith(
+        "t1",
+        { "0": "Auth, Cache, Metrics" },
+        "Auth, Cache, Metrics",
+      );
+    });
+
+    it("can still select and deselect options after Other is on", () => {
+      // The second half of the report: with "Other" active, option clicks had
+      // no visible effect, so the card read as frozen.
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
+      fireEvent.click(screen.getByTestId("option-Logging")); // add
+      fireEvent.click(screen.getByTestId("option-Auth")); // remove
+      expect(screen.getByTestId("option-Logging").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Auth").className).not.toContain("bg-(--color-accent-subtle)");
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Logging, Metrics" }, "Logging, Metrics");
+    });
+
+    it("toggles Other off again, dropping its text from the answer", () => {
+      // "Other" used to only ever be added, so a mis-click was unrecoverable.
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
+      fireEvent.click(screen.getByTestId("option-other")); // untick
+      expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Auth" }, "Auth");
+    });
+
+    it("submit stays enabled when Other is ticked but empty next to a checked option", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.getByTestId("submit-answer")).toBeEnabled();
+    });
+
+    it("highlights every checked option in the answered state", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-Auth"));
+      fireEvent.click(screen.getByTestId("option-Cache"));
+      fireEvent.click(screen.getByTestId("option-other"));
+      fireEvent.change(screen.getByTestId("other-input"), { target: { value: "Metrics" } });
+      fireEvent.click(screen.getByTestId("submit-answer"));
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Logging").className).not.toContain("bg-(--color-accent-subtle)");
+      // The free text shows as its own row rather than swallowing the labels.
+      expect(screen.getByText("Metrics")).toBeInTheDocument();
+      expect(screen.queryByText("Auth, Cache, Metrics")).not.toBeInTheDocument();
+    });
+
+    it("does not resurrect an option label that appears inside the free text", () => {
+      // Free text "custom, Cache" used to have its trailing "Cache" matched as
+      // a checked option on reload, so the card showed a box the user never
+      // ticked and the answer came back reordered as "Auth, Cache, custom".
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer="Auth, custom, Cache"
+        />
+      );
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).not.toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByText("custom, Cache")).toBeInTheDocument();
+    });
+
+    it("restores checked options and free text from persisted history", () => {
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={multiSelectQuestion}
+          onAnswer={vi.fn()}
+          disabled={false}
+          resolvedAnswer="Auth, Cache, Metrics"
+        />
+      );
+      expect(screen.getByTestId("option-Auth").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByTestId("option-Cache").className).toContain("bg-(--color-accent-subtle)");
+      expect(screen.getByText("Metrics")).toBeInTheDocument();
+    });
+
     it("submit button is disabled when nothing is selected", () => {
       const onAnswer = vi.fn<AnswerFn>(() => true);
       render(
@@ -304,6 +446,25 @@ describe("AskUserQuestion", () => {
       fireEvent.change(screen.getByTestId("other-input"), { target: { value: "My custom answer" } });
       fireEvent.click(submit);
       expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "My custom answer" }, "My custom answer");
+    });
+
+    it("toggles Other off on a single-select question too", () => {
+      const onAnswer = vi.fn<AnswerFn>(() => true);
+      render(
+        <AskUserQuestion
+          toolUseId="t1"
+          questions={singleQuestion}
+          onAnswer={onAnswer}
+          disabled={false}
+        />
+      );
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.getByTestId("other-input")).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("option-other"));
+      expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
+      // Back to the plain state: a preset option auto-submits again.
+      fireEvent.click(screen.getByTestId("option-Redis"));
+      expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
     });
 
     it("does not submit empty other text on Enter", () => {
@@ -659,5 +820,95 @@ describe("AskUserQuestion — the answered lock is conditional on delivery", () 
     fireEvent.click(screen.getByTestId("option-Redis"));
     expect(onAnswer).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId("option-Redis")).toBeDisabled();
+  });
+});
+
+/**
+ * The option rows are `<button>`s, and a browser refuses to select text inside
+ * one unless `user-select: text` is set (verified in Chrome). That blocked the
+ * user from highlighting an option to quote it back at the agent with
+ * `ChatQuoteReply`'s "Reply" affordance.
+ *
+ * Making the text selectable is only half of it: the drag that selects it still
+ * ends in a `click` on the row, so without the guard below, highlighting an
+ * option answers the question with it.
+ */
+describe("AskUserQuestion — option text is selectable", () => {
+  /** Put a live, non-collapsed selection over `el`'s text, as a drag would. */
+  function selectTextIn(el: HTMLElement) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
+
+  afterEach(() => window.getSelection()?.removeAllRanges());
+
+  it("marks the option and Other rows selectable", () => {
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={vi.fn<AnswerFn>(() => true)}
+        disabled={false}
+      />
+    );
+    expect(screen.getByTestId("option-Redis")).toHaveClass("select-text");
+    expect(screen.getByTestId("option-other")).toHaveClass("select-text");
+  });
+
+  it("does not answer when the click only ends a selection drag over the row", () => {
+    const onAnswer = vi.fn<AnswerFn>(() => true);
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={onAnswer}
+        disabled={false}
+      />
+    );
+    const redis = screen.getByTestId("option-Redis");
+    selectTextIn(redis);
+    fireEvent.click(redis);
+
+    expect(onAnswer).not.toHaveBeenCalled();
+    // Still answerable — the card is not locked, just not triggered.
+    expect(redis).toBeEnabled();
+  });
+
+  it("does not toggle Other when the click only ends a selection drag over it", () => {
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={vi.fn<AnswerFn>(() => true)}
+        disabled={false}
+      />
+    );
+    const other = screen.getByTestId("option-other");
+    selectTextIn(other);
+    fireEvent.click(other);
+
+    expect(screen.queryByTestId("other-input")).not.toBeInTheDocument();
+  });
+
+  it("still answers a plain click while text elsewhere is selected", () => {
+    const onAnswer = vi.fn<AnswerFn>(() => true);
+    render(
+      <AskUserQuestion
+        toolUseId="t1"
+        questions={singleQuestion}
+        onAnswer={onAnswer}
+        disabled={false}
+      />
+    );
+    // A selection on a *different* row (or, in the real UI, anywhere else on the
+    // page) must not suppress this row — that is what keyboard activation looks
+    // like, and the guard is row-scoped precisely so it stays live.
+    selectTextIn(screen.getByTestId("option-In-memory"));
+    fireEvent.click(screen.getByTestId("option-Redis"));
+
+    expect(onAnswer).toHaveBeenCalledWith("t1", { "0": "Redis" }, "Redis");
   });
 });

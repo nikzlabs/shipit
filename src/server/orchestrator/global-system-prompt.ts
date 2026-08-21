@@ -19,7 +19,7 @@
  * root it wants, and `.shipit` appears in exactly one place instead of four.
  *
  * Session-scoped ShipIt state has its own module and its own rule: it lives
- * outside the clone (`session-state-dir.ts`, docs/246 req 7). Nothing
+ * outside the clone (`session-state-dir.ts`, docs/246-shipit-state-out-of-clone req 7). Nothing
  * ShipIt-generated may be written into a clone's `.shipit/` at all —
  * `no-clone-writes.test.ts` enforces that with no exemptions.
  */

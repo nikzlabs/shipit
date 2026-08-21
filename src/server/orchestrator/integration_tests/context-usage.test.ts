@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import type { UsageTotals } from "../../shared/types.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +38,17 @@ import { DatabaseManager } from "../../shared/database.js";
  *   5. A drop in input tokens between turns surfaces (the data the dial
  *      uses to detect compaction).
  */
+/**
+ * docs/252 req 16 — the session's money figure. These sessions run without a
+ * catalogue-resolvable selection, so every row is `legacy`: attributed rows
+ * would land in `meteredCostUsd` instead, and neither is ever added to the
+ * other. Summing the two here keeps the assertion about the DELTA arithmetic
+ * these cases exist to check rather than about which bucket it fell into.
+ */
+function sessionSpend(totals: UsageTotals): number {
+  return totals.meteredCostUsd + totals.legacyCostUsd;
+}
+
 describe("Integration: Context window usage (105)", () => {
   let app: FastifyInstance;
   let port: number;
@@ -119,7 +131,7 @@ describe("Integration: Context window usage (105)", () => {
     expect(turnUsage.type).toBe("turn_usage_update");
     expect(turnUsage.sessionId).toBe(client.sessionId);
     expect(turnUsage.turnCount).toBe(1);
-    expect(turnUsage.totalCostUsd).toBeCloseTo(0.1);
+    expect(sessionSpend(turnUsage.totals)).toBeCloseTo(0.1);
     expect(turnUsage.turn).toMatchObject({
       inputTokens: 10_000,
       outputTokens: 500,
@@ -162,7 +174,7 @@ describe("Integration: Context window usage (105)", () => {
     });
     const u1 = (await client.receiveType("turn_usage_update")) as WsTurnUsageUpdate;
     expect(u1.turnCount).toBe(1);
-    expect(u1.totalCostUsd).toBeCloseTo(0.05);
+    expect(sessionSpend(u1.totals)).toBeCloseTo(0.05);
     expect(u1.turn.inputTokens).toBe(5_000);
     lastClaude.emit("done", 0);
 
@@ -199,7 +211,7 @@ describe("Integration: Context window usage (105)", () => {
     // (same session_id "ctx-2turn"): 0.05 then 0.07. The session bill is the
     // latest cumulative 0.07 (turn 2's own cost is the 0.02 delta) — not 0.12,
     // which double-counted turn 1.
-    expect(u2.totalCostUsd).toBeCloseTo(0.07);
+    expect(sessionSpend(u2.totals)).toBeCloseTo(0.07);
     expect(u2.turn.costUsd).toBeCloseTo(0.02);
     expect(u2.turn.inputTokens).toBe(12_000);
     lastClaude.emit("done", 0);
@@ -252,13 +264,14 @@ describe("Integration: Context window usage (105)", () => {
     expect(historyRes.statusCode).toBe(200);
     const history = historyRes.json() as {
       turnUsage: { inputTokens: number; outputTokens: number; costUsd: number }[];
-      sessionUsage: { totalCostUsd: number; turnCount: number } | null;
+      sessionUsage: { totals: UsageTotals; turnCount: number } | null;
       cumulativeInputTokens?: number;
       cumulativeOutputTokens?: number;
     };
     expect(history.turnUsage).toHaveLength(1);
     expect(history.turnUsage[0]).toMatchObject({ inputTokens: 3_000, outputTokens: 100, costUsd: 0.02 });
-    expect(history.sessionUsage).toMatchObject({ totalCostUsd: 0.02, turnCount: 1 });
+    expect(history.sessionUsage).toMatchObject({ turnCount: 1 });
+    expect(sessionSpend(history.sessionUsage!.totals)).toBeCloseTo(0.02);
     expect(history.cumulativeInputTokens).toBe(3_000);
     expect(history.cumulativeOutputTokens).toBe(100);
 

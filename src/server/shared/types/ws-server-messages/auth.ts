@@ -1,4 +1,4 @@
-import type { AgentId } from "../agent-types.js";
+import type { LoginIntegrationId } from "../../catalogue/types.js";
 
 // ---- Auth types ----
 
@@ -47,14 +47,18 @@ export type AgentAuthPendingDetails =
     };
 
 /**
- * Server → Client (SSE-broadcast): a per-agent auth flow has produced its
- * pending state and is waiting on the user. Adding a new backend means
- * emitting this event from its `AgentAuthManager` — the client's single
- * handler dispatches on `agentId` + `details.kind`. (docs/155 Phase 2b)
+ * Server → Client (SSE-broadcast): a login flow has produced its pending state
+ * and is waiting on the user. Adding a new backend means emitting this event
+ * from its `AgentAuthManager` — the client's single handler dispatches on
+ * `details.kind` alone. (docs/155 Phase 2b)
+ *
+ * Keyed by `loginId`, not `agentId`: the identity that matters to a sign-in is
+ * whose account is being connected, not which CLI happens to consume it. See
+ * `AgentAuthManager`.
  */
 export interface WsAgentAuthPending {
   type: "agent_auth_pending";
-  agentId: AgentId;
+  loginId: LoginIntegrationId;
   /**
    * Provider-account id this flow authenticates (docs/150). Present when the
    * flow was started for a specific stored account row; omitted for the
@@ -67,12 +71,14 @@ export interface WsAgentAuthPending {
 
 /**
  * Server → Client (SSE-broadcast): a per-agent auth flow completed
- * successfully. Receivers refresh the agent list — `authConfigured` for the
- * named agent flips to `true`. (docs/155 Phase 2b)
+ * successfully. Receivers refresh the agent list — `hasRunnableModels` flips to
+ * `true` for every harness this login serves, which is why the server fans the
+ * refresh out through `refreshAuthForLogin` rather than naming one agent.
+ * (docs/155 Phase 2b)
  */
 export interface WsAgentAuthComplete {
   type: "agent_auth_complete";
-  agentId: AgentId;
+  loginId: LoginIntegrationId;
   /** Provider-account id that just authenticated (docs/150), when scoped. */
   accountId?: string;
 }
@@ -81,9 +87,9 @@ export interface WsAgentAuthComplete {
  * Server → Client (SSE-broadcast): a per-agent auth flow failed or the
  * persisted credentials were revoked. `reason` lets the UI tailor the next
  * step (retry on `timeout`/`denied`/`error`, prompt re-sign-in on
- * `revoked`). (docs/155 Phase 2b)
+ * `revoked`/`missing_credentials`). (docs/155 Phase 2b, docs/153)
  *
- * `duplicate` (docs/150 req 22) is the odd one out: the sign-in itself
+ * `duplicate` (docs/150-multiple-provider-subscriptions req 22) is the odd one out: the sign-in itself
  * *succeeded*, and was then refused because the account is already connected.
  * It needs its own reason because retrying is exactly the wrong next step, and
  * because the refusal usually removes the row it names — so the UI has to
@@ -91,10 +97,10 @@ export interface WsAgentAuthComplete {
  */
 export interface WsAgentAuthFailed {
   type: "agent_auth_failed";
-  agentId: AgentId;
+  loginId: LoginIntegrationId;
   /** Provider-account id whose flow failed (docs/150), when scoped. */
   accountId?: string;
-  reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
+  reason?: "timeout" | "denied" | "error" | "revoked" | "missing_credentials" | "duplicate";
   message?: string;
 }
 
@@ -110,7 +116,7 @@ export type AgentAuthPhase =
 
 export interface WsAgentAuthProgress {
   type: "agent_auth_progress";
-  agentId: AgentId;
+  loginId: LoginIntegrationId;
   accountId?: string;
   attemptId: string;
   phase: AgentAuthPhase;
@@ -120,7 +126,7 @@ export interface WsAgentAuthProgress {
 
 export interface WsAgentAuthLog {
   type: "agent_auth_log";
-  agentId: AgentId;
+  loginId: LoginIntegrationId;
   accountId?: string;
   attemptId: string;
   timestamp: string;

@@ -147,4 +147,37 @@ describe("assembleAgentPrompt", () => {
       expect(DICTATION_CONTEXT.toLowerCase()).toContain("punctuation");
     });
   });
+
+  describe("docs/272-user-selectable-roles req 2 — a role's standing instructions", () => {
+    const ROLE_CTX = '<role_instructions role="deep dive">\nRead everything first.\n</role_instructions>';
+
+    it("goes FIRST, so it frames the attachments and the task", () => {
+      expect(
+        assembleAgentPrompt({
+          userText: "fix the bug",
+          fileContext: FILE_CTX,
+          imageContext: IMAGE_CTX,
+          roleContext: ROLE_CTX,
+        }),
+      ).toBe(`${ROLE_CTX}\n\n${IMAGE_CTX}\n\n${FILE_CTX}\n\nfix the bug`);
+    });
+
+    it("moves to the back for a slash command, keeping /skill at index 0", () => {
+      const result = assembleAgentPrompt({
+        userText: "/review the auth module",
+        fileContext: "",
+        imageContext: "",
+        roleContext: ROLE_CTX,
+      });
+      expect(result.startsWith("/review")).toBe(true);
+      expect(result).toBe(`/review the auth module\n\n${ROLE_CTX}`);
+    });
+
+    it("changes nothing when the session is not on a role", () => {
+      // The overwhelmingly common case, and the one that must stay byte-identical.
+      expect(
+        assembleAgentPrompt({ userText: "fix the bug", fileContext: "", imageContext: "" }),
+      ).toBe("fix the bug");
+    });
+  });
 });

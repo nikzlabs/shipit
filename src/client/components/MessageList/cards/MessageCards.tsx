@@ -2,6 +2,7 @@ import { SpawnedSessionCard } from "../../SpawnedSessionCard.js";
 import { ChildMergedCard } from "../../ChildMergedCard.js";
 import { SelfMergeWatchCard } from "../../SelfMergeWatchCard.js";
 import { SessionReportCard } from "../../SessionReportCard.js";
+import { NonTurnFailureCard } from "../../NonTurnFailureCard.js";
 import { SpawnFailedCard } from "../../SpawnFailedCard.js";
 import { ReviewCard } from "../../ReviewCard.js";
 import { UserReviewCard } from "../../UserReviewCard.js";
@@ -33,6 +34,7 @@ export interface MessageCardCallbacks {
   /** Opens a spawned/fork child session. */
   onResumeSession?: (sessionId: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
+  onDismissBugReport?: (cardId: string) => void;
   /** docs/172 — resolve an egress allow-once card (allow-once / add / deny). */
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
   /** docs/193 — answer a permission request (approve/deny + remember). */
@@ -46,7 +48,7 @@ export interface MessageCardCallbacks {
     identifier: string;
     title?: string;
     url?: string;
-    /** Comment to scroll to + highlight once the thread lands (SHI-103). */
+    /** Comment to scroll to + highlight once the thread lands (planning#105). */
     anchorCommentId?: string;
   }) => void;
   /** Returns whether the message actually reached the wire (see `sendUserMessage`). */
@@ -161,6 +163,31 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
+  // docs/252 phase 7 (req 9) — the non-turn-work failure notice carries no chat
+  // text of its own. Rendered whether or not it is dismissed: dismissal is state
+  // on the row (the card collapses to one muted line), never its removal, so a
+  // recurring failure stays visible in the scrollback.
+  if (msg.nonTurnFailure && cb.sessionId) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <NonTurnFailureCard
+            sessionId={cb.sessionId}
+            cardId={msg.nonTurnFailure.cardId}
+            purpose={msg.nonTurnFailure.purpose}
+            {...(msg.nonTurnFailure.serviceName ? { serviceName: msg.nonTurnFailure.serviceName } : {})}
+            {...(msg.nonTurnFailure.billingMode ? { billingMode: msg.nonTurnFailure.billingMode } : {})}
+            {...(msg.nonTurnFailure.modelId ? { modelId: msg.nonTurnFailure.modelId } : {})}
+            {...(msg.nonTurnFailure.pinned ? { pinned: true } : {})}
+            fallback={msg.nonTurnFailure.fallback}
+            {...(msg.nonTurnFailure.detail ? { detail: msg.nonTurnFailure.detail } : {})}
+            {...(msg.nonTurnFailure.dismissedAt ? { dismissedAt: msg.nonTurnFailure.dismissedAt } : {})}
+          />
+        </div>
+      </div>
+    );
+  }
+
   // docs/203 — plain-text AI review card carries no chat text of its own;
   // render the inline `ReviewCard` (markdown findings) and skip the bubble
   // path. Self-contained — no lazy fetch, no modal.
@@ -217,13 +244,17 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     return (
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
-          <BugReportCard cardId={msg.bugReport.cardId} onSubmit={cb.onSubmitBugReport} />
+          <BugReportCard
+            cardId={msg.bugReport.cardId}
+            onSubmit={cb.onSubmitBugReport}
+            onDismiss={cb.onDismissBugReport}
+          />
         </div>
       </div>
     );
   }
 
-  // docs/172 / SHI-90 — egress allow-once card. Carries no chat text of its
+  // docs/172 / planning#92 — egress allow-once card. Carries no chat text of its
   // own; render the inline `EgressPromptCard` (which reads its payload +
   // phase from the egress-prompt store) and skip the bubble path.
   if (msg.egressPrompt) {
@@ -236,7 +267,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/193 / SHI-112 — permission-request card. Carries no chat text of
+  // docs/193 / planning#114 — permission-request card. Carries no chat text of
   // its own; render the inline `PermissionRequestCard` (which reads its
   // payload + phase from the permission store) and skip the bubble path.
   if (msg.permissionPrompt) {
@@ -275,7 +306,7 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
-  // docs/207 / SHI-153 — action checklist card. Carries no chat text of
+  // docs/207 / planning#155 — action checklist card. Carries no chat text of
   // its own; renders the interactive `ActionChecklistCard` straight from the
   // message payload (no store, no lifecycle). Submit reuses the same
   // follow-up sender as the rest of the chat (queue-aware, one message →

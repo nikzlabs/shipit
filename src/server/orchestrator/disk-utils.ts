@@ -84,7 +84,7 @@ export function getMessage(err: unknown): string {
  * the docs/183 `overlay/` upperdirs (pure install-delta cache; rebuilds on the
  * next install after unarchive). Everything else under the session root —
  * notably `uploads/` (user files, referenced by persisted chat history, restored
- * on unarchive; SHI-180/docs/217) and any future durable scratch tier — is
+ * on unarchive; planning#182/docs/217) and any future durable scratch tier — is
  * DURABLE and must survive. This is an allowlist on purpose: a blanket `rm` of
  * the session root would take `uploads/` with it, and the allowlist is
  * future-proof against new durable siblings.
@@ -103,7 +103,7 @@ export const REGENERABLE_SESSION_SUBDIRS = [
 ] as const;
 
 /**
- * SHI-192 — reclaim a session's REGENERABLE on-disk tiers while PRESERVING its
+ * planning#194 — reclaim a session's REGENERABLE on-disk tiers while PRESERVING its
  * durable, non-git siblings. The historical bug: every reclaim site (`fs.rm`'d
  * `workspaceDir`, the `sessions/<id>/workspace` checkout) deleted only the
  * cheap, re-clonable half and orphaned the expensive `overlay/` sibling
@@ -165,7 +165,7 @@ export async function reclaimRegenerableSessionDirs(
 }
 
 /**
- * SHI-294 — reclaim a session's regenerable CACHES while leaving the
+ * planning#296 — reclaim a session's regenerable CACHES while leaving the
  * `workspace/` checkout in place: the `overlay/` upper (docs/183 install
  * deltas) and, with it, the `.install-done` marker.
  *

@@ -1,6 +1,6 @@
 ---
 description: Reconcile the auto-fix-CI and auto-resolve-conflicts automations onto a shared state machine and agent-injection path, removing divergence and duplication.
-issue: https://linear.app/shipit-ai/issue/SHI-62
+issue: planning#64
 ---
 
 # PR automation reconciliation
@@ -373,7 +373,7 @@ promise pending forever.
 Fix — one shared settlement path, not a per-caller guard. `dispatchOnRunner`
 (`session-runner.ts`) registers a one-shot `"disposed"` listener for the turn it
 starts and settles it as `dropped`, removing the listener when the turn settles on
-its own. This is owned in the same place setup-failure settlement (SHI-263) is,
+its own. This is owned in the same place setup-failure settlement (planning#265) is,
 for the same reason: there is one place a dispatched turn starts, so there is one
 place it can lose its runner. Every dispatched turn benefits, not just CI fix.
 `fetchAndFixCb` then awaits the OWNED settlement (`dispatch(...).settled`) instead

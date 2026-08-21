@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSidebar } from "./SessionSidebar.js";
-import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS, groupBandFill } from "./SessionSidebar/SessionGroup.js";
+import { GROUP_GAP_CLASS, BAND_CLEARANCE_CLASS, ROW_GAP_CLASS, groupBandFill } from "./SessionSidebar/SessionGroup.js";
 import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore, type PrCardState } from "../stores/pr-store.js";
@@ -38,10 +38,20 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   // Reset cross-test state so SessionStatusDot tests don't leak into others.
-  useSessionStore.setState({ activeRunnerSessions: new Set<string>(), messages: [], rewindRecoveries: {} });
+  useSessionStore.setState({
+    activeRunnerSessions: new Set<string>(),
+    messages: [],
+    rewindRecoveries: {},
+    allSessionsDialogOpen: false,
+    allSessionsDialogRepoUrl: undefined,
+  });
   usePrStore.setState({ cardBySession: {}, statusBySession: {}, autoMergeBySession: {} });
   useUiStore.getState().setProjectSettingsRepoUrl(null);
-  useRepoStore.setState({ collapsedParents: new Set<string>(), collapsedResolved: new Set<string>() });
+  useRepoStore.setState({
+    collapsedParents: new Set<string>(),
+    collapsedResolved: new Set<string>(),
+    expandedResolvedChildren: new Set<string>(),
+  });
 });
 
 const baseSession = (overrides: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -300,6 +310,23 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("View All Sessions")).toBeTruthy();
     expect(screen.getByText("Project Settings")).toBeTruthy();
     expect(screen.getByText("Remove Repository")).toBeTruthy();
+  });
+
+  it("scopes View All Sessions to the clicked repo, not the current session's repo", async () => {
+    const user = userEvent.setup();
+    // Current session lives in repo A; the menu is opened on repo B.
+    useRepoStore.setState({ activeRepoUrl: repoA.url });
+    const sessions = [baseSession({ id: "s1", title: "In repo A", remoteUrl: repoA.url })];
+    render(
+      <SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={sessions} currentSessionId="s1" />,
+    );
+    await user.click(screen.getByLabelText("thing repository menu"));
+    await user.click(screen.getByText("View All Sessions"));
+    expect(useSessionStore.getState().allSessionsDialogOpen).toBe(true);
+    expect(useSessionStore.getState().allSessionsDialogRepoUrl).toBe(repoB.url);
+    // Looking at a repo's sessions must not move the active repo, which is
+    // persisted and decides where a NEW session lands.
+    expect(useRepoStore.getState().activeRepoUrl).toBe(repoA.url);
   });
 
   it("opens the per-repo Project Settings dialog from the menu", async () => {
@@ -762,6 +789,25 @@ describe("SessionSidebar", () => {
       expect(divider.compareDocumentPosition(newSession) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
+    it("keeps the list's row gap inside a pin's drag shell, so a pinned session and its children are not flush", () => {
+      const sessions = [
+        baseSession({ id: "p1", title: "Pinned root", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+        baseSession({ id: "c1", title: "Spawned child", remoteUrl: repoA.url, parentSessionId: "p1", rootSessionId: "p1" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      const shell = screen.getByTestId("pinned-tree");
+      // Both rows live inside the shell, so the shell — not the list — is what
+      // spaces them. `gap` is inherited by nothing: a plain block wrapper here
+      // renders the rows flush (the docs/110 Phase 2 regression).
+      expect(within(shell).getByText("Pinned root")).toBeTruthy();
+      expect(within(shell).getByText("Spawned child")).toBeTruthy();
+      for (const cls of ["flex", "flex-col", ROW_GAP_CLASS]) {
+        expect(shell.className.split(/\s+/)).toContain(cls);
+      }
+      // …and it is the SAME rhythm the surrounding list uses.
+      expect(screen.getByTestId("group-session-list").className.split(/\s+/)).toContain(ROW_GAP_CLASS);
+    });
+
     it("makes pinned rows draggable only when there is more than one pin", () => {
       const onePin = [
         baseSession({ id: "p1", title: "Solo pin", remoteUrl: repoA.url, pinnedAt: "2024-06-02T00:00:00.000Z" }),
@@ -892,6 +938,16 @@ describe("SessionSidebar", () => {
       expect(screen.queryByTitle(/CI failed/)).toBeNull();
     });
 
+    const mergedPr = {
+      number: 42,
+      title: "Shipped",
+      url: "https://github.com/o/r/pull/42",
+      baseBranch: "main",
+      headBranch: "feature",
+      insertions: 1,
+      deletions: 0,
+    };
+
     it("shows the auto-merge badge alongside the CI status when auto-merge is armed", () => {
       const card: PrCardState = {
         cardId: "card-1",
@@ -914,6 +970,38 @@ describe("SessionSidebar", () => {
       usePrStore.setState({ autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash" } } });
 
       const sessions = [baseSession({ id: "s1", title: "Armed pre-PR session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.getByTitle("Auto-merge enabled")).toBeTruthy();
+    });
+
+    it("shows no auto-merge indicator once the arming's PR has merged", () => {
+      // The arming belongs to the merged PR (docs/077) — `armedForPrNumber`
+      // says so. The reducer normally retires it on the terminal update; the
+      // badge must ALSO stay off when that update was missed and the entry is
+      // still sitting in the store.
+      const card: PrCardState = { cardId: "card-1", phase: "merged", pr: mergedPr };
+      usePrStore.setState({
+        cardBySession: { "s1": card },
+        autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash", armedForPrNumber: 42 } },
+      });
+
+      const sessions = [baseSession({ id: "s1", title: "Merged session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.queryByTitle(/Auto-merge enabled/)).toBeNull();
+    });
+
+    it("keeps the indicator for a merged session armed for its NEXT PR", () => {
+      // Armed after the merge, from the card's overflow menu — no
+      // `armedForPrNumber`, so it is a pre-arm and not the dead PR's arming.
+      const card: PrCardState = { cardId: "card-1", phase: "merged", pr: mergedPr };
+      usePrStore.setState({
+        cardBySession: { "s1": card },
+        autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash" } },
+      });
+
+      const sessions = [baseSession({ id: "s1", title: "Re-armed session", remoteUrl: repoA.url })];
       render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
 
       expect(screen.getByTitle("Auto-merge enabled")).toBeTruthy();
@@ -965,6 +1053,119 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={[parent, childA]} currentSessionId="other" onResume={onResume} />);
       await user.click(screen.getByLabelText("Hide 1 spawned session"));
       expect(onResume).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("resolved children hidden behind a per-brood control", () => {
+    const parent = baseSession({ id: "parent-1", title: "Parent", remoteUrl: repoA.url });
+    const liveChild = baseSession({
+      id: "child-live",
+      title: "Live child",
+      remoteUrl: repoA.url,
+      parentSessionId: "parent-1",
+      rootSessionId: "parent-1",
+    });
+    const mergedChild = baseSession({
+      id: "child-merged",
+      title: "Merged child",
+      remoteUrl: repoA.url,
+      parentSessionId: "parent-1",
+      rootSessionId: "parent-1",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      lastUsedAt: "2024-01-01T00:00:00.000Z",
+      mergedAt: "2024-01-02T00:00:00.000Z",
+    });
+    const closedChild = baseSession({
+      id: "child-closed",
+      title: "Closed child",
+      remoteUrl: repoA.url,
+      parentSessionId: "parent-1",
+      rootSessionId: "parent-1",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      lastUsedAt: "2024-01-01T00:00:00.000Z",
+      closedAt: "2024-01-02T00:00:00.000Z",
+    });
+
+    it("hides a merged child by default and offers a control to show it", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, mergedChild]} />);
+      expect(screen.getByText("Live child")).toBeTruthy();
+      expect(screen.queryByText("Merged child")).toBeNull();
+      expect(screen.getByText("1 resolved")).toBeTruthy();
+      expect(screen.getByLabelText("Show 1 resolved spawned session")).toBeTruthy();
+    });
+
+    it("counts closed-without-merge children as resolved too", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, mergedChild, closedChild]} />);
+      expect(screen.queryByText("Merged child")).toBeNull();
+      expect(screen.queryByText("Closed child")).toBeNull();
+      expect(screen.getByLabelText("Show 2 resolved spawned sessions")).toBeTruthy();
+    });
+
+    it("reveals the resolved children on click and remembers it per root session", async () => {
+      const user = userEvent.setup();
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, mergedChild]} />);
+      await user.click(screen.getByLabelText("Show 1 resolved spawned session"));
+      expect(screen.getByText("Merged child")).toBeTruthy();
+      expect(screen.getByLabelText("Hide 1 resolved spawned session")).toBeTruthy();
+      expect(useRepoStore.getState().expandedResolvedChildren.has("parent-1")).toBe(true);
+    });
+
+    it("renders no control when the brood has no resolved member", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild]} />);
+      expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
+    });
+
+    it("still counts hidden resolved children in the parent's collapse caret", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, mergedChild]} />);
+      expect(screen.getByLabelText("Hide 2 spawned sessions")).toBeTruthy();
+    });
+
+    it("hides the control along with the brood when the parent is collapsed", async () => {
+      const user = userEvent.setup();
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, mergedChild]} />);
+      await user.click(screen.getByLabelText("Hide 2 spawned sessions"));
+      expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
+      expect(screen.queryByText("Live child")).toBeNull();
+    });
+
+    it("keeps a merged child visible when it is pinned", () => {
+      // docs/110 — an explicit pin outranks the automatic resolved-demotion. A
+      // pinned child renders under its parent rather than in the pinned
+      // sub-section, so this split is its only render path.
+      const pinnedMerged = baseSession({
+        ...mergedChild,
+        title: "Pinned merged child",
+        pinnedAt: "2024-01-03T00:00:00.000Z",
+      });
+      render(<SessionSidebar {...defaultProps} sessions={[parent, liveChild, pinnedMerged]} />);
+      expect(screen.getByText("Pinned merged child")).toBeTruthy();
+      expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
+    });
+
+    it("keeps a merged child visible when it has its own children in the brood", () => {
+      // Tucking away an intermediate merged child would leave its grandchild
+      // rendered at the same indent with no visible ancestor.
+      const mergedMiddle = baseSession({
+        id: "child-merged",
+        title: "Merged middle",
+        remoteUrl: repoA.url,
+        parentSessionId: "parent-1",
+        rootSessionId: "parent-1",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        lastUsedAt: "2024-01-01T00:00:00.000Z",
+        mergedAt: "2024-01-02T00:00:00.000Z",
+      });
+      const grandchild = baseSession({
+        id: "grand-1",
+        title: "Grandchild",
+        remoteUrl: repoA.url,
+        parentSessionId: "child-merged",
+        rootSessionId: "parent-1",
+      });
+      render(<SessionSidebar {...defaultProps} sessions={[parent, mergedMiddle, grandchild]} />);
+      expect(screen.getByText("Merged middle")).toBeTruthy();
+      expect(screen.getByText("Grandchild")).toBeTruthy();
+      expect(screen.queryByTestId("resolved-children-toggle")).toBeNull();
     });
   });
 
@@ -1356,5 +1557,79 @@ describe("SessionSidebar", () => {
         }
       });
     });
+  });
+});
+
+/**
+ * docs/260 — the "Needs you" view. The list itself is covered in
+ * `SessionSidebar/AttentionSessionList.test.tsx`; these are the sidebar-level
+ * wiring facts: where the switch sits, what its count says, and what it swaps.
+ */
+describe("SessionSidebar needs-attention view", () => {
+  afterEach(() => {
+    useUiStore.getState().setSidebarView("all");
+  });
+
+  const waiting = () => [
+    baseSession({ id: "s1", title: "Needs me", remoteUrl: repoA.url }),
+    baseSession({ id: "s2", title: "Also needs me", remoteUrl: repoB.url }),
+  ];
+
+  const findSwitch = () => screen.getByRole("button", { name: /need you/ });
+
+  it("puts the switch beside the collapse control, not among the create controls", () => {
+    // req 4 — the switch and the collapse button both act on the sidebar; the
+    // right-hand cluster is create/act controls the switch must not join.
+    render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
+    const collapse = screen.getByRole("button", { name: "Collapse sidebar" });
+    expect(collapse.nextElementSibling).toBe(findSwitch());
+  });
+
+  it("is the first control on the mobile bar, which has no collapse button", () => {
+    // req 15.
+    render(<SessionSidebar {...defaultProps} sessions={waiting()} mobile />);
+    expect(screen.queryByRole("button", { name: "Collapse sidebar" })).toBeNull();
+    expect(findSwitch().parentElement?.firstElementChild).toBe(findSwitch());
+  });
+
+  it("carries the count in BOTH views, so the second one is discoverable", () => {
+    // req 5. Both sessions are idle with no PR, i.e. "Waiting for your input".
+    render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={waiting()} />);
+    expect(findSwitch().textContent).toContain("2");
+
+    fireEvent.click(findSwitch());
+    expect(screen.getByRole("button", { name: /Show all sessions/ }).textContent).toContain("2");
+  });
+
+  it("swaps the repo tree for a flat list with no repo headers", () => {
+    // reqs 2, 3, 6, 10 — no grouping, no headers, and no band above the list.
+    render(<SessionSidebar {...defaultProps} repos={[repoA, repoB]} sessions={waiting()} />);
+    // The repo group: a sticky header band and its own "New session" row.
+    expect(screen.getByText("repo").closest(".sticky")).toBeTruthy();
+    expect(screen.getAllByText("New session").length).toBe(2);
+
+    fireEvent.click(findSwitch());
+    expect(screen.queryByText("New session")).toBeNull();
+    // "repo" survives only as a row's repo NAME (req 12), never as a header.
+    expect(screen.getByText("repo").closest(".sticky")).toBeNull();
+    expect(screen.getByText("Needs me")).toBeTruthy();
+    expect(screen.getByText("Also needs me")).toBeTruthy();
+    // The lit icon is the whole mode indicator — nothing else is added above.
+    expect(screen.queryByText(/Needs you/)).toBeNull();
+  });
+
+  it("remembers the chosen view", () => {
+    // req 13 — the store is seeded from localStorage; this covers the write.
+    render(<SessionSidebar {...defaultProps} sessions={waiting()} />);
+    fireEvent.click(findSwitch());
+    expect(useUiStore.getState().sidebarView).toBe("attention");
+    expect(localStorage.getItem("shipit-sidebar-view")).toBe("attention");
+  });
+
+  it("adds no second switch to the collapsed rail", () => {
+    // A rail control could only mean "expand into the view" — a different
+    // action behind the same glyph. The rail shows no session state at all.
+    render(<SessionSidebar {...defaultProps} sessions={waiting()} collapsed />);
+    expect(screen.queryByRole("button", { name: /need you/ })).toBeNull();
   });
 });

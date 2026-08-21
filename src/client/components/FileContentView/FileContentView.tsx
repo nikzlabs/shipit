@@ -34,6 +34,13 @@ export interface FileContentViewProps {
   /** Line comments for the code/source view (from `useFileReviewControls`). */
   codeComments: { id: string; kind: "line"; line: number; text: string }[];
   agentInterfaceFrameRef?: Ref<HTMLIFrameElement>;
+  /**
+   * docs/258 — the element id in a rendered HTML artifact that an agent-authored
+   * pointer named. Only the Present tab passes this; other kinds ignore it
+   * (markdown scrolls in ShipIt's own DOM, and there is no place inside an image
+   * to address).
+   */
+  scrollTo?: string;
 }
 
 export function FileContentView({
@@ -47,6 +54,7 @@ export function FileContentView({
   markdownComments,
   codeComments,
   agentInterfaceFrameRef,
+  scrollTo,
 }: FileContentViewProps) {
   const readOnly = !reviewable;
 
@@ -80,6 +88,7 @@ export function FileContentView({
         content={content}
         enableAgentInterface={!!agentInterfaceFrameRef}
         frameRef={agentInterfaceFrameRef}
+        scrollTo={scrollTo}
       />
     );
   }

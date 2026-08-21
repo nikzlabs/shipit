@@ -46,7 +46,7 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
     expect(screen.queryByTestId("sub-agent-consult-output")).toBeNull();
   });
 
-  // SHI-307 — a consult the boot reconcile cancelled reads exactly like one the
+  // planning#309 — a consult the boot reconcile cancelled reads exactly like one the
   // USER cancelled unless the card says otherwise, so ShipIt's own explanation
   // renders on the card face.
   it("shows ShipIt's explanation of a terminal status alongside the summary", () => {
@@ -70,7 +70,7 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
     expect(screen.queryByTestId("sub-agent-consult-status-detail")).toBeNull();
   });
 
-  // SHI-278 — the same card also carries the DURABLE in-flight state, so a
+  // planning#280 — the same card also carries the DURABLE in-flight state, so a
   // backgrounded consult still shows up after a switch/reload/restart.
   it("renders the pending state as an in-progress row", () => {
     render(<SubAgentConsultCardRow card={card({ status: "pending", durationMs: undefined, costUsd: undefined })} />);
@@ -82,13 +82,118 @@ describe("SubAgentConsultCardRow (docs/220)", () => {
 });
 
 /**
- * docs/244 / SHI-297 — the lazy consult output. The transcript payload carries
+ * docs/261 phase 4 (req 9) — the card reports what the consult ACTUALLY ran on.
+ *
+ * The bug this closes: `subAgentId` is a HARNESS, and Claude Code can drive a
+ * non-Anthropic model, so "Consulted Claude" can be true while telling the
+ * reader nothing about which weights reviewed their work. The model becomes the
+ * subject of the summary and the rest — service, billing mode, harness,
+ * reasoning level — lands on a second line.
+ */
+describe("SubAgentConsultCardRow run-on attribution (docs/261 req 9)", () => {
+  const runOn = {
+    serviceId: "anthropic",
+    billingMode: "sub" as const,
+    modelId: "claude-opus-5",
+    reasoningEffort: "high",
+  };
+
+  it("names the MODEL in the summary, not the harness", () => {
+    render(<SubAgentConsultCardRow card={card({ subAgentId: "claude", runOn })} />);
+    const row = screen.getByTestId("sub-agent-consult-card");
+    expect(row.textContent).toContain("Consulted Opus 5");
+    expect(row.textContent).not.toContain("Consulted Claude");
+  });
+
+  it("puts the service, billing mode, harness and reasoning level on the second line", () => {
+    render(<SubAgentConsultCardRow card={card({ subAgentId: "claude", runOn })} />);
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
+      .toBe("Anthropic · Subscription · Claude · High reasoning");
+  });
+
+  // The whole point of the phase: a harness driving another vendor's model. The
+  // card has to say Claude Code ran it AND that DeepSeek did the reviewing —
+  // "Consulted Claude" would have been true and useless.
+  it("distinguishes the harness from the model when they disagree", () => {
+    render(<SubAgentConsultCardRow card={card({
+      subAgentId: "claude",
+      runOn: { serviceId: "openrouter", billingMode: "key", modelId: "deepseek/deepseek-v4-pro", reasoningEffort: "high" },
+    })} />);
+    const row = screen.getByTestId("sub-agent-consult-card");
+    expect(row.textContent).toContain("Consulted DeepSeek V4 Pro");
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
+      .toBe("OpenRouter · API key · Claude · High reasoning");
+  });
+
+  /**
+   * docs/264-agent-roles req 14 — the role is what the caller ASKED FOR, and it is not
+   * recoverable from the tuple: two roles can resolve to the same model, and the
+   * reviewer's params resolve per run. A card that showed only the tuple left the
+   * reader unable to tell a `reviewer` run from a `deep dive` one, and the name
+   * was already being persisted.
+   */
+  it("names the role the run was started as, when one was", () => {
+    render(<SubAgentConsultCardRow card={card({ subAgentId: "claude", runOn, roleName: "deep dive" })} />);
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
+      .toBe("as deep dive · Anthropic · Subscription · Claude · High reasoning");
+  });
+
+  it("says nothing about a role when the call named all five parameters itself", () => {
+    // An invented role name would be worse than an absent one: the run really did
+    // come from a target the caller assembled, and nothing chose it by name.
+    render(<SubAgentConsultCardRow card={card({ subAgentId: "claude", runOn })} />);
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent).not.toContain("as ");
+  });
+
+  it("shows the attribution while the consult is still in flight", () => {
+    render(<SubAgentConsultCardRow card={card({
+      status: "pending", durationMs: undefined, costUsd: undefined, subAgentId: "claude", runOn,
+    })} />);
+    expect(screen.getByTestId("sub-agent-consult-card").textContent).toContain("Asking Opus 5");
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent).toContain("Anthropic");
+  });
+
+  it("shows it on a terminal card with no output too", () => {
+    render(<SubAgentConsultCardRow card={card({ status: "error", costUsd: 0, subAgentId: "claude", runOn })} />);
+    expect(screen.queryByTestId("sub-agent-consult-preview")).toBeNull();
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent).toContain("Anthropic");
+  });
+
+  it("titles the output viewer with the model as well", () => {
+    render(<SubAgentConsultCardRow card={card({
+      subAgentId: "claude", runOn, outputMarkdown: "Two findings.",
+    })} />);
+    fireEvent.click(screen.getByTestId("sub-agent-consult-card"));
+    expect(screen.getByRole("dialog").textContent).toContain("Consulted Opus 5");
+  });
+
+  // A card written before this phase, and one naming a model the catalogue has
+  // since dropped. Provenance degrades to a worse label, never to a wrong one.
+  it("falls back to the harness when the card carries no run target", () => {
+    render(<SubAgentConsultCardRow card={card()} />);
+    expect(screen.getByTestId("sub-agent-consult-card").textContent).toContain("Consulted Codex");
+    expect(screen.queryByTestId("sub-agent-consult-run-on")).toBeNull();
+  });
+
+  it("falls back to raw ids for a model or service the catalogue no longer carries", () => {
+    render(<SubAgentConsultCardRow card={card({
+      subAgentId: "codex",
+      runOn: { serviceId: "retired-gw", billingMode: "key", modelId: "some-old-model", reasoningEffort: "turbo" },
+    })} />);
+    expect(screen.getByTestId("sub-agent-consult-card").textContent).toContain("Consulted some-old-model");
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
+      .toBe("retired-gw · API key · Codex · turbo reasoning");
+  });
+});
+
+/**
+ * docs/244 / planning#299 — the lazy consult output. The transcript payload carries
  * only the preview line the card face draws; the viewer is the click that
  * fetches the rest. Server tests prove the payload is stripped — these prove the
  * UI actually puts the output back on screen, which is the half a refactor could
  * silently drop while every server test stayed green.
  */
-describe("SubAgentConsultCardRow lazy output (docs/244, SHI-297)", () => {
+describe("SubAgentConsultCardRow lazy output (docs/244, planning#299)", () => {
   const PREVIEW = "Two findings, both in the projection…";
   const lazyCard = card({ outputMarkdown: PREVIEW, outputTruncated: true });
 
@@ -152,7 +257,7 @@ describe("SubAgentConsultCardRow lazy output (docs/244, SHI-297)", () => {
 
   it("issues no request at all for a card that arrived whole", async () => {
     // Short consults stay under the strip floor, and rows persisted before
-    // SHI-297 carry no marker — both must render straight from the payload.
+    // planning#299 carry no marker — both must render straight from the payload.
     stubSession();
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

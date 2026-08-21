@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-219
+issue: planning#221
 title: Auto-sized session containers
 description: Derive per-session memory from host capacity so neither operators nor repos need to configure container limits in the common case.
 ---

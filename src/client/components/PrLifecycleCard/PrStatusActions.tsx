@@ -19,7 +19,7 @@
  */
 
 import { useState } from "react";
-import { usePrStore } from "../../stores/pr-store.js";
+import { usePrStore, useActiveAutoMerge } from "../../stores/pr-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -155,7 +155,9 @@ export function PrMergeActions({
   canAutoMerge?: boolean;
 }) {
   const canMerge = useCanMerge(card, sessionId);
-  const autoMerge = card.autoMerge;
+  // Same rule as every other auto-merge surface: an arming belongs to one pull
+  // request, so read it through the selector rather than off the card.
+  const autoMerge = useActiveAutoMerge(sessionId);
   const showMergeButton = canMerge && !autoMerge?.enabled;
 
   if (!card.pr || (!canAutoMerge && !showMergeButton)) return null;

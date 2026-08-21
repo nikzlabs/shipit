@@ -45,6 +45,17 @@ able to do with it.
 10. The outer agent can tell whether an inner session is still working or has
     finished, so it knows when there is something to read.
 
+11. A service API key is set **once**, outside, and is then present in the inner
+    ShipIt in every session — nobody visits the inner Settings to re-add it.
+    This applies to **every** service ShipIt supports, in both billing modes
+    where a service has both, so an agent can exercise any model/credential
+    combination in the dogfood loop without a human configuring it first.
+
+12. "Present in the inner ShipIt" means the inner ShipIt shows it: it appears in
+    Settings → Services the way a credential added by hand does, and behaves
+    like one. A value that only exists in the environment does not satisfy
+    requirement 11.
+
 Not required in this version: the outer agent replying to an inner agent
 mid-task — follow-up messages, answering a question the inner agent asks,
 interrupting it. Starting it and reading the result is enough (see the resolved
@@ -55,6 +66,39 @@ question below).
 _(none — implementation is unblocked.)_
 
 ## Resolved questions
+
+- 2026-08-11 — Requirements 11–12 added from two statements. First: *"I don't
+  want to go to settings in every session"*, with GLM as the motivating case.
+  Then, when the scope was put back as "GLM plus a generic mechanism": *"we need
+  to propagate all keys that we support, so the agent could test all
+  combinations in the dogfood."* Requirement 11 is the second statement. Neither
+  says how; see `plan.md`.
+
+  Requirement 12 pins down what "present in the inner ShipIt" means, because the
+  environment variable was *already* forwarded and did not produce it. It is
+  deliberately limited to the observable half — it appears in Settings and
+  behaves like a hand-added credential. A first draft went further and required
+  router selection and quota reporting; a cross-agent review was right that
+  those are inferred mechanism promoted into a requirement, and the quota half
+  also promised something not delivered (only Claude's and Codex's limits
+  providers are registered — GLM's is `planning#339`). Both were removed. Two
+  further implementation invariants the first draft carried — "adding a service
+  to the catalogue must make its key seedable without extending a list", and
+  ordering/failover semantics — were removed for the same reason and moved to
+  `plan.md`, where the compose-list guard belongs. The catalogue claim was also
+  not quite true as a requirement: `x-shipit-secrets` remains a hand-maintained
+  list that a test *checks*, not one the catalogue generates.
+
+- 2026-08-11 — Does propagating every key silently create metered spend?
+  Answered from the code, and **not** treated as a new requirement, because the
+  opt-in requirement 11 needs already exists: declaring a name in
+  `x-shipit-secrets` seeds nothing, and supplying its value is a deliberate
+  per-key act in the outer Settings → Secrets. Three of the eight names
+  (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`) are read by
+  the vendor CLIs directly and do take precedence over a connected subscription
+  for non-turn work; that is a pre-existing local-mode gap, recorded in
+  `plan.md` under "The billing hazard" and surfaced at seed time, not something
+  this feature introduces or can fix from here.
 
 - 2026-08-04 — Does requirement 1 need a repo-backed *session* to exist when the
   dogfood ShipIt boots? Chosen: **no — a repo added and ready is the whole

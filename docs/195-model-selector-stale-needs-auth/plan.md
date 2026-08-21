@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-116
+issue: planning#118
 description: Fix the Claude/Codex model selector showing a stale "needs auth" after a revoked OAuth token silently recovers.
 ---
 

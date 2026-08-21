@@ -15,10 +15,13 @@ export function ContextDialMount({
   modelInfo,
   contextTokensFallback,
   onOpenUsageDetails,
+  compact = false,
 }: {
   modelInfo: ModelInfo | null;
   contextTokensFallback: number;
   onOpenUsageDetails?: () => void;
+  /** docs/260 — ring only, no figures beside it, in the narrow composer row. */
+  compact?: boolean;
 }) {
   // Two separate selector subscriptions, each returning a stable reference,
   // so React's `useSyncExternalStore` snapshot stays cached across renders.
@@ -41,9 +44,10 @@ export function ContextDialMount({
     }
     return false;
   });
-  // Authoritative session totals so the popover's "Total cost" row matches
-  // the value shown in `UsageModal` rather than summing live-only turns.
-  const sessionTotalCostUsd = useUiStore((s) => s.currentSessionUsage?.totalCostUsd);
+  // Authoritative session totals so the popover's cost rows match the values
+  // shown in `UsageModal` rather than summing live-only turns. docs/252 req 16
+  // — the split, not a single figure: money and allowance are not added up.
+  const sessionTotals = useUiStore((s) => s.currentSessionUsage?.totals);
   const cumulativeInputTokens = useUiStore((s) => s.cumulativeInputTokens);
   const cumulativeOutputTokens = useUiStore((s) => s.cumulativeOutputTokens);
   return (
@@ -51,11 +55,12 @@ export function ContextDialMount({
       modelInfo={modelInfo}
       turnUsage={turnUsage}
       contextTokensOverride={turnUsage.length > 0 ? undefined : contextTokensFallback}
-      sessionTotalCostUsd={sessionTotalCostUsd ?? undefined}
+      sessionTotals={sessionTotals}
       cumulativeInputTokens={cumulativeInputTokens}
       cumulativeOutputTokens={cumulativeOutputTokens}
       onOpenUsageDetails={onOpenUsageDetails}
       authoritativeCompacted={authoritativeCompacted}
+      compact={compact}
     />
   );
 }

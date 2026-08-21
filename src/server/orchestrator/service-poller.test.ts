@@ -11,7 +11,7 @@
  *     tell a real OOM from a plain SIGKILL (docs/239).
  *   - the missing-container reconciliation pass, which is the only thing that
  *     ever notices a service whose container was *removed* rather than exited
- *     (SHI-314).
+ *     (planning#316).
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -19,6 +19,8 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   ServicePoller,
   MISSING_CONTAINER_GRACE_MS,
+  DOCKER_UNREACHABLE_GRACE_MS,
+  DOCKER_UNREACHABLE_MESSAGE,
   COMPOSE_QUERY_TIMEOUT_MS,
   type ServicePollerOptions,
   type PollerService,
@@ -79,7 +81,7 @@ describe("ServicePoller — afterPoll hook (docs/128)", () => {
   });
 });
 
-describe("ServicePoller — missing-container reconciliation (SHI-314)", () => {
+describe("ServicePoller — missing-container reconciliation (planning#316)", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -97,7 +99,7 @@ describe("ServicePoller — missing-container reconciliation (SHI-314)", () => {
     present: { value: boolean },
     overrides: Partial<ServicePollerOptions> = {},
   ) {
-    const updateServiceStatus = vi.fn((_name: string, status: PollerService["status"]) => {
+    const updateServiceStatus = vi.fn((_name: string, status: PollerService["status"], _error?: string) => {
       svc.status = status;
     });
     const onLeftRunning = vi.fn();
@@ -391,12 +393,18 @@ describe("ServicePoller — missing-container reconciliation (SHI-314)", () => {
       },
     );
 
-    // A broken docker CLI is not evidence about containers — statuses freeze
-    // rather than being reconciled from an answer we never got.
+    // A broken docker CLI is not evidence about containers, so the
+    // reconciliation pass must never run on its "no rows" — that is what would
+    // walk a whole healthy stack to `stopped`.
     await poller.pollOnce();
     vi.advanceTimersByTime(MISSING_CONTAINER_GRACE_MS * 3);
     await poller.pollOnce();
-    expect(updateServiceStatus).not.toHaveBeenCalled();
+    expect(updateServiceStatus.mock.calls.map(c => c[1])).not.toContain("stopped");
+    // What DOES happen past the grace window is the docs/121 gap D withdrawal:
+    // an `error` naming docker as the thing that stopped answering, which is a
+    // claim about our own blindness rather than about the container. Covered in
+    // full by the docs/121 suite below.
+    expect(updateServiceStatus.mock.calls.map(c => c[2])).toEqual([DOCKER_UNREACHABLE_MESSAGE]);
   });
 
   it("restarts the window across stop() — a reconcile rebuilds the registry", async () => {
@@ -580,6 +588,197 @@ describe("ServicePoller — bounded docker queries (#2044)", () => {
     expect(updates).toEqual([
       { name: "slow", status: "running" },
       { name: "web", status: "running" },
+    ]);
+  });
+});
+
+/**
+ * docs/121 gap D (requirement 3) — a failing `docker compose ps` must not let a
+ * `running` claim stand forever.
+ *
+ * The bail-out on a failed `ps` is right as far as it goes: "no rows" from a
+ * broken docker CLI is not evidence that every container vanished. But it froze
+ * the last reading indefinitely, so a service that crashed during a daemon
+ * outage kept reporting `running` — and since `ServiceManager.getServices`
+ * publishes an address for a `running` service, the preview proxy kept routing
+ * at a container nothing had evidence for.
+ */
+describe("ServicePoller — statuses expire when docker stops answering (docs/121 gap D)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * A poller over a small live registry: `updateServiceStatus` mutates the
+   * services the way `ServiceManager` does, so the sweep's self-limiting
+   * behaviour (an `error` service is no longer eligible) is actually exercised
+   * rather than assumed.
+   */
+  function buildFailingPoller(
+    services: PollerService[],
+    overrides: Partial<ServicePollerOptions> = {},
+  ) {
+    let psFails = true;
+    const updates: { name: string; status: string; error?: string }[] = [];
+    const leftRunning: string[] = [];
+    const poller = buildPoller({
+      composeQuery: (args) => {
+        if (args.includes("ps") && psFails) {
+          return Promise.reject(new Error("Cannot connect to the Docker daemon"));
+        }
+        if (args.includes("ps")) {
+          return Promise.resolve(
+            services.map(s => JSON.stringify({
+              Service: s.name, ID: `${s.name}-1`, State: "running", ExitCode: 0,
+            })).join("\n"),
+          );
+        }
+        return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      },
+      getService: (name) => services.find(s => s.name === name),
+      listServices: () => services,
+      onLeftRunning: (name) => { leftRunning.push(name); },
+      updateServiceStatus: (name, status, error) => {
+        updates.push({ name, status, ...(error ? { error } : {}) });
+        const svc = services.find(s => s.name === name);
+        if (svc) svc.status = status;
+      },
+      ...overrides,
+    });
+    return { poller, updates, leftRunning, setPsFails: (v: boolean) => { psFails = v; } };
+  }
+
+  it("holds the last reading through a brief docker hiccup", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const services: PollerService[] = [{ name: "web", preview: "auto", status: "running" }];
+    const { poller, updates } = buildFailingPoller(services);
+
+    // Well inside the grace window: a daemon restart must not flap the stack.
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS / 2);
+    await poller.pollOnce();
+
+    expect(updates).toEqual([]);
+    expect(services[0].status).toBe("running");
+  });
+
+  it("withdraws a running claim once the outage outlasts the grace window", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const services: PollerService[] = [{ name: "web", preview: "auto", status: "running" }];
+    const { poller, updates, leftRunning } = buildFailingPoller(services);
+
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS + 1_000);
+    await poller.pollOnce();
+
+    expect(updates).toEqual([
+      { name: "web", status: "error", error: DOCKER_UNREACHABLE_MESSAGE },
+    ]);
+    // The message must not claim the service died — docker is what broke.
+    expect(updates[0].error).toContain("may still be running");
+    // Stable-uptime timers must not keep accruing against an observation we
+    // can no longer make.
+    expect(leftRunning).toEqual(["web"]);
+  });
+
+  it("does not repeat the sweep on every subsequent failed poll", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const services: PollerService[] = [{ name: "web", preview: "auto", status: "running" }];
+    const { poller, updates } = buildFailingPoller(services);
+
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS + 1_000);
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS + 1_000);
+    await poller.pollOnce();
+
+    expect(updates).toHaveLength(1);
+  });
+
+  it("measures one continuous outage, not a sum of unrelated ones", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const services: PollerService[] = [{ name: "web", preview: "auto", status: "running" }];
+    const { poller, updates, setPsFails } = buildFailingPoller(services);
+
+    // Fail, recover, fail again: an intermittently flaky daemon must never
+    // accumulate its way to a sweep.
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS - 1_000);
+    setPsFails(false);
+    await poller.pollOnce();
+    setPsFails(true);
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS - 1_000);
+    await poller.pollOnce();
+
+    expect(updates.filter(u => u.status === "error")).toEqual([]);
+  });
+
+  it("restores the real status as soon as docker answers again", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const services: PollerService[] = [{ name: "web", preview: "auto", status: "running" }];
+    const { poller, updates, setPsFails } = buildFailingPoller(services);
+
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS + 1_000);
+    await poller.pollOnce();
+    expect(services[0].status).toBe("error");
+
+    setPsFails(false);
+    await poller.pollOnce();
+
+    expect(services[0].status).toBe("running");
+    expect(updates.at(-1)).toEqual({ name: "web", status: "running" });
+  });
+
+  it("leaves gated and non-running services alone", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const services: PollerService[] = [
+      // The install gate owns this one's status (docs/137).
+      { name: "gated", preview: "auto", status: "running" },
+      // Claims nothing about a live container, so there is nothing to withdraw.
+      { name: "idle", preview: "manual", status: "stopped" },
+      // `starting` is already bounded by the manager's own watchdog, which runs
+      // off its own timer and keeps working while the poll loop is blind.
+      { name: "coming-up", preview: "auto", status: "starting" },
+    ];
+    const { poller, updates } = buildFailingPoller(services, {
+      isGated: (name) => name === "gated",
+    });
+
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS + 1_000);
+    await poller.pollOnce();
+
+    expect(updates).toEqual([]);
+  });
+
+  it("withdraws a running claim even with a compose up in flight", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // `refreshSecrets` runs `up` on services that stay `running` throughout, so
+    // an in-flight `up` here is not evidence the container is alive — it may be
+    // what removed it. And because the status is not `starting`, the manager's
+    // watchdog does not cover this service either: exempting it would let
+    // `running` stand indefinitely with nothing behind it.
+    const services: PollerService[] = [{ name: "web", preview: "auto", status: "running" }];
+    const { poller, updates } = buildFailingPoller(services, {
+      isStartInFlight: () => true,
+    });
+
+    await poller.pollOnce();
+    await vi.advanceTimersByTimeAsync(DOCKER_UNREACHABLE_GRACE_MS + 1_000);
+    await poller.pollOnce();
+
+    expect(updates).toEqual([
+      { name: "web", status: "error", error: DOCKER_UNREACHABLE_MESSAGE },
     ]);
   });
 });

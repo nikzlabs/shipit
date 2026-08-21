@@ -25,6 +25,7 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GH_SHIM = path.resolve(HERE, "../session/agent-shim/gh.ts");
+const PLUGIN_SHIM = path.resolve(HERE, "../session/agent-shim/shipit-plugin.ts");
 
 describe("mapAgentOpsPath", () => {
   it("maps the fixed PR routes, including the worker's rename of pr/create", () => {
@@ -40,6 +41,15 @@ describe("mapAgentOpsPath", () => {
     expect(mapAgentOpsPath("/agent-ops/run/rerun")).toBe("actions/runs/rerun");
     expect(mapAgentOpsPath("/agent-ops/workflow/list")).toBe("actions/workflows");
     expect(mapAgentOpsPath("/agent-ops/workflow/view")).toBe("actions/workflows/view");
+  });
+
+  // docs/262 req 12 — the dogfood instance has no container, so this host IS
+  // the agent-ops surface there. A missing entry means `shipit plugin refresh`
+  // works in production and is denied in the inner instance, which is exactly
+  // the drift this allowlist keeps making visible.
+  it("maps the plugin routes the `shipit plugin` shim emits", () => {
+    expect(mapAgentOpsPath("/agent-ops/plugin/refresh")).toBe("plugin/refresh");
+    expect(mapAgentOpsPath("/agent-ops/plugin/exec")).toBe("plugin/exec");
   });
 
   it("still denies the CI verbs the shim never emits", () => {
@@ -101,6 +111,40 @@ describe("mapAgentOpsPath", () => {
 
     const denied = [...concrete].filter((p) => mapAgentOpsPath(p) === null);
     expect(denied, `gh shim emits paths this host denies: ${denied.join(", ")}`).toEqual([]);
+  });
+
+  // docs/262 — the same guard for the `shipit plugin` verb, and ONLY that verb.
+  // Scoping matters: the `shipit` shim as a whole emits agent-ops paths this
+  // host deliberately denies (`shipit service` needs a ServiceManager local mode
+  // does not have, `shipit agent run` spawns a sub-agent), so scanning
+  // `shipit.ts` would assert a parity that is not wanted. `shipit-plugin.ts` is
+  // the file whose every path local mode MUST admit — reqs 12 and 17 are
+  // orchestrator-side verbs, so denying one here would be dogfood-only drift
+  // rather than an honest local-mode limit. A third plugin verb added to that
+  // file now fails this build instead of 403-ing in the inner instance.
+  it("accepts every /agent-ops path the `shipit plugin` shim can emit", () => {
+    const source = fs.readFileSync(PLUGIN_SHIM, "utf8");
+    // Known limit, stated rather than implied (review finding): this captures a
+    // LITERAL method and a LITERAL path. A path held in a variable, or built by
+    // a helper, is invisible to it — and the count check below would still
+    // pass. All of today's calls are literals, so the guard is real now; a
+    // future verb that is not would need this widened, not trusted.
+    //
+    // docs/266 widened it once, as that comment anticipated: `status` appends a
+    // querystring, so a trailing `${...}` is dropped and everything from `?` on
+    // is cut — which is exactly what the relay does before mapping
+    // (`request.url.split("?")[0]`). The PATH is what this asserts; the query
+    // never reaches the allowlist.
+    const raw = [...source.matchAll(/deps\.call\(\s*"[A-Z]+",\s*([`"])([^`"]*)\1/g)]
+      .map((m) => m[2].replace(/\$\{[^}]*\}/g, "").split("?")[0]);
+    expect(raw.length).toBeGreaterThan(2); // sanity: refresh + exec + status
+    expect(raw.every((p) => p.startsWith("/agent-ops/plugin/"))).toBe(true);
+
+    const denied = raw.filter((p) => mapAgentOpsPath(p) === null);
+    expect(
+      denied,
+      `\`shipit plugin\` emits paths this host denies: ${denied.join(", ")}`,
+    ).toEqual([]);
   });
 });
 
@@ -189,15 +233,28 @@ describe("the host", () => {
   });
 
   it("names the reason when the orchestrator is unreachable", async () => {
-    // Requirement 4 (docs/251): a transport failure must not read as an outcome.
-    await orch.close();
-    const host = await startLocalAgentOpsHost({ sessionId: "s1", orchestratorBaseUrl: orchUrl });
+    // Requirement 4 (docs/251-local-agent-ops): a transport failure must not read as an
+    // outcome.
+    //
+    // The unreachable base is port 0, NOT this suite's own orchestrator closed
+    // mid-test. Closing it released an EPHEMERAL port, and the kernel is free
+    // to hand that number to any of the several hundred other test files
+    // binding `port: 0` in the same run — so the relay's request could connect
+    // to a stranger and be answered. It was: CI saw a 404 here, which this
+    // host can only produce by RELAYING it (its own failures are 403 for an
+    // unmapped path and 502 for a transport error), so the connection had
+    // succeeded against something that was not an orchestrator. Port 0 cannot
+    // be hijacked that way, because "listen on port 0" means "pick a real port"
+    // — nothing is ever bound to it, so the connect refuses by construction.
+    const host = await startLocalAgentOpsHost({
+      sessionId: "s1",
+      orchestratorBaseUrl: "http://127.0.0.1:0",
+    });
     const res = await fetch(`${host.url}/agent-ops/pr/status`);
 
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("Could not reach");
     await host.close();
-    orch = Fastify({ logger: false }); // afterEach closes it again harmlessly
   });
 });
 

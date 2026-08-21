@@ -79,7 +79,16 @@ function feedRealCliOutput(agent: FakeAgent): (raw: string) => void {
   const proc = new EventEmitter() as EventEmitter & Record<string, unknown>;
   proc.stdout = stdout;
   proc.stderr = new EventEmitter();
-  proc.stdin = { write: vi.fn(() => true), writable: true, destroyed: false, writableEnded: false };
+  // An EventEmitter, like the real `ChildProcess.stdin`: the process attaches an
+  // `error` listener to it so an EPIPE cannot crash the worker, and a plain
+  // object has no `.on`.
+  const stdin = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  stdin.write = vi.fn(() => true);
+  stdin.end = vi.fn();
+  stdin.writable = true;
+  stdin.destroyed = false;
+  stdin.writableEnded = false;
+  proc.stdin = stdin;
   proc.kill = vi.fn();
   mockChildSpawn.mockReturnValue(proc as never);
 
@@ -112,14 +121,20 @@ function makeFakeAgent(): FakeAgent {
 function makeDeps(
   agents: FakeAgent[],
   ensureAgentTokenFresh: SystemTurnDeps["ensureAgentTokenFresh"],
-  resolveTurnAccountId?: SystemTurnDeps["resolveTurnAccountId"],
+  // docs/260 — the heal is scoped by the TURN'S OWN captured route, which the
+  // executor takes from `prepareAgentEnv`'s returned `turnRoute`.
+  turnRoute?: { kind: "account" | "reserved"; id: string },
 ): {
   deps: SystemTurnDeps;
   sseBroadcast: ReturnType<typeof vi.fn>;
   startOAuthFlow: ReturnType<typeof vi.fn>;
+  persistUserRow: ReturnType<typeof vi.fn>;
+  onAgentAuthRequired: ReturnType<typeof vi.fn>;
 } {
   const sseBroadcast = vi.fn();
   const startOAuthFlow = vi.fn();
+  const persistUserRow = vi.fn();
+  const onAgentAuthRequired = vi.fn();
   const deps: SystemTurnDeps = {
     agentFactory: () => {
       const a = makeFakeAgent();
@@ -127,7 +142,7 @@ function makeDeps(
       return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
     },
     ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
-    ...(resolveTurnAccountId ? { resolveTurnAccountId } : {}),
+    ...(turnRoute ? { prepareAgentEnv: async () => ({ turnRoute }) } : {}),
     autoCommit: vi.fn().mockResolvedValue({
       commitHash: null,
       parentHash: null,
@@ -143,12 +158,13 @@ function makeDeps(
         setLastTurnErrored: vi.fn(),
         get: vi.fn(),
         track: vi.fn(),
+        setMuted: vi.fn(),
         list: vi.fn().mockReturnValue([]),
       } as never,
       chatHistoryManager: {
         replaceInProgress: vi.fn(),
         finalizeInProgress: vi.fn(),
-        append: vi.fn(),
+        append: persistUserRow,
         updateLastMessage: vi.fn().mockReturnValue(null),
         indexOfMessageId: vi.fn().mockReturnValue(-1),
       } as never,
@@ -156,10 +172,11 @@ function makeDeps(
       sseBroadcast,
       broadcastLog: vi.fn(),
       getSelectedModel: () => undefined,
+      onAgentAuthRequired,
     },
     buildRunParams: vi.fn().mockResolvedValue({ prompt: "do work", cwd: "/tmp/s1" }),
   };
-  return { deps, sseBroadcast, startOAuthFlow };
+  return { deps, sseBroadcast, startOAuthFlow, persistUserRow, onAgentAuthRequired };
 }
 
 async function flush(): Promise<void> {
@@ -287,6 +304,170 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     expect(agents).toHaveLength(1);
     expect(sseBroadcast).toHaveBeenCalledWith("session_agent_finished", { sessionId: "s1" });
     expect(runner.running).toBe(false);
+
+    runner.dispose({ force: true });
+  });
+
+  it("continues the same logical turn on the next healthy subscription account after a confirmed auth failure", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const messages: { type: string; [key: string]: unknown }[] = [];
+    runner.on("message", (message) => messages.push(message as never));
+    const authFailedAccounts = new Set<string>();
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(false);
+    const { deps, persistUserRow, onAgentAuthRequired } = makeDeps(agents, ensureAgentTokenFresh);
+    onAgentAuthRequired.mockImplementation(() => authFailedAccounts.add("acct-a"));
+    const prepareAgentEnv = vi.fn().mockImplementation(
+      async (_sessionId: string, _agentId: AgentId, opts?: { excludeRouteIds?: readonly string[] }) => {
+        const excluded = opts?.excludeRouteIds ?? [];
+        if (!excluded.includes("acct-a") && !authFailedAccounts.has("acct-a")) {
+          return { turnRoute: { kind: "account" as const, id: "acct-a" } };
+        }
+        return {
+          turnRoute: {
+            kind: "account" as const,
+            id: "acct-b",
+          },
+        };
+      },
+    );
+    deps.prepareAgentEnv = prepareAgentEnv;
+    deps.routeProfile = vi.fn().mockReturnValue({
+      serviceId: "anthropic",
+      billingMode: "sub",
+    });
+    deps.routeLabel = (routeId) => routeId === "acct-a" ? "Primary" : "Backup";
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first account run");
+
+    agents[0]!.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Partial work before authentication failed" }],
+    });
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "backup account run");
+
+    expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct-a", { force: true });
+    expect(onAgentAuthRequired).toHaveBeenCalledWith("claude");
+    expect(authFailedAccounts).toContain("acct-a");
+    expect(prepareAgentEnv.mock.calls[1]?.[2]?.excludeRouteIds).toEqual(["acct-a"]);
+    expect(agents[1]!.run.mock.calls[0]?.[0]?.prompt).toBe("do work");
+    const history = deps.listenerDeps.chatHistoryManager as any;
+    expect(history.replaceInProgress.mock.calls.some((call: any[]) =>
+      call[1]?.some((row: { text?: string }) => row.text === "Partial work before authentication failed"),
+    )).toBe(true);
+    expect(history.finalizeInProgress).toHaveBeenCalled();
+    expect(messages.some((message) =>
+      String(message.message).includes("Primary could not authenticate")
+      && !String(message.message).includes("out of quota"),
+    )).toBe(true);
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "failover turn finished");
+
+    expect(agents).toHaveLength(2);
+    expect(runner.lastTurnErrored).toBe(false);
+    expect(messages.filter((message) => message.type === "error")).toHaveLength(0);
+    const userRows = persistUserRow.mock.calls
+      .map((call) => call[1] as { role?: string; text?: string } | undefined)
+      .filter((row) => row?.role === "user" && row.text === "do work");
+    expect(userRows).toHaveLength(1);
+    runner.dispose({ force: true });
+  });
+
+  it("does not cross to metered billing and stops after the backup subscription also fails auth", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(false);
+    const { deps } = makeDeps(agents, ensureAgentTokenFresh);
+    const selectedRoutes: string[] = [];
+    const prepareAgentEnv = vi.fn().mockImplementation(
+      async (_sessionId: string, _agentId: AgentId, opts?: { excludeRouteIds?: readonly string[] }) => {
+        const excluded = opts?.excludeRouteIds ?? [];
+        if (excluded.includes("acct-a") && excluded.includes("acct-b")) {
+          selectedRoutes.push("metered-key");
+          return { turnRoute: { kind: "reserved" as const, id: "metered-key" } };
+        }
+        if (excluded.includes("acct-a")) {
+          selectedRoutes.push("acct-b");
+          return { turnRoute: { kind: "account" as const, id: "acct-b" } };
+        }
+        selectedRoutes.push("acct-a");
+        return { turnRoute: { kind: "account" as const, id: "acct-a" } };
+      },
+    );
+    deps.prepareAgentEnv = prepareAgentEnv;
+    deps.routeProfile = vi.fn().mockImplementation((_kind, routeId) => ({
+      serviceId: "anthropic",
+      billingMode: routeId === "metered-key" ? "key" : "sub",
+    }));
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "primary run");
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "backup run");
+
+    // The replacement attempt has spent the one automatic recovery budget.
+    // Its auth failure surfaces normally and cannot start a third route.
+    agents[1]!.emit("auth_required");
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "bounded auth failure");
+    expect(agents).toHaveLength(2);
+    expect(prepareAgentEnv).toHaveBeenCalledTimes(2);
+    expect(selectedRoutes).toEqual(["acct-a", "acct-b"]);
+    runner.dispose({ force: true });
+  });
+
+  // A late `done` must not release the FAILED-HEAL sequence's post-turn hold.
+  //
+  // `recoverAuth`'s heal-failed branch runs this turn's whole terminal sequence
+  // (drain → commit → finished → settle) under the post-turn hold that keeps the
+  // runner off the idle-reclaim list. The killed agent's `done` can arrive while
+  // that sequence is mid-commit, and it takes the `automaticRecoveryInProgress`
+  // stand-down — which briefly ALSO released the hold, on the mistaken theory
+  // that the re-dispatched turn owned it. There is no re-dispatched turn on this
+  // branch: the release just reopened the window over the commit. (Found by
+  // cross-backend review.)
+  it("a late `done` does not release the failed-heal sequence's reclaim hold", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(false); // heal fails
+    const { deps } = makeDeps(agents, ensureAgentTokenFresh);
+    // Hold the commit open so the terminal sequence is observably in flight.
+    let releaseCommit!: () => void;
+    const commitGate = new Promise<void>((r) => { releaseCommit = r; });
+    deps.autoCommit = vi.fn().mockImplementation(async () => {
+      await commitGate;
+      return { commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+    });
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    // 401 → heal fails → the terminal sequence starts and parks in the commit.
+    agents[0]!.emit("auth_required");
+    await waitFor(() => (deps.autoCommit as ReturnType<typeof vi.fn>).mock.calls.length === 1, "commit started");
+    expect(runner.postTurnWorkInFlight).toBe(true);
+    expect(runner.agentBusy).toBe(true);
+
+    // The killed process's `done` lands mid-commit.
+    agents[0]!.emit("done", 0);
+    await flush();
+    // Before the fix this was false: the stand-down had dropped the hold and the
+    // runner was reclaimable with its commit still running.
+    expect(runner.postTurnWorkInFlight).toBe(true);
+    expect(runner.agentBusy).toBe(true);
+
+    releaseCommit();
+    await waitFor(() => !runner.postTurnWorkInFlight, "hold released after the commit");
+    expect(runner.agentBusy).toBe(false);
 
     runner.dispose({ force: true });
   });
@@ -470,12 +651,13 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/150 — with several accounts per provider, the heal has to name the
-  // account this turn is pinned to. Provider-wide, `ensureAgentTokenFresh`
-  // refreshes every account and returns `results.every(Boolean)`, so a second
-  // account that is revoked (or was never signed in) makes the aggregate false
-  // and a healthy account's turn gets a sign-in card it did not need.
-  it("heals the account the turn is pinned to, not the whole provider", async () => {
+  // docs/260 — with several accounts per provider, the heal has to name the
+  // account this TURN ran on (the captured route). Provider-wide,
+  // `ensureAgentTokenFresh` refreshes every account and returns
+  // `results.every(Boolean)`, so a second account that is revoked (or was
+  // never signed in) makes the aggregate false and a healthy account's turn
+  // gets a sign-in card it did not need.
+  it("heals the account the turn ran on, not the whole provider", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     // Stands in for the real healer: account-scoped calls heal, a
@@ -486,7 +668,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     const { deps, startOAuthFlow } = makeDeps(
       agents,
       ensureAgentTokenFresh as unknown as SystemTurnDeps["ensureAgentTokenFresh"],
-      () => "acct_healthy",
+      { kind: "account", id: "acct_healthy" },
     );
     runner.setSystemTurnDeps(deps);
 
@@ -504,7 +686,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/150 — a session pinned to a reserved route (`claude-api-key`,
+  // docs/260 — a turn that ran on a reserved route (`claude-api-key`,
   // `claude-env-oauth`) has no account token of its own. Rotating every
   // *subscription* account and reporting the aggregate answers a question
   // nobody asked: a bad API key would read as healed because the subscriptions
@@ -518,8 +700,8 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     const { deps } = makeDeps(
       agents,
       ensureAgentTokenFresh,
-      // Pinned to `claude-api-key` — not an account.
-      () => undefined,
+      // The turn ran on `claude-api-key` — not an account.
+      { kind: "reserved", id: "claude-api-key" },
     );
     runner.setSystemTurnDeps(deps);
 

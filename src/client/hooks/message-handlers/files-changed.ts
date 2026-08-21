@@ -1,6 +1,7 @@
 import type { WsFilesChanged } from "../../../server/shared/types.js";
 import { useFileStore } from "../../stores/file-store.js";
 import { useIssuesStore } from "../../stores/issues-store.js";
+import { usePluginReposStore } from "../../stores/plugin-repos-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { Handler } from "./types.js";
@@ -33,8 +34,8 @@ export const handleFilesChanged: Handler<WsFilesChanged> = (_ctx, data) => {
     }
   }
 
-  // SHI-321 — `shipit.yaml` is where a repository declares its issue trackers
-  // (docs/248 req 16: resolution happens at use). The server re-reads the file
+  // planning#323 — `shipit.yaml` is where a repository declares its issue trackers
+  // (docs/248-declared-issue-trackers req 16: resolution happens at use). The server re-reads the file
   // on every request, so the browser's copy of the declarations is the only
   // stale view — and that copy IS the reference-resolution context
   // (`trackerDestinations()`), which doc chips, PR-card chips and markdown
@@ -51,5 +52,12 @@ export const handleFilesChanged: Handler<WsFilesChanged> = (_ctx, data) => {
         await useIssuesStore.getState().fetchIssues();
       }
     })();
+    // docs/262 — shipit.yaml is also where plugin repositories are declared,
+    // and the snapshot gates the Plugins tab itself, so refresh it whether or
+    // not the tab is open. Same cost profile as the tracker refetch: one local
+    // file read on the server.
+    if (sid) {
+      void usePluginReposStore.getState().fetchSnapshot(sid);
+    }
   }
 };

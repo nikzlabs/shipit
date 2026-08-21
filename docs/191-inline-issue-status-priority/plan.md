@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-106
+issue: planning#108
 description: Set an issue's status (both trackers) and priority (Linear) inline from the issue list and the detail view.
 ---
 
@@ -19,7 +19,7 @@ but had to bounce to Linear/GitHub to triage status/priority.
   to open/closed (+ `state_reason`).
 - **Priority** is editable for **Linear only**. Linear has a native numeric
   priority field; GitHub has none (it's label-derived) and its adapter
-  deliberately *rejects* priority writes (SHI-92). Rather than fake it via label
+  deliberately *rejects* priority writes (planning#94). Rather than fake it via label
   manipulation, the UI gates the priority editor on the tracker — GitHub rows
   keep a read-only priority badge. The server still backstops this: a GitHub
   priority write returns 422.

@@ -1,145 +1,101 @@
 /**
- * AgentRegistry — runtime detection of installed agent CLIs and auth status.
+ * AgentRegistry — which agent CLIs this install has, and whether their
+ * credentials are configured. Used by the server to expose agent availability to
+ * clients and to validate `set_agent` requests.
  *
- * Checks which agent binaries are on $PATH and whether their credentials
- * are configured. Used by the server to expose agent availability to clients
- * and to validate `set_agent` requests.
+ * docs/252 phase 9 (req 14) — "installed" is the **declared** set when the image
+ * build declared one (`/opt/shipit/agents/installed.json`), and a `which` probe
+ * only when it did not. See `installed-harnesses.ts` for why the declaration wins.
  */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
-import { CLAUDE_PERMISSION_MODES } from "./types/agent-types.js";
+import type { BillingMode, LoginIntegrationId } from "./catalogue/types.js";
+import {
+  HARNESSES,
+  catalogueModelIdsForHarness,
+  credentialStorageEnvNames,
+  eligibleEntriesForHarness,
+  harnessesForLoginIntegration,
+  loginIntegrationForService,
+  type ConfiguredCredential,
+} from "./catalogue/index.js";
+import { readInstalledHarnesses } from "./installed-harnesses.js";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * Single source of truth for the Claude models offered in the picker.
- *
- * Order matters: `models[0]` is the default model a fresh install runs with.
- * Every default path — the server's connect-time fallback in `index.ts`
- * (`agentInfo?.capabilities.models[0]`) and the client picker's fallback in
- * `ModelAgentSelector` (`activeAgent?.models[0]`, used when there's no
- * persisted session model and no saved `vibe-model-id`) — resolves to the
- * first entry. Opus leads so a brand-new user gets Opus, not Sonnet.
- *
- * Mixed style is intentional:
- * - Explicit dated/versioned IDs (`claude-opus-4-8`) are listed when a new
- *   model ships before the CLI's alias is bumped to point at it. The CLI
- *   forwards `--model` to the API as-is, so any API-recognized ID works even
- *   if the CLI's local alias table hasn't caught up.
- * - Bare family names (`haiku`) are CLI aliases that always resolve
- *   to the latest of that family on the installed CLI.
- *
- * No bare `opus` alias: older CLIs resolve it to a previous Opus (≤ 2.1.148:
- * Opus 4.7), and Opus 5 shipped (2026-07-24) the same day as the currently
- * pinned CLI, so its alias table can't be trusted to resolve `opus` to Opus 5
- * yet. Once a CLI release verifiably does, we can swap the explicit versioned
- * entry for the alias the same way.
- *
- * `claude-sonnet-5` is explicit instead of the bare `sonnet` alias so the
- * picker and first-frame context-window fallback are correct even before a
- * freshly-bumped CLI's local alias table is trusted.
- *
- * `claude-fable-5` is listed LAST on purpose: it is Anthropic's most capable
- * public model but bills per token (usage-based) rather than against the
- * subscription plan limit, so it's a deliberate opt-in, not the default. The
- * picker flags it with a $ icon (see `METERED_MODELS` in
- * `ModelAgentSelector.tsx`). It's an explicit versioned id (no CLI alias); the
- * CLI forwards `--model` as-is, verified working on CLI 2.1.162.
- *
- * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
- * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
- */
-export const CLAUDE_MODELS = ["claude-opus-5", "claude-sonnet-5", "haiku", "claude-fable-5"];
-
-export const CLAUDE_TOOL_NAMES = [
-  "Agent",
-  "AskUserQuestion",
-  "Bash",
-  "CronCreate",
-  "CronDelete",
-  "CronList",
-  "Edit",
-  "EnterPlanMode",
-  "EnterWorktree",
-  "ExitPlanMode",
-  "ExitWorktree",
-  "Glob",
-  "Grep",
-  "ListMcpResourcesTool",
-  "LSP",
-  "Monitor",
-  "NotebookEdit",
-  "PowerShell",
-  "PushNotification",
-  "Read",
-  "ReadMcpResourceTool",
-  "RemoteTrigger",
-  "ScheduleWakeup",
-  "SendMessage",
-  "ShareOnboardingGuide",
-  "Skill",
-  "TaskCreate",
-  "TaskGet",
-  "TaskList",
-  "TaskStop",
-  "TaskUpdate",
-  "TeamCreate",
-  "TeamDelete",
-  "TodoWrite",
-  "ToolSearch",
-  "WaitForMcpServers",
-  "WebFetch",
-  "WebSearch",
-  "Workflow",
-  "Write",
-] as const;
-
-export const CODEX_TOOL_NAMES = [
-  "shell",
-  "commandExecution",
-  "fileChange",
-  "apply_patch",
-  "mcpToolCall",
-  "dynamicToolCall",
-  "collabToolCall",
-  "spawn_agent",
-  "Agent",
-  "webSearch",
-  "imageView",
-  "view_image",
-  "tool_search",
-  "AskUserQuestion",
-] as const;
+// docs/252 phase 1 — tool names moved to their own module so the harness
+// catalogue can carry them without closing an import cycle with this file.
+// Re-exported here so existing import sites are unchanged.
+export { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, GROK_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "./agent-tool-names.js";
 
 /**
- * Single source of truth for Codex models offered in the picker.
+ * docs/252 — the model lists are DERIVED from the service catalogue.
  *
- * Order matters: `models[0]` is the default model a fresh Codex session runs
- * with. Codex CLI 0.144.1 lists the GPT-5.6 family as explicit Sol/Terra/Luna
- * slugs; the historical unsuffixed `gpt-5.6` alias is rejected for ChatGPT
- * account auth, so do not expose it as selectable.
+ * They used to be hand-kept arrays here, which is the `AgentId` conflation this
+ * feature removes: a harness is a CLI to spawn, and which models exist is a
+ * property of the *service*.
+ *
+ * **The whole join, not just the harness's own vendor.** Phase 1 narrowed these
+ * to `nativeService` because nothing could yet give a custom service a
+ * credential or route a turn to one; phase 3 can, so the narrowing goes. These
+ * are the *catalogue's* answer — what this CLI could speak to — and are used
+ * where no credential question is being asked: the worker-side adapter's static
+ * capability block and {@link agentIdForModel}. What the picker offers is the
+ * CREDENTIAL-FILTERED subset, computed per install in {@link AgentRegistry}.
+ *
+ * Order still matters exactly as it did: `models[0]` is the default a fresh
+ * install runs with (the server's connect-time fallback and the client picker's
+ * first-model fallback both resolve to the first entry), so the ordering
+ * *within* a mode in `catalogue/services.ts` is what decides it — and the
+ * first-party services still sort first, so no default moved.
  */
-export const CODEX_MODELS = [
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.5",
-  "gpt-5.3-codex",
-  "gpt-5.2",
-];
+export const CLAUDE_MODELS = catalogueModelIdsForHarness("claude");
+
+/** See {@link CLAUDE_MODELS} — the same join for the `codex` harness. */
+export const CODEX_MODELS = catalogueModelIdsForHarness("codex");
+
+// docs/252 phase 8 — `normalizeCodexModelId` lived here: a shim that mapped the
+// retired unsuffixed GPT-5.6 slug onto Sol for one service, one style and one
+// harness. Retirement is now resolved once, where the service and billing mode
+// are known: `retirementSuccessor` (`catalogue/index.ts`) reads the catalogue's
+// per-mode record, and `applyModelRetirement` (orchestrator) persists the
+// successor onto the session so the picker agrees with what is running (req 13).
+// Deliberately NOT re-created as a bare-id helper for a spawn boundary to call —
+// see the note beside `retirementSuccessor` for why an id alone cannot say whose
+// retirement applies.
 
 /**
- * Compatibility shim for rows/session state written before ShipIt stopped
- * surfacing the invalid unsuffixed GPT-5.6 slug. Keep this at the boundary
- * before Codex turns so legacy sessions run the intended Sol model.
+ * docs/252 phase 3 (req 8) — one model the picker may offer, as the identity it
+ * is actually selected by.
+ *
+ * The entry is the **triple**, not a model id: the same id is reachable through
+ * a vendor directly and through a gateway, and through two modes of one service,
+ * at different prices — so an id alone cannot say who is billing you (req 11).
+ * `serviceName` and `label` ride along because the picker groups on the service
+ * and the client has no catalogue of its own to look them up in.
  */
-export function normalizeCodexModelId(model: string | undefined): string | undefined {
-  return model === "gpt-5.6" ? "gpt-5.6-sol" : model;
+export interface EligibleModel {
+  serviceId: string;
+  serviceName: string;
+  billingMode: BillingMode;
+  modelId: string;
+  label: string;
+  /**
+   * docs/261 phase 6 (req 11) — phase 0's authored identity, carried to the
+   * client.
+   *
+   * Two rows with this key ARE one model, whatever their ids say. The client
+   * needs it to answer one question: the user changed the service, so does the
+   * new service offer *the model they had*? Comparing `modelId` gets exactly the
+   * motivating pair wrong — `anthropic/claude-opus-5` through a gateway and
+   * `claude-opus-5` direct differ as strings and are the same weights — and
+   * re-deriving the identity in the browser would be a second implementation of
+   * a rule the catalogue already authors.
+   */
+  canonicalModelKey: string;
 }
 
 export interface AgentInfo {
@@ -147,88 +103,65 @@ export interface AgentInfo {
   name: string;
   binary: string;
   installed: boolean;
-  authConfigured: boolean;
+  /**
+   * docs/252 phase 3 — **"this harness has at least one model it can run"**,
+   * which is the same question as before for a first-party install and a
+   * different one for req 2's case: a user whose only credential is a DeepSeek
+   * key now has Claude Code configured, with no Anthropic account anywhere.
+   *
+   * It was called `authConfigured` up to and including phase 3, from when the
+   * answer really was a per-`AgentId` credential probe of the harness's own
+   * vendor. That is no longer what it asks: the probe became the per-model rule
+   * of req 8, evaluated over this harness's eligible set, so a name about *auth*
+   * now describes the wrong axis entirely — under req 2 a harness is runnable
+   * with no account at its own vendor at all. This is still the gate every "can
+   * this harness take a turn" site reads (`agent-auth-gate.ts`, `set_agent`, the
+   * sub-agent spawn), and `AgentRegistry.available()` is still the conjunction
+   * with `installed` (req 14); only the name moved.
+   *
+   * NOT a claim that {@link eligibleModels} is non-empty. With no credential
+   * source wired (a worker, a unit test) the legacy probe answers instead and
+   * the credential-filtered join is not computed — `capabilities.models` is the
+   * harness's full set there. See {@link deriveHasRunnableModels}.
+   */
+  hasRunnableModels: boolean;
   capabilities: AgentCapabilities;
+  /**
+   * The credential-filtered join for this install, in catalogue order (req 8).
+   * `capabilities.models` is this list's model ids, de-duplicated — kept because
+   * many call sites still speak bare ids, and exactly consistent with this
+   * because both are derived from it.
+   */
+  eligibleModels: EligibleModel[];
 }
 
-/** Agent metadata definitions (static). */
-const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: AgentCapabilities }[] = [
-  {
-    id: "claude",
-    name: "Claude Code",
-    binary: "claude",
+/**
+ * Agent metadata definitions (static), derived from the harness catalogue.
+ *
+ * `HarnessDef.capabilities` is `Omit<AgentCapabilities, "models">` — that single
+ * removal is the type-level content of docs/252 — so this join is the one place
+ * the harness's capabilities and the service's model list come back together.
+ */
+const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: AgentCapabilities }[] =
+  HARNESSES.map((harness) => ({
+    id: harness.id,
+    name: harness.name,
+    binary: harness.binary,
     capabilities: {
-      supportsResume: true,
-      supportsImages: true,
-      supportsSystemPrompt: true,
-      supportsPermissionModes: true,
-      supportedPermissionModes: CLAUDE_PERMISSION_MODES,
-      toolNames: [...CLAUDE_TOOL_NAMES],
-      models: CLAUDE_MODELS,
-      // Claude Code CLI `--effort <level>`. Verified valid values by running
-      // `claude --effort __bogus__`: "low, medium, high, xhigh, max". Omitting
-      // the flag uses the model's adaptive default. See docs/217-per-agent-reasoning.
-      reasoning: {
-        label: "Reasoning",
-        options: [
-          { value: "low", label: "Low" },
-          { value: "medium", label: "Medium" },
-          { value: "high", label: "High" },
-          { value: "xhigh", label: "Extra high" },
-          { value: "max", label: "Max" },
-        ],
-      },
-      supportsReview: true,
-      supportsSteering: true,
-      supportsCompaction: true,
-      skillsDirName: ".claude",
-      skillInvocationPrefix: "/",
+      ...harness.capabilities,
+      supportedPermissionModes: [...harness.capabilities.supportedPermissionModes],
+      toolNames: [...harness.capabilities.toolNames],
+      ...(harness.capabilities.reasoning
+        ? {
+            reasoning: {
+              label: harness.capabilities.reasoning.label,
+              options: harness.capabilities.reasoning.options.map((o) => ({ ...o })),
+            },
+          }
+        : {}),
+      models: catalogueModelIdsForHarness(harness.id),
     },
-  },
-  {
-    id: "codex",
-    name: "Codex",
-    binary: "codex",
-    capabilities: {
-      supportsResume: true,
-      supportsImages: false,
-      supportsSystemPrompt: true,
-      supportsPermissionModes: false,
-      supportedPermissionModes: [],
-      toolNames: [...CODEX_TOOL_NAMES],
-      // GPT-5.6 is the current OpenAI frontier family. Codex requires the
-      // explicit Sol slug; the old unsuffixed `gpt-5.6` alias is not accepted
-      // with ChatGPT account auth.
-      models: CODEX_MODELS,
-      // Codex CLI config `model_reasoning_effort`. Verified valid values by
-      // running `codex -c model_reasoning_effort=__bogus__`: "none, minimal,
-      // low, medium, high, xhigh". Omitting the override uses Codex's own
-      // default. Passed at app-server spawn as `-c model_reasoning_effort=…`.
-      // See docs/217-per-agent-reasoning.
-      reasoning: {
-        label: "Reasoning effort",
-        options: [
-          { value: "none", label: "None" },
-          { value: "minimal", label: "Minimal" },
-          { value: "low", label: "Low" },
-          { value: "medium", label: "Medium" },
-          { value: "high", label: "High" },
-          { value: "xhigh", label: "Extra high" },
-        ],
-      },
-      // docs/125 — Codex now ships subagents (model-invoked via the
-      // `spawn_agent` collab tool, triggered by explicit instruction) AND MCP
-      // servers (`[mcp_servers.*]` in config.toml). The worker writes the
-      // review bridge into the Codex config; the same chat-native review flow
-      // works on both backends.
-      supportsReview: true,
-      supportsSteering: true,
-      supportsCompaction: true,
-      skillsDirName: ".codex",
-      skillInvocationPrefix: "$",
-    },
-  },
-];
+  }));
 
 /**
  * Runtime list of known agent ids, derived from `AGENT_DEFS` so it can never
@@ -274,6 +207,18 @@ export function getAgentCapabilities(id: AgentId): AgentCapabilities | undefined
 }
 
 /**
+ * Human-readable harness name ("Codex", "Claude Code") from the static defs,
+ * falling back to the raw id for an unknown one.
+ *
+ * Same shape and same reason as {@link getAgentCapabilities}: the runners label
+ * the consults they are brokering for the busy marker's status line, and they
+ * hold an `AgentId` with no registry handle to resolve it against.
+ */
+export function getAgentDisplayName(id: AgentId): string {
+  return AGENT_DEFS.find((d) => d.id === id)?.name ?? id;
+}
+
+/**
  * Env var required for each agent's auth (Claude uses OAuth, not an env var).
  * Consumers should go through {@link getAuthEnvKey} rather than reading this
  * map directly so a new backend's key (e.g. `CURSOR_API_KEY`) is one edit
@@ -281,6 +226,16 @@ export function getAgentCapabilities(id: AgentId): AgentCapabilities | undefined
  */
 const AUTH_ENV_KEYS: Partial<Record<AgentId, string>> = {
   codex: "OPENAI_API_KEY",
+  // opencode is deliberately absent: it has no single canonical key variable —
+  // every credential is per-service, delivered through the adapter's provider
+  // block (docs/268) — so there is no one env var whose absence means
+  // "not configured".
+  //
+  // grok is present for the opposite reason (docs/274): its native service is
+  // the only one it can reach, so `XAI_API_KEY` genuinely IS the one variable
+  // whose absence means "not configured" — which is also what makes the
+  // no-credential-source fallback below answer honestly for it.
+  grok: "XAI_API_KEY",
 };
 
 /**
@@ -300,7 +255,18 @@ export function getAuthEnvKey(agentId: AgentId): string | null {
  * `.has()` checks. The set is kept exported because tests and re-export sites
  * still reference it directly.
  */
-export const ALLOWED_ENV_KEYS = new Set(["OPENAI_API_KEY"]);
+export const ALLOWED_ENV_KEYS = new Set<string>([
+  // docs/252 phase 2 — every `storageEnv` the catalogue declares, so a new
+  // service's key name is one catalogue edit rather than an edit here as well.
+  // `ALLOWED_ENV_KEYS` stays a compile-time constant (Appendix A): the
+  // requirement that once justified a runtime mechanism — "trying a new service
+  // needs no release" — disappeared when the catalogue itself started shipping
+  // with ShipIt, so the mechanism should not survive it.
+  ...credentialStorageEnvNames(),
+  // Kept explicitly rather than left to the catalogue: this is the historical
+  // entry, and `set_agent_env` writes flowing through it predate the catalogue.
+  "OPENAI_API_KEY",
+]);
 
 /** Prefix reserved for MCP server secrets (docs/088-mcp-integration). */
 const MCP_ENV_KEY_PREFIX = "mcp__";
@@ -361,29 +327,62 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
    */
   private checkCodexAuth: () => boolean;
 
+  /**
+   * docs/252 phase 9 — the harness set this install declares, or `null` when it
+   * declares none (a checkout, a test, a pre-feature image) and `checkBinary` is
+   * the answer instead. Injectable so a test can assert either mode.
+   */
+  private declaredHarnesses: () => AgentId[] | null;
+
+  /**
+   * docs/252 phase 3 (req 8) — the credentials the user has configured, as
+   * eligibility sees them. Injected rather than read here because this module is
+   * `shared/` and the credential store is the orchestrator's; the wiring site is
+   * `app-di.ts`.
+   *
+   * Absent ⇒ **fall back to the account probes**, which is what a worker-side or
+   * test registry has. Returning an empty list instead would be worse than
+   * wrong: it would report every harness unconfigured and empty every model
+   * list, in the two contexts least able to notice.
+   */
+  private listCredentials: (() => ConfiguredCredential[]) | undefined;
+
   constructor(opts?: {
     checkBinary?: (binary: string) => Promise<boolean>;
     checkClaudeAuth?: () => boolean;
     checkCodexAuth?: () => boolean;
+    declaredHarnesses?: () => AgentId[] | null;
+    listCredentials?: () => ConfiguredCredential[];
   }) {
     super();
     this.checkBinary = opts?.checkBinary ?? defaultCheckBinary;
     this.checkClaudeAuth = opts?.checkClaudeAuth ?? (() => true);
     this.checkCodexAuth = opts?.checkCodexAuth ?? (() => false);
+    this.declaredHarnesses = opts?.declaredHarnesses ?? (() => readInstalledHarnesses());
+    this.listCredentials = opts?.listCredentials;
   }
 
-  /** Probe the system for installed agent CLIs. */
+  /**
+   * Resolve which agent CLIs this install has.
+   *
+   * Prefers the build's declared set over a `which` probe: the deployment's
+   * harness selection is the fact (req 14), and a probe answers the narrower
+   * question of what happens to be on *this* container's $PATH. Read once here
+   * rather than per harness so one report backs the whole pass.
+   */
   async detect(): Promise<void> {
+    const declared = this.declaredHarnesses();
     for (const def of AGENT_DEFS) {
-      const installed = await this.checkBinary(def.binary);
-      const authConfigured = this.isAuthConfigured(def.id);
+      const installed = declared ? declared.includes(def.id) : await this.checkBinary(def.binary);
+      const eligibleModels = this.computeEligibleModels(def.id);
       this.agents.set(def.id, {
         id: def.id,
         name: def.name,
         binary: def.binary,
         installed,
-        authConfigured,
-        capabilities: def.capabilities,
+        hasRunnableModels: this.deriveHasRunnableModels(def.id, eligibleModels),
+        capabilities: this.capabilitiesFor(def, eligibleModels),
+        eligibleModels,
       });
     }
   }
@@ -398,26 +397,150 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     return Array.from(this.agents.values());
   }
 
-  /** List only agents that are installed and auth-configured. */
+  /** List only agents this deployment installed and that have a runnable model. */
   available(): AgentInfo[] {
-    return this.list().filter((a) => a.installed && a.authConfigured);
+    return this.list().filter((a) => a.installed && a.hasRunnableModels);
   }
 
-  /** Re-check auth status for a specific agent. */
+  /**
+   * Re-check auth status for a specific agent.
+   *
+   * docs/252 phase 3 — this now also recomputes the eligible model set, because
+   * the two answer the same question at different granularities. Every
+   * credential write already calls this (phase 2 wired it so a saved key made
+   * its agent selectable), so the picker's rows follow a credential change
+   * without a second notification path.
+   */
   refreshAuth(id: AgentId): void {
     const info = this.agents.get(id);
-    if (info) {
-      const wasConfigured = info.authConfigured;
-      info.authConfigured = this.isAuthConfigured(id);
-      // docs/144 — emit on a configured → not-configured edge so the sub-agent
-      // service can sweep cross-agent creds left over from a spawn.
-      if (wasConfigured && !info.authConfigured) {
-        this.emit("sign-out", id);
-      }
+    if (!info) return;
+    const def = AGENT_DEFS.find((d) => d.id === id);
+    const wasRunnable = info.hasRunnableModels;
+    info.eligibleModels = this.computeEligibleModels(id);
+    info.hasRunnableModels = this.deriveHasRunnableModels(id, info.eligibleModels);
+    if (def) info.capabilities = this.capabilitiesFor(def, info.eligibleModels);
+    // docs/144 — emit on a runnable → not-runnable edge so the sub-agent
+    // service can sweep cross-agent creds left over from a spawn.
+    if (wasRunnable && !info.hasRunnableModels) {
+      this.emit("sign-out", id);
     }
   }
 
-  private isAuthConfigured(id: AgentId): boolean {
+  /**
+   * Refresh every harness a completed sign-in on `loginId` can change the
+   * answer for.
+   *
+   * **Not a convenience wrapper — it is the reason the auth managers re-keyed.**
+   * `refreshAuth` is correctly keyed by harness ("can this CLI run a model
+   * now?"), but the CALLER only knows which login flow finished. While every
+   * login serves exactly one harness the two are indistinguishable, so the old
+   * `refreshAuth(agentId)` call sites read as correct and were correct by
+   * coincidence. A provider-neutral harness signed in against an existing
+   * service breaks that coincidence silently: the credential changes for two
+   * harnesses and only one re-evaluates.
+   *
+   * Routing the fan-out through the catalogue means the set widens on its own
+   * when such a harness is declared, instead of needing every call site found
+   * again. See `harnessesForLoginIntegration`.
+   */
+  refreshAuthForLogin(loginId: LoginIntegrationId): void {
+    for (const harnessId of harnessesForLoginIntegration(loginId)) this.refreshAuth(harnessId);
+  }
+
+  /**
+   * req 8, evaluated for this install: the catalogue join narrowed to the modes
+   * holding a credential this harness can carry.
+   *
+   * Empty when no credential source is wired — see {@link listCredentials} for
+   * why that is not the same as "nothing is eligible", and
+   * {@link deriveHasRunnableModels} for how the probe fallback covers it.
+   */
+  private computeEligibleModels(id: AgentId): EligibleModel[] {
+    const configured = this.listCredentials?.();
+    if (!configured) return [];
+    const credentials = [...configured, ...this.probedCredentialsFor(id)];
+    return eligibleEntriesForHarness(id, credentials).map((entry) => ({
+      serviceId: entry.selection.serviceId,
+      serviceName: entry.service.name,
+      billingMode: entry.selection.billingMode,
+      modelId: entry.model.id,
+      label: entry.model.label,
+      canonicalModelKey: entry.model.canonicalModelKey,
+    }));
+  }
+
+  /**
+   * The legacy per-`AgentId` auth probe, translated into the one credential it
+   * can be describing: **an account of this harness's own vendor's
+   * subscription**.
+   *
+   * This is the residue of `checkClaudeAuth` / `checkCodexAuth`, and it is
+   * additive — it can only ever widen a harness's eligible set, never narrow
+   * one, so req 2's DeepSeek-only install is unaffected by it. What it is for is
+   * the **injected auth manager** the DI boundary keeps as an auth source for
+   * tests and custom runtimes that do not persist provider-account rows.
+   *
+   * **The probes must report account-shaped evidence only**, and the wiring in
+   * `app-di.ts` narrows them for exactly that reason. `hasAnyAuthForProvider`
+   * also answers true for a bare `ANTHROPIC_API_KEY` — translating that into a
+   * subscription credential would offer a "Subscription" row on a key-only
+   * install and fail `auth_required` the moment it was chosen. An env-delivered
+   * key needs no translation: `listConfiguredCredentials` already reads it, as
+   * the credential of its own mode.
+   *
+   * Translating rather than short-circuiting is what keeps ONE rule: eligibility
+   * is a question about credentials, so a legacy credential becomes a credential
+   * rather than a second way to answer "is this harness configured". The
+   * alternative — OR-ing the probe into `hasRunnableModels` — would report a
+   * harness runnable while its picker had no rows, which is the state req 8
+   * exists to prevent.
+   */
+  private probedCredentialsFor(id: AgentId): ConfiguredCredential[] {
+    const nativeService = HARNESSES.find((h) => h.id === id)?.nativeService;
+    if (!nativeService) return [];
+    // A native service is not enough: what this translates a probe INTO is an
+    // account of a subscription, so the service must actually have a login
+    // flow. OpenCode's native service still has none (docs/272 — a pasted
+    // key). xAI gained one in planning#435 (`xai-oauth`); grok has no legacy
+    // probe of its own, so the `false` branch below is what still returns
+    // nothing for it. Eligibility for a SuperGrok login comes from
+    // `listCredentials` (the account row), not from a probe. The guard stays
+    // because the two conditions must not drift: a third probe branch added
+    // later would otherwise mint an account credential for a service that has
+    // no accounts, and every turn routed onto it would fail `auth_required`.
+    if (!loginIntegrationForService(nativeService)) return [];
+    const probed = id === "claude" ? this.checkClaudeAuth() : id === "codex" ? this.checkCodexAuth() : false;
+    if (!probed) return [];
+    return [{ serviceId: nativeService, billingMode: "sub", via: "account" }];
+  }
+
+  /** `capabilities`, with `models` narrowed to what this install can actually run. */
+  private capabilitiesFor(
+    def: (typeof AGENT_DEFS)[number],
+    eligibleModels: EligibleModel[],
+  ): AgentCapabilities {
+    if (!this.listCredentials) return def.capabilities;
+    const ids: string[] = [];
+    for (const model of eligibleModels) {
+      if (!ids.includes(model.modelId)) ids.push(model.modelId);
+    }
+    return { ...def.capabilities, models: ids };
+  }
+
+  /**
+   * docs/252 phase 3 — "can this harness run anything here?", answered from the
+   * per-model rule (req 8) when a credential source is wired.
+   *
+   * That is the whole of req 2: a DeepSeek key makes Claude Code runnable, and
+   * a lapsed Anthropic subscription with no key makes it not — one rule, no
+   * vendor special-cased. The probes below survive only as the fallback for a
+   * registry with no credential source (a worker, a unit test); they are the
+   * pre-feature behaviour and are per-`AgentId` by construction. That fallback
+   * is why the field is not simply `eligibleModels.length > 0` at its readers:
+   * there the join is not computed and this is the only answer there is.
+   */
+  private deriveHasRunnableModels(id: AgentId, eligibleModels: EligibleModel[]): boolean {
+    if (this.listCredentials) return eligibleModels.length > 0;
     if (id === "claude") {
       return this.checkClaudeAuth();
     }
@@ -429,6 +552,11 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
       // bill via Platform API. See docs/119-codex-subscription-auth/plan.md.
       if (this.checkCodexAuth()) return true;
     }
+    // opencode: no legacy probe and no canonical env key (see AUTH_ENV_KEYS),
+    // so the no-credential-source fallback answers false. Real installs answer
+    // through the credential join above (docs/268). grok has no legacy probe
+    // either, but it DOES have a canonical env key, so it falls through to the
+    // env check below and answers honestly without one being written here.
     const envKey = getAuthEnvKey(id);
     if (!envKey) return false;
     const val = process.env[envKey];

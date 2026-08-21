@@ -179,7 +179,7 @@ describe("CodexAdapter", () => {
   it("reports Codex capabilities", () => {
     adapter = new CodexAdapter();
     expect(adapter.capabilities.supportsResume).toBe(true);
-    expect(adapter.capabilities.supportsImages).toBe(false);
+    expect(adapter.capabilities.supportsImages).toBe(true);
     expect(adapter.capabilities.supportsSystemPrompt).toBe(true);
     expect(adapter.capabilities.supportsPermissionModes).toBe(false);
     expect(adapter.capabilities.toolNames).toContain("shell");
@@ -192,10 +192,13 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.models[0]).toBe("gpt-5.6-sol");
     expect(adapter.capabilities.models).not.toContain("gpt-5.6");
     expect(adapter.capabilities.models).toContain("gpt-5.4");
-    // 125 — chat-native AI review requires a subagent primitive plus custom
-    // MCP tool registration; Codex ships both (model-invoked `spawn_agent`
-    // collab tool + `[mcp_servers.*]` config), so the affordance is enabled.
+    // docs/266 item 15 — chat-native review requires a shell tool and a
+    // subagent primitive, and no MCP surface (docs/220 deleted the last
+    // `submit_review` write path). Codex ships `shell` and the model-invoked
+    // `spawn_agent` collab tool, so the affordance is enabled.
     expect(adapter.capabilities.supportsReview).toBe(true);
+    expect(adapter.capabilities.toolNames).toContain("shell");
+    expect(adapter.capabilities.toolNames).toContain("spawn_agent");
   });
 
   it("emits auth_required when OPENAI_API_KEY is not set", () => {
@@ -402,14 +405,25 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("normalizes legacy GPT-5.6 alias before reporting or starting a Codex turn", async () => {
+  it("forwards the model it is given, without re-mapping a retired id", async () => {
+    // docs/252 phase 8 — this used to assert the opposite: the boundary rewrote
+    // `gpt-5.6` to `gpt-5.6-sol` via `normalizeCodexModelId`. It must not, and
+    // the reason is req 5: two services may offer the same model id, so a
+    // boundary holding only an id cannot say whose retirement applies and would
+    // rewrite a model the session's own service still serves.
+    //
+    // The behaviour that test protected is preserved a layer up and asserted
+    // there — `applyModelRetirement` resolves and PERSISTS the successor before
+    // the turn is built, so a session on `gpt-5.6` reaches this point already
+    // holding `gpt-5.6-sol` (see `model-retirement.test.ts` and the retirement
+    // case in `integration_tests/codex-agent.test.ts`).
     await createAndInit("Hello", undefined, "/workspace", "gpt-5.6");
 
     const initEvent = events.find((e) => e.type === "agent_init");
-    expect(initEvent).toMatchObject({ model: "gpt-5.6-sol" });
+    expect(initEvent).toMatchObject({ model: "gpt-5.6" });
 
     const turnStart = fakeProc.getRequests().find((r) => r.method === "turn/start");
-    expect((turnStart!.params as any).model).toBe("gpt-5.6-sol");
+    expect((turnStart!.params as any).model).toBe("gpt-5.6");
   });
 
   it("maps an agentMessage item to agent_assistant text", async () => {
@@ -781,11 +795,158 @@ describe("CodexAdapter", () => {
       type: "agent_result",
       status: "success",
       sessionId: "thread-abc-123",
-      tokens: { input: 150, output: 75, cacheRead: 100 },
+      // docs/252 phase 3 — Codex's `inputTokens` INCLUDES `cachedInputTokens`
+      // (measured against the app-server), where Claude's are disjoint. The
+      // adapter normalizes to the disjoint convention here, at the boundary that
+      // knows this harness's semantics, so the pricing code can multiply the
+      // classes independently without double-charging the cached tokens at the
+      // full input rate: 150 - 100 = 50.
+      tokens: { input: 50, output: 75, cacheRead: 100 },
       contextTokens: 130,
       contextWindow: 272000,
     });
     expect((resultEvent as any).error).toBeUndefined();
+  });
+
+  // planning#341 — the case the phase-3 test above did not carry, which is how
+  // the defect survived: `cacheWriteInputTokens` is a detail of `inputTokens`
+  // just as `cachedInputTokens` is, so it must come out of the input class too.
+  // Left in, `costFromRates` bills those tokens at the ordinary input rate AND
+  // again at the write rate (1.25× input on OpenAI's GPT-5.6 family), with no
+  // harness dollar figure to mask it. Verified against codex-cli 0.146.0, which
+  // passes the Responses `input_tokens` total through untouched.
+  it("takes cache-written tokens out of the input class as well as the cached ones", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("thread/tokenUsage/updated", {
+      tokenUsage: {
+        total: {
+          inputTokens: 1000,
+          outputTokens: 42,
+          cachedInputTokens: 800,
+          cacheWriteInputTokens: 50,
+        },
+      },
+    });
+    fakeProc.sendNotification("turn/completed", { turn: { id: "t", status: "completed" } });
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_result")).toBe(true);
+    });
+
+    const resultEvent = events.find((e) => e.type === "agent_result");
+    // 1000 - 800 - 50, and the three input classes still sum back to the total.
+    expect(resultEvent).toMatchObject({
+      tokens: { input: 150, output: 42, cacheRead: 800, cacheWrite: 50 },
+    });
+  });
+
+  // planning#367 — every token test above drives ONE turn, which is exactly how
+  // this survived: the app-server's `total` is the running rollup for the whole
+  // THREAD, and `thread/resume` restores the accumulator from the rollout file
+  // (which lives in the persistent `~/.codex` volume), so it never resets for
+  // the life of a ShipIt session. Recorded verbatim, turn N of a session posted
+  // the first N turns' tokens — a ~31-turn session read as roughly 11–18× its
+  // real usage, in `atApiRatesUsd` and, on a metered key, in real money.
+  //
+  // ShipIt runs one app-server per turn, so each turn here gets its own adapter
+  // and its own fake process — nothing carries over in memory, which is the
+  // point: the baseline comes from the snapshot `thread/resume` REPLAYS.
+  // Measured against codex-cli 0.146.0 with a local Responses recorder returning
+  // identical usage every call: `total.inputTokens` 1000 → 2000 → 3000 while
+  // `last.inputTokens` stayed 1000.
+  describe("a resumed thread's cumulative token rollup", () => {
+    const THREAD = "thread-abc-123";
+
+    /** Drive one whole ShipIt turn and return its `agent_result`. */
+    async function runTurn(opts: {
+      turnId: string;
+      resume?: boolean;
+      /** Snapshots the app-server pushes, in order, as `[turnId, rollup]`. */
+      snapshots: [string, { inputTokens: number; cachedInputTokens: number; outputTokens: number }][];
+    }): Promise<AgentEvent | undefined> {
+      await createAndInit("Hello", opts.resume ? THREAD : undefined);
+      events.length = 0;
+      for (const [turnId, total] of opts.snapshots) {
+        fakeProc.sendNotification("thread/tokenUsage/updated", {
+          threadId: THREAD,
+          turnId,
+          tokenUsage: { total, last: { totalTokens: 1000 }, modelContextWindow: 272000 },
+        });
+      }
+      fakeProc.sendNotification("turn/completed", {
+        threadId: THREAD,
+        turn: { id: opts.turnId, status: "completed" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "agent_result")).toBe(true);
+      });
+      return events.find((e) => e.type === "agent_result");
+    }
+
+    // The three turns consumed the same thing, so they must record the same
+    // thing — not 1×, 2×, 3×.
+    const ROLLUP_AFTER = [
+      { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 10 },
+      { inputTokens: 2000, cachedInputTokens: 1600, outputTokens: 20 },
+      { inputTokens: 3000, cachedInputTokens: 2400, outputTokens: 30 },
+    ];
+    const ONE_TURN = { input: 200, output: 10, cacheRead: 800 };
+
+    it("records each turn's own tokens across three resumed turns", async () => {
+      const first = await runTurn({ turnId: "turn-1", snapshots: [["turn-1", ROLLUP_AFTER[0]]] });
+      expect(first).toMatchObject({ tokens: ONE_TURN, contextTokens: 1000, contextWindow: 272000 });
+
+      // Turn 2 resumes: the app-server replays turn 1's snapshot under turn 1's
+      // id before turn 2 reports its own. That replay is the baseline.
+      const second = await runTurn({
+        turnId: "turn-2",
+        resume: true,
+        snapshots: [["turn-1", ROLLUP_AFTER[0]], ["turn-2", ROLLUP_AFTER[1]]],
+      });
+      expect(second).toMatchObject({ tokens: ONE_TURN });
+
+      const third = await runTurn({
+        turnId: "turn-3",
+        resume: true,
+        snapshots: [["turn-2", ROLLUP_AFTER[1]], ["turn-3", ROLLUP_AFTER[2]]],
+      });
+      expect(third).toMatchObject({ tokens: ONE_TURN });
+    });
+
+    // The secondary defect: the replayed snapshot is the PREVIOUS turn's
+    // cumulative total and the previous turn's context occupancy. A turn that
+    // reported nothing of its own must record nothing, not that snapshot again.
+    it("records nothing for a turn whose only snapshot is the replayed one", async () => {
+      const result = await runTurn({
+        turnId: "turn-2",
+        resume: true,
+        snapshots: [["turn-1", ROLLUP_AFTER[0]]],
+      });
+      expect((result as { tokens?: unknown }).tokens).toBeUndefined();
+      expect((result as { contextTokens?: unknown }).contextTokens).toBeUndefined();
+      // The model's context window is not turn-scoped, so it still comes through.
+      expect(result).toMatchObject({ contextWindow: 272000 });
+    });
+  });
+
+  // Reported nothing and consumed zero are different facts, and a present-but-
+  // empty rollup is the first. An all-zero `tokens` block prices to $0 through
+  // the catalogue's rates and asserts a Codex turn was free.
+  it("emits no tokens for a usage rollup with no numbers in it", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("thread/tokenUsage/updated", { tokenUsage: { total: {} } });
+    fakeProc.sendNotification("turn/completed", { turn: { id: "t", status: "completed" } });
+
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_result")).toBe(true);
+    });
+
+    const resultEvent = events.find((e) => e.type === "agent_result");
+    expect((resultEvent as { tokens?: unknown }).tokens).toBeUndefined();
   });
 
   it("maps account/rateLimits/updated to an agent_rate_limits event", async () => {
@@ -1062,17 +1223,18 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("maps Codex spawn_agent collab calls to the Agent subagent tool shape", async () => {
+  it("maps a live-shape Codex subAgentActivity spawn to the Agent tool shape", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
     fakeProc.sendNotification("item/started", {
+      threadId: "thread-abc-123",
       item: {
-        type: "collabToolCall",
+        type: "subAgentActivity",
         id: "agent-001",
-        tool: "spawn_agent",
-        newThreadId: "thread-child-1",
-        prompt: "Review the session lifecycle code.\nFocus on reconnect behavior.",
+        kind: "started",
+        agentThreadId: "thread-child-1",
+        agentPath: "/root/session_reviewer",
       },
     });
 
@@ -1090,11 +1252,155 @@ describe("CodexAdapter", () => {
           input: {
             agent: "thread-child-1",
             subagent_type: "Codex",
-            description: "Review the session lifecycle code.",
-            prompt: "Review the session lifecycle code.\nFocus on reconnect behavior.",
+            description: "Run session_reviewer subagent",
           },
         },
       ],
+    });
+  });
+
+  it("nests Codex child-thread progress and final output under the spawn call", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      threadId: "thread-abc-123",
+      item: {
+        type: "subAgentActivity",
+        id: "agent-001",
+        kind: "started",
+        agentThreadId: "thread-child-1",
+        agentPath: "/root/reconnect_inspector",
+      },
+    });
+    fakeProc.sendNotification("thread/started", {
+      thread: { id: "thread-child-1", agentNickname: "Scout", agentRole: "explorer" },
+    });
+    fakeProc.sendNotification("turn/started", {
+      threadId: "thread-child-1",
+      turn: { id: "child-turn-1" },
+    });
+    fakeProc.sendNotification("item/started", {
+      threadId: "thread-child-1",
+      item: { type: "commandExecution", id: "child-shell-1", command: "rg reconnect src" },
+    });
+    fakeProc.sendNotification("item/completed", {
+      threadId: "thread-child-1",
+      item: {
+        type: "commandExecution",
+        id: "child-shell-1",
+        command: "rg reconnect src",
+        aggregatedOutput: "3 matches",
+        exitCode: 0,
+      },
+    });
+    fakeProc.sendNotification("item/agentMessage/delta", {
+      threadId: "thread-child-1",
+      itemId: "child-message-1",
+      delta: "Reconnect is safe.",
+    });
+    fakeProc.sendNotification("item/completed", {
+      threadId: "thread-child-1",
+      item: { type: "agentMessage", id: "child-message-1", text: "Reconnect is safe." },
+    });
+    await vi.waitFor(() => expect(events).toHaveLength(4));
+    expect(events[1]).toMatchObject({
+      type: "agent_assistant",
+      parentToolUseId: "agent-001",
+      content: [{ type: "tool_use", id: "child-shell-1", name: "shell" }],
+    });
+    expect(events[2]).toMatchObject({
+      type: "agent_tool_result",
+      parentToolUseId: "agent-001",
+      content: [{ type: "tool_result", tool_use_id: "child-shell-1", content: "3 matches" }],
+    });
+    expect(events[3]).toMatchObject({
+      type: "agent_assistant",
+      parentToolUseId: "agent-001",
+      content: [{ type: "text", text: "Reconnect is safe." }],
+    });
+    fakeProc.sendNotification("turn/completed", {
+      threadId: "thread-child-1",
+      turn: { id: "child-turn-1", status: "completed" },
+    });
+    await vi.waitFor(() => expect(events).toHaveLength(5));
+    expect(events[4]).toMatchObject({
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "agent-001", content: "Reconnect is safe." }],
+    });
+    expect(events.some((event) => event.type === "agent_result")).toBe(false);
+
+    fakeProc.sendNotification("turn/completed", {
+      threadId: "thread-abc-123",
+      turn: { id: "parent-turn-1", status: "completed" },
+    });
+    await vi.waitFor(() => expect(events).toHaveLength(6));
+    expect(events[5]).toMatchObject({
+      type: "agent_result",
+      status: "success",
+      sessionId: "thread-abc-123",
+    });
+  });
+
+  it("closes a resultless Codex spawn card before the parent turn ends", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      threadId: "thread-abc-123",
+      item: {
+        type: "subAgentActivity",
+        id: "agent-orphan",
+        kind: "started",
+        agentThreadId: "thread-child-orphan",
+        agentPath: "/root/background_investigator",
+      },
+    });
+    fakeProc.sendNotification("turn/completed", {
+      threadId: "thread-abc-123",
+      turn: { id: "parent-turn-1", status: "completed" },
+    });
+
+    await vi.waitFor(() => expect(events).toHaveLength(3));
+    expect(events[1]).toMatchObject({
+      type: "agent_tool_result",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "agent-orphan",
+        content: "Subagent ended without a final response.",
+      }],
+    });
+    expect(events[2]).toMatchObject({ type: "agent_result", sessionId: "thread-abc-123" });
+  });
+
+  it("marks an errored Codex child result as an error", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      threadId: "thread-abc-123",
+      item: {
+        type: "subAgentActivity",
+        id: "agent-failed",
+        kind: "started",
+        agentThreadId: "thread-child-failed",
+        agentPath: "/root/build_checker",
+      },
+    });
+    fakeProc.sendNotification("turn/completed", {
+      threadId: "thread-child-failed",
+      turn: { id: "child-turn-failed", status: "failed" },
+    });
+
+    await vi.waitFor(() => expect(events).toHaveLength(2));
+    expect(events[1]).toMatchObject({
+      type: "agent_tool_result",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "agent-failed",
+        content: "Subagent ended with status: failed",
+        is_error: true,
+      }],
     });
   });
 
@@ -1696,6 +2002,61 @@ describe("CodexAdapter", () => {
       expect((events.find((e) => e.type === "agent_compacted") as any).trigger).toBe("manual");
       expect(fakeProc.killed).toBe(true);
     });
+
+    // planning#367 — a compact-only run makes a model request of its own and
+    // raises the thread's rollup. Measured against codex-cli 0.146.0: it gets a
+    // `turn/started` with its own id, the resume replays the previous turn's
+    // snapshot under the OLD id, and the compaction's own snapshots follow under
+    // the new one (total 1000 → 2000, `last` ending at the post-compaction
+    // occupancy). Before the per-turn subtraction those tokens were swept up by
+    // the next turn's cumulative total; now the next turn's baseline excludes
+    // them, so a synthetic result without them would drop them for good.
+    it("records a compact-only run's own tokens in its synthetic result", async () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.on("event", (e) => events.push(e));
+      adapter.run({ prompt: "/compact", cwd: "/workspace", sessionId: "thread-xyz", compact: true });
+
+      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+      fakeProc.sendResponse(1, { serverInfo: {} });
+      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+      fakeProc.sendResponse(2, { threadId: "thread-xyz" });
+      await vi.waitFor(() => {
+        expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
+      });
+
+      // The resume replays the previous turn's rollup under its old id…
+      fakeProc.sendNotification("thread/tokenUsage/updated", {
+        threadId: "thread-xyz",
+        turnId: "turn-before",
+        tokenUsage: {
+          total: { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 10 },
+          last: { totalTokens: 1010 },
+          modelContextWindow: 258400,
+        },
+      });
+      // …and the compaction turn reports its own consumption under its own.
+      fakeProc.sendNotification("turn/started", { threadId: "thread-xyz", turn: { id: "turn-compact" } });
+      fakeProc.sendNotification("thread/tokenUsage/updated", {
+        threadId: "thread-xyz",
+        turnId: "turn-compact",
+        tokenUsage: {
+          total: { inputTokens: 2000, cachedInputTokens: 1600, outputTokens: 20 },
+          last: { totalTokens: 5439 },
+          modelContextWindow: 258400,
+        },
+      });
+      fakeProc.sendNotification("item/completed", { item: { type: "contextCompaction", id: "c4" } });
+
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "agent_result")).toBe(true);
+      });
+      expect(events.find((e) => e.type === "agent_result")).toMatchObject({
+        // The compaction's own request — not the thread's running total.
+        tokens: { input: 200, output: 10, cacheRead: 800 },
+        // The post-compaction occupancy, which is the point of the run.
+        contextTokens: 5439,
+      });
+    });
   });
 });
 
@@ -1709,13 +2070,29 @@ describe("CodexAdapter", () => {
 // ---------------------------------------------------------------------------
 
 describe("CodexAdapter / dual-mode auth (feature 119)", () => {
+  // The HOME tests below drive `agentHome()` / `codexHome()`, both of which read
+  // process.env at call time — so the block owns those variables outright and
+  // puts the runner's own values back afterwards.
+  const HOME_VARS = ["HOME", "AGENT_HOME", "CODEX_HOME", "DEEPSEEK_API_KEY"] as const;
+  let savedEnv: Partial<Record<(typeof HOME_VARS)[number], string | undefined>> = {};
+
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
+    savedEnv = {};
+    for (const name of HOME_VARS) {
+      savedEnv[name] = process.env[name];
+      Reflect.deleteProperty(process.env, name);
+    }
     lastSpawnEnv = undefined;
   });
 
   afterEach(() => {
     delete process.env.OPENAI_API_KEY;
+    for (const name of HOME_VARS) {
+      const value = savedEnv[name];
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    }
   });
 
   it("emits auth_required when neither file auth nor OPENAI_API_KEY is present", () => {
@@ -1740,20 +2117,62 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-platform-billing");
   });
 
-  // docs/150 — in local mode the CLI must read the account this session was
-  // routed to. The default (no resolver) is the containerized path and must
-  // leave HOME/CODEX_HOME exactly as inherited.
-  it("leaves HOME and CODEX_HOME untouched when no resolver is given", async () => {
+  // planning#390 — with no resolver the spawn still names its own HOME, from
+  // AGENT_HOME rather than from whatever the hosting process inherited. In a
+  // session container the two are the same value, so this is a no-op there; in
+  // local mode the ambient HOME is the dogfood image's root-owned /root and
+  // inheriting it killed the CLI before the turn started.
+  it("spawns with the AGENT_HOME-derived home when no resolver is given", async () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
-    const inheritedHome = process.env.HOME;
+    process.env.AGENT_HOME = "/workspace/.inner-shipit/agent-home";
+    process.env.HOME = "/root";
 
     const adapter = new CodexAdapter(() => false);
     adapter.on("event", () => { /* drain */ });
     adapter.run({ prompt: "Hello", cwd: "/workspace" });
 
     await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
-    expect(lastSpawnEnv?.HOME).toBe(inheritedHome);
-    expect(lastSpawnEnv?.CODEX_HOME).toBe(process.env.CODEX_HOME);
+    expect(lastSpawnEnv?.HOME).toBe("/workspace/.inner-shipit/agent-home");
+    expect(lastSpawnEnv?.CODEX_HOME).toBe("/workspace/.inner-shipit/agent-home/.codex");
+  });
+
+  // planning#390's actual failure shape: a redirected service resolves to a
+  // string/reserved route, for which `resolveLocalAgentHome` returns undefined.
+  // That branch must still carry a writable HOME/CODEX_HOME — it is the one the
+  // whole Codex×custom-URL surface runs on, and the one that used to inherit
+  // /root while a subscription turn (an account route) got an explicit home.
+  it("carries a writable HOME/CODEX_HOME for a redirected service whose resolver returns undefined", async () => {
+    process.env.AGENT_HOME = "/workspace/.inner-shipit/agent-home";
+    process.env.HOME = "/root";
+    process.env.DEEPSEEK_API_KEY = "sk-deepseek";
+
+    const adapter = new CodexAdapter(
+      () => false,
+      // A reserved/string route: pinned to no provider account, so the resolver
+      // answers `undefined` exactly as it does in the dogfood instance.
+      { resolveHome: () => undefined },
+    );
+    adapter.on("event", () => { /* drain */ });
+    adapter.run({
+      prompt: "Hello",
+      cwd: "/workspace",
+      serviceRouting: {
+        serviceId: "deepseek",
+        serviceName: "DeepSeek",
+        billingMode: "key",
+        style: "openai-responses",
+        baseUrl: "https://api.deepseek.com/v1",
+        credentialSourceEnv: "DEEPSEEK_API_KEY",
+        credentialTarget: { kind: "env", name: "OPENAI_API_KEY" },
+      },
+    });
+
+    await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+    expect(lastSpawnEnv?.HOME).toBe("/workspace/.inner-shipit/agent-home");
+    expect(lastSpawnEnv?.CODEX_HOME).toBe("/workspace/.inner-shipit/agent-home/.codex");
+    // The redirect itself is unchanged — the credential still lands in the
+    // harness's own variable, so this guard cannot pass on a spawn that lost it.
+    expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-deepseek");
   });
 
   it("spawns against the resolved account root, and probes that root's auth.json", async () => {
@@ -1777,7 +2196,7 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(probed).toContain(`${root}/.codex`);
   });
 
-  // docs/150 req 12 — failover moves work between subscriptions only.
+  // docs/150-multiple-provider-subscriptions req 12 — failover moves work between subscriptions only.
   it("does not fall back to the env key for a scoped account with no auth.json", () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
 

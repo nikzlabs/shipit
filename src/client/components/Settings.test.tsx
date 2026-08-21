@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings, type SettingsProps } from "./Settings.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -17,15 +17,36 @@ afterEach(() => {
     missingRequired: [],
   });
   useSettingsStore.getState().setProviderAccounts([]);
+  useSettingsStore.getState().setCredentialRoutes([]);
   useSettingsStore.setState({
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
     claudeAuthDiagnostics: {},
+    providerAccountNotices: {},
   });
 });
 
-const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true };
-const claudeUnauthed = { ...claudeAuthed, authConfigured: false };
+/**
+ * docs/252 req 17 — a card exists because a credential does, and there is no
+ * longer any way to summon an empty one: the reveal these tests used to call
+ * went with the hand-off that needed it. So a test that wants Anthropic's
+ * subscription card connects an account, which is what a user does.
+ */
+function connectAnthropicSubscription(status: "ready" | "authenticating" = "ready") {
+  const now = Date.now();
+  useSettingsStore.getState().setProviderAccounts([{
+    id: "acct-seed",
+    serviceId: "anthropic", billingMode: "sub", via: "account",
+    label: "Anthropic account",
+    isPrimary: true,
+    status,
+    createdAt: now,
+    updatedAt: now,
+  }]);
+}
+
+const claudeAuthed = { id: "claude", name: "Claude Code", installed: true, hasRunnableModels: true, models: ["claude-sonnet"], supportsReview: true };
+const claudeUnauthed = { ...claudeAuthed, hasRunnableModels: false };
 
 const defaultProps: SettingsProps = {
   initialContent: "",
@@ -33,8 +54,6 @@ const defaultProps: SettingsProps = {
   githubStatus: { authenticated: false },
   onGitHubTokenSubmit: vi.fn(),
   onGitHubLogout: vi.fn(),
-  onApiKey: vi.fn(),
-  onClearApiKey: vi.fn(),
   agentList: [claudeAuthed],
   gitIdentity: { name: "", email: "" },
   onGitIdentitySave: vi.fn(),
@@ -89,35 +108,59 @@ describe("Settings", () => {
   });
 });
 
-describe("Settings - Agent → Claude tab", () => {
-  it("shows Claude tab by default", () => {
+describe("Settings - Services → Anthropic subscription", () => {
+  it("opens on Services, with no per-vendor tab to open on instead", () => {
     render(<Settings {...defaultProps} />);
-    const tab = screen.getByRole("tab", { name: "Claude" });
-    expect(tab).toHaveAttribute("data-state", "active");
+    expect(screen.getByRole("tab", { name: "Services" })).toHaveAttribute("data-state", "active");
+    expect(screen.queryByRole("tab", { name: "Claude" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Codex" })).not.toBeInTheDocument();
   });
 
-  it("renders the unified provider-accounts card as the only connect surface (req 16)", () => {
+  /**
+   * The whole point of the unification: the account rows sit INSIDE the same
+   * `ServiceCard` a string-delivered credential gets, rather than in a
+   * borderless block above the list. A card-shaped assertion is what catches a
+   * regression back to two components; asserting the rows exist would not.
+   */
+  it("renders the account rows inside the service's own card, titled by service", () => {
+    connectAnthropicSubscription();
     render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    const card = screen.getByTestId("service-card-anthropic:sub");
+    expect(within(card).getByTestId("provider-account-rows-claude")).toBeInTheDocument();
+    expect(within(card).getByRole("heading", { name: "Anthropic" })).toBeInTheDocument();
+    // The harness vendor never titles a credential card (docs/252 D2).
+    expect(screen.queryByText(/Claude subscriptions/i)).not.toBeInTheDocument();
     // The provider-wide singleton card is gone — connecting the first account
     // must not be a different flow from connecting the second.
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
-    // Settings is the full-density rendering: onboarding passes `compact` and
-    // drops this line, so pin that it is only dropped there.
-    expect(screen.getByText(/fails over between them/i)).toBeInTheDocument();
   });
 
-  it("offers the same Add account affordance when no accounts exist yet", () => {
+  it("lists no card at all for a subscription with no credential (req 17)", () => {
+    // The state the reveal used to create, and could not undo: a service listed
+    // with nothing in it and no way to remove it. It is now unreachable — a
+    // card exists because a credential does.
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
-    expect(screen.getByTestId("provider-accounts-empty-claude")).toBeInTheDocument();
-    expect(screen.getByTestId("provider-account-add-claude")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
   });
 
-  it("creates the account and immediately starts its sign-in, first account included", async () => {
+  it("gives a connected card no way of its own to add another (req 17)", () => {
+    connectAnthropicSubscription();
+    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    const card = screen.getByTestId("service-card-anthropic:sub");
+    expect(within(card).queryByTestId("provider-account-add-claude")).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /add/i })).not.toBeInTheDocument();
+    // The one door, on the panel rather than the card.
+    expect(screen.getByTestId("services-add")).toBeInTheDocument();
+  });
+
+  it("creates the account and starts its sign-in from inside the add-service dialog (req 17)", async () => {
+    // req 17 — the sign-in is the last step of the one flow, not a hand-off to
+    // a button on a card. The card does not exist yet at this point, and that
+    // is the change: the account is what brings it into being.
     const now = Date.now();
     const created = {
       id: "acct-1",
-      provider: "claude" as const,
+      serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const,
       label: "Claude account 1",
       isPrimary: true,
       status: "authenticating" as const,
@@ -128,7 +171,10 @@ describe("Settings - Agent → Claude tab", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
-    await userEvent.click(screen.getByTestId("provider-account-add-claude"));
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.click(screen.getByTestId("add-service-sign-in"));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/provider-accounts",
@@ -146,43 +192,57 @@ describe("Settings - Agent → Claude tab", () => {
   // docs/150 — one login process per provider, so the server rejects a second
   // concurrent sign-in with a 409. Surface that as a disabled affordance rather
   // than letting the user click into the refusal.
-  it("blocks a second concurrent sign-in while one account is authenticating", () => {
+  it("blocks a second concurrent sign-in while one account is authenticating", async () => {
     const now = Date.now();
-    const base = { provider: "claude" as const, isPrimary: false, createdAt: now, updatedAt: now };
+    // `externalId` is what says a row has connected before — without it these
+    // read as sign-in attempts, which the panel does not list (req 17).
+    const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
-      { ...base, id: "acct-a", label: "Account A", isPrimary: true, status: "authenticating" as const },
-      { ...base, id: "acct-b", label: "Account B", status: "unavailable" as const },
+      { ...base, id: "acct-a", label: "Account A", isPrimary: true, status: "authenticating" as const, externalId: "ext-a" },
+      { ...base, id: "acct-b", label: "Account B", status: "unavailable" as const, externalId: "ext-b" },
     ]);
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
 
-    expect(screen.getByTestId("provider-account-add-claude")).toBeDisabled();
+    // docs/252 req 19 — both verbs live in the row's `\u22ef` now, so the guard is
+    // asserted where the user meets it. Radix renders one menu at a time, so
+    // each row is opened in turn.
+    await userEvent.click(screen.getByLabelText("Manage Account B"));
     // The row that is NOT signing in can't start a competing flow...
-    expect(screen.getByTestId("provider-account-connect-acct-b")).toBeDisabled();
+    expect(screen.getByTestId("provider-account-connect-acct-b")).toHaveAttribute("data-disabled");
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(screen.getByLabelText("Manage Account A"));
     // ...and the one that is keeps its own way out.
-    expect(screen.getByTestId("provider-account-cancel-login-acct-a")).toBeEnabled();
+    expect(screen.getByTestId("provider-account-cancel-login-acct-a")).not.toHaveAttribute("data-disabled");
   });
 
-  // docs/150 — the Claude CLI-output buffer is keyed by account id, so a row
-  // can only ever render its OWN attempt's output. It was one provider-wide
-  // buffer before, which read correctly only because the server refuses a
-  // second concurrent per-provider sign-in; the scoping now lives in the data.
-  it("renders a row's Claude CLI output only on the account that produced it", () => {
+  /**
+   * docs/150 — the Claude CLI-output buffer is keyed by account id, so a
+   * sign-in can only ever render its OWN attempt's output. It was one
+   * provider-wide buffer before, which read correctly only because the server
+   * refuses a second concurrent per-provider sign-in; the scoping lives in the
+   * data now.
+   *
+   * docs/252 req 19 moved WHERE it renders: the challenge left the row for the
+   * add-service dialog's step 3, because `AccountChallenge` returns `null`
+   * until the auth URL arrives and the row showed nothing in between. So the
+   * keying is asserted through the reconnect that opens that dialog — the
+   * account whose sign-in is running gets its own output, and the other
+   * account's rows carry none.
+   */
+  it("renders the Claude CLI output of the account whose sign-in is running, and no other", async () => {
     const now = Date.now();
-    const base = { provider: "claude" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
+    const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, status: "ready" as const, externalId: "ext", createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
-      { ...base, id: "acct-a", label: "Account A", isPrimary: true },
-      { ...base, id: "acct-b", label: "Account B" },
+      { ...base, id: "acct-a", label: "Account A", isPrimary: true, externalId: "ext-a" },
+      { ...base, id: "acct-b", label: "Account B", externalId: "ext-b" },
     ]);
-    // Both rows carry a live challenge — the condition under which the shared
-    // buffer would have rendered twice.
-    for (const id of ["acct-a", "acct-b"]) {
-      useSettingsStore.getState().setProviderAccountAuth("claude", id, {
-        provider: "claude",
-        accountId: id,
-        verificationUri: `https://claude.ai/oauth/authorize?${id}`,
-      });
-    }
+    useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-a", {
+      loginId: "anthropic-oauth",
+      accountId: "acct-a",
+      verificationUri: "https://claude.ai/oauth/authorize?acct-a",
+    });
     useSettingsStore.getState().appendClaudeAuthLog("acct-a", {
       attemptId: "attempt-a",
       timestamp: "2026-08-03T00:00:00.000Z",
@@ -190,114 +250,84 @@ describe("Settings - Agent → Claude tab", () => {
       source: "claude_stdout",
       message: "A's CLI output.",
     });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    await userEvent.click(screen.getByLabelText("Manage Account A"));
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct-a"));
 
-    expect(screen.getByTestId("provider-account-diagnostics-acct-a")).toBeInTheDocument();
+    expect(await screen.findByTestId("provider-account-diagnostics-acct-a")).toBeInTheDocument();
     expect(screen.queryByTestId("provider-account-diagnostics-acct-b")).not.toBeInTheDocument();
     expect(screen.getByText(/A's CLI output\./)).toBeInTheDocument();
-  });
-
-  it("asks which account to move pinned sessions to instead of dead-ending on the refusal", async () => {
-    const now = Date.now();
-    const base = { provider: "claude" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
-    useSettingsStore.getState().setProviderAccounts([
-      { ...base, id: "acct-a", label: "Account A", isPrimary: true },
-      { ...base, id: "acct-b", label: "Account B" },
-    ]);
-
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 409,
-        json: async () => ({
-          error: "1 session(s) are pinned to this account. Choose a replacement account to move them to (available: acct-b).",
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ accounts: [{ ...base, id: "acct-b", label: "Account B" }], switchedSessionIds: ["s1"] }),
-      });
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(<Settings {...defaultProps} />);
-    await userEvent.click(within(screen.getByTestId("provider-account-row-acct-a")).getByRole("button", { name: "Disconnect" }));
-
-    // The refusal names the alternatives, so it becomes a picker on the row.
-    const panel = await screen.findByTestId("provider-account-replacement-acct-a");
-    expect(panel).toHaveTextContent("1 session(s) are pinned");
-    await userEvent.click(screen.getByTestId("provider-account-confirm-replacement-acct-a"));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenLastCalledWith(
-      "/api/provider-accounts/claude/acct-a?replacementAccountId=acct-b",
-      expect.objectContaining({ method: "DELETE" }),
-    ));
     vi.unstubAllGlobals();
   });
 
-  // docs/150 req 23 — the last account disconnects without a picker, because
-  // there is nothing to pick. The user is told what it cost.
-  it("disconnects the last account and reports the sessions left without one", async () => {
+  // docs/260-turn-level-account-routing req 3 — disconnecting is one click, even for the last account.
+  // Sessions are never pinned to an account, so there is no replacement to
+  // pick and no moved/stranded bookkeeping to report: the row disappears, the
+  // response carries `{accounts}` only, and each session simply routes among
+  // whatever accounts remain at its next turn.
+  it("disconnects the last account in one click with nothing to report (docs/260-turn-level-account-routing req 3)", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
-      { provider: "claude", id: "acct-a", label: "Account A", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
+      { serviceId: "anthropic", billingMode: "sub", via: "account", id: "acct-a", label: "Account A", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
     ]);
 
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ accounts: [], switchedSessionIds: [], strandedSessionIds: ["s1", "s2"] }),
+      json: async () => ({ accounts: [] }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Settings {...defaultProps} />);
-    await userEvent.click(within(screen.getByTestId("provider-account-row-acct-a")).getByRole("button", { name: "Disconnect" }));
+    await userEvent.click(screen.getByLabelText("Manage Account A"));
+    await userEvent.click(screen.getByTestId("provider-account-disconnect-acct-a"));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/provider-accounts/claude/acct-a",
       expect.objectContaining({ method: "DELETE" }),
     ));
-    // No replacement picker — that panel is for the answerable case only.
+    // The row is gone, and with the last credential gone so is the card —
+    // req 17's "a service the user has not connected does not appear", arrived
+    // at from the other direction. There is nothing left to keep it on screen:
+    // a *reported* disconnect keeps its card through the notice clause, and
+    // this one has nothing to report.
+    await waitFor(() => expect(screen.queryByTestId("provider-account-row-acct-a")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("service-card-anthropic:sub")).not.toBeInTheDocument();
+    // No replacement picker, no moved/stranded notice, no toast (req 3).
     expect(screen.queryByTestId("provider-account-replacement-acct-a")).not.toBeInTheDocument();
-    await waitFor(() => expect(useUiStore.getState().toast?.message).toContain(
-      "2 session(s) have no connected Claude account",
-    ));
+    expect(screen.queryByTestId("provider-accounts-notice-claude")).not.toBeInTheDocument();
+    expect(useUiStore.getState().toast).toBeNull();
     vi.unstubAllGlobals();
   });
 
-  it("exposes the API key fallback via a collapsed disclosure with metered-billing copy", async () => {
+  /**
+   * The collapsed "Use an API key instead" disclosure is gone with the vendor
+   * tabs. It wrote through to the very credential the Services add-flow writes
+   * (`anthropic:key`), so it was a second editor for one fact — and the card it
+   * produced is one row down in the same list.
+   */
+  it("offers no second API-key editor on the subscription card", () => {
+    connectAnthropicSubscription();
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    expect(screen.queryByTestId("provider-toggle-api-key-claude")).not.toBeInTheDocument();
     expect(screen.queryByTestId("provider-api-key-input-claude")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByTestId("provider-toggle-api-key-claude"));
-    const input = screen.getByTestId("provider-api-key-input-claude");
-    expect(input).toHaveAttribute("type", "password");
-    expect(screen.getByTestId("provider-api-key-panel-claude")).toHaveTextContent(/never fails over onto API billing/i);
   });
 
-  it("calls onApiKey when an API key is submitted via the disclosure", async () => {
-    const onApiKey = vi.fn();
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} onApiKey={onApiKey} />);
-    await userEvent.click(screen.getByTestId("provider-toggle-api-key-claude"));
-    fireEvent.change(screen.getByTestId("provider-api-key-input-claude"), { target: { value: "sk-ant-test123" } });
-    await userEvent.click(screen.getByTestId("provider-api-key-submit-claude"));
-    await waitFor(() => expect(onApiKey).toHaveBeenCalledWith("sk-ant-test123"));
-  });
-
-  it("rejects an API key with the wrong prefix before calling the handler", async () => {
-    const onApiKey = vi.fn();
-    render(<Settings {...defaultProps} agentList={[claudeUnauthed]} onApiKey={onApiKey} />);
-    await userEvent.click(screen.getByTestId("provider-toggle-api-key-claude"));
-    fireEvent.change(screen.getByTestId("provider-api-key-input-claude"), { target: { value: "sk-wrong" } });
-    await userEvent.click(screen.getByTestId("provider-api-key-submit-claude"));
-    expect(await screen.findByTestId("provider-api-key-error-claude")).toHaveTextContent("sk-ant-");
-    expect(onApiKey).not.toHaveBeenCalled();
-  });
-
-  it("renders provider accounts and primary state", () => {
+  /**
+   * docs/252 req 19/21 — the row is `label \u00b7 quota \u00b7 \u22ef`. It was a
+   * permanently-mounted rename input over the account's UUID, with a status
+   * pill and a *Primary* badge beside three ghost buttons; the name is now
+   * text, the badge is gone with the concept (`isPrimary` is stamped on read
+   * from position, so it was never a property to display), and a row that is
+   * fine says nothing at all.
+   */
+  it("renders each account as one line of its own name, with no badge and no field", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
       {
         id: "acct-primary",
-        provider: "claude",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
         label: "Primary Anthropic",
         isPrimary: true,
         status: "ready",
@@ -306,10 +336,11 @@ describe("Settings - Agent → Claude tab", () => {
       },
       {
         id: "acct-backup",
-        provider: "claude",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
         label: "Backup Anthropic",
         isPrimary: false,
         status: "unavailable",
+        externalId: "ext-backup",
         createdAt: now,
         updatedAt: now,
       },
@@ -317,33 +348,61 @@ describe("Settings - Agent → Claude tab", () => {
 
     render(<Settings {...defaultProps} />);
 
-    expect(screen.getByDisplayValue("Primary Anthropic")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("Backup Anthropic")).toBeInTheDocument();
-    expect(screen.getByText("Primary")).toBeInTheDocument();
+    expect(screen.getByText("Primary Anthropic")).toBeInTheDocument();
+    expect(screen.getByText("Backup Anthropic")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Primary Anthropic")).not.toBeInTheDocument();
+    expect(screen.queryByText("Primary")).not.toBeInTheDocument();
+    // The account this install cannot authenticate says so, in words.
+    expect(screen.getByTestId("provider-account-row-acct-backup-status"))
+      .toHaveTextContent("reconnect needed");
   });
 
+  /**
+   * docs/252 req 19 — the challenge renders in the add-service dialog, reached
+   * here by *Reconnect*, because that dialog is the one sign-in surface. The
+   * account-scoped code endpoint is what this really pins: a second account's
+   * code must not be submitted against the provider's singleton path.
+   */
   it("renders and submits the scoped Claude authorization flow for an authenticated secondary account", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
       id: "acct-secondary",
-      provider: "claude",
+      serviceId: "anthropic", billingMode: "sub", via: "account",
       label: "Claude account 2",
       isPrimary: false,
-      status: "authenticating",
+      // `unavailable` rather than `authenticating`: the row is one the user is
+      // about to reconnect, and a row already mid-login offers *Cancel
+      // sign-in* instead. The live challenge below is what the reconnect then
+      // renders in the dialog.
+      status: "unavailable",
+      // Authenticated before — the row is re-connecting, not being created. A
+      // row with no identity and no successful login is an attempt, and the
+      // panel does not list attempts (req 17); the add-service dialog owns
+      // those, and `ServicesPanel.test.tsx` covers them there.
+      externalId: "ext-secondary",
       createdAt: now,
       updatedAt: now,
     }]);
-    useSettingsStore.getState().setProviderAccountAuth("claude", "acct-secondary", {
-      provider: "claude",
-      accountId: "acct-secondary",
-      verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
-    });
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
+    await userEvent.click(screen.getByLabelText("Manage Claude account 2"));
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct-secondary"));
 
-    expect(screen.getByRole("link", { name: "Open Claude authentication page" })).toHaveAttribute(
+    // The challenge is seeded AFTER the reconnect starts, which is when it
+    // really arrives — and it has to be: adopting an attempt cancels whatever
+    // login was running against it and clears the challenge that login left, so
+    // a code seeded beforehand is a dead one the dialog is right to drop.
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-secondary", {
+        loginId: "anthropic-oauth",
+        accountId: "acct-secondary",
+        verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
+      });
+    });
+
+    expect(await screen.findByRole("link", { name: "Open Anthropic authentication page" })).toHaveAttribute(
       "href",
       "https://claude.ai/oauth/authorize?secondary=true",
     );
@@ -556,97 +615,116 @@ describe("Settings - Instructions tab", () => {
   });
 });
 
-describe("Settings - Agent → Codex tab", () => {
+describe("Settings - Services → OpenAI subscription", () => {
   const codexInstalled = {
     id: "codex",
     name: "Codex",
     installed: true,
-    authConfigured: false,
+    hasRunnableModels: false,
     models: ["codex-mini-latest"],
     supportsReview: false,
   };
 
-  async function switchToCodexTab() {
-    await userEvent.click(screen.getByTestId("settings-tab-agent-codex"));
-  }
-
-  it("shows the Codex sub-tab when codex is in agentList", () => {
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    expect(screen.getByTestId("settings-tab-agent-codex")).toBeInTheDocument();
-  });
-
-  it("hides the Codex sub-tab when agentList has no codex", () => {
-    render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
-    expect(screen.queryByTestId("settings-tab-agent-codex")).not.toBeInTheDocument();
-  });
-
-  it("renders the unified provider-accounts card inside the Codex sub-tab", async () => {
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    await switchToCodexTab();
-    expect(screen.getByTestId("provider-accounts-card-codex")).toBeInTheDocument();
-    expect(screen.queryByTestId("codex-auth-card")).not.toBeInTheDocument();
-  });
-
-  it("calls onSetAgentEnv when the codex API key fallback is submitted", async () => {
-    const onSetAgentEnv = vi.fn();
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} onSetAgentEnv={onSetAgentEnv} />);
-    await switchToCodexTab();
-    await userEvent.click(screen.getByTestId("provider-toggle-api-key-codex"));
-    fireEvent.change(screen.getByTestId("provider-api-key-input-codex"), { target: { value: "sk-test-key" } });
-    await userEvent.click(screen.getByTestId("provider-api-key-submit-codex"));
-    await waitFor(() => expect(onSetAgentEnv).toHaveBeenCalledWith("codex", "OPENAI_API_KEY", "sk-test-key"));
-  });
-
-  it("renders a Codex device code on the row that started the sign-in (req 16)", async () => {
+  /** As above: the card is summoned by connecting an account, not by a reveal. */
+  function connectOpenAiSubscription() {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
-      id: "acct-codex-2",
-      provider: "codex",
-      label: "Codex account 2",
-      isPrimary: false,
-      status: "authenticating",
+      id: "acct-openai",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "OpenAI account",
+      isPrimary: true,
+      status: "ready",
       createdAt: now,
       updatedAt: now,
     }]);
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-codex-2", {
-      provider: "codex",
-      accountId: "acct-codex-2",
-      verificationUri: "https://auth.openai.com/device",
-      userCode: "WXYZ-1234",
+  }
+
+  it("renders OpenAI's account rows in the same card component, not a Codex tab", () => {
+    connectOpenAiSubscription();
+    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    const card = screen.getByTestId("service-card-openai:sub");
+    expect(within(card).getByTestId("provider-account-rows-codex")).toBeInTheDocument();
+    expect(within(card).getByRole("heading", { name: "OpenAI" })).toBeInTheDocument();
+    expect(screen.queryByTestId("codex-auth-card")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Codex" })).not.toBeInTheDocument();
+  });
+
+  it("offers no second API-key editor for OpenAI either", () => {
+    connectOpenAiSubscription();
+    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    expect(screen.queryByTestId("provider-toggle-api-key-codex")).not.toBeInTheDocument();
+  });
+
+  /**
+   * docs/252 req 19 — the device code renders in the add-service dialog, which
+   * *Reconnect* opens on step 3 for this account. Still one implementation for
+   * both providers (docs/150-multiple-provider-subscriptions req 16): `AccountChallenge` shows OpenAI's
+   * device-code variant here and Anthropic's paste variant above.
+   */
+  it("renders a Codex device code in the sign-in it belongs to (req 16)", async () => {
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([{
+      id: "acct-codex-2",
+      serviceId: "openai", billingMode: "sub", via: "account",
+      label: "Codex account 2",
+      isPrimary: false,
+      status: "unavailable",
+      externalId: "ext-codex-2",
+      createdAt: now,
+      updatedAt: now,
+    }]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    await userEvent.click(screen.getByLabelText("Manage Codex account 2"));
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct-codex-2"));
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-codex-2", {
+        loginId: "openai-chatgpt",
+        accountId: "acct-codex-2",
+        verificationUri: "https://auth.openai.com/device",
+        userCode: "WXYZ-1234",
+      });
     });
 
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    await switchToCodexTab();
-
-    // The device code belongs to the row, not to a provider-wide card — the
-    // shared row shell renders the device-code variant here and the
-    // code-paste variant for Claude.
-    expect(screen.getByTestId("provider-account-user-code-acct-codex-2")).toHaveTextContent("WXYZ-1234");
-    expect(screen.getByRole("link", { name: "Open Codex authentication page" })).toHaveAttribute(
+    // The device code belongs to the ACCOUNT, not to a provider-wide card.
+    expect(await screen.findByTestId("provider-account-user-code-acct-codex-2")).toHaveTextContent("WXYZ-1234");
+    expect(screen.getByRole("link", { name: "Open OpenAI authentication page" })).toHaveAttribute(
       "href",
       "https://auth.openai.com/device",
     );
+    vi.unstubAllGlobals();
   });
 
-  it("keeps two concurrent row sign-ins independent", async () => {
+  /**
+   * Two sign-ins can no longer be on screen at once — the challenge lives in
+   * one modal dialog (docs/252 req 19) and the server runs one login per
+   * provider anyway. What replaces "keep them independent" is the constraint
+   * that makes the question moot: **no challenge renders on a row at all.**
+   * Rebuilding one there is the regression this catches, and it would return
+   * the poorer copy the change removed — `AccountChallenge` renders `null`
+   * until the auth URL lands, so the row would again show nothing in between.
+   */
+  it("renders no challenge on the rows themselves, whatever their state", () => {
     const now = Date.now();
-    const base = { provider: "codex" as const, isPrimary: false, createdAt: now, updatedAt: now };
+    const base = { serviceId: "openai" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
-      { ...base, id: "acct-a", label: "Codex A", status: "authenticating" },
-      { ...base, id: "acct-b", label: "Codex B", status: "authenticating" },
+      { ...base, id: "acct-a", label: "Codex A", status: "authenticating", externalId: "ext-a" },
+      { ...base, id: "acct-b", label: "Codex B", status: "authenticating", externalId: "ext-b" },
     ]);
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-a", {
-      provider: "codex", accountId: "acct-a", verificationUri: "https://auth.openai.com/device", userCode: "AAAA-1111",
+    useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-a", {
+      loginId: "openai-chatgpt", accountId: "acct-a", verificationUri: "https://auth.openai.com/device", userCode: "AAAA-1111",
     });
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-b", {
-      provider: "codex", accountId: "acct-b", verificationUri: "https://auth.openai.com/device", userCode: "BBBB-2222",
+    useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-b", {
+      loginId: "openai-chatgpt", accountId: "acct-b", verificationUri: "https://auth.openai.com/device", userCode: "BBBB-2222",
     });
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-    await switchToCodexTab();
 
-    expect(screen.getByTestId("provider-account-user-code-acct-a")).toHaveTextContent("AAAA-1111");
-    expect(screen.getByTestId("provider-account-user-code-acct-b")).toHaveTextContent("BBBB-2222");
+    expect(screen.queryByTestId("provider-account-user-code-acct-a")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("provider-account-user-code-acct-b")).not.toBeInTheDocument();
+    // The rows still say what is going on — in a word, which is req 19's rule
+    // for a state that needs attention.
+    expect(screen.getByTestId("provider-account-row-acct-a-status")).toHaveTextContent("signing in");
   });
 });
 
@@ -917,30 +995,27 @@ describe("Settings - Advanced tab", () => {
   });
 });
 
-describe("Settings - Sidebar groups", () => {
-  it("renders Agent heading", () => {
+describe("Settings - Sidebar", () => {
+  /**
+   * docs/252 — one flat list, led by Services. The "Agent" group and its two
+   * per-vendor tabs are gone: a credential belongs to a service, not to the
+   * harness that drives it, so there is no vendor axis left to group on.
+   */
+  it("lists one flat group with Services first and no vendor tabs", () => {
     render(<Settings {...defaultProps} />);
-    // The Agent group header is rendered as plain text in the sidebar (the
-    // sub-tabs underneath are labelled "Claude" / "Codex").
-    const headings = screen.getAllByText("Agent");
-    expect(headings.length).toBeGreaterThan(0);
-  });
-
-  it("renders General heading", () => {
-    render(<Settings {...defaultProps} />);
-    expect(screen.getByText("General")).toBeInTheDocument();
-  });
-
-  it("renders Claude sub-tab in sidebar", () => {
-    render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("settings-tab-agent-claude")).toBeInTheDocument();
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs[0]).toHaveTextContent("Services");
+    expect(screen.queryByText("Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("General")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-tab-agent-claude")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-tab-agent-codex")).not.toBeInTheDocument();
   });
 });
 
 describe("Settings - Tab switching", () => {
-  it("Agent → Claude tab is selected by default", () => {
+  it("Services is selected by default", () => {
     render(<Settings {...defaultProps} />);
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    expect(screen.getByTestId("services-panel")).toBeInTheDocument();
   });
 
   it("clicking Integrations tab switches to integrations section", async () => {
@@ -972,11 +1047,11 @@ describe("Settings - Tab switching", () => {
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
 
-  it("clicking Claude tab switches back", async () => {
+  it("clicking Services switches back", async () => {
     render(<Settings {...defaultProps} />);
     await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
-    await userEvent.click(screen.getByRole("tab", { name: "Claude" }));
-    expect(screen.getByTestId("provider-accounts-card-claude")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Services" }));
+    expect(screen.getByTestId("services-panel")).toBeInTheDocument();
     expect(screen.queryByTestId("github-token-form")).not.toBeInTheDocument();
   });
 });

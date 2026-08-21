@@ -1,5 +1,5 @@
 /**
- * Reference → destination resolution (docs/248 reqs 10, 11, 12, 16, 19).
+ * Reference → destination resolution (docs/248-declared-issue-trackers reqs 10, 11, 12, 16, 19).
  *
  * A thin layer **above** `parseIssueRef`, which stays pure and context-free. The
  * split is the design: the parser answers "what shape is this string", this
@@ -82,13 +82,45 @@ function keyEquals(a: string | undefined, b: string | undefined): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
-/** The declared names available, for a fail-closed error message (req 19). */
+/**
+ * The declared names available, for a fail-closed error message (req 19).
+ *
+ * Plugin repositories (docs/262 req 25) are listed **separately**: they are
+ * addressable exactly like a tracker, but naming them alongside the project's
+ * trackers would suggest they are where its work is tracked. A repository that
+ * is both keeps its tracker name here and contributes its plugin name to the
+ * second list, because both names really do resolve.
+ */
 export function describeDeclaredNames(destinations: TrackerDestinations): string {
-  const names = destinations.map((d) => d.name).filter((n): n is string => Boolean(n));
-  if (names.length === 0) {
-    return "This repository declares no issue trackers — add an `issues.trackers` entry to shipit.yaml.";
-  }
-  return `Declared trackers: ${names.join(", ")}.`;
+  const trackerNames = destinations
+    .filter((d) => d.origin !== "plugin")
+    .map((d) => d.name)
+    .filter((n): n is string => Boolean(n));
+  const pluginNames = destinations.flatMap((d) => d.pluginNames ?? []);
+  const trackers =
+    trackerNames.length > 0
+      ? `Declared trackers: ${trackerNames.join(", ")}.`
+      : "This repository declares no issue trackers — add an `issues.trackers` entry to shipit.yaml.";
+  if (pluginNames.length === 0) return trackers;
+  return `${trackers} Declared plugin repositories, for feedback on the plugin itself: ${pluginNames.join(", ")}.`;
+}
+
+/**
+ * The declared name a lookup actually matched (docs/262 req 25).
+ *
+ * Normally the destination's own `name`. It differs when the typed name is a
+ * plugin repository's, aliased onto a destination the project also declares as
+ * a tracker: there both names are declared and *which one was used states the
+ * intent*, so collapsing to the primary name would erase it — and with it the
+ * running-commit context and the plugin guards keyed on it (review finding).
+ * Returns the DECLARED spelling, not the typed one, so casing stays canonical.
+ */
+export function matchedDestinationName(
+  destination: TrackerDestination,
+  asTyped: string,
+): string | undefined {
+  const needle = asTyped.trim().toLowerCase();
+  return destination.pluginNames?.find((n) => n.toLowerCase() === needle) ?? destination.name;
 }
 
 /**
@@ -103,7 +135,14 @@ export function resolveDestinationByName(
   name: string,
 ): { ok: true; destination: TrackerDestination } | { ok: false; reason: IssueRefFailure; message: string } {
   const needle = name.trim().toLowerCase();
-  const matches = destinations.filter((d) => d.name?.toLowerCase() === needle);
+  // A plugin repository's name addresses its destination too (docs/262 req 25),
+  // including when that destination is a tracker the repository ALSO declared —
+  // there the two names share one destination on purpose, so both must match it.
+  const matches = destinations.filter(
+    (d) =>
+      d.name?.toLowerCase() === needle ||
+      d.pluginNames?.some((p) => p.toLowerCase() === needle),
+  );
   if (matches.length === 1) return { ok: true, destination: matches[0] };
   if (matches.length === 0) {
     return {
@@ -251,7 +290,7 @@ function canonicalMatches(dest: TrackerDestination, id: TrackerId): boolean {
  * Turn a name form's raw suffix into the named backend's native issue id.
  *
  * GitHub wants a bare number. Linear wants a key, so `roadmap#304` is completed
- * from the declaration's team (`SHI-304`) — that completion is the whole reason
+ * from the declaration's team (`planning#306`) — that completion is the whole reason
  * requirement 5 puts the team key in the declaration.
  *
  * Where the suffix carries a team key of its OWN and it disagrees with the
@@ -293,7 +332,7 @@ function resolveNamedSuffix(
     }
     const keyed = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(suffix);
     // req 16 — in a name form the NAME is authoritative and an embedded backend
-    // id is advisory. `roadmap#SHI-304` written before `roadmap` was re-pointed
+    // id is advisory. `planning#306` written before `roadmap` was re-pointed
     // to team OPS resolves to `OPS-304` rather than failing on the stale key,
     // which is what lets requirement 15's emitted form survive a re-point.
     //
@@ -306,13 +345,17 @@ function resolveNamedSuffix(
     issueId = keyed ? `${team}-${keyed[2]}` : `${team}-${suffix}`;
   }
 
+  // docs/262 req 25 — keep the name the reference actually used when it is a
+  // plugin repository aliased onto a tracker destination: both are declared, and
+  // the choice is what says "this is about the plugin".
+  const resolvedName = matchedDestinationName(destination, name) ?? name;
   return {
     ok: true,
     ref: {
       tracker: destination.id,
-      trackerName: destination.name ?? name,
+      trackerName: resolvedName,
       identifier: formatIssueReference({
-        trackerName: destination.name ?? name,
+        trackerName: resolvedName,
         kind: destination.kind,
         key: destination.key,
         issueId,

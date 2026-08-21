@@ -110,21 +110,18 @@ interface FileReviewState {
   ) => Promise<void>;
 
   /**
-   * Apply a `review_updated` WS message (docs/125): the chat-native review
-   * subagent wrote anchored comments via `submit_review_comments`, and the
-   * server broadcast the authoritative updated draft. Replace the local draft
-   * so an open modal renders the new AI comments live.
-   */
-  applyReviewUpdate: (review: FileReview) => void;
-
-  /**
    * Send the draft. Marks it sent, returns the constructed prompt + the
    * sent review (so callers can render a structured "Sent comments" card
    * with filePath + commentCount), moves the sent review into history, and
    * clears the draft locally so the modal can fetch a fresh one on next
    * open.
    */
-  sendDraft: (sessionId: string, filePath: string) => Promise<SentDraftPayload | null>;
+  sendDraft: (
+    sessionId: string,
+    filePath: string,
+    /** docs/260 — the send dialog's free-text note, stored with the sent review. */
+    note?: string,
+  ) => Promise<SentDraftPayload | null>;
 
   /**
    * Discard an empty draft. Called when the user closes the modal without
@@ -274,12 +271,7 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
     }
   },
 
-  applyReviewUpdate: (review) => {
-    const key = makeKey(review.sessionId, review.filePath);
-    set((s) => ({ draftByKey: { ...s.draftByKey, [key]: review } }));
-  },
-
-  sendDraft: async (sessionId, filePath) => {
+  sendDraft: async (sessionId, filePath, note) => {
     const key = makeKey(sessionId, filePath);
     const draft = get().draftByKey[key];
     if (!draft || draft.comments.length === 0) return null;
@@ -287,6 +279,7 @@ export const useFileReviewStore = create<FileReviewState>((set, get) => ({
       const { prompt, review } = await request<{ prompt: string; review: FileReview }>(
         "POST",
         `/api/sessions/${sessionId}/file-reviews/${draft.id}/send`,
+        { note: note?.trim() ?? "" },
       );
       set((s) => ({
         draftByKey: { ...s.draftByKey, [key]: null },

@@ -10,7 +10,7 @@ import { useUiStore } from "../../stores/ui-store.js";
 
 /**
  * Jump-to-issue chip for the doc's `issue:` pointer. A pointer that resolves to a
- * **declared** destination (docs/248 req 11) opens ShipIt's inline issue detail
+ * **declared** destination (docs/248-declared-issue-trackers req 11) opens ShipIt's inline issue detail
  * view — inline beats link-out (CLAUDE.md §1/§2), and the deep link to the
  * upstream tracker lives inside that view. Mirrors the docs-list chip
  * (`DocsViewer.IssueChip`) and the changed-docs strip; an unresolvable pointer

@@ -6,8 +6,12 @@ import type { PrReviewThread } from "../../server/shared/types/github-types.js";
 
 // Mock Monaco DiffEditor — it doesn't work in jsdom
 vi.mock("@monaco-editor/react", () => ({
-  DiffEditor: (props: { original: string; modified: string; language: string }) => (
-    <div data-testid="mock-diff-editor" data-language={props.language}>
+  DiffEditor: (props: { original: string; modified: string; language: string; options?: unknown }) => (
+    <div
+      data-testid="mock-diff-editor"
+      data-language={props.language}
+      data-options={JSON.stringify(props.options ?? {})}
+    >
       <pre data-testid="original">{props.original}</pre>
       <pre data-testid="modified">{props.modified}</pre>
     </div>
@@ -122,6 +126,20 @@ describe("DiffPanel", () => {
       expect(screen.getByTestId("mock-diff-editor")).toBeInTheDocument();
       expect(screen.getByTestId("original")).toHaveTextContent("const x = 1;");
       expect(screen.getByTestId("modified")).toHaveTextContent("const x = 2;");
+    });
+
+    it("wraps long lines instead of scrolling each file section sideways", () => {
+      render(<DiffPanel {...defaultProps()} />);
+      const options = JSON.parse(
+        screen.getByTestId("mock-diff-editor").getAttribute("data-options") ?? "{}",
+      );
+      expect(options.wordWrap).toBe("on");
+      // The diff-specific override has to agree with wordWrap, or the original
+      // and modified panes wrap differently and their rows stop lining up.
+      expect(options.diffWordWrap).toBe("on");
+      // Wrap points are a function of width, so a stale layout is now a wrong
+      // rendering rather than just a clipped viewport.
+      expect(options.automaticLayout).toBe(true);
     });
 
     it("shows binary file message for binary files", () => {

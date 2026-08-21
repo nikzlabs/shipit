@@ -3,9 +3,11 @@
  */
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
-import type { AgentReasoningCapability, SubAgentDefaults } from "../../shared/types/agent-types.js";
-import type { AccountSelectionMode, FailoverCutoffs, ProviderAccount, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
+import type { AgentReasoningCapability, ReviewerSlotView, RoleView } from "../../shared/types/agent-types.js";
+import type { EligibleModel } from "../../shared/agent-registry.js";
+import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
+import type { BillingMode } from "../../shared/catalogue/types.js";
 
 // ---- Types for service function results ----
 
@@ -13,8 +15,16 @@ export interface AgentInfo {
   id: AgentId;
   name: string;
   installed: boolean;
-  authConfigured: boolean;
+  hasRunnableModels: boolean;
   models: string[];
+  /**
+   * docs/252 phase 3 (req 8) — the models this install can actually run on this
+   * harness, each as the `(service, billing mode, model)` triple it is selected
+   * by. `models` above is this list's ids, kept for the call sites that still
+   * speak bare ids; the picker reads this one, because an id alone cannot say
+   * which service is billing the turn (req 11).
+   */
+  eligibleModels: EligibleModel[];
   /**
    * Whether the agent backend can run the chat-native AI review flow
    * (docs/125-chat-native-ai-review). The client uses this to gate the
@@ -49,6 +59,21 @@ export interface AgentInfo {
 }
 
 export interface GlobalSettings {
+  /**
+   * docs/257 req 8 — whether this install can actually run a turn: at least one
+   * installed agent with a configured credential. Computed server-side (see
+   * `computeCanRunTurns`) because the client must not re-derive it — three
+   * consumers reading one field is what keeps the composer, the starter-prompts
+   * gate and the onboarding panel from disagreeing.
+   */
+  canRunTurns: boolean;
+  /**
+   * docs/257 req 9 — when harness onboarding was first completed (ISO), or
+   * absent for "never". The onboarding panel's presence is `absent && the
+   * GitHub gate is not up`; nothing ever clears it, so removing every
+   * credential later does not bring the panel back.
+   */
+  harnessOnboardingCompletedAt?: string;
   gitIdentity: { name: string; email: string };
   systemPrompt: string;
   agents: AgentInfo[];
@@ -70,13 +95,17 @@ export interface GlobalSettings {
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi: boolean;
   /**
-   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
-   * id. Reaching either window's cutoff moves new work to the next eligible
-   * account; both default to 90%. Always populated for every registered agent,
-   * so the client never has to know the default.
+   * docs/150-multiple-provider-subscriptions reqs 4-6 — proactive failover cutoffs. Reaching either window's
+   * cutoff moves new work to the next eligible credential; both default to 90%.
+   *
+   * docs/252 phase 2 — keyed by `credentialModeKey(serviceId, billingMode)`,
+   * not by agent id, and populated for every **subscription** mode in the
+   * catalogue (a `key` mode has no entry: keys do not fail over, so there is no
+   * group to order). Always populated, so the client never has to know the
+   * default.
    */
   failoverCutoffs: Record<string, FailoverCutoffs>;
-  /** docs/150 req 21 — per-provider account selection mode, one entry per registered agent. */
+  /** docs/150-multiple-provider-subscriptions req 21 — selection mode, keyed exactly as {@link GlobalSettings.failoverCutoffs}. */
   accountSelectionMode: Record<string, AccountSelectionMode>;
   /** docs/218 — when true, resuming a merged, untouched session resets its branch to the latest base before the turn. Default on. */
   autoResetMergedBranch: boolean;
@@ -86,11 +115,27 @@ export interface GlobalSettings {
    */
   enableSubAgents: boolean;
   /**
-   * docs/217 — per-agent defaults applied when an agent is invoked as a
-   * sub-agent (governs the `shipit agent run` path). Keyed by agent id; set on
-   * each agent's Settings tab. Empty object when nothing is configured.
+   * docs/252 phase 7 (req 9) — the model the user PINNED for non-turn work
+   * (session naming, pull-request descriptions), or absent for "follow the
+   * install".
+   *
+   * Absent is a state, not a missing value, which is why this is not filled in
+   * with the resolved answer: req 9's setting has to be visible as *unset* so
+   * the user can see it tracks the install rather than a vendor they may stop
+   * paying for. What it currently resolves to rides
+   * {@link GlobalSettings.nonTurnModelResolved}.
    */
-  agentSubAgentDefaults: Record<string, SubAgentDefaults>;
+  nonTurnModel?: NonTurnModelSelection;
+  /**
+   * docs/252 phase 7 (req 9) — what non-turn work would run on **right now**,
+   * pin or no pin, including the derived harness.
+   *
+   * Computed server-side rather than re-derived in the browser: the derivation
+   * is req 9's rule (first eligible model, first installed harness offering it)
+   * and a second implementation in the client is how the setting starts
+   * disagreeing with what actually runs. Absent when nothing is runnable.
+   */
+  nonTurnModelResolved?: NonTurnModelResolved;
   /**
    * docs/163 — voice-note delivery mode: "native" (inline note + TTS),
    * "external" (webhook only), or "both". Default "native".
@@ -102,7 +147,86 @@ export interface GlobalSettings {
    * Provider subscription accounts grouped by provider (docs/150). Reserved
    * env/API-key routes are not represented here.
    */
-  providerAccounts: ProviderAccount[];
+  providerAccounts: CredentialRoute[];
+  /**
+   * docs/252 phase 2 — every credential the user holds, keyed by
+   * `(serviceId, billingMode)` and in selection order within each group.
+   *
+   * A superset of {@link GlobalSettings.providerAccounts}: an account row IS a
+   * `via: "account"` credential of its vendor's subscription mode, and appears
+   * in both while the docs/150 routing machinery still reads the account shape.
+   * Carries **no secret** — see `CredentialRoute`.
+   */
+  credentialRoutes: CredentialRoute[];
+  /**
+   * docs/261 phase 3 (reqs 1, 5, 8) — both reviewer slots, in the user's order,
+   * each with its pin (if any) and what it resolves to right now.
+   *
+   * Always two entries, always present: a reviewer nobody has configured is
+   * *auto-configured*, which is a state with an answer rather than a missing
+   * value, and rendering a blank there is exactly what req 8 exists to stop.
+   *
+   * Also carried on the `agent_list` SSE payload — see `buildAgentListPayload`
+   * — so an open Reviewer tab re-renders when a credential is added or removed
+   * instead of showing the answer from before.
+   */
+  reviewers: ReviewerSlotView[];
+  /**
+   * docs/264 phase 1 — every agent role, sorted by name, each carrying what it
+   * resolves to right now or why it cannot run.
+   *
+   * **The reviewer is always in this list**, synthesized rather than stored, so
+   * an install nobody has configured still has a role to name. It is the one
+   * entry with no `resolved`: its params are docs/261's two ranked candidate
+   * slots, which ride {@link GlobalSettings.reviewers} above, and a single
+   * resolution here would have to pick one of the two.
+   *
+   * Empty **only** when there is no credential store to read — the same "the
+   * settings read failed" state `reviewers` reports as two unresolved slots.
+   */
+  roles: RoleView[];
+}
+
+/**
+ * docs/261 phase 3 — the reviewer wire shapes.
+ *
+ * Declared in `shared/types/agent-types.ts` beside `ReviewerPin`, not here: the
+ * browser renders them verbatim, so they are shared wire types rather than
+ * orchestrator-internal ones. Re-exported so this module stays the one import
+ * the settings layer needs.
+ */
+export type { ReviewerPinPatch, ReviewerResolved, ReviewerSlotView } from "../../shared/types/agent-types.js";
+
+/**
+ * docs/264 phase 1 — the role wire shapes, declared beside {@link ReviewerPin}
+ * in `shared/types/agent-types.ts` for the same reason: the browser renders them
+ * verbatim, so they are shared wire types rather than orchestrator-internal
+ * ones. Re-exported so this module stays the one import the settings layer needs.
+ */
+export type {
+  AgentRole,
+  RoleParams,
+  RoleResolved,
+  RoleUnavailableReason,
+  RoleView,
+} from "../../shared/types/agent-types.js";
+
+/** docs/252 phase 7 — the pinned non-turn selection, as it crosses the wire. */
+export interface NonTurnModelSelection {
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+}
+
+/** docs/252 phase 7 — the resolved answer, for display beside the "Default" option. */
+export interface NonTurnModelResolved extends NonTurnModelSelection {
+  serviceName: string;
+  /** Model label, not the raw id — the same string the picker shows. */
+  label: string;
+  /** Derived (req 9): the first installed harness offering this model. */
+  harnessId: AgentId;
+  /** Whether the resolution came from the user's pin or from the derived default. */
+  source: "pinned" | "default";
 }
 
 export interface GitHubStatus {

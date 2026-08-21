@@ -16,6 +16,14 @@ description: Replace the out-of-band AI review endpoint with a chat-native flow 
 > decoupled** — only the AI-review prompt stopped embedding draft comments. See
 > docs/203 for the current design.
 >
+> **Fully removed since:** with docs/220 taking out the last `submit_review`
+> write path, a review comment can only be human-authored, so the
+> `source: "human" | "ai"` discriminator described below — and every AI branch
+> hanging off it (the purple AI comment style, the "AI" label, the dead
+> `applyReviewUpdate` / `review_updated` client plumbing) — is gone. The
+> `file_review_comments.source` column remains in SQLite but is neither read nor
+> written.
+>
 > **Status note (docs/151 superseded the AI-comment storage path, now itself
 > superseded by docs/203).** The
 > chat-native review *flow* described here is still live — the same

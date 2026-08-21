@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Egress firewall installer — docs/172-agent-containment Gap 1 (SHI-90), Tier A.
+# Egress firewall installer — docs/172-agent-containment Gap 1 (planning#92), Tier A.
 #
 # Runs in a SHORT-LIVED PRIVILEGED SIDECAR that shares the agent container's
 # network namespace:
@@ -10,7 +10,7 @@
 # It installs a default-deny `iptables OUTPUT` policy plus an `ipset` allow-set
 # INTO THE AGENT'S NETNS, then exits. The rules persist for the life of the
 # netns (i.e. the agent container); the agent itself has CapDrop:ALL / no
-# NET_ADMIN and runs non-root (SHI-31), so it cannot flush or alter them.
+# NET_ADMIN and runs non-root (planning#33), so it cannot flush or alter them.
 #
 # Inputs (env, space-separated):
 #   EGRESS_ALLOWED_HOSTS  FQDNs to resolve (in the agent's own DNS view) and allow
@@ -19,7 +19,7 @@
 # Ordering matters: we resolve names + add members BEFORE switching OUTPUT to
 # DROP (once default-deny is up we could no longer resolve anything).
 #
-# This script is verified on a live Docker host (the SHI-90 checklist), not in
+# This script is verified on a live Docker host (the planning#92 checklist), not in
 # unit tests — the orchestrator-side logic that feeds it is unit-tested in
 # egress-firewall.test.ts / egress-firewall-install.test.ts.
 
@@ -32,18 +32,57 @@ log() { echo "[egress-init] $*"; }
 
 # --- 1. Resolve allowed hostnames (before deny) ----------------------------
 ips=()
+resolve_dir="$(mktemp -d)"
+resolve_pids=()
+all_resolve_pids=()
+resolve_files=()
+trap 'rm -rf "$resolve_dir"' EXIT
+query_index=0
 for host in ${EGRESS_ALLOWED_HOSTS:-}; do
-  # A and AAAA; `dig +short` may emit CNAME target lines, so keep only literals.
+  for record_type in A AAAA; do
+    result_file="$resolve_dir/$query_index"
+    query_index=$((query_index + 1))
+    resolve_files+=("$result_file")
+    # Resolve concurrently. Each query gets one short attempt, and the group
+    # below has a separate deadline in case `dig` itself becomes unresponsive.
+    dig +time=1 +tries=1 +short "$record_type" "$host" >"$result_file" 2>/dev/null &
+    resolve_pids+=("$!")
+    all_resolve_pids+=("$!")
+  done
+done
+
+resolve_deadline=$((SECONDS + ${EGRESS_DNS_DEADLINE_SECONDS:-5}))
+while ((${#resolve_pids[@]} > 0)); do
+  remaining=()
+  for pid in "${resolve_pids[@]}"; do
+    kill -0 "$pid" 2>/dev/null && remaining+=("$pid")
+  done
+  resolve_pids=("${remaining[@]}")
+  ((${#resolve_pids[@]} == 0)) && break
+  if ((SECONDS >= resolve_deadline)); then
+    kill "${resolve_pids[@]}" 2>/dev/null || true
+    break
+  fi
+  sleep 0.05
+done
+for pid in "${all_resolve_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+for result_file in "${resolve_files[@]}"; do
   while read -r ip; do
-    [[ -n "$ip" ]] && ips+=("$ip")
-  done < <(dig +short A "$host" 2>/dev/null | grep -E '^[0-9.]+$' || true)
-  while read -r ip; do
-    [[ -n "$ip" ]] && ips+=("$ip")
-  done < <(dig +short AAAA "$host" 2>/dev/null | grep -E '^[0-9a-fA-F:]+$' || true)
+    if [[ "$ip" =~ ^[0-9.]+$ || "$ip" =~ ^[0-9a-fA-F:]+$ ]]; then ips+=("$ip"); fi
+  done <"$result_file"
 done
 log "resolved ${#ips[@]} IP(s) from ${EGRESS_ALLOWED_HOSTS:-<none>}"
 
+# Test seam for the bounded resolver. Production never sets this value.
+[[ "${EGRESS_RESOLVE_ONLY:-0}" == "1" ]] && exit 0
+
 # --- 2. Build the ipsets (hash:net holds bare IPs and CIDRs) ----------------
+# A service container can be stopped and started with the same id but a fresh
+# network namespace, and allowlist refresh also reinstalls in-place. Remove the
+# old filter references before replacing the sets so this operation is
+# idempotent (`ipset destroy` returns EBUSY while a rule still references it).
+iptables -F OUTPUT 2>/dev/null || true
+ip6tables -F OUTPUT 2>/dev/null || true
 ipset destroy "$SET4" 2>/dev/null || true
 ipset destroy "$SET6" 2>/dev/null || true
 ipset create "$SET4" hash:net family inet
@@ -68,7 +107,7 @@ for cidr in ${EGRESS_ALLOWED_CIDRS:-}; do add_member "$cidr"; done
 # NOTE: this allows ONLY the agent's *default-gateway* subnet. A session's
 # compose/preview network is attached to the agent LATER (after `docker compose
 # up`), so its subnet is opened separately, at join time, by the companion
-# allow-subnet.sh sidecar (SHI-90, GH #1495) — that's how the agent's browser
+# allow-subnet.sh sidecar (planning#92, GH #1495) — that's how the agent's browser
 # reaches the live preview.
 default_gw="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
 local_subnet=""
@@ -160,6 +199,8 @@ log "default-deny OUTPUT policy installed"
 # excluded here (they egress via the uid-:53 filter allow). Inserted at the TOP of
 # nat/OUTPUT so it precedes Docker's own 127.0.0.11 DNAT rules.
 install_dns_redirect() {
+  while iptables -t nat -D OUTPUT -d "$DOCKER_DNS" -p udp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53 2>/dev/null; do :; done
+  while iptables -t nat -D OUTPUT -d "$DOCKER_DNS" -p tcp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53 2>/dev/null; do :; done
   iptables -t nat -I OUTPUT 1 -d "$DOCKER_DNS" -p udp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53
   iptables -t nat -I OUTPUT 1 -d "$DOCKER_DNS" -p tcp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53
 }
@@ -185,6 +226,7 @@ install_sni_redirect() {
   local rl
   rl="$(cat /proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null || echo '?')"
   [[ "$rl" == "1" ]] || log "WARN: route_localnet=$rl (expected 1) — SNI redirect may not route to the proxy; ensure the agent container sets net.ipv4.conf.all.route_localnet=1"
+  while iptables -t nat -D OUTPUT -p tcp --dport 443 -m owner ! --uid-owner "$PROXY_UID" -j REDIRECT --to-ports "$PROXY_PORT" 2>/dev/null; do :; done
   iptables -t nat -A OUTPUT -p tcp --dport 443 -m owner ! --uid-owner "$PROXY_UID" -j REDIRECT --to-ports "$PROXY_PORT"
 }
 if [[ -n "$PROXY_UID" ]]; then
@@ -199,7 +241,7 @@ fi
 # resolver may not be up yet). If it's reachable, the OUTPUT policy isn't taking
 # effect: exit non-zero so the orchestrator tears the container down rather than
 # run it with open egress. (Positive/allowed-host + DNS checks live in the
-# post-create SHI-90 verification, once the resolver is running.)
+# post-create planning#92 verification, once the resolver is running.)
 if curl -sS --max-time 5 https://192.0.2.1/ >/dev/null 2>&1; then
   log "SELF-TEST FAILED: 192.0.2.1 reachable — egress NOT contained"
   exit 1

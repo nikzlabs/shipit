@@ -65,4 +65,4 @@ Full removal (no vestigial scaffolding left), driven by `tsc`:
       consult card (agent need not re-emit it) (Phase 1)
 - [x] Update `docs/203`: AI-review (`submit_review`) write path removed; cross-agent
       → consult card, same-model → prose; `ReviewCard`/`aiReview` kept legacy-only
-- [x] Comment the rollout on SHI-195 (Phase 1 + Phase 2)
+- [x] Comment the rollout on planning#197 (Phase 1 + Phase 2)

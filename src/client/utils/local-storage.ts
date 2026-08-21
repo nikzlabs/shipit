@@ -1,6 +1,8 @@
 import type { AgentId, IssuePriorityLevel, PermissionMode } from "../../server/shared/types.js";
 import type { IssueFilters } from "../components/issues-filter.js";
 import { DEFAULT_SORT_PREFS, type GroupKey, type SortDir, type SortKey, type SortPrefs } from "../components/issues-sort.js";
+import type { BillingMode, ModelSelection } from "../../server/shared/catalogue/index.js";
+import { parseSelection, resolveModelSelection, selectionExists, serializeSelection } from "../../server/shared/catalogue/index.js";
 
 /**
  * Parse a JSON string with a guaranteed fallback. Returns `fallback` when `raw`
@@ -44,9 +46,11 @@ export function getLocalStorageObject<T>(
 }
 
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
+const SIDEBAR_VIEW_KEY = "shipit-sidebar-view";
 const RIGHT_TAB_KEY = "shipit-right-tab";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
 const MODEL_PREFERENCE_KEY = "vibe-model-id";
+const PARKED_HARNESS_KEY = "shipit-parked-harness";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
 const NOTIFY_ON_FINISH_KEY = "shipit-notify-on-finish";
 const SOUND_ON_FINISH_KEY = "shipit-sound-on-finish";
@@ -68,10 +72,31 @@ export function saveSidebarCollapsed(collapsed: boolean): void {
   }
 }
 
+// docs/260 — which of the sidebar's two views is showing: the repo tree
+// ("all") or the flat needs-attention list ("attention"). Browser-local view
+// state, like the collapse flag above; not server-persisted.
+export type SidebarView = "all" | "attention";
+
+export function getSavedSidebarView(): SidebarView {
+  try {
+    return localStorage.getItem(SIDEBAR_VIEW_KEY) === "attention" ? "attention" : "all";
+  } catch {
+    return "all";
+  }
+}
+
+export function saveSidebarView(view: SidebarView): void {
+  try {
+    localStorage.setItem(SIDEBAR_VIEW_KEY, view);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 // NOTE: "services" was removed (docs/175 — Services is now a drawer inside the
 // Preview tab, not a standalone tab). A legacy persisted "services" value fails
 // the membership check in getSavedRightTab() and falls back to "preview".
-const VALID_RIGHT_TABS = ["preview", "docs", "issues", "files", "terminal", "history", "pr", "host", "present"] as const;
+const VALID_RIGHT_TABS = ["preview", "docs", "issues", "files", "plugins", "terminal", "history", "pr", "host", "present"] as const;
 export type SavedRightTab = typeof VALID_RIGHT_TABS[number];
 
 export function getSavedRightTab(): SavedRightTab {
@@ -97,7 +122,7 @@ export function saveRightTab(tab: SavedRightTab): void {
 export function getSavedAgentId(): AgentId {
   try {
     const saved = localStorage.getItem(AGENT_PREFERENCE_KEY);
-    if (saved === "claude" || saved === "codex") return saved;
+    if (saved === "claude" || saved === "codex" || saved === "opencode" || saved === "grok") return saved;
   } catch {
     // localStorage may be unavailable
   }
@@ -112,7 +137,90 @@ export function saveAgentId(agentId: AgentId): void {
   }
 }
 
-export function getSavedModelId(): string | undefined {
+/**
+ * The harness selection an auth redirect took away from the user, kept so it can
+ * be handed back.
+ *
+ * `resolveAuthedSelection` redirects the picker off a harness with no usable
+ * credential and PERSISTS the redirect, because the seed is what the next
+ * session is created from (see that file). The redirect was one-way: it
+ * overwrote `vibe-agent-id` and `vibe-model-id` in place, so a Claude account
+ * that went `auth_failed` for a few minutes — which `ClaudeOAuthRefresher`
+ * classifies optimistically and `markProviderAccountReauthenticated` exists to
+ * undo — silently and permanently moved every future session to Codex. The user
+ * was never told, and nothing could tell afterwards which harness they had
+ * chosen.
+ *
+ * So the displaced selection is parked here first. Two rules keep it honest:
+ *
+ * - **Only a FORCED move parks.** A deliberate pick writes the seed through
+ *   `persistHarnessPick` / the model picker, both of which CLEAR the park — a
+ *   user who chooses Codex while Claude is down means it, and must not be
+ *   yanked back when Claude recovers.
+ * - **Only the first forced move parks.** A second redirect while something is
+ *   already parked would overwrite the user's own choice with the machine's, so
+ *   the park is written only when empty.
+ */
+export interface ParkedHarness {
+  agentId: AgentId;
+  /**
+   * The model seed in force at park time. The whole triple, not a bare id: the
+   * restore has to put the user back on the service and billing mode they were
+   * on, or it hands back the harness and silently re-bills the model.
+   */
+  model?: { modelId: string; serviceId?: string; billingMode?: BillingMode };
+}
+
+export function getParkedHarness(): ParkedHarness | undefined {
+  return getLocalStorageObject<ParkedHarness | undefined>(
+    PARKED_HARNESS_KEY,
+    undefined,
+    (parsed) => {
+      if (typeof parsed !== "object" || parsed === null) return undefined;
+      const value = parsed as Partial<ParkedHarness>;
+      if (
+        // eslint-disable-next-line no-restricted-syntax -- runtime input validation: localStorage is user-writable and outlives a build, so a value that is not a known harness id must be rejected before it is handed back as one (same check as `getSavedAgentId`)
+        value.agentId !== "claude" && value.agentId !== "codex"
+        // eslint-disable-next-line no-restricted-syntax -- same validation, continued across the wrapped condition
+        && value.agentId !== "opencode" && value.agentId !== "grok"
+      ) return undefined;
+      return { agentId: value.agentId, ...(value.model ? { model: value.model } : {}) };
+    },
+  );
+}
+
+export function saveParkedHarness(parked: ParkedHarness): void {
+  try {
+    localStorage.setItem(PARKED_HARNESS_KEY, JSON.stringify(parked));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export function clearParkedHarness(): void {
+  try {
+    localStorage.removeItem(PARKED_HARNESS_KEY);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+/**
+ * docs/252 — `vibe-model-id` is one of the three persisted model selections, and
+ * the easiest to miss: it is the seed for a **new** session's model, injected
+ * into every session WebSocket's query string. A bare id there silently decides
+ * what a fresh session bills to the moment one id belongs to two services or two
+ * billing modes, so the slot now holds the serialized triple.
+ *
+ * **The same key, not a new one.** `parseSelection` rejects a bare id by
+ * construction, which is exactly the "legacy, migrate it" signal — so a value
+ * written by an older build is recognised, resolved through the catalogue, and
+ * written back in the new form on first read. There is no second key to keep in
+ * sync and no window where two builds disagree about which one is authoritative:
+ * an older build reading a serialized value gets a string it does not offer, and
+ * falls through to the agent's default exactly as it does for any unknown model.
+ */
+function readRawModelPreference(): string | undefined {
   try {
     return localStorage.getItem(MODEL_PREFERENCE_KEY) ?? undefined;
   } catch {
@@ -120,16 +228,71 @@ export function getSavedModelId(): string | undefined {
   }
 }
 
-export function saveModelId(modelId: string | undefined): void {
+function writeRawModelPreference(value: string | undefined): void {
   try {
-    if (modelId) {
-      localStorage.setItem(MODEL_PREFERENCE_KEY, modelId);
-    } else {
-      localStorage.removeItem(MODEL_PREFERENCE_KEY);
-    }
+    if (value) localStorage.setItem(MODEL_PREFERENCE_KEY, value);
+    else localStorage.removeItem(MODEL_PREFERENCE_KEY);
   } catch {
     // localStorage may be unavailable
   }
+}
+
+/**
+ * The saved selection as a full triple, migrating a legacy bare id in place.
+ *
+ * Returns `undefined` when nothing is saved OR when the saved value is a bare id
+ * the catalogue cannot place (a versioned slug, a model since retired) — the
+ * caller still gets that raw id from {@link getSavedModelId}, so an
+ * unrecognisable seed degrades to today's behaviour rather than being dropped.
+ */
+export function getSavedModelSelection(): ModelSelection | undefined {
+  const raw = readRawModelPreference();
+  const parsed = parseSelection(raw);
+  // Syntax is not existence. A triple stored by a build whose catalogue carried
+  // a service this one has dropped still parses, and returning it would seed a
+  // new session with a row nothing can resolve an endpoint from. Checking here
+  // (rather than at every reader) is what keeps the invariant "a selection names
+  // a real catalogue row, or there is no selection" true on the client too.
+  if (parsed) return selectionExists(parsed) ? parsed : undefined;
+  const migrated = resolveModelSelection(raw);
+  if (migrated) writeRawModelPreference(serializeSelection(migrated));
+  return migrated;
+}
+
+/**
+ * The saved model id alone. Still a bare id, because that is what the composer
+ * picker and the WebSocket's `?model=` seed take; the service and mode ride
+ * alongside rather than inside it.
+ */
+export function getSavedModelId(): string | undefined {
+  const raw = readRawModelPreference();
+  return parseSelection(raw)?.modelId ?? raw;
+}
+
+/**
+ * Save a full selection. Preferred over {@link saveModelId} once one is known.
+ *
+ * A selection naming no catalogue row is refused rather than stored: the seed
+ * would parse on the next read and resolve to nothing, which is a worse failure
+ * than never having been saved.
+ */
+export function saveModelSelection(selection: ModelSelection | undefined): void {
+  if (selection && !selectionExists(selection)) return;
+  writeRawModelPreference(selection ? serializeSelection(selection) : undefined);
+}
+
+/**
+ * Save a bare model id, resolving it to a selection when the catalogue can place
+ * it. An id it cannot place is stored as-is, which is what an older build wrote
+ * and what the reader above still understands.
+ */
+export function saveModelId(modelId: string | undefined): void {
+  if (!modelId) {
+    writeRawModelPreference(undefined);
+    return;
+  }
+  const selection = resolveModelSelection(modelId);
+  writeRawModelPreference(selection ? serializeSelection(selection) : modelId);
 }
 
 // docs/217 — composer reasoning seed, keyed PER AGENT so switching agents
@@ -189,6 +352,48 @@ export function saveQuickSessionRepo(url: string | undefined): void {
       localStorage.setItem(LAST_QUICK_SESSION_REPO_KEY, url);
     } else {
       localStorage.removeItem(LAST_QUICK_SESSION_REPO_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+/**
+ * docs/272-user-selectable-roles req 12 — the role the user last selected, which the NEXT new
+ * session starts on.
+ *
+ * The same treatment the model and the harness already get, for the same
+ * reason: a user who works through a role works through it repeatedly, and
+ * re-picking it on every new session is a click that says nothing. Still a
+ * starting point and still optional (reqs 3, 7) — it is changed, and left, in
+ * the same place it was chosen.
+ *
+ * **Cleared by a harness / model / reasoning pick**, wherever one is made. That
+ * is req 15 applied to the seed as well as to the session: leaving a role means
+ * changing how the session runs, and a seed that outlived the leaving would
+ * quietly re-apply the role to the next session the user starts.
+ *
+ * A name, not a resolved tuple. The role's parameters are the server's to
+ * resolve at the moment it starts (req 8 — nothing is ever substituted), so a
+ * cached copy here would be a second answer that goes stale the first time the
+ * role is edited.
+ */
+const ROLE_PREFERENCE_KEY = "shipit-role-name";
+
+export function getSavedRoleName(): string | undefined {
+  try {
+    return localStorage.getItem(ROLE_PREFERENCE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveRoleName(roleName: string | undefined): void {
+  try {
+    if (roleName) {
+      localStorage.setItem(ROLE_PREFERENCE_KEY, roleName);
+    } else {
+      localStorage.removeItem(ROLE_PREFERENCE_KEY);
     }
   } catch {
     // localStorage may be unavailable
@@ -546,6 +751,30 @@ export function saveCollapsedResolved(collapsed: Set<string>): void {
   } catch { /* ignore */ }
 }
 
+// Per-root-session EXPANDED state for the resolved members of a spawn brood.
+// Inverted relative to COLLAPSED_RESOLVED_KEY above: a brood's resolved children
+// are hidden by DEFAULT (absence = collapsed), because a big feature can spawn
+// 10-15 children and the merged ones are finished work. Presence = the user
+// expanded that brood's resolved sub-section.
+const EXPANDED_RESOLVED_CHILDREN_KEY = "shipit-expanded-resolved-children";
+
+export function getSavedExpandedResolvedChildren(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_RESOLVED_CHILDREN_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      return new Set(arr);
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+export function saveExpandedResolvedChildren(expanded: Set<string>): void {
+  try {
+    localStorage.setItem(EXPANDED_RESOLVED_CHILDREN_KEY, JSON.stringify([...expanded]));
+  } catch { /* ignore */ }
+}
+
 const OPS_COLLAPSED_KEY = "shipit-ops-collapsed";
 
 export function getSavedOpsCollapsed(): boolean {
@@ -597,7 +826,7 @@ export function saveHiddenReposCollapsed(collapsed: boolean): void {
 
 const DRAFT_MESSAGE_KEY_PREFIX = "shipit-draft-message:";
 
-/** Read the saved draft message text for a session (or `"new"` for the new-session view). */
+/** Read the saved draft message text for a session (or `"new:{repo-slug}"` for the new-session view). */
 export function getSavedDraftMessage(sessionKey: string): string | undefined {
   try {
     const value = localStorage.getItem(DRAFT_MESSAGE_KEY_PREFIX + sessionKey);
@@ -840,4 +1069,4 @@ export function saveIncludeDone(includeDone: boolean): void {
   }
 }
 
-export { SIDEBAR_COLLAPSED_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, LAST_QUICK_SESSION_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };
+export { SIDEBAR_COLLAPSED_KEY, SIDEBAR_VIEW_KEY, RIGHT_TAB_KEY, AGENT_PREFERENCE_KEY, MODEL_PREFERENCE_KEY, ACTIVE_REPO_KEY, LAST_QUICK_SESSION_REPO_KEY, NOTIFY_ON_FINISH_KEY, SOUND_ON_FINISH_KEY, COLLAPSED_REPOS_KEY, COLLAPSED_PARENTS_KEY, ISSUE_FILTERS_KEY, ISSUE_INCLUDE_DONE_KEY };

@@ -40,7 +40,7 @@ export function BranchUpdatedCard({ card }: BranchUpdatedCardProps) {
             Branch {card.forced ? "force-reset" : "updated"} to latest{" "}
             <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>
           </div>
-          {/* SHI-277 — a forced reset skipped the "this branch is exactly what
+          {/* planning#279 — a forced reset skipped the "this branch is exactly what
               merged" safety check, so it must not read as the routine automatic
               move. The recorded reason is the whole accountability story for a
               trust-based override, so it is shown, not tucked away. */}

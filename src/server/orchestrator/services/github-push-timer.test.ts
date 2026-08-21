@@ -4,11 +4,16 @@ import type { GitManager, AutoCommitResult } from "../../shared/git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
-// SHI-198 — the debounced auto-push is only safe to drop once a *synchronous*
+// planning#200 — the debounced auto-push is only safe to drop once a *synchronous*
 // push has actually replaced it. `flushPendingTurnCommit` must NOT cancel the
 // timer (it can early-return before any push), and `agentCreatePr` must cancel
 // it only AFTER its synchronous push lands — otherwise a short-circuiting flush
 // (secretBlocked / no-commit) leaves the commit local with no retry.
+//
+// The cancel is session-keyed (`options.cancelAutoPush`) rather than resolved
+// through the runner: the pending push lives in `services/auto-push-scheduler.ts`
+// now, so a session whose runner was reclaimed still gets its debounce dropped —
+// and, more to the point, still gets its push.
 
 function fakeGit(overrides: Partial<Record<keyof GitManager, unknown>>): GitManager {
   return {
@@ -28,7 +33,6 @@ function fakeRunner() {
   return {
     sessionId: "s1",
     turnSummary: "do things",
-    clearPushTimer: vi.fn(),
     emitMessage: vi.fn(),
     pendingCommitLink: null as unknown,
   };
@@ -45,18 +49,19 @@ const SECRET_COMMIT: AutoCommitResult = {
   secretFindings: [
     { rule: "github-pat", description: "GitHub PAT", file: "x.ts", redacted: "ghp_…[redacted]" },
   ],
+  unreadable: null,
 };
 const CLEAN_COMMIT: AutoCommitResult = {
   commitHash: "abc123",
   conflictedFiles: [],
   rebaseInProgress: false,
-  secretFindings: [],
+  secretFindings: [], unreadable: null,
 };
 const NO_COMMIT: AutoCommitResult = {
   commitHash: null,
   conflictedFiles: [],
   rebaseInProgress: false,
-  secretFindings: [],
+  secretFindings: [], unreadable: null,
 };
 
 describe("flushPendingTurnCommit — does not touch the push debounce", () => {
@@ -64,13 +69,15 @@ describe("flushPendingTurnCommit — does not touch the push debounce", () => {
     ["secret refusal", SECRET_COMMIT],
     ["nothing to commit", NO_COMMIT],
     ["a normal commit", CLEAN_COMMIT],
-  ])("never cancels the pending push (%s)", async (_label, result) => {
+  ])("has no way to cancel the pending push (%s)", async (_label, result) => {
+    // `flushPendingTurnCommit` is not given a cancel hook at all — the shape
+    // that makes "it can early-return before any push" un-losable.
     const runner = fakeRunner();
-    await flushPendingTurnCommit(fakeGit({ autoCommit: vi.fn(async () => result) }), {
-      sessionId: "s1",
-      runnerRegistry: registryFor(runner),
-    });
-    expect(runner.clearPushTimer).not.toHaveBeenCalled();
+    const flushed = await flushPendingTurnCommit(
+      fakeGit({ autoCommit: vi.fn(async () => result) }),
+      { sessionId: "s1", runnerRegistry: registryFor(runner) },
+    );
+    expect(flushed.commitHash).toBe(result.commitHash);
   });
 });
 
@@ -86,6 +93,7 @@ describe("agentCreatePr — debounce cancellation is coupled to the synchronous 
 
   it("leaves the debounce armed when the flush short-circuits on a secret", async () => {
     const runner = fakeRunner();
+    const cancelAutoPush = vi.fn();
     const git = fakeGit({ autoCommit: vi.fn(async () => SECRET_COMMIT) });
 
     await expect(
@@ -93,32 +101,53 @@ describe("agentCreatePr — debounce cancellation is coupled to the synchronous 
         title: "t",
         sessionId: "s1",
         runnerRegistry: registryFor(runner),
+        cancelAutoPush,
       }),
     ).rejects.toThrow(/secret/i);
 
     // The commit was refused and no synchronous push happened, so the pending
     // debounced push must survive to carry the prior commit to the remote.
-    expect(runner.clearPushTimer).not.toHaveBeenCalled();
+    expect(cancelAutoPush).not.toHaveBeenCalled();
     expect(git.push).not.toHaveBeenCalled();
   });
 
   it("cancels the debounce after pushing to an existing open PR", async () => {
     const runner = fakeRunner();
+    const cancelAutoPush = vi.fn();
     const git = fakeGit({ autoCommit: vi.fn(async () => CLEAN_COMMIT) });
     const auth = authManager({ number: 7, url: "https://gh/pr/7", base: "main", title: "T", body: "" });
 
     const res = await agentCreatePr(git, auth, {
       sessionId: "s1",
       runnerRegistry: registryFor(runner),
+      cancelAutoPush,
     });
 
     expect(res.alreadyExisted).toBe(true);
     expect(git.push).toHaveBeenCalledTimes(1);
-    expect(runner.clearPushTimer).toHaveBeenCalledTimes(1);
+    expect(cancelAutoPush).toHaveBeenCalledExactlyOnceWith("s1");
+  });
+
+  it("cancels the debounce even when the session has no live runner", async () => {
+    // The runner is gone (reclaimed between the commit and this call), which
+    // used to mean `pushRunner` was null and the debounce was left armed behind
+    // a push that had already landed. The cancel is keyed on the session now.
+    const cancelAutoPush = vi.fn();
+    const git = fakeGit({ autoCommit: vi.fn(async () => CLEAN_COMMIT) });
+    const auth = authManager({ number: 7, url: "https://gh/pr/7", base: "main", title: "T", body: "" });
+
+    await agentCreatePr(git, auth, {
+      sessionId: "s1",
+      runnerRegistry: { get: () => undefined } as unknown as SessionRunnerRegistry,
+      cancelAutoPush,
+    });
+
+    expect(cancelAutoPush).toHaveBeenCalledExactlyOnceWith("s1");
   });
 
   it("does NOT cancel the debounce if the synchronous push fails", async () => {
     const runner = fakeRunner();
+    const cancelAutoPush = vi.fn();
     const git = fakeGit({
       autoCommit: vi.fn(async () => CLEAN_COMMIT),
       push: vi.fn(async () => { throw new Error("boom"); }),
@@ -126,8 +155,12 @@ describe("agentCreatePr — debounce cancellation is coupled to the synchronous 
     const auth = authManager({ number: 7, url: "https://gh/pr/7", base: "main", title: "T", body: "" });
 
     await expect(
-      agentCreatePr(git, auth, { sessionId: "s1", runnerRegistry: registryFor(runner) }),
+      agentCreatePr(git, auth, {
+        sessionId: "s1",
+        runnerRegistry: registryFor(runner),
+        cancelAutoPush,
+      }),
     ).rejects.toThrow(/Push failed/);
-    expect(runner.clearPushTimer).not.toHaveBeenCalled();
+    expect(cancelAutoPush).not.toHaveBeenCalled();
   });
 });

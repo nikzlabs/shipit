@@ -1,5 +1,5 @@
 /**
- * docs/201 / SHI-129 — container ↔ browser trust boundary guard.
+ * docs/201 / planning#131 — container ↔ browser trust boundary guard.
  *
  * Three concerns:
  *   1. Pure helpers — `isHardDeniedGlobal`, `normalizeRemoteIp`.
@@ -22,7 +22,15 @@ import {
   registerContainerOriginGuard,
   isHardDeniedGlobal,
   normalizeRemoteIp,
+  registerUntrustedContainerNetwork,
+  clearUntrustedContainerNetworks,
+  isUntrustedContainerIp,
 } from "./api-container-guard.js";
+import {
+  EGRESS_DECISION_HEADER,
+  mintEgressDecisionToken,
+  clearAllEgressDecisionTokens,
+} from "./egress-decision-auth.js";
 
 import { buildApp } from "./index.js";
 import { GitManager } from "../shared/git.js";
@@ -84,8 +92,11 @@ describe("normalizeRemoteIp", () => {
 // ---------------------------------------------------------------------------
 
 const CONTAINER_IP = "172.18.0.5";
+const SERVICE_IP = "172.18.0.6";
 const BROWSER_IP = "10.0.0.9";
-const OWN_SESSION = "sess-own";
+// A real uuid, so the preview-subdomain cases below parse the way production
+// hosts do (`parsePreviewSubdomain` matches a uuid, never an arbitrary label).
+const OWN_SESSION = "98f05156-7e64-422d-81bc-ba677fda60e0";
 
 describe("registerContainerOriginGuard — request gating", () => {
   let app: FastifyInstance;
@@ -96,6 +107,8 @@ describe("registerContainerOriginGuard — request gating", () => {
       containerManager: {
         getSessionByContainerIp: (ip: string) =>
           ip === CONTAINER_IP ? { sessionId: OWN_SESSION } : undefined,
+        getSessionByAnyContainerIp: async (ip: string) =>
+          ip === SERVICE_IP ? { sessionId: OWN_SESSION } : undefined,
       },
     });
     // An allowlisted own-session route, a browser-only route, and a hard-denied
@@ -118,11 +131,18 @@ describe("registerContainerOriginGuard — request gating", () => {
       { config: { containerAccessible: true } },
       async () => ({ sessions: [] }),
     );
+    // docs/264 — same shape, with the target session in a `?target=` query.
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/host-session-logs",
+      { config: { containerAccessible: true } },
+      async () => ({ entries: [] }),
+    );
     await app.ready();
   });
 
   afterEach(async () => {
     await app.close();
+    clearAllEgressDecisionTokens();
   });
 
   it("allows a container to reach an allowlisted route for its OWN session", async () => {
@@ -156,6 +176,100 @@ describe("registerContainerOriginGuard — request gating", () => {
     const res = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  // planning#371 — a Compose service reaches NO `/api/*` route, not even the
+  // container-accessible ones of its own session. It used to reach all of them,
+  // and `POST /api/sessions/:id/git/credential` is one.
+  it("denies a Compose service IP the whole API, including its own session's routes", async () => {
+    const global = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      remoteAddress: SERVICE_IP,
+    });
+    expect(global.statusCode).toBe(403);
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/services`,
+      remoteAddress: SERVICE_IP,
+    });
+    expect(own.statusCode).toBe(403);
+  });
+
+  it("denies a Compose service the egress decision query with no token", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/egress/decision?host=example.com&session=${OWN_SESSION}`,
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("admits the egress decision query from a service netns with its sidecar's token", async () => {
+    const token = mintEgressDecisionToken(OWN_SESSION);
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/egress/decision?host=example.com&session=${OWN_SESSION}`,
+      headers: { [EGRESS_DECISION_HEADER]: token },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("refuses a sidecar token minted for a DIFFERENT session", async () => {
+    const token = mintEgressDecisionToken("sess-other");
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/egress/decision?host=example.com&session=${OWN_SESSION}`,
+      headers: { [EGRESS_DECISION_HEADER]: token },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("refuses a valid token presented for a route other than the decision query", async () => {
+    const token = mintEgressDecisionToken(OWN_SESSION);
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/services`,
+      headers: { [EGRESS_DECISION_HEADER]: token },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("refuses a valid token whose ?session= names another session", async () => {
+    const token = mintEgressDecisionToken(OWN_SESSION);
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/egress/decision?host=example.com&session=sess-other",
+      headers: { [EGRESS_DECISION_HEADER]: token },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  // The preview proxy's own hook hijacks any request carrying this Host before
+  // routing (`preview-proxy.ts:639`), so the early return cannot reach an API
+  // route — a service fetching its own session's preview keeps working.
+  it("leaves same-session preview traffic from a service alone", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: { host: `${OWN_SESSION}--5173.localhost` },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("does not bypass the guard for an invalid preview port", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: { host: `${OWN_SESSION}--99999.localhost` },
       remoteAddress: CONTAINER_IP,
     });
     expect(res.statusCode).toBe(403);
@@ -215,11 +329,90 @@ describe("registerContainerOriginGuard — request gating", () => {
     expect(other.statusCode).toBe(403);
   });
 
+  it("scopes the ops log route on the PATH, not on its ?target= filter (docs/264)", async () => {
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/host-session-logs?target=sess-other`,
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(own.statusCode).toBe(200);
+    const other = await app.inject({
+      method: "GET",
+      url: "/api/sessions/sess-other/host-session-logs",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(other.statusCode).toBe(403);
+  });
+
   it("lets a NON-container (browser) origin reach everything, including globals", async () => {
     const secrets = await app.inject({ method: "PUT", url: "/api/secrets", remoteAddress: BROWSER_IP });
     expect(secrets.statusCode).toBe(200);
     const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP });
     expect(bootstrap.statusCode).toBe(200);
+  });
+});
+
+// docs/262 — a container ShipIt runs but never registers used to be treated as
+// MORE trusted than a session container: "not a known session" reads as
+// "browser or host", which skips all three layers. The plugin installer runs
+// third-party code, so its whole subnet is declared untrusted instead.
+describe("untrusted container networks", () => {
+  afterEach(() => {
+    clearUntrustedContainerNetworks();
+  });
+
+  it("matches addresses inside a registered CIDR and nothing else", () => {
+    expect(registerUntrustedContainerNetwork("172.28.0.0/16")).toBe(true);
+    expect(isUntrustedContainerIp("172.28.0.1")).toBe(true);
+    expect(isUntrustedContainerIp("172.28.255.254")).toBe(true);
+    expect(isUntrustedContainerIp("172.29.0.1")).toBe(false);
+    expect(isUntrustedContainerIp(CONTAINER_IP)).toBe(false);
+    expect(isUntrustedContainerIp("not-an-ip")).toBe(false);
+  });
+
+  it("refuses a CIDR it cannot match, rather than registering a no-op", () => {
+    // An IPv6 subnet would silently match nothing — and a subnet that matches
+    // nothing is a subnet that is not denied.
+    expect(registerUntrustedContainerNetwork("fd00::/64")).toBe(false);
+    expect(registerUntrustedContainerNetwork("172.28.0.0/33")).toBe(false);
+    expect(registerUntrustedContainerNetwork("nonsense")).toBe(false);
+  });
+
+  it("denies the whole API — including routes a session container may reach", async () => {
+    registerUntrustedContainerNetwork("172.28.0.0/16");
+    const app = Fastify({ logger: false });
+    registerContainerOriginGuard(app, {
+      containerManager: {
+        getSessionByContainerIp: (ip: string) =>
+          ip === CONTAINER_IP ? { sessionId: OWN_SESSION } : undefined,
+      },
+    });
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/git/credential",
+      { config: { containerAccessible: true } },
+      async () => ({ username: "x", password: "secret" }),
+    );
+    app.get("/api/bootstrap", async () => ({ ok: true }));
+    await app.ready();
+
+    for (const url of [`/api/sessions/${OWN_SESSION}/git/credential`, "/api/bootstrap"]) {
+      const res = await app.inject({ method: "GET", url, remoteAddress: "172.28.0.7" });
+      expect(res.statusCode).toBe(403);
+    }
+    // The same routes still behave normally for everyone else.
+    expect((await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("denies even where the guard is otherwise inert (no IP→session map)", async () => {
+    registerUntrustedContainerNetwork("172.28.0.0/16");
+    const app = Fastify({ logger: false });
+    registerContainerOriginGuard(app, {});
+    app.get("/api/bootstrap", async () => ({ ok: true }));
+    await app.ready();
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: "172.28.0.7" });
+    expect(res.statusCode).toBe(403);
+    await app.close();
   });
 });
 
@@ -255,6 +448,30 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/pr/status",
   "POST /api/sessions/:id/pr/agent-create",
   "POST /api/sessions/:id/git/credential",
+  // docs/262 req 12 — `shipit plugin refresh`, relayed by the worker's
+  // agent-ops surface. Container-reachable on purpose: this IS the agent's
+  // path, and the guard's own session scoping means a container can only
+  // refresh its own session's plugins.
+  "POST /api/sessions/:id/plugin/refresh",
+  // docs/262 req 17 — `shipit plugin exec`, the target of every generated
+  // companion-CLI wrapper. Same rationale as refresh, and the same scoping: a
+  // container can only run its own session's plugin commands. The command
+  // itself does NOT run in the calling container — this route builds an
+  // invocation container that holds no ShipIt credential (plan §2).
+  "POST /api/sessions/:id/plugin/exec",
+  // docs/266-plugin-install-diagnosability reqs 1–4, 9 — `shipit plugin status`. Container-reachable for the
+  // same reason the two above are: this IS the agent's path, and the browser's
+  // `/api/plugin-repos` snapshot is not reachable from a container. It is a GET
+  // and that is load-bearing — it activates nothing, which is what makes it
+  // safe to run against a version you are trying to diagnose. It returns a SLIM
+  // projection of what the Plugins tab computes for THIS session — the live
+  // version, the install outcome and the issue strings — not the tab's full
+  // snapshot: the credential groups and host reach are computed server-side and
+  // discarded (review finding; an earlier version of this comment said "the same
+  // object", which overstated it). Nothing in it is a credential value in either
+  // case (req 23 carries names and whether each is satisfied, never the secret),
+  // and the guard's own session scoping bounds it to this session.
+  "GET /api/sessions/:id/plugin/status",
   "PATCH /api/sessions/:id/pr/:number",
   "GET /api/sessions/:id/pr/list",
   "GET /api/sessions/:id/pr/view",
@@ -290,17 +507,21 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/issue/comments",
   "POST /api/sessions/:sessionId/issue/create",
   "POST /api/sessions/:sessionId/issue/comment",
-  // SHI-86 — `shipit issue comment edit`. Same posture as the writes around it;
+  // planning#88 — `shipit issue comment edit`. Same posture as the writes around it;
   // the comment it may reach is additionally narrowed server-side to one on the
   // named issue that ShipIt itself authored.
   "POST /api/sessions/:sessionId/issue/comment/edit",
   "POST /api/sessions/:sessionId/issue/edit",
   "POST /api/sessions/:sessionId/issue/status",
   "POST /api/sessions/:sessionId/issue/assign",
-  // SHI-230 — `shipit issue label create` broker target; same posture as the
+  // planning#232 — `shipit issue label create` broker target; same posture as the
   // issue writes above (own-session scoped, do-then-surface card with undo,
   // tracker token stays orchestrator-side).
   "POST /api/sessions/:sessionId/issue/label/create",
+  // planning#88 — `shipit issue label edit`, the same posture as `label create`: it
+  // corrects a label that already exists (rename in place, so nothing is
+  // re-labeled) and its Undo restores the prior values.
+  "POST /api/sessions/:sessionId/issue/label/edit",
   // source — shipit source (ops sessions)
   "GET /api/sessions/:id/source/status",
   "GET /api/sessions/:id/source/tree",
@@ -315,11 +536,26 @@ const GOLDEN_CONTAINER_ROUTES = [
   // only (id/title/branch/repo/parent/PR number+url+state) — never another
   // session's conversation, prompts, secrets, or workspace contents.
   "GET /api/sessions/:id/host-sessions",
+  // docs/264 — `shipit session logs` (ops sessions). Same shape and same second
+  // gate as the inventory above; the session being READ is the `?target=` query
+  // param, never the path. Returns SERVER-source log entries only — orchestrator
+  // lifecycle lines, never the target session's agent output or conversation.
+  "GET /api/sessions/:id/host-session-logs",
   // agent — shipit agent run / shipit agent result. The result read is
   // own-session scoped like the spawn (the worker injects the caller's id), and
-  // returns only that session's own persisted consult cards (SHI-245).
+  // returns only that session's own persisted consult cards (planning#247).
   "POST /api/sessions/:id/agent/spawn",
   "GET /api/sessions/:id/agent/result",
+  // docs/264-agent-roles req 12 — the two reads that make `--role NAME` and an override
+  // nameable. Deliberately container-reachable: the agent cannot name a role it
+  // cannot see, and an agent allowed to override a parameter without the list
+  // names one from memory. Neither read carries anything session-private — the
+  // roles are a ShipIt-wide SETTING (name, description, what each resolves to)
+  // and the parameters are this install's harnesses, levels and credentialed
+  // model IDS. No secrets, no credentials, no other session's anything; the path
+  // id is the caller's own, injected by the worker as on every route here.
+  "GET /api/sessions/:id/agent/roles",
+  "GET /api/sessions/:id/agent/params",
   // session — shipit session create/list/view/wait/message/archive + notify-on-merge
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",
@@ -334,7 +570,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   // counterpart is deliberately browser-only.
   "POST /api/sessions/:sessionId/notify-on-merge-self",
   "POST /api/sessions/:id/branch/reset-to-base",
-  // docs/233 (SHI-241) — the upward channel: `shipit session whoami` resolves
+  // docs/233 (planning#243) — the upward channel: `shipit session whoami` resolves
   // the CALLING session's own cohort, and `shipit session report` pushes a
   // report to its parent / siblings. Own-session scoped like every route above:
   // the worker injects the caller's id and recipients are derived server-side
@@ -344,10 +580,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   // bridges — voice_note / report_shipit_bug
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
-  // docs/207 (SHI-153) — the `propose_actions` tool relays an action checklist
+  // docs/207 (planning#155) — the `propose_actions` tool relays an action checklist
   // card here; container-reachable so the worker can broker it.
   "POST /api/sessions/:sessionId/propose-actions",
-  // docs/172 Tier C (SHI-90) — the SNI proxy queries this for an unknown host.
+  // docs/172 Tier C (planning#92) — the SNI proxy queries this for an unknown host.
   // Query-only: it returns allow/deny and may surface an allow-once card, but
   // cannot GRANT (granting is the browser-only `egress_decision` WS path).
   "GET /api/egress/decision",

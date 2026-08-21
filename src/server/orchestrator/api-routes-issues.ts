@@ -1,5 +1,5 @@
 /**
- * Issue tracker routes (docs/170 — inline tracker Issues tab; SHI-80).
+ * Issue tracker routes (docs/170 — inline tracker Issues tab; planning#82).
  *
  * These are global `/api/...` routes, not `/api/sessions/:id/...`, because they
  * predate per-session tracker scoping. Since docs/248 that scoping is what they
@@ -13,6 +13,7 @@
  */
 
 import { randomUUID, createHash } from "node:crypto";
+import fs from "node:fs";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import {
@@ -28,6 +29,7 @@ import {
   userSetIssueLabels,
   createIssueForTracker,
   createLabelForTracker,
+  updateLabelForTracker,
   commentOnIssueForTracker,
   editCommentForTracker,
   updateIssueForTracker,
@@ -39,7 +41,7 @@ import {
   listTrackerDestinations,
   ServiceError,
   type IssueWriteOutcome,
-  type LabelCreation,
+  type LabelWrite,
 } from "./services/index.js";
 import type { GitHubTrackerContext } from "./trackers/index.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -47,6 +49,10 @@ import type { SessionManager } from "./sessions.js";
 import type { TrackerId, TrackerIssue, IssueWriteCard, IssueRefCard } from "../shared/types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolveShipitConfig, type DeclaredTracker } from "../shared/shipit-config.js";
+import { pluginFeedbackRepos, type PluginFeedbackRepo } from "../shared/plugin-feedback.js";
+import { readActiveGeneration } from "./plugin-generations.js";
+import { destinationKey } from "../shared/plugin-repos.js";
+import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { isGitHubTracker } from "../shared/tracker-id.js";
 import { resolveDestinationByName } from "../shared/issue-ref-resolution.js";
 import { getErrorMessage } from "./validation.js";
@@ -68,11 +74,12 @@ export function resolveGitHubTrackerContext(
   const token = githubAuthManager.getToken();
   const session = sessionId ? sessionManager.get(sessionId) : undefined;
   const parsed = session?.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
-  const { trackers, warnings } = readDeclaredTrackers(session?.workspaceDir);
+  const { trackers, plugins, warnings } = readDeclaredTrackers(session?.workspaceDir);
   return {
     token,
     repo: parsed ? { owner: parsed.owner, repo: parsed.repo } : null,
     declared: trackers,
+    pluginRepos: plugins,
     warnings,
   };
 }
@@ -93,15 +100,27 @@ export function resolveGitHubTrackerContext(
  */
 function readDeclaredTrackers(
   workspaceDir: string | undefined,
-): { trackers: DeclaredTracker[]; warnings: string[] } {
-  if (!workspaceDir) return { trackers: [], warnings: [] };
+): { trackers: DeclaredTracker[]; plugins: PluginFeedbackRepo[]; warnings: string[] } {
+  if (!workspaceDir) return { trackers: [], plugins: [], warnings: [] };
   try {
     const config = resolveShipitConfig(workspaceDir);
     // Only the declaration-shaped warnings are carried forward (req 8) — the
     // agent asked about trackers, not about a stale `agent.memory` key.
     return {
       trackers: config.issues.trackers,
-      warnings: config.warnings.filter((w) => w.includes("issues.")),
+      // docs/262 req 25 — the same read answers "which plugin repositories can
+      // this session file feedback on", because the two declarations live in
+      // one file and share one name space (plan §1a).
+      plugins: withRunningCommits(workspaceDir, pluginFeedbackRepos(config.plugins)),
+      // …and its warnings ride along for the same reason the tracker ones do
+      // (review finding): a `plugins.repos` entry dropped for a name collision
+      // takes its feedback destination with it, so `--tracker tools` fails with
+      // "no such tracker" and nothing anywhere says why. Only the `repos:`
+      // warnings — a broken `use:` entry or export is the Plugins tab's
+      // business, not this CLI's.
+      warnings: config.warnings.filter(
+        (w) => w.includes("issues.") || w.includes("plugins.repos"),
+      ),
     };
   } catch (err) {
     // A malformed *document* (bad YAML, a bad `release` block) degrades to "no
@@ -110,9 +129,90 @@ function readDeclaredTrackers(
     // repository simply declares nothing.
     return {
       trackers: [],
+      plugins: [],
       warnings: [`shipit.yaml could not be parsed, so no tracker declarations were read: ${getErrorMessage(err)}`],
     };
   }
+}
+
+/**
+ * docs/262 reqs 15, 25 — stamp each feedback destination with the commit this
+ * session is actually running from that repository, read off the live
+ * generation record. A repository with no generation yet keeps its declared ref
+ * and no commit: a report filed then still files, and says the version was not
+ * active rather than inventing one.
+ *
+ * Never throws. The commit is context on a report, so a session-state-dir
+ * problem must not be able to fail an issue operation.
+ */
+function withRunningCommits(
+  workspaceDir: string,
+  repos: PluginFeedbackRepo[],
+): PluginFeedbackRepo[] {
+  if (repos.length === 0) return repos;
+  let stateDir: string;
+  try {
+    stateDir = sessionStateDirForWorkspace(workspaceDir);
+  } catch {
+    return repos;
+  }
+  return repos.map((repo) => {
+    // Keyed by what the declaration POINTS AT, not by its name. The name is
+    // re-pointable and every on-disk path uses it, so a `tools` moved from
+    // `acme/old` to `acme/new` would otherwise stamp this report with the old
+    // repository's commit — the exact mismatch this footer exists to prevent
+    // (req 15). A generation from another repository reads as absent, and the
+    // report says the version was not active instead of inventing one.
+    const generation = readActiveGeneration(
+      stateDir,
+      repo.name,
+      destinationKey({ kind: "github", owner: repo.owner, repo: repo.repo }),
+    );
+    if (!generation) return repo;
+    return { ...repo, ref: generation.ref, commit: generation.commit };
+  });
+}
+
+/**
+ * Whether the answer to "what does this repository declare?" is *not yet
+ * knowable* for this session — as opposed to "it declares nothing".
+ *
+ * `readDeclaredTrackers` degrades a missing checkout to zero declarations, and
+ * the two are indistinguishable in the response. They are not the same thing: a
+ * disk-evicted session (docs/161) keeps its `workspaceDir` in the session row
+ * while the directory itself is gone, and activation re-clones it from the bare
+ * cache *asynchronously* (`finishRestore`). The browser's tracker fetch races
+ * that re-clone and reliably wins, so a session switch to an evicted session
+ * cached "declares nothing" — and since the client refetches only on the next
+ * session change or Issues-tab open, every inline `planning#147` badge in the
+ * transcript stayed plain text until the user opened the tab.
+ *
+ * Saying so lets the client retry instead of caching the empty answer.
+ *
+ * **The directory existing is not the test.** `restoreSessionWorkspace` deletes
+ * the remnant and clones into the same path (`services/session.ts`), and
+ * `git clone` creates the target directory long before the checkout lands — so
+ * `existsSync` goes true within milliseconds while `shipit.yaml` is still absent
+ * (mid-clone) or on the wrong branch (cloned, not yet checked out). A client
+ * retrying on that signal would stop on the first retry and cache the empty
+ * answer anyway, which is the bug it was added to fix. The authoritative signal
+ * is the **disk tier**: eviction sets `evicted` (`tier-escalation.ts`) and only
+ * the very end of a successful restore sets it back to `hot`, after the branch
+ * checkout and the LFS materialization.
+ *
+ * So pending means: this session has a workspace path, and either the tier says
+ * a restore is still owed or the path isn't on disk at all (a genuine fs loss,
+ * or the instant before the re-clone starts). `light` keeps its checkout and is
+ * not pending. A session with no workspace at all (standalone/sandbox) declares
+ * nothing, permanently; neither it nor an unknown session id is pending.
+ */
+function areDeclarationsPending(
+  sessionManager: SessionManager,
+  sessionId: string | undefined,
+): boolean {
+  const session = sessionId ? sessionManager.get(sessionId) : undefined;
+  if (!session?.workspaceDir) return false;
+  return session.diskTier === "evicted" || !fs.existsSync(session.workspaceDir);
 }
 
 /**
@@ -183,10 +283,22 @@ export async function registerIssueRoutes(
     );
   }
 
-  // GET /api/trackers — configured-tracker metadata (drives the sub-tabs).
+  // GET /api/trackers — configured-tracker metadata (drives the sub-tabs) plus,
+  // when the session's checkout isn't on disk yet, the flag that says the empty
+  // declaration set is a "not yet" rather than an answer (see
+  // `areDeclarationsPending`). Omitted when false so the response shape is
+  // unchanged for every session whose workspace is present.
   app.get<{ Querystring: { sessionId?: string } }>("/api/trackers", async (request) => {
+    // Readiness is sampled BEFORE the declarations are read, never after: a
+    // restore that completes between the two reads would otherwise pair an empty
+    // read with a ready verdict — the one combination the client caches forever.
+    // Sampling first can only err towards "pending", which costs a retry.
+    const pending = areDeclarationsPending(sessionManager, request.query.sessionId);
     const github = resolveGitHubContext(request.query.sessionId);
-    return { trackers: listTrackers(credentialStore, trackerFetchImpl, github) };
+    return {
+      trackers: listTrackers(credentialStore, trackerFetchImpl, github),
+      ...(pending ? { declarationsPending: true } : {}),
+    };
   });
 
   // GET /api/issues?tracker=linear[&includeDone=true][&sessionId=...] —
@@ -499,7 +611,7 @@ export async function registerIssueRoutes(
 
   // GET /api/sessions/:id/issue/labels?tracker= — the tracker's pickable label
   // set (name + color), so the agent can discover valid `--label` values up front
-  // instead of guessing and tripping the create/edit rejection (SHI-199). The
+  // instead of guessing and tripping the create/edit rejection (planning#201). The
   // session-scoped sibling of the UI's `GET /api/issue/labels`: GitHub binds to
   // this session's repo, Linear is workspace-wide. A discovery read — emits NO
   // transcript card (label config isn't an issue the user would navigate to).
@@ -527,7 +639,7 @@ export async function registerIssueRoutes(
 
   // GET /api/sessions/:id/issue/statuses?tracker= — the tracker's assignable
   // statuses (name + type + color), so the agent can pick a valid `issue status`
-  // target without first `view`-ing an issue (SHI-199). Same session-scoping +
+  // target without first `view`-ing an issue (planning#201). Same session-scoping +
   // no-card contract as the labels route above.
   app.get<{ Params: { id: string }; Querystring: { tracker?: string } }>(
     "/api/sessions/:id/issue/statuses",
@@ -552,9 +664,9 @@ export async function registerIssueRoutes(
   );
 
   // GET /api/sessions/:id/issue/comments?tracker=&id= — read an issue's comment
-  // thread (SHI-137). The read-only sibling of the comment WRITE route below:
+  // thread (planning#139). The read-only sibling of the comment WRITE route below:
   // brokered through the orchestrator so the tracker token never enters the
-  // container, container-accessible + own-session scoped by the SHI-129 guard.
+  // container, container-accessible + own-session scoped by the planning#131 guard.
   // It emits NO transcript card — the agent reaches comments via
   // `shipit issue view --comments`, whose `view` leg already surfaced the
   // jump-to-issue card, so a second card here would just duplicate it.
@@ -602,7 +714,7 @@ export async function registerIssueRoutes(
   });
 
   // GET /api/trackers/linear/teams — the team keys this credential can reach, so
-  // Settings can show what a `kind: linear` declaration may name. docs/248 req 4:
+  // Settings can show what a `kind: linear` declaration may name. docs/248-declared-issue-trackers req 4:
   // a lookup for writing a declaration, not a picker that binds anything.
   app.get("/api/trackers/linear/teams", async (_request, reply) => {
     try {
@@ -632,7 +744,7 @@ export async function registerIssueRoutes(
   // (and the undo snapshot, on the persisted card) returns to the container.
 
   /**
-   * docs/248 req 13 — a create ALWAYS names its destination. The shim enforces
+   * docs/248-declared-issue-trackers req 13 — a create ALWAYS names its destination. The shim enforces
    * this by requiring `--tracker <name>`, but `/agent-ops/issue/*` is reachable
    * from the session container by anything the agent runs (a `curl` bypasses the
    * shim entirely), so the rule needs a server-side backstop or it is only a
@@ -707,7 +819,7 @@ export async function registerIssueRoutes(
     reply.code(500).send({ error: `${fallback}: ${getErrorMessage(err)}` });
   }
 
-  // ---- Write idempotency (SHI-112) ----------------------------------------
+  // ---- Write idempotency (planning#114) ----------------------------------------
   //
   // The `shipit issue {comment,edit,status,assign,create}` write relay is
   // re-driven verbatim when a crashed turn (exit 137 / OOM) is retried or the
@@ -744,7 +856,7 @@ export async function registerIssueRoutes(
   }
 
   /**
-   * Emit + persist the provenance card for one label creation (SHI-230) — used
+   * Emit + persist the provenance card for one label creation (planning#232) — used
    * by the standalone `label create` route and by `--create-missing-labels` on
    * create/edit (one card per minted label, so a flag-driven creation is as
    * visible and undoable as an explicit one). The card reuses the issue-write
@@ -752,11 +864,12 @@ export async function registerIssueRoutes(
    * issue, so `issueId`/`title` stay empty and the client renders it non-
    * navigable. Undo deletes the label if it's still unused.
    */
-  function emitLabelCreationCard(
+  function emitLabelCard(
     runner: NonNullable<ReturnType<typeof deps.runnerRegistry.get>>,
     sessionId: string,
     trackerId: string,
-    creation: LabelCreation,
+    verb: "label" | "label-edit",
+    write: LabelWrite,
     trackerName?: string,
   ): IssueWriteCard {
     const card: IssueWriteCard = {
@@ -764,12 +877,15 @@ export async function registerIssueRoutes(
       tracker: trackerId as TrackerId,
       ...(trackerName ? { trackerName } : {}),
       issueId: "",
-      identifier: creation.label.name,
+      // The label's name as it now stands — for an edit that is the NEW name,
+      // and the card's second line carries the one it replaced.
+      identifier: write.label.name,
       title: "",
-      verb: "label",
-      summary: creation.summary,
+      verb,
+      summary: write.summary,
+      ...("content" in write && write.content ? { content: write.content } : {}),
       attribution: isGitHubTracker(trackerId) ? "user" : "workspace",
-      undo: creation.undo,
+      undo: write.undo,
       undoState: "available",
       createdAt: new Date().toISOString(),
     };
@@ -780,6 +896,81 @@ export async function registerIssueRoutes(
       { chatHistoryManager: deps.chatHistoryManager, sessionId },
     );
     return card;
+  }
+
+  /**
+   * Shared handler for the two label writes (`label create`, `label edit`) —
+   * the same brokered-write-then-surface-a-card flow `handleWrite` runs, minus
+   * the issue: a label write targets tracker CONFIG, so there is no
+   * `TrackerIssue` to stamp onto the card and no issue id for the dedup key's
+   * `issueId` slot.
+   *
+   * That slot instead names **the label being written**: empty for a create (the
+   * label does not exist yet, so the name lives in the hashed content alongside
+   * the color and description) and the target's name for an edit (the object
+   * being mutated, exactly as the slot holds the issue for every issue verb).
+   * Keying an edit on the name is what keeps two edits to *different* labels
+   * from collapsing into one — the same trap `comment edit` avoided by riding
+   * the comment id in its hashed content (planning#88) — while a replay of the same
+   * edit stays absorbed (planning#114).
+   */
+  async function handleLabelWrite(
+    sessionId: string,
+    trackerId: string,
+    trackerName: string | undefined,
+    verb: "label" | "label-edit",
+    dedup: { verb: string; target: string; content: string },
+    reply: FastifyReply,
+    fallback: string,
+    run: (github: GitHubTrackerContext) => Promise<LabelWrite>,
+  ): Promise<unknown> {
+    // Same name/destination coherence check `handleWrite` applies — these routes
+    // mint their own card (with its own Undo) without going through it.
+    const mismatch = rejectMismatchedTrackerName(sessionId, trackerId, trackerName);
+    if (mismatch) {
+      reply.code(400).send({ error: mismatch });
+      return;
+    }
+    // Writing a tracker's label set mutates its configuration, so req 13's
+    // name-your-destination rule applies as it does to `issue create` — same
+    // backstop, same reasoning.
+    const unnamed = rejectUnnamedCreateDestination(trackerId);
+    if (unnamed) {
+      reply.code(400).send({ error: unnamed });
+      return;
+    }
+    const runner = deps.runnerRegistry.get(sessionId);
+    if (!runner) {
+      reply.code(409).send({ error: "Session is not active — open it to record the write." });
+      return;
+    }
+    const now = Date.now();
+    pruneWrites(now);
+    const dedupKey = `${sessionId}::${trackerId}::${dedup.verb}::${dedup.target}::${createHash("sha256")
+      .update(dedup.content)
+      .digest("hex")}`;
+    const cached = recentWrites.get(dedupKey);
+    if (cached && now - cached.at <= WRITE_DEDUP_WINDOW_MS) {
+      cached.at = now;
+      return cached.result;
+    }
+    const github = resolveGitHubContext(sessionId);
+    let write: LabelWrite;
+    try {
+      write = await run(github);
+    } catch (err) {
+      sendServiceError(reply, err, fallback);
+      return;
+    }
+    const card = emitLabelCard(runner, sessionId, trackerId, verb, write, trackerName);
+    const result = {
+      ok: true,
+      cardId: card.cardId,
+      summary: write.summary,
+      label: write.label,
+    };
+    recentWrites.set(dedupKey, { at: now, result });
+    return result;
   }
 
   /**
@@ -837,9 +1028,9 @@ export async function registerIssueRoutes(
       return;
     }
     // Labels minted by --create-missing-labels each get their own card, BEFORE
-    // the main write card — the creation happened first (SHI-230).
+    // the main write card — the creation happened first (planning#232).
     for (const creation of outcome.labelCreations ?? []) {
-      emitLabelCreationCard(runner, sessionId, trackerId, creation, trackerName);
+      emitLabelCard(runner, sessionId, trackerId, "label", creation, trackerName);
     }
     // For a create the issue id isn't known until the tracker assigns it, so
     // fall back to the created issue's id (the undo target).
@@ -872,7 +1063,7 @@ export async function registerIssueRoutes(
       { chatHistoryManager: deps.chatHistoryManager, sessionId },
     );
     // Surface the resolved labels + priority so `shipit issue ... --json` reflects
-    // what was actually applied (SHI-92), not just the title/identifier.
+    // what was actually applied (planning#94), not just the title/identifier.
     const result = {
       ok: true,
       cardId: card.cardId,
@@ -883,10 +1074,10 @@ export async function registerIssueRoutes(
       // colored read shape back to names here.
       labels: (outcome.issue.labels ?? []).map((l) => l.name),
       priority: outcome.issue.priority.label,
-      // Reflect the resolved parent (SHI-206) so `--json` shows the nesting that
+      // Reflect the resolved parent (planning#208) so `--json` shows the nesting that
       // was applied; absent when the issue is top-level.
       ...(outcome.issue.parentIdentifier ? { parent: outcome.issue.parentIdentifier } : {}),
-      // Labels minted on the fly by --create-missing-labels (SHI-230), so the
+      // Labels minted on the fly by --create-missing-labels (planning#232), so the
       // shim can report exactly what was created vs merely applied.
       ...(outcome.labelCreations && outcome.labelCreations.length > 0
         ? { createdLabels: outcome.labelCreations.map((c) => c.label.name) }
@@ -897,7 +1088,7 @@ export async function registerIssueRoutes(
   }
 
   // POST /api/sessions/:sessionId/issue/create
-  //   { tracker, title, body, labels?, priority?, createMissingLabels? } (docs/187, SHI-92, SHI-230)
+  //   { tracker, title, body, labels?, priority?, createMissingLabels? } (docs/187, planning#94, planning#232)
   app.post<{
     Params: { sessionId: string };
     Body: { tracker?: string; trackerName?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };
@@ -922,13 +1113,18 @@ export async function registerIssueRoutes(
       // stamp the card's issueId from the created issue.
       const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null, parent: parentToSet ?? null, createMissingLabels: createMissingLabels === true }) };
       return handleWrite(request.params.sessionId, tracker, trackerName, "", reply, "Failed to create issue", dedup, (github) =>
-        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet, createMissingLabels: createMissingLabels === true }, trackerFetchImpl, github),
+        // `trackerName` rides along because it is the create's *intent*, not
+        // only a display detail: for a repository declared both as a tracker and
+        // as a plugin repository, the name chosen is what says whether this is
+        // plugin feedback (docs/262 req 25). `rejectMismatchedTrackerName` has
+        // already verified it resolves to `tracker`.
+        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet, createMissingLabels: createMissingLabels === true, ...(trackerName ? { trackerName } : {}) }, trackerFetchImpl, github),
       );
     },
   );
 
   // POST /api/sessions/:sessionId/issue/label/create { tracker, name, color?, description? }
-  //   (SHI-230) — mint a tracker label so `--label` can apply it. Do-then-surface
+  //   (planning#232) — mint a tracker label so `--label` can apply it. Do-then-surface
   //   like every other write: created immediately, provenance card with Undo
   //   (undo deletes the label if it's still unused). The one write that targets
   //   tracker CONFIG rather than an issue, so it bypasses handleWrite (no
@@ -945,60 +1141,77 @@ export async function registerIssueRoutes(
         reply.code(400).send({ error: "tracker and name are required" });
         return;
       }
-      // Same name/destination coherence check `handleWrite` applies — this route
-      // mints its own card (with its own Undo) without going through it.
-      const labelMismatch = rejectMismatchedTrackerName(request.params.sessionId, tracker, trackerName);
-      if (labelMismatch) {
-        reply.code(400).send({ error: labelMismatch });
-        return;
-      }
-      // Creating a label mutates a tracker's configuration, so req 13's rule
-      // applies to it too — same backstop, same reasoning.
-      const unnamedLabel = rejectUnnamedCreateDestination(tracker);
-      if (unnamedLabel) {
-        reply.code(400).send({ error: unnamedLabel });
-        return;
-      }
-      const sessionId = request.params.sessionId;
-      const runner = deps.runnerRegistry.get(sessionId);
-      if (!runner) {
-        reply.code(409).send({ error: "Session is not active — open it to record the write." });
-        return;
-      }
-      const now = Date.now();
-      pruneWrites(now);
-      const dedupKey = `${sessionId}::${tracker}::label-create::::${createHash("sha256")
-        .update(JSON.stringify({ name, color: color ?? null, description: description ?? null }))
-        .digest("hex")}`;
-      const cached = recentWrites.get(dedupKey);
-      if (cached && now - cached.at <= WRITE_DEDUP_WINDOW_MS) {
-        cached.at = now;
-        return cached.result;
-      }
-      const github = resolveGitHubContext(sessionId);
-      let creation: LabelCreation;
-      try {
-        creation = await createLabelForTracker(
-          credentialStore,
-          tracker,
-          name,
-          { ...(color ? { color } : {}), ...(description ? { description } : {}) },
-          trackerFetchImpl,
-          github,
-        );
-      } catch (err) {
-        sendServiceError(reply, err, "Failed to create label");
-        return;
-      }
-      const card = emitLabelCreationCard(runner, sessionId, tracker, creation, trackerName);
-      const result = {
-        ok: true,
-        cardId: card.cardId,
-        summary: creation.summary,
-        label: creation.label,
+      const dedup = {
+        verb: "label-create",
+        target: "",
+        content: JSON.stringify({ name, color: color ?? null, description: description ?? null }),
       };
-      recentWrites.set(dedupKey, { at: now, result });
-      return result;
+      return handleLabelWrite(
+        request.params.sessionId,
+        tracker,
+        trackerName,
+        "label",
+        dedup,
+        reply,
+        "Failed to create label",
+        (github) =>
+          createLabelForTracker(
+            credentialStore,
+            tracker,
+            name,
+            { ...(color ? { color } : {}), ...(description ? { description } : {}) },
+            trackerFetchImpl,
+            github,
+          ),
+      );
+    },
+  );
+
+  // POST /api/sessions/:sessionId/issue/label/edit
+  //   { tracker, name, newName?, color?, description? } (planning#88) — correct a label
+  //   that already exists with the wrong color, casing or description. The
+  //   counterpart to `label/create`, which refuses an existing name: without an
+  //   edit verb a wrongly-minted label was permanently wrong through ShipIt.
+  //   Undo restores the prior values of exactly the fields this write changed.
+  app.post<{
+    Params: { sessionId: string };
+    Body: { tracker?: string; trackerName?: string; name?: string; newName?: string; color?: string; description?: string };
+  }>(
+    "/api/sessions/:sessionId/issue/label/edit",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const { tracker, trackerName, name, newName, color, description } = request.body ?? {};
+      if (!tracker || !name?.trim()) {
+        reply.code(400).send({ error: "tracker and name are required" });
+        return;
+      }
+      if (newName === undefined && color === undefined && description === undefined) {
+        reply.code(400).send({ error: "at least one of newName/color/description is required" });
+        return;
+      }
+      const patch = {
+        ...(newName !== undefined ? { name: newName } : {}),
+        ...(color !== undefined ? { color } : {}),
+        // `description: ""` is meaningful (clear it), so forward on presence.
+        ...(description !== undefined ? { description } : {}),
+      };
+      const dedup = {
+        verb: "label-edit",
+        // The label being edited occupies the issueId slot: it is the object
+        // this write mutates, so two edits to different labels stay distinct.
+        target: name.trim(),
+        content: JSON.stringify(patch),
+      };
+      return handleLabelWrite(
+        request.params.sessionId,
+        tracker,
+        trackerName,
+        "label-edit",
+        dedup,
+        reply,
+        "Failed to edit label",
+        (github) => updateLabelForTracker(credentialStore, tracker, name, patch, trackerFetchImpl, github),
+      );
     },
   );
 
@@ -1019,7 +1232,7 @@ export async function registerIssueRoutes(
   );
 
   // POST /api/sessions/:sessionId/issue/comment/edit { tracker, id, commentId, body }
-  //   (SHI-86) — rewrite a comment the agent posted. `id` (the issue) is named
+  //   (planning#88) — rewrite a comment the agent posted. `id` (the issue) is named
   //   alongside `commentId` because a comment id is backend-global; the adapter
   //   checks the pairing and refuses a comment ShipIt did not author.
   app.post<{
@@ -1039,7 +1252,7 @@ export async function registerIssueRoutes(
       // edits to different comments on the same issue would collapse into one
       // — the second silently dropped, with the first's card returned as if it
       // had succeeded. Hashing `{commentId, body}` keeps replay-of-the-same-edit
-      // absorbed (SHI-112) while keeping distinct comments distinct.
+      // absorbed (planning#114) while keeping distinct comments distinct.
       const dedup = { verb: "comment-edit", content: JSON.stringify({ commentId, body }) };
       return handleWrite(request.params.sessionId, tracker, trackerName, id, reply, "Failed to edit comment", dedup, (github) =>
         editCommentForTracker(credentialStore, tracker, id, commentId, body, trackerFetchImpl, github),
@@ -1048,7 +1261,7 @@ export async function registerIssueRoutes(
   );
 
   // POST /api/sessions/:sessionId/issue/edit
-  //   { tracker, id, title?, body?, labels?, priority?, createMissingLabels? } (SHI-92, SHI-230)
+  //   { tracker, id, title?, body?, labels?, priority?, createMissingLabels? } (planning#94, planning#232)
   app.post<{
     Params: { sessionId: string };
     Body: { tracker?: string; trackerName?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null; createMissingLabels?: boolean };

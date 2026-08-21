@@ -4,7 +4,6 @@ export interface SelectionCommentData {
   contextBefore: string;
   contextAfter: string;
   text: string;
-  source?: "human" | "ai";
 }
 
 /**

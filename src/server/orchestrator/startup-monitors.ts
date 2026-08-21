@@ -8,7 +8,8 @@ import {
 } from "./app-lifecycle.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
-import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
+import { isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
+import { overlayLiveScopeSource, pluginLiveArtifactSource } from "./disk-liveness-sources.js";
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
@@ -48,7 +49,7 @@ export async function startStartupMonitors(
     loopDetector, oomBreaker, chatHistoryManager,
     repoPrefetcher, claudeOAuthRefresherRef, codexOAuthRefresherRef,
     startupTimer, authManagers, dockerProxyServer, databaseManager,
-    mergeWatchManager,
+    mergeWatchManager, autoPushScheduler,
   } = rt;
 
   // ---- Docker memory stats broadcast (every 10s) ----
@@ -95,6 +96,10 @@ export async function startStartupMonitors(
         containerManager,
         runnerRegistry,
         broadcastLog,
+        // Lets the vanished path preserve an interrupted turn's transcript and
+        // append a visible notice — the same rescue `handleContainerExited`
+        // performs for a Docker `die` (docs/121 gap E).
+        chatHistoryManager,
         // Lets the reconciler re-adopt a live-but-untracked container
         // instead of force-disposing its runner — same resolver shape as
         // the startup `rediscover` path.
@@ -153,10 +158,10 @@ export async function startStartupMonitors(
   // crashed, fs.rm failed, the per-merge branch-delete hook didn't fire) — none
   // accumulate steadily, so we run once at boot rather than on a timer. The
   // STEADY-GROWTH sweeps (repo/dep caches, repo-memory, overlay bases, pnpm
-  // stores) moved onto the periodic escalation pass below (SHI-196). Skipped in
+  // stores) moved onto the periodic escalation pass below (planning#198). Skipped in
   // test mode so unit tests don't shell out to docker.
   //
-  // SHI-197 — one knob for every cold artifact: the archived-workspace
+  // planning#199 — one knob for every cold artifact: the archived-workspace
   // crash-recovery backstop swept here PLUS the repo/dep/pnpm/repo-memory caches
   // swept by the steady-state reclaim below, replacing the two coincidental 30d
   // knobs (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`).
@@ -189,7 +194,7 @@ export async function startStartupMonitors(
       createRepoGit,
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
-      // SHI-222 — orphan egress-sidecar sweep. Reuses the container manager's
+      // planning#224 — orphan egress-sidecar sweep. Reuses the container manager's
       // OWN Docker client so we hit the same daemon/socket it was configured
       // with; without a container manager there are no sidecars to reap.
       ...(containerManager ? { docker: containerManager.dockerClient } : {}),
@@ -202,7 +207,7 @@ export async function startStartupMonitors(
   // so the startup janitor above runs rarely, but session starts are frequent
   // and are exactly when disk gets consumed. Guarded + fire-and-forget;
   // `escalateDiskTiers` swallows its own errors.
-  // SHI-197 — the disk-idle ladder as one ordered, unit-consistent config (ms).
+  // planning#199 — the disk-idle ladder as one ordered, unit-consistent config (ms).
   // Env overrides fall back to the in-code defaults per-field; the ordering
   // invariant (`lightAfter ≤ evictMerged ≤ evictUnmerged`) is asserted once here
   // so an incoherent override (e.g. merged clock below the light clock) fails
@@ -245,16 +250,21 @@ export async function startStartupMonitors(
       + "Age-based tier escalation still runs.",
     );
   }
-  // SHI-196 — in-flight guard for the steady-state disk-reclaim pass. It fires
+  // planning#198 — in-flight guard for the steady-state disk-reclaim pass. It fires
   // from three triggers (startup, per-activation, hourly timer); without this,
   // two passes can race on the same session's tier descent (mirrors the
   // missing-container reconciler's `reconcileInFlight` above). It matters more
   // now the pass also runs the slower steady-state cache sweeps below.
   let escalationInFlight = false;
-  // SHI-294 — sessions already warned that their eviction is blocked by
+  // planning#296 — sessions already warned that their eviction is blocked by
   // uncommittable work. Process-scoped so the hourly pass appends the notice
   // once per stuck session instead of once per hour.
   const notifiedEvictBlocked = new Set<string>();
+  // Sessions whose eviction is stuck on something that can't change between
+  // passes (a workspace that is no longer a git repository, a corrupt checkout).
+  // Process-scoped so the hourly + per-activation passes report each cause once
+  // instead of re-logging it on every sweep for as long as the session exists.
+  const evictStuckLog = new Map<string, string>();
   const kickDiskEscalation = (excludeSessionId?: string): void => {
     if (isTestMode || !containerManager) return;
     if (escalationInFlight) return;
@@ -270,10 +280,11 @@ export async function startStartupMonitors(
             pruneVolumes: (sid) => pruneSessionVolumes(sid),
             createGitManager,
             ladder,
-            // SHI-294 — persisted warning when a dirty checkout can't be made
+            // planning#296 — persisted warning when a dirty checkout can't be made
             // durable, so a session pinned at `light` is visible to its user.
             chatHistory: chatHistoryManager,
             notifiedEvictBlocked,
+            evictStuckLog,
             paceMs: escalationPaceMs,
             diskFreeLow,
             diskFreeHigh,
@@ -281,12 +292,12 @@ export async function startStartupMonitors(
           },
           excludeSessionId,
         );
-        // SHI-196 — steady-growth disk reclaim (repo/dep caches, repo-memory,
+        // planning#198 — steady-growth disk reclaim (repo/dep caches, repo-memory,
         // obsolete overlay bases, stale pnpm stores) rides this periodic pass: it
         // grows with the clock, not with a crashed teardown, so it must NOT be
         // boot-only (it used to live in the startup `runDiskJanitor`). Boot
         // coverage is preserved because this same kick fires once at startup.
-        // Both calls swallow their own errors and always resolve. SHI-197 — the
+        // Both calls swallow their own errors and always resolve. planning#199 — the
         // cache cutoff is the single cold-artifact retention shared with the
         // boot janitor's archived-workspace backstop.
         await runSteadyStateReclaim({
@@ -295,11 +306,15 @@ export async function startStartupMonitors(
           credentialsDir,
           cacheDays: coldArtifactRetentionDays,
           paceMs: escalationPaceMs,
-          // Resolved at sweep time (not boot) so each reflects the current session
-          // set / runtime; both return an empty/null live-set under the
-          // `OVERLAY_DEP_STORE` kill switch, keeping their sweeps inert when off.
-          liveOverlayScopeHashes: () =>
-            liveOverlayScopeHashes(sessionManager.listAll(), depDirsForSession),
+          // Both resolve at sweep time (not boot) so each reflects the current
+          // session set / runtime, and both return an empty/null live-set under
+          // the `OVERLAY_DEP_STORE` kill switch, keeping their sweeps inert when
+          // off. They live in `disk-liveness-sources.ts` rather than inline here
+          // because WHICH session set they enumerate is a correctness property
+          // that was wrong in production (planning#439) and is untestable as a
+          // closure in this function.
+          liveOverlayScopeHashes: overlayLiveScopeSource(sessionManager),
+          livePluginStoreArtifacts: pluginLiveArtifactSource(sessionManager),
           pnpmStoreRuntimeHash: () =>
             isOverlayEnabled() ? pnpmStoreHash(overlayRuntimeKey()) : null,
         });
@@ -319,7 +334,7 @@ export async function startStartupMonitors(
   // ---- Periodic disk-tier escalation (issue #1049) ----
   // The escalation pass is the single steady-state disk-reclaim entry point: the
   // tier ladder (idle node_modules → hot/light/evicted) + its disk-pressure LRU
-  // descent, AND — since SHI-196 — the steady-growth cache sweeps
+  // descent, AND — since planning#198 — the steady-growth cache sweeps
   // (`runSteadyStateReclaim`). All grow with the clock, not with a failed
   // teardown. The startup `runDiskJanitor` failure-recovery sweeps correctly stay
   // startup-only (see the disk-janitor.ts module docstring) because those orphans
@@ -385,12 +400,12 @@ export async function startStartupMonitors(
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
-    // SHI-258 — the notify-on-merge retry supervisor. Unref'd, so it never held
+    // planning#260 — the notify-on-merge retry supervisor. Unref'd, so it never held
     // the process open, but stopping it keeps shutdown free of a stray pass.
     mergeWatchManager?.stopRetryLoop();
   });
   registerShutdownHook(app, {
-    startupTimer, authManagers, runnerRegistry,
+    startupTimer, authManagers, runnerRegistry, autoPushScheduler,
     dockerProxyServer, containerManager, databaseManager,
   });
 

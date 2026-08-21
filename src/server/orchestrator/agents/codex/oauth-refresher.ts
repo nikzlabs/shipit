@@ -18,7 +18,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import type { AgentId, ProviderAccount } from "../../../shared/types.js";
+import type { AgentId } from "../../../shared/types.js";
 import { killChild } from "../../../shared/kill-child.js";
 import type { ProviderAccountManager } from "../../provider-account-manager.js";
 import type { RuntimeMode } from "../../app-di.js";
@@ -106,7 +106,7 @@ export class CodexOAuthRefresher extends EventEmitter {
       console.log("[codex-oauth-refresh] skipping start: runtimeMode != containerized");
       return;
     }
-    for (const account of this.deps.providerAccountManager.list("codex")) {
+    for (const account of this.deps.providerAccountManager.list("openai")) {
       this.scheduleAccount(account.id);
     }
   }
@@ -124,7 +124,7 @@ export class CodexOAuthRefresher extends EventEmitter {
   async refreshNow(accountId?: string): Promise<CodexRefreshResult[]> {
     if (this.deps.runtimeMode !== "containerized") return [];
     if (accountId) return [await this.runTickForAccount(accountId)];
-    const accounts = this.deps.providerAccountManager.list("codex");
+    const accounts = this.deps.providerAccountManager.list("openai");
     return Promise.all(accounts.map((a) => this.runTickForAccount(a.id)));
   }
 
@@ -189,6 +189,10 @@ export class CodexOAuthRefresher extends EventEmitter {
         reason: `source file missing or unparseable at ${sourceFile}`,
       };
       console.log(`[codex-oauth-refresh] account=${accountId} missing_credentials — waiting for auth_complete`);
+      // Missing or unreadable source credentials make an existing account
+      // unusable. Use the same account-qualified terminal path as revocation
+      // so persistence, routing, and Settings stop reporting it as ready.
+      this.emitUnauthenticated(accountId, "missing_credentials");
       return result;
     }
 
@@ -203,6 +207,7 @@ export class CodexOAuthRefresher extends EventEmitter {
     if (!nearExpiry) {
       const state = this.ensureAccountState(accountId);
       state.failureCount = 0;
+      this.handleHealthySource(accountId);
       this.scheduleAccount(accountId);
       return {
         outcome: "noop",
@@ -276,7 +281,7 @@ export class CodexOAuthRefresher extends EventEmitter {
 
     if (isRevoked) {
       console.log(`[codex-oauth-refresh] account=${accountId} revoked (invalid_grant) — emitting auth_required`);
-      this.emitUnauthenticated(accountId);
+      this.emitUnauthenticated(accountId, "revoked");
       return {
         outcome: "revoked",
         accountId,
@@ -313,17 +318,31 @@ export class CodexOAuthRefresher extends EventEmitter {
     };
   }
 
-  private emitUnauthenticated(accountId: string): void {
+  private emitUnauthenticated(accountId: string, reason: "revoked" | "missing_credentials"): void {
     const state = this.ensureAccountState(accountId);
     if (state.emittedUnauthenticated) return;
     state.emittedUnauthenticated = true;
     this.emit("account_unauthenticated", accountId);
     this.deps.sseBroadcast("codex_account_unauthenticated", { accountId });
-    // docs/150 req 19 — `accountId` is not optional decoration. The client
+    // docs/150-multiple-provider-subscriptions req 19 — `accountId` is not optional decoration. The client
     // files sign-in state per account and has no provider-wide slot left to
     // fall back to, so an unqualified `agent_auth_failed` is dropped: the row
     // of the account that was actually revoked would keep reading "ready".
-    this.deps.sseBroadcast("agent_auth_failed", { agentId: "codex", accountId, reason: "revoked" });
+    this.deps.sseBroadcast("agent_auth_failed", { loginId: "openai-chatgpt", accountId, reason });
+  }
+
+  /** Clear the terminal-state latch when re-auth wrote a healthy source file. */
+  private handleHealthySource(accountId: string): void {
+    const state = this.ensureAccountState(accountId);
+    if (!state.emittedUnauthenticated) return;
+    state.emittedUnauthenticated = false;
+    try {
+      this.deps.repushAccountToken("codex", accountId);
+    } catch (err) {
+      console.error(`[codex-oauth-refresh] account=${accountId} recovery repush failed:`, err);
+    }
+    this.deps.sseBroadcast("codex_account_authenticated", { accountId });
+    this.emit("account_reauthenticated", accountId);
   }
 
   private spawnCliInRoot(args: string[], accountRoot: string, timeoutMs: number): Promise<string> {
@@ -411,5 +430,3 @@ export class CodexOAuthRefresher extends EventEmitter {
     return Array.from(this.accounts.keys());
   }
 }
-
-export type { ProviderAccount };

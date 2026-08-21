@@ -210,10 +210,12 @@ written by the `claude` / `codex` CLIs) are out of scope for this encryption.
 
 ## Security note: agent-container egress
 
-Agent containers are **network-contained by default** (SHI-90,
+Agent containers are **network-contained by default** (planning#92,
 `docs/172-agent-containment`): a default-deny egress allowlist + controlled DNS
 resolver + transparent SNI proxy restrict outbound traffic to known hosts (the
-agent API, your git host, package registries, your connected MCP servers). So a
+agent APIs in ShipIt's service catalogue, your git host, package registries,
+your connected MCP servers). Provider API access uses the catalogue's exact
+endpoint hosts; it does not allow other subdomains from those providers. So a
 value reachable inside the container — `agent: true` secrets, MCP tokens, the
 agent's own CLI OAuth — can no longer be POSTed to an arbitrary attacker host by
 code the agent runs (a malicious dependency README, fetched page, or repo
@@ -260,3 +262,10 @@ declared in any compose service. Those are kept in the per-repo secret
 store but are NOT injected anywhere — declaring them in
 `x-shipit-secrets` is what wires them up. This keeps services scoped to
 exactly what they asked for.
+
+**So deleting a service is also a secrets change.** A declaration is the only
+thing that injects a value, and it lives on a service. Delete the last service
+declaring a name — even for an unrelated reason, like dropping a redundant
+preview — and that name becomes undeclared: the value stays in the store, and it
+stops reaching every container, including the agent's if it was `agent: true`.
+Re-declare it on a service that survives.

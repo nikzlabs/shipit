@@ -32,10 +32,27 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   codeRollbackHash: "c0ffee",
   voiceNote: { id: "v1", headline: "h", kind: "authored", createdAt: "t" },
   bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
-  permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
+  permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", details: "{\n  \"file_path\": \".npmrc\"\n}", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
   egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "denied", createdAt: "2026-06-05T00:00:00.000Z" },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
-  subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, outputMarkdown: "## Findings\n\n- `foo.ts:42` — bug\n", createdAt: "2026-06-05T00:00:00.000Z" },
+  // docs/261 phase 4 — `runOn` rides the same json column as the rest of the
+  // card, so it needs no migration; what it DOES need is to be here, or the
+  // round-trip below cannot tell "attribution survives a reload" from
+  // "attribution was never stored", which is the exact bug class docs/188 names.
+  subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" }, status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, outputMarkdown: "## Findings\n\n- `foo.ts:42` — bug\n", createdAt: "2026-06-05T00:00:00.000Z" },
+  nonTurnFailure: {
+    cardId: "ntf1",
+    purpose: "session-naming",
+    serviceId: "anthropic",
+    serviceName: "Anthropic",
+    billingMode: "sub",
+    modelId: "claude-haiku-4-5-20251001",
+    pinned: true,
+    fallback: "The session kept its placeholder title.",
+    detail: "401 Unauthorized",
+    createdAt: "2026-08-09T00:00:00.000Z",
+    dismissedAt: "2026-08-09T00:01:00.000Z",
+  },
   actionChecklist: {
     cardId: "ac1",
     title: "Optional follow-ups",
@@ -397,7 +414,7 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  describe("listSubAgentConsultCards (SHI-245)", () => {
+  describe("listSubAgentConsultCards (planning#247)", () => {
     const consult = (spawnId: string, outputMarkdown: string): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -432,7 +449,7 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  describe("updateSubAgentConsultCard (SHI-278)", () => {
+  describe("updateSubAgentConsultCard (planning#280)", () => {
     const pending = (spawnId: string): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -440,6 +457,9 @@ describe("ChatHistoryManager", () => {
         cardId: `card-${spawnId}`,
         spawnId,
         subAgentId: "codex",
+        // docs/261 phase 4 — written at SPAWN time, so it has to survive the
+        // terminal patch that lands minutes later on an already-finalized row.
+        runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
         status: "pending",
         createdAt: "2026-08-03T00:00:00.000Z",
       },
@@ -471,6 +491,10 @@ describe("ChatHistoryManager", () => {
         outputMarkdown: "## Findings",
         // untouched fields survive the merge
         createdAt: "2026-08-03T00:00:00.000Z",
+        // docs/261 req 9 — including the attribution. The patch that finalizes a
+        // card carries no `runOn`, so a merge that replaced rather than merged
+        // would leave the permanent record unable to say what reviewed the work.
+        runOn: { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", reasoningEffort: "high" },
       });
       // patched in place — one card, not a second row appended
       const all = new ChatHistoryManager(dbManager).load("sess-1");
@@ -490,7 +514,7 @@ describe("ChatHistoryManager", () => {
       expect(mgr.listSubAgentConsultCards("sess-1")[0].status).toBe("pending");
     });
 
-    // SHI-307 — the boot reconcile's write. `finalize` clears in_progress so the
+    // planning#309 — the boot reconcile's write. `finalize` clears in_progress so the
     // reconciled card cannot be deleted by a docs/240-adopted turn's
     // `replaceInProgress`, which drops every in_progress=1 row in the session.
     it("finalize clears in_progress, so an adopted turn's replaceInProgress can't delete the card", () => {
@@ -517,17 +541,260 @@ describe("ChatHistoryManager", () => {
       expect(cards[0]).toMatchObject({ status: "cancelled", statusDetail: "ShipIt restarted" });
     });
 
-    it("without finalize, an in-progress card is still deleted by the next replaceInProgress", () => {
-      // Pins the reason `finalize` exists — remove it and this is what happens.
+    // planning#402 — `finalize` used to be the ONLY thing standing between a card
+    // and the next turn's delete, and only the boot reconcile passed it. The
+    // storage chokepoint in `replaceInProgress` now finalizes an orphaned
+    // consult row on its own, so a card patched WITHOUT `finalize` survives too.
+    // `finalize` is still correct and still what the reconcile wants — it just
+    // stopped being load-bearing for durability.
+    it("survives the next replaceInProgress even when the patch omits finalize", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.replaceInProgress("sess-1", [{ ...pending("spawn-a"), inProgress: true }]);
       expect(mgr.updateSubAgentConsultCard("sess-1", "card-spawn-a", { status: "cancelled" })).toBe(true);
       mgr.replaceInProgress("sess-1", [{ role: "assistant", text: "the adopted turn", inProgress: true }]);
-      expect(mgr.listSubAgentConsultCards("sess-1")).toEqual([]);
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ cardId: "card-spawn-a", status: "cancelled" });
     });
   });
 
-  describe("listPendingSubAgentConsultCards (SHI-307)", () => {
+  /**
+   * planning#402 — the incident: a foreground `shipit agent run` finished
+   * successfully, its 16,529-character review was written into the turn's
+   * `in_progress=1` rows, an auto-fix turn preempted that turn 330 ms later, and
+   * its first `replaceInProgress` deleted the row. `shipit agent result` read
+   * `pending` for hours and the output was unrecoverable.
+   *
+   * The invariant these pin: **no delete of turn scratch takes a row carrying a
+   * sub-agent consult card** — and preserving it must not disturb the card's
+   * position inside a turn that is still alive.
+   */
+  describe("consult cards are not turn scratch (planning#402)", () => {
+    const card = (
+      spawnId: string,
+      over: Partial<SubAgentConsultCard> = {},
+    ): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      subAgentConsult: {
+        cardId: `card-${spawnId}`,
+        spawnId,
+        subAgentId: "codex",
+        status: "pending",
+        createdAt: "2026-08-16T08:14:20.000Z",
+        ...over,
+      },
+    });
+
+    /** The turn's rows as `emitChatCard` / `persistTurnInProgress` build them. */
+    const turnRows = (...msgs: PersistedMessage[]): PersistedMessage[] =>
+      msgs.map((m) => ({ ...m, inProgress: true }));
+
+    it("keeps a terminal card whose turn is preempted before it finalizes", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      // Turn T: the agent blocks on its own foreground `shipit agent run`, so
+      // the pending card lands in T's in-progress rows and T stays open.
+      const spawned = turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a"),
+      );
+      mgr.replaceInProgress("sess-1", spawned);
+
+      // 12 minutes later the consult returns. `persistCardTransition` takes the
+      // in-flight branch (T is still running), patching the recorded card and
+      // re-flushing the turn.
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a", { status: "success", outputMarkdown: "## Findings", durationMs: 761_642 }),
+      ));
+
+      // 330 ms later an auto-fix turn preempts T and rebuilds from ITS OWN
+      // (empty) recorded cards. Before the fix this deleted the success row.
+      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "fixing the failing test" }));
+
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        cardId: "card-spawn-a",
+        status: "success",
+        outputMarkdown: "## Findings",
+      });
+    });
+
+    it("keeps a card that is still pending when its turn is preempted", () => {
+      // The same delete, one beat earlier: lose the pending row and the terminal
+      // patch that arrives minutes later has no row to land on at all.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", turnRows(card("spawn-a")));
+      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "a different turn" }));
+
+      expect(mgr.updateSubAgentConsultCard("sess-1", "card-spawn-a", {
+        status: "success",
+        outputMarkdown: "## Findings",
+      })).toBe(true);
+      expect(new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1")[0]).toMatchObject({
+        status: "success",
+        outputMarkdown: "## Findings",
+      });
+    });
+
+    it("keeps a consult row through clearInProgress", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "consulting" },
+        card("spawn-a", { status: "success" }),
+      ));
+      mgr.clearInProgress("sess-1");
+
+      const all = new ChatHistoryManager(dbManager).load("sess-1");
+      // The aborted turn's scratch is gone; the consult record is not.
+      expect(all.map((m) => m.text)).toEqual([""]);
+      expect(all[0].subAgentConsult).toMatchObject({ cardId: "card-spawn-a", status: "success" });
+    });
+
+    it("never leaves two rows for one card, and lets the terminal copy win", () => {
+      // Defect A on its own — no deletion involved, so this has to manufacture
+      // the finalized twin by a route that exists WITHOUT the fix: an
+      // out-of-band `finalizeInProgress` (docs/240's turn adoption, the auth
+      // handler, the crash paths). A live turn keeps the card in
+      // `recordedCards`, so its next rebuild re-offers it; inserting it beside
+      // the finalized copy leaves the stale row first, and every read that takes
+      // a first match then reports `pending` for a finished run.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a"),
+      ));
+      mgr.finalizeInProgress("sess-1");
+      // The turn is still alive and flushes its recorded card again — now
+      // carrying the terminal status.
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a", { status: "success", outputMarkdown: "## Findings" }),
+      ));
+
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ status: "success", outputMarkdown: "## Findings" });
+    });
+
+    it("a stale rebuild cannot downgrade a terminal card back to pending", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", turnRows(card("spawn-a", { status: "success", outputMarkdown: "## Findings" })));
+      mgr.finalizeInProgress("sess-1");
+      mgr.replaceInProgress("sess-1", turnRows(card("spawn-a")));
+
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ status: "success", outputMarkdown: "## Findings" });
+    });
+
+    it("re-anchors a replaced card instead of freezing it above its own turn", () => {
+      // The other half of finding 2: when a finalized twin exists and the batch
+      // copy is at least as current, the surviving row is dropped and the card
+      // re-inserted at its anchor. Patching the twin in place would keep the
+      // data and lose the position — the card floating above the groups that
+      // preceded it, which is the regression the preserve step is conditional
+      // to avoid.
+      const mgr = new ChatHistoryManager(dbManager);
+      const rows = (status: "pending" | "success") => turnRows(
+        { role: "assistant", text: "before the consult" },
+        card("spawn-a", { status }),
+        { role: "assistant", text: "after the consult" },
+      );
+      mgr.replaceInProgress("sess-1", rows("pending"));
+      // A foreign rebuild orphans the card, so the preserve step finalizes THAT
+      // ROW ALONE — the state the twin branch actually sees in production.
+      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "a preempting turn" }));
+      // The original turn is alive after all and flushes its recorded card.
+      mgr.replaceInProgress("sess-1", rows("success"));
+
+      const all = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(all.map((m) => (m.subAgentConsult ? "<card>" : m.text))).toEqual([
+        "before the consult",
+        "<card>",
+        "after the consult",
+      ]);
+      expect(all[1].subAgentConsult).toMatchObject({ status: "success" });
+    });
+
+    it("leaves the card at its anchor while its own turn is still rebuilding", () => {
+      // Why the preserve is conditional on the batch: finalize a row the LIVE
+      // turn still owns and its id freezes while the assistant rows around it
+      // are reborn with higher ones — the card floats to the top of its turn.
+      const mgr = new ChatHistoryManager(dbManager);
+      const rebuild = (tail: string[]) =>
+        mgr.replaceInProgress("sess-1", turnRows(
+          { role: "assistant", text: "before the consult" },
+          card("spawn-a", { status: "success" }),
+          ...tail.map((t) => ({ role: "assistant" as const, text: t })),
+        ));
+      rebuild([]);
+      rebuild(["after the consult"]);
+      rebuild(["after the consult", "and later still"]);
+
+      const all = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(all.map((m) => (m.subAgentConsult ? "<card>" : m.text))).toEqual([
+        "before the consult",
+        "<card>",
+        "after the consult",
+        "and later still",
+      ]);
+    });
+  });
+
+  describe("replaceInProgress notice dedupe (double failover-notice incident)", () => {
+    const notice = (noticeId: string, text = "Claude2 is out of quota."): PersistedMessage => ({
+      role: "assistant",
+      text,
+      notice: true,
+      noticeLevel: "info",
+      noticeId,
+    });
+
+    it("skips a notice whose id already exists as a finalized row", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      // Turn start: the env-prep notice is written in-progress…
+      mgr.replaceInProgress("sess-1", [{ ...notice("n-1"), inProgress: true }]);
+      // …and a stale teardown finalizes it out from under the turn.
+      mgr.finalizeInProgress("sess-1");
+      // The turn's next boundary rebuilds from `recordedCards`, which still
+      // hold the notice — the finalized copy must win, not duplicate.
+      mgr.replaceInProgress("sess-1", [
+        { ...notice("n-1"), inProgress: true },
+        { role: "assistant", text: "working…", inProgress: true },
+      ]);
+      mgr.finalizeInProgress("sess-1");
+
+      const notices = mgr.load("sess-1").filter((m) => m.notice);
+      expect(notices).toHaveLength(1);
+      expect(notices[0].noticeId).toBe("n-1");
+    });
+
+    it("does not dedupe distinct notices or notices without a finalized twin", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", notice("n-old", "an earlier, unrelated notice"));
+      mgr.replaceInProgress("sess-1", [
+        { ...notice("n-a"), inProgress: true },
+        { ...notice("n-b", "a second, different notice"), inProgress: true },
+      ]);
+      mgr.finalizeInProgress("sess-1");
+
+      expect(mgr.load("sess-1").filter((m) => m.notice)).toHaveLength(3);
+    });
+
+    it("scopes the dedupe to the session", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-other", notice("n-1"));
+      mgr.replaceInProgress("sess-1", [{ ...notice("n-1"), inProgress: true }]);
+      mgr.finalizeInProgress("sess-1");
+
+      expect(mgr.load("sess-1").filter((m) => m.notice)).toHaveLength(1);
+      expect(mgr.load("sess-other").filter((m) => m.notice)).toHaveLength(1);
+    });
+  });
+
+  describe("listPendingSubAgentConsultCards (planning#309)", () => {
     const consultWith = (spawnId: string, status: SubAgentConsultCard["status"]): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -715,7 +982,7 @@ describe("ChatHistoryManager", () => {
     });
   });
 
-  describe("egress allow-once card lifecycle (docs/172, SHI-90)", () => {
+  describe("egress allow-once card lifecycle (docs/172, planning#92)", () => {
     const pendingEgress = (cardId: string): PersistedMessage => ({
       role: "assistant",
       text: "",
@@ -844,7 +1111,7 @@ describe("ChatHistoryManager", () => {
       expect(loaded[0].issueWrite).toEqual(msg.issueWrite);
     });
 
-    it("round-trips an edit card's label/priority undo snapshot (SHI-92)", () => {
+    it("round-trips an edit card's label/priority undo snapshot (planning#94)", () => {
       const mgr = new ChatHistoryManager(dbManager);
       const msg: PersistedMessage = {
         role: "assistant",
@@ -868,7 +1135,7 @@ describe("ChatHistoryManager", () => {
       expect(card?.undo).toEqual({ kind: "edit", previousLabels: ["backend"], previousPriority: "low" });
     });
 
-    it("round-trips a comment-edit card's previous-body undo snapshot (SHI-86)", () => {
+    it("round-trips a comment-edit card's previous-body undo snapshot (planning#88)", () => {
       const mgr = new ChatHistoryManager(dbManager);
       const msg: PersistedMessage = {
         role: "assistant",
@@ -893,6 +1160,41 @@ describe("ChatHistoryManager", () => {
       const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
       // The whole card survives a reload — without the snapshot the Undo button
       // would render with nothing to restore.
+      expect(card).toEqual(msg.issueWrite);
+    });
+
+    it("round-trips a label-edit card's prior-values undo snapshot (planning#88)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg: PersistedMessage = {
+        role: "assistant",
+        text: "",
+        issueWrite: {
+          cardId: "iw-label-edit",
+          tracker: "github:acme/planning",
+          trackerName: "planning",
+          // A label write targets tracker CONFIG, so there is no issue: the
+          // identifier is the label's name AS IT NOW STANDS.
+          issueId: "",
+          identifier: "Bug",
+          title: "",
+          verb: "label-edit",
+          summary: 'edited label renamed "bug" → "Bug", color → #d73a4a',
+          content: { label: { before: "bug", after: "Bug" }, attrs: "color → #d73a4a" },
+          attribution: "user",
+          undo: {
+            kind: "label-edit",
+            labelId: "Bug",
+            previousName: "bug",
+            previousColor: "#ededed",
+          },
+          undoState: "available",
+          createdAt: "2026-06-05T00:00:00.000Z",
+        },
+      };
+      mgr.append("sess-1", msg);
+      const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
+      // Without the snapshot surviving a reload the Undo button would render
+      // with nothing to restore — the label would stay wrong the other way.
       expect(card).toEqual(msg.issueWrite);
     });
 
@@ -1184,6 +1486,108 @@ describe("ChatHistoryManager", () => {
       const messages = mgr.load("sess-1");
       expect(messages).toHaveLength(1);
       expect(messages[0].text).toBe("Original");
+    });
+  });
+
+  // docs/252 phase 7 (req 9) — the notice must still be findable after a reload,
+  // and dismissal is STATE on the row rather than its removal: deleting it would
+  // make "I read this" and "it never happened" the same thing on the next load,
+  // and would take the record of a recurring failure with it.
+  it("keeps a dismissed non-turn-failure notice in history with its dismissal stamped", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    mgr.append("sess-1", {
+      role: "assistant",
+      text: "",
+      nonTurnFailure: {
+        cardId: "ntf-1",
+        purpose: "session-naming",
+        serviceId: "deepseek",
+        serviceName: "DeepSeek",
+        billingMode: "key",
+        modelId: "deepseek-v4-flash",
+        fallback: "The session kept its placeholder title.",
+        createdAt: "2026-08-09T00:00:00.000Z",
+      },
+    });
+
+    expect(mgr.updateNonTurnFailureCard("sess-1", "ntf-1", { dismissedAt: "2026-08-09T00:05:00.000Z" }))
+      .toBe(true);
+
+    const reloaded = mgr.load("sess-1");
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0].nonTurnFailure?.dismissedAt).toBe("2026-08-09T00:05:00.000Z");
+    expect(reloaded[0].nonTurnFailure?.serviceName).toBe("DeepSeek");
+  });
+
+  it("reports false when dismissing a notice that is not in this session", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    expect(mgr.updateNonTurnFailureCard("sess-1", "missing", { dismissedAt: "x" })).toBe(false);
+  });
+
+  describe("consumeUnreportedBugOutcomes (nikzlabs/shipit#2350)", () => {
+    const card = (over: Record<string, unknown>) => ({
+      cardId: "c1",
+      phase: "draft",
+      title: "Preview won't reload",
+      body: "b",
+      stage2Ran: true,
+      producer: "session",
+      ...over,
+    });
+
+    it("returns a resolved card once, then never again", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ phase: "filed", issueNumber: 7, issueUrl: "u" }) as never,
+      });
+
+      const first = mgr.consumeUnreportedBugOutcomes("s1");
+      expect(first).toHaveLength(1);
+      expect(first[0].issueNumber).toBe(7);
+      // The mark is durable, so a second turn — or a restart — gets nothing.
+      expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
+      expect(new ChatHistoryManager(dbManager).consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
+    });
+
+    it("ignores cards that are not resolved", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "assistant", text: "", bugReport: card({ phase: "draft" }) as never });
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ cardId: "c2", phase: "filing" }) as never,
+      });
+      expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
+    });
+
+    it("reports every card resolved since the last turn, not just the newest", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ phase: "filed", issueNumber: 1, issueUrl: "u1" }) as never,
+      });
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ cardId: "c2", phase: "dismissed" }) as never,
+      });
+      // The single last-write-wins `pendingAgentNotice` slot could not do this,
+      // which is why the flag lives on the card.
+      expect(mgr.consumeUnreportedBugOutcomes("s1").map((c) => c.cardId)).toEqual(["c1", "c2"]);
+    });
+
+    it("scopes to the session", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s2", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ phase: "filed", issueNumber: 9, issueUrl: "u" }) as never,
+      });
+      expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
+      expect(mgr.consumeUnreportedBugOutcomes("s2")).toHaveLength(1);
     });
   });
 });

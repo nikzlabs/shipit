@@ -45,20 +45,3 @@ export function ComposeErrorBanner({ composeError, onSendToAgent }: ComposeError
     </div>
   );
 }
-
-interface ComposeHintProps {
-  /** Called when the user clicks "Send to agent" to ask it to add compose config. */
-  onSendToAgent?: () => void;
-}
-
-/** Overlay nudging the user to add a `compose` block to shipit.yaml to enable previews. */
-export function ComposeHint({ onSendToAgent }: ComposeHintProps) {
-  return (
-    <div className="text-center space-y-3 max-w-lg px-4">
-      <p className="text-sm text-(--color-text-secondary)">
-        Add <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">compose</code> to <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">shipit.yaml</code> to enable previews
-      </p>
-      {onSendToAgent && <Button variant="primary" size="md" onClick={onSendToAgent}>Send to agent</Button>}
-    </div>
-  );
-}

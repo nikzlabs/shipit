@@ -11,22 +11,59 @@ agent:
 compose: docker-compose.yml
 # docs/248 — every issue tracker this repository uses is declared here. ShipIt has
 # no built-in tracker any more, so without this block a session reaches only this
-# repository's own GitHub Issues and the Linear tab disappears. The credential
-# (and therefore the workspace) is configured in ShipIt settings; the declaration
-# names the team and gives it the name every reference and `--tracker` uses.
+# repository's own GitHub Issues. The credential is configured in ShipIt settings;
+# the declaration gives the tracker the name every reference and `--tracker` uses.
 issues:
   trackers:
-    - kind: linear
-      team: SHI
-      name: roadmap
-    # docs/247 — ShipIt's own planning issues live in a private repository,
-    # separate from this public source repo. Migration off Linear in progress.
+    # docs/247 — ShipIt's own planning lives in a private repository, separate
+    # from this public source repo.
     - kind: github
       repo: nikzlabs/shipit-planning
       name: planning
       # `name` is the address (`planning#42`); `label` is what the Issues tab
       # shows. Without it the tab would render the lower-case slug.
       label: Planning
+# docs/262 — plugin repositories. Both blocks are the feature's live fixture
+# (test-plugin/README.md): ShipIt exports one deliberately tiny plugin and
+# declares it back into itself with `repo: self`, so the repo that implements
+# the feature also dogfoods it. Slice-2 parsing will read these; until then the
+# keys are reserved (known-but-ignored) in shipit-config.ts.
+exports:
+  plugins:
+    probe:
+      compose: test-plugin/docker-compose.yml
+      cli:
+        probe: test-plugin/cli/probe.mjs
+      skills: test-plugin/skills
+      install: node test-plugin/install.mjs
+      install-inputs: [test-plugin/install.mjs]
+      credentials: [PROBE_TOKEN]
+      hosts: [example.com]
+      settings:
+        greeting:
+          description: Text the probe service and CLI echo back
+          default: hello from the probe
+plugins:
+  repos:
+    - repo: self
+      name: shipit-dev
+  use:
+    - plugin: probe
+      from: shipit-dev
+      overrides:
+        # req 26's CONSUMER half. The manifest's default is "hello from the
+        # probe"; this value can only have come from here, so a build that
+        # ignored `overrides.settings` reports the default and the fixture sees
+        # it (nikzlabs/shipit#2298 finding 2 was reported precisely because
+        # nothing here ever set one). Note the nesting: `settings:` one level
+        # up, on the `use` entry, is not read.
+        settings:
+          greeting: hello from the consuming project
+        services:
+          probe:
+            # The dev service is this repo's primary preview; the probe UI is
+            # started on demand (and exercises the req 16 consumer override).
+            autostart: false
 # Release auto-publish (docs/214): ShipIt cuts releases by merging a version-bump
 # PR into the `stable` maintenance branch. On merge, .github/workflows/release.yml
 # derives the tag `v<package.json version>`, gates on a green build, tags the

@@ -1,6 +1,6 @@
 ---
 description: "SUPERSEDED by the PWA (docs/222): the Android WebView wrapper and its android/ project have been removed. Kept as historical reference."
-issue: https://linear.app/shipit-ai/issue/SHI-53
+issue: planning#55
 ---
 
 # 116 — Android WebView wrapper (configurable host)
@@ -9,7 +9,7 @@ issue: https://linear.app/shipit-ai/issue/SHI-53
 > and its `.github/workflows/android.yml` release pipeline were deleted. The
 > wrapper accumulated too many quirks (WebView chrome, insets/edge-to-edge, a
 > separate signed-APK release path) for what it delivered, and the **installable
-> PWA** ([docs/222](../222-pwa-installable/plan.md), SHI-208) solves the same
+> PWA** ([docs/222](../222-pwa-installable/plan.md), planning#210) solves the same
 > problem — standalone, no address bar — with none of that overhead.
 >
 > The native Android target in this repo is now **`android-snapshot-test/`**, a

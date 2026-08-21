@@ -8,6 +8,7 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runDiskJanitor } from "./startup-janitor.js";
 import { repoUrlToHash } from "./git-utils.js";
+import type { GitRemoteCredential } from "./repo-git.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
@@ -273,7 +274,7 @@ describe("runDiskJanitor", () => {
     expect(lsRequests).toHaveLength(1);
     expect(lsRequests[0]).toContain("--filter");
     expect(lsRequests[0]).toContain("dangling=true");
-    expect(lsRequests[0]).toContain("name=shipit-session-");
+    expect(lsRequests[0]).toContain("name=shipit-");
 
     // Only the two orphan networks get rm'd — both the agent-style and
     // compose-style names. The live session's networks, the user-named
@@ -283,6 +284,51 @@ describe("runDiskJanitor", () => {
       "shipit-session-fed987654321",
     ]);
     expect(result.orphanNetworksRemoved).toBe(2);
+  });
+
+  it("spares a network whose session is created after the listing (docs/113)", async () => {
+    // The sweep is fire-and-forget from boot and paced, so it can still be
+    // running once the server accepts session creates. A session's network
+    // exists BEFORE its container attaches, so it is `dangling` and would be
+    // reaped by a one-shot snapshot of the live set — the same create-vs-prune
+    // race that made `docker network prune -f` in deploy.sh delete 18 live
+    // session networks on 2026-08-10.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const racingSessionId = "aaaabbbbcccc-dddd-eeee-ffff-000000000000";
+    const rmRequests: string[] = [];
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "network" && args[1] === "ls") {
+        // Decoy FIRST so its removal is what opens the race window; the racing
+        // session's network is still an orphan at listing time.
+        return Promise.resolve([
+          "shipit-session-fed987654321",
+          `shipit-session-${racingSessionId.slice(0, 12)}`,
+        ].join("\n"));
+      }
+      if (args[0] === "network" && args[1] === "rm") {
+        rmRequests.push(args[2]);
+        // The session is created DURING the sweep — after the listing and the
+        // candidate computation, before the second removal. Only a re-check
+        // immediately before `network rm` can see it.
+        underlyingDb!.prepare(
+          "INSERT OR IGNORE INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+        ).run(racingSessionId, "Racing", "2026-08-10", "2026-08-10", "https://github.com/example/repo.git");
+      }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+    });
+
+    expect(rmRequests).toEqual(["shipit-session-fed987654321"]);
+    expect(result.orphanNetworksRemoved).toBe(1);
   });
 
   it("preserves networks for idle-evicted (still-tracked) sessions", async () => {
@@ -382,7 +428,7 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(recentDir)).toBe(true);
   });
 
-  it("SHI-192: archive sweep reclaims overlay/ sibling but preserves uploads/", async () => {
+  it("planning#194: archive sweep reclaims overlay/ sibling but preserves uploads/", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -419,7 +465,7 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(uploadsDir, "photo.png"))).toBe(true);
   });
 
-  it("SHI-192: archive sweep reclaims an orphaned overlay/ even when workspace/ is already gone", async () => {
+  it("planning#194: archive sweep reclaims an orphaned overlay/ even when workspace/ is already gone", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -449,9 +495,9 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
   });
 
-  // SHI-197 — the archived-workspace backstop is now ON by default at the single
+  // planning#199 — the archived-workspace backstop is now ON by default at the single
   // cold-artifact retention (30d), no longer gated behind a disabled-by-default
-  // knob. It's pure crash-recovery (SHI-192 frees the workspace synchronously at
+  // knob. It's pure crash-recovery (planning#194 frees the workspace synchronously at
   // archive time), so a workspace this old only exists if that synchronous
   // cleanup crashed — exactly what the backstop is here to mop up.
   it("archive backstop runs by default at the cold-artifact retention", async () => {
@@ -609,10 +655,16 @@ describe("runDiskJanitor", () => {
    */
   function buildGitHubStub(
     branches: Record<string, { name: string; states: string[] }[]>,
-    opts: { authenticated?: boolean } = {},
+    opts: { authenticated?: boolean; token?: string | null } = {},
   ) {
     return {
       authenticated: opts.authenticated ?? true,
+      // planning#426 — the sweep resolves an explicit repo-scoped credential
+      // before pushing, so the stub answers the two reads that resolution makes.
+      // `token: null` is the "authenticated but nothing to authenticate with"
+      // state the sweep must now decline loudly instead of pushing into.
+      getToken: () => (opts.token === undefined ? "ghp_test_token" : opts.token),
+      appTokensEnabled: () => false,
 
       async graphqlQuery(query: string, vars?: Record<string, unknown>) {
         const owner = vars?.owner as string;
@@ -661,19 +713,37 @@ describe("runDiskJanitor", () => {
   function buildRepoGitFactory(opts: { deleteFails?: boolean } = {}) {
     const deleted: string[] = [];
     const setRemoteUrlCalls: string[] = [];
-    const factory = (_dir: string) => ({
-      deleteBranch: (branch: string) => {
-        if (opts.deleteFails) return Promise.reject(new Error("push denied"));
-        deleted.push(branch);
-        return Promise.resolve();
-      },
-      setRemoteUrl: (url: string) => {
-        setRemoteUrlCalls.push(url);
-        return Promise.resolve();
-      },
-    } as unknown as ReturnType<NonNullable<Parameters<typeof runDiskJanitor>[0]["createRepoGit"]>>);
-    return { factory, deleted, setRemoteUrlCalls };
+    // planning#426 — the credential the sweep hands each `RepoGit` is recorded, so
+    // a test can assert the push authenticates explicitly rather than leaning on
+    // the orchestrator's ambient global helper.
+    const credentials: (GitRemoteCredential | undefined)[] = [];
+    const factory = (_dir: string, credential?: GitRemoteCredential) => {
+      credentials.push(credential);
+      return {
+        deleteBranch: (branch: string) => {
+          if (opts.deleteFails) return Promise.reject(new Error("push denied"));
+          deleted.push(branch);
+          return Promise.resolve();
+        },
+        setRemoteUrl: (url: string) => {
+          setRemoteUrlCalls.push(url);
+          return Promise.resolve();
+        },
+      } as unknown as ReturnType<NonNullable<Parameters<typeof runDiskJanitor>[0]["createRepoGit"]>>;
+    };
+    return { factory, deleted, setRemoteUrlCalls, credentials };
   }
+
+  /**
+   * planning#426 — the sweep resolves an explicit repo-scoped credential before it
+   * pushes, so a fake auth manager needs the two reads that resolution makes.
+   * These fakes previously carried only `authenticated: true`, which is a state
+   * production cannot be in: `authenticated` IS `_token !== null`.
+   */
+  const CREDENTIAL_FIELDS = {
+    getToken: () => "ghp_test_token",
+    appTokensEnabled: () => false,
+  };
 
   it("deletes merged-PR branches that no live session points at", async () => {
     setup();
@@ -724,6 +794,89 @@ describe("runDiskJanitor", () => {
     // Credentials refreshed exactly once for this repo (lazy: only when we
     // actually have a deletion to perform).
     expect(setRemoteUrlCalls).toEqual([repoUrl]);
+  });
+
+  // planning#426 — the sweep's `push --delete` used to carry no credential of its
+  // own. Its docstring claimed the cache's remote URL embedded the token, but
+  // docs/262 req 19 made `setRemoteUrl` STRIP credentials, so the push depended
+  // entirely on the orchestrator's ambient global helper — and when that answered
+  // nothing it died with `fatal: could not read Username for 'https://github.com'`,
+  // one of the three paths in the planning#410 soak.
+  it("hands the bare-cache push an explicit repo-scoped credential", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    const githubAuthManager = buildGitHubStub({
+      "example/repo": [{ name: "old-merged", states: ["MERGED"] }],
+    });
+    const { factory, deleted, credentials } = buildRepoGitFactory();
+
+    await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+      githubAuthManager,
+      createRepoGit: factory,
+      getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+    });
+
+    expect(deleted).toEqual(["shipit/old-merged"]);
+    // Scoped to the origin it is for, never offered to another host — the
+    // ambient global helper is host-blind and this is not.
+    expect(credentials).toEqual([{
+      origin: "https://github.com",
+      token: { username: "x-access-token", password: "ghp_test_token" },
+    }]);
+  });
+
+  // The other half of the same fix: when no credential can be produced, DECLINE
+  // rather than push. A push with nothing to authenticate with can only produce
+  // the "could not read Username" line this issue is about, so failing closed and
+  // saying so is strictly better than failing open and being unreadable.
+  it("declines the sweep, loudly, when no credential can be resolved", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const repoUrl = "https://github.com/example/repo.git";
+    repoStore.add(repoUrl);
+    fs.mkdirSync(path.join(tmpDir, "repo-cache", repoUrlToHash(repoUrl)), { recursive: true });
+
+    // `authenticated` true but no token — the inconsistent state a wiped
+    // credentials volume or a `clear` that raced an install produces.
+    const githubAuthManager = buildGitHubStub(
+      { "example/repo": [{ name: "old-merged", states: ["MERGED"] }] },
+      { token: null },
+    );
+    const { factory, deleted } = buildRepoGitFactory();
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    let result;
+    try {
+      result = await runDiskJanitor({
+        sessionManager,
+        repoStore,
+        stateDir: tmpDir,
+        runDocker: () => Promise.resolve(""),
+        githubAuthManager,
+        createRepoGit: factory,
+        getBareCacheDir: (url) => path.join(tmpDir, "repo-cache", repoUrlToHash(url)),
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(deleted).toEqual([]);
+    expect(result.orphanBranchesRemoved).toBe(0);
+    expect(warnings.some((w) => w.includes("no GitHub credential available for example/repo"))).toBe(true);
   });
 
   it("no-ops when GitHub auth is unauthenticated", async () => {
@@ -977,6 +1130,7 @@ describe("runDiskJanitor", () => {
 
     const githubAuthManager = {
       authenticated: true,
+      ...CREDENTIAL_FIELDS,
       async graphqlQuery(query: string) {
         if (query.includes("pullRequests(states:")) {
           return {
@@ -1038,6 +1192,7 @@ describe("runDiskJanitor", () => {
     let prPage = 0;
     const githubAuthManager = {
       authenticated: true,
+      ...CREDENTIAL_FIELDS,
       async graphqlQuery(query: string) {
         if (query.includes("pullRequests(states:")) {
           prPage += 1;
@@ -1110,7 +1265,7 @@ describe("runDiskJanitor", () => {
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
-    // SHI-179: disk-evicted but NOT user-archived — still LIVE (re-clones on
+    // planning#181: disk-evicted but NOT user-archived — still LIVE (re-clones on
     // activation), so its credentials must be PRESERVED.
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 0, 0, 'evicted')",
@@ -1140,7 +1295,7 @@ describe("runDiskJanitor", () => {
     expect(result.credentialDirsRemoved).toBe(2);
   });
 
-  it("preserves per-session logs for disk-evicted-but-live sessions; reaps user-archived/untracked (SHI-179)", async () => {
+  it("preserves per-session logs for disk-evicted-but-live sessions; reaps user-archived/untracked (planning#181)", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1182,7 +1337,7 @@ describe("runDiskJanitor", () => {
     expect(result.logDirsRemoved).toBe(2);
   });
 
-  it("archived-workspace sweep skips disk-evicted-but-live sessions (SHI-179)", async () => {
+  it("archived-workspace sweep skips disk-evicted-but-live sessions (planning#181)", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1304,7 +1459,7 @@ describe("runDiskJanitor", () => {
   });
 
   // -------------------------------------------------------------------------
-  // SHI-222 — orphan egress-sidecar sweep (backstop for the crash-site reap)
+  // planning#224 — orphan egress-sidecar sweep (backstop for the crash-site reap)
   // -------------------------------------------------------------------------
 
   it("reaps egress sidecars whose netns parent is gone, and spares the live ones", async () => {

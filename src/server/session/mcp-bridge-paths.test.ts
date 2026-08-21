@@ -68,7 +68,7 @@ describe("resolveBridge (docs/199)", () => {
     expect(resolveBridge("mcp-shipit-bridge", dirs())).toBeNull();
   });
 
-  it("resolves the consolidated bridge basename the worker registers (SHI-128)", () => {
+  it("resolves the consolidated bridge basename the worker registers (planning#130)", () => {
     const name = "mcp-shipit-bridge";
     fs.writeFileSync(path.join(compiledDir, `${name}.js`), "//");
     const resolved = resolveBridge(name, dirs());

@@ -25,7 +25,7 @@
  * that the secrets message carries NO values — is pinned by tests.
  */
 
-import type { ServiceManager } from "./service-manager.js";
+import { originView, type ServiceManager } from "./service-manager.js";
 import type { WsServerMessage } from "../shared/types.js";
 
 /**
@@ -56,9 +56,12 @@ export function buildComposeAttachReplay(
       services: services.map((s) => ({
         name: s.name,
         status: s.status,
+        // The same number the live path sends, or a reattaching viewer would
+        // rebuild a different preview origin from the same service.
         port: s.port,
         preview: s.preview,
         error: s.error,
+        ...(s.origin ? { origin: originView(s.origin) } : {}),
       })),
     });
   }
@@ -92,6 +95,7 @@ export function buildComposeAttachReplay(
       declared: secrets.declared,
       missingByService: secrets.missingByService,
       missingRequired: secrets.missingRequired,
+      plugins: secrets.plugins,
     });
   }
 

@@ -29,7 +29,8 @@ describe("CodexLimitsProvider (event-fed)", () => {
     expect(provider.routeIds()).toEqual([ROUTE]);
     const snap = await provider.fetch(ROUTE);
     expect(snap).toMatchObject({
-      agentId: "codex",
+      serviceId: "openai",
+      billingMode: "sub",
       plan: "Pro",
       session: WINDOW,
       weekly: WEEKLY,
@@ -42,7 +43,7 @@ describe("CodexLimitsProvider (event-fed)", () => {
     const provider = new CodexLimitsProvider({ codexAuthManager: auth });
     provider.setRateLimits(WINDOW, null, ROUTE);
     const snap = await provider.fetch(ROUTE);
-    expect(snap).toMatchObject({ agentId: "codex", plan: null, session: WINDOW, weekly: null });
+    expect(snap).toMatchObject({ serviceId: "openai", billingMode: "sub", plan: null, session: WINDOW, weekly: null });
   });
 
   it("keeps only the most recently pushed snapshot", async () => {
@@ -70,5 +71,32 @@ describe("CodexLimitsProvider (event-fed)", () => {
       ROUTE,
     );
     expect((await provider.fetch(ROUTE))?.session?.startedAt).toBe("2026-05-20T10:00:00Z");
+  });
+});
+
+/**
+ * planning#454 — this reader DOES state which windows the plan has, because its
+ * source is a complete statement: `account/rateLimits/updated` carries both
+ * `rateLimits.primary` and `.secondary` in one notification, so a window absent
+ * from a reading is one the plan does not have.
+ *
+ * The opposite call from Claude's reader on the same field, and the difference
+ * is a property of the SOURCE rather than of the vendor. A ChatGPT plan that
+ * reports no 5-hour window was one of the pills the reporting user was looking
+ * at, drawing a `5h · —` that nothing would ever fill.
+ */
+describe("CodexLimitsProvider and the windows it declares", () => {
+  const auth = () => makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" });
+
+  it("names both windows when the payload carried both", async () => {
+    const provider = new CodexLimitsProvider({ codexAuthManager: auth() });
+    provider.setRateLimits(WINDOW, WEEKLY, ROUTE);
+    expect((await provider.fetch(ROUTE))?.availableWindows).toEqual(["session", "weekly"]);
+  });
+
+  it("names only the weekly window for a plan whose payload has no 5-hour one", async () => {
+    const provider = new CodexLimitsProvider({ codexAuthManager: auth() });
+    provider.setRateLimits(null, WEEKLY, ROUTE);
+    expect((await provider.fetch(ROUTE))?.availableWindows).toEqual(["weekly"]);
   });
 });

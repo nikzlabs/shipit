@@ -1,5 +1,5 @@
 /**
- * The local-mode agent home's credential links (SHI-282, docs/118 §dogfood,
+ * The local-mode agent home's credential links (planning#284, docs/118 §dogfood,
  * docs/150 §9).
  *
  * In containerized mode an agent's credentials reach the CLI by *copy*: the

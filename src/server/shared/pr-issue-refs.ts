@@ -30,7 +30,7 @@
  * declarations can resolve one — so this parser must NOT filter on `tracker`,
  * or every `Closes planning#42` would be dropped before anything could resolve
  * it. `issue-lifecycle.ts` resolves what this returns, and drops what doesn't
- * resolve (docs/248 req 11).
+ * resolve (docs/248-declared-issue-trackers req 11).
  *
  * This is pure and tracker-agnostic so it can be unit-tested in isolation and
  * reused by the orchestrator merge path without dragging in tracker plumbing.
@@ -54,7 +54,7 @@ const REF_RE = /\b(?:references?|refs?)\b\s*:?\s+(\S+)/gi;
 
 /** Strip surrounding markdown/punctuation noise from a captured pointer token. */
 function cleanToken(raw: string): string {
-  // Drop a trailing sentence punctuation (`Closes SHI-43.`) and any wrapping
+  // Drop a trailing sentence punctuation (`Closes planning#45.`) and any wrapping
   // parens/brackets/backticks/quotes a body might put around the pointer.
   return raw.replace(/^[([`"']+/, "").replace(/[).,;:!?\]`"']+$/, "");
 }

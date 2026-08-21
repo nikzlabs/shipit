@@ -158,7 +158,7 @@
   <div class="page-head">
     <h1>Nested issues + two-level sorting</h1>
     <p>
-      Refined prototype. <b>Deep nesting recurses</b> (SHI-90 goes four levels deep) on the desktop table.
+      Refined prototype. <b>Deep nesting recurses</b> (planning#92 goes four levels deep) on the desktop table.
       The <b>sort &amp; group editor moved into a modal</b> behind the sliders icon — the toolbar row already
       holds search and filters. The narrow panel on the right shows the <b>mobile card layout</b>: no tree
       affordances, just a subtle indent + left rule on child cards. Click the sliders icon to open the editor.
@@ -269,7 +269,7 @@
   <div class="legend">
     <b>What changed from the first prototype</b>
     <ul>
-      <li><b>Recursive nesting:</b> parents nest to any depth (SHI-90 → SHI-93 → SHI-94 → SHI-95). Each level adds a tree spine; collapsing any node hides its whole subtree.</li>
+      <li><b>Recursive nesting:</b> parents nest to any depth (planning#92 → planning#95 → planning#96 → planning#97). Each level adds a tree spine; collapsing any node hides its whole subtree.</li>
       <li><b>Modal editor:</b> the sliders icon opens the two-level sort + group-by editor. The icon shows an accent dot when the order differs from the default; the active order lives in the icon's hover tooltip (no standing summary row — the toolbar stays one line tall).</li>
       <li><b>Independent Group-by:</b> with the modal's extra room, grouping is its own field (None / Priority / Status / Assignee), not tied to the primary sort key.</li>
       <li><b>Mobile = indent only:</b> the card layout drops disclosure triangles and tree lines; a child card is faintly indented (4px/level, capped at 3) with a left rule. No collapse/expand at this width.</li>
@@ -293,27 +293,27 @@ const PRI = {
 };
 
 const ISSUES = [
-  { id: "i90",  ident: "SHI-90",  parentId: null,  title: "Egress containment: SNI identity allowlist", pri: "urgent", status: "inprogress", assignee: "Nik", updated: 95, labels: [["security","#f2585b"],["infra","#5e9cea"]] },
-  { id: "i91",  ident: "SHI-91",  parentId: "i90", title: "Durable allowlist store", pri: "high", status: "done", assignee: "Nik", updated: 80, labels: [] },
-  { id: "i92",  ident: "SHI-92",  parentId: "i90", title: "Containment Settings UI", pri: "medium", status: "inreview", assignee: "Ava", updated: 90, labels: [["frontend","#6e63f2"]] },
-  { id: "i93",  ident: "SHI-93",  parentId: "i90", title: "Tier-C proxy launch wiring", pri: "high", status: "inprogress", assignee: "Nik", updated: 70, labels: [] },
-  { id: "i94",  ident: "SHI-94",  parentId: "i93", title: "Per-route SNI rule matcher", pri: "medium", status: "inprogress", assignee: "Nik", updated: 66, labels: [] },
-  { id: "i95",  ident: "SHI-95",  parentId: "i94", title: "Unit tests for the SNI matcher", pri: "low", status: "todo", assignee: "Ava", updated: 44, labels: [["test","#7c818c"]] },
+  { id: "i90",  ident: "planning#92",  parentId: null,  title: "Egress containment: SNI identity allowlist", pri: "urgent", status: "inprogress", assignee: "Nik", updated: 95, labels: [["security","#f2585b"],["infra","#5e9cea"]] },
+  { id: "i91",  ident: "planning#93",  parentId: "i90", title: "Durable allowlist store", pri: "high", status: "done", assignee: "Nik", updated: 80, labels: [] },
+  { id: "i92",  ident: "planning#94",  parentId: "i90", title: "Containment Settings UI", pri: "medium", status: "inreview", assignee: "Ava", updated: 90, labels: [["frontend","#6e63f2"]] },
+  { id: "i93",  ident: "planning#95",  parentId: "i90", title: "Tier-C proxy launch wiring", pri: "high", status: "inprogress", assignee: "Nik", updated: 70, labels: [] },
+  { id: "i94",  ident: "planning#96",  parentId: "i93", title: "Per-route SNI rule matcher", pri: "medium", status: "inprogress", assignee: "Nik", updated: 66, labels: [] },
+  { id: "i95",  ident: "planning#97",  parentId: "i94", title: "Unit tests for the SNI matcher", pri: "low", status: "todo", assignee: "Ava", updated: 44, labels: [["test","#7c818c"]] },
 
-  { id: "i210", ident: "SHI-210", parentId: null, title: "Nested issues in the tracker panel", pri: "high", status: "inprogress", assignee: "Ava", updated: 98, labels: [["tracker","#e8c547"]] },
-  { id: "i211", ident: "SHI-211", parentId: "i210", title: "Add parentId to TrackerIssue + adapters", pri: "high", status: "done", assignee: "Nik", updated: 60, labels: [] },
-  { id: "i212", ident: "SHI-212", parentId: "i210", title: "Disclosure + indentation in IssuesViewer", pri: "medium", status: "inprogress", assignee: "Ava", updated: 88, labels: [["frontend","#6e63f2"]] },
-  { id: "i213", ident: "SHI-213", parentId: "i210", title: "Recursive within-parent ordering", pri: "low", status: "todo", assignee: "Ava", updated: 40, labels: [] },
+  { id: "i210", ident: "planning#212", parentId: null, title: "Nested issues in the tracker panel", pri: "high", status: "inprogress", assignee: "Ava", updated: 98, labels: [["tracker","#e8c547"]] },
+  { id: "i211", ident: "planning#213", parentId: "i210", title: "Add parentId to TrackerIssue + adapters", pri: "high", status: "done", assignee: "Nik", updated: 60, labels: [] },
+  { id: "i212", ident: "planning#214", parentId: "i210", title: "Disclosure + indentation in IssuesViewer", pri: "medium", status: "inprogress", assignee: "Ava", updated: 88, labels: [["frontend","#6e63f2"]] },
+  { id: "i213", ident: "planning#215", parentId: "i210", title: "Recursive within-parent ordering", pri: "low", status: "todo", assignee: "Ava", updated: 40, labels: [] },
 
-  { id: "i198", ident: "SHI-198", parentId: null, title: "Two-level sort + group editor (modal)", pri: "urgent", status: "todo", assignee: "Nik", updated: 75, labels: [["tracker","#e8c547"],["ux","#4cb782"]] },
-  { id: "i199", ident: "SHI-199", parentId: "i198", title: "Sliders icon + modal shell", pri: "high", status: "todo", assignee: "Ava", updated: 50, labels: [] },
-  { id: "i200", ident: "SHI-200", parentId: "i198", title: "Persist sort/group prefs per tracker", pri: "none", status: "backlog", assignee: null, updated: 20, labels: [] },
+  { id: "i198", ident: "planning#200", parentId: null, title: "Two-level sort + group editor (modal)", pri: "urgent", status: "todo", assignee: "Nik", updated: 75, labels: [["tracker","#e8c547"],["ux","#4cb782"]] },
+  { id: "i199", ident: "planning#201", parentId: "i198", title: "Sliders icon + modal shell", pri: "high", status: "todo", assignee: "Ava", updated: 50, labels: [] },
+  { id: "i200", ident: "planning#202", parentId: "i198", title: "Persist sort/group prefs per tracker", pri: "none", status: "backlog", assignee: null, updated: 20, labels: [] },
 
-  { id: "i185", ident: "SHI-185", parentId: null, title: "Inline issue label filter editor", pri: "medium", status: "inreview", assignee: "Ava", updated: 65, labels: [["frontend","#6e63f2"]] },
-  { id: "i150", ident: "SHI-150", parentId: null, title: "Fix flaky ws-disconnect resilience test", pri: "low", status: "todo", assignee: "Nik", updated: 30, labels: [["test","#7c818c"]] },
+  { id: "i185", ident: "planning#187", parentId: null, title: "Inline issue label filter editor", pri: "medium", status: "inreview", assignee: "Ava", updated: 65, labels: [["frontend","#6e63f2"]] },
+  { id: "i150", ident: "planning#152", parentId: null, title: "Fix flaky ws-disconnect resilience test", pri: "low", status: "todo", assignee: "Nik", updated: 30, labels: [["test","#7c818c"]] },
 
   // Orphan: parent i300 is Done and excluded from the open list.
-  { id: "i301", ident: "SHI-301", parentId: "i300", title: "Backfill migration for parentId column", pri: "medium", status: "todo", assignee: "Nik", updated: 55, labels: [], orphanParent: "SHI-300" },
+  { id: "i301", ident: "planning#303", parentId: "i300", title: "Backfill migration for parentId column", pri: "medium", status: "todo", assignee: "Nik", updated: 55, labels: [], orphanParent: "planning#302" },
 ];
 
 const DEFAULTS = { primary: "priority", primaryDir: 1, secondary: "status", secondaryDir: 1, group: "none" };

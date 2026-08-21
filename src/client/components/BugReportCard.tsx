@@ -13,8 +13,13 @@
  * it's inherent to filing as the user, shown for transparency.
  *
  * Lifecycle (from the bug-report store, keyed by cardId): draft → filing →
- * filed | (failed drops back to draft with an error banner so the user can fix
- * their token / edit and retry).
+ * filed | dismissed | (failed drops back to draft with an error banner so the
+ * user can fix their token / edit and retry).
+ *
+ * nikzlabs/shipit#2350 — Cancel is a server round-trip, not local state. It persists a
+ * terminal `dismissed` phase (so a reload doesn't resurrect the card as an
+ * editable draft) and tells the session's agent the report was declined, so it
+ * stops treating a resolved card as still awaiting the user.
  */
 
 import { useState } from "react";
@@ -31,6 +36,7 @@ import { useBugReportStore } from "../stores/bug-report-store.js";
 export interface BugReportCardProps {
   cardId: string;
   onSubmit?: (cardId: string, title: string, body: string) => void;
+  onDismiss?: (cardId: string) => void;
 }
 
 /**
@@ -56,20 +62,25 @@ function augmentBodyWithBrowser(body: string): string {
   );
 }
 
-export function BugReportCard({ cardId, onSubmit }: BugReportCardProps) {
+export function BugReportCard({ cardId, onSubmit, onDismiss }: BugReportCardProps) {
   const card = useBugReportStore((s) => s.cards[cardId]);
   const setFiling = useBugReportStore((s) => s.setFiling);
+  const setDismissed = useBugReportStore((s) => s.setDismissed);
 
   // Local editable copies, seeded once from the store payload.
   const [title, setTitle] = useState(() => card?.title ?? "");
   const [body, setBody] = useState(() => augmentBodyWithBrowser(card?.body ?? ""));
-  // Cancel discards locally — nothing was ever sent, so there's no server
-  // round-trip; we just collapse the card so the user can't submit it.
-  const [dismissed, setDismissed] = useState(false);
 
   if (!card) return null;
 
-  if (dismissed && card.phase !== "filed") {
+  const handleDismiss = () => {
+    // Optimistic — the server echoes `bug_report_dismissed` and persists the
+    // phase, so the collapse survives a reload instead of being local state.
+    setDismissed(cardId);
+    onDismiss?.(cardId);
+  };
+
+  if (card.phase === "dismissed") {
     return (
       <div
         data-testid="bug-report-card"
@@ -180,7 +191,7 @@ export function BugReportCard({ cardId, onSubmit }: BugReportCardProps) {
       </div>
 
       <div className="flex items-center justify-end gap-2">
-        <Button variant="ghost" size="md" onClick={() => setDismissed(true)} disabled={isFiling}>
+        <Button variant="ghost" size="md" onClick={handleDismiss} disabled={isFiling}>
           Cancel
         </Button>
         <Button

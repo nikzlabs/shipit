@@ -7,7 +7,7 @@
  * just edits — leaves a quick jump-to-issue affordance in the transcript. Unlike
  * the write card it has NO lifecycle (no undo), so the full payload arrives on
  * the chat message and the component **renders** straight from props. The one
- * store read is in the click handler, where docs/248 req 16 re-resolves the
+ * store read is in the click handler, where docs/248-declared-issue-trackers req 16 re-resolves the
  * recorded tracker name against today's declarations — so the card still holds
  * no subscription and never re-renders on store changes.
  *
@@ -36,7 +36,7 @@ export function IssueRefCard({ card, onOpen }: IssueRefCardProps) {
   const done = isDone(card.statusType);
 
   const open = () => {
-    // docs/248 req 16 — resolve at USE, not at write. The card records the name
+    // docs/248-declared-issue-trackers req 16 — resolve at USE, not at write. The card records the name
     // it was addressed through; if that name now points somewhere else, the card
     // opens the new destination. `card.tracker` is the fallback for a card
     // written without a name (the session's own repository) and for a name that

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-242
+issue: planning#244
 description: Re-read shipit.yaml and the compose file when the workspace changes under a live session — including orchestrator-side rewrites like a rebase.
 ---
 

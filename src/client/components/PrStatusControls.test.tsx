@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ClosePrDropdownItem, MergeButton, useClosePr } from "./PrStatusControls.js";
+import { AutoMergeToggle, ClosePrDropdownItem, MergeButton, useClosePr } from "./PrStatusControls.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
@@ -131,5 +131,55 @@ describe.each(surfaces)("close pull request via $name", ({ render: renderSurface
 
     expect(useUiStore.getState().toast?.message).toContain("GitHub said no");
     expect(usePrStore.getState().cardBySession.s1?.phase).toBe("open");
+  });
+});
+
+/**
+ * docs/266 — two states share the `managed` flag and they must not look alike.
+ * `native-unavailable` is a repo misconfiguration the user is asked to fix;
+ * `session-live` is ShipIt deliberately holding the merge until the session
+ * stops working. Showing the first for the second sends the user to a settings
+ * page to fix a repository that is configured correctly.
+ */
+describe("AutoMergeToggle — managed-merge explanation", () => {
+  it("explains the live session, without the misconfiguration affordance", async () => {
+    const user = userEvent.setup();
+    render(
+      <AutoMergeToggle
+        sessionId="s1"
+        autoMerge={{ enabled: true, mergeMethod: "squash", managed: true, managedReason: "session-live" }}
+      />,
+    );
+
+    const info = screen.getByLabelText("Auto-merge is waiting for this session");
+    expect(screen.queryByLabelText("Auto-merge requirements")).toBeNull();
+
+    await user.hover(info);
+    // Radix renders the tooltip body twice (visible + the aria live copy).
+    expect((await screen.findAllByText(/This session is still working/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText("Configure in GitHub settings")).toBeNull();
+  });
+
+  it("still explains the GitHub-refused fallback and links to settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AutoMergeToggle
+        sessionId="s1"
+        autoMerge={{
+          enabled: true,
+          mergeMethod: "squash",
+          managed: true,
+          managedReason: "native-unavailable",
+          reason: "Allow auto-merge is turned off",
+          settingsUrl: "https://github.com/o/r/settings",
+        }}
+      />,
+    );
+
+    const info = screen.getByLabelText("Auto-merge requirements");
+    await user.hover(info);
+
+    expect((await screen.findAllByText(/Allow auto-merge is turned off/)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Configure in GitHub settings").length).toBeGreaterThan(0);
   });
 });

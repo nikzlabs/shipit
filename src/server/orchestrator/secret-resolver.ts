@@ -6,7 +6,7 @@
  * Every file this module writes lands OUTSIDE the session's git clone — the
  * orchestrator-private service-env root (docs/183), the Docker-secrets root, or
  * the session state dir. There is no in-clone placement left for any of them
- * (docs/246 req 7, enforced with no exemptions by `no-clone-writes.test.ts`).
+ * (docs/246-shipit-state-out-of-clone req 7, enforced with no exemptions by `no-clone-writes.test.ts`).
  *
  * Responsibilities:
  *   - Phase 1: simple string form (`x-shipit-secrets: [STRIPE_KEY, ...]`) +
@@ -41,7 +41,14 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ComposeService } from "./compose-generator.js";
 import { AGENT_ENV_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
-import type { SecretRequirement } from "../shared/types/domain-types.js";
+import type { CredentialRoute, SecretRequirement } from "../shared/types/domain-types.js";
+import {
+  credentialModeKey,
+  credentialRouteEnvName,
+  orderCredentialRoutes,
+  parseCredentialModeKey,
+} from "../shared/types/domain-types.js";
+import { storageEnvFor } from "../shared/catalogue/index.js";
 import type { CredentialStore } from "./credential-store.js";
 
 // ---------------------------------------------------------------------------
@@ -135,6 +142,14 @@ export interface PlatformSourceWarning {
 export interface DeclaredSecret extends SecretRequirement {
   /** Names of services that listed this secret in `x-shipit-secrets`. */
   services: string[];
+  /**
+   * docs/262 req 23 — aliases of activated plugins that declare this name.
+   * The second claimant dimension beside `services`: a project credential and
+   * a plugin credential of the same name are deliberately the SAME stored
+   * secret, so the settings row lists every claimant instead of the name
+   * appearing twice. Absent when no plugin claims it.
+   */
+  plugins?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +297,7 @@ export function resolveSecrets(opts: {
  *      substitutes both forms in `mcp-resolve.ts`.
  *
  * Token refresh is **not** performed here — this function is called from
- * synchronous code paths (the `mcpAgentEnvLoader` plumbed into
+ * synchronous code paths (the `accountAgentEnvLoader` plumbed into
  * `ServiceManager`). Near-expired tokens are refreshed by a separate
  * async path (`refreshExpiredMcpOAuthTokens()` in `mcp-oauth.ts`),
  * triggered at orchestrator startup and before each agent turn.
@@ -318,6 +333,95 @@ export function collectMcpAgentEnv(
     out[`MCP_PLATFORM_${source.toUpperCase()}`] = tokens.accessToken;
   }
   return out;
+}
+
+/**
+ * docs/252 phase 2 — the env values a session should receive for the service
+ * credentials the user has stored.
+ *
+ * One entry per `(service, billing mode)` that has a secret, under the
+ * catalogue's `storageEnv` name, taking that group's **first** credential in
+ * selection order.
+ *
+ * Taking the first is deliberately not a routing decision. Phase 2 delivers
+ * exactly what today's single-slot storage would have delivered; phase 3
+ * replaces this with per-turn resolution from the selected model's service, at
+ * which point a subscription's second and third credentials become reachable
+ * (req 12). Storing them per instance now is what makes that possible;
+ * delivering only the first is what keeps this phase from quietly changing
+ * which credential a turn authenticates with.
+ *
+ * Note `storageEnv` is where the value is **materialized**, and is not the same
+ * as where the harness's CLI reads it from — that is the harness's
+ * `CredentialTargets`, and writing the value into it is phase 3's spawn
+ * shaping. A CLI seeing `DEEPSEEK_API_KEY` in its environment and ignoring it
+ * is the expected state until then.
+ *
+ * **docs/252 phase 5 — each credential also gets a name of its own.** The group
+ * name can only carry one of a subscription's credentials, which was fine while
+ * nothing could choose a different one. Failover is exactly that (req 12): a
+ * session moved onto the second GLM key would otherwise keep authenticating with
+ * the first, since that is the only one in the environment — the turn billed to
+ * a credential ShipIt had just benched, and attributed to another. So every
+ * stored credential is additionally materialized under
+ * {@link credentialRouteEnvName}, and spawn shaping reads the pinned route's own
+ * variable. The group name is left exactly as it was, because a session with no
+ * pinned route (and every eligibility probe) still reads it.
+ *
+ * The cost is that a session's environment holds every credential of a service
+ * rather than one. They are all the same user's, for the same service, and the
+ * environment already carried every *mode* and every *service* the user has
+ * configured — so this widens what a compromised session container can reach
+ * within one service's subscription, and nothing beyond it.
+ */
+export function collectServiceCredentialEnv(
+  credentialStore: Pick<CredentialStore, "listCredentialRoutes" | "getCredentialSecret">,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  const byMode = new Map<string, CredentialRoute[]>();
+  for (const route of credentialStore.listCredentialRoutes()) {
+    if (route.via !== "string") continue;
+    const key = credentialModeKey(route.serviceId, route.billingMode);
+    byMode.set(key, [...(byMode.get(key) ?? []), route]);
+    const secret = credentialStore.getCredentialSecret(route.id);
+    if (secret) out[credentialRouteEnvName(route.id)] = secret;
+  }
+  for (const [key, routes] of byMode) {
+    const parsed = parseCredentialModeKey(key);
+    if (!parsed) continue;
+    const envName = storageEnvFor(parsed.serviceId, parsed.billingMode);
+    // A route whose service or mode has left the catalogue has nowhere to be
+    // delivered. Skipping is right — inventing a variable name would put a live
+    // secret into the agent's environment under a name nothing reads.
+    if (!envName) continue;
+    const first = orderCredentialRoutes(routes)[0];
+    const secret = first ? credentialStore.getCredentialSecret(first.id) : undefined;
+    if (secret) out[envName] = secret;
+  }
+  return out;
+}
+
+/**
+ * Every **account-level** secret the agent should see: MCP secrets and OAuth
+ * tokens ({@link collectMcpAgentEnv}) plus the service credentials above.
+ *
+ * This is the single entry point both delivery paths use, which is what closes
+ * the gap Appendix A recorded: `collectMcpAgentEnv` filtered to `mcp__*`, so a
+ * top-level key stored in Settings reached a compose-less session (through
+ * `getAllAgentEnv`) and **not** a compose-backed one, whose agent env is the
+ * ServiceManager snapshot. Adding a key name was never going to be enough; the
+ * pipe had to widen.
+ */
+export function collectAccountAgentEnv(
+  credentialStore: Pick<
+    CredentialStore,
+    "getAllAgentEnv" | "getAllMcpOAuthTokens" | "listCredentialRoutes" | "getCredentialSecret"
+  >,
+): Record<string, string> {
+  return {
+    ...collectMcpAgentEnv(credentialStore),
+    ...collectServiceCredentialEnv(credentialStore),
+  };
 }
 
 /**
@@ -425,10 +529,10 @@ function renderEnvFile(entries: { key: string; value: string }[]): string {
  * the agent-readable workspace while preserving the env-var semantics inside the
  * service container; the generated compose override references the returned
  * absolute paths via `env_file:`. The in-workspace `.shipit/.env.<service>`
- * writer this replaced is gone (SHI-290) — it survived docs/183 as a fallback
+ * writer this replaced is gone (planning#292) — it survived docs/183 as a fallback
  * for callers that configured no root, which production never was, and it was
  * the last thing in the codebase that put a ShipIt-generated file inside a
- * user's git clone (docs/246 req 7).
+ * user's git clone (docs/246-shipit-state-out-of-clone req 7).
  *
  * Why this is agent-invisible: in production `rootDir` defaults to
  * `<stateDir>/service-env`, where `stateDir` is the workspace-volume root. The
@@ -709,7 +813,7 @@ const SECRETS_ENTRYPOINT_SUBDIR = "_entrypoint";
 const SECRETS_ENTRYPOINT_FILE = "secrets-entrypoint.sh";
 
 /**
- * SHI-285 — stage the Docker-secrets entrypoint wrapper where the Docker
+ * planning#287 — stage the Docker-secrets entrypoint wrapper where the Docker
  * **daemon** can bind-mount it into service containers, and return the path to
  * reference from the compose override.
  *
@@ -719,7 +823,7 @@ const SECRETS_ENTRYPOINT_FILE = "secrets-entrypoint.sh";
  * to be copied somewhere with a known daemon-side path. ShipIt used to copy it
  * into the session's git clone and mount it through the workspace volume, which
  * put a generated file where the post-turn `git add -A` commits it into the
- * user's repository (docs/246 req 1).
+ * user's repository (docs/246-shipit-state-out-of-clone req 1).
  *
  * The Docker-secrets root is the natural home: it is the one directory this mode
  * already requires a daemon-side mapping for (`hostDir`, used by
@@ -785,7 +889,7 @@ export function writeAgentEnvFile(opts: {
   /**
    * The session's clone. Resolves the session state dir the file is written to
    * (orchestrator-side, outside the clone) — there is no in-clone placement any
-   * more (SHI-286).
+   * more (planning#288).
    */
   workspaceDir: string;
   body: string;

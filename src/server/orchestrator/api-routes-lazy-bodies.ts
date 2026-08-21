@@ -1,8 +1,8 @@
 /**
  * Fetch endpoints for the bodies the docs/244 projection strips from the
- * transcript payload (SHI-267). Each one is hit when the user opens the view
+ * transcript payload (planning#269). Each one is hit when the user opens the view
  * that actually shows the body — "Show all N lines", the diff modal, an image,
- * or a sub-agent consult's output viewer (SHI-297) — so the transcript itself
+ * or a sub-agent consult's output viewer (planning#299) — so the transcript itself
  * never carries them.
  *
  * These read `ChatHistoryManager.load()` directly rather than the projected
@@ -19,7 +19,8 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import type { PersistedMessage } from "./chat-history.js";
-import { imageHash } from "./transcript-projection.js";
+import type { SubAgentConsultCard } from "../shared/types.js";
+import { imageHash, substituteResultImages } from "./transcript-projection.js";
 import type { ToolResultEntry } from "./session-runner.js";
 
 /** Every tool result in a message, including those nested under a subagent. */
@@ -86,6 +87,16 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
   };
 
   // GET /api/sessions/:id/tool-results/:toolUseId — the full result body.
+  //
+  // "Full" means the whole TEXT, not the base64 the projection already replaced
+  // with a URL. A caller reaches this endpoint because something wants to draw
+  // the body's text — "Show all N lines", the report modal — and the images in
+  // it are already on screen, painted from `/images/:hash` out of this same row.
+  // Serving the stored bytes verbatim re-sent every screenshot as base64 the
+  // moment a tool-call modal opened, which is exactly the transfer docs/244
+  // exists to remove, and put the raw JSON array in reach of the text preview.
+  // `substituteResultImages` is a no-op for the text-only results that are the
+  // overwhelming majority, so this costs a `startsWith` per fetch.
   app.get<{ Params: { id: string; toolUseId: string } }>(
     "/api/sessions/:id/tool-results/:toolUseId",
     async (request, reply) => {
@@ -97,7 +108,10 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
       for (const msg of messages) {
         for (const r of allToolResults(msg)) {
           if (r.toolUseId === request.params.toolUseId) {
-            reply.send({ content: r.content, isError: r.isError ?? false });
+            reply.send({
+              content: substituteResultImages(request.params.id, r.content),
+              isError: r.isError ?? false,
+            });
             return;
           }
         }
@@ -109,7 +123,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
   // GET /api/sessions/:id/tool-inputs/:toolUseId — the whole stored input.
   //
   // Returns the input verbatim rather than the three Edit/Write body fields it
-  // used to name (SHI-296): the projection now shortens or removes keys for
+  // used to name (planning#298): the projection now shortens or removes keys for
   // every tool, so what a caller needs back depends on the tool — a `Bash`
   // command, a `Task` prompt, an MCP argument object. The persisted row always
   // holds the whole thing, so the honest answer is all of it.
@@ -135,7 +149,7 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
 
   // GET /api/sessions/:id/sub-agent-consults/:cardId — the consult's full output.
   //
-  // SHI-297 — the card face draws a 140-character preview line and the rest is
+  // planning#299 — the card face draws a 140-character preview line and the rest is
   // modal-only, so the wire copy carries only the preview. Served from the
   // persisted card, which is always whole: `projectConsultCardForWire` runs on
   // the serve path, and `updateSubAgentConsultCard` (a read-modify-write updater
@@ -147,9 +161,16 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
         reply.code(404).send({ error: "Session not found" });
         return;
       }
-      const card = deps.chatHistoryManager
+      // planning#402 — prefer a terminal copy, the same rule `getSubAgentResult`
+      // applies. Duplicate rows for one `cardId` are prevented going forward,
+      // but sessions damaged before that fix still carry them, and taking the
+      // first match served the stale `pending` copy's empty output for a run
+      // whose review sat on the very next row.
+      const copies = deps.chatHistoryManager
         .listSubAgentConsultCards(request.params.id)
-        .find((c) => c.cardId === request.params.cardId);
+        .filter((c: SubAgentConsultCard) => c.cardId === request.params.cardId);
+      let card = copies[0];
+      for (const copy of copies) if (copy.status !== "pending") card = copy;
       if (!card) {
         reply.code(404).send({ error: "Sub-agent consult not found" });
         return;

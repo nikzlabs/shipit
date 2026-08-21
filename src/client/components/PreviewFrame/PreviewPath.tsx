@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { CheckIcon, CopyIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
+import { ADDRESS_MEASURE_ATTR } from "../../hooks/usePreviewToolbarCollapse.js";
 
 interface PreviewPathProps {
   /** Path + query + hash of the page the preview is on, or null when unknown. */
@@ -20,6 +21,10 @@ interface PreviewPathProps {
  * device selectors for width. Content is left-aligned (req 5): the path starts
  * at a fixed x position, so it stays where the eye last found it instead of
  * drifting as the route changes length.
+ *
+ * The separator that opens this region is rendered by PreviewToolbar, not here:
+ * the Home button sits between it and the path, and must stay visible when this
+ * component renders nothing because no path was ever reported.
  */
 export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
   const [copied, setCopied] = useState(false);
@@ -54,23 +59,38 @@ export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
   };
 
   return (
-    <div className="flex-1 min-w-0 flex items-center gap-1">
-      <span className="text-(--color-border-secondary) shrink-0">|</span>
+    // `min-w-7` is the copy button's floor and the reason it is not just a
+    // `shrink-0` icon. The icon has always been shrink-0, but it lives inside a
+    // region that was free to collapse to zero width, so it was clipped away
+    // together with the text it belongs to — losing the only way to recover the
+    // absolute URL exactly when the path had become too short to read. The
+    // region may now shrink to one icon button and no further, so the address
+    // text can disappear entirely while copy stays reachable.
+    <div className="flex-1 min-w-7 flex items-center gap-1">
       <button
         onClick={() => void copy()}
         title={fullUrl ?? path}
         aria-label={`Copy preview URL${fullUrl ? `: ${fullUrl}` : ""}`}
         className="group flex items-baseline min-w-0 gap-0 px-1.5 py-0.5 rounded border border-transparent font-mono text-[11px] hover:bg-(--color-bg-tertiary) hover:border-(--color-border-secondary) transition-colors cursor-pointer"
       >
-        <span className={`truncate min-w-0 shrink ${isRoot ? "text-(--color-text-tertiary)" : "text-(--color-text-primary)"}`}>
-          {route}
+        {/* The measured element: the toolbar drops labels to keep this above
+            ADDRESS_MIN_PX. Content-sized and shrinkable rather than hidden at a
+            breakpoint, so it always renders as much of the URL as the region
+            holds — a truncated address never leaves unused space beside it. */}
+        <span
+          {...{ [ADDRESS_MEASURE_ATTR]: "" }}
+          className="flex items-baseline min-w-0 overflow-hidden"
+        >
+          <span className={`truncate min-w-0 shrink ${isRoot ? "text-(--color-text-tertiary)" : "text-(--color-text-primary)"}`}>
+            {route}
+          </span>
+          {query && (
+            // Shrinks far more eagerly than the route, so a long query gives up
+            // its space first instead of both truncating proportionally and
+            // costing the user the part that says where they are.
+            <span className="truncate min-w-0 shrink-[999] text-(--color-text-tertiary)">{query}</span>
+          )}
         </span>
-        {query && (
-          // Shrinks far more eagerly than the route, so a long query gives up
-          // its space first instead of both truncating proportionally and
-          // costing the user the part that says where they are.
-          <span className="truncate min-w-0 shrink-[999] text-(--color-text-tertiary)">{query}</span>
-        )}
         <span className="ml-1.5 shrink-0 self-center text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)">
           {copied
             ? <CheckIcon size={ICON_SIZE.XS} className="text-(--color-success)" data-testid="preview-path-copied" />

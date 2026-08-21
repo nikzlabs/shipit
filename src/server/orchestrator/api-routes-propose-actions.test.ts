@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { validateProposeActions, MAX_ACTIONS } from "./api-routes-propose-actions.js";
 
 /**
- * docs/207 / SHI-153 — input validation for the `propose_actions` payload. The
+ * docs/207 / planning#155 — input validation for the `propose_actions` payload. The
  * pure validator is shared semantics for both the tool's fail-fast pre-check and
  * the authoritative route, so it carries the contract: 1–5 actions, unique
  * non-empty ids, non-empty labels/payloads, length caps, deterministic order.

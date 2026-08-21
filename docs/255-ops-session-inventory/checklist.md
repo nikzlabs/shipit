@@ -30,4 +30,4 @@
 - [x] 2nd-pass: PR-URL parsing handles `/files`, `?query`, `#fragment`
 - [x] 2nd-pass: `list` host-only flags refused without `--all`
 - [x] 2nd-pass: "any earlier PR" overclaim corrected to the retained one
-- [x] Tracker issue filed and cross-linked (`roadmap#SHI-329`)
+- [x] Tracker issue filed and cross-linked (`planning#331`)

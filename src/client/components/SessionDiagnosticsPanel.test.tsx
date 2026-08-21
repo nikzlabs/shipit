@@ -92,6 +92,7 @@ const samplePayload = {
     routeId: "acct_1234",
     label: "Work",
   },
+  installContentKeyOff: null,
   nodeRuntime: {
     state: "provisioned",
     pinSource: ".nvmrc",
@@ -182,6 +183,32 @@ describe("SessionDiagnosticsPanel", () => {
     expect(screen.getByText("docker-compose.yml")).toBeTruthy();
   });
 
+  // Follow-up to nikzlabs/shipit#2429 — the panel is where a user learns that
+  // content-keying is off, before the failure it eventually causes.
+  it("reports a non-content-keyable install, and stays quiet otherwise", async () => {
+    mockOk(samplePayload);
+    const { unmount } = render(
+      <SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />,
+    );
+    await waitFor(() => screen.getByText("Parsed shipit.yaml"));
+    expect(screen.queryByText("install content key")).toBeNull();
+    unmount();
+
+    mockOk({
+      ...samplePayload,
+      installContentKeyOff: {
+        commands: ["npm ci", "npm run build"],
+        // The server renders the whole explanation; the panel only places it.
+        notice: "the content-keyed install skip is off for this session",
+      },
+    });
+    render(<SessionDiagnosticsPanel sessionId="sess-1" open={true} onOpenChange={() => {}} />);
+    await waitFor(() => {
+      expect(screen.getByText("install content key")).toBeTruthy();
+    });
+    expect(screen.getByText(/content-keyed install skip is off/)).toBeTruthy();
+  });
+
   it("surfaces parser warnings for legacy shipit.yaml keys", async () => {
     mockOk({
       ...samplePayload,
@@ -254,7 +281,7 @@ describe("SessionDiagnosticsPanel", () => {
     });
   });
 
-  // docs/150 req 11 — after a proactive cutoff or a hard-exhaustion retry has
+  // docs/150-multiple-provider-subscriptions req 11 — after a proactive cutoff or a hard-exhaustion retry has
   // moved a session, this panel is where "which account am I on?" gets
   // answered. The account's NAME is the answer; the opaque id is supporting
   // detail for a bug report, not the thing the user reads.

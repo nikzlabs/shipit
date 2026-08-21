@@ -32,7 +32,7 @@ None. Implementation is unblocked.
   tab and back must never change or break the UI at all, including the scroll
   position — not merely preserve the loaded span. Became req 9. Two consequences
   worth recording: the requirement constrains more than paging (it is a
-  statement about focus/blur generally, and SHI-322 is one way to satisfy it),
+  statement about focus/blur generally, and planning#324 is one way to satisfy it),
   and it is stated as an observable outcome, so "the transcript is refetched but
   nothing visibly moves" satisfies it just as well as "the transcript is not
   refetched".
@@ -59,7 +59,7 @@ None. Implementation is unblocked.
   part?* Chosen: everything (req 5).
 - 2026-08-05 — *Is lazy-loading heavy row bodies part of this feature?* Chosen:
   no — paging only, with a separate issue filed for fields not directly
-  displayed in the conversation UI. That became SHI-267, which has since
+  displayed in the conversation UI. That became planning#269, which has since
   **landed** as `docs/244-lazy-tool-result-bodies`. No requirement here changes;
   the two features compose (see `plan.md`).
 - 2026-08-05 — *Doesn't gzip already solve the traffic half at the transport

@@ -1,6 +1,6 @@
 ---
 description: Inject user input into a running agent turn (native-CLI-style steering), capability-gated, with a settings toggle to fall back to the stable per-turn queue.
-issue: https://linear.app/shipit-ai/issue/SHI-60
+issue: planning#62
 ---
 
 # Live steering: inserting user input while an agent is running
@@ -471,6 +471,192 @@ re-queued — the `[steer-requeue]` / `[steer-send]` diagnostics make such a rep
 visible, and the escalation lever is to drop the echo from the delivered
 predicate and rely on the assistant-activity signal alone.
 
+**Validated in production, 2026-08-13 — the assumption is half wrong, and the
+escalation lever named above would have been the wrong fix.** See Phase 6.11.
+
+**Phase 6.11 — the CLI echoes a steer it will run as its OWN turn.**
+The production trace (host `shipit-shipit-1`, session `a26ddd2e`, branch
+`shipit/imagegen-shipit-plugin--rw8i2`) is exactly the shape 6.9 wondered about,
+and it disproves the two-outcome model the ack was designed against:
+
+```
+18:26:04  [env-prep] … turn=yes                 <- the orchestrator turn starts
+18:37:17  [steer-send] streamingActive=true      <- the user steers, late in the turn
+18:37:17  [steered] recordSteeredMessage afterGroupIndex=57
+          [streaming-claude] sendUserMessage NDJSON bytes=264
+~18:37:22 result                                 <- the turn ends WITHOUT applying it
+18:37:24  post-turn commit ("Both done, on PR #7.")
+          (no [steer-requeue] line — the CLI acked, so 6.9 correctly left it alone)
+          (no further env-prep … turn=yes — the orchestrator never started a turn)
+18:42:49  [turn] self-wake …; re-arming the post-turn flow   <- an UNRELATED background
+                                                                task rescues the flow
+18:43:53  commit ("Done, on PR #7.")
+```
+
+So there is a **third** outcome: the CLI accepts the steer (hence the echo, hence
+correctly no re-queue) but has no decision point left in the finishing turn, and
+runs it as a turn **of its own** after the `result`. The echo means *received*,
+not *applied in this turn* — the inference in `requeueUndeliveredSteers`'s
+docstring that an ack proves the agent "demonstrably handled" it was wrong at the
+seam. The message is neither lost (6.9's case) nor part of the finishing turn.
+
+Nothing told the orchestrator that turn existed. Three consequences, all in the
+trace above: `runner.running` stayed `false` for the ~5.5 minutes the agent
+worked, so the UI showed the session **idle** (the user-reported symptom); the
+post-turn flow — auto-commit, push, drain, `session_agent_finished` — was never
+armed for that response, so its edits reached git only because an unrelated
+`agent_self_wake` re-armed it 5 minutes later; and, worst, a `agent_self_wake`
+landing mid-response sees `running === false`, runs `resetRunnerTurnState`, and
+the next `replaceInProgress` persists only the groups after the reset — the first
+half of the answer is gone from chat history permanently.
+
+Fix: **adopt the turn when the model starts talking.** A top-level
+`agent_assistant` after this wired turn's `result`, on a resident streaming
+process, is the CLI producing output for a turn the orchestrator did not start —
+the same class of event as `agent_self_wake`, and it reuses the same docs/235
+machinery (`adoptCliStartedTurn` in `agent-listeners.ts`: `resetRunnerTurnState`
++ `running = true` + `session_status running:true`, plus
+`rearmForCliStartedTurn` in `turn-executor.ts` for the post-turn flow). The
+un-acked-steer re-queue is untouched — an acked steer must still never be
+re-queued, or it would be double-processed.
+
+The edge is gated on a **capability**, `AgentCapabilities.startsOwnTurns`
+(Claude true, Codex false), resolved through the agent registry beside
+`useStreaming` — never off `AgentProcess.capabilities`, which `ProxyAgentProcess`
+hardcodes. `useStreaming` is the wrong gate: Codex steers, so it streams, but its
+app-server is killed at `turn/completed` and it routinely emits the turn's FINAL
+assistant text *after* that (the `pendingCommitLink` comment in
+`agent-listeners.ts` documents the ordering; the synthetic `isStreamCompletion`
+re-emit exists precisely because of it). On Codex the adoption shape therefore
+means "the turn that just ended is still talking", and adopting it would mark the
+session busy for a turn that will never produce another `result` — a permanently
+busy session. `agent_self_wake` needs no such gate: only the Claude adapter emits
+it, so the event's own provenance is the gate.
+
+**Why not the `agent_init`, which looks like the announcement.** It is the
+obvious candidate and docs/235's own probe names it ("a `system/init` arriving
+while no orchestrator turn is in flight ⇒ a turn just started"). It is wrong
+here, and the reason is the second half of the same feature:
+`StreamingClaudeProcess.setPermissionMode` pushes a `set_permission_mode`
+control_request, and **the CLI answers it with a fresh `init`** — no turn behind
+it, and therefore no later `result` to clear `running` again. Steering pushes the
+mode change and the message as two independent worker calls
+(`send-message.ts` → `proxy-agent-process.ts`), so that init can land after the
+finishing turn's `result`. Adopting it would wedge the session as **permanently
+busy** — a worse failure than the one being fixed, since nothing recovers it.
+Assistant output has no such producer: a backgrounded subagent's carries
+`parentToolUseId` (excluded), and compaction emits none. Evidence the model is
+generating output IS the turn; an announcement is only a claim about one.
+
+Why not **tracking un-consumed acked steers** (the other alternative — mark the
+runner "expecting a CLI-side turn" when a steer was acked but the turn produced
+no group after it, then adopt on the next event):
+
+- Assistant output is **evidence**; an un-consumed ack is a **prediction**.
+  Adoption sets `running = true`, and nothing but a `result` clears it.
+  Predicting a turn that never arrives wedges the session as busy forever;
+  adopting one that is demonstrably running cannot.
+- It is not steer-specific. Any turn the CLI opens on its own — a future hook, a
+  backend that resumes work between turns — produces output the same way, so the
+  orchestrator stops needing a new detector per cause.
+- It needs no new state on `SteeredMessage` and no new coupling between the
+  re-queue predicate and the liveness path. The discriminator is one flag
+  (`sawTurnResult`, set where `running` is already cleared) plus the executor's
+  existing `streamingPostTurnFired`.
+
+Safety is the same argument docs/237 made for the wake edge, and rests on
+`resetRunnerTurnState` never running while a turn is genuinely in flight:
+assistant output arriving *before* this turn's `result` is just this turn
+talking, and is guarded by `runner.running` / the executor's
+`streamingPostTurnFired`. An orchestrator-started turn is never adopted either —
+it wires fresh listeners, so its output lands on a closure that has seen no
+result. Note the production trace shows the reverse hazard was the live one: the
+18:42:49 reset ran precisely *because* `running` was `false` while a real CLI
+turn WAS in flight.
+
+**Five ordering hazards the adoption creates, and what each costs.** Adoption
+lands in the middle of the finished turn's own terminal sequence, so the two
+overlap. Independent review (docs/261 reviewer, Codex) surfaced all three; each
+is now pinned by a test that fails without its fix. They apply to the
+`agent_self_wake` edge too, which has had them since planning#249 — the assistant
+edge is simply frequent enough to make them reachable.
+
+1. **The finished turn's drain undoes the adoption.** `tryDrain` runs a few
+   awaits after `agent_result` and clears `running`. A turn adopted inside that
+   window would be put straight back to IDLE for its whole response — the
+   original symptom, restored by the fix's own sequence — and the drain would
+   start a queued turn CONCURRENTLY with the one the CLI is running. `tryDrain`
+   now stands down when `turnIsCurrent()` is false: the runner has moved on, and
+   the adopted turn drains for itself once `rearmForCliStartedTurn` clears
+   `drainFired`.
+2. **The adopted turn finishes before the re-arm hands the guards over.** The
+   re-arm awaits the finished turn's whole sequence (commit + PR round-trip:
+   seconds), and the CLI is not paused by that await. A short adopted turn —
+   "rename the folder" is exactly that — reached its `result`, hit the still-true
+   `streamingPostTurnFired` and returned: no drain, no commit, no settlement.
+   The `agent_result` handler now awaits any in-flight re-arm (`rearmInFlight`)
+   instead of reading a flag that is still the finished turn's.
+3. **The commit summary is read after the adoption cleared it.**
+   `resetRunnerTurnState` clears `turnSummary`, and the finished turn's commit is
+   the *last* step of its sequence, so it labelled its own work "Agent turn" (or,
+   once the adopted turn had spoken, with ITS first line). The summary is now
+   snapshot at `agent_result` (`resultTurnSummary`), and `runCommit` prefers the
+   LIVE value, falling back to the snapshot only when `turnIsCurrent()` is false.
+   Preferring the snapshot unconditionally would re-break Codex, whose late
+   `isStreamCompletion` event exists to replace a one-character final delta as
+   the commit message.
+4. **The ownership check is stale by the time the drain runs.** `tryDrain` checks
+   `turnIsCurrent()`, then *awaits the queued-turn commit* — real work, on a real
+   tree — before calling `drainNext()`. A turn adopted inside that await would
+   still have a queued turn started alongside it, which respawns the agent,
+   removes the adopted turn's listeners and resets its accumulator mid-response.
+   It now re-checks after the commit.
+5. **`agent_result` is not the only terminal path.** An adopted turn that dies
+   (adapter error, crash, OOM) reached the executor's `error` / `done` handlers,
+   which read the predecessor's still-latched `drainFired` and already-settled
+   commit memos — so they no-op, and the re-arm then clears the memos with no
+   terminal event left to invoke them: the adopted turn's edits stay in the
+   working tree. Both paths now wait for the hand-over too. `rearmInFlight` is
+   non-null ONLY while a re-arm is genuinely running, which is load-bearing in
+   the other direction: on the non-streaming path `done` follows `agent_result`
+   synchronously, and an unconditional await there reorders the two (it broke
+   `quota-exhaustion-retry.test.ts`). The **failed auth heal** is the fourth such
+   path and waits too.
+
+**And two things an adopted turn must NOT inherit from the closure it borrows.**
+The closure still holds the turn it was invoked for — its prompt, its
+`receivedResult`, its dispatch handle — so `servingAdoptedTurn` marks the window
+in which that state is not this turn's:
+
+- **No re-dispatch.** The quota failover and the auth-heal retry re-run
+  `input.prompt` on a fresh credential. That prompt is the USER's; re-running it
+  because an adopted turn hit a limit repeats work the agent already did and
+  still doesn't retry what failed. Both stand down. (Reasoned from the code and
+  **not** pinned by a test — reaching the failover needs the credential-selection
+  harness on a streaming *dispatched* turn, which no existing harness builds, and
+  a test against the executor harness alone passes with the guard removed.)
+- **The partial-turn finalize must still fire.** It is gated on
+  `!receivedResult`, which deliberately survives an adoption — so an adopted turn
+  that died on a bare `done` had its streamed rows left `in_progress` for the
+  next turn's `replaceInProgress` to delete. That is this phase's own bug, one
+  path over. Only the row finalize is widened; the no-result hook stays disarmed,
+  because arming it would re-run the user's original prompt.
+
+**Known residual, accepted.** An adopted turn that edits the tree BEFORE the
+finished turn's `git add -A` has those edits swept into the finished turn's
+commit. The work reaches git — the tree ends clean and the adopted turn's own
+commit is then a no-op — only the attribution is the previous turn's, for the
+sub-second window between `result` and the commit. Fixing it would mean tracking
+per-turn paths through `git add -A`; the cost of not fixing it is a commit
+message, not lost work. Asserted explicitly in the test rather than wished away.
+
+Coverage: `turn-self-wake-commit.test.ts` (a late-acked steer's CLI-started turn
+commits its own work under its own summary; a bare post-`result` init does NOT
+adopt; mid-turn output and a backgrounded subagent's output do not adopt; the
+drain stands down after an adoption; an adopted turn that ends before the re-arm
+settles still runs its post-turn flow) and `live-steering.test.ts` (the session
+reads busy, the accumulator is clean, and each turn persists once).
+
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends
 it is shown as Fable again, but the drop-down shows Opus." Root cause is the
@@ -558,5 +744,16 @@ pinning trigger/checkmark agreement.
 - `src/server/orchestrator/resident-model-guard.ts` — release the resident
   process when the session's model no longer matches its spawn-time `--model`
   (Phase 6.10); paired with `runner.appliedModel`, set in `turn-executor.ts`.
+- `src/server/shared/types/agent-types.ts` +
+  `src/server/shared/catalogue/harnesses.ts` —
+  `AgentCapabilities.startsOwnTurns` (Phase 6.11): whether a backend's process
+  survives its own turn boundary. Resolved through the agent registry in
+  `ws-handlers/agent-execution.ts`, beside `useStreaming`.
+- `src/server/orchestrator/ws-handlers/agent-listeners.ts` —
+  `adoptCliStartedTurn` + `sawTurnResult`: adopt a turn the CLI started on its
+  own, from either edge (Phase 6.11). Paired with `rearmForCliStartedTurn` in
+  `turn-executor.ts`, which gives that turn a post-turn flow to end on — plus the
+  three overlap guards there (`turnIsCurrent()` in `tryDrain`, `rearmInFlight`,
+  `resultTurnSummary`).
 - `src/client/components/MessageInput.tsx`, `QueueIndicator.tsx`,
   `src/client/stores/session-store.ts` — client UX + settings toggle.

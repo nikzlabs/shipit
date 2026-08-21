@@ -1,6 +1,6 @@
 /**
  * Per-tool policy for tool **inputs** on the docs/244 wire projection
- * (SHI-296, reqs 1 and 5).
+ * (planning#298, reqs 1 and 5).
  *
  * The result side answers one question — "does anything draw this result's
  * content without a click?" (`rendersResultContentInline`). Inputs cannot be
@@ -35,7 +35,7 @@
  * | `DiffBlock` via Edit/Write | `file_path` (the body is replaced by `diffStats`) |
  * | `DiffBlock` via Codex `apply_patch` | `changes` / `files` — the `+N -M` is derived from each change's `diff` |
  * | `AskUserQuestion` | `questions` — the card *is* the transcript, and its branch returns before any modal |
- * | `TodoPanel` (`MessageList.tsx`) | `TodoWrite.todos` |
+ * | `TodoPanel`, via the fold in `client/components/task-list.ts` | `TodoWrite.todos`; `taskId`, `subject`, `activeForm`, `status` on the `Task*` tools |
  * | `SubagentCall` | `description`, `subagent_type` (and `prompt`, behind a collapsed disclosure) |
  * | the `Skill` chip (`MessageToolUse.tsx`) | `skill`, `args` |
  * | `PresentToolChip` | `title` |
@@ -66,6 +66,7 @@
 
 import { SUBAGENT_TOOL_NAMES } from "./transcript-slice-tools.js";
 import { isPresentTool } from "./tool-names.js";
+import { isTaskListTool, TASK_LIST_SUMMARY_KEYS } from "./task-list-tools.js";
 
 /**
  * Below this, an input value is left on the wire instead of being stripped.
@@ -112,8 +113,24 @@ const SUMMARY_KEYS = new Set(["file_path", "pattern", "query", "url"]);
  */
 const WHOLE_INPUT_TOOL_NAMES = new Set(["AskUserQuestion", "TodoWrite", "apply_patch"]);
 
+/**
+ * `TodoWrite`'s successors are NOT here. They carry a `description` the panel
+ * never draws, so they get the narrower per-key rule below instead — the
+ * whole-input exemption is for tools where every key is on screen.
+ */
+
 /** Keys the subagent renderers draw beside the collapsed prompt. */
 const SUBAGENT_SUMMARY_KEYS = new Set(["description", "subagent_type", "skill", "args"]);
+
+/**
+ * The task panel folds `TaskCreate`/`TaskUpdate` into a list and draws it with
+ * no click behind it, so the keys it reads have to survive the projection —
+ * otherwise the panel is right live and loses its rows on the next reload.
+ *
+ * It is a key set rather than a whole-input exemption because `description` is
+ * the one long field these tools carry and the panel never draws it. See
+ * `TASK_LIST_SUMMARY_KEYS`.
+ */
 
 /** True for a `Write` whose body `PlanApproval` renders inline (`findPlanContent`). */
 export function isPlanDocumentWrite(toolName: string, input: Record<string, unknown>): boolean {
@@ -139,6 +156,7 @@ export function inputKeyTreatment(
   if (WHOLE_INPUT_TOOL_NAMES.has(toolName)) return "keep";
   if (key === "content" && isPlanDocumentWrite(toolName, input)) return "keep";
   if (SUMMARY_KEYS.has(key)) return "keep";
+  if (isTaskListTool(toolName)) return TASK_LIST_SUMMARY_KEYS.has(key) ? "keep" : "drop";
   if (SUBAGENT_TOOL_NAMES.has(toolName)) return SUBAGENT_SUMMARY_KEYS.has(key) ? "keep" : "drop";
   if (isPresentTool(toolName)) return key === "title" ? "keep" : "drop";
   if (key === "command") return "head";

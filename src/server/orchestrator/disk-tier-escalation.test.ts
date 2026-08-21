@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -62,32 +62,58 @@ describe("escalateDiskTiers", () => {
     );
   }
 
-  /** Minimal runner-registry fake: only `get`/`dispose` are exercised. */
+  /**
+   * Minimal runner-registry fake: only `get` / `dispose` are exercised.
+   *
+   * `dispose` models the real runner's refusal, not just the call: both runner
+   * classes DECLINE a non-forced dispose while they hold live work (a running
+   * agent, an in-flight consult, a turn's post-turn sequence), and the ladder
+   * has to honor that — it destroys the container and, at `evict`, wipes the
+   * checkout. A fake that always disposed made the caller's decision
+   * untestable.
+   */
   function fakeRegistry(
     runners: Record<string, {
       running?: boolean;
       viewerCount?: number;
       /** docs/235 — outstanding agent-initiated background tasks. */
       backgroundTaskCount?: number;
+      /** A turn's terminal sequence (commit / PR flow / settlement) is running. */
+      postTurnWorkInFlight?: boolean;
     }> = {},
   ): { registry: SessionRunnerRegistry; disposed: string[] } {
     const disposed: string[] = [];
+    const state = new Map<string, { disposed: boolean }>();
     const registry = {
       get: (id: string) => {
         const r = runners[id];
         if (!r) return undefined;
         const running = r.running ?? false;
         const backgroundTaskCount = r.backgroundTaskCount ?? 0;
+        const postTurnWorkInFlight = r.postTurnWorkInFlight ?? false;
+        let slot = state.get(id);
+        if (!slot) { slot = { disposed: false }; state.set(id, slot); }
         return {
           running,
           viewerCount: r.viewerCount ?? 0,
           backgroundTaskCount,
+          postTurnWorkInFlight,
           // Mirrors the real runner's derivation so the guard under test sees
           // the same union the production code does.
-          agentBusy: running || backgroundTaskCount > 0,
+          agentBusy: running || backgroundTaskCount > 0 || postTurnWorkInFlight,
+          get disposed() { return slot.disposed; },
         };
       },
-      dispose: (id: string) => { disposed.push(id); },
+      dispose: (id: string) => {
+        disposed.push(id);
+        const r = runners[id];
+        if (!r) return;
+        let slot = state.get(id);
+        if (!slot) { slot = { disposed: false }; state.set(id, slot); }
+        // Non-forced: the real runner refuses while it holds live work.
+        if (r.running || r.postTurnWorkInFlight) return;
+        slot.disposed = true;
+      },
     } as unknown as SessionRunnerRegistry;
     return { registry, disposed };
   }
@@ -106,7 +132,7 @@ describe("escalateDiskTiers", () => {
   }
 
   /**
-   * A session checkout on `main`. SHI-294 — pushed to a bare `origin` by
+   * A session checkout on `main`. planning#296 — pushed to a bare `origin` by
    * default, because eviction now requires the tip to be recoverable from the
    * remote; `noRemote` produces the un-evictable "this checkout is the only
    * copy" shape.
@@ -209,6 +235,93 @@ describe("escalateDiskTiers", () => {
     const after = await escalateDiskTiers(baseDeps(sm, registry));
     expect(after.toLight + after.toEvicted).toBeGreaterThan(0);
     expect(sm.get("pinned-old")?.diskTier).not.toBe("hot");
+  });
+
+  // docs/256 — the reaper asymmetry. `idle-enforcer.ts` has always skipped a
+  // reserved always-on preview; this ladder did not, so the `hot → light` rung
+  // destroyed the very container docs/241 promises to keep up (and the
+  // keep-preview restart supervisor then recreated it — a fight, not a
+  // one-shot).
+  it("docs/241: NEVER descends a session with an always-on preview reservation", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-reserved");
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, "keep.txt"), "x");
+    // Old enough for the gentle eviction clock, let alone `hot → light`. A
+    // reserved preview that nobody views and no turn touches is the normal
+    // shape here: it is serving HTTP, which the idle age never sees.
+    insertSession({
+      id: "reserved-old",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 5),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+    sm.setKeepPreviewRunning("reserved-old", true);
+
+    const { registry, disposed } = fakeRegistry();
+    const result = await escalateDiskTiers(baseDeps(sm, registry));
+
+    expect(result.toLight).toBe(0);
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("reserved-old")?.diskTier).toBe("hot");
+    expect(disposed).not.toContain("reserved-old");
+    expect(fs.existsSync(path.join(wsDir, "keep.txt"))).toBe(true);
+
+    // Control: releasing the reservation lets the same session descend, which
+    // proves the reservation — not some unrelated condition — held it.
+    sm.setKeepPreviewRunning("reserved-old", false);
+    const after = await escalateDiskTiers(baseDeps(sm, registry));
+    expect(after.toLight + after.toEvicted).toBeGreaterThan(0);
+    expect(sm.get("reserved-old")?.diskTier).not.toBe("hot");
+  });
+
+  // planning#298's rule, applied to this ladder: a DECLINED dispose means "leave
+  // this container alone". `canAutoDescend` runs BEFORE `sleep(paceMs)` and
+  // before the git/network work, so a session can pick up live work in between
+  // — and the destroy was unconditional, so the work died anyway and the
+  // surviving runner was left pointed at a dead container. A turn's post-turn
+  // sequence (commit / PR flow / settlement) is now one of the things that
+  // declines, and a turn ending during the pace delay lands exactly here.
+  it("does not destroy the container when the runner declines disposal mid-pass", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-toctou");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "toctou",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.lightAfterMs / 86_400_000 + 1),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+
+    // Idle when the guard looks; a turn's terminal sequence has started by the
+    // time the rung actually disposes.
+    let busy = false;
+    const disposed: string[] = [];
+    const registry = {
+      get: () => ({
+        running: false,
+        viewerCount: 0,
+        backgroundTaskCount: 0,
+        get agentBusy() { const answer = busy; busy = true; return answer; },
+        get disposed() { return false; }, // declined — still holds live work
+      }),
+      dispose: (id: string) => { disposed.push(id); },
+    } as unknown as SessionRunnerRegistry;
+
+    const destroyed: string[] = [];
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      containerManager: { destroy: (id: string) => { destroyed.push(id); return Promise.resolve(); } },
+    } as TierEscalationDeps);
+
+    expect(disposed).toContain("toctou");
+    // The whole point: dispose was attempted and refused, so the container
+    // survives and the tier does not move. The next pass retries.
+    expect(destroyed).toEqual([]);
+    expect(result.toLight).toBe(0);
+    expect(sm.get("toctou")?.diskTier).toBe("hot");
   });
 
   it("paces age-based descents when paceMs is set", async () => {
@@ -359,10 +472,10 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(scratchFile)).toBe(true); // sibling scratch/ spared
   });
 
-  // SHI-192 — eviction must ALSO reclaim the regenerable `overlay/` upper sibling
+  // planning#194 — eviction must ALSO reclaim the regenerable `overlay/` upper sibling
   // (the docs/183 install-delta cache), which the legacy reclaim orphaned —
   // ~60 GB of leaked uppers on prod. `uploads/` stays durable.
-  it("light → evicted wipes workspace/ AND overlay/ but spares uploads/ (SHI-192)", async () => {
+  it("light → evicted wipes workspace/ AND overlay/ but spares uploads/ (planning#194)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const sessionRoot = path.join(tmpDir, "sess-evict-overlay");
@@ -421,7 +534,7 @@ describe("escalateDiskTiers", () => {
   });
 
   // ---------------------------------------------------------------------
-  // SHI-294 — `autoCommit` returns a null hash from THREE paths, and only one
+  // planning#296 — `autoCommit` returns a null hash from THREE paths, and only one
   // of them ("nothing to commit") is safe to wipe. The other two are normal
   // returns, not throws, so they used to fall past the `if (commitHash)` gate
   // straight into the wipe — destroying uncommitted work with no reflog entry.
@@ -447,7 +560,89 @@ describe("escalateDiskTiers", () => {
   // two halves never appear adjacent.
   const FIXTURE_AWS_KEY = ["AKIA", "IOSFODNN7EXAMPLE"].join("");
 
-  it("SHI-294: a secret-refused auto-commit blocks the wipe (keeps the checkout)", async () => {
+  // docs/128 / docs/211 — an ops/sandbox session is never evicted at all, which
+  // is also what keeps the disk janitor's commit-before-eviction (its only
+  // `autoCommit` call) from firing for them.
+  //
+  // The `pushed` case is the one that matters and the one a "they have no remote
+  // so they were never evictable" reading gets WRONG: the durability gate reads
+  // the CHECKOUT's `refs/remotes/origin/<branch>`, not `session.remoteUrl`. A
+  // sandbox that ran `git clone <url> .`, or an ops agent that added an origin
+  // by hand, satisfies it with a session row that has no `remoteUrl` — so the
+  // wipe used to succeed and `restoreSessionWorkspace` would then throw 410,
+  // because restore re-clones from session METADATA. That is unrecoverable
+  // deletion, so the refusal has to be by kind, not inferred from the tree.
+  for (const kind of ["ops", "sandbox"] as const) {
+    for (const shape of ["dirty, no origin", "clean, pushed to an origin"] as const) {
+      it(`never evicts a ${kind} session (${shape}) and makes no commit`, async () => {
+        setup();
+        const sm = new SessionManager(dbManager!);
+        const clean = shape === "clean, pushed to an origin";
+        const wsDir = path.join(tmpDir, `ws-${kind}-${clean ? "clean" : "dirty"}`);
+        // `clean` mirrors an agent-created origin: the checkout has one and its
+        // tip is pushed, while the session row below records NO remoteUrl.
+        await initRepo(wsDir, { dirty: !clean, noRemote: !clean });
+        insertSession({
+          id: `${kind}-light`,
+          lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+          diskTier: "light",
+          workspaceDir: wsDir,
+          branch: "main",
+        });
+        sm.setKind(`${kind}-light`, kind);
+
+        const { registry } = fakeRegistry();
+        const { appended, chatHistory } = fakeChatHistory();
+        const before = (await new GitManager(wsDir).log()).length;
+        const result = await escalateDiskTiers({
+          ...baseDeps(sm, registry),
+          createGitManager: (dir) => new GitManager(dir),
+          chatHistory,
+          notifiedEvictBlocked: new Set<string>(),
+        });
+
+        // Not evicted, and the checkout is still on disk.
+        expect(result.toEvicted).toBe(0);
+        expect(sm.get(`${kind}-light`)?.diskTier).toBe("light");
+        expect(fs.existsSync(wsDir)).toBe(true);
+        // No commit was made — history is exactly as the agent left it.
+        expect((await new GitManager(wsDir).log()).length).toBe(before);
+        expect(await new GitManager(wsDir).isClean()).toBe(clean);
+        if (!clean) expect(fs.existsSync(path.join(wsDir, "b.txt"))).toBe(true);
+        // Reason-less refusal ⇒ no user-facing notice: nothing was refused that
+        // the user could act on, and no commit was attempted.
+        expect(appended).toHaveLength(0);
+      });
+    }
+  }
+
+  // The refusal must not widen: an ordinary session with the SAME clean+pushed
+  // shape is still evicted, which is the whole point of the ladder.
+  it("still evicts an ordinary session with the same clean, pushed shape", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-ordinary-clean");
+    await initRepo(wsDir);
+    insertSession({
+      id: "ordinary-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(1);
+    expect(sm.get("ordinary-light")?.diskTier).toBe("evicted");
+    expect(fs.existsSync(wsDir)).toBe(false);
+  });
+
+  it("planning#296: a secret-refused auto-commit blocks the wipe (keeps the checkout)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const sessionRoot = path.join(tmpDir, "sess-secret");
@@ -505,7 +700,7 @@ describe("escalateDiskTiers", () => {
     expect(appended[0]!.text).not.toContain(FIXTURE_AWS_KEY);
   });
 
-  it("SHI-294: an unresolved merge state blocks the wipe (keeps the checkout)", async () => {
+  it("planning#296: an unresolved merge state blocks the wipe (keeps the checkout)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-conflict");
@@ -545,7 +740,7 @@ describe("escalateDiskTiers", () => {
     expect(appended[0]!.text).toContain("unresolved merge state");
   });
 
-  it("SHI-294: still evicts when the null hash meant 'nothing to commit'", async () => {
+  it("planning#296: still evicts when the null hash meant 'nothing to commit'", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-race");
@@ -563,9 +758,10 @@ describe("escalateDiskTiers", () => {
     // a blanket "null hash ⇒ blocked" guard would make this un-evictable.
     let cleanCalls = 0;
     const stubGit = {
-      isClean: () => Promise.resolve(cleanCalls++ > 0),
+      isClean: () => Promise.resolve(cleanCalls > 0),
+      inspectWorkingTree: () => Promise.resolve({ clean: cleanCalls++ > 0, unreadable: null }),
       autoCommit: () => Promise.resolve({
-        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
       }),
       isRebaseInProgress: () => Promise.resolve(false),
       isMergeOrSequencerInProgress: () => Promise.resolve(false),
@@ -592,11 +788,109 @@ describe("escalateDiskTiers", () => {
     expect(appended).toHaveLength(0);
   });
 
+  /**
+   * docs/266 / planning#407 — the data-loss path the uid drop created.
+   *
+   * `isClean()` is TRUE for content git cannot read, so the pre-eviction
+   * commit's own re-check waved the wipe through and the checkout — the only
+   * copy of that content — was deleted. Root-side git read everything, so this
+   * was unreachable until orchestrator git started running as the tree's owner.
+   *
+   * Produced with mode bits on a self-owned directory: a session container has
+   * no root and `unshare -r` is refused, so genuine foreign ownership cannot be
+   * reproduced here. The kernel check is the same one a foreign-owned directory
+   * fails; the ownership dimension itself is not exercised.
+   */
+  it("planning#407: an unreadable directory hiding the ONLY changes blocks the wipe", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-unreadable");
+    await initRepo(wsDir);
+    const dataDir = path.join(wsDir, "pgdata");
+    fs.mkdirSync(dataDir);
+    fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "14\n");
+    const g = simpleGit(wsDir);
+    await g.add(".");
+    await g.commit("data");
+    await g.push("origin", "main");
+    // The uncommitted work, and then the state that hides it from git.
+    fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "15\n");
+    fs.chmodSync(dataDir, 0o000);
+    insertSession({
+      id: "unreadable-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    try {
+      const { registry } = fakeRegistry();
+      const { appended, chatHistory } = fakeChatHistory();
+      const result = await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+        chatHistory,
+        notifiedEvictBlocked: new Set<string>(),
+      });
+
+      expect(result.toEvicted).toBe(0);
+      expect(result.evictBlockedByDirty).toBe(1);
+      expect(sm.get("unreadable-light")?.diskTier).toBe("light");
+      expect(fs.existsSync(dataDir)).toBe(true);
+      expect(appended[0]!.text).toContain("pgdata/");
+    } finally {
+      fs.chmodSync(dataDir, 0o755);
+    }
+  });
+
+  it("planning#407: blocks even when the readable half of the tree committed fine", async () => {
+    // The commit is not the question the wipe turns on. Here `autoCommit`
+    // succeeds and leaves a clean tree — and the unreadable subtree is STILL
+    // only on disk, so the eviction must refuse anyway.
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-unreadable-mixed");
+    await initRepo(wsDir);
+    const dataDir = path.join(wsDir, "pgdata");
+    fs.mkdirSync(dataDir);
+    fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "14\n");
+    fs.chmodSync(dataDir, 0o000);
+    fs.writeFileSync(path.join(wsDir, "a.txt"), "agent edit");
+    insertSession({
+      id: "mixed-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    try {
+      const { registry } = fakeRegistry();
+      const { appended, chatHistory } = fakeChatHistory();
+      const result = await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+        chatHistory,
+        notifiedEvictBlocked: new Set<string>(),
+      });
+
+      expect(result.evictBlockedByDirty).toBe(1);
+      expect(fs.existsSync(wsDir)).toBe(true);
+      // The readable edit DID commit — blocking the wipe costs nothing that
+      // could have been made durable.
+      expect(await new GitManager(wsDir).isClean()).toBe(true);
+      expect(appended[0]!.text).toContain("pgdata/");
+    } finally {
+      fs.chmodSync(dataDir, 0o755);
+    }
+  });
+
   // The clean-tree question is not the durability question. A commit this pass
   // made but could not push leaves the tree CLEAN, so the next pass sailed
   // straight through the remediation block and wiped a commit that exists
   // nowhere else. Two passes is the whole point of this test.
-  it("SHI-294: a commit that failed to push is not wiped by the NEXT pass", async () => {
+  it("planning#296: a commit that failed to push is not wiped by the NEXT pass", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-unpushed");
@@ -629,7 +923,7 @@ describe("escalateDiskTiers", () => {
   // `edit`/`exec` step has nothing uncommitted, so `autoCommit` is never even
   // called and its conflict branch never fires — but the in-flight commits and
   // recovery state live only in `.git`.
-  it("SHI-294: a CLEAN checkout with a rebase in progress blocks the wipe", async () => {
+  it("planning#296: a CLEAN checkout with a rebase in progress blocks the wipe", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-rebasing");
@@ -663,7 +957,7 @@ describe("escalateDiskTiers", () => {
   // A repo-less session's checkout is the only copy there will ever be —
   // `restoreSessionWorkspace` returns a terminal 410 for it. `archiveSession`
   // already refuses to reclaim one; the automatic ladder now matches.
-  it("SHI-294: never evicts a session whose work has no remote to live on", async () => {
+  it("planning#296: never evicts a session whose work has no remote to live on", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-standalone");
@@ -691,7 +985,7 @@ describe("escalateDiskTiers", () => {
   // HEAD, pushing `session.branch` succeeds with "Everything up-to-date" while
   // HEAD's commits stay local — a green push that proves nothing, followed by
   // a wipe.
-  it("SHI-294: a detached HEAD is never evicted (its commits belong to no branch)", async () => {
+  it("planning#296: a detached HEAD is never evicted (its commits belong to no branch)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-detached");
@@ -723,7 +1017,7 @@ describe("escalateDiskTiers", () => {
 
   // The descend guards run before the pacing delay and seconds of git/network
   // work. A session the user opened in that window must not be wiped.
-  it("SHI-294: does not wipe a session that became active during remediation", async () => {
+  it("planning#296: does not wipe a session that became active during remediation", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-activated");
@@ -760,7 +1054,7 @@ describe("escalateDiskTiers", () => {
   // failed" → skipped), and activation's `light → hot` shortcut skips
   // `restoreSessionWorkspace` — so the container bind-mount 404s in a loop.
   // Recording the truth routes the next activation through restore.
-  it("SHI-294: records an already-missing workspace as evicted (restorable), not stuck at light", async () => {
+  it("planning#296: records an already-missing workspace as evicted (restorable), not stuck at light", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-vanished", "workspace");
@@ -782,7 +1076,238 @@ describe("escalateDiskTiers", () => {
     expect(sm.get("vanished-light")?.diskTier).toBe("evicted");
   });
 
-  it("SHI-294: warns once per session, not once per escalation pass", async () => {
+  // The same stuck-forever shape as the vanished workspace above, but with the
+  // DIRECTORY still present and only `.git` gone. `workspaceGone` was false, so
+  // every pass reached the durability block, threw "fatal: not a git
+  // repository", and returned "skipped" — no state change, no backoff. One
+  // production session repeated that pair 117 times in an hour for eight days.
+  // An EMPTY remnant is the missing-workspace case with a directory inode left
+  // over: nothing to protect, so it is recorded evicted and restore re-clones.
+  it("evicts an empty remnant directory that is no longer a git repository", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-remnant");
+    fs.mkdirSync(wsDir, { recursive: true }); // an interrupted rm -rf leaves this
+    insertSession({
+      id: "remnant-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(1);
+    expect(sm.get("remnant-light")?.diskTier).toBe("evicted");
+  });
+
+  // The other half of the split, and the one that must NOT wipe. Files in a
+  // directory with no repository exist nowhere else — there is no branch or
+  // commit that could ever carry them to origin — so the rung that promises
+  // "everything it wipes is recoverable from origin" cannot delete them. It
+  // blocks instead: reclaim the regenerable overlay, notify, keep the files.
+  it("never wipes a non-repo workspace that still holds files — it blocks instead", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const sessionRoot = path.join(tmpDir, "ws-derepoed");
+    const wsDir = path.join(sessionRoot, "workspace");
+    await initRepo(wsDir);
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(wsDir, "only-copy.txt"), "never pushed anywhere");
+    // The regenerable dep overlay a block is allowed to reclaim (planning#194).
+    const overlayDir = path.join(sessionRoot, "overlay");
+    fs.mkdirSync(overlayDir, { recursive: true });
+    insertSession({
+      id: "derepoed-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const { appended, chatHistory } = fakeChatHistory();
+    const deps = {
+      ...baseDeps(sm, registry),
+      createGitManager: (dir: string) => new GitManager(dir),
+      chatHistory,
+      notifiedEvictBlocked: new Set<string>(),
+    };
+
+    const first = await escalateDiskTiers(deps);
+    const second = await escalateDiskTiers(deps);
+
+    expect(first.toEvicted).toBe(0);
+    expect(first.evictBlockedByPush).toBe(1);
+    // Blocked every pass — the condition is still true — but never wiped.
+    expect(second.evictBlockedByPush).toBe(1);
+    expect(sm.get("derepoed-light")?.diskTier).toBe("light");
+    expect(fs.existsSync(path.join(wsDir, "only-copy.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
+    // The expensive, regenerable half IS reclaimed, and the user is told once.
+    expect(fs.existsSync(overlayDir)).toBe(false);
+    expect(appended).toHaveLength(1);
+    expect(appended[0]!.text).toContain("no longer a git repository");
+  });
+
+  // Same empty-remnant shape, no remote: nothing could restore it, so recording
+  // "evicted" would assert a lie. The refusal is unchanged — only the log is
+  // throttled.
+  it("refuses to evict an empty remnant when there is no remote to restore from", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-remnant-noremote");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "remnant-noremote",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+      remoteUrl: "", // the session row has no remote either
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("remnant-noremote")?.diskTier).toBe("light");
+    expect(fs.existsSync(wsDir)).toBe(true);
+  });
+
+  // `.git` as a FILE is what a worktree or submodule checkout looks like, and
+  // as a symlink it is still a repository pointer. Neither is "no repository":
+  // both must take the careful path, never the new one.
+  it("treats a `.git` FILE as a repository — the careful path, never the wipe", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-gitfile");
+    await initRepo(wsDir);
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(wsDir, ".git"), "gitdir: /elsewhere/.git/worktrees/w\n");
+    insertSession({
+      id: "gitfile-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    // The gitdir target doesn't exist, so git fails and the catch refuses —
+    // which is the point: a repository pointer is never the empty-remnant case.
+    expect(result.toEvicted).toBe(0);
+    expect(result.evictBlockedByPush).toBe(0); // not the no-repository block
+    expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
+  });
+
+  // A corrupt-but-present `.git` still takes the careful path (never wiped) —
+  // but it must not narrate its unchanging failure on every hourly pass.
+  it("reports a repeating git failure once, not once per pass", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-corrupt");
+    await initRepo(wsDir);
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    // A `.git` FILE with an invalid gitfile format: present (so the "no
+    // repository at all" fast path doesn't apply) and broken on every git call.
+    fs.writeFileSync(path.join(wsDir, ".git"), "not a gitfile\n");
+    insertSession({
+      id: "corrupt-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const deps = {
+      ...baseDeps(sm, registry),
+      createGitManager: (dir: string) => new GitManager(dir),
+      evictStuckLog: new Map<string, string>(),
+    };
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warnings: string[];
+    try {
+      await escalateDiskTiers(deps);
+      await escalateDiskTiers(deps);
+      await escalateDiskTiers(deps);
+      // Read BEFORE the restore — `mockRestore` also clears `mock.calls`.
+      warnings = warn.mock.calls.map((c) => String(c[0]));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(warnings.filter((w) => w.includes("git check failed"))).toHaveLength(1);
+    // Still refused: the checkout survives every pass.
+    expect(sm.get("corrupt-light")?.diskTier).toBe("light");
+    expect(fs.existsSync(path.join(wsDir, "a.txt"))).toBe(true);
+
+    // The suppression is scoped to a session that is still stuck the same way.
+    // Once the row leaves `light` — reopened, archived, deleted — the entry is
+    // pruned, so a later failure is reported again instead of being swallowed
+    // by a signature from a previous episode.
+    expect(deps.evictStuckLog.size).toBe(1);
+    sm.setDiskTier("corrupt-light", "evicted");
+    await escalateDiskTiers(deps);
+    expect(deps.evictStuckLog.size).toBe(0);
+  });
+
+  // The throttle keys on the CAUSE, not the session: a session that gets stuck
+  // for a new reason must never be silenced by the signature of the old one.
+  it("reports a DIFFERENT git failure even while an earlier one is throttled", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-changing");
+    await initRepo(wsDir);
+    fs.rmSync(path.join(wsDir, ".git"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(wsDir, ".git"), "not a gitfile\n");
+    insertSession({
+      id: "changing-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const deps = {
+      ...baseDeps(sm, registry),
+      createGitManager: (dir: string) => new GitManager(dir),
+      evictStuckLog: new Map<string, string>(),
+    };
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warnings: string[];
+    try {
+      await escalateDiskTiers(deps);
+      await escalateDiskTiers(deps);
+      // A different breakage in the same slot → a different message.
+      fs.writeFileSync(path.join(wsDir, ".git"), "gitdir: /nonexistent/git/dir\n");
+      await escalateDiskTiers(deps);
+      warnings = warn.mock.calls.map((c) => String(c[0]));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(warnings.filter((w) => w.includes("git check failed"))).toHaveLength(2);
+  });
+
+  it("planning#296: warns once per session, not once per escalation pass", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
     const wsDir = path.join(tmpDir, "ws-secret-repeat");
@@ -1004,7 +1529,7 @@ describe("escalateDiskTiers", () => {
     expect(disposed).not.toContain("gone");
   });
 
-  // SHI-197 — a custom ladder threads through and overrides the defaults.
+  // planning#199 — a custom ladder threads through and overrides the defaults.
   it("honors a custom ladder threshold", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
@@ -1022,7 +1547,7 @@ describe("escalateDiskTiers", () => {
   });
 });
 
-// SHI-197 — the ladder ordering invariant is asserted once at startup so an
+// planning#199 — the ladder ordering invariant is asserted once at startup so an
 // incoherent env override fails fast instead of misbehaving at runtime.
 describe("assertDiskLadderOrdering", () => {
   it("accepts the default ladder", () => {

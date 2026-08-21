@@ -27,10 +27,13 @@ import {
 import {
   rediscoverContainers,
   adoptRunningContainer,
+  isTrackedContainerRunning,
   cleanupOrphanContainers,
+  reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
+import { reapSessionEgressSidecars } from "./egress-orphan-reaper.js";
 import {
   startHealthMonitor,
   stopHealthMonitor,
@@ -48,13 +51,18 @@ import {
   resolveWorkerBaseDigest as resolveWorkerBaseDigestFn,
   resolveWorkerNodeVersion as resolveWorkerNodeVersionFn,
   prepareOverlaySpecs as prepareOverlaySpecsFn,
+  resolveSiblingOverlayDepDirs as resolveSiblingOverlayDepDirsFn,
   preparePnpmStore as preparePnpmStoreFn,
   type OverlayProvisionerDeps,
 } from "./container-overlay-provisioner.js";
 import type { DepDirOverlaySpec } from "./overlay-session.js";
 import { egressEnforceEnabled, allowEgressToSubnets } from "./egress-firewall-install.js";
 import { extractNetworkSubnets } from "./egress-firewall.js";
-import { egressDnsEnabled } from "./egress-dns-install.js";
+import {
+  containComposeServices as applyComposeServiceEgress,
+  invalidateComposeServiceContainment,
+} from "./compose-service-egress.js";
+import { egressDnsEnabled, orchestratorCallbackHost } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
 import {
   kernelRuntime,
@@ -62,6 +70,8 @@ import {
   readonlyRootfsEnabled,
 } from "./container-hardening.js";
 import { reloadEgressSidecars } from "./egress-reload.js";
+import { listEgressAllowedHosts } from "./egress-policy.js";
+import type { PluginEgressPolicy } from "./plugin-egress.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { SessionInfo } from "../shared/types.js";
 
@@ -84,7 +94,9 @@ export {
 export {
   rediscoverContainers,
   adoptRunningContainer,
+  isTrackedContainerRunning,
   cleanupOrphanContainers,
+  reapStandbyContainers,
   getSessionByContainerIp,
   type DiscoveryDeps,
 } from "./container-discovery.js";
@@ -118,7 +130,7 @@ export interface ContainerConfig {
   /** Host path to the git repo directory, mounted as /workspace in the container:
    *  /workspace/sessions/{uuid}/workspace. Always a `workspace/` child of the
    *  session dir — the pre-`workspace/` flat layout, where the clone WAS the
-   *  session dir, was removed in SHI-286. */
+   *  session dir, was removed in planning#288. */
   workspaceDir: string;
   /** Host path: /workspace/dep-cache/{hash} (shared dependency cache) */
   depCacheDir?: string;
@@ -149,7 +161,7 @@ export interface ContainerConfig {
    * their repository. Another sibling of `workspace/`, like `scratch/`.
    *
    * Always present: `buildContainerConfig` derives it from the clone path and
-   * refuses a session whose clone isn't `<sessionDir>/workspace` (SHI-286), so
+   * refuses a session whose clone isn't `<sessionDir>/workspace` (planning#288), so
    * neither the mount nor the worker's `SHIPIT_SESSION_STATE_DIR` has a
    * "no state dir" case to fall back from.
    */
@@ -204,7 +216,7 @@ export interface SessionContainer {
   /** Worker IPC URL (e.g. http://172.18.0.3:9100). */
   workerUrl: string;
   /**
-   * SHI-311 — the per-session token this container's worker requires on
+   * planning#313 — the per-session token this container's worker requires on
    * orchestrator→worker calls (injected as `SHIPIT_WORKER_TOKEN` at create,
    * re-read from the container env on adoption). Absent for a container created
    * before the mechanism existed, in which case its worker gates only the
@@ -252,6 +264,40 @@ export interface SessionContainer {
    * re-deriving eligibility. Absent for non-overlay sessions.
    */
   overlayVolumeNames?: string[];
+  /**
+   * nikzlabs/shipit#2426 — the (dep dir → overlay volume) pairs this container was
+   * actually created with, the authoritative answer to "what does the agent have
+   * mounted". The compose path needs BOTH halves: the volume to reference and the
+   * dep dir that decides where to nest it under a service's workspace mount.
+   *
+   * Recorded rather than re-derived. Re-deriving reads the LIVE workspace
+   * (`shipit.yaml`'s `dep-dirs`, the pnpm signals, `git check-ignore`), all of
+   * which the agent can change mid-session — and a disagreement there silently
+   * produced zero compose mounts while the agent kept its overlay, giving the two
+   * containers independent dependency trees.
+   *
+   * A container the orchestrator did NOT create (rediscovered after a restart,
+   * or re-adopted by the inverse-leak reconciler) has no `overlaySpecs` to record,
+   * so `container-discovery.ts` reads the same pairs back off the container's own
+   * `docker inspect` mount table (`overlayDepDirsFromMounts`) — still the
+   * container, still not a re-derivation. Absent only where no record is built at
+   * all, which {@link SessionContainerManager.provisionedOverlayDepDirs} reports
+   * as the `null` "cannot say".
+   */
+  overlayDepDirs?: { depDir: string; volumeName: string }[];
+  /**
+   * The ops finding of 2026-08-19 — set when creating this container had to remove
+   * Compose siblings that were holding an overlay volume whose base generation had
+   * rotated, so the volume could be recreated over the new generation.
+   *
+   * The compose path decides whether to reconcile by asking whether the dep-dir SET
+   * changed, and a rotation does not change it (the volume name is keyed on session
+   * + dep dir, never on the generation). But the containers are now gone, and a
+   * service container freezes its mounts at create time, so a reconcile is the only
+   * thing that can bring them back over the new generation. Consumed once by
+   * {@link SessionContainerManager.consumeOverlayVolumesRecreated}.
+   */
+  overlayVolumesRecreated?: boolean;
   /**
    * docs/172 — the resolved egress containment (`ResolvedEgressConfig.contained`)
    * this container was actually created with. The egress topology is installed
@@ -367,7 +413,7 @@ export interface SessionContainerManagerOpts {
   /** Docker API proxy port. Required for Docker-enabled sessions. */
   dockerProxyPort?: number;
   /**
-   * docs/172 (SHI-90) — resolve a session's egress containment + composed
+   * docs/172 (planning#92) — resolve a session's egress containment + composed
    * extra-host allowlist at container start. Built in `app-di` where the durable
    * `EgressAllowlistStore` + the live MCP `CredentialStore` are in scope, and
    * passed straight through to `LifecycleDeps.resolveEgressConfig`. Omitted in
@@ -407,6 +453,19 @@ export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 export class SessionContainerManager extends EventEmitter<SessionContainerManagerEvents> {
   private docker: Docker;
   private containers = new Map<string, SessionContainer>();
+  /** Serialize service containment per session; concurrent Compose starts can overlap. */
+  private composeEgressRuns = new Map<string, Promise<void>>();
+  private composeServiceNames = new Map<string, string[]>();
+  private containerOriginSessions = new Map<string, string>();
+  private containerOriginNegative = new Map<string, number>();
+  private containerOriginRefresh?: Promise<void>;
+  private containerOriginRefreshStartedAt = 0;
+  private containerOriginRefreshedAt = 0;
+  private containerOriginRefreshBackoffUntil = 0;
+  private containerOriginRefreshFailed = false;
+  private sessionNetworkRanges = new Map<string, { subnet: string; gateway?: string }[]>();
+  private sessionNetworkRangeRefresh?: Promise<void>;
+  private sessionNetworkRangeRefreshBackoffUntil = 0;
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
@@ -430,9 +489,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   private workerImageId?: string;
   /**
-   * SHI-194 — cached `BASE_IMAGE_DIGEST` baked into the session-worker image, the
+   * planning#196 — cached `BASE_IMAGE_DIGEST` baked into the session-worker image, the
    * ABI fingerprint the overlay scope now keys on instead of `workerImageId`.
-   * Resolved once via `resolveWorkerBaseDigest`; a failed inspect / pre-SHI-194
+   * Resolved once via `resolveWorkerBaseDigest`; a failed inspect / pre-planning#196
    * image (no baked digest) is cached as `""` (a miss) so there is no per-session
    * Docker call and the scope falls back to the worker-image-id behavior.
    */
@@ -484,7 +543,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /**
    * The manager's configured Docker client (honours the `socketPath` option),
    * exposed so boot-time sweeps that live OUTSIDE the manager — the disk
-   * janitor's orphan egress-sidecar reap (SHI-222) — talk to the same daemon
+   * janitor's orphan egress-sidecar reap (planning#224) — talk to the same daemon
    * rather than constructing a default-socket client of their own.
    */
   get dockerClient(): Docker {
@@ -492,40 +551,275 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
-   * docs/172 (SHI-90) — apply a newly-added durable allowlist host to a RUNNING,
+   * nikzlabs/shipit#2426 — the (dep dir → overlay volume) pairs this session's
+   * agent container was created with, or `null` when nothing is known about it
+   * (no live container record at all — a session whose container has gone away,
+   * or a runtime that creates none).
+   *
+   * `[]` and `null` are deliberately different answers: `[]` means the container
+   * genuinely has no overlay, so a compose service that mounts the dep dir path
+   * plainly agrees with it, while `null` means we cannot say. The compose path
+   * treats only `null` as a reason to look further.
+   */
+  provisionedOverlayDepDirs(sessionId: string): { depDir: string; volumeName: string }[] | null {
+    const sc = this.containers.get(sessionId);
+    if (!sc) return null;
+    return sc.overlayDepDirs ?? [];
+  }
+
+  /**
+   * Whether creating this session's current agent container had to remove Compose
+   * siblings so a rotated overlay volume could be recreated — see
+   * {@link SessionContainer.overlayVolumesRecreated}. Read-and-clear: the answer
+   * is "does the stack owe itself a reconcile", and one reconcile settles it.
+   */
+  consumeOverlayVolumesRecreated(sessionId: string): boolean {
+    const sc = this.containers.get(sessionId);
+    if (!sc?.overlayVolumesRecreated) return false;
+    sc.overlayVolumesRecreated = false;
+    return true;
+  }
+
+  /** Boot-effective containment used when generating the Compose override. */
+  isEgressContained(sessionId: string): boolean {
+    if (!egressEnforceEnabled()) return false;
+    const sc = this.containers.get(sessionId);
+    return sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true;
+  }
+
+  /**
+   * The session's resolved egress config — the very inputs a contained
+   * session's resolver and SNI proxy are launched with (base allowlist minus
+   * removed defaults, plus operator/MCP/durable extras; or the docs/211
+   * lifeline set for a Network-off sandbox).
+   *
+   * Exposed so a READER can answer "can this session reach host X?" from the
+   * same seam that configures the enforcement, rather than re-deriving the
+   * composition from the store and drifting from it. docs/262 req 24's Plugins
+   * card is the first such reader: re-deriving it would, among other things,
+   * have reported a Network-off sandbox against the full default base, which is
+   * not the base that session runs on. Answers `undefined` when no resolver is
+   * wired (test runtimes).
+   */
+  resolveEgress(sessionId: string): ResolvedEgressConfig | undefined {
+    return this.resolveEgressConfig?.(sessionId);
+  }
+
+  /**
+   * docs/262 req 24 — the same posture, shaped for the two plugin containers
+   * that run outside Compose (`plugin-egress.ts`).
+   *
+   * It composes the answers above rather than adding a second source: the
+   * containment verdict, the resolved config the session's own resolver and
+   * proxy were launched with, the tier flags, the sidecar image, and this
+   * manager's labels. The one thing it adds is the session's in-memory
+   * allow-once hosts — a plugin container's SNI proxy is on a network denied
+   * ShipIt's whole API, so it cannot ask the decision endpoint and the answer
+   * has to travel with it. That set plus the config's entries is exactly what
+   * `egressHostReach` reports on the Plugins card, so enforcement and the
+   * card cannot disagree.
+   */
+  pluginEgressPolicy(sessionId: string): PluginEgressPolicy {
+    const contained = this.isEgressContained(sessionId);
+    const config = this.resolveEgressConfig?.(sessionId);
+    return {
+      contained,
+      config,
+      // A session that admits no user hosts admits no live decision either
+      // (docs/211's tighten-only `network` capability, planning#380). Its own
+      // decision route refuses to card, so this set is empty in practice — kept
+      // explicit so a plugin container cannot become the one surface that widens
+      // a sealed sandbox.
+      allowOnceHosts: contained && !config?.userHostsExcluded ? listEgressAllowedHosts(sessionId) : [],
+      sidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
+      dnsEnabled: this.isEgressDnsContained(sessionId),
+      proxyEnabled: this.isEgressProxyContained(sessionId),
+    };
+  }
+
+  isEgressDnsContained(sessionId: string): boolean {
+    return this.isEgressContained(sessionId) && egressDnsEnabled();
+  }
+
+  isEgressProxyContained(sessionId: string): boolean {
+    return this.isEgressContained(sessionId) && egressProxyEnabled();
+  }
+
+  /** Remove the old session bridge before an Open/Contained policy transition. */
+  async resetSessionNetwork(sessionId: string): Promise<void> {
+    const network = this.docker.getNetwork(`shipit-session-${sessionId}`);
+    let info: Docker.NetworkInspectInfo;
+    try { info = await network.inspect(); } catch { return; }
+    for (const containerId of Object.keys(info.Containers ?? {})) {
+      try { await network.disconnect({ Container: containerId, Force: true }); } catch { /* already detached */ }
+    }
+    try { await network.remove(); } catch (error) {
+      const code = error && typeof error === "object" && "statusCode" in error ? Number(error.statusCode) : 0;
+      if (code !== 404) throw error;
+    }
+  }
+
+  /** Recreate a stale Open/Contained bridge before Compose can reuse it. */
+  async ensureSessionNetworkMode(sessionId: string, internal: boolean): Promise<void> {
+    const network = this.docker.getNetwork(`shipit-session-${sessionId}`);
+    let info: Docker.NetworkInspectInfo;
+    try { info = await network.inspect(); } catch { return; }
+    if ((info.Internal ?? false) === internal) return;
+    await this.resetSessionNetwork(sessionId);
+  }
+
+  /** Remove the NAT endpoint from stopped services before Compose starts them. */
+  async prepareComposeServiceStart(sessionId: string, _serviceNames: string[]): Promise<void> {
+    if (!this.isEgressContained(sessionId)) return;
+    try {
+      const networkInfo = await this.docker.getNetwork(`shipit-session-${sessionId}`).inspect();
+      this.sessionNetworkRanges.set(sessionId, (networkInfo.IPAM?.Config ?? [])
+        .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
+        .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) })));
+    } catch { /* containment later verifies the network and fails closed */ }
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`shipit-parent-session=${sessionId}`] },
+    });
+    const network = this.docker.getNetwork(`shipit-egress-${sessionId}`);
+    for (const entry of containers) {
+      const serviceName = entry.Labels?.["shipit-service-name"];
+      if (!serviceName || entry.State === "running" || entry.State === "paused") continue;
+      invalidateComposeServiceContainment(sessionId, entry.Id);
+      try {
+        await network.disconnect({ Container: entry.Id, Force: true });
+      } catch (error) {
+        const code = error && typeof error === "object" && "statusCode" in error ? Number(error.statusCode) : 0;
+        const message = error instanceof Error ? error.message : String(error);
+        if (code !== 404 && !/not connected|no such network|not found/i.test(message)) throw error;
+      }
+    }
+  }
+
+  /**
+   * Apply the owning session's effective egress policy to its running Compose
+   * services. Called after every Compose `up`, because that command can replace
+   * containers while preserving service names.
+   */
+  async containComposeServices(sessionId: string, serviceNames: string[], refresh = false): Promise<void> {
+    if (!egressEnforceEnabled()) return;
+    const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+    const sc = this.containers.get(sessionId);
+    const config = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
+    const contained = sc?.egressContainedAtStart ?? config.contained;
+    if (!contained) return;
+    if (serviceNames.length > 0) this.composeServiceNames.set(sessionId, [...serviceNames]);
+    if (!sidecarImage) {
+      throw new Error(
+        "Compose egress containment is on but SESSION_EGRESS_SIDECAR_IMAGE is not set",
+      );
+    }
+    const prior = this.composeEgressRuns.get(sessionId) ?? Promise.resolve();
+    const run = (async () => {
+      try { await prior; } catch { /* a failed predecessor must not poison the queue */ }
+      await applyComposeServiceEgress({
+        docker: this.docker,
+        sessionId,
+        sidecarImage,
+        config: { ...config, contained },
+        serviceNames,
+        dnsEnabled: egressDnsEnabled(),
+        proxyEnabled: egressProxyEnabled(),
+        labels: this.baseLabels(),
+        orchestratorHost: orchestratorCallbackHost(),
+        refresh,
+      });
+    })();
+    this.composeEgressRuns.set(sessionId, run);
+    try {
+      await run;
+    } finally {
+      if (this.composeEgressRuns.get(sessionId) === run) this.composeEgressRuns.delete(sessionId);
+    }
+  }
+
+  /**
+   * docs/262 — the session-worker image, exposed so the plugin install runner
+   * can borrow its toolchain (node, npm, git) for a throwaway container. It
+   * bypasses the image's entrypoint and mounts none of a session's paths, so
+   * this is a toolchain reference, not a session container.
+   */
+  get workerImageName(): string {
+    return this.imageName;
+  }
+
+  /**
+   * The workspace state volume's name, or `undefined` in dev/dogfood, where the
+   * state dir is a bind mount. Exposed for the same reason as the image: the
+   * plugin overlay volume's paths must be translated onto the DAEMON's view of
+   * this volume, and only the manager knows which volume that is.
+   */
+  get workspaceVolumeName(): string | undefined {
+    return this.workspaceVolume;
+  }
+
+  /**
+   * docs/172 (planning#92) — apply a newly-added durable allowlist host to a RUNNING,
    * contained session by relaunching the Tier B resolver + Tier C proxy with the
    * regenerated config, so the host resolves (DNS + ipset auto-pin) and its SNI
    * is permitted without waiting for the next container start. Best-effort and
-   * fail-safe: a no-op when egress isn't enforced, the session has no running
-   * container, or the session is in Open mode. Errors are swallowed by the reload
-   * module — the durable add already persisted, so the worst case is "applies on
-   * next restart." Returns true if a reload was attempted.
+   * A no-op when egress isn't enforced, the session has no running container, or
+   * the session is in Open mode.
+   *
+   * **It throws on failure, and the failure is not benign.** This said "errors
+   * are swallowed by the reload module — the worst case is applies on next
+   * restart", and neither half is true: `reloadEgressSidecars` propagates, and it
+   * REMOVES the old resolver/proxy before launching the replacement, so a failed
+   * launch leaves the agent with no DNS or no SNI proxy rather than with a stale
+   * allowlist. Both callers catch — the route answers 503 and says the refresh
+   * failed closed, the WS handler logs — which is what makes it survivable, not
+   * anything this method does.
+   *
+   * **Returns whether the AGENT's sidecars were relaunched** — the claim its one
+   * reporting caller makes (`computeEgressGrantOutcome`'s `reloaded`). It used to
+   * return `true` on the path where the container is not running and only the
+   * Compose services were refreshed (planning#380): that answer happened to be
+   * unused, because the grant outcome short-circuits on `startedContained ===
+   * null` first, but the next caller would have believed the docstring. The
+   * service refresh below is NOT part of this answer: it runs on every reaching
+   * path and reports failure by throwing, so folding it in would only blur which
+   * surface got the new list.
    */
   async reloadEgress(sessionId: string): Promise<boolean> {
     if (!egressEnforceEnabled()) return false;
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     if (!sidecarImage) return false;
     const sc = this.containers.get(sessionId);
-    if (sc?.status !== "running" || !sc.id) return false;
     const cfg = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
     if (!cfg.contained) return false;
     const reloadResolver = egressDnsEnabled();
     const reloadProxy = egressProxyEnabled();
     if (!reloadResolver && !reloadProxy) return false;
-    await reloadEgressSidecars({
-      docker: this.docker,
-      agentContainerId: sc.id,
-      sessionId,
-      sidecarImage,
-      opsSession: sc.opsSession ?? false,
-      extraHosts: cfg.extraHosts,
-      ...(cfg.base ? { base: cfg.base } : {}),
-      ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
-      baseLabels: this.baseLabels(),
-      reloadResolver,
-      reloadProxy,
-    });
-    return true;
+    const agentRunning = sc?.status === "running" && Boolean(sc.id);
+    if (agentRunning && sc?.id) {
+      await reloadEgressSidecars({
+        docker: this.docker,
+        agentContainerId: sc.id,
+        sessionId,
+        sidecarImage,
+        opsSession: sc.opsSession ?? false,
+        extraHosts: cfg.extraHosts,
+        ...(cfg.base ? { base: cfg.base } : {}),
+        ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
+        baseLabels: this.baseLabels(),
+        reloadResolver,
+        reloadProxy,
+      });
+    }
+    // Service sidecars borrow different network namespaces. Refresh each of
+    // them with the new effective allowlist as part of the same operation.
+    try {
+      await this.containComposeServices(sessionId, this.composeServiceNames.get(sessionId) ?? [], true);
+    } catch (error) {
+      console.error(`[egress:${sessionId}] service allowlist refresh failed closed:`, error);
+      throw error;
+    }
+    return agentRunning;
   }
 
   /** Build the base label set for containers and networks. */
@@ -568,7 +862,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       dockerImageName: this.dockerImageName,
       dockerProxyHost: this.dockerProxyHost,
       dockerProxyPort: this.dockerProxyPort,
-      // docs/172 Gap 1 (SHI-90) Tier A — egress enforcement, default-off via
+      // docs/172 Gap 1 (planning#92) Tier A — egress enforcement, default-off via
       // SESSION_EGRESS_ENFORCE; the installer sidecar image via env.
       egressEnforce: egressEnforceEnabled(),
       egressSidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
@@ -579,7 +873,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       // at the end of the Tier-A install so a future firewall rebuild can't strand
       // them (no-op on first boot; nothing is joined until compose-up runs later).
       reopenJoinedEgress: (sessionId: string) => this.reopenJoinedSessionEgress(sessionId),
-      // docs/172 Gap 5 (SHI-97) — kernel-tier hardening, env-gated default-OFF.
+      // docs/172 Gap 5 (planning#99) — kernel-tier hardening, env-gated default-OFF.
       // gVisor via SESSION_RUNTIME; seccomp via SESSION_SECCOMP(_PROFILE);
       // read-only rootfs via SESSION_READONLY_ROOTFS. resolveSeccompSecurityOpt
       // reads + validates the profile (throws fail-closed if enabled but bad).
@@ -678,7 +972,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     // stranded by a flush.
     (sc.joinedSessionNetworks ??= new Set()).add(networkName);
 
-    // docs/172 Gap 1 (SHI-90) — the agent is now multi-homed: it has an interface
+    // docs/172 Gap 1 (planning#92) — the agent is now multi-homed: it has an interface
     // on this session/compose network in addition to the orchestrator bridge. The
     // Tier A egress firewall (installed at container creation) default-denies
     // OUTPUT and only allowed the *default-gateway* subnet, so traffic to preview
@@ -764,7 +1058,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   /**
    * Best-effort: open the agent's default-deny egress to the IPAM subnet(s) of a
-   * session/compose network it just joined (docs/172 Gap 1, SHI-90). No-op unless
+   * session/compose network it just joined (docs/172 Gap 1, planning#92). No-op unless
    * the session is contained, enforcement is enabled, and the sidecar image is
    * configured — i.e. only when there is a firewall to punch a hole in. Swallows
    * all errors (logs a warning): preview reachability is a convenience, not a
@@ -892,11 +1186,21 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return destroyContainer(this.lifecycleDeps(), sessionId, { preserveChildResources: true });
   }
 
-  /** Stop and remove all session containers. Used for full_reset and shutdown. */
-  async destroyAll(): Promise<void> {
-    const sessionIds = [...this.containers.keys()];
-    await Promise.allSettled(sessionIds.map((id) => this.destroy(id)));
-  }
+  // NOTE: there is deliberately no `destroyAll()`. It existed for the shutdown
+  // path (docs/051) and `dispose()` was its only caller — which is exactly how
+  // docs/113 zero-downtime updates got defeated: `deploy.sh` stopped killing
+  // session containers, and the orchestrator's own shutdown hook kept doing it.
+  // Teardown is per-session and explicit (`destroy(sessionId)`), owned by the
+  // idle enforcer, archive/repo-delete, tier escalation and Rescue.
+  //
+  // `full_reset` is the one path that arguably wants a sweep and never had one:
+  // `fullReset()` (`services/misc.ts`) disposes the runners and wipes the
+  // workspace but takes no container manager, so the containers run on against
+  // a deleted workspace until the idle enforcer's capacity limit or the next
+  // boot's `cleanupOrphanContainers()` reaps them. That is pre-existing — this
+  // method was never wired there despite its old "for full_reset" docstring —
+  // and fixing it means giving `fullReset` a container manager, not resurrecting
+  // an all-sessions sweep on a path that doesn't need one.
 
   /**
    * Forcibly reap any compose-child resources still labeled
@@ -932,11 +1236,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
-   * SHI-194 — resolve the `BASE_IMAGE_DIGEST` baked into the worker image, the
+   * planning#196 — resolve the `BASE_IMAGE_DIGEST` baked into the worker image, the
    * pinned-base ABI fingerprint the overlay scope keys on. Mirrors
    * {@link resolveWorkerImageId}'s caching (incl. caching a miss as `""`) so it
    * adds no per-session Docker call. Returns `undefined` when the image can't be
-   * inspected or carries no baked digest (a pre-SHI-194 image) — the caller then
+   * inspected or carries no baked digest (a pre-planning#196 image) — the caller then
    * leaves the scope on the worker-image-id / `"unknown"` fallback.
    */
   async resolveWorkerBaseDigest(): Promise<string | undefined> {
@@ -1011,6 +1315,135 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return getSessionByContainerIp(this.containers, ip);
   }
 
+  /** Resolve agent, Compose-service, and sidecar IPs to their owning session. */
+  async getSessionByAnyContainerIp(ip: string): Promise<{ sessionId: string } | undefined> {
+    const agent = this.getSessionByContainerIp(ip);
+    if (agent) return { sessionId: agent.sessionId };
+    const arrivedAt = Date.now();
+    const cached = this.containerOriginSessions.get(ip);
+    if (cached && arrivedAt - this.containerOriginRefreshedAt <= 1_000) return { sessionId: cached };
+    if ((this.containerOriginNegative.get(ip) ?? 0) > arrivedAt) return undefined;
+
+    const refresh = async (): Promise<void> => {
+      if (Date.now() < this.containerOriginRefreshBackoffUntil) return;
+      if (!this.containerOriginRefresh) {
+        this.containerOriginRefreshStartedAt = Date.now();
+        this.containerOriginRefresh = (async () => {
+        try {
+          const entries = await Promise.race([
+            this.docker.listContainers({
+              filters: { label: ["shipit-parent-session"] },
+            }),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("container-origin lookup timed out")), 1_000).unref();
+            }),
+          ]);
+          const next = new Map<string, string>();
+          for (const entry of entries) {
+            const sessionId = entry.Labels?.["shipit-parent-session"];
+            if (!sessionId) continue;
+            for (const network of Object.values(entry.NetworkSettings?.Networks ?? {})) {
+              if (network.IPAddress) next.set(network.IPAddress, sessionId);
+            }
+          }
+          this.containerOriginSessions = next;
+          this.containerOriginRefreshedAt = Date.now();
+          this.containerOriginRefreshBackoffUntil = 0;
+          this.containerOriginRefreshFailed = false;
+          for (const [negativeIp, expiresAt] of this.containerOriginNegative) {
+            if (expiresAt <= this.containerOriginRefreshedAt) this.containerOriginNegative.delete(negativeIp);
+          }
+        } catch (error) {
+          console.warn("[container-guard] could not refresh container IP index:", error);
+          this.containerOriginRefreshBackoffUntil = Date.now() + 5_000;
+          this.containerOriginRefreshFailed = true;
+          this.containerOriginNegative.clear();
+        } finally {
+          this.containerOriginRefresh = undefined;
+        }
+        })();
+      }
+      await this.containerOriginRefresh;
+    };
+
+    const joinedRefreshStartedAt = this.containerOriginRefresh
+      ? this.containerOriginRefreshStartedAt
+      : 0;
+    await refresh();
+    // If this request joined a snapshot that started before the request, take a
+    // second snapshot. A service can appear between those two events.
+    if (joinedRefreshStartedAt > 0 && joinedRefreshStartedAt < arrivedAt
+      && Date.now() >= this.containerOriginRefreshBackoffUntil) {
+      await refresh();
+    }
+    const refreshed = this.containerOriginSessions.get(ip);
+    if (refreshed) return { sessionId: refreshed };
+    if (this.containerOriginRefreshFailed) {
+      await this.refreshSessionNetworkRanges();
+      throw new Error("container-origin index is unavailable");
+    }
+    this.containerOriginNegative.set(ip, Date.now() + 1_000);
+    return undefined;
+  }
+
+  private async refreshSessionNetworkRanges(): Promise<void> {
+    if (Date.now() < this.sessionNetworkRangeRefreshBackoffUntil) return;
+    this.sessionNetworkRangeRefresh ??= (async () => {
+        try {
+          await Promise.race([
+            Promise.all([...this.containers.keys()].map(async (sessionId) => {
+              const inspected = await Promise.allSettled([
+                this.docker.getNetwork(`shipit-session-${sessionId}`).inspect(),
+                this.docker.getNetwork(`shipit-egress-${sessionId}`).inspect(),
+              ]);
+              const ranges = inspected.flatMap((result) => result.status === "fulfilled"
+                ? (result.value.IPAM?.Config ?? [])
+                  .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
+                  .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) }))
+                : []);
+              // Preserve the last-known-good ranges when Docker cannot inspect
+              // either network. This fallback exists for Docker outages, so an
+              // outage must never erase it and turn the API guard fail-open.
+              if (ranges.length > 0) this.sessionNetworkRanges.set(sessionId, ranges);
+            })),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("session-network range lookup timed out")), 1_000).unref();
+            }),
+          ]);
+          this.sessionNetworkRangeRefreshBackoffUntil = Date.now() + 1_000;
+        } catch (error) {
+          console.warn("[container-guard] could not refresh session network ranges:", error);
+          this.sessionNetworkRangeRefreshBackoffUntil = Date.now() + 5_000;
+        } finally {
+          this.sessionNetworkRangeRefresh = undefined;
+        }
+      })();
+    await this.sessionNetworkRangeRefresh;
+  }
+
+  /** Conservative bridge-origin check used only when Docker lookup is unavailable. */
+  isLikelySessionContainerIp(ip: string): boolean {
+    const toIpv4 = (value: string): number | null => {
+      const parts = value.split(".").map(Number);
+      if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+      return parts.reduce((result, part) => (result * 256) + part, 0) >>> 0;
+    };
+    const target = toIpv4(ip);
+    if (target === null) return false;
+    for (const ranges of this.sessionNetworkRanges.values()) {
+      for (const range of ranges) {
+        if (range.gateway === ip) continue;
+        const [baseText, prefixText] = range.subnet.split("/");
+        const base = toIpv4(baseText);
+        const prefix = Number(prefixText);
+        if (base === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) continue;
+        const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+        if ((target & mask) === (base & mask)) return true;
+      }
+    }
+    return false;
+  }
+
   // --- Standby container support ---
 
   /**
@@ -1058,6 +1491,18 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
+   * Stop and remove every UNCLAIMED `shipit-standby=true` container at boot — a
+   * standby holds no work and was built from the previous process's worker
+   * image, so it never survives a restart. `activeSessionIds` is load-bearing:
+   * the label is immutable after create, so a claimed session's container still
+   * carries it and only the session row tells the two apart. See
+   * `reapStandbyContainers`.
+   */
+  async reapStandbyContainers(activeSessionIds: Set<string>): Promise<number> {
+    return reapStandbyContainers(this.discoveryDeps(), activeSessionIds);
+  }
+
+  /**
    * Rediscover running containers from a previous orchestrator run.
    * After restart, the in-memory containers map is empty even though Docker
    * containers keep running. This method queries Docker for containers with
@@ -1092,6 +1537,57 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     } | undefined,
   ): Promise<boolean> {
     return adoptRunningContainer(this.discoveryDeps(), sessionId, sessionInfoResolver);
+  }
+
+  /**
+   * Ask Docker whether the tracked container for a session is still running.
+   * `undefined` means Docker could not answer — never treat that as death.
+   * See `isTrackedContainerRunning` in `container-discovery.ts`.
+   */
+  async isTrackedContainerRunning(sessionId: string): Promise<boolean | undefined> {
+    return isTrackedContainerRunning(this.discoveryDeps(), sessionId);
+  }
+
+  /**
+   * Apply the `die` we never received: drop the tracking entry for a container
+   * Docker has confirmed is no longer running, and reap what that `die` would
+   * have reaped. Returns `false` when nothing was done.
+   *
+   * Deliberately the same work the `die` handler in `container-health.ts`
+   * performs — reap the egress sidecars, mark stopped, forget it — and
+   * deliberately NOT `destroy()`. There is nothing left to stop, and
+   * `destroy()` would also sweep the session's Compose children on a path
+   * whose only established fact is "the agent container is gone". The dead
+   * container's own shell is removed by name on the next create for this
+   * session (`removeStaleContainer`).
+   *
+   * The sidecar reap is not optional and must happen BEFORE the map entry
+   * goes: the Tier B/C egress sidecars share the agent container's netns and
+   * are dead weight without it, and every later `destroyContainer(sessionId)`
+   * early-returns once the entry is gone — so skipping it here latches the
+   * leak for the life of the orchestrator. Startup orphan cleanup does not
+   * save us either: it protects every active session's id.
+   *
+   * `expectedContainerId` guards against an incarnation race. The caller
+   * inspected one container and then awaited; a rescue or manual restart can
+   * replace the entry in that window, and a late "not running" answer about
+   * the OLD container must not delete the healthy replacement. Same guard the
+   * `die` handler applies for the same reason.
+   */
+  async markContainerGone(sessionId: string, expectedContainerId: string): Promise<boolean> {
+    const sc = this.containers.get(sessionId);
+    if (!sc) return false;
+    if (sc.id !== expectedContainerId) {
+      console.warn(
+        `[container] markContainerGone(${sessionId}) ignored — tracked ${sc.id.slice(0, 12)} != probed ${expectedContainerId.slice(0, 12)} (container was replaced)`,
+      );
+      return false;
+    }
+    await reapSessionEgressSidecars(this.docker, sessionId, sc.id);
+    sc.status = "stopped";
+    this.containers.delete(sessionId);
+    this.standbySessionIds.delete(sessionId);
+    return true;
   }
 
   // --- Health monitoring (delegates to container-health.ts) ---
@@ -1252,6 +1748,26 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
+   * #2426 — the overlay pairs a SIBLING container (a plugin companion CLI's
+   * invocation container) should nest under its copy of the working tree.
+   *
+   * Reads this session's agent-container record and only falls back to
+   * re-derivation when there is none; see `resolveSiblingOverlayDepDirs` for the
+   * reasoning. The `provisioned` argument is supplied here rather than by the
+   * caller so the record lookup and the fallback cannot be wired up out of step.
+   */
+  async resolveSiblingOverlayDepDirs(opts: {
+    sessionId: string;
+    workspaceDir: string;
+    session: Pick<SessionInfo, "remoteUrl" | "kind">;
+  }): Promise<{ depDir: string; volumeName: string }[]> {
+    return resolveSiblingOverlayDepDirsFn(this.overlayDeps(), {
+      ...opts,
+      provisioned: this.provisionedOverlayDepDirs(opts.sessionId),
+    });
+  }
+
+  /**
    * docs/197 Part 2 — resolve the shared per-runtime pnpm store host dir for a
    * session, or `undefined` when the store doesn't apply. Returns the dir only
    * when ALL hold:
@@ -1278,11 +1794,34 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   // --- Dispose ---
 
+  /**
+   * Release this manager's orchestrator-side resources — the Docker event
+   * health monitor and every listener attached to it.
+   *
+   * It **must not touch the containers**. `dispose()` is reached from exactly
+   * one place: the Fastify `onClose` hook (`shutdown-manager.ts`), i.e. the
+   * orchestrator is going down — most often because `deploy.sh` is swapping it
+   * for a new build. docs/113 makes updates zero-downtime by leaving session
+   * containers alive across that swap; the new orchestrator re-adopts them at
+   * boot (`rediscoverContainers()`), and `reattachInFlightTurns()` (docs/240)
+   * picks up turns that were mid-flight. Destroying them here defeats both, and
+   * it kills running agents mid-tool-call — the 2026-08-10 incident, where six
+   * session containers were destroyed 9 seconds before the orchestrator itself
+   * was replaced.
+   *
+   * This is the same contract CLAUDE.md states for the WebSocket lifecycle:
+   * container teardown belongs to the idle enforcer and to explicit user
+   * actions (archive, repo delete, full reset, Rescue), each of which calls
+   * `destroy(sessionId)` itself. Process shutdown is none of those.
+   *
+   * The container map is deliberately NOT cleared: the containers are still
+   * running, and the map is the record of that. The process is about to exit
+   * and take it with them.
+   */
   async dispose(): Promise<void> {
     if (this._disposed) return;
     this._disposed = true;
     this.stopHealthMonitor();
-    await this.destroyAll();
     this.removeAllListeners();
   }
 }

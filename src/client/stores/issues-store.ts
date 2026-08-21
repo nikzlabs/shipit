@@ -35,6 +35,7 @@ import {
   saveSortPrefs,
 } from "../utils/local-storage.js";
 import { useSessionStore } from "./session-store.js";
+import { useUiStore } from "./ui-store.js";
 import type { TrackerDestination } from "../../server/shared/declared-tracker.js";
 import {
   resolveIssueRef,
@@ -43,7 +44,7 @@ import {
 
 /**
  * The GitHub tracker is per-repo, so its issues are scoped to the active
- * session's remote (docs/170, SHI-80). We pass the current session id on the
+ * session's remote (docs/170, planning#82). We pass the current session id on the
  * tracker/issue fetches; the server resolves it to a `{owner, repo}` binding.
  * Linear ignores it. Returns a `sessionId=…` pair, or "" when no session.
  */
@@ -67,7 +68,7 @@ export function trackerDestinations(): TrackerDestination[] {
 /**
  * The same projection, over a tracker list the caller already holds. Split out
  * for the one resolver that runs at **render** time rather than in a click
- * handler — the inline `IssueBadge` (docs/207, SHI-323), which subscribes to the
+ * handler — the inline `IssueBadge` (docs/207, planning#325), which subscribes to the
  * store's `trackers` array and must derive its destinations inside a `useMemo`.
  * Calling {@link trackerDestinations} from a zustand selector would mint a new
  * array on every store read and defeat the snapshot cache.
@@ -85,7 +86,7 @@ export function toTrackerDestinations(trackers: TrackerInfo[]): TrackerDestinati
  * Signature of the declared-tracker view — everything the sub-tabs and
  * {@link trackerDestinations} read out of a `TrackerInfo`. `fetchTrackers`
  * compares it across a refresh so a caller can tell a real declaration change
- * from a no-op refresh (SHI-321): a `shipit.yaml` edit that touched
+ * from a no-op refresh (planning#323): a `shipit.yaml` edit that touched
  * `agent.install` or the compose path re-reads the (cheap, local) tracker list
  * without also spending a tracker-API round-trip on the issue list.
  */
@@ -134,7 +135,7 @@ export interface IssueSelection {
   url?: string;
   /**
    * Tracker-native id of a comment to scroll to + highlight once the thread
-   * lands (SHI-103). Set when an opener has a specific comment to land on — e.g.
+   * lands (planning#105). Set when an opener has a specific comment to land on — e.g.
    * clicking the provenance card for a comment the agent just posted. The detail
    * view consumes it (clears it via `clearAnchorComment`) after anchoring, so a
    * later refresh doesn't re-scroll.
@@ -153,7 +154,7 @@ export interface OpenIssueRef {
   url?: string;
   /** Full issue to render instantly while the fresh fetch lands (list path). */
   seed?: TrackerIssue;
-  /** Comment to scroll to + highlight once the thread lands (SHI-103). */
+  /** Comment to scroll to + highlight once the thread lands (planning#105). */
   anchorCommentId?: string;
 }
 
@@ -173,12 +174,19 @@ interface IssuesState {
   /**
    * The repository whose declarations the store's contents belong to — the
    * active session's remote URL, or null when there is no repo context
-   * (SHI-325). Declarations live in a repository's `shipit.yaml`, so a switch
+   * (planning#327). Declarations live in a repository's `shipit.yaml`, so a switch
    * to a session on a *different* repository invalidates everything here
    * before `fetchTrackers` can say what the new repository declares. See
    * {@link IssuesState.setRepoScope}.
    */
   repoScope: string | null;
+  /**
+   * The last fetch could not read the session's declarations at all — its
+   * checkout isn't on disk yet (a disk-evicted session being re-cloned by
+   * activation). `trackers: []` then means "not yet", not "declares nothing",
+   * and {@link IssuesState.warmTrackers} keeps asking until it means the latter.
+   */
+  declarationsPending: boolean;
   activeTracker: TrackerId;
   issuesByTracker: Record<string, TrackerIssue[]>;
   /** Per-tracker info refreshed alongside the list (configured + binding). */
@@ -263,7 +271,7 @@ interface IssuesState {
 
   setActiveTracker: (id: TrackerId) => void;
   /**
-   * Point the store at the repository the active session belongs to (SHI-325).
+   * Point the store at the repository the active session belongs to (planning#327).
    * A no-op while the repository is unchanged — switching between two sessions
    * of the same repository keeps the open issue and the loaded lists, which are
    * still valid there. On a *change* it drops everything scoped to the previous
@@ -286,15 +294,28 @@ interface IssuesState {
    * Re-read the declared-tracker view from `GET /api/trackers` (a local
    * `shipit.yaml` read server-side — no tracker API round-trip). Resolves to
    * whether the declared set actually changed, so a caller refreshing on a
-   * `shipit.yaml` edit (SHI-321) can skip the far more expensive issue-list
+   * `shipit.yaml` edit (planning#323) can skip the far more expensive issue-list
    * fetch when the edit touched something else in the file.
    *
    * Also enforces docs/248 req 11 over what the store already holds: a
    * destination that is no longer declared is not reachable, so the open detail
    * closes back to the list and that tracker's cached list/statuses/labels are
-   * dropped (SHI-325).
+   * dropped (planning#327).
    */
   fetchTrackers: () => Promise<boolean>;
+  /**
+   * `fetchTrackers`, plus a bounded background retry for as long as the server
+   * reports the declarations aren't readable yet
+   * ({@link IssuesState.declarationsPending}). Resolves on the first answer, so
+   * it substitutes for `fetchTrackers` at every call site without adding a wait.
+   *
+   * This is what the session-change warm-up calls instead of a bare
+   * `fetchTrackers`: one shot lands in the window where a disk-evicted session
+   * is still being re-cloned, and the empty answer it gets is then cached until
+   * the user opens the Issues tab. Only a *pending* answer retries — a
+   * repository that genuinely declares nothing answers once and never loops.
+   */
+  warmTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
   /**
    * Fetch + cache the tracker's full available-label set (name + color). Lazy:
@@ -310,7 +331,7 @@ interface IssuesState {
   fetchComments: () => Promise<void>;
   /**
    * Clear the open selection's `anchorCommentId` after the detail view has
-   * scrolled to it (SHI-103), so a later refresh/refetch doesn't re-anchor.
+   * scrolled to it (planning#105), so a later refresh/refetch doesn't re-anchor.
    */
   clearAnchorComment: () => void;
   /**
@@ -403,6 +424,9 @@ function closedDetail() {
  */
 function clearedRepoState() {
   return {
+    // Whether the *previous* repository's declarations were readable says
+    // nothing about the incoming one's; the next fetch answers it.
+    declarationsPending: false,
     issuesByTracker: {},
     statusesByTracker: {},
     labelsByTracker: {},
@@ -463,9 +487,67 @@ function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilte
   };
 }
 
+/**
+ * Backoff between `warmTrackers` retries, in ms — one retry per entry, so the
+ * budget is ~60s over 8 requests. Sized against what it waits for: a re-clone of
+ * an evicted checkout from the bare cache, which is seconds for a small repo and
+ * tens of seconds for a large one. Each request is a local `shipit.yaml` read
+ * server-side with no tracker-API round-trip, so the cost of over-asking is
+ * negligible; the cost of under-waiting is the bug this exists for.
+ */
+const WARM_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 15000, 30000];
+
+/**
+ * Which warm-up owns the store. A later `warmTrackers` supersedes the one in
+ * flight rather than letting two backoff loops interleave writes.
+ */
+let warmGeneration = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * What a tracker response is *about*: the session it was requested for (the
+ * server resolves the GitHub binding from it) and the repository the store is
+ * currently scoped to. Compared across the fetch await so a response that
+ * outlived its subject is dropped rather than written.
+ */
+function declarationScope(get: () => IssuesState): string {
+  return `${useSessionStore.getState().sessionId ?? ""} ${get().repoScope ?? ""}`;
+}
+
+/**
+ * The background half of {@link IssuesState.warmTrackers}: re-ask until the
+ * session's checkout is readable, then stop. Bails the moment a newer warm-up
+ * owns the store, or the session changes under it — a fetch issued for the
+ * session we started on would otherwise write another repository's declarations
+ * over the current one's.
+ *
+ * When the declarations finally land *and* differ from what the store was
+ * showing, the issue list is refreshed on the same condition `files-changed`
+ * uses for a `shipit.yaml` edit: the list is a real tracker-API round-trip, so
+ * only refetch it when the declared set actually changed and the tab is showing.
+ */
+async function retryUntilReadable(get: () => IssuesState, generation: number): Promise<void> {
+  const startedFor = useSessionStore.getState().sessionId;
+  let changed = false;
+  for (const delayMs of WARM_RETRY_DELAYS_MS) {
+    await sleep(delayMs);
+    if (generation !== warmGeneration) return;
+    if (useSessionStore.getState().sessionId !== startedFor) return;
+    changed = await get().fetchTrackers();
+    if (!get().declarationsPending) break;
+  }
+  if (changed && useUiStore.getState().rightTab === "issues") {
+    await get().fetchIssues();
+  }
+}
+
 export const useIssuesStore = create<IssuesState>((set, get) => ({
   trackers: [],
   repoScope: null,
+  declarationsPending: false,
   // docs/248 — no built-in tracker, so there is no meaningful default until
   // `fetchTrackers` lands. The session's own repository is the one destination
   // that always exists when there is a repo at all, so it is the safe seed.
@@ -523,16 +605,29 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
 
   fetchTrackers: async () => {
     try {
+      const requestedFor = declarationScope(get);
       const params = sessionIdParam();
       const res = await fetch(`/api/trackers${params ? `?${params}` : ""}`, {
         headers: { Accept: "application/json" },
       });
       if (!res.ok) return false;
-      const data = (await res.json()) as { trackers?: TrackerInfo[] };
+      const data = (await res.json()) as {
+        trackers?: TrackerInfo[];
+        declarationsPending?: boolean;
+      };
+      // The answer describes the session/repository that was current when the
+      // request went out. If either moved across the await this response is
+      // about somewhere else, and writing it would paint one repository's
+      // declarations over another's — the resolution context every inline issue
+      // badge renders against, so a `planning#147` in the transcript would go
+      // plain the moment a slow response from the previous session landed last.
+      // Dropping is safe: whatever changed the scope issues its own fetch.
+      if (declarationScope(get) !== requestedFor) return false;
       const trackers = data.trackers ?? [];
+      const declarationsPending = data.declarationsPending === true;
       const changed = declarationSignature(get().trackers) !== declarationSignature(trackers);
       set((state) => {
-        // docs/248 req 11 (SHI-325) — what the store holds for a tracker id
+        // docs/248 req 11 (planning#327) — what the store holds for a tracker id
         // survives only while that id still names the destination it was
         // fetched from. Presence of the id is NOT enough: the session's own
         // repository's GitHub Issues live under the bare `github` id (req 12),
@@ -557,6 +652,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
           : (trackers[0]?.id ?? "github");
         return {
           trackers,
+          declarationsPending,
           infoByTracker,
           activeTracker,
           // Only the unreachable entries go: a tracker that still names the
@@ -574,6 +670,16 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       console.error("[issues-store] fetchTrackers failed:", err);
       return false;
     }
+  },
+
+  warmTrackers: async () => {
+    const generation = ++warmGeneration;
+    await get().fetchTrackers();
+    // Resolve on the first answer and retry in the background: callers sequence
+    // an issue-list fetch after this, and the session's own repository is
+    // listable whether or not the declarations have been read yet — blocking
+    // that on a re-clone would trade one stale panel for a slower one.
+    if (get().declarationsPending) void retryUntilReadable(get, generation);
   },
 
   fetchIssues: async (trackerId) => {

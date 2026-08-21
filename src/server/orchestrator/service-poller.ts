@@ -29,7 +29,7 @@ export interface PollerService {
 
 /**
  * How long a known service may be absent from `docker compose ps -a` before
- * the poller reconciles it to `stopped` (SHI-314). ~6 polls at the default 5s
+ * the poller reconciles it to `stopped` (planning#316). ~6 polls at the default 5s
  * interval.
  *
  * The window exists because "no row" is genuinely ambiguous for a short
@@ -62,15 +62,56 @@ export const MISSING_CONTAINER_GRACE_MS = 30_000;
 export const COMPOSE_QUERY_TIMEOUT_MS = 30_000;
 
 /**
+ * How long `docker compose ps` may keep failing before the poller stops
+ * vouching for the services it can no longer see (docs/121 gap D, requirement 3).
+ *
+ * A failing `ps` says nothing about container state, so {@link ServicePoller.pollOnce}
+ * bails out rather than reading "no rows" as "every container vanished" — but
+ * bailing out froze the last reading in place indefinitely. A service that
+ * crashed during a daemon outage kept reporting `running`, and because
+ * `ServiceManager.getServices` publishes an address for a `running` service, the
+ * preview proxy kept routing at a container nothing had evidence for.
+ *
+ * ~6 consecutive failures at the default 5s interval: long enough that a daemon
+ * restart or a socket EAGAIN blip costs nobody a status flap, short enough that
+ * the stale claim cannot outlive the user's patience.
+ */
+export const DOCKER_UNREACHABLE_GRACE_MS = 30_000;
+
+/**
+ * Reason recorded on a service whose status could not be confirmed for
+ * {@link DOCKER_UNREACHABLE_GRACE_MS} (requirement 3). Written to
+ * `ManagedService.error`, so it reaches the services drawer, `shipit service
+ * list`, and `GET /api/sessions/:id/services`.
+ *
+ * `error` rather than a new `unknown` member of the status union, deliberately.
+ * The requirement is that ShipIt stop reporting `running` for a container it has
+ * no evidence for and stop routing the preview at it — and `error` already
+ * delivers both: `updateServiceStatus` drops the container IP on the way in, so
+ * `getServices` withholds the URL and `getContainerIpForPort` finds nothing. A
+ * new status member would have to be taught to the client, the preview gating
+ * and the agent-facing registry to buy the same behaviour.
+ *
+ * Like {@link STARTING_TIMEOUT_MESSAGE} in the manager, the wording says plainly
+ * that the container may still be running. We are reporting a failure to
+ * observe, not an observed failure, and telling the user their service is dead
+ * when Docker is what broke would send them debugging the wrong thing.
+ */
+export const DOCKER_UNREACHABLE_MESSAGE =
+  `Docker has not answered \`docker compose ps\` for over ${Math.round(DOCKER_UNREACHABLE_GRACE_MS / 1000)}s, ` +
+  "so this service's status can no longer be confirmed. The container may still be running. " +
+  "The status recovers on its own as soon as Docker responds again.";
+
+/**
  * Container states that exist but tell us nothing usable about whether the
  * service is up, and are therefore fed into the missing-container
- * reconciliation pass rather than left to the forward pass (SHI-314).
+ * reconciliation pass rather than left to the forward pass (planning#316).
  *
  *  - `created` — the container exists but has never been started. Compose
  *    leaves one here when `up` created it and then failed to start it. It is
  *    not coming up on its own, and the forward pass has no branch for it, so
  *    before this the service stayed pinned at `starting` forever: exactly the
- *    SHI-314 failure (no preview URL, no `containerIp`), reached through a row
+ *    planning#316 failure (no preview URL, no `containerIp`), reached through a row
  *    that exists rather than a row that is missing.
  *  - `removing` — on its way out. The next poll will find no row at all.
  *
@@ -112,7 +153,7 @@ export interface ServicePollerOptions {
   getService: (name: string) => PollerService | undefined;
   /**
    * Every service the manager currently knows about. Drives the
-   * missing-container reconciliation pass (SHI-314) — the poll's forward pass
+   * missing-container reconciliation pass (planning#316) — the poll's forward pass
    * can only react to services `ps` mentions, so the reverse question ("which
    * services did `ps` NOT mention?") needs the full registry.
    */
@@ -213,6 +254,13 @@ export class ServicePoller {
    * window measures a *continuous* absence rather than a cumulative one.
    */
   private readonly missingSince = new Map<string, number>();
+  /**
+   * `Date.now()` of the first `docker compose ps` failure in the current run of
+   * failures, or `null` while `ps` is answering. Measures a CONTINUOUS outage —
+   * a single successful poll clears it — so an intermittently flaky daemon
+   * doesn't accumulate its way to a stale-status sweep.
+   */
+  private psFailingSince: number | null = null;
 
   constructor(opts: ServicePollerOptions) {
     this.sessionId = opts.sessionId;
@@ -255,8 +303,14 @@ export class ServicePoller {
       stdout = await this.composeQuery(args, this.workspaceDir);
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] pollStatus failed:`, (err as Error).message);
+      // ...but freezing forever is its own lie (docs/121 gap D). Once the
+      // outage outlasts the grace window, withdraw the claims we can no longer
+      // support instead of letting them stand indefinitely.
+      this.expireUnconfirmedStatuses();
       return;
     }
+    // `ps` answered — whatever it says, the outage is over.
+    this.psFailingSince = null;
 
     // Parse container info and collect names for IP resolution
     const containerNames = new Map<string, string>();
@@ -340,7 +394,7 @@ export class ServicePoller {
     }
 
     // Reverse pass: services the registry knows about that `ps` never
-    // mentioned (SHI-314).
+    // mentioned (planning#316).
     this.reconcileMissingServices(seen);
 
     // Self-heal the agent's compose-network attachment on the poll heartbeat
@@ -357,8 +411,63 @@ export class ServicePoller {
   }
 
   /**
+   * `docker compose ps` has been failing for {@link DOCKER_UNREACHABLE_GRACE_MS}
+   * — stop reporting `running` for containers nothing can vouch for any more
+   * (docs/121 gap D, requirement 3).
+   *
+   * Only `running` services are touched, and that is the whole point of the
+   * pass: `running` is the one status that makes a positive claim about a live
+   * container, and it is the status `getServices` publishes an address for. A
+   * `stopped`/`error` service claims nothing. A `starting` one is already
+   * bounded by the manager's own `starting` watchdog, which runs off its own
+   * timer and therefore keeps working while the poll loop is blind — adding a
+   * second mechanism for it here would be redundant.
+   *
+   * Gated services are excluded, exactly as in every other pass: their status
+   * belongs to the install gate (docs/137).
+   *
+   * An in-flight `compose up` is NOT an exclusion here, unlike in the
+   * missing-container pass. There, the `up` genuinely answers the question —
+   * "no container yet" is what a build looks like. Here the question is whether
+   * a container we last saw running is still there, and an `up` in flight is
+   * evidence of the opposite if anything: it may have removed that container to
+   * recreate it. `refreshSecrets` is the live case, since it `up`s services that
+   * stay `running` throughout, and exempting them meant a hung `up` during a
+   * docker outage could hold `running` — with no address behind it and no
+   * `starting` watchdog to catch it, because the status is not `starting` —
+   * indefinitely.
+   *
+   * Self-limiting rather than repeating: the sweep writes `error`, so the next
+   * failed poll finds nothing eligible. `psFailingSince` is deliberately left
+   * set — clearing it belongs to the first successful `ps`, which also restores
+   * the real statuses through the forward pass.
+   */
+  private expireUnconfirmedStatuses(): void {
+    const now = Date.now();
+    if (this.psFailingSince === null) {
+      this.psFailingSince = now;
+      return;
+    }
+    if (now - this.psFailingSince < DOCKER_UNREACHABLE_GRACE_MS) return;
+
+    for (const svc of this.listServices()) {
+      if (svc.status !== "running") continue;
+      if (this.isGated(svc.name)) continue;
+      console.warn(
+        `[compose:${this.sessionId}] service "${svc.name}" was last seen running but docker has not ` +
+        `answered for ${Math.round((now - this.psFailingSince) / 1000)}s — status no longer confirmed`,
+      );
+      // The service is no longer known to be up, so the stable-uptime timers
+      // must not keep accruing against an observation we can't make — same
+      // argument as the missing-container pass.
+      this.onLeftRunning(svc.name);
+      this.updateServiceStatus(svc.name, "error", DOCKER_UNREACHABLE_MESSAGE);
+    }
+  }
+
+  /**
    * Reconcile services the registry knows about but `docker compose ps -a`
-   * did not return a row for (SHI-314).
+   * did not return a row for (planning#316).
    *
    * The forward pass above can only ever react to rows `ps` produced, so a
    * service whose container was *removed* — as opposed to merely exited, which
@@ -392,14 +501,15 @@ export class ServicePoller {
    * so a poll landing in that gap sees no row for a service that is fine.
    *
    * A `paused` container is deliberately NOT routed here, and gets no forward
-   * branch either — it is left at whatever status it already had. Pausing is
-   * something only a human with a shell does; nothing in ShipIt pauses a
-   * service container. And neither answer we can express is true: `stopped` is
+   * branch either — it is left at whatever status it already had. ShipIt's
+   * Compose egress installer pauses services during its short fail-closed
+   * setup window and owns the transition back to running or removal. Neither
+   * answer the poller can express is true: `stopped` is
    * wrong because the process is intact and `docker unpause` resumes it
    * mid-instruction, while `running` is wrong because connections to it hang.
    * The honest status is a `paused` member of the `ServiceStatus` union, which
    * would ripple through the preview gating, the client and the agent's
-   * service registry for a state ShipIt never produces. Leaving it alone is
+   * service registry for this short internal state. Leaving it alone is
    * the cheap correct-enough answer; what matters is that it counts as a
    * conclusive row, so reconciliation cannot walk a paused service to
    * `stopped` 30 seconds later.
@@ -471,8 +581,9 @@ export class ServicePoller {
     }
     // `reconcile()` stops the poller, clears the services map and starts over;
     // an absence observed against the *old* registry must not count toward the
-    // new one's grace window.
+    // new one's grace window. Same for the docker-outage clock.
     this.missingSince.clear();
+    this.psFailingSince = null;
   }
 
   /**

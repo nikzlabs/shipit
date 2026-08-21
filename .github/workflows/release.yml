@@ -148,6 +148,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run check-deps
+      - run: npm run check-audit
       - run: npm run build
 
   test:
@@ -241,7 +242,7 @@ jobs:
             --verify-tag \
             $PRERELEASE_FLAG
 
-  # 4. Forward-port the released version onto `main` (SHI-172 follow-up). The
+  # 4. Forward-port the released version onto `main` (planning#174 follow-up). The
   # release bump lands ONLY on `stable` (the `release/<version>` PR), so without
   # this `main`'s package.json drifts behind every release — `main` keeps showing
   # the pre-release version forever. After a successful publish on the BRANCH path,

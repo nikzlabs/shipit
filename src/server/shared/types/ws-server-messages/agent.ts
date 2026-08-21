@@ -1,4 +1,5 @@
 import type { AgentId, AgentEvent, AgentReasoningCapability } from "../agent-types.js";
+import type { EligibleModel } from "../../agent-registry.js";
 import type { PermissionMode } from "../attachment-types.js";
 // Type-only edge into the orchestrator so the snapshot and `GET /history`
 // share ONE definition of a transcript row (the client renders both through
@@ -126,6 +127,57 @@ export interface WsModelInfo {
   contextWindowTokens: number;
 }
 
+// ---- Model selection (docs/252 phase 4, req 4) ----
+
+/**
+ * Server → Client: the session's authoritative model selection after a
+ * `set_model` / `set_agent`, and — when the server moved something the user did
+ * not pick — one sentence saying what.
+ *
+ * Two jobs, and both need the server's answer rather than the client's guess:
+ *
+ *  - **Converge the picker.** The client picks optimistically by triple, and
+ *    the server may resolve a bare id, refuse an explicit one, or conform a
+ *    selection to a newly chosen harness. Without a confirmation the composer's
+ *    checkmark can sit on a `(service, mode)` the session is not on — invisible
+ *    when the two share a model id, which is precisely the case this feature
+ *    creates.
+ *  - **Say what moved** (`model-switch.ts`). A harness switch can move the
+ *    model, the billing group and the reasoning effort at once; `notice` names
+ *    all of them in one sentence.
+ *
+ * Transient by design — it reports the outcome of a control the user just
+ * operated, so it renders as a toast and is NOT transcript content: the state
+ * it describes is the composer's own, re-read from the session row on every
+ * load. Sent to the connection that acted, like the sibling `error`.
+ */
+export interface WsModelSelectionChanged {
+  type: "model_selection_changed";
+  /** The session this selection belongs to; a viewer on another one ignores it. */
+  sessionId: string;
+  agentId: AgentId;
+  /** The persisted triple, or null when the session holds no resolvable one. */
+  selection: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
+  /** The persisted model id — set even when `selection` is null (an unplaceable id). */
+  modelId: string | null;
+  /** docs/217 — the session's reasoning effort after the change; null ⇒ CLI default. */
+  reasoningEffort: string | null;
+  /**
+   * docs/272-user-selectable-roles reqs 5, 15 — the role **in force** after the change, or
+   * null.
+   *
+   * It rides this message rather than one of its own because setting a role and
+   * leaving a role are the same event as the three fields above: `set_role`
+   * writes all four, and a `set_agent` / `set_model` / `set_reasoning` clears
+   * this one *because* it moved one of them. Two messages could arrive out of
+   * order and leave the composer naming a role whose model it has already
+   * updated — the one screen state req 13 exists to rule out.
+   */
+  roleName: string | null;
+  /** Present only when the server moved something the user did not pick. */
+  notice?: string;
+}
+
 // ---- Prompt queuing messages ----
 
 /** Server → Client: a message was queued because Claude is busy. */
@@ -159,7 +211,7 @@ export interface WsMessageSteered {
    * persists for user messages — so reconnecting viewers / other tabs render
    * the steered bubble identically to a reloaded one.
    *
-   * docs/244 / SHI-297 — that parity now includes the body bound: the echo
+   * docs/244 / planning#299 — that parity now includes the body bound: the echo
    * carries a content-addressed `src` rather than the base64 `data`, exactly as
    * the history path does. The steered row is persisted BEFORE this message is
    * emitted, so the image is fetchable the moment the URL is on the wire.
@@ -179,8 +231,14 @@ export interface WsAgentListMessage {
     id: AgentId;
     name: string;
     installed: boolean;
-    authConfigured: boolean;
+    hasRunnableModels: boolean;
     models: string[];
+    /**
+     * docs/252 phase 3 (req 8) — the models this install can run on this
+     * harness, each as its `(service, billing mode, model)` triple. The picker
+     * reads this; `models` above is the same list's ids.
+     */
+    eligibleModels: EligibleModel[];
     /**
      * Whether the agent backend can run the chat-native AI review flow
      * (docs/125-chat-native-ai-review). Drives whether the "Ask agent to
@@ -204,6 +262,24 @@ export interface WsAgentListMessage {
      */
     reasoning?: AgentReasoningCapability;
   }[];
+  /**
+   * docs/257 req 8 — whether this install can actually run a turn. Rides the
+   * agent list because that is the one push channel the fact changes on: every
+   * producer of this event (sign-in, sign-out, account primary/disconnect, the
+   * reconnect snapshot) is also a producer of `canRunTurns`. Optional on the
+   * wire so a client talking to an older server leaves its value alone rather
+   * than clobbering a good one with `undefined`.
+   */
+  canRunTurns?: boolean;
+  /**
+   * docs/257 req 9 — when harness onboarding was first completed (ISO), or
+   * absent. Rides the same channel and for the same reason as `canRunTurns`:
+   * the stamp is written the moment the server first observes a runnable
+   * install, which is exactly when this event fires. Absent means "no news"
+   * (either not stamped yet, or an older server) — the client leaves its value
+   * alone, which is safe because the stamp is never cleared.
+   */
+  harnessOnboardingCompletedAt?: string;
 }
 
 /** Server → Client: the agent was interrupted by user. */

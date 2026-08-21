@@ -127,6 +127,149 @@ describe("shipit service list", () => {
     expect(res.stdout).toContain("docker-compose.yml");
   });
 
+  /**
+   * planning#382 — the surface a docs/262 operator actually reported.
+   *
+   * "No services defined. Add them to docker-compose.yml" is right for a
+   * project with no stack and WRONG for one whose stack was declined: it sends
+   * the agent to write a file that already exists rather than to the line it
+   * has to change. docs/263's `user:` rule declines a stock compose file, so
+   * this was the first answer a normal project got.
+   */
+  describe("a compose file ShipIt declined", () => {
+    const REFUSED = {
+      status: 200,
+      body: {
+        services: [],
+        failure: {
+          kind: "refused",
+          message: "Service `web`: contained services must declare a numeric, non-root `user:`.",
+        },
+      },
+    };
+
+    it("states the rule instead of claiming no services are defined", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], { "GET /services/list": REFUSED });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("refused");
+      expect(res.stdout).toContain("numeric, non-root `user:`");
+      // The wrong advice must be GONE, not merely accompanied by the right one.
+      expect(res.stdout).not.toContain("No services defined");
+    });
+
+    it("does not offer a fix for a file it could not parse at all", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], {
+        "GET /services/list": {
+          status: 200,
+          body: {
+            services: [],
+            failure: { kind: "malformed", message: "Compose file is not valid YAML: bad indent" },
+          },
+        },
+      });
+      expect(res.stdout).toContain("could not read");
+      expect(res.stdout).toContain("not valid YAML");
+      // `malformed` means ShipIt understood nothing, so there is no rule to
+      // satisfy — telling the agent to "edit it to satisfy that rule" would be
+      // an instruction it cannot follow.
+      expect(res.stdout).not.toContain("satisfy that rule");
+    });
+
+    it("carries the reason on --json too", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list", "--json"], { "GET /services/list": REFUSED });
+      const parsed = JSON.parse(res.stdout) as {
+        services: unknown[];
+        failure?: { kind: string; message: string };
+      };
+      expect(parsed.services).toEqual([]);
+      expect(parsed.failure?.kind).toBe("refused");
+      expect(parsed.failure?.message).toContain("user:");
+    });
+
+    it("keeps the table first when services exist alongside the failure", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], {
+        "GET /services/list": {
+          status: 200,
+          body: {
+            services: [{ name: "artk", status: "running", preview: "auto", port: 7000 }],
+            failure: { kind: "refused", message: "Service `web`: `privileged: true` is not allowed." },
+          },
+        },
+      });
+      expect(res.stdout.indexOf("artk")).toBeLessThan(res.stdout.indexOf("refused"));
+      expect(res.stdout).toContain("privileged");
+    });
+  });
+
+  /**
+   * nikzlabs/shipit#2429 — the list is where the reported diagnosis went wrong. The
+   * service read `running`, every request failed on an unresolvable import, and
+   * nothing here connected either to the rebase that rewrote the tree.
+   */
+  describe("dependencies that may not match the tree", () => {
+    const GAP = {
+      reason: "not-content-keyed",
+      message:
+        "`agent.install` was not re-run after a sync onto the latest base — installed " +
+        "dependencies may not match this tree.",
+    };
+
+    it("says so beside a service that otherwise reads as healthy", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], {
+        "GET /services/list": {
+          status: 200,
+          body: {
+            services: [{ name: "dev", status: "running", preview: "auto", port: 5173 }],
+            dependencies: GAP,
+          },
+        },
+      });
+
+      expect(res.exitCode).toBe(0);
+      expect(res.stdout).toContain("running");
+      // The row and the note have to arrive together: the row is the reason the
+      // agent stops looking, and the note is why it should not.
+      expect(res.stdout).toContain("Dependencies:");
+      expect(res.stdout).toContain("a sync onto the latest base");
+    });
+
+    it("carries the note on --json too", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list", "--json"], {
+        "GET /services/list": { status: 200, body: { services: [], dependencies: GAP } },
+      });
+      const parsed = JSON.parse(res.stdout) as { dependencies?: { reason: string; message: string } };
+      expect(parsed.dependencies?.reason).toBe("not-content-keyed");
+      expect(parsed.dependencies?.message).toContain("not re-run");
+    });
+
+    it("survives an empty list, where the note is the only thing worth reading", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], {
+        "GET /services/list": { status: 200, body: { services: [], dependencies: GAP } },
+      });
+      expect(res.stdout).toContain("No services defined");
+      expect(res.stdout).toContain("Dependencies:");
+    });
+
+    it("is absent when there is nothing to report", async () => {
+      const { run } = makeRunner();
+      const res = await run(["service", "list"], {
+        "GET /services/list": {
+          status: 200,
+          body: { services: [{ name: "dev", status: "running", preview: "auto" }] },
+        },
+      });
+      expect(res.stdout).not.toContain("Dependencies:");
+    });
+  });
+
   it("points at compose.md when the project has no stack", async () => {
     const { run } = makeRunner();
     const res = await run(["service", "list"], {

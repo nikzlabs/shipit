@@ -5,9 +5,9 @@
  * Completion used to be an unowned callback riding along as one more optional
  * field on `AgentDispatchOptions`. Nothing owned the invariant "this dispatch
  * signals completion exactly once", so the callback could be dropped in transit
- * (SHI-254 lost it on the steer path, SHI-255 and SHI-259 lost it at hand-rolled
+ * (planning#256 lost it on the steer path, planning#257 and planning#261 lost it at hand-rolled
  * queue drains) or guarded so carefully against a double fire that it fired zero
- * times (SHI-260 passed it only to attempt zero of a retrying turn). Worse, the
+ * times (planning#262 passed it only to attempt zero of a retrying turn). Worse, the
  * *consumer* could not tell **pending** from **lost**, which is why every one of
  * those bugs manifested as a watch silently stranded at `merge-observed` rather
  * than as an error.
@@ -145,7 +145,7 @@ export function createTurnSettlement(): TurnSettlement {
  * it: a notify-on-merge wake-turn enqueued behind a turn the user then
  * interrupted was dropped, its `onTurnComplete` never fired, and the watch sat
  * at `merge-observed` looking healthy until an orchestrator restart. Settling
- * with `dropped` turns that into a signal the consumer can act on (the SHI-258
+ * with `dropped` turns that into a signal the consumer can act on (the planning#260
  * retry supervisor re-attempts it on a backoff).
  */
 export function settleDroppedQueueEntries(queue: QueuedMessage[], reason: string): void {

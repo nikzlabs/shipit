@@ -13,6 +13,7 @@ import {
 import { getErrorMessage } from "./validation.js";
 import { agentLogAppend } from "./log-emit.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
+import { dependencyGapSummary } from "./dependency-staleness.js";
 
 export async function registerPreviewRoutes(
   app: FastifyInstance,
@@ -43,7 +44,28 @@ export async function registerPreviewRoutes(
       reply.code(404).send({ error: "No compose stack for this session" });
       return;
     }
-    return { services: mgr.getServices() };
+    // planning#382 — `failure` rides ALONGSIDE the list rather than replacing
+    // it with a 4xx. An empty list is still a valid answer (the stack has not
+    // parsed yet, the project declares no compose file), and a refused project
+    // file can co-exist with plugin services this session does surface — so the
+    // caller gets both facts and does not have to infer one from the other.
+    // Without it, "refused, here is the line to add" and "nothing is declared"
+    // are the same response.
+    const failure = mgr.projectComposeFailure;
+    // nikzlabs/shipit#2429 — `dependencies` rides alongside for the same reason
+    // `failure` does: a service row cannot explain a failure whose cause is that
+    // the tree moved under an install that did not re-run. Sourced from the
+    // RUNNER, not the manager, because it is a fact about the session's install
+    // rather than about its compose stack. A session with a manager but no live
+    // runner reports no gap, which is the right answer rather than a tolerated
+    // one: the gap describes what a RUNNING container has installed, and the
+    // next start installs against the tree as it now stands.
+    const gap = deps.runnerRegistry.get(request.params.id)?.dependencyGap ?? null;
+    return {
+      services: mgr.getServices(),
+      ...(failure ? { failure } : {}),
+      ...(gap ? { dependencies: { reason: gap.reason, message: dependencyGapSummary(gap) } } : {}),
+    };
   });
 
   // GET /api/sessions/:id/services/:name/logs — fetch service logs (ANSI stripped)

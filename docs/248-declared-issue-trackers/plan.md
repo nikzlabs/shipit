@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-318
+issue: planning#320
 title: Declared issue trackers
 description: Declare every issue tracker in shipit.yaml, address destinations by name, and resolve references through the declarations.
 ---
@@ -248,7 +248,7 @@ The exception is the **Undo target**, which is not a reference but a reverse-wri
 against a specific issue: `getRecorded(id)` uses the recorded destination, and
 `undoIssueWrite` refuses when the recorded name has since moved (req 11).
 
-*Client follow-up (SHI-321).* "At use" holds server-side because
+*Client follow-up (planning#323).* "At use" holds server-side because
 `readDeclaredTrackers` re-reads `shipit.yaml` on every request, but the browser's
 copy of that list is a cached fetch, so an edit made with the app open used to
 resolve against the previous declarations until a session switch or an
@@ -266,7 +266,7 @@ local`, the dogfood inner ShipIt) runs no file watcher at all, so there the olde
 session-switch/tab-activation refresh remains the only trigger — the same
 documented degradation as the file tree and terminal.
 
-*Client follow-up (SHI-325) — the browser's copy also has to be **dropped**, not
+*Client follow-up (planning#327) — the browser's copy also has to be **dropped**, not
 just refreshed.* An issue opened in the Issues tab survived a switch to a session
 on another repository, leaving a destination the new session cannot reach on
 screen (req 11 fails closed). Two halves, because neither is sufficient alone:
@@ -301,6 +301,51 @@ The list is repo-scoped for the same reason the detail is, so the session-change
 effect in `App` now refetches it when the tab is open; keyed on `rightTab`, the
 fetch-on-open effect never re-ran for a switch that left the tab open, and the
 GitHub tab kept the previous repository's issues.
+
+*Client follow-up — "declares nothing" and "can't read it yet" are different
+answers.* Dropping the declarations on a repo change makes the refill
+load-bearing, and the refill was a single request that could not fail safely. A
+**disk-evicted** session (docs/161: 2 days after a merged PR, 14 for unmerged WIP,
+sooner under disk pressure) keeps its `workspaceDir` in the session row while the
+directory itself is gone, and activation re-clones it from the bare cache
+*asynchronously* (`finishRestore`). `readDeclaredTrackers` degrades a missing
+checkout to zero declarations, so the browser's fetch — which reliably wins that
+race, being a local read against a multi-second clone — cached "this repository
+declares nothing" and never asked again: the session-change effect had already
+fired, and opening the Issues tab was the only other trigger. Every inline
+`planning#147` badge in the transcript rendered as plain text until the user did
+so. It reproduces only across a *repo* change because a same-repo switch no-ops
+`setRepoScope` and the previous (identical) declarations survive the gap.
+
+`GET /api/trackers` now says which of the two it means: `declarationsPending:
+true` when a restore is still owed (`areDeclarationsPending`), omitted otherwise —
+a workspace that exists and has no `shipit.yaml` is a final answer, and so is a
+session with no workspace at all. **The directory existing is deliberately not the
+test.** `restoreSessionWorkspace` deletes the remnant and clones into the same
+path, and `git clone` creates the target directory long before the checkout lands,
+so `existsSync` goes true within milliseconds while `shipit.yaml` is still absent
+(mid-clone) or on the wrong branch (cloned, not yet checked out) — a client
+retrying on *that* signal would stop on its first retry and cache the empty answer
+anyway. The authoritative signal is the **disk tier**: eviction sets `evicted`
+(`tier-escalation.ts`) and only the last line of a successful restore sets it back
+to `hot`, after the branch checkout and the LFS materialization. Readiness is also
+sampled *before* the declarations are read, so a restore finishing between the two
+reads can only err towards "pending", which costs a retry.
+
+`warmTrackers` (`issues-store.ts`) is `fetchTrackers` plus a bounded background
+retry on that flag: it resolves on the first answer, so it substitutes at both
+`App` call sites without adding a wait, and retries over ~60s of backoff only
+while the answer is "not yet". A newer warm-up or a session change under it stops
+the loop rather than letting it write another repository's declarations.
+
+*And a response that outlives its subject has to be dropped.* Independently of
+eviction, `fetchTrackers` committed its response unconditionally, so two
+overlapping requests across a session switch — a warm-up, a `shipit.yaml` refresh,
+a tab-open fetch — could land out of order and paint the previous repository's
+declarations over the current one's: the same symptom, reachable with nothing more
+than a slow response. It now captures the session id and repo scope before the
+request and drops the write if either moved (`declarationScope`). Dropping is safe
+because whatever changed the scope issues its own fetch.
 
 *Divergence from the design:* this was expected to need a database migration. It
 does not. `IssueWriteCard` is persisted as a JSON blob in the existing
@@ -430,9 +475,12 @@ Current state; each is a rework site unless noted.
   failure be reported in CLI output with the declared names in hand (reqs 8, 19)
   instead of arriving as an opaque 404 from a write that should never have run.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
-  builds the branch from the identifier alone (req 22). **Carries over.**
+  builds the branch from the identifier alone (req 22). **Carries over**, with
+  a random uniqueness suffix added since (planning#413): the identifier still
+  names the branch, but no longer *determines* it, so a second session on one
+  issue cannot land on the first session's remote branch.
 - `src/server/orchestrator/services/issue-seeded-session.ts` — the same
-  derivation applied on the **in-app** path (SHI-320). The Issues tab prefills
+  derivation applied on the **in-app** path (planning#322). The Issues tab prefills
   the composer rather than creating the session (docs/236), so the issue reaches
   ShipIt on the first message; `handleSendMessage`'s warm graduation renames the
   claimed branch to `seedFromIssueRef`'s pointer slug and pins the title, which
@@ -564,7 +612,7 @@ change below was a `shipit.yaml` edit with no restart.
 
 **The `shipit` shim could not be driven through the inner agent.** The dogfood
 image deliberately installs only the `gh` shim, and `local-agent-ops.ts`'s
-allowlist maps no `issue/*` paths — a documented limitation tracked as SHI-303,
+allowlist maps no `issue/*` paths — a documented limitation tracked as planning#305,
 not a defect of this branch. The runs above therefore invoked this branch's shim
 binary directly against this branch's orchestrator through a relay reproducing
 the worker's 1:1 `/agent-ops/issue/*` mapping. The one link not exercised is the
@@ -595,7 +643,7 @@ unconditionally, since the rule is not scoped to private trackers. The same root
 cause meant the session carried no `issueRef`, so the seed-time **→ started**
 transition never fired from the Issues tab either.
 
-Closed in SHI-320 by `issue-seeded-session.ts`, which keeps docs/236's prefill and
+Closed in planning#322 by `issue-seeded-session.ts`, which keeps docs/236's prefill and
 pins the branch and title at warm graduation instead. The lesson generalizes past
 this feature: an inherited guarantee is a claim until you read the code that would
 have to hold for it, and "carries over" is where that claim usually hides.
@@ -604,7 +652,7 @@ have to hold for it, and "carries over" is where that claim usually hides.
 
 Backend capability differences — status workflows beyond Open/Closed, priority
 conventions, parent/sub-issue mapping — are not part of this feature. Priority
-writes are tracked as [SHI-310](https://linear.app/shipit-ai/issue/SHI-310), as a
+writes are tracked as planning#312, as a
 property of the shared GitHub adapter rather than of any declaration.
 
 ## Non-goals

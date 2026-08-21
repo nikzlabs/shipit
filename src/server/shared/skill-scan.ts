@@ -13,6 +13,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Dirent } from "node:fs";
+import { markerClaimsOwnership, PLUGIN_SKILL_MARKER } from "./plugin-skill-marker.js";
 import type { SkillInfo } from "./types.js";
 
 /** Frontmatter regex — matches `---\n...\n---` at the start of a file. */
@@ -44,10 +45,36 @@ async function sniff(fullPath: string): Promise<string | undefined> {
 }
 
 /**
+ * Whether this directory is a skill ShipIt materialized from a plugin
+ * repository (docs/262 req 22) — decided by the marker's CONTENT, never by the
+ * `plugins--` prefix, because a directory may carry that name and belong to the
+ * user (see `shared/plugin-skill-marker.ts`).
+ */
+async function isMaterializedPluginSkill(skillDir: string): Promise<boolean> {
+  const marker = path.join(skillDir, PLUGIN_SKILL_MARKER);
+  try {
+    // `lstat` first: a symlink pointing at somebody else's valid marker is not
+    // proof of anything, and would hide a real skill from the menu.
+    if (!(await fs.lstat(marker)).isFile()) return false;
+    return markerClaimsOwnership(await fs.readFile(marker, "utf-8"));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Scan a skills root laid out as `<skillsDir>/<name>/SKILL.md`, returning one
- * {@link SkillInfo} per skill (unsorted). Skills that opt out with
- * `user-invocable: false` in their frontmatter are excluded. Returns `[]` when
- * the directory doesn't exist.
+ * {@link SkillInfo} per skill (unsorted). Returns `[]` when the directory
+ * doesn't exist.
+ *
+ * Two kinds of skill are excluded, for the same reason: the menu lists what the
+ * USER can invoke. A skill opts out for itself with `user-invocable: false` in
+ * its frontmatter; a skill materialized from a plugin repository is excluded on
+ * ShipIt's behalf (docs/262 req 22). Plugin skills reach the agent exactly as
+ * project skills do — that is req 22 and it is unchanged — but they are the
+ * plugin's instructions to the agent, not commands the user chose to have, and
+ * they carry a namespaced directory name with a collision hash that reads as
+ * noise in a `/` menu.
  */
 export async function scanSkillsDir(
   skillsDir: string,
@@ -63,8 +90,10 @@ export async function scanSkillsDir(
   const skills: SkillInfo[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const content = await sniff(path.join(skillsDir, entry.name, "SKILL.md"));
+    const skillDir = path.join(skillsDir, entry.name);
+    const content = await sniff(path.join(skillDir, "SKILL.md"));
     if (content === undefined) continue;
+    if (await isMaterializedPluginSkill(skillDir)) continue;
 
     const fm = FRONTMATTER_RE.exec(content)?.[1];
     // A skill is invocable unless it explicitly opts out with

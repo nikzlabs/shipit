@@ -89,7 +89,7 @@ function ChangedDocChip({ sessionId, file }: { sessionId: string; file: NotableF
  * meaning. Click opens ShipIt's inline issue detail when the reference resolved
  * to a declared destination (CLAUDE.md §2: inline beats link-out); an
  * unresolvable reference with a URL links out, otherwise it's a static badge —
- * legible, never a broken in-app link (docs/248 req 11).
+ * legible, never a broken in-app link (docs/248-declared-issue-trackers req 11).
  */
 function PrCardIssueChip({ chip }: { chip: IssueChipRef }) {
   const label = INTENT_LABEL[chip.intent];

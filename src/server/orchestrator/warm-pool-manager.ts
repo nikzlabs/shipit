@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoGit } from "./repo-git.js";
@@ -8,10 +8,12 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch, syncLocalDefaultBranchToOrigin } from "./git-utils.js";
+import { gitRemoteCredentialResolver } from "./services/github.js";
 import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
 import { materializeLfsWithWarning } from "./git-lfs.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { evaluateInstallGate } from "./agent-install-gate.js";
 import { workerInstall, workerGet } from "./worker-http.js";
 
 // ---- Warm session pool ----
@@ -149,6 +151,7 @@ export function createWarmPool(
         const { resetTarget, fetched, authError } = await fetchAndResolveDefaultBranch(
           workspaceDir,
           (err) => githubAuthManager.markTokenInvalid(`warm-pool fetch failed for ${repoUrl}: ${err.message}`),
+          { resolveRemoteCredential: gitRemoteCredentialResolver(githubAuthManager) },
         );
         if (!fetched && !authError) {
           // The workspace-clone fetch failed — the warm branch is being cut
@@ -163,7 +166,7 @@ export function createWarmPool(
         }
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (resetTarget) branchArgs.push(resetTarget);
-        await simpleGit(workspaceDir).raw(branchArgs);
+        await safeSimpleGit(workspaceDir).raw(branchArgs);
 
         // Realign the local default branch (`main`) with `origin/main` so a
         // later "review the PR" comparison against `main` doesn't pick up
@@ -171,18 +174,43 @@ export function createWarmPool(
         // snapshot this clone was cut from (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
         // docs/231 — pull Git LFS content. Must come after the `checkout -b`
-        // above (which re-writes pointer stubs into the worktree) and before the
-        // chown below (the pull writes files as root). Warming happens off the
-        // user's critical path, so this is the cheapest place to absorb the
-        // transfer for asset-heavy repos.
+        // above, which re-writes pointer stubs into the worktree. Warming
+        // happens off the user's critical path, so this is the cheapest place to
+        // absorb the transfer for asset-heavy repos.
+        //
+        // planning#412 — this used to add "and before the chown below (the pull
+        // writes files as root)". That reason DIED with docs/266-orchestrator-git-trust-boundary E1 and the
+        // sentence outlived it. `cloneFromCache` hands the tree to the session
+        // uid before returning (`repo-git.ts:320`), so the `checkout -b` above
+        // — which goes through `safeSimpleGit` — already drops and writes
+        // worker-owned stubs, and the pull drops to the same identity. Nothing
+        // here is written as root any more.
+        //
+        // The stale half of that sentence was read as current fact by two
+        // sessions and nearly produced a reordering of all four LFS call sites,
+        // so it is worth being explicit: the ordering constraint that remains is
+        // "after the checkout", not "before the chown".
         await materializeLfsWithWarning(workspaceDir, repoUrl, (message) =>
           sseBroadcast("error", { message }),
         );
-        // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
-        // uid after the root orchestrator's fetch + `checkout -b` + ref
-        // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE
-        // (not just `.git`), so hand back both — otherwise the warm session's
-        // cloned files stay root-owned and the non-root agent can't edit them.
+        // docs/150 §7 addendum (planning#147): hand the workspace back — both
+        // halves, because `checkout -b <resetTarget>` re-materializes the
+        // WORKTREE and not just `.git`.
+        //
+        // planning#412 — what this repairs is the CLONE, not the ops listed
+        // above. `cloneFromCache`'s `git clone --local` is a bare
+        // `safeSimpleGit()` naming no directory to stat, so it alone runs as
+        // root and lands `root:root` (`git-hooks-guard.ts`, "blind to a tree it
+        // CREATES"); `cloneFromCache` already hands that tree over before it
+        // returns (`repo-git.ts`), and every op here — fetch, `checkout -b`,
+        // ref realignment, the LFS pull — then goes through
+        // `safeSimpleGit(workspaceDir)` / `gitSpawnOverridesForTree` and drops
+        // to this session's identity, so each writes worker-owned files. This
+        // call is what reconciles `.git` with `resolveGitDirOwner` — the uid
+        // that will next RUN git in it — and hands the worktree to the identity
+        // the container runs as. It is a no-op wherever no identity resolves
+        // (local mode, dev, tests), which is also the only place the ops above
+        // still write as root.
         handWorkspaceBackToWorker(workspaceDir);
 
         sessionManager.setBranch(appSessionId, branchPrefix);
@@ -335,6 +363,17 @@ export async function runPreInstall(workspaceDir: string, workerUrl: string, ses
     return;
   }
   if (commands.length === 0) return;
+
+  // docs/271 — the one install path that does NOT go through
+  // `ContainerSessionRunner.runInstall`: this POSTs the worker directly. In
+  // practice a standby's clone is fresh and no plugin container has ever run
+  // against it, so the gate allows — but "in practice" is not the guarantee
+  // req 5 asks for, and an ungated run here would also stamp the marker, which
+  // is the very anchor the gate reads.
+  if (evaluateInstallGate({ workspaceDir, requested: commands }).withheld) {
+    console.warn(`[warm:install:${sessionId}] Skipping pre-install — agent.install is withheld`);
+    return;
+  }
 
   try {
     // The worker returns `{ started: true }` / `{ skipped: true }` fast and

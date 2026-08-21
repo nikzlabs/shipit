@@ -24,10 +24,12 @@
 
 import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
-import { releaseResidentOnModelChange } from "./resident-model-guard.js";
+import { releaseResidentOnSpawnChange } from "./resident-spawn-guard.js";
+import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./validation.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
+import { buildBugOutcomeNotice } from "./services/bug-report.js";
 import type {
   SessionRunnerInterface,
   SystemTurnDeps,
@@ -37,6 +39,7 @@ import { queuedMessageToDispatchOptions } from "./queue-drain.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import { formatAgentInterfacePrompt } from "../shared/agent-interface-sdk/protocol.js";
 import { formatSessionMessagePrompt } from "./session-message-origin.js";
+import { dependencyGapAgentPrefix } from "./dependency-staleness.js";
 
 /**
  * How many times a dispatched first turn that exited WITHOUT producing a result
@@ -46,6 +49,42 @@ import { formatSessionMessagePrompt } from "./session-message-origin.js";
  * the user never has to. Bounded so a genuinely broken turn can't loop.
  */
 const MAX_NO_RESULT_RETRIES = 1;
+
+/**
+ * planning#318 — settle the turn whose resident process this dispatch is about to
+ * RETIRE, at the moment it is retired.
+ *
+ * `ContainerSessionRunner.supersedeDisplacedAgent` already covers a slot
+ * REPLACEMENT (`setAgent(next)` over a still-installed proxy). Both retirement
+ * blocks below take the other shape — `kill(); setAgent(null); createAgent()` —
+ * so the incoming proxy is installed over an ALREADY-EMPTY slot and the
+ * displacement hook has nothing to compare against. Nothing else then tells the
+ * retired turn it is over: its own `agent_done` arrives with the previous
+ * spawn's `runToken` and is dropped by the docs/146 stale-spawn guard (right for
+ * the relay — emitting it would run the retired turn's teardown against the
+ * live turn's slot), and neither `settleAsDropped` net applies (the runner is
+ * alive, and the worker truthfully reports an agent running). The settlement
+ * stayed pending forever.
+ *
+ * In production (2026-08-10, session 18d04568) that stranded a merge-wake turn
+ * for PR #2104 at `merge-observed`: its `agent_result` had already arrived and
+ * drained the NEXT wake turn off the queue, that wake retired the still-resident
+ * process here, and the retired turn's `agent_done` was then dropped as stale.
+ * Indistinguishable from a wake that never reached the session, so planning#260's
+ * retry supervisor re-sent the identical prompt three minutes later — the
+ * duplicate notification planning#318 exists to prevent.
+ *
+ * SETTLEMENT ONLY. The `superseded` handler in `turn-executor.ts` deliberately
+ * runs no teardown: the turn being started here owns the runner, the agent slot
+ * and the working tree. The outcome is whatever the retired turn earned —
+ * `completed` when its `agent_result` had arrived (the production shape),
+ * `interrupted` when it was cut short before producing one — never `no-result`,
+ * which is the one the supervisor retries. A turn that already settled latches,
+ * so this is a no-op for every ordinary retirement.
+ */
+function supersedeRetiredTurn(outgoing: AgentProcess): void {
+  outgoing.emit("superseded");
+}
 
 export async function runDispatchedTurn(
   runner: SessionRunnerInterface,
@@ -135,14 +174,118 @@ export async function runDispatchedTurn(
   const agentText = opts.messageOrigin
     ? formatSessionMessagePrompt(surfacedText, opts.messageOrigin)
     : surfacedText;
-  const prompt = assembleAgentPrompt({
-    userText: agentText,
-    fileContext,
-    imageContext,
-    // docs/144 — set only by a human-dictated dispatch (a quick-capture prompt
-    // spoken into the overlay); server-composed turns never carry it.
-    dictated: opts.dictated,
-  });
+
+  // docs/218 + planning#333 — auto-reset a MERGED session's branch onto the latest
+  // base BEFORE this turn's prompt is assembled, exactly as the interactive path
+  // does. A dispatched message is a continuation of the session's work — an
+  // Agent Interface SDK click, a `shipit session message`, a wake turn — and
+  // without this it ran on a branch still sitting on already-merged commits.
+  //
+  // No per-send intent is passed: the tick box is a composer control, so a
+  // dispatch follows the global `autoResetMergedBranch` setting (which is what
+  // the box reflects when it is ticked). The hook is fail-safe and its own
+  // safety gate decides — see `SystemTurnDeps.preTurnReset`.
+  //
+  // Runs ONCE per dispatched message, outside `runOnce`, so a no-result retry
+  // neither re-resets nor re-emits the transcript card.
+  //
+  // `postTurn: "none"` is excluded, and it is the ONE exclusion — the same kind
+  // the interactive path makes for `/compact`: about what the turn *is*, not
+  // about which transport carried it. It marks a turn that is a STEP INSIDE a
+  // git operation the driver owns (docs/146 rebase-conflict resolution, which
+  // commits via `rebase --continue` and force-pushes at the end), not a
+  // continuation of the session's work. No reset could fire there anyway — the
+  // gate refuses a conflicted tree — but the planning#297 skip machinery would
+  // still fire, persisting "this branch still sits on the already-merged
+  // commits" and telling the agent to consider `shipit branch reset-to-base`
+  // while its actual job is to edit the conflicted files. Note the clause it
+  // would report is `dirty-tree`, NOT `rebase-in-progress`: `computeResetBlocker`
+  // checks `isClean()` first, and a conflicted rebase has an unclean tree. So
+  // the exclusion is load-bearing, not belt-and-braces.
+  const reset = sessionDir && opts.postTurn !== "none"
+    ? await deps.preTurnReset?.(runner, runner.sessionId, sessionDir)
+    : undefined;
+
+  // docs/221 / nikzlabs/shipit#2349 — drain the out-of-band sync notice on this
+  // transport too. A manual "Sync with <base>" parks it because it runs with no
+  // turn in flight; the interactive path consumes it, and this one did not — so a
+  // message the user sent while the sync was still settling (queued, then
+  // released onto `dispatch`) resumed the agent against a rewritten tree in
+  // silence. Same `postTurn: "none"` exclusion as the reset above and for the
+  // same reason: a rebase-resolution turn is a step inside the git operation
+  // that produced the notice, not a continuation to be warned about.
+  const pendingNotice = opts.postTurn !== "none"
+    ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
+    : "";
+  // The consume is read-and-CLEAR, so a turn that dies before the agent ever
+  // sees the prompt would burn the notice permanently — the branch stays
+  // rewritten and nothing ever says so again. Same hazard docs/218 solved for
+  // its card with `ensureRecorded`, and the same answer: re-park it in the
+  // `finally` unless the agent actually got it. Latched, so the re-park cannot
+  // fire twice, and a no-result RETRY re-runs the agent with the prompt already
+  // built — `promptDelivered` is set once the run is handed over.
+  let promptDelivered = false;
+  const reparkNoticeIfUndelivered = () => {
+    if (!pendingNotice || promptDelivered) return;
+    promptDelivered = true; // latch: never re-park more than once
+    try {
+      deps.restorePendingAgentNotice?.(runner.sessionId, pendingNotice);
+    } catch (err) {
+      console.error("[dispatch] re-parking the pending agent notice failed:", err);
+    }
+  };
+
+  // nikzlabs/shipit#2350 — a dispatched turn that is NOT a system turn is still the
+  // user speaking: an Agent Interface SDK click, a `shipit session message`. The
+  // promise made in the tool description and `skeleton.md` is unconditional, so
+  // a session driven entirely programmatically must get the outcome too —
+  // otherwise it sits pending forever and the agent is never told. System turns
+  // (CI fix, merge wake, rebase step) are correctly excluded: they are ShipIt
+  // talking to itself, not a turn the user asked for.
+  //
+  // Unlike the sync notice above this is NOT re-parked when the turn dies before
+  // delivery: `consumeUnreportedBugOutcomes` is deliberately at-most-once, since
+  // a repeated "your report was filed" is worse than a missed one, and the
+  // agent-facing copy makes silence the safe fallback. The two notices differ
+  // because their stakes do — a branch that was rewritten in silence is a
+  // correctness hazard, a missed report status is not.
+  const bugOutcomeNotice = opts.systemTurn
+    ? ""
+    : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
+
+  // The `[System] …` prefix rides in FRONT of the assembled prompt, exactly as
+  // the interactive path places it: the branch moved (or conspicuously did not)
+  // moments ago, so the agent has to read that before the message it is acting
+  // on. Chronological order matches the interactive path — the out-of-band sync
+  // happened before this turn, the bug-report card was resolved somewhere in
+  // between, and the reset happened moments ago.
+  // nikzlabs/shipit#2429 — same fourth element as the interactive path, and for the
+  // same reason: a dispatched turn edits the same tree. Included for system
+  // turns too — a CI-fix or conflict-remediation turn is precisely one that will
+  // build against the stale dependencies and misread the result.
+  const agentPrefix = [
+    pendingNotice,
+    bugOutcomeNotice,
+    reset?.agentPrefix,
+    dependencyGapAgentPrefix(runner.dependencyGap),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  // docs/272 req 2 — the role's standing instructions, first turn only. Called
+  // unconditionally: the latch is inside, so this path and the WS one cannot
+  // disagree about when a role has already spoken.
+  const roleContext = deps.takeRoleInstructions?.(runner.sessionId) ?? "";
+  const prompt =
+    (agentPrefix ? `${agentPrefix}\n\n` : "") +
+    assembleAgentPrompt({
+      userText: agentText,
+      fileContext,
+      imageContext,
+      ...(roleContext ? { roleContext } : {}),
+      // docs/144 — set only by a human-dictated dispatch (a quick-capture prompt
+      // spoken into the overlay); server-composed turns never carry it.
+      dictated: opts.dictated,
+    });
 
   // Chat-history metadata for the persisted user row — mirrors the WS path so a
   // reload shows the same inline image / file chips on the dispatched bubble.
@@ -157,12 +300,21 @@ export async function runDispatchedTurn(
         }))
       : undefined;
 
-  // SHI-255 — this drain runs EVERY entry (interactive or dispatched) on the
+  // planning#257 — this drain runs EVERY entry (interactive or dispatched) on the
   // dispatched executor via the shared `queuedMessageToDispatchOptions`, which
   // is the superset conversion: nothing can be narrowed away here. The WS drain
   // (`ws-handlers/agent-execution.ts`), whose re-entry is narrower, routes
   // through `startQueuedMessage` instead so a dispatched entry lands back here.
   const drainNext = async (): Promise<void> => {
+    // planning#338 — a rebase flow grabbed the session during this turn's post-turn
+    // window (after `tryDrain` cleared `running`, while the local commit was
+    // still being awaited). Dequeuing now would start a turn against a
+    // mid-rebase tree — or double-drain against the flow's own post-flow
+    // release. `!opts.systemTurn` keeps a SYSTEM turn's own drain working: its
+    // per-turn flag is still set at drain time (`finishTurn` clears it after),
+    // and the flow can't have grabbed the hold mid-turn (`runRebaseFlow`
+    // refuses while the flag is up).
+    if (runner.systemTurnInProgress && !opts.systemTurn) return;
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
     if (!next) return;
@@ -175,7 +327,7 @@ export async function runDispatchedTurn(
   // its own fresh counter — each message is retried independently).
   let noResultRetries = 0;
 
-  // SHI-260 — ONE settlement for the whole logical turn, spanning every
+  // planning#262 — ONE settlement for the whole logical turn, spanning every
   // no-result attempt.
   //
   // The old code passed `onTurnComplete` only to attempt zero, reasoning that a
@@ -185,7 +337,7 @@ export async function runDispatchedTurn(
   // "handled" branch WITHOUT calling `finishTurn`, so neither the retry's
   // success nor its failure ever reached the caller. A notify-on-merge wake-turn
   // that no-result-retried therefore never settled its watch, and (worse, under
-  // SHI-258's supervisor) the runner stayed live so the `inFlight` marker looked
+  // planning#260's supervisor) the runner stayed live so the `inFlight` marker looked
   // healthy forever.
   //
   // Retries are attempts WITHIN one settlement instead. Every attempt is wired
@@ -211,6 +363,15 @@ export async function runDispatchedTurn(
     if (deps.needsAccountFailover?.(runner.sessionId, agentId)) {
       const outgoing = runner.getAgent();
       if (outgoing) {
+        // Settle first — see `supersedeRetiredTurn`. It has to run BEFORE the
+        // listeners come off, since the settlement travels on one of them.
+        supersedeRetiredTurn(outgoing);
+        // Drop the previous turn's listeners BEFORE killing — same as the WS
+        // path's failover release and `releaseResidentOnSpawnChange`: the
+        // kill's late `done`/`error` (an SSE exit, or an in-flight worker HTTP
+        // call rejecting locally on the proxy) must not re-run that turn's
+        // terminal flow against the turn this dispatch is about to start.
+        try { outgoing.removeAllListeners(); } catch { /* already bare */ }
         try { outgoing.kill(); } catch { /* already gone */ }
         runner.setAgent(null);
       }
@@ -239,12 +400,16 @@ export async function runDispatchedTurn(
     // resident process. Only the FIRST attempt can reuse; a no-result retry
     // always spawns fresh (the resident ref was cleared by the `done` handler
     // when the process exited without a result).
-    // Same model-drift release the WS path performs: a resident process runs
-    // the model it was spawned with, so reusing one after the session's model
-    // changed would run the old model behind the user's back. Dispatch reads
-    // the session's persisted model, which is what its run-params use too.
+    // Same spawn-drift release the WS path performs: a resident process runs the
+    // model, endpoint and credential it was spawned with, so reusing one after
+    // the session's selection changed would run the old ones behind the user's
+    // back. Both paths derive the identity from the session row, which is what
+    // their run params read too.
     if (!opts.systemTurn) {
-      releaseResidentOnModelChange(runner, deps.listenerDeps.getSelectedModel());
+      releaseResidentOnSpawnChange(
+        runner,
+        desiredSpawnIdentity(deps.listenerDeps.sessionManager, runner.sessionId, agentId),
+      );
     }
     const resident =
       !opts.systemTurn && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
@@ -268,6 +433,7 @@ export async function runDispatchedTurn(
     if (opts.systemTurn && !reuse) {
       const outgoing = runner.getAgent();
       if (outgoing) {
+        supersedeRetiredTurn(outgoing);
         try { outgoing.kill(); } catch { /* already gone */ }
         runner.setAgent(null);
         runner.isStreamingActive = false;
@@ -285,6 +451,10 @@ export async function runDispatchedTurn(
     // WS path's `existingAgent.removeAllListeners()`).
     if (reuse) agent.removeAllListeners();
 
+    // The agent is about to be handed the assembled prompt, notice included, so
+    // the re-park is off from here: a failure after this point is a failure of a
+    // turn that WAS told, not a lost notice.
+    promptDelivered = true;
     await executeAgentTurn(runner, deps, agent, {
       agentId,
       sessionId: runner.sessionId,
@@ -305,11 +475,11 @@ export async function runDispatchedTurn(
       // docs/169 — post-turn policy + system-turn marker + completion signal.
       ...(opts.postTurn !== undefined ? { postTurn: opts.postTurn } : {}),
       ...(opts.systemTurn !== undefined ? { systemTurn: opts.systemTurn } : {}),
-      // SHI-264 — the durable delivery identity travels with every attempt: a
+      // planning#266 — the durable delivery identity travels with every attempt: a
       // no-result retry is the SAME delivery, so it publishes the same id and
       // the worker records it on the fresh spawn too.
       ...(opts.deliveryId !== undefined ? { deliveryId: opts.deliveryId } : {}),
-      // SHI-260 — EVERY attempt reports its terminal outcome; `settleAttempt`
+      // planning#262 — EVERY attempt reports its terminal outcome; `settleAttempt`
       // owns "exactly once" and discards superseded attempts. The old
       // "attempt zero only" guard is deleted, not corrected.
       onTurnComplete: (outcome) => settleAttempt(attempt, outcome),
@@ -319,6 +489,13 @@ export async function runDispatchedTurn(
       emitUserEcho: attempt === 0,
       ...(opts.agentInterface ? { agentInterface: opts.agentInterface } : {}),
       ...(opts.messageOrigin ? { messageOrigin: opts.messageOrigin } : {}),
+      // docs/218 — the "branch updated" card (or the planning#297 skip notice) lands
+      // right after the user row, inside the fresh turn. Attempt 0 only: a
+      // no-result retry re-enters the executor with the user row already
+      // written, and firing the hook again would duplicate the card.
+      ...(attempt === 0 && reset?.afterUserMessagePersisted
+        ? { afterUserMessagePersisted: reset.afterUserMessagePersisted }
+        : {}),
       persistUserMessage:
         attempt === 0
           ? (sid) =>
@@ -416,5 +593,14 @@ export async function runDispatchedTurn(
     });
   };
 
-  await runOnce(0);
+  // docs/218 — a branch that moved must leave a record even if the turn dies
+  // before reaching the anchor (`afterUserMessagePersisted`) — an admission
+  // refusal, a spawn failure, a throw in env prep. `ensureRecorded` is latched
+  // against that hook, so exactly one of the two writes the card.
+  try {
+    await runOnce(0);
+  } finally {
+    reset?.ensureRecorded?.(runner.sessionId);
+    reparkNoticeIfUndelivered();
+  }
 }

@@ -1,5 +1,5 @@
 /**
- * Tests for the egress sidecar orphan reaper (SHI-222).
+ * Tests for the egress sidecar orphan reaper (planning#224).
  *
  * The invariant under test: a Tier B/C sidecar (docs/172) borrows the agent
  * container's network namespace, so it is garbage the moment its netns parent

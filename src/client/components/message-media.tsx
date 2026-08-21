@@ -46,7 +46,7 @@ export function MessageImages({ images, isUserMessage }: { images: ChatMessageIm
         //
         // Nothing resizes the image, here or anywhere else in the repo — the
         // 96px render is CSS only, so the browser downloads the full bytes to
-        // paint it. Accepted by docs/244 requirement 9; SHI-300 revisits it.
+        // paint it. Accepted by docs/244 requirement 9; planning#302 revisits it.
         const src = img.src ?? `data:${img.mediaType};base64,${img.data}`;
         const alt = `Attached image ${i + 1}`;
         return (

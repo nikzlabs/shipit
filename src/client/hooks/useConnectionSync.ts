@@ -1,10 +1,10 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: HTTP bootstrap fetch on mount, WS connect/disconnect handling (external system sync)
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WsClientMessage } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { loadBootstrapData, loadSessionHistory } from "../utils/session-data.js";
-import { useEventListeners } from "./useEventListener.js";
+import { useForegroundSignal } from "./useForegroundSignal.js";
 
 export function useConnectionSync(params: {
   status: string;
@@ -14,7 +14,35 @@ export function useConnectionSync(params: {
 }): void {
   const { status, send, onSessionConnect } = params;
 
-  const historyLoadedRef = useRef(false);
+  // Subscribed, not read through `getState()`: lowering this flag is what
+  // re-arms hydration, so the effect below has to re-run when it moves. App
+  // already subscribes to it, so this adds no renders.
+  const historyLoaded = useSessionStore((s) => s.historyLoaded);
+
+  /**
+   * A history load is on the wire right now. This is re-entrancy protection
+   * only — "does the transcript have its baseline" is answered by the store's
+   * `historyLoaded`, never by a hook-local latch.
+   *
+   * It used to be that latch ("a load has been issued for this connection"),
+   * cleared only on a `closed`/`connecting` status transition. That made the
+   * store flag and the hook disagree about the same fact: any path that
+   * lowered the flag without changing the socket — `resumeSessionInternal`
+   * resuming the session already on screen, which "All Sessions" does because
+   * it renders every row as non-current — found the latch still raised, so no
+   * load was ever issued and `useMessageHandler` queued the transcript
+   * forever.
+   */
+  const historyLoadInFlightRef = useRef(false);
+  /**
+   * Identifies the newest hydration attempt. A load that is no longer the
+   * newest — superseded by a reconnect, or abandoned by a disconnect — must not
+   * clear the guard, nudge the effect, or run `onSessionConnect`, because it is
+   * speaking for a socket generation that is gone.
+   */
+  const hydrateGenerationRef = useRef(0);
+  /** Bumped to re-run the hydrate effect when only a ref changed. */
+  const [hydrateAttempt, setHydrateAttempt] = useState(0);
   const bootstrapFetchedRef = useRef(false);
   const recentlyForegroundedRef = useRef(false);
   const foregroundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -23,8 +51,14 @@ export function useConnectionSync(params: {
   // reconnect/replay path a short window before treating a streaming close as
   // a real agent error. Touches refs only, so the per-render closure is safe to
   // hand to the listener hook (it reads the latest one at fire time).
+  //
+  // This has to use the SAME genuine-resume test as the two connection hooks,
+  // not its own `focus` listener. A bare `focus` is fired by the preview iframe
+  // on every load, so counting it as a foregrounding kept this 8s suppression
+  // window permanently open next to a live preview — and a genuine mid-stream
+  // disconnect then skipped the "connection lost" message below, stranding the
+  // composer in its loading state with nothing on screen to explain it.
   function markRecentlyForegrounded() {
-    if (document.hidden) return;
     recentlyForegroundedRef.current = true;
     if (foregroundTimerRef.current) clearTimeout(foregroundTimerRef.current);
     foregroundTimerRef.current = setTimeout(() => {
@@ -33,11 +67,13 @@ export function useConnectionSync(params: {
     }, 8000);
   }
 
-  useEventListeners([
-    { target: document, type: "visibilitychange", handler: markRecentlyForegrounded },
-    { target: window, type: "pageshow", handler: markRecentlyForegrounded },
-    { target: window, type: "focus", handler: markRecentlyForegrounded },
-  ]);
+  useForegroundSignal({
+    onForeground: markRecentlyForegrounded,
+    // The window this suppression protects is exactly the one where a live-
+    // looking socket turns out to be dead, so an open socket is not a reason to
+    // skip marking the resume.
+    isConnectionLive: () => status === "open",
+  });
 
   // The foreground timer used to be cleared in the listener effect's cleanup;
   // useEventListeners only owns the add/remove pairs, so preserve that teardown
@@ -59,13 +95,22 @@ export function useConnectionSync(params: {
     });
   }, []);
 
-  // On per-session WS connect, fetch session history + send any pending message
+  // Hydrate whenever the socket is open and the transcript has no baseline.
   // (No activate_session needed — the per-session WS auto-activates via URL)
   // (No set_agent needed — passed as query param on WS URL)
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  //
+  // Keyed on `historyLoaded` rather than on the status transition alone, so a
+  // reset performed by anything other than a disconnect (a session switch, a
+  // resume of the session already on screen) re-arms hydration on its own. The
+  // status transition is still what clears the flag on a disconnect, below.
+  //
+  // `onSessionConnect` is a caller-supplied callback that is re-created on each
+  // render, so it is invoked but deliberately not depended on.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; see above
   useEffect(() => {
-    if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
-      historyLoadedRef.current = true;
+    if (status === "open" && !historyLoaded && !historyLoadInFlightRef.current && useSessionStore.getState().sessionId) {
+      historyLoadInFlightRef.current = true;
+      const attempt = ++hydrateGenerationRef.current;
       const sessionId = useSessionStore.getState().sessionId!;
       // Sync the UI's active agent to whichever provider the session is
       // actually persisted with — otherwise the localStorage default (used
@@ -76,29 +121,81 @@ export function useConnectionSync(params: {
         useUiStore.getState().setActiveAgentId(session.agentId);
       }
       void (async () => {
+        let loaded = false;
         try {
           await loadSessionHistory(sessionId);
+          loaded = true;
+          // A superseded load still resolves normally (`loadSessionHistory`
+          // returns early rather than throwing), so without this it would
+          // re-hydrate uploads/skills/docs for a session that is no longer the
+          // one on screen, overwriting the current attempt's work.
+          if (hydrateGenerationRef.current !== attempt) return;
           await onSessionConnect?.(sessionId);
         } catch (err) {
           console.error("[api] Failed to load session history:", err);
+        } finally {
+          // Only the newest attempt owns this bookkeeping. An older one
+          // clearing the guard would hand the effect a green light while the
+          // current load is still running — and its nudge would then start yet
+          // another load, superseding the one in flight, whose own late
+          // settle would repeat the whole thing. That is an unbounded fetch
+          // loop, not a one-off duplicate.
+          if (hydrateGenerationRef.current === attempt) {
+            historyLoadInFlightRef.current = false;
+            // `loadSessionHistory` raises `historyLoaded` partway through and
+            // then keeps going (it still has the preview-status round trip to
+            // make), so a reset landing in that tail — a resume of the session
+            // already on screen — leaves the flag false with this ref still
+            // raised. Clearing a ref renders nothing, so the effect would never
+            // re-run and the transcript would stay queued forever. Nudge it.
+            //
+            // Gated on `loaded`, so a load that THREW does not retry: that
+            // would spin against a failing endpoint. It keeps the old behaviour
+            // of waiting for the next connection transition.
+            if (loaded && !useSessionStore.getState().historyLoaded) {
+              setHydrateAttempt((n) => n + 1);
+            }
+          }
         }
       })();
-
-      // If there's a pending WS message (e.g. new session from home page, feature start), send it now
-      const pending = useSessionStore.getState().pendingWsMessage;
-      if (pending) {
-        // Only drop the stash once the frame is actually on the wire. The
-        // status transition can land a tick before the socket is writable (or
-        // the socket can close again in between), and clearing first would lose
-        // the message with no trace — the same silent drop `send`'s boolean
-        // exists to expose. Keeping it stashed means the next open retries it.
-        if (send({ ...pending, sessionId } as WsClientMessage)) {
-          useSessionStore.getState().setPendingWsMessage(undefined);
-        }
-      }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `onSessionConnect` is re-created each render (see above)
+  }, [status, historyLoaded, hydrateAttempt, send]);
+
+  // Flush a stashed frame (e.g. the first message of a session claimed on
+  // /{slug}/new) on EVERY open, not only on an open that also hydrates. These
+  // were one block until an open that skips a redundant history load — the
+  // reconnect whose earlier response already landed — started skipping the
+  // flush with it, stranding the user's message until some later reconnect.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; status-transition-keyed
+  useEffect(() => {
+    if (status !== "open") return;
+    const sessionId = useSessionStore.getState().sessionId;
+    const pending = useSessionStore.getState().pendingWsMessage;
+    if (!sessionId || !pending) return;
+    // Only drop the stash once the frame is actually on the wire. The status
+    // transition can land a tick before the socket is writable (or the socket
+    // can close again in between), and clearing first would lose the message
+    // with no trace — the same silent drop `send`'s boolean exists to expose.
+    // Keeping it stashed means the next open retries it.
+    if (send({ ...pending, sessionId } as WsClientMessage)) {
+      useSessionStore.getState().setPendingWsMessage(undefined);
+    }
+  }, [status, send]);
+
+  // On disconnect, drop the transcript baseline and the live-only signals that
+  // cannot survive the gap. Keyed on `status` alone so it fires once per
+  // transition — not again every time `historyLoaded` moves while we are down.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; status-transition-keyed, see above
+  useEffect(() => {
     if (status === "closed" || status === "connecting") {
-      historyLoadedRef.current = false;
+      // The load this connection issued (if any) is abandoned: its response may
+      // still land — `historyLoadSeq` decides whether it may write — but the
+      // next open must be free to issue its own rather than wait on a request
+      // whose socket is gone. Retiring the generation with it keeps that
+      // orphaned load from clearing the NEXT one's guard when it settles.
+      hydrateGenerationRef.current += 1;
+      historyLoadInFlightRef.current = false;
       // Reset the store flag so the useMessageHandler guard blocks agent events
       // until the next loadSessionHistory completes. Without this, a reconnecting
       // WS would process live events before HTTP history is loaded, causing
@@ -122,7 +219,7 @@ export function useConnectionSync(params: {
       // after HTTP history hydration.
       useSessionStore.setState({ subAgentSpawns: {} });
     }
-  }, [status, send]);
+  }, [status]);
 
   // PR status is now delivered via SSE (pr_status event) — no HTTP polling needed.
 

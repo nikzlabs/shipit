@@ -59,6 +59,16 @@ interface SessionState {
    */
   compacting: boolean;
   /**
+   * docs/178 — the transcript position the in-flight compaction started at:
+   * `messages.length` at the moment `compacting` went true, or `null` when no
+   * compaction is running. `MessageList` renders the transient indicator at
+   * this position instead of at the end of the list, so a message the user
+   * sends *while* the compaction runs lands BELOW the spinner — the order the
+   * two things actually happened in. Derived by `setCompacting`; never set
+   * directly.
+   */
+  compactingAnchor: number | null;
+  /**
    * docs/144 — transient sub-agent spawn chips keyed by spawnId. Set from
    * `sub_agent_spawn` WS messages; "Asking Codex…" while in flight, replaced by
    * "Consulted Codex · 47s · $0.03" on return. Status only, never persisted —
@@ -69,6 +79,18 @@ interface SessionState {
   selectedRepoUrl: string | null;
   creatingRepo: boolean;
   sessions: SessionInfo[];
+  /**
+   * docs/252 phase 4 — how many times the server has answered a selection change
+   * for a session, keyed by session id.
+   *
+   * The composer picks OPTIMISTICALLY, and the obvious clear signal — "the
+   * session row now matches my pick" — cannot fire when the server REFUSED the
+   * pick, because the row is then exactly what it was. Without a separate
+   * signal the picker sits on a selection the session is not on, indefinitely
+   * and invisibly (a same-id cross-service pick changes nothing else on screen).
+   * A counter says "the server has answered", which is true of both outcomes.
+   */
+  modelSelectionEcho: Record<string, number>;
   activeRunnerSessions: Set<string>;
   /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
   awaitingPermissionSessions: Set<string>;
@@ -97,7 +119,7 @@ interface SessionState {
   /** Text to prefill into the message input (consumed and cleared by MessageInput). */
   prefillText: string | undefined;
   /**
-   * SHI-320 — the issue the Issues tab's "Start session" seeded this session
+   * planning#322 — the issue the Issues tab's "Start session" seeded this session
    * with, waiting to ride along with the first message. It is NOT the prefill
    * text's twin: the text is consumed by the composer immediately and may then
    * be edited or discarded, while this stays until the message is actually
@@ -108,7 +130,7 @@ interface SessionState {
    */
   pendingIssueRef: { sessionId: string; ref: IssueRef } | undefined;
   /**
-   * SHI-10 — a pre-formatted markdown blockquote to *append* into the chat
+   * planning#12 — a pre-formatted markdown blockquote to *append* into the chat
    * composer when the user clicks the floating "Reply" button on a selection
    * inside a chat message bubble. Distinct from `prefillText` (which replaces
    * the whole draft): this is consumed by MessageInput by appending to the
@@ -154,7 +176,7 @@ interface SessionState {
   /** Runtime worker/orchestrator build comparison for the active session. */
   containerFreshness: ContainerFreshness | null;
   /**
-   * docs/213 / SHI-315 — non-null while the active session's auto-commit is
+   * docs/213 / planning#317 — non-null while the active session's auto-commit is
    * refused because a likely credential sits in the working tree. Drives the
    * sticky `SecretBlockBanner`; the accompanying chat notice is a separate,
    * scrollable transcript row. Seeded on attach/session-switch from
@@ -196,6 +218,8 @@ interface SessionState {
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
+  /** docs/252 phase 4 — record that the server answered this session's selection. */
+  bumpModelSelectionEcho: (sessionId: string) => void;
   /**
    * docs/186 — pause / resume the auto-fix-CI loop for a single session.
    * Optimistically flips `autoFixCiPaused` on the session record, POSTs the
@@ -211,6 +235,12 @@ interface SessionState {
   setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
   /** docs/241 — reserve/release the session runtime for its managed preview. */
   setKeepPreviewRunning: (sessionId: string, enabled: boolean) => Promise<void>;
+  /**
+   * docs/277 — mute/unmute a session: while muted it is suppressed from every
+   * "needs you" surface. Optimistic; the server clears the mute on its own at
+   * the start of the session's next turn and broadcasts `session_list`.
+   */
+  setMuted: (sessionId: string, muted: boolean) => Promise<void>;
   /**
    * docs/110 Phase 2 — reorder a repo's pinned sessions to the given id order
    * (top-first). Optimistic; the authoritative `session_list` broadcast
@@ -254,7 +284,7 @@ interface SessionState {
    */
   setPrefillText: (text: string | undefined) => void;
   setPendingIssueRef: (pending: { sessionId: string; ref: IssueRef } | undefined) => void;
-  /** SHI-10 — set the blockquote to append into the composer (see `quoteReplyText`). */
+  /** planning#12 — set the blockquote to append into the composer (see `quoteReplyText`). */
   setQuoteReplyText: (text: string | undefined) => void;
   /** Append a per-turn usage record for the given session. */
   appendTurnUsage: (sessionId: string, turn: TurnUsage) => void;
@@ -267,7 +297,15 @@ interface SessionState {
   // All sessions dialog
   allSessions: SessionInfo[];
   allSessionsDialogOpen: boolean;
-  setAllSessionsDialogOpen: (open: boolean) => void;
+  /**
+   * Repo the dialog opens filtered to, when it was opened FROM a repo (the
+   * sidebar's "View All Sessions"). `undefined` means "no repo was named" and
+   * the dialog falls back to the current session's repo. Carried here rather
+   * than read off the active session because the two differ exactly when it
+   * matters — opening the menu on repo B while a session of repo A is current.
+   */
+  allSessionsDialogRepoUrl: string | undefined;
+  setAllSessionsDialogOpen: (open: boolean, repoUrl?: string) => void;
   fetchAllSessions: () => Promise<void>;
   unarchiveSession: (sessionId: string) => Promise<void>;
 
@@ -311,6 +349,7 @@ const initialResettableState = {
   isLoading: false,
   activity: undefined as StreamingActivity | undefined,
   compacting: false,
+  compactingAnchor: null as number | null,
   subAgentSpawns: {},
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
@@ -336,6 +375,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessionId: undefined,
   ...initialResettableState,
   sessions: [] as SessionInfo[],
+  modelSelectionEcho: {},
   activeRunnerSessions: new Set<string>(),
   awaitingPermissionSessions: new Set<string>(),
   backgroundTaskSessions: new Map<string, string[]>(),
@@ -343,6 +383,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
   allSessionsDialogOpen: false,
+  allSessionsDialogRepoUrl: undefined,
 
   setSessionId: (sessionId) => set({ sessionId }),
 
@@ -367,7 +408,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setActivity: (activity) => set({ activity }),
 
-  setCompacting: (compacting) => set({ compacting }),
+  // The anchor is captured here rather than at the call sites so every path
+  // that starts a compaction (live `compaction_status`, a replayed one after a
+  // reconnect) gets it. A repeated `active:true` keeps the original anchor —
+  // the replay must not move the spinner down past messages sent since.
+  setCompacting: (compacting) =>
+    set((s) => ({
+      compacting,
+      compactingAnchor: !compacting
+        ? null
+        : s.compacting && s.compactingAnchor !== null
+        ? s.compactingAnchor
+        : s.messages.length,
+    })),
   upsertSubAgentSpawn: (chip) =>
     set((s) => ({ subAgentSpawns: { ...s.subAgentSpawns, [chip.spawnId]: chip } })),
   removeSubAgentSpawn: (spawnId) =>
@@ -398,6 +451,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => ({
       sessions:
         typeof sessions === "function" ? sessions(state.sessions) : sessions,
+    })),
+
+  bumpModelSelectionEcho: (sessionId) =>
+    set((state) => ({
+      modelSelectionEcho: {
+        ...state.modelSelectionEcho,
+        [sessionId]: (state.modelSelectionEcho[sessionId] ?? 0) + 1,
+      },
     })),
 
   setAutoFixCiPaused: async (sessionId, paused) => {
@@ -453,13 +514,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setKeepPreviewRunning: async (sessionId, enabled) => {
+    // Patch both lists: the sidebar renders `sessions`, while the All Sessions
+    // dialog renders `allSessions` and is where a session demoted from the
+    // sidebar is toggled from. Patching one left the other showing the opposite
+    // state until the next fetch.
     const patch = (value: boolean) =>
       set((state) => ({
         sessions: state.sessions.map((s) =>
           s.id === sessionId ? { ...s, keepPreviewRunning: value || undefined } : s,
         ),
+        allSessions: state.allSessions.map((s) =>
+          s.id === sessionId ? { ...s, keepPreviewRunning: value || undefined } : s,
+        ),
       }));
-    const prev = get().sessions.find((s) => s.id === sessionId)?.keepPreviewRunning ?? false;
+    // Same reason as the patch above: a session toggled from the All Sessions
+    // dialog may not be in `sessions` at all, and a revert must restore its
+    // real previous value rather than a default of false.
+    const prev = (get().sessions.find((s) => s.id === sessionId)
+      ?? get().allSessions.find((s) => s.id === sessionId))?.keepPreviewRunning ?? false;
     patch(enabled);
     try {
       const res = await fetch(`/api/sessions/${sessionId}/keep-preview-running`, {
@@ -476,6 +548,39 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.error("[session-store] Preview reservation toggle failed:", err);
       patch(prev);
       useUiStore.getState().setToast({ message: "Failed to update preview reservation" });
+    }
+  },
+
+  setMuted: async (sessionId, muted) => {
+    // Patched in both lists for the same reason as the reservation toggle above:
+    // the sidebar renders `sessions` and the All Sessions dialog renders
+    // `allSessions`, and either row can carry the control.
+    const patch = (value: string | undefined) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) => (s.id === sessionId ? { ...s, mutedAt: value } : s)),
+        allSessions: state.allSessions.map((s) => (s.id === sessionId ? { ...s, mutedAt: value } : s)),
+      }));
+    const prev = (get().sessions.find((s) => s.id === sessionId)
+      ?? get().allSessions.find((s) => s.id === sessionId))?.mutedAt;
+    // Optimistic: the row's attention marker goes quiet on the click, not on the
+    // round-trip. The server's `session_list` broadcast reconciles the real
+    // timestamp a moment later.
+    patch(muted ? new Date().toISOString() : undefined);
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/muted`, {
+        method: "PUT",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ muted }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        patch(prev);
+        useUiStore.getState().setToast({ message: data.error ?? "Failed to update session mute" });
+      }
+    } catch (err) {
+      console.error("[session-store] Mute toggle failed:", err);
+      patch(prev);
+      useUiStore.getState().setToast({ message: "Failed to update session mute" });
     }
   },
 
@@ -605,7 +710,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   reset: () => set(initialResettableState),
 
-  setAllSessionsDialogOpen: (allSessionsDialogOpen) => set({ allSessionsDialogOpen }),
+  setAllSessionsDialogOpen: (allSessionsDialogOpen, allSessionsDialogRepoUrl) =>
+    // Clear the scope on close as well as on a scope-less open, so the next
+    // open never inherits the previous one's repo.
+    set({ allSessionsDialogOpen, allSessionsDialogRepoUrl }),
 
   fetchAllSessions: async () => {
     const res = await fetch("/api/sessions/all", {
@@ -653,7 +761,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sessions: result.sessions,
         allSessions: state.allSessions.map((s) =>
           s.id === sessionId
-            ? { ...s, archived: true, userArchived: true, diskTier: "evicted" as const }
+            // docs/241 — mirror the server's release of the reservation
+            // (`SessionManager.archive`), or this cached row keeps claiming an
+            // always-on preview the deployment has already handed back.
+            ? { ...s, archived: true, userArchived: true, diskTier: "evicted" as const, keepPreviewRunning: undefined }
             : s,
         ),
         turnUsage: rest,

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-88
+issue: planning#90
 description: Readiness assessment and migration plan for npm v12's install hardening (lifecycle-script allowlist, --allow-git, --allow-remote) across ShipIt's npm invocation points.
 ---
 
@@ -107,7 +107,7 @@ user-facing install behavior and wants its own design pass.
 
 ## What ships now
 
-Nothing in the install path — just this doc and its tracker issue (SHI-88). The
+Nothing in the install path — just this doc and its tracker issue (planning#90). The
 actual command changes are gated on npm v12's release because:
 
 - The `approve-scripts` allowlist field does not exist in the npm version we

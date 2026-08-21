@@ -21,6 +21,11 @@
 - [ ] `StarterPrompts` component
 - [ ] Click seeds the composer via `setPrefillText` (edit-then-send, no auto-send)
 - [ ] Render in App.tsx empty-state container, gated on `showRocket` + non-sandbox
+- [ ] `&&` in `starterPromptsAllowed` (`client/utils/chat-runnable.ts`) — docs/257 req 10.
+      A gate layered on top of whatever eligibility is settled above: it only ever
+      *removes* prompts, never adds them. A chip seeds the composer rather than
+      sending, so a chip above a disabled composer would fill an input that cannot
+      send and replace the placeholder explaining why
 - [ ] Conditional cross-agent chip; prompt names the non-active authed agent
 - [ ] Co-located unit test
 - [ ] Typecheck + lint clean

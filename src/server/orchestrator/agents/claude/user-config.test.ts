@@ -97,7 +97,7 @@ describe("claude user-config defaults", () => {
     });
   });
 
-  // docs/118 (SHI-59) — the `RUNTIME_MODE=local` branch. Trust is keyed by the enclosing
+  // docs/118 (planning#61) — the `RUNTIME_MODE=local` branch. Trust is keyed by the enclosing
   // git root of the CLI's cwd, so a dogfood session's
   // `<dataDir>/sessions/<id>/workspace` needs its own key; `/workspace` (an
   // ancestor) grants it nothing.

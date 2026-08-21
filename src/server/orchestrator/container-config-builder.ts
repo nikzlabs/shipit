@@ -117,6 +117,8 @@ export function readAgentConfig(workspaceDir: string): ShipitConfig {
       agent: { install: [], depDirs: ["node_modules"], installInputs: null },
       hostMounts: [],
       issues: { trackers: [] },
+      plugins: { declared: false, repos: [], uses: [] },
+      pluginExports: [],
       warnings: [],
     };
   }

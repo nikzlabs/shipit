@@ -13,11 +13,31 @@ import type { AgentEvent } from "../agent-process.js";
 
 /**
  * Token usage snapshot from a `thread/tokenUsage/updated` notification.
- * `total` is the cumulative turn rollup (billing); `last` is the most recent
- * API call (real context-window occupancy — see AgentResultEvent.contextTokens).
+ * `total` is the cumulative rollup for the whole THREAD (billing); `last` is the
+ * most recent API call (real context-window occupancy — see
+ * AgentResultEvent.contextTokens).
  */
 export interface CodexTokenUsage {
-  total?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
+  /**
+   * The running total for the thread, NOT for the turn — it survives
+   * `thread/resume` because the app-server restores it from the rollout file.
+   * `codexTurnTokens` subtracts the previous turn's rollup to get this turn's;
+   * see {@link CodexRateLimits.recordTokenUsage} for where that baseline comes
+   * from (planning#367).
+   *
+   * **`inputTokens` INCLUDES `cachedInputTokens`** — measured against
+   * codex-cli 0.146.0, not inferred. The adapter subtracts one from the other
+   * before emitting `agent_result` so ShipIt's own token classes stay disjoint,
+   * as Claude's already are; the rule is `disjointCodexTokens`
+   * (`shared/codex-token-usage.ts`), shared with the orchestrator's `codex exec
+   * --json` reader. Nothing downstream should re-derive that.
+   */
+  total?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    cacheWriteInputTokens?: number;
+  };
   last?: { totalTokens?: number };
   modelContextWindow?: number;
 }
@@ -39,6 +59,16 @@ export class CodexRateLimits {
   /** Latest token usage from `thread/tokenUsage/updated`, surfaced at turn end. */
   private _lastTokenUsage: CodexTokenUsage | null = null;
 
+  /** Turn the latest snapshot belongs to, from the notification's `turnId`. */
+  private _lastTurnId: string | null = null;
+
+  /**
+   * The rollup as it stood before the latest snapshot's turn — the baseline
+   * `codexTurnTokens` subtracts. See {@link recordTokenUsage} for where it
+   * comes from.
+   */
+  private _baselineTotal: CodexTokenUsage["total"] | undefined;
+
   /** Latest subscription rate-limit snapshot pushed by the app-server. */
   private lastRateLimits: {
     session: { usedPct: number; resetAt: string; startedAt?: string } | null;
@@ -52,9 +82,53 @@ export class CodexRateLimits {
   /**
    * Record a `thread/tokenUsage/updated` snapshot. A null/undefined payload
    * keeps the previous snapshot rather than clobbering it.
+   *
+   * `turnId` is what makes the cumulative rollup usable as a per-turn figure.
+   * Measured against codex-cli 0.146.0: every snapshot carries the turn it
+   * belongs to, and a `thread/resume` REPLAYS the previous turn's snapshot —
+   * same numbers, the OLD `turnId` — before the new turn produces one of its
+   * own. That replay is exactly the baseline `codexTurnTokens` needs, so it is
+   * captured here, WITHIN the turn, rather than held across turns: a ShipIt
+   * adapter is constructed per turn and its container is destroyed on idle,
+   * while the app-server's accumulator survives both (it is restored from the
+   * rollout file in the persistent `~/.codex` volume). Cross-turn memory would
+   * therefore be missing at exactly the moments the accumulator is not, and each
+   * such gap would post a whole thread's tokens as one turn's.
+   *
+   * A snapshot without a `turnId` (an older app-server) shifts nothing and is
+   * simply the latest — that is the pre-planning#367 behaviour, which is right
+   * for a thread that only ever runs one turn.
    */
-  recordTokenUsage(tokenUsage: CodexTokenUsage | undefined): void {
-    this._lastTokenUsage = tokenUsage ?? this._lastTokenUsage;
+  recordTokenUsage(tokenUsage: CodexTokenUsage | undefined, turnId?: string): void {
+    if (!tokenUsage) return;
+    if (turnId !== undefined && turnId !== this._lastTurnId) {
+      this._baselineTotal = this._lastTokenUsage?.total;
+      this._lastTurnId = turnId;
+    }
+    this._lastTokenUsage = tokenUsage;
+  }
+
+  /**
+   * The rollup **the named turn produced**, with the baseline to subtract from
+   * it, or null when the only snapshot held belongs to another turn.
+   *
+   * Null is the honest answer for a turn that reported no usage of its own: the
+   * snapshot left over from `thread/resume`'s replay is the PREVIOUS turn's
+   * cumulative total (and its `last` the previous turn's context occupancy), so
+   * surfacing it would record that turn a second time.
+   *
+   * Both ids have to be known to refuse — an app-server that sends no `turnId`
+   * gets the snapshot it would have got before. "Known" is `!== null`, NOT
+   * truthiness: codex-cli 0.146.0 replays usage under an EMPTY `turnId` when it
+   * cannot associate persisted usage with a rebuilt turn, and reading that as
+   * "no id" would let the replayed rollup be posted as the new turn's own.
+   */
+  turnTokenUsage(
+    turnId: string | null | undefined,
+  ): { usage: CodexTokenUsage; baselineTotal: CodexTokenUsage["total"] | undefined } | null {
+    if (!this._lastTokenUsage) return null;
+    if (turnId && this._lastTurnId !== null && turnId !== this._lastTurnId) return null;
+    return { usage: this._lastTokenUsage, baselineTotal: this._baselineTotal };
   }
 
   /**

@@ -1,5 +1,5 @@
 /**
- * docs/150 req 21 — the account selection mode decides what a session pins,
+ * docs/150-multiple-provider-subscriptions req 21 — the account selection mode decides what a session pins,
  * and only at the moment it pins.
  *
  * These target `prepareSessionAgentEnvironment` rather than a full HTTP flow
@@ -38,6 +38,16 @@ function makeCredentialStore(): CredentialStore {
     listProviderAccounts: () => [],
     getAgentEnv: () => undefined,
     getAllAgentEnv: () => ({}),
+    // planning#353 — env-prep now asks what this install can run before it
+    // routes, so the store has to answer the credential-row questions too. An
+    // empty list is right for these tests: they drive the ACCOUNT walk through
+    // the injected `providerAccountManager`, so a session with no stored
+    // credential and no selection derives nothing and the walk is unchanged.
+    listCredentialRoutes: () => [],
+    getCredentialSecret: () => undefined,
+    getCredentialRoute: () => undefined,
+    markCredentialRouteUsed: () => {},
+    getSelectionMode: () => "strict" as const,
   } as unknown as CredentialStore;
 }
 
@@ -67,7 +77,7 @@ function makeSessionManager(opts: {
   return { sm, setProviderRouteCalls };
 }
 
-describe("account selection mode at pin time (req 21)", () => {
+describe("account selection mode at turn time (docs/260-turn-level-account-routing reqs 1, 8 + docs/150-multiple-provider-subscriptions req 21)", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -79,12 +89,13 @@ describe("account selection mode at pin time (req 21)", () => {
   });
 
   /**
-   * What a given mode pins for a brand-new session. The ordering itself is
-   * unit-tested against the real implementation in
+   * What a given mode selects for a turn. The ordering itself is unit-tested
+   * against the real implementation in
    * `provider-account-selection-mode.test.ts`; what matters here is that
-   * env-prep asks, honours the answer, and stamps it.
+   * env-prep asks, honours the answer, returns it as the turn route, and
+   * stamps it — persisting nothing on the session row (docs/260-turn-level-account-routing req 1).
    */
-  async function pinNewSession(mode: "strict" | "balanced") {
+  async function routeTurn(mode: "strict" | "balanced") {
     const accounts = [
       { id: "acct-first", lastUsedAt: 9_000 },
       { id: "acct-second", lastUsedAt: 1 },
@@ -99,50 +110,52 @@ describe("account selection mode at pin time (req 21)", () => {
     const markAccountUsed = vi.fn();
     const { sm, setProviderRouteCalls } = makeSessionManager({ agentPinned: false });
 
-    await prepareSessionAgentEnvironment(new FakeRunner() as unknown as SessionRunnerInterface, {
-      sessionId: "s1",
-      agentId: "claude",
-      enforceAccountRouting: true,
-      deps: {
-        credentialsDir: tmpDir,
-        credentialStore: makeCredentialStore(),
-        sessionManager: sm,
-        providerAccountManager: { selectAccountForTurn, markAccountUsed } as never,
+    const result = await prepareSessionAgentEnvironment(
+      new FakeRunner() as unknown as SessionRunnerInterface,
+      {
+        sessionId: "s1",
+        agentId: "claude",
+        enforceAccountRouting: true,
+        deps: {
+          credentialsDir: tmpDir,
+          credentialStore: makeCredentialStore(),
+          sessionManager: sm,
+          providerAccountManager: { selectAccountForTurn, markAccountUsed } as never,
+        },
       },
-    });
-    return { setProviderRouteCalls, markAccountUsed, selectAccountForTurn };
+    );
+    return { setProviderRouteCalls, markAccountUsed, selectAccountForTurn, turnRoute: result.turnRoute };
   }
 
-  it("strict pins the highest-ranked account even when it is the busiest", async () => {
-    const { setProviderRouteCalls } = await pinNewSession("strict");
-    expect(setProviderRouteCalls.at(-1)?.routeId).toBe("acct-first");
+  it("strict routes the turn to the highest-ranked account even when it is the busiest", async () => {
+    const { turnRoute, setProviderRouteCalls } = await routeTurn("strict");
+    expect(turnRoute?.id).toBe("acct-first");
+    // docs/260-turn-level-account-routing req 1 — the choice is a VALUE; nothing lands on the session row.
+    expect(setProviderRouteCalls).toHaveLength(0);
   });
 
-  it("balanced pins the least-recently-used account instead", async () => {
-    const { setProviderRouteCalls } = await pinNewSession("balanced");
-    expect(setProviderRouteCalls.at(-1)?.routeId).toBe("acct-second");
+  it("balanced routes the turn to the least-recently-used account instead", async () => {
+    const { turnRoute, setProviderRouteCalls } = await routeTurn("balanced");
+    expect(turnRoute?.id).toBe("acct-second");
+    expect(setProviderRouteCalls).toHaveLength(0);
   });
 
   it("stamps the account the turn resolved onto — the key balancing sorts by", async () => {
     // Without this the mode is inert: `lastUsedAt` was declared on
     // ProviderAccount from the start but written by nothing, so an LRU order
     // over it would sort `undefined` against `undefined` forever.
-    const { markAccountUsed } = await pinNewSession("balanced");
-    expect(markAccountUsed).toHaveBeenCalledWith("claude", "acct-second");
+    const { markAccountUsed } = await routeTurn("balanced");
+    expect(markAccountUsed).toHaveBeenCalledWith("anthropic", "acct-second");
   });
 
-  it("does not re-route a session that is already pinned", async () => {
-    // The mode is a pin-time decision. Changing it must not migrate existing
-    // sessions onto other accounts behind the user's back — req 9's transcript
-    // and workspace continuity depends on a session staying put until
-    // something makes its own account unusable.
+  it("a warm-up call selects nothing at all (docs/260 §5b)", async () => {
+    // Warm-ups (child spawn, headless create, CI fix, wake) are
+    // account-neutral: they run before a turn exists, so they must not
+    // double-select against the real turn that follows, stamp bookkeeping, or
+    // persist anything.
     const selectAccountForTurn = vi.fn();
     const markAccountUsed = vi.fn();
-    const { sm, setProviderRouteCalls } = makeSessionManager({
-      agentPinned: true,
-      providerRouteKind: "account",
-      providerRouteId: "acct-first",
-    });
+    const { sm, setProviderRouteCalls } = makeSessionManager({ agentPinned: true });
 
     await prepareSessionAgentEnvironment(new FakeRunner() as unknown as SessionRunnerInterface, {
       sessionId: "s1",
@@ -155,12 +168,8 @@ describe("account selection mode at pin time (req 21)", () => {
       },
     });
 
-    // Never even asked: a pinned route short-circuits selection entirely.
     expect(selectAccountForTurn).not.toHaveBeenCalled();
+    expect(markAccountUsed).not.toHaveBeenCalled();
     expect(setProviderRouteCalls).toHaveLength(0);
-    // Still stamped, deliberately — an account carrying a long-lived busy
-    // session must keep sorting last under `balanced` rather than ageing into
-    // looking idle.
-    expect(markAccountUsed).toHaveBeenCalledWith("claude", "acct-first");
   });
 });

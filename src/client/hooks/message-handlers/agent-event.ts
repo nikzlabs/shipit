@@ -57,7 +57,7 @@ function safeCutAt(text: string, max: number): number {
  * cap to handle it — an ordinary JSON payload from a tool that happens to
  * return an array is bounded exactly as before.
  */
-function capContentBlocks(content: string, cap: number): { content: string; textRemoved: boolean } | undefined {
+function capContentBlocks(content: string, cap: number): { content: string; textRemoved: boolean; totalLines: number } | undefined {
   if (!content.startsWith("[")) return undefined;
   let blocks: unknown;
   try {
@@ -70,6 +70,11 @@ function capContentBlocks(content: string, cap: number): { content: string; text
   let isContentBlocks = false;
   let textRemoved = false;
   let budget = cap;
+  // Counted over the TEXT, not the serialized array. `totalLines` labels a
+  // "Show all N lines" button on the unwrapped text, and a stringified block
+  // array is one physical line — so measuring `content` advertised "Show all 1
+  // lines" for a body of thousands. Same units mismatch as the cap itself.
+  let totalLines = 0;
   const capped = blocks.map((b): unknown => {
     if (typeof b !== "object" || b === null) return b;
     const block = b as Record<string, unknown>;
@@ -80,6 +85,9 @@ function capContentBlocks(content: string, cap: number): { content: string; text
     if (block.type !== "text" || typeof block.text !== "string") return b;
     isContentBlocks = true;
     const text = block.text;
+    // `parseContentForImages` joins text blocks with a newline, so each block
+    // after the first contributes its own lines plus the joining one.
+    totalLines += text.split("\n").length + (totalLines > 0 ? 1 : 0);
     if (text.length <= budget) {
       budget -= text.length;
       return b;
@@ -90,7 +98,7 @@ function capContentBlocks(content: string, cap: number): { content: string; text
     return { ...block, text: head };
   });
   if (!isContentBlocks) return undefined;
-  return { content: JSON.stringify(capped), textRemoved };
+  return { content: JSON.stringify(capped), textRemoved, totalLines };
 }
 
 /**
@@ -99,6 +107,41 @@ function capContentBlocks(content: string, cap: number): { content: string; text
  * from an ordinary result, since the tool_result block itself carries only the
  * id.
  */
+/**
+ * Index of the message whose `toolUse` holds `toolUseId`, or -1.
+ *
+ * A tool result belongs to the message that issued the call, NOT to whatever
+ * message happens to be last. `buildVisualElements` pairs a tool with its
+ * result strictly WITHIN one message (`msg.toolResults?.find(...)`), so a
+ * result parked on the wrong message leaves the tool row resolving
+ * `result === undefined` — permanently non-interactive once streaming ends, so
+ * the command and its output are unreachable. Any mid-turn card appended
+ * between a `tool_use` and its `tool_result` produces that gap; the permission
+ * card (`permission-request-card.ts`) is the one guaranteed to land there.
+ */
+function indexOfToolUse(messages: ChatMessage[], toolUseId: string): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].toolUse?.some((t) => t.id === toolUseId)) return i;
+  }
+  return -1;
+}
+
+/**
+ * Where a result with no matching `tool_use` goes: the last assistant message,
+ * as before — except that a terminal transcript entry (a card carrier, a system
+ * notice) is skipped rather than written to. Those are complete the moment they
+ * are created, which is exactly why the streaming-text merge branch excludes
+ * them via `isTerminalTranscriptEntry`; this branch now agrees with it.
+ */
+function fallbackResultTarget(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (isTerminalTranscriptEntry(msg)) continue;
+    return msg.role === "assistant" ? i : -1;
+  }
+  return -1;
+}
+
 function toolNameForResult(messages: ChatMessage[], toolUseId: string): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -252,7 +295,7 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         //     permanently, the very bodies that exemption exists to protect —
         //     so it is not capped at all. Deliberately unbounded: the
         //     alternative is silently destroying the tail of a long
-        //     `AskUserQuestion` answer (SHI-291).
+        //     `AskUserQuestion` answer (planning#293).
         //
         //     This used to test `SUBAGENT_TOOLS`, the *layout* set, which was
         //     wrong in both directions: it spared `Skill` (which renders no
@@ -297,7 +340,8 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
             // The markers mean "this body was shortened, fetch the rest". An
             // image-only result loses nothing here, so claiming otherwise would
             // send the modal after a multi-megabyte body it already has.
-            if (blocks.textRemoved) capped = { totalLines };
+            // The count comes from the blocks' own text — see `capContentBlocks`.
+            if (blocks.textRemoved) capped = { totalLines: blocks.totalLines };
           } else {
             capped = { totalLines };
             content = content.slice(0, safeCutAt(content, CLIENT_CONTENT_CAP));
@@ -337,15 +381,22 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
       session.setMessages((prev) => attachSubagentToolResult(prev, parentToolUseId, results));
     } else if (results.length > 0) {
       session.setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.role === "assistant") {
-          const existingResults = last.toolResults ?? [];
-          return [
-            ...prev.slice(0, -1),
-            { ...last, toolResults: [...existingResults, ...results] },
-          ];
+        // Route each result to the message that actually issued the call.
+        const byIndex = new Map<number, ToolResultBlock[]>();
+        let fallback: number | undefined;
+        for (const r of results) {
+          let idx = indexOfToolUse(prev, r.toolUseId);
+          if (idx < 0) idx = fallback ??= fallbackResultTarget(prev);
+          if (idx < 0) continue;
+          const bucket = byIndex.get(idx);
+          if (bucket) bucket.push(r);
+          else byIndex.set(idx, [r]);
         }
-        return prev;
+        if (byIndex.size === 0) return prev;
+        return prev.map((m, i) => {
+          const add = byIndex.get(i);
+          return add ? { ...m, toolResults: [...(m.toolResults ?? []), ...add] } : m;
+        });
       });
     }
   }

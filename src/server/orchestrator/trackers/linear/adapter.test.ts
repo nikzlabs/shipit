@@ -166,13 +166,67 @@ describe("LinearTracker", () => {
     await expect(tracker.listIssues()).rejects.toThrow(/rejected the API token/);
   });
 
+  /**
+   * docs/247 — Linear does NOT share GitHub's 403-means-either blind spot: no
+   * throttle shape it produces can reach the "re-connect Linear" message. What
+   * it did produce was a bare `Linear API returned <status>`, which gave the
+   * caller nothing to act on. Linear reports a throttle in the GraphQL error
+   * body (`extensions.code === "RATELIMITED"`, on a 400) as well as by status,
+   * so both shapes are covered — along with the regression that 401/403 still
+   * sends the user to the credential.
+   */
+  it("reports a RATELIMITED GraphQL error body as rate limiting, not a bare 400", async () => {
+    const rateLimited = { errors: [{ message: "Rate limit exceeded", extensions: { code: "RATELIMITED" } }] };
+    // The 400 form, which would otherwise stop at the generic status branch.
+    const on400 = new LinearTracker({
+      token: "t",
+      teamKey: "SHI",
+      fetchImpl: vi.fn(async () => jsonResponse(rateLimited, 400)),
+    });
+    await expect(on400.listIssues()).rejects.toThrow(/rate-limiting requests/);
+    await expect(on400.listIssues()).rejects.toThrow(/not an auth or access failure/);
+
+    // …and the same code riding on a 200, which GraphQL is free to do.
+    const on200 = new LinearTracker({
+      token: "t",
+      teamKey: "SHI",
+      fetchImpl: vi.fn(async () => jsonResponse(rateLimited, 200)),
+    });
+    await expect(on200.listIssues()).rejects.toThrow(/rate-limiting requests/);
+  });
+
+  it("leaves an ordinary GraphQL error and an ordinary 400 alone", async () => {
+    const plain400 = new LinearTracker({
+      token: "t",
+      teamKey: "SHI",
+      fetchImpl: vi.fn(async () => jsonResponse({ errors: [{ message: "Bad query" }] }, 400)),
+    });
+    await expect(plain400.listIssues()).rejects.toThrow(/Linear API returned 400/);
+  });
+
+  it("reports a 429 as rate limiting, not as a rejected token", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({}), { status: 429, headers: { "Retry-After": "120" } }),
+    );
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    let message = "resolved";
+    try {
+      await tracker.listIssues();
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toMatch(/rate-limiting requests/);
+    expect(message).toMatch(/2 minutes/);
+    expect(message).not.toMatch(/Re-connect Linear/);
+  });
+
   it("surfaces GraphQL errors", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ errors: [{ message: "boom" }] }));
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.listIssues()).rejects.toThrow(/boom/);
   });
 
-  // docs/248 reqs 11/17 — Linear's `issue(id:)` is workspace-global, so an id for
+  // docs/248-declared-issue-trackers reqs 11/17 — Linear's `issue(id:)` is workspace-global, so an id for
   // another team resolves. An operation that named THIS tracker must not act on
   // it: the reference resolver cannot close this, because a raw `tracker=`+`id=`
   // pair over the agent relay never passes through the resolver.
@@ -225,7 +279,7 @@ describe("LinearTracker", () => {
     expect(varsFor(fetchImpl, "TeamIssues").excludedTypes).toEqual(["canceled"]);
   });
 
-  // docs/248 req 5 — the declaration carries the team KEY; Linear's own queries
+  // docs/248-declared-issue-trackers req 5 — the declaration carries the team KEY; Linear's own queries
   // want the internal id, so the adapter resolves one to the other lazily and
   // caches it for the request's lifetime.
   it("resolves the declared team key to a team id once, then reuses it", async () => {
@@ -326,7 +380,7 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.deleteComment("c1")).resolves.toBeUndefined();
   });
 
-  // docs/248 req 17 — a comment id is workspace-global, and the undo path hands
+  // docs/248-declared-issue-trackers req 17 — a comment id is workspace-global, and the undo path hands
   // this adapter one recorded before its declared name was re-pointed. Deleting
   // it would mutate a team this adapter does not name.
   it("refuses to delete a comment belonging to another team", async () => {
@@ -348,7 +402,7 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.deleteComment("gone")).resolves.toBeUndefined();
   });
 
-  // ---- comment edit (SHI-86) ----------------------------------------------
+  // ---- comment edit (planning#88) ----------------------------------------------
   //
   // A comment id is workspace-global, so the adapter reads the comment (plus
   // `viewer`) in one query and checks three things before the mutation: the
@@ -376,7 +430,7 @@ describe("LinearTracker writes (docs/177)", () => {
     },
   ];
 
-  it("updates a comment and returns the body it replaced (SHI-86)", async () => {
+  it("updates a comment and returns the body it replaced (planning#88)", async () => {
     const fetchImpl = routerFetch(commentEditRoutes());
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     expect(await tracker.updateComment("SHI-1", "c1", "new text")).toEqual({
@@ -385,7 +439,7 @@ describe("LinearTracker writes (docs/177)", () => {
     });
   });
 
-  it("refuses to edit a comment on a different issue than the one named (SHI-86)", async () => {
+  it("refuses to edit a comment on a different issue than the one named (planning#88)", async () => {
     const fetchImpl = routerFetch(
       commentEditRoutes({ issue: { id: "uuid-9", identifier: "SHI-9", team: { key: "SHI" } } }),
     );
@@ -396,7 +450,7 @@ describe("LinearTracker writes (docs/177)", () => {
     ).toBe(false);
   });
 
-  it("refuses to edit a comment written by someone else (SHI-86)", async () => {
+  it("refuses to edit a comment written by someone else (planning#88)", async () => {
     const fetchImpl = routerFetch(
       commentEditRoutes({ user: { id: "u-human", displayName: "Nik Zherebtsov" } }),
     );
@@ -409,7 +463,7 @@ describe("LinearTracker writes (docs/177)", () => {
     ).toBe(false);
   });
 
-  it("refuses to edit a comment on another team's issue (docs/248 req 17)", async () => {
+  it("refuses to edit a comment on another team's issue (docs/248-declared-issue-trackers req 17)", async () => {
     // The team guard fires on the issue leg, before the comment is even read.
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "OPS" } } } },
@@ -498,7 +552,7 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.createIssue({ title: "x", body: "" })).rejects.toThrow(/missing declared team/);
   });
 
-  it("creates with resolved labelIds and a mapped priority (SHI-92)", async () => {
+  it("creates with resolved labelIds and a mapped priority (planning#94)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueLabels", data: { issueLabels: { nodes: [{ id: "lab-sec", name: "security" }, { id: "lab-be", name: "backend" }] } } },
       { match: "issueCreate", data: { issueCreate: { success: true, issue: issueNode({ identifier: "SHI-9" }) } } },
@@ -511,7 +565,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toMatchObject({ teamId: "team-123", title: "New", labelIds: ["lab-sec"], priority: 2 });
   });
 
-  it("rejects an unknown label with the candidate list (no create) (SHI-92)", async () => {
+  it("rejects an unknown label with the candidate list (no create) (planning#94)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueLabels", data: { issueLabels: { nodes: [{ id: "lab-sec", name: "security" }] } } },
     ]);
@@ -524,7 +578,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("creates a sub-issue with a resolved parentId (SHI-206)", async () => {
+  it("creates a sub-issue with a resolved parentId (planning#208)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-parent", team: { key: "SHI" } } } },
       { match: "issueCreate", data: { issueCreate: { success: true, issue: issueNode({ identifier: "SHI-9" }) } } },
@@ -537,7 +591,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toMatchObject({ teamId: "team-123", title: "Child", parentId: "uuid-parent" });
   });
 
-  it("reparents via issueUpdate with a resolved parentId (SHI-206)", async () => {
+  it("reparents via issueUpdate with a resolved parentId (planning#208)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
@@ -550,7 +604,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toEqual({ parentId: "uuid-1" });
   });
 
-  it("detaches a sub-issue with parentId: null on --parent none (SHI-206)", async () => {
+  it("detaches a sub-issue with parentId: null on --parent none (planning#208)", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "SHI" } } } },
       { match: "issueUpdate", data: { issueUpdate: { success: true, issue: issueNode() } } },
@@ -563,7 +617,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("surfaces labels with their colors on a read (SHI-92 + foundation)", async () => {
+  it("surfaces labels with their colors on a read (planning#94 + foundation)", async () => {
     const fetchImpl = routerFetch([
       {
         match: "query Issue",
@@ -603,7 +657,7 @@ describe("LinearTracker writes (docs/177)", () => {
     ]);
   });
 
-  it("creates a team-scoped label and returns its id for undo (SHI-230)", async () => {
+  it("creates a team-scoped label and returns its id for undo (planning#232)", async () => {
     const fetchImpl = routerFetch([
       {
         match: "issueLabelCreate",
@@ -618,12 +672,84 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toEqual({ teamId: "team-123", name: "t3code", color: "#0ea5e9", description: "T3 code area" });
   });
 
-  it("throws creating a label without a team binding (SHI-230)", async () => {
+  it("throws creating a label without a team binding (planning#232)", async () => {
     const tracker = new LinearTracker({ token: "t", teamKey: null, fetchImpl: routerFetch([]) });
     await expect(tracker.createLabel({ name: "x" })).rejects.toThrow(/missing declared team/);
   });
 
-  it("deletes an unused label on undo (SHI-230)", async () => {
+  it("finds a label by name case-insensitively, preferring the declared team (planning#88)", async () => {
+    const fetchImpl = routerFetch([
+      {
+        match: "FindIssueLabels",
+        data: {
+          issueLabels: {
+            nodes: [
+              { id: "lbl-other", name: "Bug", color: "#111111", team: { key: "OPS" } },
+              { id: "lbl-ours", name: "bug", color: "#d73a4a", description: "Broken", team: { key: "SHI" } },
+            ],
+          },
+        },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    // `issueLabels` is workspace-wide, so a same-named label can live in another
+    // team; this tracker's own team wins rather than whichever came back first.
+    expect(await tracker.findLabel("BUG")).toEqual({
+      id: "lbl-ours",
+      name: "bug",
+      color: "#d73a4a",
+      description: "Broken",
+    });
+  });
+
+  it("returns null for a label the workspace doesn't have (planning#88)", async () => {
+    const fetchImpl = routerFetch([{ match: "FindIssueLabels", data: { issueLabels: { nodes: [] } } }]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    expect(await tracker.findLabel("nope")).toBeNull();
+  });
+
+  it("updates a label's name/color via issueLabelUpdate (planning#88)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "LabelOwner", data: { issueLabel: { team: { key: "SHI" } } } },
+      {
+        match: "issueLabelUpdate",
+        data: { issueLabelUpdate: { success: true, issueLabel: { id: "lbl-1", name: "Bug", color: "#d73a4a" } } },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    expect(await tracker.updateLabel("lbl-1", { name: "Bug", color: "d73a4a" })).toEqual({
+      id: "lbl-1",
+      name: "Bug",
+      color: "#d73a4a",
+    });
+    // A bare hex is normalized to Linear's `#rrggbb`, as on create.
+    expect(inputFor(fetchImpl, "LabelUpdate")).toEqual({ name: "Bug", color: "#d73a4a" });
+  });
+
+  it("refuses to edit a label belonging to another team (planning#88)", async () => {
+    const fetchImpl = routerFetch([{ match: "LabelOwner", data: { issueLabel: { team: { key: "OPS" } } } }]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    // A label id is workspace-global, so the guard is enforced here rather than
+    // trusting the caller — a direct relay POST reaches this same path.
+    await expect(tracker.updateLabel("lbl-other", { color: "#000000" })).rejects.toThrow(/not to `SHI`/);
+    for (const call of fetchImpl.mock.calls) {
+      expect(JSON.parse(call[1]?.body as string).query).not.toContain("issueLabelUpdate");
+    }
+  });
+
+  it("edits a workspace-level label (no team) without refusing (planning#88)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "LabelOwner", data: { issueLabel: { team: null } } },
+      {
+        match: "issueLabelUpdate",
+        data: { issueLabelUpdate: { success: true, issueLabel: { id: "lbl-w", name: "Feature", color: "#8b5cf6" } } },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
+    await expect(tracker.updateLabel("lbl-w", { color: "#8b5cf6" })).resolves.toMatchObject({ name: "Feature" });
+  });
+
+  it("deletes an unused label on undo (planning#232)", async () => {
     const fetchImpl = routerFetch([
       { match: "LabelUsage", data: { issueLabel: { issues: { nodes: [] } } } },
       { match: "issueLabelDelete", data: { issueLabelDelete: { success: true } } },
@@ -636,7 +762,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(deleteCall).toBeDefined();
   });
 
-  it("refuses to delete a label that issues now carry, naming a carrier (SHI-230)", async () => {
+  it("refuses to delete a label that issues now carry, naming a carrier (planning#232)", async () => {
     const fetchImpl = routerFetch([
       { match: "LabelUsage", data: { issueLabel: { issues: { nodes: [{ identifier: "SHI-9" }] } } } },
     ]);
@@ -648,7 +774,7 @@ describe("LinearTracker writes (docs/177)", () => {
     }
   });
 
-  it("treats an already-deleted label as an idempotent undo no-op (SHI-230)", async () => {
+  it("treats an already-deleted label as an idempotent undo no-op (planning#232)", async () => {
     const fetchImpl = routerFetch([{ match: "LabelUsage", data: { issueLabel: null } }]);
     const tracker = new LinearTracker({ token: "t", teamKey: "SHI", fetchImpl });
     await expect(tracker.deleteUnusedLabel("lbl-gone", "old")).resolves.toBeUndefined();
@@ -757,7 +883,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(issue?.availableStatuses?.map((s) => s.name)).toContain("In Review");
   });
 
-  it("getIssue selects and surfaces the issue's createdAt (docs/247 req 9)", async () => {
+  it("getIssue selects and surfaces the issue's createdAt (docs/247-shipit-private-planning req 9)", async () => {
     const fetchImpl = routerFetch([
       { match: "query Issue", data: { issue: issueNode({ createdAt: "2025-11-02T09:15:00.000Z" }) } },
     ]);
@@ -808,7 +934,7 @@ describe("LinearTracker writes (docs/177)", () => {
   });
 });
 
-describe("resolveLinearPriority (SHI-92)", () => {
+describe("resolveLinearPriority (planning#94)", () => {
   it("maps normalized levels to Linear's numeric field", () => {
     expect(resolveLinearPriority("urgent")).toBe(1);
     expect(resolveLinearPriority("high")).toBe(2);

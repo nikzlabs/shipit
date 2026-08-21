@@ -16,7 +16,10 @@ import {
   isGitAuthError,
   isWorkspaceCloneInSyncWithCache,
   stripUrlCredentials,
+  stripRemoteUrlCredentials,
+  hasUrlCredentials,
   canonicalRepoKey,
+  repoUrlToHash,
   syncLocalDefaultBranchToOrigin,
 } from "./git-utils.js";
 
@@ -32,6 +35,68 @@ function commitFile(repoDir: string, name: string, content: string, message: str
   git(repoDir, `commit -m "${message}" --no-gpg-sign`);
   return git(repoDir, "rev-parse HEAD");
 }
+
+// docs/262 req 19 — the strip used when a remote URL is PERSISTED. Strictly
+// stronger than `stripUrlCredentials`, which stays as it is for display,
+// redaction and the identity key.
+describe("stripRemoteUrlCredentials", () => {
+  it("removes every shape a credential reaches a stored remote URL in", () => {
+    for (const [typed, stored] of [
+      // http(s) userinfo — the reported violation.
+      ["https://x-access-token:pw@github.com/o/r.git", "https://github.com/o/r.git"],
+      ["https://u:pw@github.com/o/r.git", "https://github.com/o/r.git"],
+      // A token in the query or fragment. A git remote has no meaningful
+      // query or fragment, and both are places a token demonstrably shows up.
+      ["https://github.com/o/r.git?access_token=pw", "https://github.com/o/r.git"],
+      ["https://github.com/o/r.git#tok=pw", "https://github.com/o/r.git"],
+      // Non-http: the PASSWORD goes, the ssh user stays — `git@` is the login
+      // identity, and dropping it breaks the remote.
+      ["ssh://git:pw@example.com/o/r.git", "ssh://git@example.com/o/r.git"],
+      ["ssh://git@github.com/o/r.git", "ssh://git@github.com/o/r.git"],
+    ] as const) {
+      expect(stripRemoteUrlCredentials(typed)).toBe(stored);
+    }
+  });
+
+  it("returns a clean or unparseable URL byte-for-byte", () => {
+    // `new URL` normalizes (a bare host gains a trailing slash), and a stored
+    // URL that silently changes shape is a row key that stops matching itself.
+    for (const url of [
+      "https://github.com/o/r.git",
+      "https://github.com",
+      // scp-style does not parse; its `git@` is an ssh login and a token pasted
+      // in that position cannot be told apart from one.
+      "git@github.com:acme/shipit.git",
+      "  https://github.com/o/r.git  ",
+    ]) {
+      expect(stripRemoteUrlCredentials(url)).toBe(url.trim());
+    }
+  });
+
+  it("agrees with hasUrlCredentials on what a credential is", () => {
+    expect(hasUrlCredentials("https://u:pw@github.com/o/r.git")).toBe(true);
+    expect(hasUrlCredentials("https://github.com/o/r.git?access_token=pw")).toBe(true);
+    expect(hasUrlCredentials("ssh://git:pw@example.com/o/r.git")).toBe(true);
+    expect(hasUrlCredentials("https://github.com/o/r.git")).toBe(false);
+    expect(hasUrlCredentials("git@github.com:acme/shipit.git")).toBe(false);
+  });
+});
+
+describe("repoUrlToHash", () => {
+  // docs/262 req 19 — the stores key rows by the stripped URL, so the directory
+  // hash must agree with them: the claim route takes a URL straight off the
+  // request path, and a credentialed spelling must not address a second bare
+  // cache, dep cache and per-repo memory directory for the same repository.
+  it("hashes the two spellings of one repository to the same directory", () => {
+    expect(repoUrlToHash("https://x-access-token:pw@github.com/acme/shipit.git"))
+      .toBe(repoUrlToHash("https://github.com/acme/shipit.git"));
+  });
+
+  it("still separates different repositories", () => {
+    expect(repoUrlToHash("https://github.com/acme/a.git"))
+      .not.toBe(repoUrlToHash("https://github.com/acme/b.git"));
+  });
+});
 
 describe("stripUrlCredentials", () => {
   it("removes embedded userinfo from an HTTPS URL", () => {

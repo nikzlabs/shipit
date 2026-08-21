@@ -41,7 +41,7 @@ export interface IssuePriority {
 }
 
 /**
- * An issue label, by display name plus the tracker's own color (SHI-92
+ * An issue label, by display name plus the tracker's own color (planning#94
  * foundation). Both trackers expose a real per-label color — Linear's
  * `issueLabels[].color`, GitHub's repo `labels[].color` — so the Issues-tab
  * chips can render the tracker's hue instead of a name-hashed guess. `color` is
@@ -59,7 +59,7 @@ export interface IssueLabel {
 export interface TrackerIssue {
   /** Tracker-internal node id (Linear GraphQL id). Used for `getIssue()`. */
   id: string;
-  /** Human-facing identifier, e.g. "SHI-67". */
+  /** Human-facing identifier, e.g. "planning#69". */
   identifier: string;
   title: string;
   /** Deep link to the issue in the tracker (escape hatch — not the happy path). */
@@ -75,7 +75,7 @@ export interface TrackerIssue {
    */
   parentId?: string;
   /**
-   * Human identifier of the parent (e.g. "SHI-90"), carried alongside `parentId`
+   * Human identifier of the parent (e.g. "planning#92"), carried alongside `parentId`
    * so the UI can label an *orphaned* sub-issue — one whose parent fell outside
    * the fetched/filtered window — without a second lookup (docs/206).
    */
@@ -91,14 +91,14 @@ export interface TrackerIssue {
    * Linear's `createdAt` and GitHub's `created_at` both map here. Surfaced so an
    * issue's original creation date is readable through `shipit issue view --json`
    * — a migration that recreates issues on another backend has to record when
-   * each one was actually filed (docs/247 req 9), and the recreated issue's own
+   * each one was actually filed (docs/247-shipit-private-planning req 9), and the recreated issue's own
    * `createdAt` is the migration date, not the original.
    */
   createdAt?: string;
   priority: IssuePriority;
   /**
    * The issue's labels, each carrying its display name and the tracker's own
-   * color (SHI-92 + foundation). Both trackers support labels natively —
+   * color (planning#94 + foundation). Both trackers support labels natively —
    * Linear's issue labels, GitHub's REST labels — and both expose a real color,
    * so the chips render the tracker's hue (falling back to a name hash when
    * `color` is absent). Surfaced so the agent's `--json` output and the
@@ -159,8 +159,11 @@ export interface TrackerComment {
  * by `--create-missing-labels`) — the one write verb that targets tracker
  * config rather than an issue, so its card carries the label name as the
  * identifier and no issue id. `comment-edit` records a comment REWRITE
- * (`shipit issue comment edit`, SHI-86) — distinct from `comment` because the
+ * (`shipit issue comment edit`, planning#88) — distinct from `comment` because the
  * card reads differently and undo restores a body rather than deleting one.
+ * `label-edit` is the same split for labels (planning#88): a label that already
+ * exists with the wrong color or casing is corrected in place, and its undo
+ * restores the prior values rather than deleting anything.
  */
 export type IssueWriteVerb =
   | "comment"
@@ -169,7 +172,8 @@ export type IssueWriteVerb =
   | "status"
   | "assignee"
   | "create"
-  | "label";
+  | "label"
+  | "label-edit";
 
 /**
  * docs/189 — the human-readable "what changed" values the redesigned write card
@@ -182,7 +186,7 @@ export type IssueWriteVerb =
 export interface IssueWriteContent {
   /**
    * comment → a clipped preview of the posted comment body. Also carries the
-   * NEW body for a `comment-edit` (SHI-86): the card is two-line clamped, so a
+   * NEW body for a `comment-edit` (planning#88): the card is two-line clamped, so a
    * second blockquote for the prior text would not fit — and the prior body is
    * not lost, it rides on the undo snapshot and one click restores it.
    */
@@ -195,8 +199,16 @@ export interface IssueWriteContent {
    * edit → a faint one-liner for label/priority changes (e.g.
    * "priority → High · labels: security, bug"), so a labels/priority-only edit
    * still shows what changed rather than rendering an empty second line.
+   * label-edit → the same one-liner for a recolor / description change
+   * ("color → #d73a4a · description updated").
    */
   attrs?: string;
+  /**
+   * label-edit → the label's name transition, present only when the edit renamed
+   * it (planning#88). Line 1 already shows the name the label has NOW, so the card
+   * needs the prior one to make a rename legible; a recolor sets only `attrs`.
+   */
+  label?: { before: string; after: string };
   /** status → the native status names of the transition. */
   status?: { from: string; to: string };
   /** assignee → the new assignee's display name, or null when unassigned. */
@@ -212,14 +224,14 @@ export interface IssueWriteContent {
  */
 export type IssueWriteUndo =
   | { kind: "comment"; commentId: string }
-  // SHI-86 — a comment EDIT. Undo restores the exact body the comment had
+  // planning#88 — a comment EDIT. Undo restores the exact body the comment had
   // before the rewrite, which is the symmetric reverse-write the established
   // `edit` snapshot pattern already uses for an issue's title/description. (A
   // comment *delete* has no symmetric undo — re-posting mints a new id, author
   // and timestamp — which is why it is deliberately not exposed; see
   // docs/177 → "Proposed — editing and deleting a comment".)
   | { kind: "comment-edit"; commentId: string; previousBody: string }
-  // SHI-92 — an edit may also change labels/priority; the prior label set and
+  // planning#94 — an edit may also change labels/priority; the prior label set and
   // prior priority level are snapshotted so undo restores them (the prior labels
   // replace the post-edit set; the prior priority level is re-applied).
   // `previousLabels` holds label *names* (the write API resolves names → ids),
@@ -230,7 +242,7 @@ export type IssueWriteUndo =
       previousDescription?: string;
       previousLabels?: string[];
       previousPriority?: string;
-      // SHI-206 — an edit may also reparent (Linear sub-issues). The prior
+      // planning#208 — an edit may also reparent (Linear sub-issues). The prior
       // parent's tracker-internal id is snapshotted (or `null` when it had no
       // parent) so undo restores the exact prior relation — re-parenting back to
       // the prior id, or detaching when there was none.
@@ -245,7 +257,21 @@ export type IssueWriteUndo =
   // already carry it the delete refuses with an explanation (shown on the card).
   // `labelId` is the tracker-internal delete target (Linear UUID; for GitHub the
   // label name IS the id), `labelName` the display name for messaging.
-  | { kind: "label"; labelId: string; labelName: string };
+  | { kind: "label"; labelId: string; labelName: string }
+  // planning#88 — a label EDIT (recolor / rename / description). Undo restores the
+  // prior values of exactly the fields the edit touched, which is a symmetric
+  // reverse write: both backends rename a label IN PLACE, so every issue keeps
+  // carrying it and nothing is re-labeled in either direction. Only the touched
+  // fields are snapshotted, so an undo can't silently revert a value the edit
+  // never set. `labelId` is the address to write back through and is the id AFTER
+  // the edit (on GitHub the name IS the id, so a rename changes it).
+  | {
+      kind: "label-edit";
+      labelId: string;
+      previousName?: string;
+      previousColor?: string;
+      previousDescription?: string;
+    };
 
 /** Undo lifecycle of a write provenance card. */
 export type IssueWriteUndoState = "available" | "undoing" | "undone" | "failed";
@@ -289,7 +315,7 @@ export interface IssueWriteCard {
   /** Deep link to the issue (escape hatch). */
   url?: string;
   verb: IssueWriteVerb;
-  /** Human one-liner, e.g. "commented on SHI-28", "set #42 → Closed". */
+  /** Human one-liner, e.g. "commented on planning#30", "set #42 → Closed". */
   summary: string;
   /**
    * docs/189 — display-only "what changed" values for the card's second line
@@ -363,7 +389,7 @@ export interface TrackerInfo {
   label: string;
   configured: boolean;
   /**
-   * docs/248 req 2 — the `name` this tracker was declared under, and how every
+   * docs/248-declared-issue-trackers req 2 — the `name` this tracker was declared under, and how every
    * reference and operation addresses it. Absent for the session's own code
    * repository, the one destination that needs no declaration (req 12).
    *

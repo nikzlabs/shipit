@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,7 +11,10 @@ import {
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
+  releaseSubAgentCredentials,
   removeSubAgentCredentials,
+  readSessionAccountMarker,
+  writeSessionAccountMarker,
   removeSessionCredentials,
   syncAgentTokenIn,
   syncProviderAccountTokenIn,
@@ -22,6 +25,7 @@ import {
   repoMemoryDir,
   provisionRepoMemory,
   chownSessionCredentialsTree,
+  clearSubtreeBorrows,
 } from "./session-credentials.js";
 
 /**
@@ -49,6 +53,9 @@ describe("session-credentials", () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
+    // The borrow ledger is process-local, so a test that provisions a borrow
+    // without releasing it would otherwise leak into the next one.
+    clearSubtreeBorrows();
   });
 
   it("computes the per-session dir and POSIX subpath", () => {
@@ -106,6 +113,28 @@ describe("session-credentials", () => {
       expect(fs.lstatSync(sessionMemory).uid).toBe(myUid);
       expect(fs.lstatSync(path.join(sessionMemory, "MEMORY.md")).uid).toBe(myUid);
     });
+  });
+
+  /**
+   * #2432 — a session that ran the server test suite in-box had its brokered
+   * `/credentials/.gitconfig` rewritten to `cat` a `.git-credential-github`
+   * holding a 5-character fixture token, and could not push again. The suite
+   * hole is closed in `server-test-setup.ts`; this is the repair for the
+   * sessions already carrying the artifact, which runs on every container
+   * create. The regenerated gitconfig no longer references the file, so what is
+   * left is a stale credential sitting where the agent can reach it.
+   */
+  it("scaffold removes a credential file orchestrator code left in the sandbox", () => {
+    const dir = perSessionCredentialsDir(root, sid);
+    fs.mkdirSync(dir, { recursive: true });
+    const stray = path.join(dir, ".git-credential-github");
+    fs.writeFileSync(stray, "username=x-access-token\npassword=ghp_x\n");
+
+    ensureSessionCredentialsScaffold(root, sid);
+
+    expect(fs.existsSync(stray)).toBe(false);
+    expect(fs.readFileSync(path.join(dir, ".gitconfig"), "utf-8"))
+      .toContain("/usr/local/bin/shipit-git-credential");
   });
 
   it("scaffold seeds only the shared .gitconfig — no agent creds", () => {
@@ -211,11 +240,23 @@ describe("session-credentials", () => {
     expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(false);
   });
 
-  it("provisioning tolerates a missing agent subtree (agent never logged in)", () => {
+  it("provisioning tolerates a missing agent subtree, and still creates the DIR (planning#444)", () => {
+    // This assertion used to be `.codex` does NOT exist, and that was the bug.
+    // "Agent never logged in" is exactly the key-billed shape: the credential
+    // travels as an env var, `copyCredentialPath` early-returns on a missing
+    // source, and the image has ALREADY symlinked `~/.codex` at this path — so
+    // leaving nothing here leaves the link DANGLING. That is not a harmless
+    // absence: a dangling symlink is an existing directory entry, so the CLI's
+    // own `mkdir` fails and it dies at startup (grok did exactly this in every
+    // session container; OpenCode did it before that, docs/270).
     fs.rmSync(path.join(root, ".codex"), { recursive: true, force: true });
     expect(() => provisionAgentCredentials(root, sid, "codex")).not.toThrow();
     const dir = perSessionCredentialsDir(root, sid);
-    expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
+    // The directory exists…
+    expect(fs.statSync(path.join(dir, ".codex")).isDirectory()).toBe(true);
+    // …and is EMPTY. Materializing the mount point must never invent credential
+    // material, which is what keeps the docs/138 isolation guarantee intact.
+    expect(fs.readdirSync(path.join(dir, ".codex"))).toEqual([]);
     // .gitconfig still provisioned.
     expect(fs.existsSync(path.join(dir, ".gitconfig"))).toBe(true);
   });
@@ -247,7 +288,7 @@ describe("session-credentials", () => {
     expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), ".codex"))).toBe(false);
   });
 
-  // docs/150 req 9 — an account switch reprovisions credentials but must not
+  // docs/150-multiple-provider-subscriptions req 9 — an account switch reprovisions credentials but must not
   // take the session's conversation with it. Claude resumes from
   // `.claude/projects/<encoded-cwd>/<agentSessionId>.jsonl` and Codex from
   // `.codex/sessions/.../rollout-*.jsonl`; both are per-session files that
@@ -353,6 +394,11 @@ describe("session-credentials", () => {
     writeClaudeToken(accountB, "B-NEW", 9_000);
     provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
 
+    // A turn that moves the session to acct-b makes the subtree acct-b's FIRST
+    // (`ensureSessionAccountCredentials`, docs/260 req 4) and only then syncs
+    // the token. The write-back publishes to the account the subtree records,
+    // so the two steps are one sequence, not two independent ones.
+    writeSessionAccountMarker(root, sid, "claude", "acct-b");
     syncProviderAccountTokenIn(root, sid, "claude", "acct-b");
     expect(readTail(path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json"))).toBe("B-NEW");
 
@@ -361,6 +407,285 @@ describe("session-credentials", () => {
 
     expect(readTail(path.join(accountB, ".claude", ".credentials.json"))).toBe("B-ROTATED");
     expect(readTail(path.join(accountA, ".claude", ".credentials.json"))).toBe("A-OLD");
+  });
+
+  // A same-harness consult (`shipit agent run`, session naming, voice cleanup)
+  // BORROWS the session's own credential subtree for an account chosen
+  // independently of the session's. While that borrow is in place the session's
+  // token file holds the borrowed account's bearer, and every write-back path —
+  // the turn-end sync-back and the mid-turn publisher — is still pointed at the
+  // session's own account. Publishing then copies one account's credential into
+  // another account's root, which is the duplicate-bearer state
+  // `quarantineDuplicateClaudeCredentials` exists to clean up after.
+  it("does not publish a BORROWED account's token into the session's own account root", () => {
+    const accountA = path.join(root, "provider-accounts", "claude", "acct-a");
+    const accountB = path.join(root, "provider-accounts", "claude", "acct-b");
+    // A was just reconnected, so its token has the latest expiry of the two —
+    // which is exactly what makes the freshness guard wave the write through.
+    writeClaudeToken(accountA, "A-FRESH", 12_000);
+    writeClaudeToken(accountB, "B-LIVE", 5_000);
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-b"); // the session runs on B
+    provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // a consult borrows A
+
+    syncProviderAccountTokenBack(root, sid, "claude", "acct-b");
+
+    expect(readTail(path.join(accountB, ".claude", ".credentials.json"))).toBe("B-LIVE");
+  });
+
+  // The same hazard in the direction that looks safe. A reserved/legacy-route
+  // session still gets same-harness background work, and that work routes to an
+  // account of its own — so the flat write-back can be handed an account's
+  // bearer. The flat root is `migrateProviderDefault`'s "this install has
+  // pre-account credentials" marker, so a copy landing there mints an extra
+  // account row at the next boot, holding a duplicate of a real account's token.
+  it("does not publish a borrowed account's token into the flat root", () => {
+    writeClaudeToken(root, "FLAT", 1_000);
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A-FRESH", 12_000);
+    fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
+    provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // background work borrows A
+
+    syncAgentTokenBack(root, sid, "claude");
+
+    expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("FLAT");
+  });
+
+  it("records the borrowed account on the subtree marker, so the borrow is visible", () => {
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+    provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
+    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-b");
+
+    provisionSubAgentCredentials(root, sid, "claude", "acct-a");
+    expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+
+    // The borrow's own write-back still reaches the account it actually ran on.
+    writeClaudeToken(perSessionCredentialsDir(root, sid), "A-ROTATED", 15_000);
+    syncProviderAccountTokenBack(root, sid, "claude", "acct-a");
+    expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
+      .toBe("A-ROTATED");
+  });
+
+  /**
+   * planning#445 — the incident the borrow ledger exists for.
+   *
+   * Losing the marker is not a cosmetic bookkeeping error: every write-back
+   * afterwards is refused, and a refused write-back DROPS a rotation whose
+   * token has already invalidated the source's copy upstream. The account then
+   * fails every refresher tick, the CLI erases the source file about an hour
+   * later, and the user is made to sign in again — which is how a reconnect
+   * interval of a week or more became one of a day or two.
+   */
+  describe("a borrow never loses the session's own account", () => {
+    const seedTwoAccounts = () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+    };
+
+    it("restores the session's account after an ordinary borrow", () => {
+      seedTwoAccounts();
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b"); // the session runs on B
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // a consult borrows A
+
+      expect(releaseSubAgentCredentials(root, sid, "claude")).toBe("acct-b");
+    });
+
+    /**
+     * The exact shape that stranded the account in production. The second
+     * borrow's own pre-read of the marker returns `undefined` — the first
+     * borrow's wipe has already cleared it — so a caller that captured the
+     * account itself restored nothing and left the subtree with NO marker.
+     * The ledger's re-entrancy makes the outer borrow's capture the answer for
+     * both.
+     */
+    it("survives a borrow taken while the marker reads as absent", () => {
+      seedTwoAccounts();
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
+
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // borrow 1
+      removeSubAgentCredentials(root, sid, "claude"); // its wipe: the marker is now absent
+      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
+
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // borrow 2, into that window
+      expect(releaseSubAgentCredentials(root, sid, "claude")).toBe("acct-b");
+    });
+
+    it("reports no account to restore for a session that never had one", () => {
+      seedTwoAccounts();
+      fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a");
+
+      expect(releaseSubAgentCredentials(root, sid, "claude")).toBeUndefined();
+    });
+
+    /**
+     * The marker write is temp + rename, so a reader can only ever observe the
+     * old value or the new one. The old in-place `writeFileSync` truncated
+     * first, and a reader landing in that window parsed nothing and reported
+     * "no recorded account" — the same permanent refusal a genuinely lost
+     * marker causes, from a write that was working perfectly.
+     */
+    it("never exposes an empty marker mid-write", () => {
+      seedTwoAccounts();
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b");
+
+      const observed: (string | undefined)[] = [];
+      const realRename = fs.renameSync;
+      const spy = vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+        // Mid-write: the temp file holds the new value, the marker still holds
+        // the old one. A concurrent reader must see an account either way.
+        observed.push(readSessionAccountMarker(root, sid).claude);
+        realRename(from, to);
+      });
+      try {
+        writeSessionAccountMarker(root, sid, "claude", "acct-a");
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(observed).toEqual(["acct-b"]);
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+      // And no temp file left behind in the subtree the container mounts.
+      const leftovers = fs.readdirSync(perSessionCredentialsDir(root, sid)).filter((f) => f.includes(".tmp-"));
+      expect(leftovers).toEqual([]);
+    });
+  });
+
+  /**
+   * planning#445 — an absent marker is resolved, not assumed. The write-back
+   * may repair one it can prove is lost, and only then; a dropped rotation
+   * kills the source credential, so "refuse and move on" is the expensive
+   * branch, not the safe one.
+   */
+  describe("write-back marker repair", () => {
+    const rotateInSession = () => writeClaudeToken(perSessionCredentialsDir(root, sid), "ROTATED", 15_000);
+    const accountA = () => path.join(root, "provider-accounts", "claude", "acct-a");
+
+    it("repairs a lost marker for the session's own turn route and publishes the rotation", () => {
+      writeClaudeToken(accountA(), "A", 12_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      writeSessionAccountMarker(root, sid, "claude", null); // the marker went missing
+      rotateInSession();
+
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("ROTATED");
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a");
+    });
+
+    /**
+     * The repair and the refusals are the only signal an operator has for how
+     * often a marker goes missing in production, so the countable part of the
+     * line is behavior, not decoration. The prose is pinned too: the incident
+     * was diagnosed by grepping "refusing … token write-back", and a runbook
+     * that stops matching is worse than no structure at all.
+     */
+    it("logs each outcome as a countable record, keeping the greppable prose", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      // The write-back also chowns and seals the subtree, which can warn on its
+      // own — pick the write-back's line rather than whatever warned last.
+      const lastWriteBackLine = (): string =>
+        warn.mock.calls
+          .map((c) => String(c[0]))
+          .filter((line) => line.includes("write-back="))
+          .at(-1) ?? "";
+      try {
+        writeClaudeToken(accountA(), "A", 12_000);
+        provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+        writeSessionAccountMarker(root, sid, "claude", null);
+        rotateInSession();
+        syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+        const repair = lastWriteBackLine();
+        expect(repair).toContain("write-back=repaired");
+        expect(repair).toContain(`session=${sid}`);
+        expect(repair).toContain("agent=claude");
+        expect(repair).toContain("target=account:acct-a");
+        expect(repair).toContain("reason=lost-marker");
+
+        // A refusal is countable by the rule that fired, and still carries the
+        // sentence the incident was grepped by.
+        writeSessionAccountMarker(root, sid, "claude", "acct-b");
+        syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+        const refusal = lastWriteBackLine();
+        expect(refusal).toContain("write-back=refused");
+        expect(refusal).toContain("holder=acct-b");
+        expect(refusal).toContain("reason=other-account");
+        expect(refusal).toContain(`refusing claude token write-back for ${sid} to account acct-a`);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("still refuses a caller that is publishing a BORROWED account", () => {
+      writeClaudeToken(accountA(), "A", 12_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      writeSessionAccountMarker(root, sid, "claude", null);
+      rotateInSession();
+
+      // No `sessionOwnRoute`: this is the borrow's own write-back, and it has
+      // no standing to say whose copy is on disk.
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a");
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
+      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
+    });
+
+    /**
+     * The cross-account guarantee, in the one case the repair could have
+     * weakened it: a borrow on a legacy/flat route records NO account, so the
+     * absent marker is truthful and the subtree holds someone else's bearer.
+     * The ledger says a borrow is in flight, and the write-back refuses.
+     */
+    it("refuses while a flat-route borrow holds the subtree", () => {
+      writeClaudeToken(accountA(), "A", 12_000);
+      writeClaudeToken(root, "FLAT", 1_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      provisionSubAgentCredentials(root, sid, "claude"); // legacy route: marker cleared
+      rotateInSession();
+
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
+      expect(readSessionAccountMarker(root, sid).claude).toBeUndefined();
+
+      // And once the borrow ends, the same call repairs and publishes.
+      expect(releaseSubAgentCredentials(root, sid, "claude")).toBe("acct-a");
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      writeSessionAccountMarker(root, sid, "claude", null);
+      rotateInSession();
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("ROTATED");
+    });
+
+    /**
+     * The borrow writes its marker AFTER its copy lands, so a marker that
+     * agrees with the session's route is not by itself proof that the token
+     * under it is the session's. For the duration of a borrow a session-route
+     * caller publishes nothing, whatever the marker says.
+     */
+    it("refuses a session-route publish for the whole borrow, marker agreement included", () => {
+      writeClaudeToken(accountA(), "A", 1_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+      provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // a consult borrows the same account
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-a"); // marker agrees
+      rotateInSession();
+
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
+      releaseSubAgentCredentials(root, sid, "claude");
+    });
+
+    it("still refuses when the marker names a different account", () => {
+      writeClaudeToken(accountA(), "A", 1_000);
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b"); // the subtree is B's
+      rotateInSession();
+
+      syncProviderAccountTokenBack(root, sid, "claude", "acct-a", { sessionOwnRoute: true });
+
+      expect(readTail(path.join(accountA(), ".claude", ".credentials.json"))).toBe("A");
+    });
   });
 
   it("syncAgentTokenBack does NOT clobber a fresher source (failed-refresh race guard)", () => {
@@ -1385,6 +1710,164 @@ describe("session-credentials", () => {
   // "merged" by doing nothing and then recursively deleted — destroying the
   // only copy of Codex's disk-backed rollout while `sessions.agent_session_id`
   // still pointed at that thread.
+  /**
+   * planning#435 / docs/274 req 13 — a Grok subscription token is short-lived
+   * (~6h) and rotates, so "connect once" only holds if the rotation LANDS.
+   *
+   * These exercise the generic sync machinery through the grok entries added to
+   * `AGENT_TOKEN_FILES` and the freshness table: without both, a session that
+   * outlives one token would 401 mid-work and its refreshed token would be
+   * stranded in the session's own copy where the next container never sees it.
+   */
+  describe("docs/274 req 13 — a rotating Grok subscription token", () => {
+    const account = "acct_grok";
+    // The REAL file shape (live `grok login --device-auth`, planning#435):
+    // unguessable scope key, access token under `key`, ISO-8601 `expires_at`
+    // string. The first fixture used `grok-build` / `access_token` / a number,
+    // which the reader also accepts as a fallback — so those tests could not
+    // catch a regression that only broke the live file (planning#449).
+    const GROK_SCOPE = "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828";
+    const grokAuth = (tag: string, expiresAt: number) =>
+      JSON.stringify({
+        [GROK_SCOPE]: {
+          key: `tok-${tag}`,
+          refresh_token: `ref-${tag}`,
+          expires_at: new Date(expiresAt).toISOString(),
+          auth_mode: "oidc",
+          user_id: "user-fixture",
+        },
+      });
+
+    function seedAccount(expiresAt: number, tag = "SOURCE"): string {
+      const accountRoot = path.join(root, "provider-accounts", "grok", account);
+      fs.mkdirSync(path.join(accountRoot, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(accountRoot, ".grok", "auth.json"), grokAuth(tag, expiresAt));
+      return accountRoot;
+    }
+
+    it("syncs the account's token into the session at turn start", () => {
+      seedAccount(9_000_000_000_000);
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+
+      syncProviderAccountTokenIn(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(sessionDir, ".grok", "auth.json"), "utf-8")).toContain("tok-SOURCE");
+    });
+
+    /**
+     * The guard that makes the sync SAFE, and it is the half that a naive
+     * "always copy the source in" would get wrong: a session that just
+     * refreshed its own token must not have it clobbered by a staler source,
+     * because the refresh may already have invalidated the source's copy
+     * upstream.
+     */
+    it("never overwrites a session token that is already fresher", () => {
+      seedAccount(1_000_000_000_000, "STALE");
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".grok", "auth.json"), grokAuth("ROTATED", 9_000_000_000_000));
+
+      syncProviderAccountTokenIn(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(sessionDir, ".grok", "auth.json"), "utf-8")).toContain("tok-ROTATED");
+    });
+
+    /**
+     * The publish half — a rotation reaching the source, so the NEXT container
+     * starts from the live token rather than a dead refresh token.
+     *
+     * The account MARKER is what says whose bearer the subtree currently holds,
+     * and the write-back refuses without it: publishing a token to an account
+     * that is not the one on disk is how one subscription's credential lands in
+     * another's source.
+     */
+    it("publishes a rotation back to the account source", () => {
+      const accountRoot = seedAccount(1_000_000_000_000, "OLD");
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".grok", "auth.json"), grokAuth("ROTATED", 9_000_000_000_000));
+      writeSessionAccountMarker(root, sid, "grok", account);
+
+      syncProviderAccountTokenBack(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(accountRoot, ".grok", "auth.json"), "utf-8")).toContain("tok-ROTATED");
+    });
+
+    /** …and refuses when the subtree holds a DIFFERENT account's credentials. */
+    it("refuses to publish into an account the subtree does not hold", () => {
+      const accountRoot = seedAccount(1_000_000_000_000, "OLD");
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".grok", "auth.json"), grokAuth("OTHER", 9_000_000_000_000));
+      writeSessionAccountMarker(root, sid, "grok", "acct_someone_else");
+
+      syncProviderAccountTokenBack(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(accountRoot, ".grok", "auth.json"), "utf-8")).toContain("tok-OLD");
+    });
+
+    /**
+     * The token file is the ONLY thing synced. `.grok/` also holds config.toml
+     * and the sessions store the CLI writes in place, and a sync that touched
+     * them would destroy this session's resume history every turn.
+     */
+    it("touches nothing in .grok but auth.json", () => {
+      const accountRoot = seedAccount(9_000_000_000_000);
+      fs.writeFileSync(path.join(accountRoot, ".grok", "config.toml"), 'shared = true\n');
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok", "sessions"), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, ".grok", "sessions", "conversation.json"), '{"turns":1}');
+      fs.writeFileSync(path.join(sessionDir, ".grok", "config.toml"), 'session_local = true\n');
+
+      syncProviderAccountTokenIn(root, sid, "grok", account);
+
+      expect(fs.readFileSync(path.join(sessionDir, ".grok", "sessions", "conversation.json"), "utf-8")).toBe('{"turns":1}');
+      expect(fs.readFileSync(path.join(sessionDir, ".grok", "config.toml"), "utf-8")).toContain("session_local");
+    });
+
+    /**
+     * A KEY-billed grok session has no auth.json anywhere and is perfectly
+     * healthy — its credential travels as an environment variable. The
+     * credential-less warning must stay quiet for it, or every key-billed turn
+     * logs that it "will fail authentication" while working fine.
+     */
+    it("does not warn about a missing token on a key-billed session", () => {
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        syncAgentTokenIn(root, sid, "grok");
+        const complaints = warn.mock.calls
+          .map((call) => call.join(" "))
+          .filter((line) => line.includes("no token file"));
+        expect(complaints).toEqual([]);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    /** …and stays loud for an ACCOUNT-scoped session, which is genuinely broken. */
+    it("still warns when an account-scoped session has no token", () => {
+      seedAccount(9_000_000_000_000);
+      const sessionDir = perSessionCredentialsDir(root, sid);
+      fs.mkdirSync(path.join(sessionDir, ".grok"), { recursive: true });
+      // Remove the source too, so the sync has nothing to copy in and the
+      // session is left authenticating on nothing.
+      fs.rmSync(path.join(root, "provider-accounts", "grok", account, ".grok", "auth.json"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        syncProviderAccountTokenIn(root, sid, "grok", account);
+        const complaints = warn.mock.calls
+          .map((call) => call.join(" "))
+          .filter((line) => line.includes("no token file"));
+        expect(complaints.length).toBeGreaterThan(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
   describe("docs/153 — Codex rollout preservation", () => {
     const threadId = "019fb994-733e-7051-86da-e7a800bfc710";
     const rolloutRel = path.join("sessions", "2026", "07", "31", `rollout-2026-07-31T19-20-00-${threadId}.jsonl`);
@@ -1615,18 +2098,56 @@ describe("session-credentials", () => {
       expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
     });
 
-    it("removes ONLY the sub-agent subtree, leaving the pinned agent's intact", () => {
+    it("removes cross-provider auth and config, leaving the pinned agent intact", () => {
       provisionAgentCredentials(root, sid, "claude");
       provisionSubAgentCredentials(root, sid, "codex");
       const dir = perSessionCredentialsDir(root, sid);
       expect(fs.existsSync(path.join(dir, ".codex"))).toBe(true);
 
       removeSubAgentCredentials(root, sid, "codex");
-      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
+      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(false);
       // The pinned Claude subtree is untouched.
       expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
       expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(true);
     });
+
+    it("preserves a Codex parent's rollout across same-harness reviewer cleanup", () => {
+      provisionAgentCredentials(root, sid, "codex");
+      const dir = perSessionCredentialsDir(root, sid);
+      const rollout = path.join(dir, ".codex", "sessions", "2026", "08", "14", "rollout-parent.jsonl");
+      fs.mkdirSync(path.dirname(rollout), { recursive: true });
+      fs.writeFileSync(rollout, '{"thread_id":"parent-thread"}\n');
+      fs.writeFileSync(path.join(dir, ".codex", "config.toml"), 'model = "reviewer-model"\n');
+
+      // The reviewer may use another service/model route, but cleanup is keyed
+      // to the harness. The parent's rollout is state; auth/config are not.
+      removeSubAgentCredentials(root, sid, "codex");
+
+      expect(fs.readFileSync(rollout, "utf8")).toContain("parent-thread");
+      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(false);
+      expect(fs.existsSync(path.join(dir, ".codex", "config.toml"))).toBe(false);
+    });
+
+    it.each(["failure", "cancellation"])(
+      "preserves Claude resume state and removes temporary credentials after %s",
+      () => {
+        provisionAgentCredentials(root, sid, "claude");
+        const dir = perSessionCredentialsDir(root, sid);
+        const conversation = path.join(dir, ".claude", "projects", "-workspace", "parent.jsonl");
+        fs.mkdirSync(path.dirname(conversation), { recursive: true });
+        fs.writeFileSync(conversation, '{"sessionId":"parent"}\n');
+        fs.writeFileSync(path.join(dir, ".claude", "settings.json"), '{}');
+
+        // runSubAgent and non-turn work call the same helper from `finally`, so
+        // both failure and cancellation have this cleanup contract.
+        removeSubAgentCredentials(root, sid, "claude");
+
+        expect(fs.existsSync(conversation)).toBe(true);
+        expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(false);
+        expect(fs.existsSync(path.join(dir, ".claude", "settings.json"))).toBe(false);
+        expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(false);
+      },
+    );
 
     it("removeSubAgentCredentials is best-effort on a missing subtree", () => {
       provisionAgentCredentials(root, sid, "claude");

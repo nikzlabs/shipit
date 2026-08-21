@@ -123,7 +123,7 @@ describe("materializeRunnerSync", () => {
       status: "needs-restore", workspaceDir: "/w", agentId: "claude",
     });
     // No runner until the checkout is known to exist — booting a container
-    // against a missing bind-mount source is the loop SHI-179 fixed.
+    // against a missing bind-mount source is the loop planning#181 fixed.
     expect(getOrCreate).not.toHaveBeenCalled();
   });
 });

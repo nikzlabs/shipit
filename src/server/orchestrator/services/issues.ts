@@ -5,7 +5,7 @@
  * `api-routes-issues.ts`. Read-only + connect/bind: list trackers, list issues
  * for a tracker, and the Linear connect/team-binding mutations. No write-back
  * to the tracker (setting priority/status/comments) — that's a deferred
- * follow-up per the SHI-67 scope.
+ * follow-up per the planning#69 scope.
  */
 
 import type { CredentialStore } from "../credential-store.js";
@@ -35,6 +35,13 @@ import {
   type GitHubTrackerContext,
 } from "../trackers/index.js";
 import type { TrackerDestination } from "../../shared/declared-tracker.js";
+import { describeDeclaredNames } from "../../shared/issue-ref-resolution.js";
+import {
+  addressedAsPluginRepo,
+  pluginFeedbackTrackerId,
+  withPluginFeedbackContext,
+  type PluginFeedbackRepo,
+} from "../../shared/plugin-feedback.js";
 import { ServiceError } from "./types.js";
 
 /**
@@ -53,20 +60,15 @@ export function isDuplicateStatus(name?: string): boolean {
 }
 
 /**
- * docs/248 req 11/19 — the message a fail-closed destination lookup produces.
+ * docs/248-declared-issue-trackers req 11/19 — the message a fail-closed destination lookup produces.
  * Names the declared set so the agent can correct the reference instead of
  * retrying blind, and states plainly that there is no fallback.
  */
 function undeclaredTrackerMessage(trackerId: string, registry: TrackerRegistry): string {
-  const names = registry
-    .destinations()
-    .map((d) => d.name)
-    .filter((n): n is string => Boolean(n));
-  const declared =
-    names.length > 0
-      ? `Declared trackers: ${names.join(", ")}.`
-      : "This repository declares no issue trackers — add an `issues.trackers` entry to shipit.yaml.";
-  return `\`${trackerId}\` is not a tracker this repository declares, and ShipIt has no implicit tracker to fall back to. ${declared}`;
+  // Shared with the shim's own fail-closed messages so one repository describes
+  // itself the same way everywhere — including its plugin repositories, which
+  // are reachable destinations but not trackers (docs/262 req 25).
+  return `\`${trackerId}\` is not a tracker this repository declares, and ShipIt has no implicit tracker to fall back to. ${describeDeclaredNames(registry.destinations())}`;
 }
 
 /**
@@ -146,7 +148,7 @@ export async function listIssuesForTracker(
 /**
  * List the full set of available labels (name + color) for one tracker — the
  * foundation a follow-up label filter facet / on-page editor consumes, and the
- * same fetch that yields the real per-label colors the chips render (SHI-92
+ * same fetch that yields the real per-label colors the chips render (planning#94
  * foundation). Like `listIssuesForTracker`, an unconfigured tracker is a normal
  * empty state (`{ labels: [] }`), not an error — the follow-up UI degrades to
  * "no labels to pick from" rather than surfacing a failure. A reachable-tracker
@@ -176,7 +178,7 @@ export async function listLabelsForTracker(
 /**
  * List the full set of assignable statuses (name + type + color) for one tracker
  * — Linear's team workflow states in board order, GitHub's fixed Open/Closed
- * pair (SHI-199). The read-only discovery surface behind `shipit issue statuses`,
+ * pair (planning#201). The read-only discovery surface behind `shipit issue statuses`,
  * so the agent can see the valid `status` targets without first viewing an issue
  * (`view` only carries `availableStatuses` per-issue). Like `listLabelsForTracker`
  * an unconfigured tracker is a normal empty state (`{ statuses: [] }`), not an
@@ -208,7 +210,7 @@ export async function listStatusesForTracker(
  * HTTP status: 404 for an undeclared tracker, 409 for a declared-but-unconnected
  * one (the agent should connect it, not retry). Used by the write services below.
  *
- * docs/248 req 11 — the 404 is a **fail-closed**, not a lookup miss to route
+ * docs/248-declared-issue-trackers req 11 — the 404 is a **fail-closed**, not a lookup miss to route
  * around: an id naming no declared destination has nowhere to go, and the
  * message says so rather than leaving the agent to guess (req 19).
  */
@@ -218,7 +220,15 @@ function resolveConfiguredTracker(
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Tracker {
-  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  return resolveConfiguredTrackerIn(
+    buildTrackerRegistry(credentialStore, fetchImpl, github),
+    trackerId,
+  );
+}
+
+/** The same resolution against a registry the caller already built — for a
+ * write that also has to ask what KIND of destination it resolved to. */
+function resolveConfiguredTrackerIn(registry: TrackerRegistry, trackerId: string): Tracker {
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   if (!tracker.isConfigured()) {
@@ -433,7 +443,7 @@ export interface IssueWriteOutcome {
    */
   content?: IssueWriteContent;
   /**
-   * SHI-230 — labels minted on the fly by `--create-missing-labels` before this
+   * planning#232 — labels minted on the fly by `--create-missing-labels` before this
    * write applied them. Each gets its OWN provenance card (verb `label`, undo =
    * delete-if-unused) in addition to the main write card, so a flag-driven
    * label creation is exactly as visible and reversible as an explicit
@@ -443,7 +453,7 @@ export interface IssueWriteOutcome {
 }
 
 /**
- * One label created as a do-then-surface write (SHI-230) — by the standalone
+ * One label created as a do-then-surface write (planning#232) — by the standalone
  * `shipit issue label create` or by `--create-missing-labels` on create/edit.
  * Carries everything the route needs to mint the provenance card.
  */
@@ -451,6 +461,27 @@ export interface LabelCreation {
   label: IssueLabel;
   summary: string;
   undo: Extract<IssueWriteUndo, { kind: "label" }>;
+}
+
+/**
+ * One label EDIT as a do-then-surface write (planning#88) — `shipit issue label edit`.
+ * The same shape as {@link LabelCreation} with the reverse-write snapshot for
+ * the fields that changed, plus the card's second-line content.
+ */
+export interface LabelEdit {
+  label: IssueLabel;
+  summary: string;
+  undo: Extract<IssueWriteUndo, { kind: "label-edit" }>;
+  content: IssueWriteContent;
+}
+
+/** Both label writes share the card-minting shape the route consumes. */
+export type LabelWrite = LabelCreation | LabelEdit;
+
+/** Compare two label colors ignoring `#` and casing (`#D73A4A` === `d73a4a`). */
+function sameColor(a: string | undefined, b: string | undefined): boolean {
+  const norm = (v: string | undefined) => (v ?? "").trim().replace(/^#/, "").toLowerCase();
+  return norm(a) === norm(b);
 }
 
 /**
@@ -467,11 +498,11 @@ function clipComment(body: string): string {
 /**
  * Map a `TrackerResolutionError` to a 422 listing the valid options. On the
  * agent's create/edit paths (`opts.labelHint`), an unknown-label rejection also
- * points at the two sanctioned ways to mint the label (SHI-230) — before that,
+ * points at the two sanctioned ways to mint the label (planning#232) — before that,
  * the dead end forced users to create labels by hand in the tracker UI.
  */
 function toResolutionServiceError(err: unknown, opts?: { labelHint?: boolean }): never {
-  // A refusal, not a resolution failure (SHI-86) — 403, and no options list,
+  // A refusal, not a resolution failure (planning#88) — 403, and no options list,
   // because there is no other value the agent could have passed that would work.
   if (err instanceof TrackerPermissionError) {
     throw new ServiceError(403, err.message);
@@ -489,7 +520,7 @@ function toResolutionServiceError(err: unknown, opts?: { labelHint?: boolean }):
 
 /**
  * A short " (priority: High, labels: security, bug)" suffix for a write summary,
- * so the provenance card reflects the labels/priority that were set (SHI-92).
+ * so the provenance card reflects the labels/priority that were set (planning#94).
  * Empty when the issue has no labels and no explicit priority.
  */
 function describeAttrs(issue: TrackerIssue): string {
@@ -514,7 +545,7 @@ async function loadIssueOr404(tracker: Tracker, id: string): Promise<TrackerIssu
 }
 
 /**
- * Create a new tracker label so `--label` can apply it (SHI-230 — the
+ * Create a new tracker label so `--label` can apply it (planning#232 — the
  * `shipit issue label create` verb). Do-then-surface like the other writes:
  * the label is created immediately and the route mints a provenance card whose
  * undo deletes the label if it's still unused. A same-name label already
@@ -540,7 +571,17 @@ export async function createLabelForTracker(
   }
   const clash = existing.find((l) => l.name.toLowerCase() === trimmed.toLowerCase());
   if (clash) {
-    throw new ServiceError(409, `Label "${clash.name}" already exists on ${tracker.label} — nothing to create.`);
+    // Deliberately still an error, not update-if-different (planning#88): this path is
+    // also reached by `--create-missing-labels`, where the name came from a
+    // `--label` typo, and a create that repainted a live label carried by
+    // hundreds of issues is the worst outcome a typo could have. Correcting a
+    // label is a deliberate act, so it gets a deliberate verb — which the
+    // message now names, because before it the rejection was a dead end.
+    throw new ServiceError(
+      409,
+      `Label "${clash.name}" already exists on ${tracker.label} — nothing to create. ` +
+        `To change its color, name or description, run \`shipit issue label edit --name "${clash.name}"\`.`,
+    );
   }
   let created: IssueLabel & { id: string };
   try {
@@ -556,8 +597,148 @@ export async function createLabelForTracker(
 }
 
 /**
+ * Correct an existing label — rename, recolor, re-describe (planning#88 —
+ * `shipit issue label edit`). Do-then-surface like every other write: applied
+ * immediately, with a provenance card whose Undo restores the prior values.
+ *
+ * This closes the gap `label create` left open. Create refuses a name that
+ * already exists in any casing (deliberately — see below), and there is no
+ * delete, so a label minted with the wrong color or casing was permanently
+ * wrong through ShipIt: docs/247 hit exactly that with `Feature` and
+ * `priority: high` minted grey by a reachability probe, on 147 issues between
+ * them, with nothing in the product able to fix it.
+ *
+ * **Rename is in scope, and it is not a re-labeling.** Both backends rename in
+ * place, so every issue carrying the label keeps carrying it and simply displays
+ * the new name — which is also what makes the undo a true reverse write. The
+ * `Bug` / `bug` casing collision that motivated this can only be fixed by a
+ * rename.
+ *
+ * **`label create` keeps failing on an existing name** rather than becoming
+ * update-if-different. Create is reachable from `--create-missing-labels`, where
+ * the name comes from a `--label` typo; a create that quietly repainted a live
+ * label carried by 147 issues would be the worst possible outcome of a typo.
+ * Correcting a label is a deliberate act, so it gets a deliberate verb.
+ *
+ * Failure modes are all pre-write: an unknown label is a 404 naming the valid
+ * set, a new name colliding with a DIFFERENT label is a 409 (neither backend
+ * merges cleanly, and a silent merge is unrecoverable), and an edit that would
+ * change nothing is a 409 rather than a card with a meaningless Undo.
+ */
+export async function updateLabelForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  name: string,
+  patch: { name?: string; color?: string; description?: string },
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<LabelEdit> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new ServiceError(400, "A label name is required");
+  const newName = patch.name?.trim();
+  if (patch.name !== undefined && !newName) {
+    throw new ServiceError(400, "The new label name cannot be empty");
+  }
+  if (patch.name === undefined && patch.color === undefined && patch.description === undefined) {
+    throw new ServiceError(400, "At least one of name, color or description is required");
+  }
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+
+  let target: (IssueLabel & { id: string; description?: string }) | null;
+  try {
+    target = await tracker.findLabel(trimmed);
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
+  if (!target) {
+    // Name the valid set the way every other resolution failure does, so the
+    // agent corrects the name instead of retrying blind. Best-effort: a failed
+    // list must not mask the real answer ("no such label").
+    let options: string[] = [];
+    try {
+      options = (await tracker.listLabels()).map((l) => l.name).slice(0, 50);
+    } catch {
+      // Leave the list empty rather than replacing "no such label" with a
+      // secondary failure the agent can do nothing with.
+    }
+    const list = options.length > 0 ? ` Existing labels: ${options.join(", ")}.` : "";
+    throw new ServiceError(404, `No label "${trimmed}" exists on ${tracker.label}.${list}`);
+  }
+
+  // A rename onto a name a DIFFERENT label already holds is refused: GitHub
+  // rejects it outright and Linear would leave two labels the agent then has to
+  // reconcile, so neither backend gives us a merge worth exposing. A
+  // casing-only rename (`bug` → `Bug`) is the label itself, not a collision.
+  if (newName && newName.toLowerCase() !== target.name.toLowerCase()) {
+    let clash: (IssueLabel & { id: string }) | null;
+    try {
+      clash = await tracker.findLabel(newName);
+    } catch (err) {
+      throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+    }
+    if (clash) {
+      throw new ServiceError(
+        409,
+        `Label "${clash.name}" already exists on ${tracker.label}, so "${target.name}" cannot be renamed to ` +
+          `"${newName}" — ShipIt does not merge labels. Re-label the issues onto "${clash.name}" instead.`,
+      );
+    }
+  }
+
+  // Narrow the patch to what actually differs, so the undo snapshot restores
+  // only fields this write really changed.
+  const renamed = newName !== undefined && newName !== target.name;
+  const recolored = patch.color !== undefined && !sameColor(patch.color, target.color);
+  const redescribed = patch.description !== undefined && patch.description !== (target.description ?? "");
+  if (!renamed && !recolored && !redescribed) {
+    throw new ServiceError(
+      409,
+      `Label "${target.name}" already has those values on ${tracker.label} — nothing to change.`,
+    );
+  }
+
+  let updated: IssueLabel & { id: string; description?: string };
+  try {
+    updated = await tracker.updateLabel(target.id, {
+      ...(renamed && newName ? { name: newName } : {}),
+      ...(recolored ? { color: patch.color! } : {}),
+      ...(redescribed ? { description: patch.description! } : {}),
+    });
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+
+  const parts: string[] = [];
+  if (renamed) parts.push(`renamed "${target.name}" → "${updated!.name}"`);
+  if (recolored) parts.push(`color → ${updated!.color ?? patch.color}`);
+  if (redescribed) parts.push(patch.description ? "description updated" : "description cleared");
+  const attrParts: string[] = [];
+  if (recolored) attrParts.push(`color → ${updated!.color ?? patch.color}`);
+  if (redescribed) attrParts.push(patch.description ? "description updated" : "description cleared");
+  return {
+    label: { name: updated!.name, ...(updated!.color ? { color: updated!.color } : {}) },
+    summary: `edited label ${parts.join(", ")}`,
+    undo: {
+      kind: "label-edit",
+      // The id AFTER the write: on GitHub the name IS the id, so a rename moves
+      // it, and undo has to address the label as it now stands.
+      labelId: updated!.id,
+      ...(renamed ? { previousName: target.name } : {}),
+      // Only restorable when the tracker told us the prior color; both do in
+      // practice (every label carries one), so the omission is a formality.
+      ...(recolored && target.color ? { previousColor: target.color } : {}),
+      ...(redescribed ? { previousDescription: target.description ?? "" } : {}),
+    },
+    content: {
+      ...(renamed ? { label: { before: target.name, after: updated!.name } } : {}),
+      ...(attrParts.length > 0 ? { attrs: attrParts.join(" · ") } : {}),
+    },
+  };
+}
+
+/**
  * Create any requested label that doesn't exist yet — the `--create-missing-
- * labels` opt-in on create/edit (SHI-230). Matching is case-insensitive against
+ * labels` opt-in on create/edit (planning#232). Matching is case-insensitive against
  * the tracker's existing set (the same contract label RESOLUTION uses), so a
  * mere casing difference never forks a duplicate label. Returns one
  * `LabelCreation` per label actually minted, for the per-label provenance
@@ -592,22 +773,61 @@ async function createMissingLabels(tracker: Tracker, names: string[]): Promise<L
 }
 
 /**
+ * docs/262 req 25 — the plugin repository a create is filing feedback on, when
+ * that is what it is doing.
+ *
+ * Keyed on **the name the create was addressed through** — see
+ * `addressedAsPluginRepo` for why the destination alone is not enough.
+ */
+function pluginFeedbackTarget(
+  registry: TrackerRegistry,
+  trackerId: string,
+  addressedAs: string | undefined,
+  github?: GitHubTrackerContext,
+): PluginFeedbackRepo | undefined {
+  const destination = registry.destinationFor(trackerId as TrackerId);
+  if (!addressedAsPluginRepo(destination, addressedAs)) return undefined;
+  const name = addressedAs?.trim().toLowerCase();
+  const repos = (github?.pluginRepos ?? []).filter(
+    (r) => pluginFeedbackTrackerId(r).toLowerCase() === trackerId.toLowerCase(),
+  );
+  return name ? repos.find((r) => r.name.toLowerCase() === name) ?? repos[0] : repos[0];
+}
+
+/**
  * Create a new issue in the tracker's bound scope (docs/187). Unlike the other
  * writes there is no prior state to snapshot — the undo target is the new
  * issue's own id, and undo cancels/closes it. The route stamps `card.issueId`
  * from `outcome.issue.id`.
+ *
+ * When the create is addressed at a declared **plugin repository** (docs/262
+ * req 25), the session's plugin context — repository name, declared ref, exact
+ * running commit — is appended to the body here rather than left to the caller.
+ * The agent cannot read that commit from the checkout it browses, and req 25
+ * asks the report to carry it; server-side is also the only place that knows it
+ * for the UI path as well as the shim's.
  */
 export async function createIssueForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
   title: string,
   body: string,
-  opts: { labels?: string[]; priority?: string; parent?: string; createMissingLabels?: boolean } = {},
+  opts: {
+    labels?: string[];
+    priority?: string;
+    parent?: string;
+    createMissingLabels?: boolean;
+    /** The declared name the create was addressed through (docs/262 req 25). */
+    trackerName?: string;
+  } = {},
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<IssueWriteOutcome> {
-  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
-  // Opt-in only (SHI-230): mint unknown labels BEFORE the create so label
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  const tracker = resolveConfiguredTrackerIn(registry, trackerId);
+  const feedbackRepo = pluginFeedbackTarget(registry, trackerId, opts.trackerName, github);
+  const finalBody = feedbackRepo ? withPluginFeedbackContext(body, feedbackRepo) : body;
+  // Opt-in only (planning#232): mint unknown labels BEFORE the create so label
   // resolution can't reject them. Without the flag an unknown label still fails
   // (with the label-create hint) — a typo must not silently spawn a label.
   const labelCreations =
@@ -618,7 +838,7 @@ export async function createIssueForTracker(
   try {
     issue = await tracker.createIssue({
       title,
-      body,
+      body: finalBody,
       ...(opts.labels && opts.labels.length > 0 ? { labels: opts.labels } : {}),
       ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
       ...(opts.parent !== undefined ? { parent: opts.parent } : {}),
@@ -662,7 +882,7 @@ export async function commentOnIssueForTracker(
 }
 
 /**
- * Rewrite one of the issue's comments (SHI-86 — `shipit issue comment edit`);
+ * Rewrite one of the issue's comments (planning#88 — `shipit issue comment edit`);
  * undo restores the body it replaced.
  *
  * A comment was write-once before this: an agent that posted a wrong or stale
@@ -707,7 +927,7 @@ export async function editCommentForTracker(
 
 /**
  * Edit title, description, labels, and/or priority; snapshot the prior values
- * for undo. Labels are ADDITIVE (SHI-92): the requested names are merged into
+ * for undo. Labels are ADDITIVE (planning#94): the requested names are merged into
  * the issue's existing labels rather than replacing them, so editing labels can
  * never silently drop a label the agent didn't mention. The adapter's
  * `updateIssue({ labels })` is a wholesale replace, so we pass it the merged
@@ -723,7 +943,7 @@ export async function updateIssueForTracker(
   opts: { createMissingLabels?: boolean } = {},
 ): Promise<IssueWriteOutcome> {
   const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
-  // Opt-in only (SHI-230): mint unknown labels up front, mirroring create.
+  // Opt-in only (planning#232): mint unknown labels up front, mirroring create.
   const labelCreations =
     opts.createMissingLabels && patch.labels && patch.labels.length > 0
       ? await createMissingLabels(tracker, patch.labels)
@@ -755,7 +975,7 @@ export async function updateIssueForTracker(
     ...(patch.description !== undefined ? { previousDescription: prior.description ?? "" } : {}),
     ...(patch.labels !== undefined ? { previousLabels: priorLabelNames } : {}),
     ...(patch.priority !== undefined ? { previousPriority: prior.priority.level } : {}),
-    // Reparent (SHI-206): snapshot the prior parent's internal id so undo restores
+    // Reparent (planning#208): snapshot the prior parent's internal id so undo restores
     // the exact relation (or `null` when it was top-level → undo detaches back).
     ...(patch.parent !== undefined ? { previousParentId: prior.parentId ?? null } : {}),
   };
@@ -864,7 +1084,7 @@ export async function undoIssueWrite(
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<void> {
-  // docs/248 req 11's carve-out — an Undo acts on the destination recorded on
+  // docs/248-declared-issue-trackers req 11's carve-out — an Undo acts on the destination recorded on
   // the card, even when the repository no longer declares it. This is the one
   // path that does NOT go through the narrowed `get()`; see
   // `TrackerRegistry.getRecorded`.
@@ -911,10 +1131,10 @@ export async function undoIssueWrite(
           ...(card.undo.previousTitle !== undefined ? { title: card.undo.previousTitle } : {}),
           ...(card.undo.previousDescription !== undefined ? { description: card.undo.previousDescription } : {}),
           // Replace the label set back to the prior one, and re-apply the prior
-          // priority level (SHI-92). previousLabels is the exact set to restore.
+          // priority level (planning#94). previousLabels is the exact set to restore.
           ...(card.undo.previousLabels !== undefined ? { labels: card.undo.previousLabels } : {}),
           ...(card.undo.previousPriority !== undefined ? { priority: card.undo.previousPriority } : {}),
-          // Restore the prior parent relation (SHI-206): the snapshotted internal
+          // Restore the prior parent relation (planning#208): the snapshotted internal
           // id (which the adapter resolves verbatim), or `null` to detach back to
           // top-level when the issue had no parent before the edit.
           ...(card.undo.previousParentId !== undefined ? { parent: card.undo.previousParentId } : {}),
@@ -945,8 +1165,23 @@ export async function undoIssueWrite(
         return;
       case "label":
         // Delete the created label only while nothing carries it; the adapter
-        // throws an explanation otherwise, which surfaces on the card (SHI-230).
+        // throws an explanation otherwise, which surfaces on the card (planning#232).
         await tracker.deleteUnusedLabel(card.undo.labelId, card.undo.labelName);
+        return;
+      case "label-edit": {
+        // Restore exactly the fields the edit changed (planning#88). A rename undoes
+        // in place like the forward write did, so no issue is re-labeled either
+        // way; a field the edit never touched is absent from the snapshot and is
+        // therefore left alone rather than being reset to a guess.
+        const restore = {
+          ...(card.undo.previousName !== undefined ? { name: card.undo.previousName } : {}),
+          ...(card.undo.previousColor !== undefined ? { color: card.undo.previousColor } : {}),
+          ...(card.undo.previousDescription !== undefined
+            ? { description: card.undo.previousDescription }
+            : {}),
+        };
+        await tracker.updateLabel(card.undo.labelId, restore);
+      }
     }
   } catch (err) {
     toResolutionServiceError(err);
@@ -959,7 +1194,7 @@ export async function undoIssueWrite(
  * Store a Linear API token after validating it can reach the API. We validate
  * by listing teams (cheap, read-only); the returned teams are handed back as a
  * **lookup**, so the settings UI can show which team keys are available for a
- * `kind: linear` declaration. docs/248 req 4 — picking one here no longer binds
+ * `kind: linear` declaration. docs/248-declared-issue-trackers req 4 — picking one here no longer binds
  * anything: the team lives in the repository's declaration.
  */
 export async function connectLinear(
@@ -980,7 +1215,7 @@ export async function connectLinear(
 }
 
 /**
- * List the workspace's Linear teams. docs/248 req 4 — a lookup for *writing* a
+ * List the workspace's Linear teams. docs/248-declared-issue-trackers req 4 — a lookup for *writing* a
  * declaration (which team keys does this credential reach?), not a picker that
  * persists a binding.
  */

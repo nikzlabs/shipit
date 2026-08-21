@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
+import {
+  type GitRemoteCredentialResolver,
+  credentialledGit,
+  resolveTreeRemoteCredential,
+} from "../shared/git-remote-credential.js";
 import type { GitManager } from "../shared/git.js";
 
 /** Generate a short random branch suffix for the "shipit/" namespace. */
@@ -14,9 +19,21 @@ export function generateBranchPrefix(): string {
   return `shipit/${  generateBranchSlug()}`;
 }
 
-/** Hash a repo URL to a short 16-char hex string for use as a directory name. */
+/**
+ * Hash a repo URL to a short 16-char hex string for use as a directory name.
+ *
+ * Hashed credential-free (docs/262 req 19): the stores now key their rows by
+ * the stripped URL, so a caller still holding the credentialed spelling — the
+ * claim route takes one straight off the request path — would otherwise
+ * address a DIFFERENT bare cache, dep cache and per-repo memory directory than
+ * the repo row it just resolved, splitting one repository across two of each.
+ *
+ * Only a URL carrying userinfo hashes differently than before; a clean URL is
+ * unchanged, so no existing cache directory moves that the credential scrub
+ * (`startup-tasks.ts`) was not already going to orphan.
+ */
 export function repoUrlToHash(repoUrl: string): string {
-  return crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
+  return crypto.createHash("sha256").update(stripRemoteUrlCredentials(repoUrl)).digest("hex").slice(0, 16);
 }
 
 /**
@@ -47,6 +64,69 @@ export function stripUrlCredentials(url: string): string {
 }
 
 /**
+ * The strip used when a remote URL is about to be **persisted** — stored in a
+ * row, or written into a git config (docs/262 req 19: "a credential a user
+ * happens to type into a repository URL is not kept either").
+ *
+ * Strictly stronger than {@link stripUrlCredentials}, and deliberately a
+ * separate function rather than a change to it: that helper's narrow scope is
+ * right for the surfaces it was written for (showing a URL back to its own
+ * owner, redaction, the identity key), and widening it there would change
+ * every one of them at once. This one is used at the write boundary only.
+ *
+ * Three shapes, all reachable through `setGitRemote`, which takes whatever the
+ * user types — the first was the reported violation, the other two were found
+ * by the independent review of that fix:
+ *
+ *  - **http(s) userinfo** — `https://x-access-token:<pat>@host/o/r.git`.
+ *    Removed whole, as `stripUrlCredentials` does.
+ *  - **a password in ANY other scheme** — `ssh://git:pw@host/o/r.git`. The
+ *    *password* goes; the **username stays**, because for ssh that is the login
+ *    identity (`git@`) and not a secret, and dropping it breaks the remote.
+ *  - **query and fragment** — `…/o/r.git?access_token=pw`. Dropped wholesale
+ *    for any parseable URL. A git remote has no meaningful query or fragment
+ *    (the same judgement `sanitizeRemoteUrlForInventory` already makes), and
+ *    both are places a token demonstrably shows up.
+ *
+ * An scp-style remote (`git@github.com:o/r.git`) does not parse as a URL and is
+ * returned untouched — its `git@` is an ssh login, and a token pasted in that
+ * position cannot be told apart from one. The cross-session display boundary
+ * (`sanitizeRemoteUrlForInventory`) still fails closed on that shape.
+ */
+export function stripRemoteUrlCredentials(url: string): string {
+  const trimmed = (url ?? "").trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return trimmed; // scp-style, or too malformed to reason about — see above.
+  }
+  const isHttp = parsed.protocol === "http:" || parsed.protocol === "https:";
+  const carries = Boolean((isHttp && parsed.username) || parsed.password || parsed.search || parsed.hash);
+  // Return the ORIGINAL string when there is nothing to remove: `new URL`
+  // normalizes (a bare host gains a trailing slash), and a stored URL that
+  // silently changes shape is a row key that stops matching itself.
+  if (!carries) return trimmed;
+  if (isHttp) parsed.username = "";
+  parsed.password = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+/**
+ * True when persisting `url` would persist a credential — i.e. when
+ * {@link stripRemoteUrlCredentials} would change it (docs/262 req 19).
+ *
+ * Defined as "the strip changes it" rather than as a second parser, so the
+ * detector and the remedy can never disagree about what a credential is.
+ */
+export function hasUrlCredentials(url: string): boolean {
+  const trimmed = (url ?? "").trim();
+  return stripRemoteUrlCredentials(trimmed) !== trimmed;
+}
+
+/**
  * Canonicalize a repo URL for *identity* comparison (a comparison key, NOT a
  * value to persist or clone from): strip credentials, lowercase the scheme and
  * host, and drop a trailing slash and a trailing `.git`. Two URLs that point at
@@ -68,16 +148,34 @@ export function canonicalRepoKey(url: string): string {
   }
 }
 
+/** Why `pushToOrigin` returned without pushing anything. */
+export type PushSkipReason = "no-origin" | "no-branch";
+
 /**
  * Push the current branch to origin. Returns the branch name on success, or null
  * if there is no origin remote or no current branch.
+ *
+ * `onSkip` names WHICH of those two conditions applied. It exists because the
+ * bare `null` is indistinguishable between them and, on the post-turn auto-push
+ * path, was the last fully silent exit left in the module: a commit landed, the
+ * push returned null, and nothing on any surface said so. Callers that genuinely
+ * do not care (the file-editing fire-and-forget push) simply omit it.
  */
-export async function pushToOrigin(git: GitManager): Promise<string | null> {
+export async function pushToOrigin(
+  git: GitManager,
+  onSkip?: (reason: PushSkipReason) => void,
+): Promise<string | null> {
   const remotes = await git.getRemotes();
   const origin = remotes.find((r) => r.name === "origin");
-  if (!origin) return null;
+  if (!origin) {
+    onSkip?.("no-origin");
+    return null;
+  }
   const branch = await git.getCurrentBranch();
-  if (!branch) return null;
+  if (!branch) {
+    onSkip?.("no-branch");
+    return null;
+  }
   await git.push("origin", branch);
   return branch;
 }
@@ -183,7 +281,7 @@ export async function fetchAndResolveDefaultBranch(
   // below intentionally does not await the result — the fetch path doesn't
   // need to block on credential invalidation.
   onAuthError?: (err: Error) => unknown,
-  opts?: { skipFetch?: boolean },
+  opts?: { skipFetch?: boolean; resolveRemoteCredential?: GitRemoteCredentialResolver },
 ): Promise<{ resetTarget: string | undefined; fetched: boolean; fetchDurationMs: number; authError: boolean }> {
   const t0 = Date.now();
   // `GIT_TERMINAL_PROMPT=0` makes git fail fast instead of prompting on the
@@ -200,11 +298,23 @@ export async function fetchAndResolveDefaultBranch(
   // paths to arbitrary configs/binaries) and refuses to spawn — so we opt in
   // explicitly. The env here is ours, not user-controlled, so the protection
   // is a false positive for this code path.
-  const sg = simpleGit(workspaceDir, {
+  const gitOptions = {
     timeout: { block: FETCH_STALL_TIMEOUT_MS },
     unsafe: { allowUnsafeConfigPaths: true, allowUnsafeEditor: true },
-  })
-    .env({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
+  };
+  // docs/266-orchestrator-git-trust-boundary E3 (planning#404) — this fetch runs on a SESSION workspace, so
+  // under E1 it has dropped to the session's uid and can no longer read the
+  // orchestrator's PAT. Without a credential of its own it degrades to an
+  // anonymous fetch, which is invisible on a public repo and an auth failure on
+  // a private one — a failure this function reports as `authError`, i.e. as a
+  // possibly-revoked token. `null` when the drop does not apply (local mode,
+  // tests, a root-owned tree), leaving this path byte-for-byte as it was.
+  const credential = opts?.skipFetch
+    ? null
+    : await resolveTreeRemoteCredential(workspaceDir, "origin", opts?.resolveRemoteCredential);
+  const sg = credential
+    ? credentialledGit(workspaceDir, credential, gitOptions)
+    : safeSimpleGit(workspaceDir, gitOptions).env({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
   let fetched = false;
   let authError = false;
   try {
@@ -272,7 +382,7 @@ export async function fetchAndResolveDefaultBranch(
  * ref, or any git error just skips the sync.
  */
 export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Promise<void> {
-  const sg = simpleGit(workspaceDir);
+  const sg = safeSimpleGit(workspaceDir);
   // Resolve origin's default branch name (origin/HEAD → main/master), then
   // fall back to probing the common names if the symbolic ref isn't set.
   let branch: string | undefined;
@@ -337,7 +447,7 @@ export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Prom
  *     dir is exactly "the commit the prefetcher last advanced `main`
  *     to" — the same commit a fresh `--local` clone would see as its
  *     `origin/HEAD`.
- *   - The workspace clone is read via `simpleGit(workspaceDir)` rather
+ *   - The workspace clone is read via `safeSimpleGit(workspaceDir)` rather
  *     than through `RepoGit`, since `RepoGit` models the bare-cache
  *     side. We try `origin/HEAD` first (`cloneFromCache` preserves it)
  *     and fall back to `origin/main` / `origin/master` for older
@@ -348,9 +458,9 @@ export async function isWorkspaceCloneInSyncWithCache(
   cacheDir: string,
 ): Promise<boolean> {
   try {
-    const cacheHead = (await simpleGit(cacheDir).raw(["rev-parse", "HEAD"])).trim();
+    const cacheHead = (await safeSimpleGit(cacheDir).raw(["rev-parse", "HEAD"])).trim();
     if (!cacheHead) return false;
-    const sg = simpleGit(workspaceDir);
+    const sg = safeSimpleGit(workspaceDir);
     for (const ref of ["origin/HEAD", "origin/main", "origin/master"]) {
       try {
         const cloneHead = (await sg.raw(["rev-parse", ref])).trim();

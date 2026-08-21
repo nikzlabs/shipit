@@ -1,4 +1,4 @@
-import { usePrStore } from "../../../stores/pr-store.js";
+import { usePrStore, useActiveAutoMerge } from "../../../stores/pr-store.js";
 import type { PrCardState } from "../../../stores/pr-store.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
@@ -26,10 +26,13 @@ export function OpenPhase({
   // are hoisted to a full-width row below the header on mobile — see
   // PrStatusActions for why (the card's icon cluster narrows every row here).
   const isMobile = useIsMobile();
+  // The arming that can still act on THIS pull request — never the raw card
+  // value, which can carry an arming the PR already outlived (docs/077). Read
+  // above the early return below: hooks run unconditionally.
+  const autoMerge = useActiveAutoMerge(sessionId);
   if (!pr) return null;
 
   const autoFix = card.autoFix;
-  const autoMerge = card.autoMerge;
   const isAutoFixRunning = autoFix?.status === "running";
   const isAutoFixExhausted = autoFix?.status === "exhausted";
   const isCiFailed = ciDisplay.kind === "failure";

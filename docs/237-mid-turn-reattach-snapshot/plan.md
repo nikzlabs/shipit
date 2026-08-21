@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-250
+issue: planning#252
 description: Rebuild a running turn from one atomic server snapshot at attach, instead of stitching an HTTP history read onto a separately-cursored WS replay.
 ---
 
@@ -145,7 +145,7 @@ not actually guaranteed on a foreground reconnect**.
 
 ### 1. One reactivation opened several sockets
 
-`useWebSocket.handleForeground` is wired to `visibilitychange`, `focus`,
+`useWebSocket.handleForeground` was wired to `visibilitychange`, `focus`,
 `pageshow` and `online`. A single window reactivation fires two or three of
 them in separate event-loop turns, and each called `reconnectForForeground()`
 unconditionally — even on a socket that was already OPEN. React commits between

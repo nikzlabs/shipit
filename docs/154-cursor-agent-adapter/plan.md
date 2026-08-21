@@ -1,10 +1,38 @@
 ---
 title: Cursor agent adapter
 description: Optional pinned installation of third-party agent CLIs, with Cursor Agent as the first new backend using ShipIt's AgentProcess adapter boundary.
-issue: https://linear.app/shipit-ai/issue/SHI-32
+issue: planning#34
 ---
 
 # Cursor Agent adapter and optional CLI installation
+
+> **The installation half of this doc has shipped, elsewhere and differently.**
+> `docs/252-custom-models` phase 9 (req 14) implemented install-time harness
+> selection in 2026-08, and it — not this doc — is the design of record for it.
+> What it built: one `SHIPIT_HARNESSES` list (default `claude,codex`) as a build
+> arg on **every** image that carries the CLIs, consumed by
+> `docker/agent-cli/install-agent-clis.sh`, which writes the install report to
+> `/opt/shipit/agents/installed.json` for `AgentRegistry` to read instead of
+> probing `$PATH`.
+>
+> Three things below were **rejected** on the way, and should not be revived from
+> here: a boolean and a version variable per CLI (a list is one arg however many
+> harnesses the catalogue grows to, and versions stay in the docs/141 lockfile
+> where Renovate and the contract test already govern them); a per-CLI install
+> manifest with its own sources and checksums (the committed
+> `docker/agent-cli/package-lock.json` already is that, integrity-verified); and
+> `/opt/shipit/agents/<id>/bin/<binary>` prefixes with a `resolveAgentBinary`
+> resolver (the CLIs stay in the shared lockfile-installed tree and the
+> deselected ones are pruned out of it).
+>
+> **The rest of this document stands** — the Cursor *adapter*: its CLI
+> invocation, auth, event parsing, capabilities, lifecycle and tests. Nothing
+> about Cursor as a harness has been built, and adding one now means a
+> `HarnessDef` row in `src/server/shared/catalogue/harnesses.ts`, an entry in
+> `docker/agent-cli/install-agent-clis.sh`'s harness map, and the id in
+> `deployment/vps/setup.sh`'s `SUPPORTED_HARNESSES` prompt list — not new install
+> plumbing. `src/server/shared/agent-cli-install.test.ts` fails if any of the
+> three drifts from the others. Read the installation sections below as history.
 
 ShipIt already treats agent backends as pluggable process adapters. Claude Code
 and Codex are installed in the session image, detected by the shared
@@ -82,6 +110,9 @@ Cursor should use the same adapter seam rather than introducing a separate
 execution path.
 
 ## Installation model
+
+**Superseded by docs/252 phase 9 — see the note at the top of this document.** The
+sections down to *Production setup flow* record what was proposed, not what exists.
 
 ### Deployment config
 
@@ -277,7 +308,7 @@ Initial Cursor capabilities should be conservative:
   supportedPermissionModes: [],
   toolNames: ["shell", "file_read", "file_write", "file_edit"],
   models: ["auto"],              // replace with verified Cursor model ids
-  supportsReview: false,         // keep off until subagent + MCP review bridge is proven
+  supportsReview: false,         // until a shell tool + subagent primitive are proven (docs/266 item 15 — NOT an MCP bridge; that requirement died with docs/220)
   supportsSteering: false,       // keep off until mid-turn input behavior is proven
 }
 ```
@@ -471,13 +502,11 @@ the real CLI.
 
 ## Rollout phases
 
-### Phase 1 — Optional install plumbing
+### Phase 1 — Optional install plumbing — **done, as docs/252 phase 9**
 
-- Add install manifest support for enabled/disabled CLIs.
-- Add production setup prompt and `.env` output.
-- Add Docker build args and installer script.
-- Add installed report under `/opt/shipit/agents/installed.json`.
-- Keep Cursor disabled by default.
+Shipped in a different shape (one `SHIPIT_HARNESSES` list, the docs/141 lockfile as the
+manifest); see the note at the top. Adding Cursor to it is a `HarnessDef` row plus an
+entry in `docker/agent-cli/install-agent-clis.sh`'s harness map.
 
 ### Phase 2 — Registry and UI availability
 

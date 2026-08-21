@@ -666,7 +666,7 @@ describe("Docker API proxy", () => {
       expect(container?.hostConfig?.NetworkMode).toBe("shipit-session-abc123");
     });
 
-    // --- SHI-135: create-time network-ownership enforcement ---
+    // --- planning#137: create-time network-ownership enforcement ---
     // A named NetworkMode (or NetworkingConfig entry) must belong to the session,
     // mirroring the POST /networks/{id}/connect ownership check. Otherwise a child
     // container could be created directly on the orchestrator's network, where its

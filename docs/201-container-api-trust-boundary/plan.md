@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-129
+issue: planning#131
 title: Container ↔ browser trust boundary on the orchestrator API
 description: Default-deny the orchestrator API for session-container-originated requests, restricting them to a narrow per-session callback allowlist identified by bridge IP.
 ---
@@ -23,11 +23,11 @@ plane: add/edit/delete MCP servers (`POST/PUT/DELETE /api/mcp-servers`, whose
 `refreshAgentEnvForAllSessions` makes the blast radius **global across all sessions**),
 write secrets for any repo (`PUT /api/secrets`, no ownership check), and reach the rest of
 `/api/*` generally. This is the same containment family as `docs/172-agent-containment`,
-and it is the prerequisite for making the egress allowlist (SHI-90) UI-configurable
+and it is the prerequisite for making the egress allowlist (planning#92) UI-configurable
 safely — until there's a caller trust boundary, no orchestrator-side setting is safe to
 expose as an agent-reachable mutation.
 
-Tracked by **SHI-129**.
+Tracked by **planning#131**.
 
 ## The finding (two caller paths, only one guarded)
 
@@ -204,20 +204,20 @@ widening a deliberate, reviewed, test-enforced act:
 
 ## Out of scope / follow-ups
 
-- **Docker-proxy create-time network ownership (SHI-135) — fixed.** The bridge-IP guard
+- **Docker-proxy create-time network ownership (planning#137) — fixed.** The bridge-IP guard
   here identifies container origins via `getSessionByContainerIp`, which only knows
   session-worker containers. A Docker-enabled agent could create a **child** container on a
   foreign named network (e.g. the orchestrator's) whose IP isn't in that map, so the guard
   treated it as a trusted browser origin. Root cause was an asymmetry in the Docker proxy:
   `POST /networks/{id}/connect` enforced `networkBelongsToSession` but `POST /containers/create`
   did not. `sanitizeContainerCreate` now ownership-checks any named `NetworkMode` and every
-  `NetworkingConfig.EndpointsConfig` entry, mirroring the connect route. See SHI-135.
+  `NetworkingConfig.EndpointsConfig` entry, mirroring the connect route. See planning#137.
 - Scoping the **global** blast radius of the genuinely-browser-driven mutations
   (`refreshAgentEnvForAllSessions`) is a separate hardening item; this doc removes the
-  container's ability to *trigger* them, which is the SHI-129 acceptance bar.
-- Per-session signed token (SHI-129 direction option b) as defense-in-depth for any future
+  container's ability to *trigger* them, which is the planning#131 acceptance bar.
+- Per-session signed token (planning#131 direction option b) as defense-in-depth for any future
   non-bridge topology — deferred; bridge-IP covers the current containerized model.
-- **The worker end of the same channel (SHI-311) — fixed separately.** This guard covers
+- **The worker end of the same channel (planning#313) — fixed separately.** This guard covers
   agent→orchestrator. It says nothing about agent→**another agent's worker**, which is
   reachable because agent containers share one bridge and each worker binds `0.0.0.0:9100`.
   A request to B's worker is relayed onward by B's own `OrchestratorClient` with **B's**

@@ -227,6 +227,91 @@ describe("Integration: Session Worker IPC", () => {
     expect(status.json()).toMatchObject({ running: false });
   });
 
+  // Identity-guarded kill (prod incident 2026-08-09, session 468191f5): the
+  // orchestrator's fire-and-forget `/agent/kill` executed ~9 minutes late and
+  // SIGTERMed the NEW resident streaming process mid-turn — the kill carried no
+  // victim identity, so the worker killed whoever was resident at execution
+  // time. A kill that names its victim (`runToken`) must be a no-op when the
+  // resident spawn is a different one.
+  it("a kill naming a retired spawn's runToken does NOT kill the newer resident", async () => {
+    // Spawn A occupies the slot, then exits on its own (frees the slot).
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "First" }, runToken: "tok-old" },
+    });
+    const agentA = lastAgent;
+    agentA.emit("done", 0);
+    await waitFor(async () => {
+      const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
+      return status.json().running === false;
+    }, 3000, "slot freed after A's exit");
+
+    // Spawn B is now resident — the live turn the late kill must not touch.
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Second" }, runToken: "tok-new" },
+    });
+    const agentB = lastAgent;
+    expect(agentB).not.toBe(agentA);
+
+    // The late-executing kill, aimed at retired spawn A.
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/kill",
+      payload: { runToken: "tok-old" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ killed: false, staleVictim: true });
+    expect(agentB.killed).toBe(false);
+    const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
+    expect(status.json()).toMatchObject({ running: true, runToken: "tok-new" });
+  });
+
+  it("a kill naming the resident spawn's own runToken still kills it", async () => {
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" }, runToken: "tok-A" },
+    });
+
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/kill",
+      payload: { runToken: "tok-A" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ killed: true });
+    expect(lastAgent.killed).toBe(true);
+    const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
+    expect(status.json()).toMatchObject({ running: false });
+  });
+
+  // A targeted kill against a resident whose identity is unknown (started
+  // without a runToken — legacy caller) refuses rather than guessing: the
+  // failure mode being fixed (killing the wrong live process) is worse than a
+  // leaked process, and the untargeted legacy kill still clears it.
+  it("a kill naming a runToken no-ops when the resident spawn has none", async () => {
+    await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/start",
+      payload: { agentId: "claude", params: { prompt: "Work" } },
+    });
+
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/kill",
+      payload: { runToken: "tok-A" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ killed: false, staleVictim: true });
+    expect(lastAgent.killed).toBe(false);
+  });
+
   it("returns 404 when interrupting with no agent", async () => {
     const res = await worker.getApp().inject({
       method: "POST",
@@ -1236,6 +1321,18 @@ describe("Integration: Session Worker install endpoint", () => {
     }, 5_000, "install completed");
 
   it("distrusts a matching marker when a present-but-empty (non-overlay) dep dir contradicts it", async () => {
+    // The reinstall command has to POPULATE `node_modules`, and that is the
+    // scenario rather than a concession to it. After a flag rollback the deps
+    // are gone and `agent.install` is what puts them back — an install that
+    // leaves the dir empty is the docs/272 laundered-exit failure, and since
+    // that check landed it is reported as one. This fixture used `true` for
+    // both installs, which never modelled a rollback faithfully: it asserted
+    // that an install which fixed nothing "succeeded".
+    //
+    // The subject is unchanged and is the line below: a matching marker over an
+    // empty dep dir must RE-RUN (`started: true`) rather than skip.
+    const reinstall = "mkdir -p node_modules && : > node_modules/dep.js";
+
     // First install stamps the marker (default dep dir = node_modules; `true`
     // does not create it).
     await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
@@ -1247,14 +1344,48 @@ describe("Integration: Session Worker install endpoint", () => {
     fs.mkdirSync(path.join(installWorkspaceDir, "node_modules"));
 
     // The marker still matches exactly, but the empty dep dir contradicts it →
-    // reinstall, NOT skip.
+    // reinstall, NOT skip. (A different command list would also miss the marker,
+    // so the reinstall is re-proven below by the dir it repopulates.)
     const second = await installWorker.getApp().inject({
       method: "POST",
       url: "/install",
-      payload: { commands: ["true"] },
+      payload: { commands: [reinstall] },
     });
     expect(second.json()).toEqual({ started: true });
     await awaitInstallOk();
+    // The reinstall actually ran, which is what the contradiction was for.
+    expect(fs.existsSync(path.join(installWorkspaceDir, "node_modules", "dep.js"))).toBe(true);
+  });
+
+  // docs/272 — the other side of the same predicate. The contradiction above
+  // forces a reinstall; if that reinstall STILL leaves the dep dir empty, the
+  // install did not do the thing it was re-run for, and reporting success would
+  // stamp a marker and open the service gate over a tree that was never built
+  // (the production shape: `npm ci … || [ -x node_modules/.bin/vite ]`).
+  it("fails the reinstall when it leaves the contradicting dep dir empty", async () => {
+    await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
+    await awaitInstallOk();
+    fs.mkdirSync(path.join(installWorkspaceDir, "node_modules"));
+
+    const second = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true || true"] },
+    });
+    expect(second.json()).toEqual({ started: true });
+
+    await waitFor(async () => {
+      const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+      const body = s.json() as { running: boolean; lastResult: { ok: boolean } | null };
+      return !body.running && body.lastResult?.ok === false;
+    }, 5_000, "install reported failure");
+
+    const status = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+    const { lastResult } = status.json() as { lastResult: { ok: boolean; message?: string } };
+    expect(lastResult.message).toContain("node_modules");
+    // No marker — otherwise the NEXT activation skips the install entirely and
+    // re-opens the gate over the same empty tree, with no failure anywhere.
+    expect(fs.existsSync(path.join(installStateDir, ".install-done"))).toBe(false);
   });
 
   it("preserves the marker-skip when the dep dir is populated", async () => {

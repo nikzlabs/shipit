@@ -11,7 +11,7 @@
  * of this function would put the routing rules at each call site instead of in
  * one place.
  *
- * docs/248 req 10 — three reference forms are recognized:
+ * docs/248-declared-issue-trackers req 10 — three reference forms are recognized:
  *
  * | Form                        | Example                          | What this parser reports |
  * |---|---|---|
@@ -63,7 +63,7 @@ export interface ParsedIssueRef {
    */
   tracker: TrackerId | "unknown";
   /**
-   * docs/248 req 10 — the tracker **name** the reference addressed, when it used
+   * docs/248-declared-issue-trackers req 10 — the tracker **name** the reference addressed, when it used
    * one of the two name forms. The resolver looks this up in the declarations;
    * requirement 16's re-point works precisely because the name, not the
    * destination it resolved to, is what a written reference carries.
@@ -74,7 +74,7 @@ export interface ParsedIssueRef {
   /**
    * Tracker-native id for `Tracker.getIssue(id)`: the bare number for GitHub,
    * the key for Linear. For a name form this is the raw suffix as written
-   * (`304` or `SHI-304`) — the resolver normalizes it once it knows the kind.
+   * (`304` or `planning#306`) — the resolver normalizes it once it knows the kind.
    * Absent for an unrecognized shape.
    */
   issueId?: string;
@@ -96,7 +96,7 @@ const GITHUB_SHORT_RE = /^([^/\s]+)\/([^/\s#]+)#(\d+)$/;
  */
 const LINEAR_KEY_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 /**
- * docs/248 req 10 — the two name forms, `planning#123` and `roadmap#SHI-304`.
+ * docs/248-declared-issue-trackers req 10 — the two name forms, `planning#123` and `roadmap#SHI-304`.
  *
  * A free slot in the existing grammar: `GITHUB_SHORT_RE` requires the slash and
  * a bare `#42` is deliberately rejected as ambiguous, so adding this makes no
@@ -165,7 +165,7 @@ export function parseIssueRef(raw: string): ParsedIssueRef {
 }
 
 /**
- * docs/248 req 15 — the single reference **formatter**. Wherever ShipIt produces
+ * docs/248-declared-issue-trackers req 15 — the single reference **formatter**. Wherever ShipIt produces
  * a reference string itself it calls this, so a destination that has a declared
  * name renders in the name form everywhere: the Issues UI, the transcript cards,
  * the branch a seeded session pushes, and the identifier the `shipit issue` shim
@@ -262,7 +262,7 @@ export function extractIssueRefsFromText(text: string | null | undefined): Parse
   // a URL's path (`…/issues/5` has no `#`, but `github.com/o/r#5` would).
   collect(/(?<![\w/])[^/\s#]+\/[^/\s#]+#\d+/g, 0);
   // Bare Linear keys, gated on an `issue` lead-in (the separator allows
-  // `issue SHI-9`, `issue: SHI-9`, `issue #SHI-9`).
+  // `issue planning#11`, `issue: planning#11`, `issue #planning#11`).
   collect(/\bissue\b[\s:#-]*([A-Za-z][A-Za-z0-9]*-\d+)/gi, 1);
   // docs/248 name refs, gated on the same lead-in (`issue planning#42`).
   collect(/\bissue\b[\s:]*([A-Za-z0-9][A-Za-z0-9._-]*#(?:[A-Za-z][A-Za-z0-9]*-\d+|\d+))/gi, 1);

@@ -47,9 +47,9 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 - [x] Status mapping: normalized-type + native-name + ambiguous-error per tracker
 - [x] Assignee resolution: me / name / not-found-candidates / unassign
 - [x] Card persistence, undo, no-duplicate-on-replay (chat-history + service + client store + shim)
-- [x] Write idempotency across crash/retry (SHI-112): replayed identical write performs the tracker write + card exactly once; distinct write still gets its own (`agent-issue-write-idempotency.test.ts`)
+- [x] Write idempotency across crash/retry (planning#114): replayed identical write performs the tracker write + card exactly once; distinct write still gets its own (`agent-issue-write-idempotency.test.ts`)
 
-## Labels + priority on create/edit (SHI-92)
+## Labels + priority on create/edit (planning#94)
 - [x] `Tracker.createIssue`/`updateIssue` accept `labels?`/`priority?`; `TrackerResolutionError.kind` adds `label`/`priority`; `TrackerIssue.labels?`
 - [x] Linear: `resolveLabelIds` (via `issueLabels`) → `labelIds`; `resolveLinearPriority` (normalized/native → numeric); labels on the read fields
 - [x] GitHub: `resolveLabels` validates against `GET .../labels` (reject unknown + candidates); `--priority` rejected (no native field); labels on read
@@ -59,7 +59,7 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 - [x] Docs: `shipit-docs/issues.md` Labels + Priority sections; per-tracker priority behavior documented
 - [x] Tests: adapter (label resolution, priority mapping, rejections), service (additive edit, undo, gh-priority 422), shim (flag parsing, gh-priority reject, --json), chat-history round-trip
 
-## comment edit (SHI-86)
+## comment edit (planning#88)
 See plan.md → *Extension — `comment edit`*. Wanted by docs/247's migration, which
 replays 1,344 comments — the one thing it writes that could not be corrected after.
 - [x] `Tracker.updateComment(issueId, commentId, body)` → `{ comment, previousBody }`; `TrackerPermissionError` (refusal ≠ resolution failure → 403)
@@ -80,7 +80,32 @@ now shows the shape a guard would take, but the undo asymmetry is undecided.
 - [ ] `comment delete` — adapters already have `deleteComment`, reachable today only via a card's Undo. Needs an authorship guard: the id is backend-global, so an unguarded command could delete human discussion the agent never wrote.
 - [ ] Decide how a delete's card presents undo, given that re-posting mints a new id, author and timestamp rather than restoring the original.
 
+## label edit (planning#88)
+See plan.md → *Extension — `label edit`*. `label create` was the only label verb
+and refuses a name that already exists in any casing, so a label minted with the
+wrong color or casing was permanently wrong through ShipIt — docs/247 hit that
+with `Feature`, `priority: high` and `Bug`/`bug`, on 147 issues.
+
+- [x] **Rename is in scope** — both backends rename IN PLACE (`new_name` / `issueLabelUpdate`), so no issue is re-labeled and the undo is exactly symmetric; the `Bug`/`bug` casing collision has no other fix. Guarded: a rename onto a *different* existing label is a 409 (no merging), a casing-only rename is not a collision, a no-op edit is a 409.
+- [x] **`label create` keeps failing on an existing name** — not update-if-different: `--create-missing-labels` feeds it from `--label` typos, so a create must never repaint a live label. The 409 now names `label edit` instead of dead-ending.
+- [x] `Tracker.findLabel` (case-insensitive, carries id + description) + `Tracker.updateLabel`; Linear re-reads the label's team and refuses another team's (`assertOwnTeam`, server-side so a direct relay POST can't bypass it)
+- [x] `updateLabelForTracker` + `undoIssueWrite` `label-edit` case (restores only the fields the write changed; `labelId` is the id AFTER the write, since on GitHub the name IS the id)
+- [x] `POST /api/sessions/:id/issue/label/edit` + relay `/agent-ops/issue/label/edit`; `handleLabelWrite` shares the runner/dedup/card path with `label create`
+- [x] Dedup key: the `issueId` slot names THE LABEL being edited (empty for a create, whose name rides in the hashed content) — two edits to different labels must not collapse
+- [x] Shim `shipit issue label edit --name NAME [--new-name] [--color] [--description]`; `--tracker` required (req 13); `label delete` refused with the reason + a pointer at edit
+- [x] Card: `label-edit` verb + outline tag icon + line 2 (rename delta / recolor), non-navigable like the creation card
+- [x] Docs: `shipit-docs/issues.md` (Editing a label + the no-delete rationale), plan.md, this checklist
+- [x] Tests: adapters (both kinds, team guard), service (undo restores color/name, 404/409s), shim (flags, `--json`, delete refusal), integration (card persistence, replay dedup, distinct-label non-collapse, undo), chat-history round-trip, client card
+
+## Proposed — label delete
+Still out of scope; see plan.md → *Proposed — deleting a label*. Undo would mint
+a fresh label that no issue carries, so it would restore the name and lose every
+association — a button that lies. Both trackers delete labels from their own UI
+with a warning naming how many issues it strips it from, which is the honest
+place for a one-way act (§3, not a gap).
+- [ ] Revisit only if someone can answer what its undo means.
+
 ## Deferred
 - [ ] Jira adapter (transitions-based status) when the tracker lands
 - [ ] Tracker-specific richness (projects/cycles/documents) — not via the interface
-- [ ] GitHub `priority:<value>` label mapping (SHI-92 option b) — deferred; `--priority` rejects on GitHub for now
+- [ ] GitHub `priority:<value>` label mapping (planning#94 option b) — deferred; `--priority` rejects on GitHub for now

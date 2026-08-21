@@ -13,8 +13,10 @@ import {
   buildEnv,
   buildOrchestratorCallbackEnv,
   buildContainerConfig,
+  createContainer,
   destroyContainer,
   prepareOverlayDirs,
+  ensurePnpmStoreDir,
   selfHealWorkspaceOwnership,
   type LifecycleDeps,
   DEP_CACHE_CONTAINER_PATH,
@@ -23,7 +25,14 @@ import {
 } from "./container-lifecycle.js";
 import type { ContainerConfig, SessionContainer } from "./session-container.js";
 import type { DepDirOverlaySpec } from "./overlay-session.js";
+import {
+  INSTALL_MARKER_FILE,
+  sessionSharedStateDir,
+  sessionStateDirForWorkspace,
+} from "./session-state-dir.js";
+import { OVERLAY_VERIFY_FAILURE } from "./overlay-volume.js";
 import type { HostMount } from "../shared/shipit-config.js";
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,7 +44,7 @@ function baseConfig(overrides?: Partial<ContainerConfig>): ContainerConfig {
     sessionDir: "/workspace/sessions/sess-1",
     workspaceDir: "/workspace/sessions/sess-1/workspace",
     sessionStateDir: "/workspace/sessions/sess-1/state",
-    credentialsDir: "/credentials",
+    credentialsDir: TEST_CREDENTIALS_DIR,
     imageName: "shipit-worker:test",
     memoryLimit: 512 * 1024 * 1024,
     cpuQuota: 50_000,
@@ -55,14 +64,36 @@ describe("buildMounts", () => {
     expect(result.binds).toContain("/workspace/sessions/sess-1/workspace:/workspace:rw");
     // docs/138 — the container gets its PRIVATE credentials subtree, never the
     // shared root, so a Claude session can't read Codex's creds and vice versa.
-    expect(result.binds).toContain("/credentials/sessions/sess-1:/credentials:rw");
-    expect(result.binds).not.toContain("/credentials:/credentials:rw");
-    // docs/246 / SHI-286 — every session mounts the container-visible slice of
+    expect(result.binds).toContain(`${TEST_CREDENTIALS_DIR}/sessions/sess-1:/credentials:rw`);
+    expect(result.binds).not.toContain(`${TEST_CREDENTIALS_DIR}:/credentials:rw`);
+    // docs/246 / planning#288 — every session mounts the container-visible slice of
     // its state dir; there is no "no state dir" case left to skip it for.
     expect(result.binds).toContain(
       "/workspace/sessions/sess-1/state/shared:/session-state:rw",
     );
     expect(result.mounts).toHaveLength(0);
+  });
+
+  // docs/262 — read-only, and read-only ONLY: an earlier revision added a
+  // writable twin for the in-container install runner, which made req 7's
+  // guarantee decorative. Install moved to its own container instead.
+  it("docs/262: mounts the plugin root read-only, with no writable view", () => {
+    const result = buildMounts(baseConfig(), undefined, undefined);
+    expect(result.binds).toContain("/workspace/sessions/sess-1/state/plugins:/plugin-store:ro");
+    expect(result.binds.some((b) => b.includes("/state/plugins:") && b.endsWith(":rw"))).toBe(false);
+    // Never a per-generation mount: Docker resolves a bind source's symlinks at
+    // creation, so that shape would pin one generation and make refresh
+    // invisible until the container was recreated.
+    expect(result.binds.some((b) => b.includes("/generations/"))).toBe(false);
+    expect(result.binds.some((b) => b.includes("/active:"))).toBe(false);
+  });
+
+  it("docs/262: stays read-only under a volume-backed session too", () => {
+    const result = buildMounts(baseConfig(), "shipit-state", undefined);
+    const ro = result.mounts.find((m) => m.Target === "/plugin-store");
+    expect(ro?.ReadOnly).toBe(true);
+    expect(ro?.VolumeOptions?.Subpath).toBe("sessions/sess-1/state/plugins");
+    expect(result.mounts.every((m) => m.Target !== "/plugin-store-rw")).toBe(true);
   });
 
   it("docs/138: mounts the per-session credentials subpath when credentialsVolume is set", () => {
@@ -125,7 +156,7 @@ describe("buildMounts", () => {
     expect(result.binds.filter((b) => b.includes("/pnpm-store"))).toHaveLength(0);
   });
 
-  // docs/172 Gap 6 (SHI-45) — /uploads is mounted READ-ONLY. The agent only
+  // docs/172 Gap 6 (planning#47) — /uploads is mounted READ-ONLY. The agent only
   // consumes user uploads, it never writes them, so a `:ro` mount removes the
   // ability for a prompt-injected agent to delete or tamper with them.
   it("mounts uploadsDir at /uploads read-only as a bind mount (dev mode)", () => {
@@ -342,7 +373,7 @@ describe("buildMounts — ops session host mounts (docs/128)", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildEnv", () => {
-  // docs/246 / SHI-286 — the worker writes its install marker here, and the
+  // docs/246 / planning#288 — the worker writes its install marker here, and the
   // state dir is ALWAYS mounted, so this is unconditional. It used to fall back
   // to an in-clone `${workspaceDir}/.shipit` for a session with no mountable
   // state dir (the flat layout); nothing has that shape any more, and the
@@ -430,15 +461,89 @@ describe("buildEnv", () => {
   // image entrypoint chowns the mounts to the SAME uid the orchestrator-side
   // chown helpers use. Unset → not forwarded (entrypoint default + no-op chowns).
   it("docs/150: forwards SHIPIT_SESSION_WORKER_UID when set", () => {
-    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
-      SHIPIT_SESSION_WORKER_UID: "1000",
-    } as NodeJS.ProcessEnv);
-    expect(env).toContain("SHIPIT_SESSION_WORKER_UID=1000");
+    // The GATE reads the injected `procEnv`, but the VALUE comes from
+    // `identityForTarget`, which resolves through the ambient `process.env`
+    // (session-identity roots are unconfigured in unit tests, so it falls back
+    // to `sessionWorkerUid()`). Both have to say 1000, or the ambient value of
+    // the machine running the suite leaks into the assertion — a ShipIt session
+    // container carries a per-session `SHIPIT_SESSION_WORKER_UID` of its own.
+    const prev = process.env.SHIPIT_SESSION_WORKER_UID;
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    try {
+      const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
+        SHIPIT_SESSION_WORKER_UID: "1000",
+      } as NodeJS.ProcessEnv);
+      expect(env).toContain("SHIPIT_SESSION_WORKER_UID=1000");
+      // docs/270 — the PAIR is forwarded, because `gosu <uid>:<gid>` and the
+      // entrypoint's chown loop can no longer assume the two are equal. The gid
+      // is the shared one, which `sessionWorkerGid()` parses out of this same
+      // variable — the orchestrator never reads SHIPIT_SESSION_WORKER_GID, it
+      // only produces it.
+      expect(env).toContain("SHIPIT_SESSION_WORKER_GID=1000");
+    } finally {
+      if (prev === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = prev;
+    }
   });
 
   it("docs/150: does not forward SHIPIT_SESSION_WORKER_UID when unset", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
     expect(env.some((e) => e.startsWith("SHIPIT_SESSION_WORKER_UID="))).toBe(false);
+  });
+
+  // planning#415 — the entrypoint's workspace chown must PRUNE the declared dep
+  // dirs: a docs/183 overlay dep dir's lowerdir is a base generation shared by
+  // every session of the repo, and chowning a lower-only entry forces a copy-up
+  // into the session's private upper layer. The entrypoint cannot read
+  // shipit.yaml (POSIX sh, and the config is resolved — validated, defaulted —
+  // orchestrator-side), so the list travels as SHIPIT_DEP_DIRS, colon-separated,
+  // alongside the uid/gid pair.
+  describe("planning#415: forwards the dep-dir prune list", () => {
+    let tmpDir: string | undefined;
+    afterEach(() => {
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    });
+
+    /** A workspace whose shipit.yaml declares the given `agent:` block. */
+    function workspaceWith(agentBlock: string): string {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "buildenv-depdirs-"));
+      fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), `agent:\n${agentBlock}`);
+      return tmpDir;
+    }
+
+    function envFor(workspaceDir: string, procEnv: NodeJS.ProcessEnv): string[] {
+      return buildEnv(baseConfig({ workspaceDir }), "/workspace", 9100, undefined, undefined, procEnv);
+    }
+
+    it("forwards the workspace's declared dep dirs, colon-separated", () => {
+      const ws = workspaceWith("  dep-dirs:\n    - node_modules\n    - vendor\n");
+      const env = envFor(ws, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env).toContain("SHIPIT_DEP_DIRS=node_modules:vendor");
+    });
+
+    it("falls back to the default list when the workspace has no shipit.yaml", () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "buildenv-depdirs-"));
+      const env = envFor(tmpDir, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env).toContain("SHIPIT_DEP_DIRS=node_modules");
+    });
+
+    it("forwards nothing for an explicitly empty dep-dir list", () => {
+      // `agent.dep-dirs: []` means "no dep dirs" — forwarding an empty value
+      // would be indistinguishable from it anyway (the entrypoint's `[ -n … ]`
+      // reads both as none), so nothing is pushed at all.
+      const ws = workspaceWith("  dep-dirs: []\n");
+      const env = envFor(ws, { SHIPIT_SESSION_WORKER_UID: "1000" } as NodeJS.ProcessEnv);
+      expect(env.some((e) => e.startsWith("SHIPIT_DEP_DIRS="))).toBe(false);
+    });
+
+    it("forwards no dep dirs when the worker uid is unset", () => {
+      // The entrypoint reads the list only on the non-root path, so it rides
+      // the same gate as the uid/gid pair.
+      const ws = workspaceWith("  dep-dirs:\n    - node_modules\n");
+      const env = envFor(ws, {} as NodeJS.ProcessEnv);
+      expect(env.some((e) => e.startsWith("SHIPIT_DEP_DIRS="))).toBe(false);
+    });
   });
 
   // docs/183 — the orchestrator resolves the worker image id at startup into
@@ -464,18 +569,18 @@ describe("buildEnv", () => {
     expect(env.some((e) => e.startsWith("SESSION_WORKER_IMAGE_ID="))).toBe(false);
   });
 
-  // SHI-194 — the orchestrator resolves the worker's pinned base-image digest at
+  // planning#196 — the orchestrator resolves the worker's pinned base-image digest at
   // startup into BASE_IMAGE_DIGEST; buildEnv forwards it so the worker's
   // install-runtime runtimeKey() (the install-marker ABI gate) keys on the same
   // base digest the orchestrator's overlayRuntimeKey() scope uses.
-  it("SHI-194: forwards BASE_IMAGE_DIGEST into the container env", () => {
+  it("planning#196: forwards BASE_IMAGE_DIGEST into the container env", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
       BASE_IMAGE_DIGEST: "sha256:base",
     } as NodeJS.ProcessEnv);
     expect(env).toContain("BASE_IMAGE_DIGEST=sha256:base");
   });
 
-  it("SHI-194: forwards no BASE_IMAGE_DIGEST when it is unset (dev/local, flag off)", () => {
+  it("planning#196: forwards no BASE_IMAGE_DIGEST when it is unset (dev/local, flag off)", () => {
     const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
     expect(env.some((e) => e.startsWith("BASE_IMAGE_DIGEST="))).toBe(false);
   });
@@ -565,7 +670,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       depCacheDir: "/workspace/dep-cache/hash",
     });
     expect(config.depCacheDir).toBe("/workspace/dep-cache/hash");
@@ -576,7 +681,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.depCacheDir).toBeUndefined();
   });
@@ -589,7 +694,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.scratchDir).toBe("/workspace/sessions/s1/scratch");
     // Sibling of workspace/, never nested inside it.
@@ -601,7 +706,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       scratchDir: "/custom/scratch",
     });
     expect(config.scratchDir).toBe("/custom/scratch");
@@ -618,7 +723,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       dockerAccess: true,
       opsSession: true,
     });
@@ -631,7 +736,7 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       dockerAccess: true,
     });
     expect(config.dockerAccess).toBe(true);
@@ -645,12 +750,12 @@ describe("buildContainerConfig", () => {
       sessionId: "s1",
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
   });
 
-  // SHI-286 — unlike `scratchDir`/`uploadsDir`, the state dir is NOT
+  // planning#288 — unlike `scratchDir`/`uploadsDir`, the state dir is NOT
   // overridable. The old `sessionStateDir?` opt was dead in production, and it
   // would now silently diverge: the container would mount `<custom>/shared`
   // while `preStampInstallMarker` (which derives from the clone path) wrote the
@@ -662,7 +767,7 @@ describe("buildContainerConfig", () => {
       sessionDir: "/workspace/sessions/s1",
       workspaceDir: "/workspace/sessions/s1/workspace",
       scratchDir: "/custom/scratch",
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
     });
     // The overridable siblings still honour their overrides...
     expect(config.scratchDir).toBe("/custom/scratch");
@@ -670,7 +775,7 @@ describe("buildContainerConfig", () => {
     expect(config.sessionStateDir).toBe("/workspace/sessions/s1/state");
   });
 
-  // SHI-286 — a pre-`workspace/` flat session (clone === session dir) is refused
+  // planning#288 — a pre-`workspace/` flat session (clone === session dir) is refused
   // outright. The two rejected alternatives: a bare `dirname` gives every flat
   // session on the host the SAME `<sessionsRoot>/state` (one shared install
   // marker), and the previous "no state dir" answer let ShipIt keep writing its
@@ -681,7 +786,7 @@ describe("buildContainerConfig", () => {
         sessionId: "s1",
         sessionDir: "/workspace/sessions/s1",
         workspaceDir: "/workspace/sessions/s1",
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
       }),
     ).toThrow(/<sessionDir>\/workspace/);
   });
@@ -696,7 +801,7 @@ describe("destroyContainer — overlay volume teardown", () => {
    * Minimal fake Docker that records every `volume rm` by name, plus every
    * child container removed by the `shipit-parent-session` sweep.
    *
-   * `children` seeds `listContainers` — SHI-222: it used to return `[]`
+   * `children` seeds `listContainers` — planning#224: it used to return `[]`
    * unconditionally, so the sweep in `cleanupSessionDockerResources` (the thing
    * that reaps a session's egress sidecars on teardown) was never actually
    * asserted by any test.
@@ -788,7 +893,7 @@ describe("destroyContainer — overlay volume teardown", () => {
     expect(deps.containers.has("sess-x")).toBe(false);
   });
 
-  // SHI-222 — the parent-label sweep is what reaps a session's Tier B/C egress
+  // planning#224 — the parent-label sweep is what reaps a session's Tier B/C egress
   // sidecars (docs/172) on teardown. It was previously untested here (the fake's
   // `listContainers` returned `[]`), which is how the crash-path leak went
   // unnoticed for so long: nothing pinned the behavior either way.
@@ -830,7 +935,7 @@ describe("destroyContainer — overlay volume teardown", () => {
     expect(deps.containers.has("sess-x")).toBe(false);
   });
 
-  // Round 5 (SHI-222) — with the crash-site reaper live, the die-triggered reap
+  // Round 5 (planning#224) — with the crash-site reaper live, the die-triggered reap
   // races this sweep for the same two sidecars on EVERY healthy destroy, so a 404
   // on child remove is the routine "the reaper got there first" outcome. Warning
   // on it would spam every clean shutdown. Mutation-verified: revert the
@@ -877,31 +982,225 @@ describe("destroyContainer — overlay volume teardown", () => {
 });
 
 // ---------------------------------------------------------------------------
-// prepareOverlayDirs — overlay dir creation + worker-uid handoff (SHI-145)
+// createContainer — overlay volumes re-verified after the container is built
+// (nikzlabs/shipit#2495)
 // ---------------------------------------------------------------------------
 
-describe("prepareOverlayDirs (SHI-145)", () => {
+describe("createContainer — overlay volume re-verification (nikzlabs/shipit#2495)", () => {
+  /**
+   * A daemon that models the one behaviour this whole fix exists for: a
+   * `createContainer` naming a volume that does not exist does NOT fail — the
+   * daemon silently auto-creates a plain, driver-option-less volume under that
+   * name. `vanishBeforeContainerCreate` removes the named volume in the window
+   * between `createOverlayVolume` and `docker createContainer`, which is exactly
+   * what the production session hit.
+   */
+  function fakeDaemon(opts: { vanishBeforeContainerCreate?: string[] } = {}) {
+    const store = new Map<string, { Options: Record<string, string> | null }>();
+    const removedVolumes: string[] = [];
+    const started: string[] = [];
+    let containerRemoved = false;
+
+    const docker = {
+      createVolume: async (cfg: { Name: string; DriverOpts?: Record<string, string> }) => {
+        if (store.has(cfg.Name)) return; // Docker's silent no-op on a taken name.
+        store.set(cfg.Name, { Options: cfg.DriverOpts ?? null });
+      },
+      getVolume: (name: string) => ({
+        inspect: async () => {
+          const v = store.get(name);
+          if (!v) throw Object.assign(new Error("no such volume"), { statusCode: 404 });
+          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data`, ...v };
+        },
+        remove: async () => {
+          removedVolumes.push(name);
+          store.delete(name);
+        },
+      }),
+      listContainers: async () => [],
+      listNetworks: async () => [],
+      getNetwork: () => ({ remove: async () => {} }),
+      listVolumes: async () => ({ Volumes: [] }),
+      getContainer: () => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => { containerRemoved = true; },
+      }),
+      createContainer: async (cfg: { HostConfig?: { Mounts?: { Type: string; Source: string }[] } }) => {
+        for (const name of opts.vanishBeforeContainerCreate ?? []) store.delete(name);
+        // Docker's implicit named-volume creation: any referenced volume that is
+        // missing is conjured up as a plain local volume with no driver options.
+        for (const m of cfg.HostConfig?.Mounts ?? []) {
+          if (m.Type === "volume" && !store.has(m.Source)) store.set(m.Source, { Options: null });
+        }
+        return {
+          id: "cid-new",
+          start: async () => { started.push("cid-new"); },
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    } as unknown as Docker;
+
+    return { docker, store, removedVolumes, started, wasContainerRemoved: () => containerRemoved };
+  }
+
+  function makeDeps(docker: Docker): LifecycleDeps {
+    return {
+      docker,
+      containers: new Map(),
+      standbySessionIds: new Set<string>(),
+      emitter: new EventEmitter(),
+      baseLabels: () => ({ "shipit-managed": "true" }),
+      networkName: "shipit-net",
+      workerPort: 9100,
+      imageName: "shipit-worker:test",
+      // No workspaceVolume → dev bind-mount mode, so `selfHealWorkspaceOwnership`
+      // is the documented no-op and the test needs no root.
+      skipHealthCheck: true,
+    } as unknown as LifecycleDeps;
+  }
+
+  function overlaySpec(depDir: string, volumeName: string): DepDirOverlaySpec {
+    return {
+      depDir,
+      mountPath: `/workspace/${depDir}`,
+      volumeName,
+      lowerdir: `/data/overlay-base/h-${depDir}/g1`,
+      upperdir: `/data/sessions/s1/overlay/h-${depDir}/g1/upper`,
+      workdir: `/data/sessions/s1/overlay/h-${depDir}/g1/work`,
+      generation: 1,
+      scopeHash: `h-${depDir}`,
+    } as unknown as DepDirOverlaySpec;
+  }
+
+  const NODE_MODULES_VOL = "shipit-3f6d1497-c46_overlay-dba27c31";
+  const DIST_VOL = "shipit-3f6d1497-c46_overlay-bcae0416";
+
+  function configWithSpecs(tmp: string, specs: DepDirOverlaySpec[]): ContainerConfig {
+    return baseConfig({
+      sessionId: "3f6d1497-c466-4b2c-b9af-0f1800fbf759",
+      sessionDir: path.join(tmp, "session"),
+      workspaceDir: path.join(tmp, "session", "workspace"),
+      sessionStateDir: path.join(tmp, "session", "state"),
+      overlaySpecs: specs,
+    });
+  }
+
+  const tmpDirs: string[] = [];
+  function tmpDir(): string {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-create-"));
+    tmpDirs.push(d);
+    fs.mkdirSync(path.join(d, "session", "workspace"), { recursive: true });
+    return d;
+  }
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  it("starts the container when every dep-dir volume is still the overlay we created", async () => {
+    const daemon = fakeDaemon();
+    const deps = makeDeps(daemon.docker);
+    const tmp = tmpDir();
+
+    const sc = await createContainer(deps, configWithSpecs(tmp, [
+      overlaySpec("node_modules", NODE_MODULES_VOL),
+      overlaySpec("dist", DIST_VOL),
+    ]));
+
+    expect(daemon.started).toEqual(["cid-new"]);
+    expect(sc.workerUrl).toBe("http://172.20.0.9:9100");
+    expect(daemon.removedVolumes).toEqual([]);
+  });
+
+  // The reported failure, end to end: `node_modules`'s volume is gone by the time
+  // the container is built, Docker conjures a plain one, and before this fix the
+  // container started on a dep dir the session uid could never write.
+  it("refuses to start when a dep-dir volume was auto-created by Docker mid-window", async () => {
+    const daemon = fakeDaemon({ vanishBeforeContainerCreate: [NODE_MODULES_VOL] });
+    const deps = makeDeps(daemon.docker);
+    const tmp = tmpDir();
+
+    await expect(createContainer(deps, configWithSpecs(tmp, [
+      overlaySpec("node_modules", NODE_MODULES_VOL),
+      overlaySpec("dist", DIST_VOL),
+    ]))).rejects.toThrow(OVERLAY_VERIFY_FAILURE);
+
+    // Never started — that is the whole point: a session that fails to create is
+    // recoverable, one that boots wedged is not.
+    expect(daemon.started).toEqual([]);
+    // …and the cleanup removed the container AND both overlay volumes, the plain
+    // impostor included. Leaving it behind would make the create retry reuse it.
+    expect(daemon.wasContainerRemoved()).toBe(true);
+    expect([...daemon.removedVolumes].sort()).toEqual([DIST_VOL, NODE_MODULES_VOL].sort());
+    expect(daemon.store.has(NODE_MODULES_VOL)).toBe(false);
+    expect(deps.containers.has("3f6d1497-c466-4b2c-b9af-0f1800fbf759")).toBe(false);
+  });
+
+  it("leaves a non-overlay session's create path untouched", async () => {
+    const daemon = fakeDaemon();
+    const deps = makeDeps(daemon.docker);
+    const tmp = tmpDir();
+
+    const sc = await createContainer(deps, baseConfig({
+      sessionId: "plain-session",
+      sessionDir: path.join(tmp, "session"),
+      workspaceDir: path.join(tmp, "session", "workspace"),
+      sessionStateDir: path.join(tmp, "session", "state"),
+    }));
+
+    expect(daemon.started).toEqual(["cid-new"]);
+    expect(sc.status).toBe("running");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prepareOverlayDirs — overlay dir creation + worker-uid handoff (planning#147)
+// ---------------------------------------------------------------------------
+
+describe("prepareOverlayDirs (planning#147)", () => {
   let tmpDir: string;
   const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
 
-  function makeSpec(root: string, hash: string): DepDirOverlaySpec {
-    const overlayDir = path.join(root, "sessions", "sess-1", "overlay", hash);
+  function makeSpec(root: string, hash: string, generation = 0): DepDirOverlaySpec {
+    const scopeDir = path.join(root, "sessions", "sess-1", "overlay", hash);
+    const genDir = path.join(scopeDir, `g${generation}`);
     return {
       volumeName: `shipit-sess-1_overlay-${hash}`,
-      lowerdir: `/daemon/overlay-base/${hash}/g0`,
-      upperdir: `/daemon/${path.relative("/", path.join(overlayDir, "upper"))}`,
-      workdir: `/daemon/${path.relative("/", path.join(overlayDir, "work"))}`,
+      lowerdir: `/daemon/overlay-base/${hash}/g${generation}`,
+      upperdir: `/daemon/${path.relative("/", path.join(genDir, "upper"))}`,
+      workdir: `/daemon/${path.relative("/", path.join(genDir, "work"))}`,
       depDir: "node_modules",
       mountPath: "/workspace/node_modules",
       scope: { repoUrl: "https://x/y.git", runtimeKey: "rk", depDir: "node_modules" },
       scopeHash: hash,
-      generation: 0,
+      generation,
       orchDirs: {
-        lowerdir: path.join(root, "overlay-base", hash, "g0"),
-        upperdir: path.join(overlayDir, "upper"),
-        workdir: path.join(overlayDir, "work"),
+        lowerdir: path.join(root, "overlay-base", hash, `g${generation}`),
+        upperdir: path.join(genDir, "upper"),
+        workdir: path.join(genDir, "work"),
+        sessionScopeDir: scopeDir,
       },
     };
+  }
+
+  /**
+   * A session state dir laid out the way `sessionStateDirForWorkspace` expects
+   * (`<sessionDir>/workspace` + `<sessionDir>/state/shared/`), pre-seeded with an
+   * install marker — the state a rotation has to invalidate.
+   */
+  function makeWorkspaceWithMarker(root: string): { workspaceDir: string; markerFile: string } {
+    const workspaceDir = path.join(root, "sessions", "sess-1", "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    const markerFile = path.join(
+      sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
+      INSTALL_MARKER_FILE,
+    );
+    fs.mkdirSync(path.dirname(markerFile), { recursive: true });
+    fs.writeFileSync(markerFile, "{}");
+    return { workspaceDir, markerFile };
   }
 
   afterEach(() => {
@@ -939,6 +1238,241 @@ describe("prepareOverlayDirs (SHI-145)", () => {
     const spec = makeSpec(tmpDir, "cccc3333");
     delete spec.orchDirs; // mock/unit configs have no orchestrator state dir
     expect(() => prepareOverlayDirs([spec])).not.toThrow();
+  });
+
+  // -------------------------------------------------------------------------
+  // Base-generation rotation (ops finding 2026-08-17)
+  // -------------------------------------------------------------------------
+
+  it("reaps the superseded generation's upper/work when the base generation rotated", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const hash = "dddd4444";
+
+    // The session last ran over g262 and wrote an install delta into its upper.
+    const old = makeSpec(tmpDir, hash, 262);
+    prepareOverlayDirs([old]);
+    const staleFile = path.join(old.orchDirs!.upperdir, ".package-lock.json");
+    fs.writeFileSync(staleFile, "{}");
+
+    // A publish advanced the pointer while the session slept; the next container
+    // create pins g265 as its lowerdir.
+    const next = makeSpec(tmpDir, hash, 265);
+    prepareOverlayDirs([next]);
+
+    // The g262 upper — valid only over the lower that produced it — is gone, and
+    // the new generation gets its own empty upper/work.
+    expect(fs.existsSync(path.dirname(old.orchDirs!.upperdir))).toBe(false);
+    expect(fs.existsSync(staleFile)).toBe(false);
+    expect(fs.readdirSync(next.orchDirs!.upperdir)).toEqual([]);
+    expect(fs.existsSync(next.orchDirs!.workdir)).toBe(true);
+    // Only the current generation remains under the session's scope dir.
+    expect(fs.readdirSync(next.orchDirs!.sessionScopeDir)).toEqual(["g265"]);
+  });
+
+  it("drops the install marker on rotation, so agent.install re-validates over the new base", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const hash = "eeee5555";
+    const { workspaceDir, markerFile } = makeWorkspaceWithMarker(tmpDir);
+
+    prepareOverlayDirs([makeSpec(tmpDir, hash, 1)], { workspaceDir });
+    // No rotation yet — the marker (and the fast skip it enables) must survive.
+    expect(fs.existsSync(markerFile)).toBe(true);
+
+    prepareOverlayDirs([makeSpec(tmpDir, hash, 2)], { workspaceDir });
+    // Rotated: the marker claimed deps that lived in the now-reaped upper. The
+    // dep dir remounts over a POPULATED base, so overlay-dep-check.ts would see
+    // no contradiction and the install would wrongly skip (planning#296).
+    expect(fs.existsSync(markerFile)).toBe(false);
+  });
+
+  it("keeps the marker when a second dep dir rotates nothing", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const { workspaceDir, markerFile } = makeWorkspaceWithMarker(tmpDir);
+    // Two dep dirs, both cold: nothing superseded anywhere.
+    prepareOverlayDirs([makeSpec(tmpDir, "1111aaaa", 3), makeSpec(tmpDir, "2222bbbb", 0)], {
+      workspaceDir,
+    });
+    expect(fs.existsSync(markerFile)).toBe(true);
+    // Re-creating the container at the SAME generations is not a rotation.
+    prepareOverlayDirs([makeSpec(tmpDir, "1111aaaa", 3), makeSpec(tmpDir, "2222bbbb", 0)], {
+      workspaceDir,
+    });
+    expect(fs.existsSync(markerFile)).toBe(true);
+  });
+
+  // docs/272 — the upperdir's mode is the MERGED dep dir's mode, so a Compose
+  // service at a different uid needs it group-writable. selfHealWorkspaceOwnership
+  // asserts that on boot but runs before this function, so a rotation's brand-new
+  // upperdir has to get it here or stay umask-default until the boot after.
+  it("leaves a freshly created upperdir group-writable", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const spec = makeSpec(tmpDir, "6666ffff", 9);
+    prepareOverlayDirs([spec]);
+    expect(fs.statSync(spec.orchDirs!.upperdir).mode & 0o020).toBe(0o020);
+  });
+
+  it("reaps only the rotating dep dir's superseded upper, not its sibling's", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const rootNm = makeSpec(tmpDir, "3333cccc", 7);
+    const vendor = makeSpec(tmpDir, "4444dddd", 2);
+    prepareOverlayDirs([rootNm, vendor]);
+    fs.writeFileSync(path.join(vendor.orchDirs!.upperdir, "keep"), "x");
+
+    // Only the first dep dir's scope published a new generation.
+    prepareOverlayDirs([makeSpec(tmpDir, "3333cccc", 8), vendor]);
+    expect(fs.readdirSync(rootNm.orchDirs!.sessionScopeDir)).toEqual(["g8"]);
+    expect(fs.existsSync(path.join(vendor.orchDirs!.upperdir, "keep"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensurePnpmStoreDir (planning#2286)
+// ---------------------------------------------------------------------------
+
+describe("ensurePnpmStoreDir (planning#2286)", () => {
+  let tmpDir: string;
+  const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+
+  // docs/270 — the store is handed over by GROUP, not by owner, and the shared
+  // gid is what `sessionWorkerGid()` parses out of SHIPIT_SESSION_WORKER_UID
+  // (the orchestrator has exactly one input variable; SHIPIT_SESSION_WORKER_GID
+  // is an output it forwards to the entrypoint and never reads back).
+  //
+  // So these tests configure that variable to a gid the test process can
+  // actually `chgrp` to — its OWN primary gid — and assert the resulting
+  // (owner, group) pair explicitly. Setting it to the process's *uid* only
+  // worked because CI runs uid 1000 / gid 1000: on a machine where they differ
+  // (a ShipIt session container allocates a per-session uid like 2000006 while
+  // the group stays the shared 1000) the real chgrp EPERMs, is swallowed by
+  // design, and the handoff verification correctly reports false. That
+  // uid == gid assumption was the harness's, never the product's.
+  const selfUid = process.getuid?.();
+  const selfGid = process.getgid?.();
+
+  afterEach(() => {
+    if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates the store dir and its parents", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID; // legacy root runtime
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0001");
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
+    expect(fs.existsSync(storeDir)).toBe(true);
+  });
+
+  // The whole point: the entrypoint's chown loop does not revisit this mount once
+  // the workspace sentinel exists (the store is nested under /workspace and the
+  // walk is gated on the workspace), so the orchestrator must hand it over itself
+  // or the non-root agent EACCESes on `pnpm install`. Asserted on the chown CALL,
+  // not on the resulting uid: a dir the test process just created already carries
+  // its own uid, so a uid assertion would pass with no chown at all.
+  it("hands the store dir to the shared worker gid", () => {
+    if (selfUid === undefined || selfGid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0002");
+    const spy = vi.spyOn(fs, "lchownSync");
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
+    // The OWNER is left alone (chowning the shared store to one session's uid
+    // would take it from every other session) and only the group is set.
+    expect(spy).toHaveBeenCalledWith(storeDir, selfUid, selfGid);
+    spy.mockRestore();
+  });
+
+  // The store is SHARED, so most creations find the dir already there — a
+  // create-only chown would leave every store that predates this fix root-owned.
+  it("re-chowns an existing store dir (repairs one left root-owned by an earlier build)", () => {
+    if (selfUid === undefined || selfGid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0003");
+    fs.mkdirSync(storeDir, { recursive: true });
+    const spy = vi.spyOn(fs, "lchownSync");
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
+    expect(spy).toHaveBeenCalledWith(storeDir, selfUid, selfGid);
+    spy.mockRestore();
+  });
+
+  // Non-recursive by design — this runs on the container-create hot path, and
+  // root-owned contents can only come from a root worker, which the entrypoint's
+  // sentinel rotation already repairs on the first boot after the UID flips.
+  it("walks the store contents ONCE, then skips on every later create", () => {
+    // This test used to assert the opposite ("does not walk the store
+    // contents"), and that assertion was the defect rather than the guard.
+    // The non-recursive handoff was justified by the entrypoint's
+    // `chown -R /workspace` walking the nested store — which docs/270 stopped
+    // being true when it added `-path "$d/.pnpm-store" -prune`. Nothing was left
+    // repairing a store POPULATED under a previous identity, so an upgraded
+    // deployment handed every new session a store it could read and not write.
+    //
+    // The walk is what makes req 9 hold; the marker is what keeps it off the
+    // container-create hot path. Both halves are asserted, because either one
+    // alone is a bug: no walk is the original defect, and an ungated walk is the
+    // multi-gigabyte cost the original was avoiding.
+    if (selfGid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0004");
+    fs.mkdirSync(path.join(storeDir, "files", "00"), { recursive: true });
+    fs.writeFileSync(path.join(storeDir, "files", "00", "abc"), "x");
+
+    const first = vi.spyOn(fs, "lchownSync");
+    ensurePnpmStoreDir(storeDir);
+    // root + files/ + files/00/ + the file itself, i.e. the contents really are
+    // reached — the old behaviour was exactly 1 (the root alone).
+    expect(first.mock.calls.length).toBeGreaterThan(1);
+    first.mockRestore();
+
+    const second = vi.spyOn(fs, "lchownSync");
+    ensurePnpmStoreDir(storeDir);
+    expect(second).not.toHaveBeenCalled();
+    second.mockRestore();
+  });
+
+  it("chowns nothing when SHIPIT_SESSION_WORKER_UID is unset (legacy root runtime)", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0005");
+    const spy = vi.spyOn(fs, "lchownSync");
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  // `chownToSessionWorker` logs and swallows — right for the writers it was built
+  // for, fatal here, because a silently-failed handoff is exactly the root-owned
+  // mount the agent cannot recover from. So the result is VERIFIED, and a failed
+  // handoff reports false rather than "probably fine".
+  it("reports false when the handoff did not take (mount must be dropped)", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0006");
+    // Stand in for the swallowed EPERM — deterministic whether or not the test
+    // process happens to be privileged enough for the real chown to succeed.
+    const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
+    expect(ensurePnpmStoreDir(storeDir)).toBe(false);
+    spy.mockRestore();
+  });
+
+  it("reports false when the store dir cannot be created", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    // A regular file where the store dir's parent must be — mkdir -p fails ENOTDIR.
+    const blocker = path.join(tmpDir, "pnpm-store");
+    fs.writeFileSync(blocker, "not a dir");
+    expect(ensurePnpmStoreDir(path.join(blocker, "deadbeefcafe0007"))).toBe(false);
   });
 });
 

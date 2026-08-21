@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-212
+issue: planning#214
 title: Component & helper de-duplication refactors
 description: A vetted catalog of duplicated UI/logic worth collapsing into shared primitives, ranked by payoff.
 ---

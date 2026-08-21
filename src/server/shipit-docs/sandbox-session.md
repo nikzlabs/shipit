@@ -24,7 +24,13 @@ changed from inside the container — an agent can never self-elevate.
   root is not a git repo and is never committed by ShipIt.
 - **You own git.** ShipIt's automatic commit/push and the branch-creation guard
   are OFF here. Create branches, `git add`/`commit`/`push` inside each clone
-  exactly as you would in a normal terminal.
+  exactly as you would in a normal terminal. Local git always works: a commit
+  identity is configured for you, so `git commit` never fails for want of a
+  `user.email` even when no GitHub account is connected. Commits are attributed
+  to the user's git identity when they have set one, and to a placeholder
+  (`ShipIt Agent <agent@shipit.invalid>`) when they have not — reaching the
+  network is the part gated by the **GitHub access** capability below, not
+  committing.
 
 ## Capabilities
 
@@ -85,8 +91,11 @@ What still works, because neither needs a repo:
 
 - **In-turn subagents**, for parallel research or codegen you synthesize in the
   current reply (the `Task` tool, on backends that have one).
-- **`shipit agent run --agent <id> --prompt-file -`**, to consult a different
-  agent backend one-shot. See [agent.md](agent.md).
+- **`shipit agent run --role reviewer --prompt-file -`**, to have ShipIt's
+  configured reviewer look at something one-shot. Any other role the user
+  configured starts the same way (`shipit agent roles` lists them), and a
+  parameter the user asked to change rides alongside as an override. See
+  [agent.md](agent.md).
 
 ## Persistence
 

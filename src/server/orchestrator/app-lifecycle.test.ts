@@ -1,3 +1,5 @@
+import { harnessesForLoginIntegration } from "../shared/catalogue/index.js";
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -32,6 +34,7 @@ import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { SessionContainerManager } from "./session-container.js";
+import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
 
 /**
  * These tests pin down the contract that protects running agents from being
@@ -110,6 +113,28 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("ordinary");
     expect(destroy).not.toHaveBeenCalledWith("reserved");
     expect(registry.get("reserved")).toBeDefined();
+  });
+
+  it("docs/241: does not exempt an archived session carrying a stale reservation", () => {
+    // Admission stopped counting archived rows, so protecting a surviving
+    // container here would hold the RAM for a slot the books already handed to
+    // someone else — two reservations' worth of host, one on the books.
+    const containers = [{ sessionId: "stale" }];
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const cm = makeContainerManager({ containers, destroy });
+    registry.getOrCreate("stale", "/tmp/stale", "claude" as AgentId);
+
+    createIdleEnforcer({
+      containerManager: cm,
+      credentialStore: makeCredentialStore(0),
+      runnerRegistry: registry,
+      sessionManager: {
+        get: () => ({ keepPreviewRunning: true, userArchived: true, archived: true }),
+      } as any,
+      getMemoryStats: () => ({ usedBytes: 95, totalBytes: 100 }),
+    })();
+
+    expect(destroy).toHaveBeenCalledWith("stale");
   });
 
   it("never disposes a runner whose agent is running, even when over the limit", () => {
@@ -244,13 +269,13 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("a");
   });
 
-  // SHI-296 — the prod incident: a BACKGROUNDED `shipit agent run` consult (the
+  // planning#298 — the prod incident: a BACKGROUNDED `shipit agent run` consult (the
   // shape docs/236 tells agents to prefer) ends the primary turn, so `running`
   // is false; and with no resident streaming process `backgroundTaskCount` reads
   // 0 too. The session looked perfectly idle and its container was destroyed 12
   // minutes into an `xhigh` Codex review, leaving only a `cancelled` card.
   //
-  // The assertion that matters is `destroy` — the SHI-278 runner-level guard
+  // The assertion that matters is `destroy` — the planning#280 runner-level guard
   // already made `dispose` decline, and it declined AFTER `container.stop` had
   // been issued, which is exactly why it didn't save the review.
   it("never destroys the container of a runner with an in-flight sub-agent spawn", async () => {
@@ -272,6 +297,7 @@ describe("createIdleEnforcer", () => {
       prompt: "review this branch",
       spawnId: "spawn-1",
       depth: 0,
+      model: "gpt-5.6-sol",
       timeoutMs: 10 * 60_000,
     });
 
@@ -307,7 +333,7 @@ describe("createIdleEnforcer", () => {
     expect(destroy).toHaveBeenCalledWith("consulting");
   });
 
-  // SHI-296, second half — the enforcer used to fire `destroy` and `dispose`
+  // planning#298, second half — the enforcer used to fire `destroy` and `dispose`
   // unconditionally in sequence, so a runner that declined disposal still lost
   // its container (and was left pointed at a dead one). A declined dispose must
   // now mean the container is left alone.
@@ -668,7 +694,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: null,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "local",
     });
 
@@ -696,7 +722,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: null,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "local",
     });
     const runner = factory!({
@@ -717,15 +743,14 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     await resetLocalAgentOpsForTests();
   });
 
-  // docs/150 — local mode has no per-session credentials mount, so the account
-  // the router selected reaches the CLI only if the spawn is told which HOME to
-  // use. `createAgent` is the per-session hook every spawn path already prefers.
-  describe("account-scoped local spawns (docs/150)", () => {
-    const account = (sessionId: string, accountId: string): SessionInfo => ({
+  // docs/260 — local mode has no per-session credentials mount, so the account
+  // the TURN selected reaches the CLI only if the spawn is told which HOME to
+  // use. Env-prep stamps the selection on the runner (`residentRoute`) before
+  // the spawn resolves; `createAgent` reads that stamp lazily.
+  describe("account-scoped local spawns (docs/260)", () => {
+    const claudeSession = (sessionId: string): SessionInfo => ({
       id: sessionId,
       agentId: "claude" as AgentId,
-      providerRouteKind: "account",
-      providerRouteId: accountId,
     } as SessionInfo);
 
     function localFactoryWith(sessions: Record<string, SessionInfo>) {
@@ -737,7 +762,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       const factory = buildRunnerFactory({
         deps: {},
         containerManager: null,
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
         sessionManager: { get: (id: string) => sessions[id] } as unknown as SessionManager,
         runtimeMode: "local",
         localAgentFactory,
@@ -745,49 +770,52 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       return { factory: factory!, calls };
     }
 
-    it("resolves each session's own account root", () => {
+    it("resolves each runner's own stamped account root", () => {
       const { factory, calls } = localFactoryWith({
-        s1: account("s1", "acct-a"),
-        s2: account("s2", "acct-b"),
+        s1: claudeSession("s1"),
+        s2: claudeSession("s2"),
       });
 
       const r1 = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
       const r2 = factory({ sessionId: "s2", sessionDir: "/tmp/s2", defaultAgentId: "claude" as AgentId });
+      // What env-prep does immediately before each spawn (docs/260 §5).
+      r1.residentRoute = { kind: "account", id: "acct-a" };
+      r2.residentRoute = { kind: "account", id: "acct-b" };
       r1.createAgent!("claude");
       r2.createAgent!("claude");
 
-      // Two sessions pinned to different accounts spawn against different
+      // Two sessions routed to different accounts spawn against different
       // credential roots — the whole point, and what a single process-global
       // HOME could not express.
-      expect(calls[0].home).toBe("/credentials/provider-accounts/claude/acct-a");
-      expect(calls[1].home).toBe("/credentials/provider-accounts/claude/acct-b");
+      expect(calls[0].home).toBe(`${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-a`);
+      expect(calls[1].home).toBe(`${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-b`);
       r1.dispose({ force: true });
       r2.dispose({ force: true });
     });
 
-    it("re-reads the route on each spawn so a failover is picked up", () => {
-      const sessions: Record<string, SessionInfo> = { s1: account("s1", "acct-a") };
-      const { factory, calls } = localFactoryWith(sessions);
+    it("re-reads the stamp on each spawn so a per-turn move is picked up", () => {
+      const { factory, calls } = localFactoryWith({ s1: claudeSession("s1") });
       const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
 
+      runner.residentRoute = { kind: "account", id: "acct-a" };
       runner.createAgent!("claude");
-      // The turn hits its cutoff and env-prep moves the session; the retry
-      // spawns from the same runner.
-      sessions.s1 = account("s1", "acct-b");
+      // The next turn's selection lands elsewhere; env-prep re-stamps and the
+      // retry spawns from the same runner.
+      runner.residentRoute = { kind: "account", id: "acct-b" };
       runner.createAgent!("claude");
 
       expect(calls.map((c) => c.home)).toEqual([
-        "/credentials/provider-accounts/claude/acct-a",
-        "/credentials/provider-accounts/claude/acct-b",
+        `${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-a`,
+        `${TEST_CREDENTIALS_DIR}/provider-accounts/claude/acct-b`,
       ]);
       runner.dispose({ force: true });
     });
   });
 
-  // SHI-298 — the second thing a local spawn has no worker to do for it. The
+  // planning#300 — the second thing a local spawn has no worker to do for it. The
   // adapter's MCP write and the MCP env both happen at `createAgent`, next to
   // the account-scoped HOME above.
-  describe("MCP on a local spawn (SHI-298)", () => {
+  describe("MCP on a local spawn (planning#300)", () => {
     function localFactoryWithMcp(opts: { credentialStore?: CredentialStore } = {}) {
       const written: (AgentMcpWriteContext | null)[] = [];
       const localAgentFactory = vi.fn((): AgentProcess => {
@@ -802,7 +830,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       const factory = buildRunnerFactory({
         deps: {},
         containerManager: null,
-        credentialsDir: "/credentials",
+        credentialsDir: TEST_CREDENTIALS_DIR,
         sessionManager: { get: () => undefined } as unknown as SessionManager,
         runtimeMode: "local",
         localAgentFactory,
@@ -828,7 +856,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
       runner.dispose({ force: true });
     });
 
-    it("without a credential store the spawn is unwrapped (pre-SHI-298 behavior)", () => {
+    it("without a credential store the spawn is unwrapped (pre-planning#300 behavior)", () => {
       const { factory, written } = localFactoryWithMcp();
       const runner = factory({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
       runner.createAgent!("claude").run({ prompt: "hi", cwd: "/tmp/s1" });
@@ -847,7 +875,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: fakeContainerManager,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "local",
     });
 
@@ -868,7 +896,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: {},
       containerManager: null,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "containerized",
     });
     expect(factory).toBeUndefined();
@@ -886,7 +914,7 @@ describe("buildRunnerFactory — runtimeMode dispatch (feature 118)", () => {
     const factory = buildRunnerFactory({
       deps: { runnerFactory: customFactory },
       containerManager: null,
-      credentialsDir: "/credentials",
+      credentialsDir: TEST_CREDENTIALS_DIR,
       runtimeMode: "local",
     });
 
@@ -1097,7 +1125,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
   /** Fake auth manager exposing a settable active account id. */
   class FakeAuthManager extends EventEmitter {
     activeAccountId: string | null = null;
-    readonly agentId: AgentId = "claude";
+    readonly loginId: LoginIntegrationId = "anthropic-oauth";
     getActiveAccountId(): string | null { return this.activeAccountId; }
     start() {}
     cancel() {}
@@ -1107,22 +1135,24 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     getPendingPayload() { return null; }
   }
 
-  function setup() {
+  function setup(onCredentialReplaced?: (agentId: AgentId, accountId: string) => void) {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-wire-auth-"));
     const credentialStore = new CredentialStore(tmp);
     const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
-    const account = providerAccountManager.create("claude", "Work");
+    const account = providerAccountManager.create("anthropic", "Work");
     const sessionManager = new SessionManager(createTestDatabaseManager());
     const mgr = new FakeAuthManager();
     const events: { event: string; data: Record<string, unknown> }[] = [];
     wireEventHandlers({
-      authManagers: new Map<AgentId, AgentAuthManager>([["claude", mgr as unknown as AgentAuthManager]]),
+      authManagers: new Map<LoginIntegrationId, AgentAuthManager>([["anthropic-oauth", mgr as unknown as AgentAuthManager]]),
       githubAuthManager: new EventEmitter() as unknown as GitHubAuthManager,
-      agentRegistry: { refreshAuth: () => {}, list: () => [] } as unknown as AgentRegistry,
+      agentRegistry: { refreshAuth: () => {}, refreshAuthForLogin: () => {}, list: () => [] } as unknown as AgentRegistry,
       providerAccountManager,
       sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
       credentialsDir: tmp,
       sessionManager,
+      credentialStore,
+      onCredentialReplaced,
     });
     return { providerAccountManager, mgr, events, account };
   }
@@ -1136,9 +1166,30 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.activeAccountId = account.id;
     mgr.emit("complete");
 
-    expect(providerAccountManager.get("claude", account.id)?.status).toBe("ready");
+    expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
     const complete = events.find((e) => e.event === "agent_auth_complete");
-    expect(complete?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+    expect(complete?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id });
+  });
+
+  it("clears the replaced credential's exhaustion before making the row selectable", () => {
+    let statusDuringInvalidation: string | undefined;
+    const managerRef: { current?: ProviderAccountManager } = {};
+    const rig = setup((_agentId, accountId) => {
+      statusDuringInvalidation = managerRef.current?.get("anthropic", accountId)?.status;
+    });
+    managerRef.current = rig.providerAccountManager;
+    const until = Date.now() + 3_600_000;
+    rig.providerAccountManager.markAccountExhausted("anthropic", rig.account.id, until);
+    rig.mgr.activeAccountId = rig.account.id;
+
+    rig.mgr.emit("complete");
+
+    expect(statusDuringInvalidation).not.toBe("ready");
+    expect(rig.providerAccountManager.get("anthropic", rig.account.id)).toMatchObject({
+      status: "ready",
+      exhaustedUntil: null,
+    });
+    expect(rig.providerAccountManager.selectRouteForTurn("anthropic")?.id).toBe(rig.account.id);
   });
 
   /** Write what a completed Claude sign-in leaves in an account's root. */
@@ -1156,7 +1207,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     );
   }
 
-  // docs/150 req 22 — the refusal has to happen on this event, not later. Once
+  // docs/150-multiple-provider-subscriptions req 22 — the refusal has to happen on this event, not later. Once
   // the row goes `ready` it is selectable, and a duplicate is worst exactly
   // when it is picked as the failover target for the account it duplicates.
   it("refuses a completion that resolves to an already-connected account", () => {
@@ -1165,16 +1216,16 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.activeAccountId = account.id;
     mgr.emit("complete");
 
-    const second = providerAccountManager.create("claude");
+    const second = providerAccountManager.create("anthropic");
     writeClaudeSignIn(providerAccountManager, second.id, "uuid-1", "dev@example.com");
     mgr.activeAccountId = second.id;
     mgr.emit("complete");
 
     // No "connected" signal for the refused flow, and no second row.
     expect(events.filter((e) => e.event === "agent_auth_complete")).toHaveLength(1);
-    expect(providerAccountManager.list("claude").map((a) => a.id)).toEqual([account.id]);
+    expect(providerAccountManager.list("anthropic").map((a) => a.id)).toEqual([account.id]);
     const failed = events.filter((e) => e.event === "agent_auth_failed").at(-1);
-    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: second.id, reason: "duplicate" });
+    expect(failed?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: second.id, reason: "duplicate" });
     expect(String(failed?.data.message)).toContain("already connected");
   });
 
@@ -1183,9 +1234,9 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.activeAccountId = account.id;
     mgr.emit("failed", { reason: "error" });
 
-    expect(providerAccountManager.get("claude", account.id)?.status).toBe("auth_failed");
+    expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
     const failed = events.find((e) => e.event === "agent_auth_failed");
-    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: account.id, reason: "error" });
+    expect(failed?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id, reason: "error" });
   });
 
   it("scoped pending qualifies the SSE with accountId", () => {
@@ -1194,21 +1245,21 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.emit("pending", { kind: "code-paste-url", verificationUri: "https://example.com" });
 
     const pending = events.find((e) => e.event === "agent_auth_pending");
-    expect(pending?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+    expect(pending?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id });
   });
 
   it("rebroadcasts auth progress and log diagnostics", () => {
     const { mgr, events, account } = setup();
     mgr.activeAccountId = account.id;
     mgr.emit("progress", {
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       phase: "waiting_for_url",
       message: "Waiting for Claude CLI.",
     });
     mgr.emit("log", {
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       timestamp: "2026-07-11T00:00:00.000Z",
@@ -1218,38 +1269,38 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     });
 
     expect(events.find((e) => e.event === "agent_auth_progress")?.data).toMatchObject({
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       phase: "waiting_for_url",
     });
     expect(events.find((e) => e.event === "agent_auth_log")?.data).toMatchObject({
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       source: "shipit",
     });
   });
 
-  // docs/150 req 19 — a scope-less completion is no longer a supported flow
+  // docs/150-multiple-provider-subscriptions req 19 — a scope-less completion is no longer a supported flow
   // (`AgentAuthManager.start` requires the account), so this is the defensive
   // case: a manager emitting `complete` without a start. It must not fabricate
   // an account, and must not re-run the default-account migration the singleton
   // branch used to.
   it("a completion with no account scope marks nothing and invents no accountId", () => {
     const { mgr, events, providerAccountManager } = setup();
-    const before = providerAccountManager.list("claude").map((a) => a.id);
+    const before = providerAccountManager.list("anthropic").map((a) => a.id);
     mgr.activeAccountId = null;
 
     mgr.emit("complete");
 
     const complete = events.find((e) => e.event === "agent_auth_complete");
-    expect(complete?.data).toMatchObject({ agentId: "claude" });
+    expect(complete?.data).toMatchObject({ loginId: "anthropic-oauth" });
     expect(complete?.data.accountId).toBeUndefined();
     // No row invented (the old `else` called migrateDefaultAccounts here) and
     // none flipped to ready off an unattributable completion.
-    expect(providerAccountManager.list("claude").map((a) => a.id)).toEqual(before);
-    expect(providerAccountManager.list("claude").every((a) => a.status !== "ready")).toBe(true);
+    expect(providerAccountManager.list("anthropic").map((a) => a.id)).toEqual(before);
+    expect(providerAccountManager.list("anthropic").every((a) => a.status !== "ready")).toBe(true);
   });
 });
 
@@ -1259,17 +1310,22 @@ describe("markProviderAccountUnauthenticated", () => {
     try {
       const credentialStore = new CredentialStore(tmp);
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
-      const account = providerAccountManager.create("claude", "Work");
-      providerAccountManager.setAccountStatus("claude", account.id, "ready");
-      let authConfigured = true;
-      const refreshAuth = vi.fn(() => { authConfigured = false; });
+      const account = providerAccountManager.create("anthropic", "Work");
+      providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
+      let hasRunnableModels = true;
+      const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = false; });
+      // Same fan-out mirror as `buildRegistry` below.
+      const refreshAuthForLogin = vi.fn((loginId: LoginIntegrationId) => {
+        for (const harnessId of harnessesForLoginIntegration(loginId)) refreshAuth(harnessId);
+      });
       const agentRegistry = {
         refreshAuth,
+        refreshAuthForLogin,
         list: () => [{
           id: "claude",
           name: "Claude Code",
           installed: true,
-          authConfigured,
+          hasRunnableModels,
           capabilities: {
             models: ["sonnet"],
             supportsReview: true,
@@ -1288,14 +1344,20 @@ describe("markProviderAccountUnauthenticated", () => {
         providerAccountManager,
         agentRegistry,
         sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
+        credentialStore,
       });
 
-      expect(providerAccountManager.get("claude", account.id)?.status).toBe("auth_failed");
+      expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
+      // The status that changed belongs to the shared account route, so the
+      // refresh must go out per LOGIN. Asserting the effect alone
+      // (`refreshAuth("claude")`) would also pass a revert to the old
+      // single-harness call, since the fan-out reaches Claude either way.
+      expect(refreshAuthForLogin).toHaveBeenCalledWith("anthropic-oauth");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "auth_failed" })]));
       expect(events.find((e) => e.event === "agent_list")?.data.agents)
-        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", authConfigured: false })]));
+        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", hasRunnableModels: false })]));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -1303,16 +1365,23 @@ describe("markProviderAccountUnauthenticated", () => {
 });
 
 describe("markProviderAccountReauthenticated", () => {
-  function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
-    let authConfigured = initialAuth;
-    const refreshAuth = vi.fn(() => { authConfigured = true; });
+  function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; refreshAuthForLogin: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
+    let hasRunnableModels = initialAuth;
+    const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = true; });
+    // Mirrors the real registry: a login refresh fans out to every harness the
+    // catalogue says that login serves. Keeping the real mapping here is what
+    // makes the `refreshAuth` assertions below actually exercise the fan-out.
+    const refreshAuthForLogin = vi.fn((loginId: LoginIntegrationId) => {
+      for (const harnessId of harnessesForLoginIntegration(loginId)) refreshAuth(harnessId);
+    });
     const agentRegistry = {
       refreshAuth,
+      refreshAuthForLogin,
       list: () => [{
         id: "claude",
         name: "Claude Code",
         installed: true,
-        authConfigured,
+        hasRunnableModels,
         capabilities: {
           models: ["sonnet"],
           supportsReview: true,
@@ -1323,7 +1392,7 @@ describe("markProviderAccountReauthenticated", () => {
         },
       }],
     } as unknown as AgentRegistry;
-    return { agentRegistry, refreshAuth, getAuth: () => authConfigured };
+    return { agentRegistry, refreshAuth, refreshAuthForLogin, getAuth: () => hasRunnableModels };
   }
 
   it("flips a auth_failed account back to ready, refreshes registry auth, and broadcasts the agent list", () => {
@@ -1331,9 +1400,9 @@ describe("markProviderAccountReauthenticated", () => {
     try {
       const credentialStore = new CredentialStore(tmp);
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
-      const account = providerAccountManager.create("claude", "Work");
-      providerAccountManager.setAccountStatus("claude", account.id, "auth_failed");
-      const { agentRegistry, refreshAuth } = buildRegistry(false);
+      const account = providerAccountManager.create("anthropic", "Work");
+      providerAccountManager.setAccountStatus("anthropic", account.id, "auth_failed");
+      const { agentRegistry, refreshAuth, refreshAuthForLogin } = buildRegistry(false);
       const events: { event: string; data: Record<string, unknown> }[] = [];
 
       markProviderAccountReauthenticated({
@@ -1342,14 +1411,17 @@ describe("markProviderAccountReauthenticated", () => {
         providerAccountManager,
         agentRegistry,
         sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
+        credentialStore,
       });
 
-      expect(providerAccountManager.get("claude", account.id)?.status).toBe("ready");
+      expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
+      // See the sibling test: assert the fan-out was chosen, not just its effect.
+      expect(refreshAuthForLogin).toHaveBeenCalledWith("anthropic-oauth");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "ready" })]));
       expect(events.find((e) => e.event === "agent_list")?.data.agents)
-        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", authConfigured: true })]));
+        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", hasRunnableModels: true })]));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -1360,9 +1432,9 @@ describe("markProviderAccountReauthenticated", () => {
     try {
       const credentialStore = new CredentialStore(tmp);
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
-      const account = providerAccountManager.create("claude", "Work");
-      providerAccountManager.setAccountStatus("claude", account.id, "ready");
-      const { agentRegistry, refreshAuth } = buildRegistry(true);
+      const account = providerAccountManager.create("anthropic", "Work");
+      providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
+      const { agentRegistry, refreshAuth, refreshAuthForLogin } = buildRegistry(true);
       const events: { event: string; data: Record<string, unknown> }[] = [];
 
       markProviderAccountReauthenticated({
@@ -1371,9 +1443,12 @@ describe("markProviderAccountReauthenticated", () => {
         providerAccountManager,
         agentRegistry,
         sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
+        credentialStore,
       });
 
       expect(refreshAuth).not.toHaveBeenCalled();
+      // Idempotent means no refresh at all — neither the fan-out nor a direct one.
+      expect(refreshAuthForLogin).not.toHaveBeenCalled();
       expect(events).toEqual([]);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

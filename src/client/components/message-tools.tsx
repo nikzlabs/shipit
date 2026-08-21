@@ -22,9 +22,10 @@ import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { usePresentStore } from "../stores/present-store.js";
-import { useUiStore } from "../stores/ui-store.js";
+import { revealWorkspaceTab } from "../utils/reveal-workspace-tab.js";
 import { parseMcpToolName, isPresentTool } from "./tool-names.js";
 import { COMMAND_SUMMARY_CHARS } from "../../server/shared/transcript-input-policy.js";
+import { isTaskListTool } from "../../server/shared/task-list-tools.js";
 import { useLazyToolInput } from "../hooks/useLazyToolInput.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
@@ -180,8 +181,11 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     );
   }
 
-  if (tool.name === "TodoWrite") {
-    return null; // latest is rendered outside the bubble; older ones are hidden
+  // The to-do list tools (TodoWrite, TaskCreate, TaskUpdate, TaskList, TaskGet)
+  // are drawn by the task panel outside the bubble, folded across all of them —
+  // so each individual call renders nothing here.
+  if (isTaskListTool(tool.name)) {
+    return null;
   }
 
   const presentResult = parsePresentToolResult(tool, result);
@@ -206,7 +210,7 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
   //
   // The slice length is imported, not literal: docs/244's projection ships only
   // this many characters of `command`, so the two have to be the same number or
-  // the transcript starts showing less than it used to (SHI-296).
+  // the transcript starts showing less than it used to (planning#298).
   const commandText = "command" in tool.input && tool.input.command
     ? (tool.input.command as string).slice(0, COMMAND_SUMMARY_CHARS)
     : null;
@@ -435,9 +439,7 @@ function PresentToolChip({
 }) {
   const focus = () => {
     usePresentStore.getState().focusById(presentId);
-    useUiStore.getState().setRightTab("present");
-    useUiStore.getState().setMobilePanel("preview");
-    useUiStore.getState().setMobileSidebarOpen(false);
+    revealWorkspaceTab("present");
   };
 
   return (
@@ -481,7 +483,7 @@ export function formatToolDuration(ms: number): string {
  * `result` prop populated and the output replaces the indicator in place.
  *
  * This modal is the only view that draws a tool's *whole* input, so it is where
- * the keys docs/244 removed come back (SHI-296). Opening it is the click, and
+ * the keys docs/244 removed come back (planning#298). Opening it is the click, and
  * the fetched input replaces the projected one wholesale rather than merging:
  * the stored input is authoritative and preserves the original key order the
  * fields are laid out in.

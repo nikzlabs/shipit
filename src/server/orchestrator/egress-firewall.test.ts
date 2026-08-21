@@ -1,5 +1,5 @@
 /**
- * Tests for the Tier A egress allow-set logic (docs/172 Gap 1, SHI-90).
+ * Tests for the Tier A egress allow-set logic (docs/172 Gap 1, planning#92).
  */
 
 import { describe, it, expect } from "vitest";
@@ -156,6 +156,10 @@ describe("extractNetworkSubnets", () => {
 });
 
 describe("EGRESS_TIER_A_RESOLVE_HOSTS", () => {
+  it("includes Claude Code's subscription authentication endpoint", () => {
+    expect(EGRESS_TIER_A_RESOLVE_HOSTS).toContain("platform.claude.com");
+  });
+
   it("lists concrete FQDNs (no suffix wildcards, no GitHub — that's CIDR-sourced)", () => {
     expect(EGRESS_TIER_A_RESOLVE_HOSTS.length).toBeGreaterThan(0);
     for (const h of EGRESS_TIER_A_RESOLVE_HOSTS) {

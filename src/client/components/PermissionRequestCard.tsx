@@ -1,6 +1,6 @@
 /**
  * PermissionRequestCard — inline approve/deny card for a gated agent action
- * (docs/193 / SHI-112).
+ * (docs/193 / planning#114).
  *
  * Rendered where an agent backend gated an action it can't auto-approve
  * headlessly and asked the user to approve it. The classification is the
@@ -18,7 +18,9 @@
  * permission store, keyed by requestId): pending → approved | denied | expired.
  */
 
+import { useState } from "react";
 import {
+  CaretRightIcon,
   CheckCircleIcon,
   LockKeyIcon,
   ProhibitIcon,
@@ -35,6 +37,9 @@ export interface PermissionRequestCardProps {
 export function PermissionRequestCard({ requestId, onResolve }: PermissionRequestCardProps) {
   const card = usePermissionStore((s) => s.cards[requestId]);
   const setPending = usePermissionStore((s) => s.setPending);
+  // Hooks run before the early returns below — `card` can be absent on first
+  // render, and the terminal branch returns early.
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
 
   if (!card) return null;
 
@@ -104,6 +109,40 @@ export function PermissionRequestCard({ requestId, onResolve }: PermissionReques
           <>: {card.summary ?? "an action that needs your approval"}.</>
         )}
       </div>
+      {/*
+        The summary above is a clipped one-liner (the broker cuts it at ~100
+        chars), so for a `sed -i` the target path — the part that explains why
+        the backend gated it — is exactly what's missing. Expanding shows the
+        gated call in full, which is what makes approve/deny an informed
+        decision rather than a guess. Only on the PENDING card: once resolved,
+        the tool's own transcript row carries the full command and its output.
+      */}
+      {card.details && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setDetailsExpanded((v) => !v)}
+            data-testid="permission-details-toggle"
+            aria-expanded={detailsExpanded}
+            className="flex items-center gap-1 text-[11px] text-(--color-text-tertiary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
+          >
+            <CaretRightIcon
+              size={ICON_SIZE.XS}
+              className={`transition-transform ${detailsExpanded ? "rotate-90" : ""}`}
+            />
+            <span>{detailsExpanded ? "Hide details" : "Show details"}</span>
+          </button>
+          {detailsExpanded && (
+            <div
+              data-testid="permission-details"
+              className="mt-1.5 text-[11px] text-(--color-text-secondary) font-mono whitespace-pre-wrap break-all rounded bg-(--color-bg-primary)/60 p-2 max-h-64 overflow-y-auto leading-5"
+            >
+              {card.details}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="text-(--color-text-tertiary) text-[11px]">
         Approve to let the change through, or deny to have the agent try another way.
       </div>

@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-210
+issue: planning#212
 description: Decouple session *visibility* in the sidebar from *disk reclamation*, replace the single destructive archive with graduated cleanup tiers, and guarantee a restored session is based on fresh origin/main instead of a stale bare-cache snapshot.
 ---
 
@@ -26,7 +26,7 @@ description: Decouple session *visibility* in the sidebar from *disk reclamation
 > tests (reopened-reappears-in-`list()`, and `evicted`-restore-cut-from-fresh-
 > `origin/main`) are now in place too — see `checklist.md`.
 
-> **SHI-179 follow-up (workspace-lost recovery + invariant):** an `evicted`
+> **planning#181 follow-up (workspace-lost recovery + invariant):** an `evicted`
 > session is a **live, non-user-archived** session — its workspace was reclaimed
 > but it must always be **recoverable**. Two gaps let an evicted session become
 > permanently unrecoverable (observed live 2026-06-19): (1) `activateSession`
@@ -415,7 +415,7 @@ are set). `deployment/vps/docker-compose.yml` now sets `DISK_FREE_LOW_PCT=0.10`,
 orchestrator service; `DISK_IDLE_EVICT_MS` is left at its 14d default so unmerged
 WIP stays on the gentle clock. This is what actually turns the pressure valve on.
 
-**SHI-197 — one validated ladder config + single cold-artifact retention.** The
+**planning#199 — one validated ladder config + single cold-artifact retention.** The
 three free-floating ladder constants (`IDLE_LIGHT_MS` / `IDLE_EVICT_MS` /
 `IDLE_EVICT_MERGED_MS`) are consolidated into a single ordered, unit-consistent
 config `DiskLadderThresholds { lightAfterMs, evictMergedAfterMs,
@@ -429,7 +429,7 @@ two coincidental 30-day startup-janitor knobs
 (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`) collapse into
 one `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (`COLD_ARTIFACT_RETENTION_DAYS`,
 default 30) covering both the cold caches and the now-vestigial archived-workspace
-backstop (post-SHI-192 the workspace is freed synchronously at archive time, so
+backstop (post-planning#194 the workspace is freed synchronously at archive time, so
 that sweep is pure crash-recovery and is no longer independently tunable — it's
 now ON by default at the shared retention rather than disabled-by-default).
 
@@ -464,7 +464,7 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
     fails (offline / no GitHub auth), **do not evict** — leave the session at
     `light` so the local commit survives on disk.
 
-**Three ways the wipe used to run against unrecoverable work (SHI-294).** The
+**Three ways the wipe used to run against unrecoverable work (planning#296).** The
 guard above was implemented as *auto-commit, and if that returned a hash, push* —
 which quietly assumed a null hash means "nothing to preserve" and a clean tree
 means "durable". Neither holds:
@@ -520,7 +520,7 @@ that fails any of the three.
 - **Breadcrumb guards** — not a parent with live children, not an un-merged
   child. Preserve existing logic (`services/session.ts:441-453`).
 
-### Blocked eviction (SHI-294)
+### Blocked eviction (planning#296)
 
 A session whose uncommitted work cannot be made durable is **not reclaimable**,
 and the ladder says so rather than reclaiming it anyway. That is the whole
@@ -606,7 +606,7 @@ the checkout and survive every reclaim path.
 workspace is gone used to throw on the first git question and return `skipped`
 forever — while activation's `light → hot` shortcut skips
 `restoreSessionWorkspace` (`route-registry.ts`), so the container bind-mount
-404s in the SHI-179 loop. The rung now stats the dir first and, when a remote
+404s in the planning#181 loop. The rung now stats the dir first and, when a remote
 exists to re-clone from, records the truth (`evicted`), which routes the next
 activation through restore. With no remote it stays put — unrecoverable either
 way, so there's nothing to gain by asserting a lie.
@@ -627,11 +627,11 @@ across remediation, teardown and removal.
 | `DiskLadderThresholds.lightAfterMs` (`DISK_IDLE_LIGHT_MS`) | idle before `hot → light` (janitor) | 24 h |
 | `DiskLadderThresholds.evictUnmergedAfterMs` (`DISK_IDLE_EVICT_MS`) | idle before `light → evicted`, **unmerged** (janitor) | 14 d |
 | `DiskLadderThresholds.evictMergedAfterMs` (`DISK_IDLE_EVICT_MERGED_MS`) | idle before `light → evicted`, **merged PR** (janitor) | 2 d (`172800000`) |
-| _ordering invariant_ | `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`, asserted at startup (SHI-197) | — |
+| _ordering invariant_ | `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`, asserted at startup (planning#199) | — |
 | `DISK_FREE_LOW_PCT` / `DISK_FREE_HIGH_PCT` | disk-pressure watermarks as **fractions of total disk** (portable) | `0.10` / `0.20` (prod) |
 | `DISK_FREE_LOW_BYTES` / `DISK_FREE_HIGH_BYTES` | absolute-byte watermarks; **take precedence** over the `_PCT` pair when set | unset |
 | `DISK_ESCALATION_INTERVAL_MS` | period of the standalone escalation timer (issue #1049) | 1 h (`3600000`) |
-| `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (`COLD_ARTIFACT_RETENTION_DAYS`) | single cold-artifact retention: archived-workspace crash-recovery backstop **+** cold caches (repo/dep/pnpm/repo-memory) (SHI-197, replaces the two coincidental 30d knobs) | 30 d |
+| `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (`COLD_ARTIFACT_RETENTION_DAYS`) | single cold-artifact retention: archived-workspace crash-recovery backstop **+** cold caches (repo/dep/pnpm/repo-memory) (planning#199, replaces the two coincidental 30d knobs) | 30 d |
 | `DISK_JANITOR_PACE_MS` | pause between each destructive janitor op (volume/network rm, branch delete, cache/workspace/nm-store rm) so the fire-and-forget startup sweep drips out instead of bursting `docker` spawns + git pushes that contend with a concurrent agent start | `500` |
 | `DISK_ESCALATION_PACE_MS` | pause between each **age-based** tier descent (same anti-contention goal). **Not** applied to the disk-pressure LRU descent — when the box is critically low and starts are already failing, fast reclaim is the point | `500` |
 
