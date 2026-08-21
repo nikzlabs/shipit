@@ -32,6 +32,14 @@ const THEME_DIR = path.dirname(fileURLToPath(import.meta.url));
  */
 const MIN_CONTRAST = 1.4;
 
+/**
+ * How far `--color-border-secondary` (input borders) must stay from
+ * `--color-border-primary` (dividers). 1.18 is the smallest separation the
+ * themes shipped with before the divider was raised, so this preserves the
+ * existing ramp rather than inventing a new one.
+ */
+const MIN_TOKEN_SEPARATION = 1.18;
+
 function relativeLuminance(hex: string): number {
   const channels = [1, 3, 5].map((i) => {
     const v = parseInt(hex.slice(i, i + 2), 16) / 255;
@@ -45,8 +53,16 @@ function contrastRatio(a: string, b: string): number {
   return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
 }
 
+/**
+ * Comments are stripped and the LAST declaration wins, which is what the cascade
+ * actually does. A naive first-match regex reads a commented-out value, or an
+ * earlier declaration that a later one overrides, and then every assertion below
+ * is checking a colour the browser never paints — a guard that fails open.
+ */
 function readToken(css: string, name: string): string | undefined {
-  return new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6})`).exec(css)?.[1];
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const matches = [...withoutComments.matchAll(new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6})`, "g"))];
+  return matches.at(-1)?.[1];
 }
 
 const themeFiles = fs
@@ -74,15 +90,40 @@ describe("theme border contrast", () => {
     const againstPrimary = contrastRatio(border!, bgPrimary!);
     const againstSecondary = contrastRatio(border!, bgSecondary!);
 
+    // Compared raw, NOT rounded to 2dp. Rounding first admits anything from
+    // 1.395 up as "1.40", and several themes clear the floor by as little as
+    // 0.0001, so that slack is the whole margin rather than a rounding detail.
     expect(
-      Number(againstPrimary.toFixed(2)),
+      againstPrimary,
       `${file}: divider on --color-bg-primary`,
     ).toBeGreaterThanOrEqual(MIN_CONTRAST);
 
     expect(
-      Number(againstSecondary.toFixed(2)),
+      againstSecondary,
       `${file}: divider on --color-bg-secondary (the preview-panel side)`,
     ).toBeGreaterThanOrEqual(MIN_CONTRAST);
+  });
+
+  /**
+   * Raising the divider token pushed it into the input-border token's range and
+   * silently flattened a distinction four components rely on: PresentGallery,
+   * ServiceList, PreviewPath and SubAgentCards all render a `border-primary`
+   * edge that becomes `border-secondary` on hover. When the two values converge,
+   * that hover state still fires and produces no visible change.
+   *
+   * Every theme shipped a separation of at least 1.18 before this was noticed,
+   * so the ramp is intentional, not incidental.
+   */
+  it.each(themeFiles)("%s keeps the input border distinct from the divider", (file) => {
+    const css = fs.readFileSync(path.join(THEME_DIR, file), "utf8");
+    const divider = readToken(css, "border-primary");
+    const input = readToken(css, "border-secondary");
+
+    expect(input, `${file} declares --color-border-secondary`).toBeDefined();
+    expect(
+      contrastRatio(divider!, input!),
+      `${file}: border-primary -> border-secondary hover transition must stay visible`,
+    ).toBeGreaterThanOrEqual(MIN_TOKEN_SEPARATION);
   });
 
   it.each(themeFiles)("%s keeps the divider distinct from the panel", (file) => {

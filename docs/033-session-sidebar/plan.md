@@ -256,6 +256,14 @@ Three things fall out, all checkable:
    `--color-bg-tertiary`.** A tertiary band with `border-primary` rules has
    invisible rules there and visible ones in Claude Light, so the two themes
    don't match. Rules have to come from `--color-border-secondary`.
+
+   > **No longer true as of the divider-contrast pass.** Claude Dark's
+   > `--color-border-primary` is now `#413524`, so it is no longer identical to
+   > `--color-bg-tertiary` and the collision this bullet describes is gone. The
+   > *conclusion* still stands for a different reason: `border-primary` remains
+   > below the 1.4 contrast floor against `--color-bg-tertiary` in every theme,
+   > because that pass only raised it against `--color-bg-primary` and
+   > `--color-bg-secondary`. Re-measure before reasoning from the numbers above.
 2. **The band as specced is the same fill as the current-session row**
    (`SessionGroup.tsx:431` also uses `--color-bg-secondary`). At 1.09 : 1 against
    the rail, header and selection become the same object. A band has to sit at a
