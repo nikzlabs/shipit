@@ -28,66 +28,55 @@ Resolved questions.
 
 1. Plugin code is trusted at the same level as a `package.json` dependency.
 2. (empty)
-3. When a repo's `agent.install` list changes, ShipIt MUST NOT run the new list
-   unattended. The user's acceptance covers the list they accepted, not whatever
-   the file says later. *(Justification withdrawn — see Open questions.)*
+3. (empty)
 4. (empty)
 5. (empty)
 6. A plugin MUST be able to write the consuming project's files, including
    `shipit.yaml` itself.
-7. Whenever req 3 stops a list from running, the chat transcript MUST say so,
-   naming the list still in force and the one not run. The notice MUST survive a
-   reload, and nothing else about the session may break — clone, file tree, agent
-   chat and already-installed dependencies keep working.
-8. A user MUST be able to get a withheld command run by asking the agent — no
-   config edit, no prompt, no restart.
+7. (empty)
+8. (empty)
 9. The design MUST state this route as closed, partly closed, or left open, and
    any remainder MUST have a named owner.
 10. The design MUST record what could not be verified, distinguishing code read
     at the source from claims inherited from a doc.
-11. A session that has never had a plugin MUST be unaffected.
+11. (empty)
 12. (empty)
 
 Numbers are stable and never reused. `(empty)` marks a retired requirement —
 what it said and why it went is in [Requirement history](#requirement-history).
 
+Two requirements remain, and neither asks ShipIt to withhold anything: 1 places
+plugin code in the trust model, 6 says what a plugin may write. 9 and 10 are
+documentation conventions carried from docs/266. **`agent.install` therefore runs
+as it did before this feature.**
+
 ## Open questions
 
-- **Why would ShipIt not run some changes — and does req 3 still have a reason to
-  exist?** Asked by the requester on 2026-08-21, reading reqs 3 and 7: *"I don't
-  get it"* and *"why would it not execute some changes?"*
-
-  **The plain answer to "why" is: because a plugin might have written them.**
-  That was the whole reason. Req 3 was never about install commands in general —
-  it was old req 1 applied to the one file that reaches unattended execution. The
-  requester's own sentence for it, *"The user accepted the commands the repo had
-  **then**, not the ones it has now"*, was said about a repo a plugin can edit.
-
-  With req 1 reversed, that reason is gone and **req 3 has no stated
-  justification left**. The question being unanswerable from the document is the
-  finding, not a gap in the writing: reqs 3 and 7 now read as arbitrary because
-  they are, in the current requirement set, arbitrary.
-
-  The residual argument for keeping req 3 is thin and worth naming so it can be
-  rejected on the merits: a changed list is something the user has not seen, so
-  running it unattended is a surprise. But ShipIt already runs whatever the repo
-  says (docs/178 repo trust), the agent edits `shipit.yaml` on request all the
-  time, and every one of those is "something the user has not read" too.
-
-  **(a)** Keep req 3 on that surprise-avoidance argument. The gate stays but
-  stops being a security control, and the notice becomes "your install command
-  changed" rather than "a plugin may have written this".
-  **(b)** Retire req 3 as `(empty)`, with 7, 8 and 11 following it. `agent.install`
-  runs unattended as it did before this feature. This also dissolves the ops
-  incident that opened this branch — a withheld install is precisely what
-  stranded that session — and removes the whole acceptance-record mechanism
-  rather than continuing to harden it.
-
-  **Recommendation: (b).** Two questions from the person who wrote the
-  requirement is strong evidence it no longer describes something anyone wants.
-  Governs how much of the shipped code stays — see plan.md.
+None.
 
 ## Resolved questions
+
+- **2026-08-21 — Does req 3 still have a reason to exist?** Raised by the
+  requester reading reqs 3 and 7: *"I don't get it"* and *"why would it not
+  execute some changes?"*
+
+  The plain answer to "why" was: **because a plugin might have written them.**
+  Req 3 was never about install commands in general — it was old req 1 applied to
+  the one file that reaches unattended execution, and the requester's sentence for
+  it, *"The user accepted the commands the repo had **then**, not the ones it has
+  now"*, was said about a repo a plugin can edit. With req 1 reversed that reason
+  was gone, so the question being unanswerable from the document was the finding
+  rather than a gap in the writing.
+
+  The one residual argument — a changed list is something the user has not seen,
+  so running it is a surprise — does not survive contact with docs/178: ShipIt
+  already runs whatever the repo says, and the agent edits `shipit.yaml` on
+  request all the time.
+
+  **Answer: retire req 3**, with 7, 8 and 11 following it. `agent.install` runs
+  as it did before this feature. This also dissolves the ops incident that opened
+  the branch — a withheld install is precisely what stranded that session — and
+  retires the acceptance-record mechanism rather than continuing to harden it.
 
 - **2026-08-21 — Where does plugin code sit in the trust model?** Requester:
   *"The plugin could change `package.json`, for example, which would be allowed
@@ -120,12 +109,14 @@ what it said and why it went is in [Requirement history](#requirement-history).
   and client UI) or a **transcript card**. Answer: the transcript card — reqs 7
   and 8. What made it sufficient rather than merely cheaper: the agent runs
   commands in that container anyway, so "ask the agent" is the same authority,
-  exercised where a human can see it.
+  exercised where a human can see it. **Overtaken on 2026-08-21** — reqs 7 and 8
+  retired with req 3; nothing is withheld, so there is nothing to show.
 
 - **2026-08-17 — Which sessions pay for it?** Every session (uniform, but costs a
   message on the common "the agent edited `shipit.yaml` because I asked it to"
   path) or only plugin-bearing ones. Answer: **only plugin-bearing sessions** —
-  req 11.
+  req 11. **Overtaken on 2026-08-21** — with no gate, the answer is "no session
+  pays for it".
 
 ## Requirement history
 
@@ -135,14 +126,10 @@ stable and never reused.
 | # | Source |
 |---|---|
 | 1 | Requester, 2026-08-21, in these words. **Replaced** the original req 1 (below). |
-| 3 | Requester: *"The user accepted the commands the repo had **then**, not the ones it has now."* Said about a repo a plugin can edit — so its justification went with old req 1, and the requester asked on 2026-08-21 what it was for. See Open questions. |
 | 6 | docs/262 req 29, settled 2026-08-15: *"plugins should be able to write to the user repo, that is their purpose"* — with its consequence that the project's own files are NOT a containment boundary. Reaffirmed here 2026-08-17. |
-| 7 | Transcript half: requester, 2026-08-17. "Does not break the session" half: inferred from docs/178's shape for the same class of decision (`service-manager-setup.ts:388-398`). |
-| 8 | Requester, 2026-08-17. Sufficient rather than merely cheaper because the agent runs commands in that container anyway — "ask the agent" is the same authority, exercised where a human can see it. |
 | 9, 10 | Conventions docs/266 set for these three routes; carried over unchanged. |
-| 11 | Requester, 2026-08-17. |
 
-### Retired (2026-08-21), all by requirement 1's reversal
+### Retired (2026-08-21) — because req 1 was reversed
 
 - **1 (old)** — *"Code running in a contained plugin container MUST NOT be able
   to cause execution inside the agent container by writing the session's
@@ -186,6 +173,35 @@ moves, the inference is visible and goes with it.
 Nothing here promotes a mechanism into a requirement. "Read the install marker"
 and "check for the session's plugin data directory" are how requirements get
 satisfied, and they live in `plan.md`.
+
+
+### Retired (2026-08-21) — because req 3 went
+
+Req 3 was the only requirement asking ShipIt to withhold anything. These three
+described what happened when it did, so none of them has a subject any more.
+
+- **3** — *"`agent.install` MUST NOT be executed on the strength of an acceptance
+  the user gave for a different command list."* Requester's words: *"The user
+  accepted the commands the repo had **then**, not the ones it has now."* Retired
+  because its justification was old req 1; see the 2026-08-21 receipt.
+
+- **7** — *"A change to `agent.install` that ShipIt does not execute MUST appear
+  in the chat transcript, naming both lists, and MUST still be there after a
+  reload."* Transcript half: requester, 2026-08-17. "Does not break the session"
+  half: inferred from docs/178's shape (`service-manager-setup.ts:388-398`).
+  Nothing is withheld now, so there is nothing to narrate.
+
+- **8** — *"Whatever ShipIt withholds, the user MUST have a way to get it — by
+  asking the agent."* Requester, 2026-08-17. The reasoning that made it
+  sufficient rather than merely cheaper is still worth keeping: the agent runs
+  commands in that container anyway, so "ask the agent" was never a weaker
+  acceptance than a button — it is the same authority, exercised where a human
+  can see it. Retired because nothing is withheld.
+
+- **11** — *"A session that has never had a plugin MUST be unaffected."*
+  Requester, 2026-08-17. It scoped the gate to plugin-bearing sessions. With no
+  gate, every session is unaffected and the requirement is vacuous rather than
+  wrong.
 
 ## What was verified, and what was not
 

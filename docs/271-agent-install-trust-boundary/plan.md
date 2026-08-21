@@ -9,19 +9,25 @@ description: One gate at the single orchestrator-side chokepoint where agent.ins
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-> **⚠ This design's founding premise was withdrawn on 2026-08-21 and the document
-> has not yet been reworked.** Requirement 1 used to say a contained plugin must
-> not reach execution in the agent container; it now says **plugin code is
-> trusted at the same level as a `package.json` dependency**, because a plugin
-> could already reach that execution by writing `package.json` and letting the
-> already-accepted `npm ci` run it — so the gate never fired on the case that
-> mattered. Everything below still describes the code as built and is accurate as
-> a description; what it is no longer entitled to claim is that it closes a
-> security boundary. How much of it survives is the open question in
-> [requirements.md](./requirements.md) — whether req 3 stands on user-acceptance
-> grounds (gate stays, stops being a security control) or falls with req 1 (gate
-> goes). Read the remainders under "What this does NOT close" with that in mind:
-> several of them are defences of a boundary that is no longer claimed.
+> **⚠ SUPERSEDED on 2026-08-21. This design implements requirements that no
+> longer exist, and the gate it describes is to be removed.**
+>
+> Requirement 1 used to say a contained plugin must not reach execution in the
+> agent container. It now says **plugin code is trusted at the same level as a
+> `package.json` dependency** — because a plugin could already reach that
+> execution by writing `package.json` and letting the already-accepted `npm ci`
+> run it, so the gate never fired on the case that mattered. Requirement 3, the
+> only one asking ShipIt to withhold anything, was then retired along with 7, 8
+> and 11.
+>
+> What survives is requirement 1 (where plugin code sits in the trust model) and
+> requirement 6 (a plugin may write the project, including `shipit.yaml`).
+> Neither asks for a gate. `agent.install` runs as it did before this feature.
+>
+> Everything below is kept as an accurate record of what was built and why, and
+> as the removal's own map — it is the list of places the gate reaches. Read the
+> remainders under "What this does NOT close" as history: each is a defence of a
+> boundary that is no longer claimed.
 
 ## What changes, in one sentence
 
