@@ -800,7 +800,7 @@ export const SERVICES = [
           // open-weight all-rounder.
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
           { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
-          { id: "stealth/ox-alpha", label: "Ox Alpha", ...MODEL_IDENTITIES.oxAlpha, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.oxAlpha, reasoningEfforts: ["high", "low"] },
+          { id: "stealth/ox-alpha", label: "Ox Alpha", ...MODEL_IDENTITIES.oxAlpha, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.oxAlpha, reasoningEfforts: ["high", "low"] },
         ],
       },
     ],
