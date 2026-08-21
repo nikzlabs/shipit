@@ -1,7 +1,7 @@
 ---
 issue: planning#400
-title: agent.install must not be a route out of a plugin container
-description: The trust boundary between a contained plugin container that can write the workspace and the agent container that executes shipit.yaml's agent.install.
+title: Plugin code is trusted at the package.json dependency level
+description: Where plugin-authored code sits in ShipIt's trust model, and what that settles about executing shipit.yaml's agent.install.
 ---
 
 # Requirements — `agent.install` trust boundary
@@ -14,13 +14,22 @@ identified; route 1 (`.git`) shipped as
 This document states **what must be true**. The design is in
 [plan.md](./plan.md).
 
-## The boundary, in one sentence
+## The trust position, in one sentence
 
-**Code that can write a session's workspace at *less* authority than the agent
-container must not thereby reach *unattended* execution *inside* the agent
-container.**
+**Plugin code is trusted at the same level as a `package.json` dependency: it
+may reach unattended execution inside the agent container, and that is accepted
+rather than defended against.** *(Requester, 2026-08-21 — see requirement 1.)*
 
-Both italics are load-bearing, and each was checked rather than assumed:
+This **replaces** the boundary this document was opened to state, which was
+*"code that can write a session's workspace at less authority than the agent
+container must not thereby reach unattended execution inside the agent
+container."* That sentence was the feature's founding premise and it is no longer
+the requirement; the reasoning that retired it is in Resolved questions
+(2026-08-21).
+
+The verification below is kept because it is still true and still useful — it
+describes the mounts, the executor and the credential store as they actually are.
+What changed is the conclusion drawn from it, not the readings:
 
 - **Less authority.** Only one writer of the workspace qualifies. A plugin CLI
   run and a plugin service each get `<workspaceDir>` bind-mounted read-write at
@@ -50,34 +59,56 @@ Both italics are load-bearing, and each was checked rather than assumed:
 
 ## Requirements
 
-1. Code running in a contained plugin container MUST NOT be able to cause
-   execution inside the agent container by writing the session's workspace.
+1. **Plugin code is considered trusted on the same level as `package.json`
+   dependencies.** Reaching execution inside the agent container by writing the
+   session's workspace is therefore NOT an escalation and MUST NOT be treated as
+   one. *(Stated by the requester, 2026-08-21, in these words. It replaces the
+   original requirement 1 — "code running in a contained plugin container MUST
+   NOT be able to cause execution inside the agent container by writing the
+   session's workspace" — which is retained here only so the reversal is legible.
+   The number is kept stable per the requirements discipline; the meaning is
+   inverted.)*
 
-2. Requirement 1 MUST hold for a plugin **service** as well as for a plugin
-   **CLI run**, including a write made at a moment when no agent turn is in
-   flight. *(Stated by the requester: a service "is the sharper case, because it
-   is long-running and can write the file at any time rather than only while a
-   companion CLI runs".)*
+   The comparison is exact and is what makes it decidable: an `npm` dependency's
+   `postinstall` already runs unattended in the agent container with the
+   credential store mounted, and ShipIt does not gate it. A plugin now sits at
+   that level — no higher, no lower.
+
+2. **SUPERSEDED by requirement 1 (2026-08-21).** Was: requirement 1 must hold
+   for a plugin **service** as well as a plugin **CLI run**, including a write
+   made when no agent turn is in flight. *(Stated by the requester: a service
+   "is the sharper case, because it is long-running and can write the file at any
+   time rather than only while a companion CLI runs".)* The observation stands —
+   a service can write at any time — but with plugin code trusted at the
+   dependency level there is nothing for it to have to hold against. Recorded
+   rather than deleted, because it is the requester's own sentence and a future
+   reader needs to see that it was answered, not overlooked.
 
 3. `agent.install` commands MUST NOT be executed on the strength of an
    acceptance the user gave for a **different** command list. *(Stated by the
    requester: "The user accepted the commands the repo had **then**, not the
    ones it has now.")*
 
-4. Requirement 1 is NOT required to hold against an ordinary `npm postinstall`,
-   the agent itself, or the project's own compose services. Those write the
-   workspace at the authority they already hold, so the route gives them
-   nothing. A design that closes only the plugin path satisfies this feature —
-   which is the opposite of docs/266-orchestrator-git-trust-boundary req 2, deliberately, because the executor
-   here is the session worker rather than the orchestrator. *(Stated by the
-   requester: "For an npm `postinstall` this is not an escalation — the writer
-   and the executor are the same uid in the same container.")*
+4. **SUBSUMED by requirement 1 (2026-08-21).** Was: requirement 1 is not
+   required to hold against an ordinary `npm postinstall`, the agent itself, or
+   the project's own compose services, because those write the workspace at the
+   authority they already hold. *(Stated by the requester: "For an npm
+   `postinstall` this is not an escalation — the writer and the executor are the
+   same uid in the same container.")*
 
-5. Requirement 1 MUST hold on **every** path that reads a changed
-   `agent.install`, not only the live watcher delta the issue names. The
-   requester read one path; a second one exists and is not covered by it — see
-   [Verified](#what-was-verified-and-what-was-not), *the restart path*.
-   *(Inferred, not stated — see Provenance.)*
+   This was a carve-out from requirement 1; requirement 1 has now moved to where
+   the carve-out was, so there is nothing left to carve out of. **Its reasoning
+   also turned out to be the thing that broke the old requirement 1**: "an
+   ordinary `npm postinstall`" is a project-authority writer, but a plugin can
+   *author* one, and the accepted command `npm ci` executes it. See Resolved
+   questions (2026-08-21).
+
+5. **SUPERSEDED by requirement 1 (2026-08-21).** Was: requirement 1 must hold on
+   **every** path that reads a changed `agent.install`, not only the live watcher
+   delta the issue names. *(Inferred, not stated — see Provenance.)* The second
+   path it names — the restart path — is real and is still documented under
+   [Verified](#what-was-verified-and-what-was-not); it is no longer a path that
+   something has to hold on.
 
 6. A plugin MUST still be able to write the consuming project's files —
    **including `shipit.yaml` itself**. This is not a new requirement; it is
@@ -87,7 +118,11 @@ Both italics are load-bearing, and each was checked rather than assumed:
    containment boundary and must never be described as one". Reaffirmed for this
    feature on 2026-08-17: what changes is that ShipIt stops *executing* a changed
    `agent.install` unattended, not what a plugin may *write*. *(Carried in from
-   docs/262; reaffirmed — see Resolved questions, Q1.)*
+   docs/262; reaffirmed — see Resolved questions, Q1.)* **That last sentence
+   describes the 2026-08-17 design and does not settle whether the gate survives
+   requirement 1's reversal — see Open questions.** The requirement itself is
+   unaffected either way: it constrains what a plugin may WRITE, and the answer
+   is still "anything in the project".
 
 7. A change to `agent.install` that ShipIt does not execute MUST appear in the
    **chat transcript**, naming both the command list that is in force and the
@@ -120,52 +155,67 @@ Both italics are load-bearing, and each was checked rather than assumed:
     behaviour as today, and no new message in its transcript. *(Answered by the
     requester on 2026-08-17 — see Resolved questions, Q3.)*
 
-12. A plugin MUST NOT be able to escape requirement 1 by **removing its own
-    declaration** from `shipit.yaml` in the same write that changes
-    `agent.install`. *(Inferred while designing req 11 — see Provenance. It is
-    recorded as a requirement rather than a design note because req 11's
-    plain reading, "a session that declares a plugin", is exactly the reading
-    that leaves this open.)*
+12. **SUPERSEDED by requirement 1 (2026-08-21).** Was: a plugin must not be able
+    to escape requirement 1 by **removing its own declaration** from
+    `shipit.yaml` in the same write that changes `agent.install`. *(Inferred
+    while designing req 11 — see Provenance.)* It existed only to stop a plugin
+    evading the old requirement 1; with nothing to evade, a plugin editing its
+    own declaration is an ordinary project write under requirement 6.
 
 ## Open questions
 
-- **Requirement 1 cannot be satisfied by gating `agent.install`, and requirement
-  4's justification does not cover the case that matters. What is the accepted
-  risk?** Raised by the requester on 2026-08-21, after three review rounds had
-  each hardened this path further: *"The plugin could change `package.json`, for
-  example, which would be allowed by ShipIt but potentially install malicious
-  packages."*
+- **With requirement 1 reversed, does the `agent.install` gate still have a
+  reason to exist — and do requirements 3, 7, 8 and 11 survive it?** Requirement
+  1 was the gate's whole justification. Requirement 3 is the one that might stand
+  on its own: the requester stated it in their own words, and its rationale is
+  about the *user's* acceptance rather than about plugins — *"The user accepted
+  the commands the repo had **then**, not the ones it has now."* Requirements 7
+  and 8 describe what the user sees and how they get the withheld commands, so
+  they are meaningful exactly as long as something is withheld; requirement 11
+  becomes trivially true.
 
-  That is correct, and it is not a gap in the design — it is a gap in
-  requirement 4's reasoning. Req 4 excuses "an ordinary `npm postinstall`" on the
-  grounds that "the writer and the executor are the same uid in the same
-  container". True of the *project's* postinstall. **Not true of one a plugin
-  wrote.** A plugin may write any project file (req 6), `package.json` is a
-  project file, and the accepted command `npm ci` executes what `package.json`
-  says. So a plugin reaches unattended execution in the credential-bearing
-  container **without changing `agent.install` at all** — the gate never fires,
-  because the command list is unchanged.
+  So the choice is roughly: **(a)** requirement 3 survives on user-acceptance
+  grounds, the gate stays, and it simply stops being a security boundary — the
+  transcript notice becomes "your install command changed, confirm it" rather
+  than "a plugin may have written this"; or **(b)** requirement 3 falls with
+  requirement 1, the gate is removed, and `agent.install` is re-run unattended
+  the way it was before this feature — which also dissolves the incident that
+  opened this branch, since a withheld install is what stranded that session.
 
-  The consequence for this feature: the gate closes only the case where the
-  *command list itself* changes. Every accepted command that interprets workspace
-  content — `npm ci`, `make`, `pip install -r`, a shell script in the repo — is
-  an open route, and closing them means treating the project's own files as a
-  containment boundary, which req 6 forbids in the requester's own words.
-  Requirements 1 and 6 are therefore in tension, and req 1 as written is not
-  achievable.
-
-  **Context the requester supplied for weighing it:** plugins today are used by
-  one person, on their own repositories.
-
-  What needs deciding is which of these the feature is: (a) req 1 is narrowed to
-  "a *changed* command list", the residual is stated as accepted risk, and the
-  hardening added for the storage-fault and first-install-ambiguity cases is
-  removed as cost without benefit; (b) req 1 stands and the route is declared
-  **left open** under req 9 with a named owner; or (c) something else. Until this
-  is answered, further hardening of this path is not obviously worth its
-  availability cost — see plan.md remainder 8, which is the immediate instance.
+  Not answered here because it is a product decision and the feedback that
+  reversed requirement 1 did not reach it. It governs how much of the shipped
+  code stays — see plan.md.
 
 ## Resolved questions
+
+- **2026-08-21 — Where does plugin code sit in the trust model?** Raised after
+  three review rounds had each hardened the `agent.install` path further, by the
+  requester: *"The plugin could change `package.json`, for example, which would
+  be allowed by ShipIt but potentially install malicious packages. I think we
+  need to take a step back and think of what is an accepted risk with plugins.
+  For now only I used them and only for my own repos."*
+
+  The observation was checked and is correct, and it is a defect in requirement
+  4's reasoning rather than in the design. Requirement 4 excused "an ordinary
+  `npm postinstall`" on the grounds that "the writer and the executor are the
+  same uid in the same container" — true of the *project's* postinstall, **not**
+  of one a plugin wrote. A plugin may write any project file (req 6),
+  `package.json` is a project file, and the already-accepted command `npm ci`
+  executes what it says. So a plugin reached unattended execution in the
+  credential-bearing container **without changing `agent.install` at all**, which
+  means the gate never fired. That generalises to every accepted command that
+  interprets workspace content — `make`, `pip install -r`, a repo script — and
+  closing those would mean treating the project's own files as a containment
+  boundary, which requirement 6 forbids in the requester's own words. The old
+  requirements 1 and 6 were therefore in direct tension and the old requirement 1
+  was not achievable.
+
+  The requester answered by **replacing requirement 1**: *"the plugin code is
+  considered trusted on the same level as `package.json` dependencies."* That
+  resolves the tension in favour of requirement 6 and makes the residual an
+  accepted risk rather than an open hole. Requirement 1 now says so; requirements
+  2, 4, 5 and 12 are marked superseded or subsumed in place, keeping their
+  numbers.
 
 - **2026-08-17 — May a plugin ever change what `agent.install` runs?** The issue
   listed three shapes and decided none. Requirement 6 already answered two of
@@ -201,6 +251,22 @@ Requirements 1–4 and 6 are the requester's, in the sense that each traces to a
 sentence in planning#400 or to a resolved question in docs/262; the quoted words
 are shown at each. Requirements 9 and 10 are conventions docs/266 set for this
 set of three routes and are carried over unchanged.
+
+**Requirement 1 was replaced by the requester on 2026-08-21** and is still
+theirs, in their own words. Requirements 2, 5 and 12 were written to make the
+*previous* requirement 1 airtight, so they are marked superseded in place rather
+than deleted — the numbers stay stable, and a reader can see they were answered
+rather than dropped. Requirement 4 is marked subsumed for the same reason, with
+the extra note that its own reasoning is what exposed the flaw. Nothing was
+renumbered.
+
+Note what this does to the "inferred" requirements below: **5 and 12 were the two
+inferences, and both are now retired by the requester's answer.** Neither was
+wrong given the premise it was drawn from; both existed only to close gaps in a
+premise that has since been withdrawn. That is the intended failure mode of
+recording an inference as a numbered requirement rather than burying it in the
+design — when the premise moves, the inference is visible and can be retired with
+it.
 
 Requirements 5 and 12, and the second half of 7, are **inferred**, and are
 recorded as requirements rather than left implicit because each would otherwise
