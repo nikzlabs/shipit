@@ -1351,6 +1351,10 @@ describe("ContainerSessionRunner — withholding a changed agent.install (docs/2
       }
       expect(posts).toBe(0);
       expect(fs.existsSync(path.join(dir, ".install-accepted"))).toBe(false);
+      // The marker is the session's ONLY remaining anchor, so a refusal that
+      // deleted it on the way out would satisfy every assertion above while
+      // destroying the thing the refusal exists to protect.
+      expect(fs.existsSync(path.join(dir, "state", "shared", ".install-done"))).toBe(true);
     });
 
     /**

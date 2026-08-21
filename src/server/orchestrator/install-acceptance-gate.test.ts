@@ -463,6 +463,9 @@ describe("acceptance survives every way the marker can be destroyed", () => {
     { name: "an object", value: {} },
     // An array is the shape a `typeof x === "object"` special-case lets through.
     { name: "an array", value: [] },
+    // ...and a NON-empty one, because "fail closed on `[]`" is satisfiable by a
+    // truthiness test that still reads `[false]` as false.
+    { name: "an array holding false", value: [false] },
   ];
 
   for (const { name, value } of NOT_FALSE) {
@@ -517,7 +520,17 @@ describe("acceptance survives every way the marker can be destroyed", () => {
     // standing exemption: give the same session live plugin evidence and it
     // gates. Without this, the allow above could be implemented as "return ALLOW
     // for any explicitly plugin-free record" and still look right.
-    fs.mkdirSync(path.join(otherRoot, "plugin-data", "probe"), { recursive: true });
+    // A live DECLARATION, not `plugin-data/`. Both satisfy `sessionHasPlugin`,
+    // and using only the on-disk evidence here would pass an implementation that
+    // consults `plugin-data/` alone — leaving a newly declared plugin ungated
+    // until its state directory exists.
+    fs.writeFileSync(
+      path.join(otherWorkspace, "shipit.yaml"),
+      `agent:\n  install:\n    - ${JSON.stringify(CHANGED[0])}\n`
+      + "plugins:\n  repos:\n    - repo: nikzlabs/tools\n      name: tools\n"
+      + "  use:\n    - plugin: probe\n      from: tools\n",
+    );
+    expect(fs.existsSync(path.join(otherRoot, "plugin-data"))).toBe(false);
     expect(sessionHasPlugin(otherWorkspace)).toBe(true);
     expect(evaluateInstallGate({ workspaceDir: otherWorkspace, requested: CHANGED })).toMatchObject({
       withheld: true,

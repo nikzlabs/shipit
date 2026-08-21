@@ -377,7 +377,13 @@ skipped.
 - `src/server/orchestrator/service-manager-setup.ts` — skips the overlay publish
   for a withheld install, and carries the note on why the compose install gate
   still releases its services when the packages were discarded.
-- `src/server/orchestrator/warm-pool-manager.ts` — gates the pre-install.
+- `src/server/orchestrator/warm-pool-manager.ts` — gates the pre-install **and
+  records the acceptance**. This is the one install path that does not go
+  through `ContainerSessionRunner.runInstall`, and it gated without recording, so
+  the invariant "a durable acceptance exists before every permitted POST" held
+  everywhere except here — while this path also stamps the marker the gate falls
+  back to. Found by the third review; the pre-existing comment already knew the
+  path was special and concluded, wrongly, that gating it was enough.
 - `src/server/orchestrator/services/claim-session.ts` — drops the acceptance
   record when a clone changes hands, beside the marker unlink it already did.
 - `src/server/orchestrator/services/session-fork-merge.ts` — carries the record
@@ -589,7 +595,35 @@ skipped.
    only way to avoid it is to make `UNREADABLE` allow, which reopens the
    fail-open that a record's mere existence is evidence against. Accepted, and
    named so it is not rediscovered as a surprise. **Owner: planning#400.**
-8. **The route is closed for `agent.install` only.** The other two routes are
+8. **OPEN — a refusal is not durable, so it delays the first-install ALLOW
+   rather than closing it.** Found by the third review, and it is the root the
+   two blockers before it were downstream of. Sequence: a fresh plugin-bearing
+   session allows list A; persisting A fails, so `runInstall` refuses without
+   posting. Plugin activation ran independently — a plugin service does not
+   depend on the project install (`plugin-compose.ts:1351`, `dependsOnInstall:
+   svc.self`) — so a plugin container is live and writes list B. Storage
+   recovers. The gate still sees no record and no marker, classifies B as a first
+   install, records it and runs it. **The plugin's list becomes its own
+   authorization.**
+
+   Refusing is not what opens this; *not being able to write* is. The same end
+   state is reached without any refusal at all, by an install that simply fails
+   after the worker has whiteouted the marker. And note the refusal is not
+   strictly safer than proceeding: had A been allowed to run and SUCCEEDED, the
+   worker's marker would have anchored the session and B would have been
+   withheld.
+
+   So the real defect is that **`evaluateInstallGate` treats "no acceptance
+   source" as "fresh session"**, when durable on-disk plugin evidence
+   (`plugin-data/<alias>/state`, written when a plugin container actually ran)
+   proves the session is not fresh and its `shipit.yaml` may already be
+   plugin-authored. Closing it means the first-install ALLOW no longer applies to
+   such a session — which narrows the docs/178 repo-trust grant that req 6
+   reaffirmed on 2026-08-17, and can leave a session with no anchor, no marker
+   and no replayable list latching its `dependsOnInstall` services to `error`.
+   That is a requester decision and a blast radius, not a bug fix, so it is
+   raised rather than taken. **Owner: planning#400.**
+9. **The route is closed for `agent.install` only.** The other two routes are
    docs/266 (`.git`, shipped) and planning#386 (the compose file, closed). This
    design does not make `/project` safe to write in general, and docs/262 req 29
    still stands: what a plugin writes to the project is untrusted content the
