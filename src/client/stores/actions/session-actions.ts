@@ -168,6 +168,8 @@ export function fullResetAllStores() {
   // Every session is gone, so the slot keys these are keyed by are dead. The
   // session-scoped `reset()` above deliberately keeps them (docs/089).
   usePreviewStore.getState().clearPreviewPaths();
+  // Same lifecycle for the remembered viewports (docs/278): keyed by dead sessions.
+  usePreviewStore.getState().clearViewportMemory();
   usePresentStore.getState().reset();
   usePluginReposStore.getState().reset();
   usePrStore.getState().reset();
