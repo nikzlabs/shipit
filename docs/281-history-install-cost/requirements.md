@@ -11,18 +11,20 @@ description: Establish whether a cached history payload can truncate the live tr
    guaranteed or merely incidental. An incidental ordering is a live
    transcript-truncation window on every foreground reconnect during a running
    turn.
-2. Establish what the four authoritative card re-seeds actually protect against,
+2. A running turn's transcript must not lose what it has already streamed, on
+   any path a user can reach from the UI.
+3. Establish what the four authoritative card re-seeds actually protect against,
    and what the correct interaction is between a re-seed and the attach-time
    turn-event-buffer replay.
-3. A fix for (1) must not be "skip the re-seeds". Skipping them reintroduces the
+4. A fix for (1) must not be "skip the re-seeds". Skipping them reintroduces the
    failure the seeds exist to prevent — a filed bug report rendering as an
    editable draft, a resolved permission re-offering Approve/Deny. If the
    transcript install and the card seed need different conditions, they get
    different conditions.
-4. A `304` must not repeat work it does not need to repeat. Removing that work
+5. A `304` must not repeat work it does not need to repeat. Removing that work
    must be weighed against what removing it costs, and must not be done if the
    cost is higher.
-5. Findings 1 and 2 must survive later edits: a change that reintroduces either
+6. The findings must survive later edits: a change that reintroduces either
    failure has to be visible when it is made, not the next time a user hits it.
 
 ## Open questions
@@ -37,7 +39,7 @@ _None._
   for a judgement rather than a decision: *"My reading, which you should test
   rather than adopt … I have not weighed that against the cost of a new
   permanent piece of store state, and you should."* Resolved as **neither**: the
-  install stays unconditional and its cost is removed instead (req 4, see
+  install stays unconditional and its cost is removed instead (req 5, see
   [`plan.md`](./plan.md) "Why not skip the install").
 - 2026-08-22 — Does the ghost card-store entry left by a load whose payload no
   longer contains a previously seeded card (the rewind case) belong in this

@@ -5,6 +5,10 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
 import { usePermissionStore } from "../stores/permission-store.js";
+import { useBugReportStore } from "../stores/bug-report-store.js";
+import { useEgressPromptStore } from "../stores/egress-prompt-store.js";
+import { useIssueWriteStore } from "../stores/issue-write-store.js";
+import type { IssueWriteCard } from "../../server/shared/types.js";
 
 /**
  * Repro for the bug where the cost/context dial disappeared from below the
@@ -646,6 +650,23 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
  * `visual-elements.ts:reuseUnchanged` consume, and a test that counted renders
  * here would pass against a `messages` array rebuilt row-for-row.
  */
+/** Matches the canonical fixture in `issue-write-store.test.ts` (docs/177). */
+function issueWriteCard(cardId: string, undoState: IssueWriteCard["undoState"]): IssueWriteCard {
+  return {
+    cardId,
+    tracker: "github",
+    issueId: "42",
+    identifier: "octocat/hello#42",
+    title: "Bug",
+    verb: "comment",
+    summary: "commented on octocat/hello#42",
+    attribution: "user",
+    undo: { kind: "comment", commentId: "c-9" },
+    undoState,
+    createdAt: "2026-06-05T00:00:00.000Z",
+  };
+}
+
 describe("loadSessionHistory — a validated 304 re-installs the same rows, not copies of them", () => {
   let requests: { headers: Record<string, string> }[];
   let etag: string;
@@ -665,6 +686,9 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     useGitStore.getState().reset();
     useFileStore.getState().reset();
     usePermissionStore.getState().reset();
+    useBugReportStore.getState().reset();
+    useEgressPromptStore.getState().reset();
+    useIssueWriteStore.getState().reset();
     __resetHistoryCache();
     requests = [];
     etag = '"v1"';
@@ -693,7 +717,11 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     expect(useSessionStore.getState().messages).toBe(first);
   });
 
-  it("restores a cleared transcript from the same row objects, so every row's memo bails", async () => {
+  // Only the per-row allocation is saved here, not the render: the clear
+  // unmounted the rows, so there is no memo left to bail out of. The identity
+  // still matters — it is what makes the reuse observable, and what the
+  // reconnect case above turns into a skipped render.
+  it("restores a cleared transcript from the same row objects", async () => {
     useSessionStore.getState().setSessionId("s1");
     await loadSessionHistory("s1");
     const rows = [...useSessionStore.getState().messages];
@@ -738,18 +766,25 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     expect(useSessionStore.getState().messages[0]).not.toBe(s1Rows[0]);
   });
 
-  it("still seeds the card stores on a 304, over a replay-created pending card", async () => {
+  it("still seeds ALL FOUR card stores on a 304, over replay-created drafts", async () => {
     // The one thing planning#467 rules out by name. The seeds are the
     // correction for the attach-time buffer replay — a channel the transcript's
     // ETag says nothing about — so a cached body must not excuse them. PR #2536
     // skipped them on exactly this reasoning and made a resolved permission
     // re-offer Approve/Deny.
+    //
+    // All four stores, not just the permission one: they are four independent
+    // seed calls, so a test covering one would pass with any of the other three
+    // deleted (req 5 asks for the guarantee, not for a sample of it).
     etag = '"cards"';
     body = {
       messages: [{
         role: "assistant",
         text: "ONE",
         permissionPrompt: { requestId: "r1", phase: "approved", toolName: "bash" },
+        bugReport: { cardId: "b1", phase: "filed", title: "t", body: "b", stage2Ran: true, producer: "session", issueNumber: 7 },
+        egressPrompt: { cardId: "e1", phase: "approved", host: "example.com" },
+        issueWrite: issueWriteCard("w1", "undone"),
       }],
       commits: [],
       agentRunning: false,
@@ -757,20 +792,36 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     useSessionStore.getState().setSessionId("s1");
     await loadSessionHistory("s1");
     expect(usePermissionStore.getState().cards.r1?.phase).toBe("approved");
+    expect(useBugReportStore.getState().cards.b1?.phase).toBe("filed");
+    expect(useEgressPromptStore.getState().cards.e1?.phase).toBe("approved");
+    expect(useIssueWriteStore.getState().cards.w1?.undoState).toBe("undone");
 
-    // The replay's `upsertCard` writes a card the store does not have as
-    // `pending` — actionable, with Approve/Deny live. Reached here by clearing
-    // the store first, because today's `upsertCard` is deliberately
-    // non-clobbering and so cannot demote a card that survived in memory. The
-    // seed must not depend on that: it is the authoritative source, and the
-    // replay's restraint is a second line, not the first.
+    // The replay's `upsertCard` writes a card the store does not have in its
+    // fresh, actionable state — `pending` for permission and egress, `draft`
+    // for a bug report, and whatever the wire message carried for an issue
+    // write. Reached here by clearing the stores first, because today's
+    // `upsertCard` is deliberately non-clobbering and so cannot demote a card
+    // that survived in memory. The seed must not depend on that: it is the
+    // authoritative source, and the replay's restraint is a second line.
     usePermissionStore.getState().reset();
+    useBugReportStore.getState().reset();
+    useEgressPromptStore.getState().reset();
+    useIssueWriteStore.getState().reset();
     usePermissionStore.getState().upsertCard({ requestId: "r1", toolName: "bash" });
+    useBugReportStore.getState().upsertCard({ cardId: "b1", title: "t", body: "b", stage2Ran: true, producer: "session" });
+    useEgressPromptStore.getState().upsertCard({ cardId: "e1", host: "example.com" });
+    useIssueWriteStore.getState().upsertCard(issueWriteCard("w1", "available"));
     expect(usePermissionStore.getState().cards.r1?.phase).toBe("pending");
+    expect(useBugReportStore.getState().cards.b1?.phase).toBe("draft");
+    expect(useEgressPromptStore.getState().cards.e1?.phase).toBe("pending");
+    expect(useIssueWriteStore.getState().cards.w1?.undoState).toBe("available");
 
     await loadSessionHistory("s1");
     expect(requests[1].headers["If-None-Match"]).toBe('"cards"');
     expect(usePermissionStore.getState().cards.r1?.phase).toBe("approved");
+    expect(useBugReportStore.getState().cards.b1?.phase).toBe("filed");
+    expect(useEgressPromptStore.getState().cards.e1?.phase).toBe("approved");
+    expect(useIssueWriteStore.getState().cards.w1?.undoState).toBe("undone");
   });
 });
 

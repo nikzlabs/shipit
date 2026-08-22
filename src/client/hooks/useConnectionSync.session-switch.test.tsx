@@ -283,14 +283,20 @@ describe("transcript hydration across session switches and reconnects", () => {
   });
 
   /**
-   * The counterpart hazard: clearing `historyLoaded` from a path that does NOT
-   * move the socket. "All Sessions" renders every row as non-current, so
-   * selecting the session already on screen resumes it with the same id — the
-   * URL, and therefore the socket and its status, never change. Hydration has
-   * to be keyed on the flag itself, or the reset leaves the transcript cleared
-   * with every incoming event queued behind a load that is never issued.
+   * The counterpart hazard: the baseline being lowered by something that does
+   * NOT move the socket. Hydration has to be keyed on the flag itself, or the
+   * transcript sits cleared with every incoming event queued behind a load that
+   * is never issued.
+   *
+   * Driven by lowering the flag directly rather than through a resume of the
+   * session already on screen, which is what this used to do: that resume is now
+   * a no-op (planning#467 — it destroyed a running turn's tail with no attach
+   * coming to restore it, see the test below), so it can no longer stand in for
+   * "something lowered the flag". The property is unchanged and still live — a
+   * switch that begins while the socket is already connecting lowers the flag
+   * with `setStatus("connecting")` a no-op, which is the first test in this file.
    */
-  it("re-issues the history load when a resume clears the baseline without moving the socket", async () => {
+  it("re-issues the history load whenever the baseline is lowered without moving the socket", async () => {
     useSessionStore.getState().setSessionId("A");
     renderHook(({ id }: { id: string }) => useConnectionStack(id), {
       initialProps: { id: "A" },
@@ -301,14 +307,58 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { historyResolvers[0](historyPayload(["A baseline"])); });
     expect(useSessionStore.getState().historyLoaded).toBe(true);
 
-    // Resume the session already on screen: same id, same URL, same socket.
-    await act(async () => { resumeSessionInternal("A"); });
-    expect(useSessionStore.getState().messages).toEqual([]);
+    // Same id, same URL, same socket — only the flag moves.
+    await act(async () => { useSessionStore.getState().setHistoryLoaded(false); });
 
     await waitFor(() => expect(historyResolvers).toHaveLength(2));
     await act(async () => { historyResolvers[1](historyPayload(["A baseline"])); });
     expect(useSessionStore.getState().historyLoaded).toBe(true);
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["A baseline"]);
+  });
+
+  /**
+   * planning#467, found by review — the ONE path where the running turn's tail
+   * is genuinely lost, and the reason it is not a `304` problem.
+   *
+   * Every other entry into `loadSessionHistory` is preceded by an attach, so a
+   * `turn_snapshot` follows the install and restores whatever the payload did
+   * not carry. A resume of the session ALREADY ON SCREEN is the exception: the
+   * session id does not change, so `useSessionWebSocket`'s memoized URL does not
+   * change, so no socket is built and the server never attaches. Nothing is
+   * coming to repair the install — and `resumeSessionInternal` has already
+   * cleared the transcript by then, so it is the CLEAR that loses the tail, not
+   * the install. Skipping the install would not have saved it.
+   *
+   * So the reset is skipped when the session is already the current one. There
+   * is nothing for it to do there: the stores it clears belong to the session
+   * being resumed.
+   */
+  it("keeps the running turn's unpersisted tail when the session already on screen is resumed", async () => {
+    useSessionStore.getState().setSessionId("A");
+    renderHook(({ id }: { id: string }) => useConnectionStack(id), {
+      initialProps: { id: "A" },
+    });
+
+    await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(1));
+    await act(async () => { historyResolvers[0](historyPayload(["persisted"])); });
+
+    // The turn streams past its last persist boundary. This row exists ONLY in
+    // memory — no payload carries it, and with no attach no snapshot will.
+    act(() => {
+      useSessionStore.getState().setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "streamed since", inProgress: true },
+      ]);
+    });
+
+    // "All Sessions" renders even the active session as selectable
+    // (`AllSessionsDialog.tsx` passes `isCurrent={false}`), so this is one
+    // click away at any time.
+    await act(async () => { resumeSessionInternal("A"); });
+
+    expect(useSessionStore.getState().messages.map((m) => m.text))
+      .toEqual(["persisted", "streamed since"]);
   });
 
   /**
@@ -353,13 +403,16 @@ describe("transcript hydration across session switches and reconnects", () => {
   });
 
   /**
-   * `loadSessionHistory` raises `historyLoaded` and then keeps going, so a
-   * resume landing in that tail lowers the flag while the in-flight guard is
-   * still raised. The guard is a ref, and clearing a ref renders nothing — so
-   * without an explicit nudge when the load settles, nothing ever re-runs the
-   * hydrate effect and the transcript stays queued forever.
+   * `loadSessionHistory` raises `historyLoaded` and then keeps going, so a reset
+   * landing in that tail lowers the flag while the in-flight guard is still
+   * raised. The guard is a ref, and clearing a ref renders nothing — so without
+   * an explicit nudge when the load settles, nothing ever re-runs the hydrate
+   * effect and the transcript stays queued forever.
+   *
+   * Lowers the flag directly for the same reason as the test above: a resume of
+   * the session already on screen is now a no-op (planning#467).
    */
-  it("re-arms hydration when a resume lands after the flag flips but before the load settles", async () => {
+  it("re-arms hydration when the baseline drops after the flag flips but before the load settles", async () => {
     deferPreviewStatus = true;
     useSessionStore.getState().setSessionId("A");
     renderHook(({ id }: { id: string }) => useConnectionStack(id), {
@@ -375,8 +428,8 @@ describe("transcript hydration across session switches and reconnects", () => {
     expect(useSessionStore.getState().historyLoaded).toBe(true);
     await waitFor(() => expect(previewStatusResolvers).toHaveLength(1));
 
-    // Resume the session on screen, inside that window.
-    await act(async () => { resumeSessionInternal("A"); });
+    // The baseline drops inside that window.
+    await act(async () => { useSessionStore.getState().setHistoryLoaded(false); });
     expect(useSessionStore.getState().historyLoaded).toBe(false);
 
     // The first load finally settles. That must re-arm hydration.
