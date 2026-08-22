@@ -113,7 +113,7 @@ Three-tier **Routes/WS handlers → Services → Managers**: `services/*.ts` are
 
 ### Post-turn flow
 
-After a turn (`agent_result` in `agent-execution.ts`): `postTurnCommit()` auto-commits → `scheduleAutoPush()` debounces a 5s push (if GitHub auth) → PR lifecycle card emitted (if a remote exists). **Critical**: session context (sessionId, sessionDir) is captured at turn *start*, not at "done", so a mid-turn session switch can't corrupt commits.
+After a turn (`agent_result` in `agent-execution.ts`): `postTurnCommit()` auto-commits → PR lifecycle card emitted (if a remote exists) → the auto-push is armed LAST (if GitHub auth). The push is armed after the card flow, not inside the commit, because that flow does its own synchronous `git push` (a `forcePush` when re-arming past a merged PR) and a debounced plain push racing it is rejected non-fast-forward — reported to the user as a branch divergence that never happened. The commit hands the arm to `turn-executor.ts` via `postTurnCommit`'s `deferPushArm`; the merged-branch REFUSAL is still decided at commit time, since the docs/202 re-arm clears `mergedAt` inside the flow. Ordering it this way is what lets the debounce be 0 (`autoPushDebounceMs`, whose doc comment carries the evidence that it never coalesced anything). **Critical**: session context (sessionId, sessionDir) is captured at turn *start*, not at "done", so a mid-turn session switch can't corrupt commits.
 
 Five invariants govern the rest. Each looks reorderable and is not; each is pinned by a guard test.
 
