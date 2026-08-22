@@ -8,6 +8,9 @@ issue: planning#63
 > integrity-pinned lockfile (`docker/agent-cli/`) via `npm ci --ignore-scripts`
 > (+ `npm rebuild @anthropic-ai/claude-code` for its required native-binary
 > postinstall), and the `NPM_GLOBALS_REBUILD` deploy-time cache-bust is gone.
+> CI and release gates run the same nested `npm ci` lock validation in dry-run
+> mode, so an incomplete optional-platform graph fails before the production
+> image build.
 > Axis 1/C's config has landed too: `renovate.json` (scoped to
 > `docker/agent-cli/**`, `minimumReleaseAge: "7 days"`) opens the grouped bump
 > PRs — auto-merge stays off until the Axis-3 contract test is the required
@@ -210,6 +213,15 @@ risk:
    `npm ci`. Reproducible, integrity-checked, and the natural surface for the
    auto-bump tool. Lets us **drop the `NPM_GLOBALS_REBUILD=$(date +%s)`
    cache-buster** — the lockfile now controls freshness deterministically.
+   CI and release gates run `npm ci --ignore-scripts --dry-run` from
+   `docker/agent-cli/` under Node 24. This exercises npm's production lockfile
+   validation without downloading and extracting the large platform binaries.
+   It catches an incomplete lock graph when an upstream package publishes its
+   optional platform packages at different times. Renovate can retain the
+   early registry snapshot even after the cooldown; when this check fails on a
+   bump, regenerate the nested lock with `npm install --package-lock-only
+   --ignore-scripts --prefix docker/agent-cli` after every platform package is
+   available.
 5. **Provenance / SBOM (higher effort, diminishing returns).** Verify npm
    provenance attestations where available; scan the resulting image.
 
