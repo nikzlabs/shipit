@@ -222,6 +222,24 @@ describe("DeviceSelector", () => {
     expect(screen.getByLabelText("Custom height")).toHaveValue(707);
   });
 
+  it("seeds the inputs from an active named preset, orientation-adjusted (req 10)", async () => {
+    const user = userEvent.setup();
+    const preset = findPresetById("iphone-16")!;
+    render(
+      <DeviceSelector
+        {...baseProps}
+        activePreset={preset}
+        isLandscape={true}
+        panelSize={{ width: 720, height: 540 }}
+      />,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    // The applied viewport is landscape iPhone 16 (852×393) — the inputs must
+    // show that, not the panel size.
+    expect(screen.getByLabelText("Custom width")).toHaveValue(852);
+    expect(screen.getByLabelText("Custom height")).toHaveValue(393);
+  });
+
   it("does not keep typed-but-unapplied values across opens", async () => {
     const user = userEvent.setup();
     render(<DeviceSelector {...baseProps} customSize={{ width: 500, height: 900 }} />);

@@ -22,12 +22,21 @@ app reflows and its breakpoints flip while the pointer moves.
 - **Detach:** dragging while a named preset is active converts the selection to
   Custom at the dragged size (req 2 resolved question). The dropdown trigger reads
   "Custom"; the toolbar indicator carries the live numbers.
-- **Range:** per axis, `[CUSTOM_SIZE_MIN, max(available, current)]` where
-  `available` is the panel minus the frame padding. The upper bound is
+- **Range:** per axis, `[CUSTOM_SIZE_MIN, min(CUSTOM_SIZE_MAX, max(available, current))]`
+  where `available` is the panel minus the frame padding. The upper bound is
   `max(available, current)` rather than `available` so a surface that starts larger
   than the panel (scaled down) can be dragged smaller — continuously, with the scale
   rising smoothly to 1 as it passes the fit boundary — but never larger. There is no
   discontinuity anywhere in the gesture: at the clamp boundary the scale is exactly 1.
+  `CUSTOM_SIZE_MAX` caps everything (review finding): on a panel wider than the
+  absolute bound, an uncapped drag could create a size the persisted-viewport
+  validation rejects, which would silently delete that session's memory.
+- **Session ownership:** a gesture captures the session it started in and ends
+  itself when the current session no longer matches (review finding).
+  `PreviewFrame` stays mounted across session switches, so unmount cleanup is
+  not guaranteed to end a gesture — and a surviving move would resize the old
+  session's geometry into the incoming session's viewport memory, since
+  `setFreeformSize` keys persistence by the current session.
 - **Geometry:** the surface is center-anchored, so moving an edge by Δ moves the
   size by 2Δ, divided by the gesture-start scale (`computeViewportResize`). All
   gesture inputs (start size, start scale, available box) are captured at
@@ -47,12 +56,17 @@ app reflows and its breakpoints flip while the pointer moves.
   shield, the drag badge, and exported pure `computeViewportResize()` /
   `computeKeyboardResize()` for tests. Renders from metrics passed by
   `PreviewFrame`; writes through `usePreviewStore.getState().setFreeformSize()`.
-- **Keyboard operability (req 9, ported from `shipit/p_799e`).** The edge
-  handles are focusable `role="slider"`s with `aria-label`, `aria-orientation`
-  (describing the grip's bar), and `aria-valuemin/max/now/valuetext`; arrow
-  keys step their own axis by a fixed `KEYBOARD_RESIZE_STEP` (10px). The corner
-  resizes both axes — no single slider value describes that — so it is a
-  `role="button"` acting on all four arrows. The keyboard path deliberately
+- **Keyboard operability (req 9, ported from `shipit/p_799e`; ARIA corrected
+  after review).** The edge handles are focusable `role="slider"`s with
+  `aria-label`, `aria-orientation`, and `aria-valuemin/max/now/valuetext`;
+  arrow keys step their own axis by a fixed `KEYBOARD_RESIZE_STEP` (10px).
+  `aria-orientation` names the **arrow-key axis** (width = horizontal, height =
+  vertical), not the grip's drawn bar — the ported version announced the bar,
+  which told assistive-technology users the opposite keys from the implemented
+  ones. The corner is a **pointer-only** convenience (`aria-hidden`, not
+  focusable): both axes are already keyboard-reachable through the sliders, and
+  any focusable role there would promise semantics (Enter/Space activation, a
+  single slider value) it cannot honour. The keyboard path deliberately
   bypasses the drag math: a key press asks for a fixed number of viewport px
   (no pointer to keep under an edge, so no centred-edge doubling) and clamps to
   the absolute bounds rather than the panel — like typed input, it may step
@@ -84,20 +98,29 @@ app reflows and its breakpoints flip while the pointer moves.
 
 ### Menu changes (`DeviceSelector.tsx`)
 
-One new row at the top of the Custom group: **Freeform**, showing the size it will
-activate (the current custom size, else the panel size on first use — passed down
-from `useDeviceFrame`'s available box). Selecting it activates Custom at that size,
-so the handles appear around what the user was already looking at. The rotate
-button's tooltip on a custom size reads "Swap width and height" (it is not
-portrait/landscape there).
+One new row at the top of the Custom group: **Freeform**. It enters Custom at the
+**active custom size when one is applied, otherwise at the current panel size**
+(passed down from `useDeviceFrame`'s available box), so the handles appear around
+what the user was already looking at. Deliberately not "the last custom size ever
+used": selecting a named preset clears `customSize`, and re-entering Freeform
+afterwards starts from the panel — the row's own rationale is "grab the edge of
+what you see", and resurrecting an old number would move the surface away from
+exactly that. The rotate button's tooltip on a custom size reads "Swap width and
+height" (it is not portrait/landscape there).
 
-**Per-open input re-seeding (req 10, ported from `shipit/yaoggm`).** The
-width/height inputs live in a `CustomSizeInputs` child of `DropdownMenuContent`:
-Radix unmounts the content on close, so the child re-seeds its state from the
-applied size (`customSize`, else the panel-size freeform target) on every open.
-With the state on `DeviceSelector` itself — as originally built here and on main
-— the last-typed values survived, so a size applied by a drag, the Freeform row,
-or a session switch showed stale numbers on the next open.
+**Per-open input re-seeding (req 10, ported from `shipit/yaoggm`; hardened after
+review).** The width/height inputs live in a `CustomSizeInputs` child of
+`DropdownMenuContent`, keyed by an open counter, and seed from the **currently
+applied viewport**: `customSize`, else the orientation-adjusted dims of the
+active named preset, else the panel-size freeform target. With the state on
+`DeviceSelector` itself — as originally built here and on main — the last-typed
+values survived, so a size applied by a drag, the Freeform row, or a session
+switch showed stale numbers on the next open. Two review corrections on the
+ported version: the seed covers named presets (req 10 says "the currently
+applied size", which a panel-size seed was not), and the open-counter `key`
+guarantees the remount — Radix does unmount the content on close, but only
+after the exit animation, which `dropdown-menu.tsx` documents a quick
+close/reopen can skip.
 
 ## 2. Per-session viewport memory (req 6)
 

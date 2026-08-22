@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document-level pointer listeners + body style pinning during drag (DOM sync)
 import { useEffect, useRef, useState } from "react";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { useSessionStore } from "../../stores/session-store.js";
 import { CUSTOM_SIZE_MIN, CUSTOM_SIZE_MAX } from "../device-presets.js";
 
 /** Which axes a grabbed handle resizes. */
@@ -12,12 +13,15 @@ export type ViewportDragAxis = "x" | "y" | "xy";
  * The surface is center-anchored, so moving an edge by Δ changes the size by
  * 2Δ — divided by the gesture-start scale so the handle tracks the pointer
  * when the gesture begins on a scaled-down surface. The result is clamped to
- * `[CUSTOM_SIZE_MIN, max(available, start)]`: a drag exists to sweep
- * breakpoints at 1:1 with the edge under the cursor, so it cannot grow the
- * surface past what fits the panel — but a surface that *starts* larger than
- * the panel can be dragged smaller, continuously (at the fit boundary the
- * scale is exactly 1, so there is no jump anywhere in the gesture). Larger
- * sizes stay reachable by preset or typed input, which scale-to-fit.
+ * `[CUSTOM_SIZE_MIN, min(CUSTOM_SIZE_MAX, max(available, start))]`: a drag
+ * exists to sweep breakpoints at 1:1 with the edge under the cursor, so it
+ * cannot grow the surface past what fits the panel — but a surface that
+ * *starts* larger than the panel can be dragged smaller, continuously (at the
+ * fit boundary the scale is exactly 1, so there is no jump anywhere in the
+ * gesture). Larger sizes stay reachable by preset or typed input, which
+ * scale-to-fit. `CUSTOM_SIZE_MAX` caps everything: on a panel wider than the
+ * absolute bound, an uncapped drag could create a size the persisted-viewport
+ * validation rejects, silently dropping that session's memory.
  */
 export function computeViewportResize(
   start: number,
@@ -26,7 +30,7 @@ export function computeViewportResize(
   available: number,
 ): number {
   const next = Math.round(start + (2 * totalDelta) / scale);
-  const upper = Math.max(available, start, CUSTOM_SIZE_MIN);
+  const upper = Math.min(CUSTOM_SIZE_MAX, Math.max(available, start, CUSTOM_SIZE_MIN));
   return Math.min(Math.max(next, CUSTOM_SIZE_MIN), upper);
 }
 
@@ -34,9 +38,12 @@ export function computeViewportResize(
 export const KEYBOARD_RESIZE_STEP = 10;
 
 /**
- * The size an arrow key produces on a handle, or `null` for a key that handle
- * does not act on (so the caller leaves the event alone — an unhandled arrow
- * must still scroll the panel).
+ * The size an arrow key produces on an edge slider, or `null` for a key that
+ * slider does not act on (so the caller leaves the event alone — an unhandled
+ * arrow must still scroll the panel). Keyboard resize is per-edge only: the
+ * corner is a pointer-only convenience, because a `role="button"` that answers
+ * arrows but not Enter/Space lies to assistive technology, and both axes are
+ * already reachable through the two sliders.
  *
  * Deliberately NOT `computeViewportResize`: a key press asks for a fixed
  * number of viewport px — there is no pointer to keep under an edge, so the
@@ -46,18 +53,16 @@ export const KEYBOARD_RESIZE_STEP = 10;
  * bounds hold.
  */
 export function computeKeyboardResize(
-  axis: ViewportDragAxis,
+  axis: Exclude<ViewportDragAxis, "xy">,
   current: { width: number; height: number },
   key: string,
 ): { width: number; height: number } | null {
   const clamp = (v: number) => Math.min(Math.max(v, CUSTOM_SIZE_MIN), CUSTOM_SIZE_MAX);
-  const horizontal = axis !== "y";
-  const vertical = axis !== "x";
-  if (horizontal && (key === "ArrowRight" || key === "ArrowLeft")) {
+  if (axis === "x" && (key === "ArrowRight" || key === "ArrowLeft")) {
     const delta = key === "ArrowRight" ? KEYBOARD_RESIZE_STEP : -KEYBOARD_RESIZE_STEP;
     return { width: clamp(current.width + delta), height: current.height };
   }
-  if (vertical && (key === "ArrowDown" || key === "ArrowUp")) {
+  if (axis === "y" && (key === "ArrowDown" || key === "ArrowUp")) {
     const delta = key === "ArrowDown" ? KEYBOARD_RESIZE_STEP : -KEYBOARD_RESIZE_STEP;
     return { width: current.width, height: clamp(current.height + delta) };
   }
@@ -79,6 +84,14 @@ interface DragGesture {
   scale: number;
   availableWidth: number;
   availableHeight: number;
+  /**
+   * The session the gesture belongs to. `PreviewFrame` stays mounted across
+   * session switches, so an unmount is not guaranteed to end a gesture — and a
+   * move that lands after a switch would resize A's geometry into B's viewport
+   * memory (`setFreeformSize` keys persistence by the *current* session). A
+   * mismatch ends the gesture instead.
+   */
+  sessionId: string | undefined;
 }
 
 export interface ViewportResizeHandlesProps {
@@ -100,10 +113,14 @@ export interface ViewportResizeHandlesProps {
  *
  * The edge handles are focusable `role="slider"`s (req 9): arrow keys step
  * their own axis by {@link KEYBOARD_RESIZE_STEP} and `aria-value*` announces
- * the size, so the freeform size is reachable without a pointer. The corner
- * resizes both axes, which no single slider value describes, so it is a
- * `button` that acts on all four arrows. The labelled menu inputs remain the
- * exact-entry path.
+ * the size, so the freeform size is reachable without a pointer. Their
+ * `aria-orientation` matches the ARROW-KEY axis (width = horizontal, height =
+ * vertical), never the grip's drawn bar — announcing the bar's direction told
+ * assistive-technology users the opposite keys from the ones implemented. The
+ * corner is a pointer-only convenience (`aria-hidden`): both axes are already
+ * keyboard-reachable through the sliders, and any focusable role here would
+ * promise semantics (Enter/Space, a single value) it cannot honour. The
+ * labelled menu inputs remain the exact-entry path.
  *
  * While a gesture is live, a transparent shield covers the panel so the iframe
  * cannot swallow pointer events (the same problem `AppLayout` solves for the
@@ -137,6 +154,7 @@ export function ViewportResizeHandles({
       scale: deviceScale,
       availableWidth,
       availableHeight,
+      sessionId: useSessionStore.getState().sessionId,
     };
     setDragAxis(axis);
   };
@@ -148,9 +166,19 @@ export function ViewportResizeHandles({
   // eslint-disable-next-line no-restricted-syntax -- document listeners + body style for the live drag gesture (DOM sync)
   useEffect(() => {
     if (!dragAxis) return;
+    const onUp = () => {
+      dragRef.current = null;
+      setDragAxis(null);
+    };
     const onMove = (e: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag) return;
+      // The session changed under a live gesture (see DragGesture.sessionId):
+      // end it rather than resize the incoming session's viewport.
+      if (drag.sessionId !== useSessionStore.getState().sessionId) {
+        onUp();
+        return;
+      }
       const width =
         drag.axis === "y"
           ? drag.startWidth
@@ -160,10 +188,6 @@ export function ViewportResizeHandles({
           ? drag.startHeight
           : computeViewportResize(drag.startHeight, e.clientY - drag.startY, drag.scale, drag.availableHeight);
       usePreviewStore.getState().setFreeformSize(width, height);
-    };
-    const onUp = () => {
-      dragRef.current = null;
-      setDragAxis(null);
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
@@ -180,7 +204,7 @@ export function ViewportResizeHandles({
   }, [dragAxis]);
 
   // A key press asks for the size relative to what is on screen now.
-  const onArrowKey = (axis: ViewportDragAxis) => (e: React.KeyboardEvent) => {
+  const onArrowKey = (axis: Exclude<ViewportDragAxis, "xy">) => (e: React.KeyboardEvent) => {
     const next = computeKeyboardResize(axis, { width: deviceWidth, height: deviceHeight }, e.key);
     if (!next) return;
     // Otherwise the arrow scrolls the panel out from under the handle.
@@ -219,12 +243,13 @@ export function ViewportResizeHandles({
       >
         {/* `role="slider"` because that is what arrow keys on a single-axis
             grip mean, and it hands a screen reader the number. Orientation
-            describes the grip's physical bar. */}
+            names the arrow-key axis the value moves on — NOT the grip's drawn
+            bar, which is perpendicular to it. */}
         <div
           data-testid="viewport-handle-x"
           role="slider"
           aria-label="Resize the preview width"
-          aria-orientation="vertical"
+          aria-orientation="horizontal"
           aria-valuemin={CUSTOM_SIZE_MIN}
           aria-valuemax={CUSTOM_SIZE_MAX}
           aria-valuenow={deviceWidth}
@@ -240,7 +265,7 @@ export function ViewportResizeHandles({
           data-testid="viewport-handle-y"
           role="slider"
           aria-label="Resize the preview height"
-          aria-orientation="horizontal"
+          aria-orientation="vertical"
           aria-valuemin={CUSTOM_SIZE_MIN}
           aria-valuemax={CUSTOM_SIZE_MAX}
           aria-valuenow={deviceHeight}
@@ -252,16 +277,14 @@ export function ViewportResizeHandles({
         >
           <div className={`h-1 w-10 ${grip(dragAxis === "y")}`} />
         </div>
-        {/* Both axes at once — no single slider value fits, so a button that
-            acts on all four arrows. */}
+        {/* Pointer-only convenience (see the component docstring): both axes
+            are keyboard-reachable through the sliders above, so this carries
+            no role, no focus, and no announcement. */}
         <div
+          aria-hidden="true"
           data-testid="viewport-handle-xy"
-          role="button"
-          aria-label={`Resize the preview width and height (currently ${deviceWidth} by ${deviceHeight} pixels)`}
-          tabIndex={0}
           onPointerDown={beginDrag("xy")}
-          onKeyDown={onArrowKey("xy")}
-          className="group pointer-events-auto touch-none absolute -right-3.5 -bottom-3.5 flex h-5 w-5 cursor-nwse-resize items-center justify-center focus:outline-none"
+          className="group pointer-events-auto touch-none absolute -right-3.5 -bottom-3.5 flex h-5 w-5 cursor-nwse-resize items-center justify-center"
         >
           <div className={`h-2 w-2 ${grip(dragAxis === "xy")}`} />
         </div>

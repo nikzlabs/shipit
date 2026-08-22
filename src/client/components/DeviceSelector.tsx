@@ -46,14 +46,17 @@ export interface DeviceSelectorProps {
  * and height can be entered at the bottom of the menu.
  */
 /**
- * The custom-size inputs, mounted as a child of `DropdownMenuContent`.
+ * The custom-size inputs, mounted as a child of `DropdownMenuContent` and
+ * keyed by the parent's open counter.
  *
- * Being a child is the point (docs/278 req 10): Radix unmounts the content on
- * close, so seeding input state from `initialSize` on mount re-prefills on
- * every open. With the state on `DeviceSelector` itself the last-typed values
- * survived, so a size applied elsewhere — a drag, the Freeform row, a session
- * switch restoring another session's viewport — showed stale numbers on the
- * next open.
+ * Both are the point (docs/278 req 10). Seeding input state from `initialSize`
+ * on mount re-prefills on every open — with the state on `DeviceSelector`
+ * itself the last-typed values survived, so a size applied elsewhere (a drag,
+ * the Freeform row, a session switch restoring another session's viewport)
+ * showed stale numbers on the next open. And the `key` is what *guarantees*
+ * the remount: Radix does unmount the content on close, but only after the
+ * exit animation, which `dropdown-menu.tsx` documents a quick close/reopen can
+ * skip — the counter forces a fresh mount even then.
  */
 function CustomSizeInputs({
   initialSize,
@@ -147,15 +150,28 @@ export function DeviceSelector({
   onCustomSize,
 }: DeviceSelectorProps) {
   const [open, setOpen] = useState(false);
+  // Counts open transitions; keys CustomSizeInputs so every open remounts it
+  // (see its docstring for why Radix's own unmount is not sufficient).
+  const [openCount, setOpenCount] = useState(0);
 
   const phones = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "phone"), []);
   const tablets = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "tablet"), []);
 
   const isCustomActive = activePreset?.category === "custom";
-  // Last custom size wins; the panel's own size on first use; a phone-ish
-  // fallback only while the panel is unmeasured. Also what the inputs below
-  // are seeded with on each open.
+  // What the Freeform row enters at: the active custom size when one is
+  // applied, else the panel's own size ("grab the edge of what you see"); a
+  // phone-ish fallback only while the panel is unmeasured.
   const freeformTarget = customSize ?? panelSize ?? { width: 390, height: 844 };
+  // What the inputs are seeded with on each open: the *currently applied*
+  // viewport (req 10) — so an active named preset seeds its own
+  // orientation-adjusted dims, which `freeformTarget` deliberately does not.
+  const inputSeed =
+    customSize ??
+    (activePreset
+      ? isLandscape
+        ? { width: activePreset.height, height: activePreset.width }
+        : { width: activePreset.width, height: activePreset.height }
+      : freeformTarget);
 
   const triggerLabel = activePreset
     ? activePreset.label
@@ -163,7 +179,13 @@ export function DeviceSelector({
 
   return (
     <span className="flex items-center gap-1">
-      <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenu
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (next) setOpenCount((c) => c + 1);
+        }}
+      >
         <DropdownMenuTrigger asChild>
           <button
             className="flex items-center gap-1.5 text-(--color-text-primary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
@@ -240,7 +262,8 @@ export function DeviceSelector({
             {isCustomActive && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-success)" />}
           </DropdownMenuItem>
           <CustomSizeInputs
-            initialSize={freeformTarget}
+            key={openCount}
+            initialSize={inputSeed}
             onApply={(width, height) => {
               onCustomSize(width, height);
               setOpen(false);

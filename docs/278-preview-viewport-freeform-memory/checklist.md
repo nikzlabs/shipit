@@ -36,6 +36,16 @@
 - [x] Rotation behaviour explicitly unchanged (`setDevicePreset`, rotate-on-custom, landscape-across-presets)
 - [x] Keyboard + re-seed tests; suites, typecheck, lint green; PR body updated
 
+## Review fixes (2026-08-22, approved findings 2–5 + docs for 6)
+
+- [x] Slider `aria-orientation` matches the arrow-key axis (width = horizontal, height = vertical)
+- [x] Corner handle pointer-only again (`aria-hidden`, no role/tabIndex/keys)
+- [x] `computeViewportResize` upper clamp includes `CUSTOM_SIZE_MAX`
+- [x] Gesture captures its session and ends on a session change
+- [x] Inputs seed from the applied viewport (incl. orientation-adjusted named presets); `CustomSizeInputs` keyed per open
+- [x] Docs reworded: Freeform row enters at active custom size else panel size (finding 6 resolved as a doc fix)
+- [x] Tests: orientation attrs, corner inertness, MAX clamp, session-change gesture drop, named-preset seed
+
 ## Verification
 
 - [x] `npm run typecheck`, `npm run lint:dev`, `npm run test:dev` + all touched suites green

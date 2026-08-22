@@ -80,6 +80,12 @@ describe("computeViewportResize", () => {
   it("tolerates a panel smaller than the minimum", () => {
     expect(computeViewportResize(100, 300, 1, 40)).toBe(100);
   });
+
+  it("never exceeds the absolute custom-size bound, however wide the panel", () => {
+    // An uncapped drag on a >2560px panel would create a size the persisted
+    // viewport validation rejects — silently deleting that session's memory.
+    expect(computeViewportResize(2500, 500, 1, 3000)).toBe(2560);
+  });
 });
 
 describe("computeKeyboardResize", () => {
@@ -98,13 +104,6 @@ describe("computeKeyboardResize", () => {
     expect(computeKeyboardResize("x", { width: 400, height: 800 }, "ArrowDown")).toBeNull();
     expect(computeKeyboardResize("y", { width: 400, height: 800 }, "ArrowRight")).toBeNull();
     expect(computeKeyboardResize("x", { width: 400, height: 800 }, "Enter")).toBeNull();
-  });
-
-  it("the corner acts on all four arrows", () => {
-    expect(computeKeyboardResize("xy", { width: 400, height: 800 }, "ArrowRight"))
-      .toEqual({ width: 410, height: 800 });
-    expect(computeKeyboardResize("xy", { width: 400, height: 800 }, "ArrowUp"))
-      .toEqual({ width: 400, height: 790 });
   });
 
   it("clamps to the absolute custom-size bounds, not the panel", () => {
@@ -210,23 +209,50 @@ describe("ViewportResizeHandles", () => {
     expect(usePreviewStore.getState().customSize).toEqual({ width: 403, height: 852 });
     fireEvent.keyDown(screen.getByTestId("viewport-handle-y"), { key: "ArrowUp" });
     expect(usePreviewStore.getState().customSize).toEqual({ width: 403, height: 842 });
-    fireEvent.keyDown(screen.getByTestId("viewport-handle-xy"), { key: "ArrowDown" });
-    expect(usePreviewStore.getState().customSize).toEqual({ width: 403, height: 852 });
   });
 
-  it("announces the size as focusable sliders, tracking each keyboard step", () => {
+  it("announces the size as focusable sliders whose orientation names the arrow-key axis", () => {
     render(<Harness />);
     const x = screen.getByTestId("viewport-handle-x");
     expect(x).toHaveAttribute("role", "slider");
     expect(x).toHaveAttribute("tabindex", "0");
+    // The width value moves on Left/Right — horizontal — even though the
+    // grip's drawn bar is vertical. Announcing the bar told AT users the
+    // opposite keys from the implemented ones.
+    expect(x).toHaveAttribute("aria-orientation", "horizontal");
     expect(x).toHaveAttribute("aria-valuenow", "393");
     expect(x).toHaveAttribute("aria-valuetext", "393 pixels wide");
     fireEvent.keyDown(x, { key: "ArrowRight" });
     expect(x).toHaveAttribute("aria-valuenow", "403");
     const y = screen.getByTestId("viewport-handle-y");
     expect(y).toHaveAttribute("role", "slider");
+    expect(y).toHaveAttribute("aria-orientation", "vertical");
     expect(y).toHaveAttribute("aria-valuetext", "852 pixels tall");
-    expect(screen.getByTestId("viewport-handle-xy")).toHaveAttribute("role", "button");
+  });
+
+  it("keeps the corner pointer-only: hidden from AT, unfocusable, deaf to keys", () => {
+    render(<Harness />);
+    const xy = screen.getByTestId("viewport-handle-xy");
+    // role=button here would promise Enter/Space activation that cannot
+    // exist; both axes are already keyboard-reachable through the sliders.
+    expect(xy).toHaveAttribute("aria-hidden", "true");
+    expect(xy).not.toHaveAttribute("role");
+    expect(xy).not.toHaveAttribute("tabindex");
+    fireEvent.keyDown(xy, { key: "ArrowDown" });
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
+  });
+
+  it("ends a live gesture when the session changes under it", () => {
+    useSessionStore.setState({ sessionId: "session-a" });
+    render(<Harness />);
+    fireEvent.pointerDown(screen.getByTestId("viewport-handle-x"), { clientX: 100, clientY: 50, button: 0 });
+    expect(screen.getByTestId("viewport-drag-shield")).toBeInTheDocument();
+    // A session switch (keyboard shortcut, automatic navigation) while the
+    // pointer is held: the move must not resize B's viewport with A's geometry.
+    useSessionStore.setState({ sessionId: "session-b" });
+    fireEvent.pointerMove(document, { clientX: 200, clientY: 50 });
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
+    expect(screen.queryByTestId("viewport-drag-shield")).not.toBeInTheDocument();
   });
 
   it("leaves keys a handle does not act on to the panel (no store write)", () => {

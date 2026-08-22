@@ -28,9 +28,10 @@ issue was filed, and this folder covers the genuine remainder.
    control sees no change.
 8. Constraining is pure client-side iframe sizing; no proxy or server changes.
    (Constraint carried verbatim from the issue.)
-9. The freeform size is operable without a pointer: the resize handles are
-   focusable, resize on arrow keys, and announce their axis and current value
-   to assistive technology. (Added 2026-08-22, benchmark amendment.)
+9. The freeform size is operable without a pointer: the edge resize handles are
+   focusable sliders that resize on arrow keys and announce their axis and
+   current value to assistive technology. (Added 2026-08-22, benchmark
+   amendment.)
 10. The custom width/height inputs show the currently applied size each time
     the menu opens — never values left over from an earlier session or entry
     path. (Added 2026-08-22, benchmark amendment.)
@@ -96,8 +97,17 @@ not asked; see Resolved questions)
   assumption: yes, one row. The issue names freeform as a peer mode of fill and
   presets, and without an entry the only paths into it are typing two numbers or
   detaching from a preset — neither is "grab the edge of what I'm looking at". The
-  row activates Custom at the last custom size, or at the current panel size on
-  first use, so the handles appear around exactly what the user was seeing.
+  row activates Custom at the active custom size when one is applied, otherwise at
+  the current panel size, so the handles appear around exactly what the user was
+  seeing.
+- 2026-08-22 — **Does the Freeform row remember a custom size across preset
+  visits?** No — reading dropped after the cross-agent review flagged the docs
+  and code disagreeing. Selecting a named preset clears the custom size by
+  design, so re-entering Freeform afterwards starts from the panel, not from a
+  number chosen before the preset detour. The row's rationale is "grab the edge
+  of what you see"; resurrecting an old size would move the surface away from
+  exactly that. The earlier wording here ("the last custom size") described the
+  dropped reading and was corrected in place.
 - 2026-08-22 — **Amendment (reqs 9, 10).** After cross-branch comparison of the
   four benchmark implementations, two behaviours were adopted from sibling
   branches: keyboard-operable slider handles (from `shipit/p_799e` — the
@@ -108,3 +118,14 @@ not asked; see Resolved questions)
   NOT adopted, per the same decision: any change to rotation behaviour — the
   rotate button stays visible on a typed custom size and swaps the numbers,
   and `isLandscape` carries across a change of preset.
+- 2026-08-22 — **Cross-agent review fixes** (reviewer run `c247cadd-3c45-4030-a2ee-9a0c8b109228`,
+  fixes approved by the user). Applied: slider `aria-orientation` now names the
+  arrow-key axis, not the grip's bar; the corner handle reverted to
+  pointer-only instead of a `role="button"` that could not honour Enter/Space;
+  the drag clamp includes `CUSTOM_SIZE_MAX` so an ultra-wide panel cannot drag
+  out a size persistence rejects (which silently deleted the session's memory);
+  a live drag ends when the session changes under it; the menu inputs seed from
+  the applied viewport including named presets, and remount per open. The
+  review's multi-tab finding (whole-map flush can resurrect another tab's
+  overwritten entry) was not taken up in this PR — the shipped
+  `shipit:preview-paths` map shares the same single-tab design.
