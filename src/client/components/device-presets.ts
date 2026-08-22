@@ -24,7 +24,22 @@ export const DEVICE_PRESETS: DevicePreset[] = [
   { id: "ipad-air", label: "iPad Air", width: 820, height: 1180, category: "tablet" },
 ];
 
+/** Minimum allowed value for a custom viewport dimension (px). */
+export const CUSTOM_SIZE_MIN = 100;
+/** Maximum allowed value for a custom viewport dimension (px). */
+export const CUSTOM_SIZE_MAX = 2560;
+
+/**
+ * The synthetic preset the Custom size fields apply (there is no named entry
+ * for it). Shared by the toolbar's apply path and the preview store's reload
+ * loader so both sides of a page reload produce identical objects.
+ */
+export function customPreset(width: number, height: number): DevicePreset {
+  return { id: "custom", label: `${width}×${height}`, width, height, category: "custom" };
+}
+
 export function findPresetById(id: string | null | undefined): DevicePreset | null {
   if (!id) return null;
+  if (id === "custom") return null; // a custom preset is only meaningful with its dimensions — see `customPreset`
   return DEVICE_PRESETS.find((p) => p.id === id) ?? null;
 }

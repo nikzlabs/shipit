@@ -10,12 +10,7 @@ import {
   DropdownMenuSeparator,
 } from "./ui/dropdown-menu.js";
 import { Button } from "./ui/button.js";
-import { DEVICE_PRESETS, type DevicePreset } from "./device-presets.js";
-
-/** Minimum allowed value for a custom viewport dimension (px). */
-export const CUSTOM_SIZE_MIN = 100;
-/** Maximum allowed value for a custom viewport dimension (px). */
-export const CUSTOM_SIZE_MAX = 2560;
+import { DEVICE_PRESETS, CUSTOM_SIZE_MIN, CUSTOM_SIZE_MAX, type DevicePreset } from "./device-presets.js";
 
 export interface DeviceSelectorProps {
   /** Currently active preset, or null when "Responsive" (fill panel). */

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { PreviewToolbar } from "./PreviewToolbar.js";
+import { usePreviewStore } from "../../stores/preview-store.js";
+import { customPreset } from "../device-presets.js";
 
 // jsdom implements neither ResizeObserver nor layout. The stub keeps the
 // collapse hook's callback ref from throwing; the hook then reads clientWidth
@@ -82,6 +85,31 @@ function unladderedLabels(root: HTMLElement): string[] {
   walk(root, false);
   return orphans;
 }
+
+describe("PreviewToolbar device viewport", () => {
+  it("applying a custom size makes customPreset(width, height) the active preset", async () => {
+    const user = userEvent.setup();
+    usePreviewStore.getState().reset();
+    localStorage.clear();
+    try {
+      render(<PreviewToolbar {...baseProps} />);
+      await user.click(screen.getByLabelText("Select device viewport"));
+      await user.clear(screen.getByLabelText("Custom width"));
+      await user.type(screen.getByLabelText("Custom width"), "500");
+      await user.clear(screen.getByLabelText("Custom height"));
+      await user.type(screen.getByLabelText("Custom height"), "900");
+      await user.click(screen.getByRole("button", { name: "Apply" }));
+      // The exact object matters: the store persists this shape and the
+      // reload loader (docs/280) rebuilds it with `customPreset`, so both
+      // sides of a reload must agree on identity.
+      expect(usePreviewStore.getState().devicePreset).toEqual(customPreset(500, 900));
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
+    } finally {
+      localStorage.clear();
+      usePreviewStore.getState().reset();
+    }
+  });
+});
 
 describe("PreviewToolbar collapse wiring", () => {
   it("starts fully expanded", () => {

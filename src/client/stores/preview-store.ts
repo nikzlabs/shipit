@@ -1,7 +1,13 @@
 import { create } from "zustand";
 import { getLocalStorageObject } from "../utils/local-storage.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
-import type { DevicePreset } from "../components/device-presets.js";
+import {
+  CUSTOM_SIZE_MAX,
+  CUSTOM_SIZE_MIN,
+  customPreset,
+  findPresetById,
+  type DevicePreset,
+} from "../components/device-presets.js";
 import type {
   ComposeServiceStatus,
   ComposeServicePreviewMode,
@@ -362,6 +368,62 @@ export function isServicesDrawerOpen(opts: {
   return opts.expanded || (!opts.previewRunning && !opts.idleCollapsed);
 }
 
+const VIEWPORT_STORAGE_KEY = "shipit:preview-viewport";
+
+/**
+ * The viewport triple as it sits in localStorage. Written by
+ * {@link saveViewportState} as `{ presetId, landscape, custom }`; read back
+ * through {@link loadViewportState}, which treats every field as untrusted —
+ * the key survives in a browser profile far longer than this code's schema.
+ */
+interface StoredViewport {
+  presetId: unknown;
+  landscape: unknown;
+  custom: unknown;
+}
+
+/**
+ * Read the last-picked viewport back from localStorage (docs/280). Runs once
+ * at store creation, so a page reload restores what the user picked before it
+ * instead of resetting the Preview tab to fill-panel. Anything malformed,
+ * unknown, or out of range falls back to Responsive rather than guessing.
+ */
+function loadViewportState(): Pick<SessionPreviewSnapshot, "devicePreset" | "isLandscape" | "customSize"> {
+  const fallback = { devicePreset: null as DevicePreset | null, isLandscape: false, customSize: null };
+  const stored = getLocalStorageObject<StoredViewport | null>(VIEWPORT_STORAGE_KEY, null, (raw) =>
+    raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as StoredViewport) : null,
+  );
+  if (!stored) return fallback;
+  const isLandscape = stored.landscape === true;
+  const dims = stored.custom !== null && typeof stored.custom === "object" ? (stored.custom as { width: unknown; height: unknown }) : null;
+  const width = Number(dims?.width);
+  const height = Number(dims?.height);
+  const custom =
+    dims !== null
+    && Number.isInteger(width) && Number.isInteger(height)
+    && width >= CUSTOM_SIZE_MIN && width <= CUSTOM_SIZE_MAX
+    && height >= CUSTOM_SIZE_MIN && height <= CUSTOM_SIZE_MAX
+      ? { width, height }
+      : null;
+  if (stored.presetId === "custom") {
+    return custom ? { devicePreset: customPreset(custom.width, custom.height), isLandscape, customSize: custom } : fallback;
+  }
+  const preset = typeof stored.presetId === "string" ? findPresetById(stored.presetId) : null;
+  return preset ? { devicePreset: preset, isLandscape, customSize: null } : fallback;
+}
+
+/** Write the current viewport triple to localStorage. Best-effort, like the store's other mirrors. */
+function saveViewportState(state: Pick<PreviewState, "devicePreset" | "isLandscape" | "customSize">): void {
+  const value = {
+    presetId: state.devicePreset?.id ?? null,
+    landscape: state.isLandscape,
+    // Dimensions only ride along when they are the active preset; a named
+    // preset never has them (`setDevicePreset` clears them).
+    custom: state.devicePreset?.category === "custom" ? state.customSize : null,
+  };
+  try { localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(value)); } catch { /* ignore */ }
+}
+
 const PREVIEW_PATHS_KEY = "shipit:preview-paths";
 
 /**
@@ -423,6 +485,11 @@ function savePreviewPaths(paths: Record<string, string>): void {
 
 const initialState = {
   ...initialSessionState,
+  // The viewport is a tool preference, not session state: the last-picked
+  // choice (docs/280) opens every fresh view of the Preview tab, including
+  // after a page reload. Session-specific choices still ride the per-session
+  // snapshots on top of this default.
+  ...loadViewportState(),
   autoFixEnabled: false,
   servicesDrawerExpanded: loadServicesDrawerExpanded(),
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
@@ -510,12 +577,20 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setPreviewProxyError: (previewProxyError) => set({ previewProxyError }),
 
-  setDevicePreset: (devicePreset) =>
-    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null }),
+  setDevicePreset: (devicePreset) => {
+    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null });
+    saveViewportState(get());
+  },
 
-  toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
+  toggleLandscape: () => {
+    set((state) => ({ isLandscape: !state.isLandscape }));
+    saveViewportState(get());
+  },
 
-  setCustomSize: (customSize) => set({ customSize }),
+  setCustomSize: (customSize) => {
+    set({ customSize });
+    saveViewportState(get());
+  },
 
   setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 
@@ -563,7 +638,11 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       set({ ...snap, previewLinkIntent: null });
     } else {
       resetDedupState();
-      set({ ...initialSessionState, previewLinkIntent: null });
+      // A session with no snapshot starts from the user's last-picked viewport
+      // (docs/280), not a bare Responsive — this branch is also the path every
+      // post-reload resume takes, so falling back to `initialSessionState`
+      // alone would undo the persisted choice on every refresh.
+      set({ ...initialSessionState, ...loadViewportState(), previewLinkIntent: null });
     }
   },
 

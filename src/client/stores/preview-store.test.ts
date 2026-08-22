@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { usePreviewStore } from "./preview-store.js";
-import { findPresetById } from "../components/device-presets.js";
+import { customPreset, findPresetById } from "../components/device-presets.js";
 
 describe("preview-store device viewport", () => {
   beforeEach(() => {
@@ -55,6 +55,74 @@ describe("preview-store device viewport", () => {
     });
   });
 
+  describe("viewport persistence across a reload", () => {
+    // A reload is a fresh module graph over the same localStorage: wipe the
+    // module registry and re-import the store, then ask the NEW instance what
+    // the Preview tab would open with.
+    async function reloadedStore() {
+      vi.resetModules();
+      const { usePreviewStore: fresh } = await import("./preview-store.js");
+      return fresh;
+    }
+
+    it("brings back a picked preset", async () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16")!);
+      const fresh = await reloadedStore();
+      expect(fresh.getState().devicePreset?.id).toBe("iphone-16");
+      expect(fresh.getState().isLandscape).toBe(false);
+      expect(fresh.getState().customSize).toBeNull();
+    });
+
+    it("brings back orientation and a custom size together", async () => {
+      usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+      usePreviewStore.getState().setDevicePreset(customPreset(500, 900));
+      usePreviewStore.getState().toggleLandscape();
+      const fresh = await reloadedStore();
+      expect(fresh.getState().devicePreset).toEqual(customPreset(500, 900));
+      expect(fresh.getState().isLandscape).toBe(true);
+      expect(fresh.getState().customSize).toEqual({ width: 500, height: 900 });
+    });
+
+    it("brings back Responsive when that was the last pick", async () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("ipad-air")!);
+      usePreviewStore.getState().setDevicePreset(null);
+      const fresh = await reloadedStore();
+      expect(fresh.getState().devicePreset).toBeNull();
+      expect(fresh.getState().isLandscape).toBe(false);
+    });
+
+    it("a session with no snapshot still opens at the persisted viewport", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-se")!);
+      // The no-snapshot branch of restoreSession is also what every post-reload
+      // resume runs, so falling back to bare defaults here would undo req 1.
+      usePreviewStore.getState().restoreSession("never-seen");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-se");
+    });
+
+    it("a session with a snapshot restores its own viewport instead", () => {
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-se")!);
+      usePreviewStore.getState().snapshotSession("a");
+      usePreviewStore.getState().setDevicePreset(findPresetById("ipad-air")!);
+      usePreviewStore.getState().restoreSession("a");
+      expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-se");
+    });
+
+    it.each([
+      ["truncated JSON", "{not json"],
+      ["a non-object", "[1,2]"],
+      ["an unknown preset id", JSON.stringify({ presetId: "pixel-99", landscape: true, custom: null })],
+      ["a custom preset with no dimensions", JSON.stringify({ presetId: "custom", landscape: false, custom: null })],
+      ["dimensions out of range", JSON.stringify({ presetId: "custom", landscape: false, custom: { width: 50, height: 99_999 } })],
+      ["non-numeric dimensions", JSON.stringify({ presetId: "custom", landscape: false, custom: { width: "wide", height: 900 } })],
+      ["a non-string preset id", JSON.stringify({ presetId: 42, landscape: false, custom: null })],
+    ])("falls back to Responsive on %s", async (_name, stored) => {
+      localStorage.setItem("shipit:preview-viewport", stored as string);
+      const fresh = await reloadedStore();
+      expect(fresh.getState().devicePreset).toBeNull();
+      expect(fresh.getState().customSize).toBeNull();
+    });
+  });
+
   describe("session snapshots", () => {
     it("findPresetById returns null for unknown id", () => {
       expect(findPresetById("nonexistent")).toBeNull();
@@ -92,9 +160,11 @@ describe("preview-store device viewport", () => {
       });
       usePreviewStore.getState().snapshotSession("session-a");
 
+      // A session with no snapshot opens at the last-picked viewport
+      // (docs/280) — this branch is also what every post-reload resume runs.
       usePreviewStore.getState().restoreSession("session-b");
-      expect(usePreviewStore.getState().devicePreset).toBeNull();
-      expect(usePreviewStore.getState().customSize).toBeNull();
+      expect(usePreviewStore.getState().devicePreset).toEqual(customPreset(500, 900));
+      expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
 
       usePreviewStore.getState().restoreSession("session-a");
       expect(usePreviewStore.getState().devicePreset?.id).toBe("custom");
