@@ -210,8 +210,13 @@ export function AppLayout({
             </a>
           </h1>
         </div>
+        {/* `z-20` is load-bearing: the subscription meters to the right are
+            `relative` spans too, so with every z-index left at `auto` paint
+            order fell back to DOM order and the meters — later siblings — drew
+            ON TOP of this banner's opaque background. It read as a
+            half-transparent pill with a stray percentage inside it. */}
         {showConnectionBanner && !isMobile && (
-          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-[60vw] pointer-events-none flex justify-center">
+          <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 max-w-[60vw] pointer-events-none flex justify-center">
             <div className="pointer-events-auto">
               <ConnectionBanner status={connectionStatus} reconnectAttempt={reconnectAttempt} onReconnect={onReconnect} />
             </div>
