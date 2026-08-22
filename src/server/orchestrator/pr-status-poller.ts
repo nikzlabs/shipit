@@ -23,7 +23,7 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeManagedReason, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
-import { readBranchSync } from "./services/branch-sync.js";
+import { readBranchSync, resolveMergeSync } from "./services/branch-sync.js";
 import {
   buildPrStatusQuery,
   extractFocusedPrNodes,
@@ -245,6 +245,18 @@ export class PrStatusPoller {
       this.githubAuth,
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
+      // The authoritative sync read, used once per merge attempt rather than
+      // once per tick — it fetches, so it belongs on the rare path. The cheap
+      // per-tick reading on the summary cannot see the remote moving under a
+      // stale tracking ref (a force-push from another clone), which reads as
+      // `in-sync` and would let the loop merge a history this session does not
+      // have. Undefined (no workspace, no factory) leaves the loop on the
+      // summary's reading alone.
+      async (sessionId, headBranch) => {
+        const dir = this.sessionManager.get(sessionId)?.workspaceDir;
+        if (!dir || !this.createGitManager) return undefined;
+        return resolveMergeSync(this.createGitManager(dir), headBranch);
+      },
     );
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
     // docs/146 — the manager requires the runner registry for its pre-attempt

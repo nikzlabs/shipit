@@ -1200,20 +1200,18 @@ export async function registerGitHubRoutes(
         // tab is exactly the caller this route exists to catch. `ahead` pushes
         // and answers "not yet" (the new head's checks have not run);
         // `diverged` refuses. Anything unknowable proceeds — see
-        // `services/branch-sync.ts`.
-        const headBranch = poller?.getStatus(request.params.id)?.headBranch
-          ?? session?.branch;
-        if (headBranch) {
-          const verdict = await guardMergeSync(git, headBranch);
-          if (verdict.action === "hold") {
-            // A push may have landed, so let the poller re-read the branch —
-            // otherwise the card keeps the old head until the next tick and the
-            // user's second click is gated on stale checks.
-            if (poller && session?.remoteUrl) {
-              await poller.forceRefreshSession(request.params.id).catch(() => {});
-            }
-            return { success: false, message: verdict.message };
+        // `services/branch-sync.ts`, which also resolves WHICH branch to read
+        // (the workspace's current one, the same branch `mergePullRequest`
+        // below resolves its pull request from).
+        const verdict = await guardMergeSync(git);
+        if (verdict.action === "hold") {
+          // A push may have landed, so let the poller re-read the branch —
+          // otherwise the card keeps the old head until the next tick and the
+          // user's second click is gated on stale checks.
+          if (poller && session?.remoteUrl) {
+            await poller.forceRefreshSession(request.params.id).catch(() => {});
           }
+          return { success: false, message: verdict.message };
         }
 
         // docs/266 — this route can end in an ARMING rather than a merge (checks

@@ -1840,6 +1840,18 @@ function prWentTerminalDuringCall(
 }
 
 /**
+ * Does this session hold commits the branch on GitHub has not got (or a history
+ * that disagrees with it)? Read from the poller's per-tick snapshot — no git,
+ * no network, because both arming paths run inside a request the user is
+ * waiting on. An absent reading is not a positive one and never diverts the
+ * arming; see `services/branch-sync.ts`.
+ */
+function branchIsUnsynced(prStatusPoller: PrStatusPoller, sessionId: string): boolean {
+  const state = prStatusPoller.getStatus(sessionId)?.branchSync?.state;
+  return state === "ahead" || state === "diverged";
+}
+
+/**
  * If auto-merge was enabled before a PR existed, apply that preference to the
  * newly-created PR now that GitHub has a pull request number to target.
  */
@@ -1863,6 +1875,12 @@ export async function activatePendingAutoMergeForPr(
   // no terminal-window check — there is nothing to await).
   if (prStatusPoller.hasLiveRunner(sessionId)) {
     prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
+    return;
+  }
+
+  // Same decision on a different signal — see `toggleAutoMerge` below.
+  if (branchIsUnsynced(prStatusPoller, sessionId)) {
+    prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "branch-unsynced" });
     return;
   }
 
@@ -1928,6 +1946,20 @@ export async function toggleAutoMerge(
       prStatusPoller.setAutoMergeEnabled(sessionId, true);
       prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
       return { enabled: true, mergeMethod, managed: true, managedReason: "session-live" };
+    }
+
+    // The branch on GitHub is not what this session holds. Arming NATIVE
+    // auto-merge here is a decision that cannot be taken back: GitHub merges
+    // whatever the branch carries the moment its checks pass, and ShipIt gets no
+    // say — so a push that never lands ships the pull request without the
+    // session's work, which is the whole failure this guard exists to prevent.
+    // ShipIt's own loop keeps the decision reversible and holds it until the
+    // branch is current (`AutoMergeManager.handleManaged`). The user's intent
+    // is honoured either way; only the executor differs.
+    if (branchIsUnsynced(prStatusPoller, sessionId)) {
+      prStatusPoller.setAutoMergeEnabled(sessionId, true);
+      prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "branch-unsynced" });
+      return { enabled: true, mergeMethod, managed: true, managedReason: "branch-unsynced" };
     }
 
     const graphqlMethod = GRAPHQL_MERGE_METHOD[mergeMethod];

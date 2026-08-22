@@ -60,7 +60,7 @@ describe("branch-sync against a real repository", () => {
   it("reads a freshly-pushed branch as in sync, and lets the merge proceed", async () => {
     const git = new GitManager(workDir);
     expect(await readBranchSync(git, "feature")).toEqual({ state: "in-sync", ahead: 0, behind: 0 });
-    expect(await guardMergeSync(git, "feature")).toEqual({ action: "proceed" });
+    expect(await guardMergeSync(git)).toEqual({ action: "proceed" });
   });
 
   it("reads an unpushed commit as ahead — the state that merges obsolete work", async () => {
@@ -74,7 +74,7 @@ describe("branch-sync against a real repository", () => {
     commit(workDir, "d", "1\n");
     const git = new GitManager(workDir);
 
-    const verdict = await guardMergeSync(git, "feature");
+    const verdict = await guardMergeSync(git);
 
     expect(verdict.action).toBe("hold");
     // The count is in the message: "2 commits" is what tells the user how much
@@ -98,7 +98,7 @@ describe("branch-sync against a real repository", () => {
     const git = new GitManager(workDir);
     const remoteTipBefore = run("git rev-parse refs/heads/feature", bareDir).trim();
 
-    const verdict = await guardMergeSync(git, "feature");
+    const verdict = await guardMergeSync(git);
 
     expect(verdict.action).toBe("hold");
     expect(verdict.action === "hold" && verdict.message).toContain("diverged");
@@ -108,7 +108,7 @@ describe("branch-sync against a real repository", () => {
     expect(run("git rev-parse HEAD", workDir).trim()).not.toBe(remoteTipBefore);
   });
 
-  it("lets a `behind` branch merge — the remote is a superset of local work", async () => {
+  it("lets a `behind` branch merge — the remote already contains this session's commits", async () => {
     run(`git clone ${bareDir} .`, otherDir);
     run("git checkout feature", otherDir);
     commit(otherDir, "remote-side", "1\n");
@@ -119,15 +119,32 @@ describe("branch-sync against a real repository", () => {
     // tracking ref still names its own last push and reads as in sync.
     expect(await readBranchSync(git, "feature")).toEqual({ state: "in-sync", ahead: 0, behind: 0 });
     expect(await resolveMergeSync(git, "feature")).toEqual({ state: "behind", ahead: 0, behind: 1 });
-    expect(await guardMergeSync(git, "feature")).toEqual({ action: "proceed" });
+    expect(await guardMergeSync(git)).toEqual({ action: "proceed" });
   });
 
-  it("declines to answer when HEAD is on a different branch than the pull request", async () => {
+  it("declines to answer when HEAD is on a different branch than the one asked about", async () => {
     run("git checkout -b sidequest", workDir);
     commit(workDir, "e", "1\n");
     // Comparing this HEAD against `origin/feature` would report a confident
     // divergence about two branches that have nothing to do with each other.
     expect(await readBranchSync(new GitManager(workDir), "feature")).toBeUndefined();
+  });
+
+  it("guards the branch that will actually be merged, not the one the card names", async () => {
+    // `services/github.ts` resolves the pull request to merge from the CURRENT
+    // branch. Guarding the card's branch instead reads "cannot tell" here and
+    // waves through a merge of `sidequest`'s pull request, whose sync state was
+    // never examined — the hole this contract closes.
+    run("git checkout -b sidequest", workDir);
+    commit(workDir, "e", "1\n");
+    run("git push origin sidequest", workDir);
+    commit(workDir, "f", "1\n");
+
+    const verdict = await guardMergeSync(new GitManager(workDir));
+
+    expect(verdict.action).toBe("hold");
+    expect(run("git rev-parse refs/heads/sidequest", bareDir).trim())
+      .toBe(run("git rev-parse HEAD", workDir).trim());
   });
 
   it("declines to answer, and lets the merge proceed, when there is no tracking ref", async () => {
@@ -137,7 +154,7 @@ describe("branch-sync against a real repository", () => {
     expect(await readBranchSync(git, "never-pushed")).toBeUndefined();
     // "Cannot tell" is never a verdict — a session whose workspace was
     // reclaimed must still be able to merge.
-    expect(await guardMergeSync(git, "never-pushed")).toEqual({ action: "proceed" });
+    expect(await guardMergeSync(git)).toEqual({ action: "proceed" });
   });
 
   it("falls back to local refs — still catching `ahead` — when the remote is unreachable", async () => {
@@ -149,7 +166,7 @@ describe("branch-sync against a real repository", () => {
     // enough for the reading that blocks: unpushed commits are stale in the
     // clone's own direction, never the remote's.
     expect(await resolveMergeSync(git, "feature")).toEqual({ state: "ahead", ahead: 1, behind: 0 });
-    const verdict = await guardMergeSync(git, "feature");
+    const verdict = await guardMergeSync(git);
     expect(verdict.action).toBe("hold");
     // The push it attempts fails too, and the message says so rather than
     // claiming the work is now safe on GitHub.

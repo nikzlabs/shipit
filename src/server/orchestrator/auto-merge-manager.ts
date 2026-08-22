@@ -13,6 +13,7 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import type {
   AutoMergeManagedReason,
   AutoMergeState,
+  BranchSyncStatus,
   PrAutoMergeError,
   PrStatusSummary,
 } from "../shared/types/github-types.js";
@@ -40,11 +41,20 @@ export class AutoMergeManager {
    *   an unresolvable runner reads as "not busy" so the merge still happens. The
    *   contract is deliberate: an absent registry must never turn into a merge
    *   that never runs.
+   * @param resolveSync the authoritative branch-sync read (it fetches), called
+   *   once per merge ATTEMPT rather than once per tick. Optional: without it the
+   *   loop falls back to the summary's cheap per-tick reading, which is right in
+   *   every ordinary case and blind only to the remote moving under a stale
+   *   tracking ref.
    */
   constructor(
     private readonly githubAuth: GitHubAuthManager,
     private readonly onChange: (sessionId: string) => void,
     private readonly getRunner?: (sessionId: string) => SessionRunnerInterface | undefined,
+    private readonly resolveSync?: (
+      sessionId: string,
+      headBranch: string,
+    ) => Promise<BranchSyncStatus | undefined>,
   ) {}
 
   /** Get auto-merge state for a session. */
@@ -239,6 +249,7 @@ export class AutoMergeManager {
       }
       return;
     }
+    this.syncLogged.delete(sessionId);
 
     // docs/266 — the PR is ready to merge, but the session is still working.
     // Auto-commit fires AFTER the turn ends, so a merge now ships a PR whose
@@ -270,9 +281,26 @@ export class AutoMergeManager {
       }
       return;
     }
-    this.syncLogged.delete(sessionId);
+    this.busyLogged.delete(sessionId);
 
-    // docs/266 — the PR is ready to merge, but the session is still working.
+    // Last check before the irreversible one, and the only one that asks the
+    // remote rather than this clone's refs. The per-tick reading above is
+    // computed from `refs/remotes/origin/<branch>`, which nothing updates when
+    // the remote branch moves in ANOTHER clone — a force-push from the user's
+    // laptop leaves the tracking ref and HEAD both at the old tip, which reads
+    // as `in-sync` while GitHub holds a history this session has never had.
+    // Affordable here because it runs once per merge ATTEMPT, not once per tick.
+    if (this.resolveSync) {
+      const fresh = await this.resolveSync(sessionId, summary.headBranch)
+        .catch(() => undefined);
+      if (fresh && fresh.state !== "in-sync" && fresh.state !== "behind") {
+        console.log(
+          `[auto-merge] Holding merge of PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}:`
+          + ` the branch is ${fresh.state} of ${summary.headBranch} on GitHub (verified against the remote)`,
+        );
+        return;
+      }
+    }
 
     // Attempt the merge via REST API
     const result = await this.githubAuth.mergePullRequest(

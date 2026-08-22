@@ -160,6 +160,24 @@ describe("AutoMergeToggle — managed-merge explanation", () => {
     expect(screen.queryByText("Configure in GitHub settings")).toBeNull();
   });
 
+  it("explains an unsynced branch as a wait, not a misconfiguration", async () => {
+    const user = userEvent.setup();
+    render(
+      <AutoMergeToggle
+        sessionId="s1"
+        autoMerge={{ enabled: true, mergeMethod: "squash", managed: true, managedReason: "branch-unsynced" }}
+      />,
+    );
+
+    const info = screen.getByLabelText("Auto-merge is waiting for this branch to reach GitHub");
+    expect(screen.queryByLabelText("Auto-merge requirements")).toBeNull();
+
+    await user.hover(info);
+    expect((await screen.findAllByText(/commits GitHub has not got yet/)).length).toBeGreaterThan(0);
+    // No settings link: the repository is configured perfectly well.
+    expect(screen.queryByText("Configure in GitHub settings")).toBeNull();
+  });
+
   it("still explains the GitHub-refused fallback and links to settings", async () => {
     const user = userEvent.setup();
     render(

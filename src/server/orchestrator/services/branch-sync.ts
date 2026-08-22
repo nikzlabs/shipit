@@ -20,8 +20,12 @@
  * classifies the result ({@link BranchSyncState}). Two readings block a merge —
  * `ahead` (the remote is missing the session's commits) and `diverged` (the two
  * histories disagree, and ShipIt never force-pushes on its own). `behind` does
- * not: the remote is then a superset of local work, so the merge ships more than
- * the session has, never less.
+ * not: the remote's history already contains every commit the session made, and
+ * the extra ones are a deliberate act on the branch rather than a stale
+ * snapshot. (Ancestry, not content: a later remote commit may revert an earlier
+ * one. Ruling that out would mean demanding exact head equality, which blocks
+ * every benign case — a suggestion applied on GitHub, a push from a laptop — to
+ * catch a decision somebody made on purpose.)
  *
  * **Absence is not a verdict.** Every path that cannot answer — no workspace, a
  * clone with no tracking ref, HEAD on a different branch than the pull request's
@@ -126,6 +130,16 @@ export type MergeSyncVerdict =
 /**
  * The merge route's guard: resolve the sync state and decide.
  *
+ * **The branch is resolved here, from the workspace, and is not a parameter.**
+ * `services/github.ts` `mergePullRequest` finds the pull request to merge from
+ * `git.getCurrentBranch()` — so the branch this guard has to reason about is the
+ * CURRENT one, whatever the card says. Passing the card's head branch instead
+ * looked equivalent and was not: when the workspace sits on a different branch
+ * than the card, the comparison is meaningless, the guard returns "cannot tell",
+ * and the merge proceeds — against the current branch's pull request, whose sync
+ * state was never examined at all. Reading the same branch the merge reads
+ * removes that hole rather than papering over it.
+ *
  * `ahead` is handled by PUSHING rather than by refusing outright — the commits
  * belong on that branch, ShipIt would have pushed them itself, and a plain
  * (never forced) push is the whole remedy. But the merge still does not go ahead
@@ -144,9 +158,14 @@ export type MergeSyncVerdict =
  */
 export async function guardMergeSync(
   git: BranchSyncGit,
-  branch: string,
   remote = "origin",
 ): Promise<MergeSyncVerdict> {
+  // Detached HEAD, an unborn branch, an unreadable workspace: nothing to
+  // compare, and the merge itself resolves no pull request from such a state
+  // either.
+  const branch = await git.currentBranchOrNull().catch(() => null);
+  if (!branch) return { action: "proceed" };
+
   const sync = await resolveMergeSync(git, branch, remote);
   if (!sync) return { action: "proceed" };
 

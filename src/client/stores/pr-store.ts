@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AutoMergeManagedReason,
   PrStatusSummary,
   PrFileStat,
   PrIssueComment,
@@ -74,11 +75,11 @@ export interface PrCardState {
     managed?: boolean;
     /**
      * Why ShipIt owns it (docs/266). `native-unavailable` is a repo
-     * misconfiguration and gets the settings tooltip; `session-live` is a normal
-     * wait for the session to finish and must NOT read as an error. Absent is
+     * misconfiguration and gets the settings tooltip; `session-live` and
+     * `branch-unsynced` are normal waits and must NOT read as errors. Absent is
      * treated as `native-unavailable` (the only case before docs/266).
      */
-    managedReason?: "native-unavailable" | "session-live";
+    managedReason?: AutoMergeManagedReason;
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
     /** The real GitHub error that triggered the managed-merge fallback. */
@@ -951,7 +952,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         enabled: boolean;
         mergeMethod: "squash" | "merge" | "rebase";
         managed?: boolean;
-        managedReason?: "native-unavailable" | "session-live";
+        managedReason?: AutoMergeManagedReason;
         reason?: string;
       };
       set((state) => {
