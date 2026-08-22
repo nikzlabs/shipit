@@ -176,7 +176,7 @@ function PrAutomationsSettings() {
 /**
  * docs/144 — global gate for sub-agent spawning. When on, a pinned session's
  * agent can spawn another registered agent for a one-shot sub-task (e.g. a
- * second-opinion review) via `shipit agent run`. Default off.
+ * second-opinion review) via `shipit agent run`. Default on.
  */
 function MultiAgentSettings() {
   const enableSubAgents = useSettingsStore((s) => s.enableSubAgents);

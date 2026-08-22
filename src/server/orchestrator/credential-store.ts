@@ -1313,7 +1313,7 @@ export class CredentialStore {
   // ---- Sub-agent spawning (docs/144) ----
 
   getEnableSubAgents(): boolean {
-    return this.data.enableSubAgents ?? false;
+    return this.data.enableSubAgents ?? true;
   }
 
   setEnableSubAgents(enabled: boolean): void {

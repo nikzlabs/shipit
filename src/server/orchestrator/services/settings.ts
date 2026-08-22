@@ -393,7 +393,7 @@ export async function getGlobalSettings(
   const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
   const autoFixCi = credentialStore?.getAutoFixCi() ?? false;
   const autoResetMergedBranch = credentialStore?.getAutoResetMergedBranch() ?? true;
-  const enableSubAgents = credentialStore?.getEnableSubAgents() ?? false;
+  const enableSubAgents = credentialStore?.getEnableSubAgents() ?? true;
   // Settings page renders the per-agent "Parallel sessions" guidance as a
   // preview. Pick the first installed-and-authed agent so a Codex-only host
   // shows Codex's variant, not Claude's. Fall back to the first registered
