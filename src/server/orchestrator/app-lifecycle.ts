@@ -13,6 +13,7 @@ import { SessionContainerManager, resolveAgentDockerLimits } from "./session-con
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { PresentStore } from "./present-store.js";
+import type { InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
@@ -365,6 +366,13 @@ export interface RunnerFactoryDeps {
    */
   presentStore?: PresentStore;
   /**
+   * docs/280 — where an inline presentation's transcript card is persisted.
+   * Passed into every `ContainerSessionRunner` because the card is emitted from
+   * the present SSE stream, which the runner owns; without it an inline present
+   * still reaches the Present tab and only the chat card is skipped.
+   */
+  chatHistoryManager?: InProgressPersister;
+  /**
    * docs/150 — local mode only. The account-scoped agent factory; each
    * in-process runner gets a `createAgent` bound to it so its CLI spawns
    * against the provider account THIS session was routed to. Absent (or with
@@ -637,7 +645,8 @@ export function buildRunnerFactory(
 ): SessionRunnerFactory | undefined {
   const {
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
-    oomBreaker, presentStore, localAgentFactory, providerAccountManager, credentialStore,
+    oomBreaker, presentStore, chatHistoryManager, localAgentFactory, providerAccountManager,
+    credentialStore,
   } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
@@ -741,6 +750,7 @@ export function buildRunnerFactory(
         defaultAgentId: o.defaultAgentId,
         workerUrl: existing.workerUrl,
         ...(presentStore ? { presentStore } : {}),
+      ...(chatHistoryManager ? { chatHistoryManager } : {}),
       });
     }
 
@@ -755,6 +765,7 @@ export function buildRunnerFactory(
         defaultAgentId: o.defaultAgentId,
         workerUrl: "http://0.0.0.0:0",
         ...(presentStore ? { presentStore } : {}),
+      ...(chatHistoryManager ? { chatHistoryManager } : {}),
       });
 
       void (async () => {
@@ -802,6 +813,7 @@ export function buildRunnerFactory(
       defaultAgentId: o.defaultAgentId,
       workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
       ...(presentStore ? { presentStore } : {}),
+      ...(chatHistoryManager ? { chatHistoryManager } : {}),
     });
     console.log(`[container] ${existing ? "Replacing stale" : "Creating"} container for session ${o.sessionId}...`);
     void createContainerForRunner({

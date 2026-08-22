@@ -6,6 +6,7 @@ import { handleAgentEvent } from "./agent-event.js";
 import { handleTurnSnapshot } from "./turn-snapshot.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
 import { handleActionChecklistCard } from "./action-checklist-card.js";
+import { handlePresentInlineCard } from "./present-inline-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
 import { handleSessionRenamedCard } from "./session-renamed-card.js";
 import { handleSessionSettingsChangeCard } from "./session-settings-change-card.js";
@@ -126,6 +127,7 @@ type MessageHandlerMap = {
  */
 export const messageHandlers: MessageHandlerMap = {
   action_checklist_card: handleActionChecklistCard,
+  present_inline_card: handlePresentInlineCard,
   auto_resolve_result: handleAutoResolveResult,
   auto_resolve_started: handleAutoResolveStarted,
   branch_auto_reset_card: handleBranchAutoResetCard,
@@ -247,6 +249,7 @@ export const messageHandlers: MessageHandlerMap = {
  */
 const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessageType>([
   "action_checklist_card",
+  "present_inline_card",
   "branch_auto_reset_card",
   "branch_synced_card",
   "bug_report_card",

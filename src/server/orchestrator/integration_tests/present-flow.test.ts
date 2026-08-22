@@ -473,3 +473,185 @@ describe("Integration: present persistence across container restart", () => {
     await b.worker.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// docs/280 — inline presentations. `present({ inline: true })` renders the
+// artifact as a card in the chat transcript AND keeps it in the Present-tab
+// carousel. The card is a PERSISTED transcript row, and the whole point of the
+// emit gate is that it is written exactly once per artifact: the screenshot
+// loop re-presents the same path repeatedly, and every one of those must
+// refresh the card that already exists rather than stack another copy showing
+// identical bytes. These drive the real worker so the flag is exercised across
+// every hop it takes (tool body → registry → SSE → runner → store → card).
+// ---------------------------------------------------------------------------
+
+describe("Integration: inline presentations (docs/280)", () => {
+  let dbManager: DatabaseManager;
+  let presentStore: PresentStore;
+  let work: string;
+  let worker: SessionWorker;
+  let workerUrl: string;
+  let runner: ContainerSessionRunner;
+  let messages: WsServerMessage[];
+  /** Rows a card write would have persisted — the reload-survival surface. */
+  let appended: { presentInline?: { presentId: string; filePath: string } }[];
+
+  beforeEach(async () => {
+    dbManager = new DatabaseManager(":memory:");
+    presentStore = new PresentStore(dbManager);
+    work = await mkdtemp(path.join(os.tmpdir(), "present-inline-"));
+    worker = new SessionWorker({
+      agentFactory: () => new FakeWorkerAgent(),
+      port: 0,
+      host: "127.0.0.1",
+      workspaceDir: work,
+    });
+    const address = await worker.start();
+    workerUrl = `http://127.0.0.1:${Number(/:(\d+)$/.exec(address)?.[1] ?? 0)}`;
+
+    appended = [];
+    runner = new ContainerSessionRunner({
+      sessionId: "inline-session",
+      sessionDir: "/tmp/present-inline-test",
+      defaultAgentId: "claude",
+      workerUrl,
+      presentStore,
+      chatHistoryManager: {
+        replaceInProgress: () => {},
+        append: (_sessionId, message) => {
+          appended.push(message as (typeof appended)[number]);
+        },
+      },
+    });
+    messages = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+  });
+
+  afterEach(async () => {
+    runner.dispose({ force: true });
+    await worker.stop();
+    dbManager.close();
+    await rm(work, { recursive: true, force: true });
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  async function present(file: string, content: string, inline?: boolean): Promise<void> {
+    await writeFile(file, content, "utf8");
+    const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file, ...(inline !== undefined ? { inline } : {}) }),
+    });
+    expect(res.ok).toBe(true);
+  }
+
+  function cards(): Extract<WsServerMessage, { type: "present_inline_card" }>[] {
+    return messages.filter(
+      (m): m is Extract<WsServerMessage, { type: "present_inline_card" }> =>
+        m.type === "present_inline_card",
+    );
+  }
+
+  it("emits no card for an ordinary present", async () => {
+    await present(path.join(work, "plain.html"), "<h1>plain</h1>");
+    await waitFor(() => presentStore.list("inline-session").length === 1, 3000, "recorded");
+    expect(cards()).toHaveLength(0);
+    expect(appended).toHaveLength(0);
+  });
+
+  it("emits and persists one card, and still adds the artifact to the carousel", async () => {
+    const file = path.join(work, "chart.html");
+    await present(file, "<h1>chart</h1>", true);
+    await waitFor(() => cards().length === 1, 3000, "card");
+
+    const card = cards()[0].card;
+    expect(card.filePath).toBe(file);
+    expect(card.mimeType).toBe("text/html");
+    // req 6 — the carousel gets it too, flagged so both surfaces agree.
+    expect(runner.presentations.map((p) => p.presentId)).toEqual([card.presentId]);
+    expect(runner.presentations[0].inline).toBe(true);
+    // req 8 — the card is a persisted row, not an emit-only broadcast.
+    expect(appended.map((m) => m.presentInline?.presentId)).toEqual([card.presentId]);
+  });
+
+  it("refreshes the artifact rather than stacking a second card on re-present", async () => {
+    const file = path.join(work, "iterate.html");
+    await present(file, "<h1>v1</h1>", true);
+    await waitFor(() => cards().length === 1, 3000, "first card");
+
+    // The screenshot loop: edit, re-present the SAME path — with and without the
+    // flag, since the agent has no reason to keep repeating it.
+    await present(file, "<h1>v2</h1>", true);
+    await present(file, "<h1>v3</h1>");
+    await waitFor(
+      () => messages.filter((m) => m.type === "present_content").length === 3,
+      3000,
+      "three content updates",
+    );
+
+    // Three artifact updates, still exactly one card (req 9), and the artifact
+    // stays inline despite the last present omitting the flag.
+    expect(cards()).toHaveLength(1);
+    expect(appended).toHaveLength(1);
+    expect(presentStore.list("inline-session")[0].inline).toBe(true);
+  });
+
+  it("promotes an already-presented artifact when it is later presented inline", async () => {
+    const file = path.join(work, "promote.svg");
+    await present(file, "<svg xmlns='http://www.w3.org/2000/svg'/>");
+    await waitFor(() => presentStore.list("inline-session").length === 1, 3000, "recorded");
+    expect(cards()).toHaveLength(0);
+
+    await present(file, "<svg xmlns='http://www.w3.org/2000/svg'/>", true);
+    await waitFor(() => cards().length === 1, 3000, "card");
+    expect(cards()[0].card.mimeType).toBe("image/svg+xml");
+  });
+
+  it("does not re-emit the card for a re-present after a container restart", async () => {
+    const file = path.join(work, "restart.html");
+    await present(file, "<h1>kept</h1>", true);
+    await waitFor(() => cards().length === 1, 3000, "card");
+
+    // A fresh worker + runner over the SAME store: the worker's registry is
+    // empty, so nothing in the container remembers the card — the durable
+    // `inline` flag is what stops a duplicate.
+    runner.dispose({ force: true });
+    await worker.stop();
+    worker = new SessionWorker({
+      agentFactory: () => new FakeWorkerAgent(),
+      port: 0,
+      host: "127.0.0.1",
+      workspaceDir: work,
+    });
+    const address = await worker.start();
+    workerUrl = `http://127.0.0.1:${Number(/:(\d+)$/.exec(address)?.[1] ?? 0)}`;
+    const restartedCards: WsServerMessage[] = [];
+    runner = new ContainerSessionRunner({
+      sessionId: "inline-session",
+      sessionDir: "/tmp/present-inline-test",
+      defaultAgentId: "claude",
+      workerUrl,
+      presentStore,
+      chatHistoryManager: {
+        replaceInProgress: () => {},
+        append: (_sessionId, message) => {
+          appended.push(message as (typeof appended)[number]);
+        },
+      },
+    });
+    runner.on("message", (m: WsServerMessage) => restartedCards.push(m));
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    await present(file, "<h1>kept v2</h1>", true);
+    await waitFor(
+      () => restartedCards.some((m) => m.type === "present_content"),
+      3000,
+      "content after restart",
+    );
+    expect(restartedCards.filter((m) => m.type === "present_inline_card")).toHaveLength(0);
+    expect(appended).toHaveLength(1);
+  });
+});

@@ -102,6 +102,50 @@ function injectScrollToFragment(html: string, fragment: string): string {
   return `${script}${html}`;
 }
 
+/**
+ * docs/280 — report the document's own height to the embedder.
+ *
+ * A Present-tab artifact fills the pane, so its frame height is decided by the
+ * layout and nothing has to be measured. An INLINE card has no such box: it sits
+ * in the chat flow, and a fixed height would either crop a two-line SVG's
+ * neighbour into a scrollbar or leave a thumbnail floating in empty space. The
+ * frame is sandboxed onto an opaque origin, so the parent cannot read
+ * `scrollHeight` itself — the document has to volunteer it.
+ *
+ * Deliberately NOT part of the Agent Interface SDK: the SDK is also injected
+ * into every proxied service preview, where a permanent `ResizeObserver` on the
+ * user's own app would be a cost paid by pages that never need it. This script
+ * is injected only by the surface that measures.
+ */
+const HEIGHT_REPORT_SCRIPT =
+  "<script>(function(){var s='shipit-preview';var last=-1;"
+  // The BODY's box, not `documentElement.scrollHeight`. `scrollHeight` is
+  // max(content, viewport), and the viewport here is the frame the embedder
+  // already sized — so a short artifact would report back whatever height it
+  // was given and could never shrink to fit. Measured: a one-line artifact in a
+  // 220px frame reported 220. The body's border box plus its margins is the
+  // content height, independent of the frame.
+  + "function measure(){var b=document.body;if(!b)return document.documentElement.scrollHeight;"
+  + "var cs=getComputedStyle(b);"
+  + "return b.getBoundingClientRect().height+(parseFloat(cs.marginTop)||0)+(parseFloat(cs.marginBottom)||0);}"
+  + "function post(){var h=Math.ceil(measure());if(h===last)return;last=h;"
+  + "parent.postMessage({source:s,type:'content_height',height:h},'*');}"
+  + "if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',post);else post();"
+  + "window.addEventListener('load',post);"
+  + "if(window.ResizeObserver){var ro=new ResizeObserver(post);ro.observe(document.documentElement);"
+  + "if(document.body)ro.observe(document.body);"
+  + "else document.addEventListener('DOMContentLoaded',function(){ro.observe(document.body);});}"
+  + "})()</script>";
+
+function injectHeightReport(html: string): string {
+  const head = /<head[^>]*>/i.exec(html);
+  if (head?.index !== undefined) {
+    const at = head.index + head[0].length;
+    return `${html.slice(0, at)}${HEIGHT_REPORT_SCRIPT}${html.slice(at)}`;
+  }
+  return `${HEIGHT_REPORT_SCRIPT}${html}`;
+}
+
 function injectAgentInterface(html: string): string {
   const head = /<head[^>]*>/i.exec(html);
   if (head?.index !== undefined) {
@@ -115,12 +159,19 @@ export function RenderedFrame({
   kind,
   content,
   enableAgentInterface = false,
+  reportHeight = false,
   frameRef,
   scrollTo,
 }: {
   kind: "html" | "svg";
   content: string;
   enableAgentInterface?: boolean;
+  /**
+   * docs/280 — inject the height reporter, so an embedder that has to SIZE the
+   * frame (the inline chat card) can learn the document's natural height. The
+   * Present tab and the file dialog give the frame a box and leave this off.
+   */
+  reportHeight?: boolean;
   frameRef?: Ref<HTMLIFrameElement>;
   /**
    * docs/258 — an element id an agent-authored pointer addressed. Only honoured
@@ -133,12 +184,24 @@ export function RenderedFrame({
     // Wrap raw SVG markup in a minimal HTML host so iframe sandboxing applies
     // even if the SVG contains <script>. Centered with subtle padding so
     // viewBox-relative dimensions don't paint flush to the bezel.
+    //
+    // A height-reporting host does NOT stretch to the viewport: `height:100vh`
+    // would make `scrollHeight` echo back whatever height the embedder last set,
+    // so the measurement could never shrink and the SVG's own size would never
+    // be discovered.
     const markup = svgToMarkup(content);
-    srcDoc = `<!doctype html><html><head>${CSP_META}</head><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:white">${markup}</body></html>`;
+    const bodyStyle = reportHeight
+      ? "margin:0;padding:8px;background:white"
+      : "margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:white";
+    const svgFit = reportHeight
+      ? "<style>svg{max-width:100%;height:auto;display:block;margin:0 auto}</style>"
+      : "";
+    srcDoc = `<!doctype html><html><head>${CSP_META}${svgFit}${reportHeight ? HEIGHT_REPORT_SCRIPT : ""}</head><body style="${bodyStyle}">${markup}</body></html>`;
   } else {
     const secured = injectCsp(content);
     const withSdk = enableAgentInterface ? injectAgentInterface(secured) : secured;
-    srcDoc = scrollTo ? injectScrollToFragment(withSdk, scrollTo) : withSdk;
+    const withHeight = reportHeight ? injectHeightReport(withSdk) : withSdk;
+    srcDoc = scrollTo ? injectScrollToFragment(withHeight, scrollTo) : withHeight;
   }
 
   return (

@@ -250,7 +250,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // for the worker secrets push local mode has no worker to receive.
   const effectiveRunnerFactory = buildRunnerFactory({
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
-    oomBreaker, presentStore, credentialStore,
+    oomBreaker, presentStore, chatHistoryManager, credentialStore,
     ...(localAgentFactory ? { localAgentFactory } : {}),
     providerAccountManager,
   });

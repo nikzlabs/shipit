@@ -2175,6 +2175,7 @@ export default function App() {
               send({ type: "undo_issue_write", cardId })
             }
             onOpenIssue={handleOpenIssue}
+            onAgentInterfaceMessage={handleAgentInterfaceMessage}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}
             onReleaseConfirm={handleReleaseConfirm}
             onReleaseCancel={handleReleaseCancel}

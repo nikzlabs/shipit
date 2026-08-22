@@ -222,6 +222,36 @@ export interface ActionChecklistItem {
  * already exists, files moved) — the "honest at click-time" guarantee without a
  * stale *state* or a lock.
  */
+/**
+ * docs/280 — a persisted "inline presentation" transcript card: an artifact the
+ * agent presented with `present({ inline: true })`, rendered in the conversation
+ * itself rather than only in the Present tab.
+ *
+ * Metadata ONLY, exactly like the Present tab's own state: the card carries no
+ * artifact bytes, and the client fetches them on demand from
+ * `GET /api/sessions/:id/present/:presentId/content` (the same lazy disk read
+ * the carousel uses). That is what lets a card written months ago still render
+ * today's file, and what makes re-presenting the same path refresh the card in
+ * place — `presentId` is content-addressed by the path, so the card and the
+ * carousel entry are the same artifact seen from two surfaces.
+ *
+ * The card has no lifecycle: it is written once when the file is first presented
+ * inline and never patched. A later re-present updates the ARTIFACT, not the
+ * card row.
+ */
+export interface PresentInlineCard {
+  /** Stable id — content-addressed by the artifact's path; dedupes replays. */
+  presentId: string;
+  /** The path the agent presented (verbatim), shown in the card header. */
+  filePath: string;
+  /** "text/html", "image/svg+xml", "text/markdown", "image/png", … */
+  mimeType: string;
+  /** Optional display title; the card falls back to the file's name. */
+  title?: string;
+  /** Emit time of the first inline present of this path. */
+  createdAt: string;
+}
+
 export interface ActionChecklistCard {
   /** Stable id — dedupes the live append vs the reconnect/reload replay. */
   cardId: string;

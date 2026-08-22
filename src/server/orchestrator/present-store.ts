@@ -38,6 +38,13 @@ export interface PersistedPresentation {
   mimeType: string;
   title?: string;
   createdAt: string;
+  /**
+   * docs/280 — the artifact also has a card in the chat transcript. STICKY: once
+   * true it never goes back to false, because the card is already in the
+   * scrollback and a later plain re-present (the screenshot loop) must not
+   * pretend it isn't. `record` enforces that with a MAX() upsert.
+   */
+  inline?: boolean;
 }
 
 /** The client-facing metadata subset (no `resolvedPath`) — matches `PresentStateEntry`. */
@@ -47,6 +54,7 @@ export interface PresentMetaForClient {
   title?: string;
   filePath: string;
   createdAt: string;
+  inline?: boolean;
 }
 
 interface PresentRow {
@@ -57,6 +65,7 @@ interface PresentRow {
   mime_type: string;
   title: string | null;
   created_at: string;
+  inline: number | null;
 }
 
 export class PresentStore {
@@ -72,34 +81,57 @@ export class PresentStore {
    *  - re-presenting the same file (same `present_id`) → `ON CONFLICT` updates
    *    the existing row in place, keeping its insertion-order id (carousel slot).
    *  - a different file (new `present_id`) → inserts a new row (appends).
+   *
+   * Returns whether this call is the moment the artifact BECAME inline —
+   * `true` exactly once per artifact, on the first `present({ inline: true })`
+   * for that path. That answer is the emit gate for the transcript card
+   * (docs/280): the screenshot loop re-presents the same path over and over, and
+   * every one of those must refresh the existing card rather than append another
+   * one showing identical bytes. Computing it here, inside the same write that
+   * flips the flag, is what keeps two concurrent presents from both reading
+   * "not inline yet" and emitting two cards.
    */
-  record(entry: PersistedPresentation): void {
+  record(entry: PersistedPresentation): { inlineCardIsNew: boolean } {
     const titleValue = entry.title ?? null;
+    const inlineValue = entry.inline ? 1 : 0;
 
     // Upsert by the natural unique key. ON CONFLICT keeps the existing row's id
     // (insertion order) while refreshing its fields — the same-file re-present
     // path — and a brand-new id otherwise appends.
-    this.db
-      .prepare(
-        `INSERT INTO presentations
-           (present_id, session_id, file_path, resolved_path, mime_type, title, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(present_id) DO UPDATE SET
-           file_path = excluded.file_path,
-           resolved_path = excluded.resolved_path,
-           mime_type = excluded.mime_type,
-           title = excluded.title,
-           created_at = excluded.created_at`,
-      )
-      .run(
-        entry.presentId,
-        entry.sessionId,
-        entry.filePath,
-        entry.resolvedPath,
-        entry.mimeType,
-        titleValue,
-        entry.createdAt,
-      );
+    //
+    // `inline` is the one field the upsert does NOT simply overwrite: MAX() makes
+    // it sticky, so a plain re-present can never demote an artifact that already
+    // has a transcript card.
+    const run = this.db.transaction((): { inlineCardIsNew: boolean } => {
+      const before = this.db
+        .prepare("SELECT inline FROM presentations WHERE present_id = ?")
+        .get(entry.presentId) as { inline: number | null } | undefined;
+      this.db
+        .prepare(
+          `INSERT INTO presentations
+             (present_id, session_id, file_path, resolved_path, mime_type, title, created_at, inline)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(present_id) DO UPDATE SET
+             file_path = excluded.file_path,
+             resolved_path = excluded.resolved_path,
+             mime_type = excluded.mime_type,
+             title = excluded.title,
+             created_at = excluded.created_at,
+             inline = MAX(presentations.inline, excluded.inline)`,
+        )
+        .run(
+          entry.presentId,
+          entry.sessionId,
+          entry.filePath,
+          entry.resolvedPath,
+          entry.mimeType,
+          titleValue,
+          entry.createdAt,
+          inlineValue,
+        );
+      return { inlineCardIsNew: inlineValue === 1 && !before?.inline };
+    });
+    return run();
   }
 
   /** Drop one presentation by id, or all for a session (session switch / full clear). */
@@ -134,6 +166,7 @@ export class PresentStore {
       filePath: p.filePath,
       createdAt: p.createdAt,
       ...(p.title !== undefined ? { title: p.title } : {}),
+      ...(p.inline ? { inline: true } : {}),
     }));
   }
 
@@ -155,5 +188,6 @@ function fromRow(row: PresentRow): PersistedPresentation {
     mimeType: row.mime_type,
     createdAt: row.created_at,
     ...(row.title !== null ? { title: row.title } : {}),
+    ...(row.inline ? { inline: true } : {}),
   };
 }

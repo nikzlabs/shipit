@@ -4,6 +4,7 @@ import type {
   CompactionCard as CompactionCardData,
   SubAgentConsultCard as SubAgentConsultCardData,
   ActionChecklistCard as ActionChecklistCardData,
+  PresentInlineCard as PresentInlineCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
   SessionRenamedCard as SessionRenamedCardData,
@@ -441,6 +442,15 @@ export interface ChatMessage {
    * persisted — so on reload the card returns to its original definition.
    */
   actionChecklist?: ActionChecklistCardData;
+  /**
+   * docs/280 — when set, this message renders a `PresentInlineCard`: an artifact
+   * the agent showed with `present({ inline: true })`, rendered right here in the
+   * conversation instead of only in the Present tab. Metadata only — the bytes
+   * come from the present store / the session API on demand, which is why a card
+   * written weeks ago still renders the file's current contents and why
+   * re-presenting the same path refreshes this card in place.
+   */
+  presentInline?: PresentInlineCardData;
   /**
    * docs/218 — when set, this message renders a `BranchUpdatedCard` inline ("Branch
    * updated to latest <base>"), shown right after the user's message when a merged

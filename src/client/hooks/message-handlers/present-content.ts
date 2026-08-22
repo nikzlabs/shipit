@@ -31,12 +31,18 @@ export const handlePresentContent: Handler<WsPresentContentMessage> = (_ctx, dat
     createdAt: data.createdAt,
     filePath: data.filePath,
     ...(data.title !== undefined ? { title: data.title } : {}),
+    ...(data.inline ? { inline: true } : {}),
   });
   const after = usePresentStore.getState().presentations.length;
   // First presentation to land in this session — surface the tab once. After
   // the user manually moves away we don't pull them back (only the 0→1 edge
   // triggers).
-  if (before === 0 && after === 1 && useUiStore.getState().rightTab !== "present") {
+  //
+  // docs/280 — an INLINE artifact is exempt: the agent asked for it to be seen
+  // in the conversation, and the card is already right there in the scrollback,
+  // so yanking the right panel open would move the user AWAY from the surface
+  // they were pointed at. It still joins the carousel; it just doesn't reveal it.
+  if (!data.inline && before === 0 && after === 1 && useUiStore.getState().rightTab !== "present") {
     useUiStore.getState().setRightTab("present");
     usePresentStore.getState().markSeen();
   }
