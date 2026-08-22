@@ -8,7 +8,10 @@ import { usePermissionStore } from "../stores/permission-store.js";
 import { useBugReportStore } from "../stores/bug-report-store.js";
 import { useEgressPromptStore } from "../stores/egress-prompt-store.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
+<<<<<<< HEAD
 import type { IssueWriteCard } from "../../server/shared/types.js";
+=======
+>>>>>>> 6641347d (Only match is "fixture" — not a closing keyword. Creating the PR:)
 
 /**
  * Repro for the bug where the cost/context dial disappeared from below the
@@ -896,5 +899,200 @@ describe("loadSessionHistory — the file tree is session-scoped", () => {
     useSessionStore.getState().setSessionId("A");
     await loadSessionHistory("A");
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["STILL HERE"]);
+  });
+});
+
+/**
+ * planning#467 — the two guarantees behind the `304` path of
+ * `loadSessionHistory`, established from the code and now pinned:
+ *
+ *   1. A `304` installs the cached payload exactly as a `200` would — it is
+ *      the baseline restore for a session switch-back (the switch cleared
+ *      `messages`), and on a reconnect during a running turn the transient
+ *      rewind heals by construction (`turn_snapshot` queues behind
+ *      `historyLoaded`, which is raised strictly after `setMessages`).
+ *   2. The card re-seed runs on every completed load, `304` included: the
+ *      attach-time buffer replay delivers card messages to their stores ahead
+ *      of this baseline, creating draft/pending entries only the authoritative
+ *      seed corrects. Skipping the seed because "the transcript is unchanged"
+ *      reintroduces that failure.
+ *
+ * Tests (1) and (2) fail against the two regression shapes planning#467 warns
+ * about — skip-install-on-304 and skip-seeds-on-304. They pass against current
+ * behaviour BY DESIGN: the investigation found the behaviour already correct;
+ * what was missing was any coverage at all ("not covered anywhere" per the
+ * issue), plus the seed step being structurally separable from the install.
+ */
+describe("loadSessionHistory — what a validated 304 guarantees", () => {
+  let requests: { headers: Record<string, string> }[];
+  let etag: string;
+
+  /** A persisted transcript whose single row carries all four card kinds. */
+  const body = {
+    messages: [
+      { role: "user", text: "do things" },
+      {
+        role: "assistant",
+        text: "",
+        bugReport: {
+          cardId: "bug-1",
+          phase: "filed",
+          title: "redacted",
+          body: "redacted",
+          stage2Ran: true,
+          producer: "session",
+          issueNumber: 42,
+          issueUrl: "https://github.com/o/r/issues/42",
+        },
+        permissionPrompt: {
+          requestId: "perm-1",
+          phase: "denied",
+          toolName: "Bash",
+          summary: "rm -rf /",
+          agentId: "claude",
+          createdAt: "2026-08-22T00:00:00.000Z",
+        },
+        egressPrompt: {
+          cardId: "egress-1",
+          phase: "granted",
+          requestedAt: "2026-08-22T00:00:00.000Z",
+        },
+        issueWrite: {
+          cardId: "iw-1",
+          tracker: "planning",
+          issueId: "467",
+          identifier: "planning#467",
+          title: "304 reinstalls cached transcript",
+          verb: "comment",
+          summary: "commented on planning#467",
+          attribution: "workspace",
+          undo: { reversible: false },
+          undoState: "undone",
+          createdAt: "2026-08-22T00:00:00.000Z",
+        },
+      },
+    ],
+    commits: [],
+    agentRunning: false,
+  };
+
+  const respond = (url: string, init?: RequestInit) => {
+    if (!url.includes("/history")) return Promise.resolve({ ok: false, status: 404 });
+    requests.push({ headers: (init?.headers ?? {}) as Record<string, string> });
+    const ifNoneMatch = requests[requests.length - 1].headers["If-None-Match"];
+    if (ifNoneMatch === etag) {
+      return Promise.resolve({
+        ok: true,
+        status: 304,
+        headers: new Headers({ etag }),
+        // A real 304 has no body; touching json() must be loud.
+        json: () => { throw new Error("must not parse a 304"); },
+      });
+    }
+    return Promise.resolve({ ok: true, status: 200, headers: new Headers({ etag }), json: () => Promise.resolve(body) });
+  };
+
+  const resetStores = () => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    useBugReportStore.getState().reset();
+    usePermissionStore.getState().reset();
+    useEgressPromptStore.getState().reset();
+    useIssueWriteStore.getState().reset();
+  };
+
+  beforeEach(() => {
+    resetStores();
+    __resetHistoryCache();
+    requests = [];
+    etag = '"v1"';
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) =>
+      respond(url, init)) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    __resetHistoryCache();
+    resetStores();
+  });
+
+  it("a 304 re-seeds filed/resolved phases over a replay-created draft", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+
+    // Simulate the attach-time buffer replay racing ahead of the baseline: a
+    // re-delivered mid-turn `bug_report_card` event creates a DRAFT in a store
+    // that has just been cleared (the non-clobbering upsert's exact shape).
+    useBugReportStore.getState().reset();
+    usePermissionStore.getState().reset();
+    useBugReportStore.getState().upsertCard({
+      cardId: "bug-1", title: "redacted", body: "redacted", stage2Ran: true, producer: "session",
+    });
+
+    // Second load revalidates: nothing persisted changed, so the server
+    // answers 304 and the seed runs from the cached payload.
+    await loadSessionHistory("s1");
+    expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
+
+    const bug = useBugReportStore.getState().cards["bug-1"];
+    expect(bug?.phase).toBe("filed");
+    expect(bug?.issueNumber).toBe(42);
+    // The permission card comes back resolved, not re-offering Approve/Deny.
+    expect(usePermissionStore.getState().cards["perm-1"]?.phase).toBe("denied");
+  });
+
+  it("a 304 still installs the cached transcript into a cleared store", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+
+    // Session switch-back shape: resumeSessionInternal clears the transcript
+    // and lowers historyLoaded before the incoming session's load fires.
+    useSessionStore.getState().setMessages([]);
+    useSessionStore.getState().setHistoryLoaded(false);
+
+    await loadSessionHistory("s1");
+    expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
+    // The cached transcript — both rows, including the card-carrying one.
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["do things", ""]);
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+  });
+
+  it("raises historyLoaded only after the cached messages are installed", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+
+    useSessionStore.getState().setMessages([]);
+    useSessionStore.getState().setHistoryLoaded(false);
+
+    // Observe the flag flip through the store itself: whatever is in
+    // `messages` at the instant historyLoaded goes true IS the installed
+    // baseline. Reordering setMessages after setHistoryLoaded would let a
+    // queued turn_snapshot apply against an arbitrary transcript instead of
+    // on top of the baseline — the ordering invariant planning#467 verified.
+    const seen: number[] = [];
+    const unsubscribe = useSessionStore.subscribe((state, prev) => {
+      if (state.historyLoaded && !prev.historyLoaded) {
+        seen.push(state.messages.length);
+      }
+    });
+
+    try {
+      await loadSessionHistory("s1");
+      expect(seen).toEqual([2]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("seeds every card kind on the first (200) load too", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+
+    expect(useBugReportStore.getState().cards["bug-1"]?.phase).toBe("filed");
+    expect(usePermissionStore.getState().cards["perm-1"]?.phase).toBe("denied");
+    expect(useEgressPromptStore.getState().cards["egress-1"]?.phase).toBe("granted");
+    expect(useIssueWriteStore.getState().cards["iw-1"]?.undoState).toBe("undone");
   });
 });
