@@ -21,12 +21,6 @@
  * to a version published the same morning, green. A CI check that reads the
  * manifest cannot be opted out of by a package nobody remembered to list.
  *
- * The age rule has one escape hatch, and it is a written one: AGE_EXEMPTIONS
- * waives it for a single `manifest + name + version`, with a reason and a date
- * it stops applying. That exists because the alternative to a recorded waiver
- * is not "no waiver" — it is merging the bump past a red check, which leaves no
- * trace at all of what was skipped or why. The pin rule is never waivable.
- *
  * Run:  npm run check-deps
  *
  * Exits non-zero on any violation so it can be wired into CI.
@@ -48,45 +42,6 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export const POLICY_MANIFESTS = ["package.json", "docker/agent-cli/package.json"] as const;
 
 const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-
-/**
- * A time-boxed waiver of the age rule for one exact version. It never waives
- * the pin rule, and it matches one `manifest + name + version` triple, so the
- * next bump of the same package is checked normally.
- */
-export interface AgeExemption {
-  manifest: (typeof POLICY_MANIFESTS)[number];
-  name: string;
-  /** Exact version. A waiver that could match a future version is not a waiver. */
-  version: string;
-  /** Why the cooldown was waived, and who signed it off. */
-  reason: string;
-  /**
-   * ISO `YYYY-MM-DD`, exclusive: from this date the entry stops applying. Set
-   * it to the day the version turns MIN_AGE_DAYS old, so the waiver lapses
-   * exactly when the ordinary rule starts passing on its own and the entry
-   * becomes deletable dead weight rather than a lingering hole. An unparseable
-   * date waives nothing — the entry fails closed.
-   */
-  expires: string;
-}
-
-/**
- * Live waivers. Delete an entry once it has lapsed; `main` prints the ones that
- * have.
- */
-export const AGE_EXEMPTIONS: readonly AgeExemption[] = [
-  {
-    manifest: "docker/agent-cli/package.json",
-    name: "opencode-ai",
-    version: "1.18.21",
-    reason:
-      "Cooldown waived by Nik (explicit request, 2026-08-21) to take the OpenCode " +
-      "harness onto 1.18.21 the day it published, three patches ahead of the pinned " +
-      "1.18.18. Published 2026-08-21T14:51Z, so it clears MIN_AGE_DAYS on 2026-08-28.",
-    expires: "2026-08-28",
-  },
-];
 
 // `npm view` reaches the registry over the network, so a transient blip
 // (DNS hiccup, 5xx, rate-limit) makes a single call fail and would otherwise
@@ -157,33 +112,15 @@ export function readManifestDeps(repoRoot: string, manifest: string): ManifestDe
 }
 
 /**
- * True when `entry` waives the age rule for this exact dependency right now.
- * `Date.parse` of a malformed `expires` is NaN and every comparison against NaN
- * is false, so an unparseable date waives nothing rather than waiving forever —
- * the failure mode that matters, since a silently-immortal entry is a permanent
- * hole in the gate.
- */
-export function isActiveExemption(
-  entry: AgeExemption,
-  dep: { manifest: string; name: string; version: string },
-  now: number,
-): boolean {
-  if (entry.manifest !== dep.manifest || entry.name !== dep.name) return false;
-  if (entry.version !== dep.version) return false;
-  return now < Date.parse(`${entry.expires}T00:00:00.000Z`);
-}
-
-/**
  * Applies both rules — exact pin, then minimum age — to every dependency of
  * every manifest. Pure apart from the injected lookup, so the tests drive it
  * without touching the registry.
  */
 export function findViolations(
   manifests: ManifestDeps[],
-  options: { now: number; lookup: PublishLookup; exemptions?: readonly AgeExemption[] },
+  options: { now: number; lookup: PublishLookup },
 ): Violation[] {
   const violations: Violation[] = [];
-  const exemptions = options.exemptions ?? AGE_EXEMPTIONS;
 
   for (const { manifest, deps } of manifests) {
     for (const [name, version] of deps) {
@@ -195,12 +132,6 @@ export function findViolations(
           kind: "not-pinned",
           detail: `version must be an exact semver (no ^, ~, ranges, tags, or URLs)`,
         });
-        continue;
-      }
-
-      // Checked after the pin rule, which no exemption can waive: an unpinned
-      // spec has no single version a waiver could even name.
-      if (exemptions.some((e) => isActiveExemption(e, { manifest, name, version }, options.now))) {
         continue;
       }
 
@@ -256,20 +187,7 @@ function main(): void {
       `(pinned + published ≥ ${MIN_AGE_DAYS} days ago)…`,
   );
 
-  const now = Date.now();
-
-  // Say what was waived, every run. A waiver nobody reads is the silent bypass
-  // it was written to replace.
-  for (const e of AGE_EXEMPTIONS) {
-    // An entry trivially matches itself, so this reports exactly the
-    // active/lapsed split `findViolations` acts on — one definition, not two.
-    const active = isActiveExemption(e, { ...e }, now);
-    const label = `${e.manifest} → ${e.name}@${e.version}`;
-    if (active) console.log(`  [age waived until ${e.expires}] ${label} — ${e.reason}`);
-    else console.log(`  [waiver lapsed ${e.expires}, delete it] ${label}`);
-  }
-
-  const violations = findViolations(manifests, { now, lookup: npmPublishLookup });
+  const violations = findViolations(manifests, { now: Date.now(), lookup: npmPublishLookup });
 
   if (violations.length === 0) {
     console.log(`All ${total} dependencies pass the policy.`);

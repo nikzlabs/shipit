@@ -4,13 +4,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import os from "node:os";
 import {
-  AGE_EXEMPTIONS,
   MIN_AGE_DAYS,
   POLICY_MANIFESTS,
   findViolations,
-  isActiveExemption,
   readManifestDeps,
-  type AgeExemption,
   type ManifestDeps,
   type PublishLookup,
 } from "./check-dependency-age.js";
@@ -207,111 +204,5 @@ describe("findViolations", () => {
     expect(violations[0]).toMatchObject({ name: "broken", kind: "lookup-failed" });
     // Only the first line of the error reaches the report — a stack would bury it.
     expect(violations[0].detail).not.toContain("stack line");
-  });
-});
-
-describe("age exemptions", () => {
-  const waiver: AgeExemption = {
-    manifest: "docker/agent-cli/package.json",
-    name: "opencode-ai",
-    version: "1.18.21",
-    reason: "signed off in the PR",
-    expires: "2026-08-28",
-  };
-  const sameDay = manifest("docker/agent-cli/package.json", { "opencode-ai": "1.18.21" });
-  const publishedToday = lookupFrom({ "opencode-ai@1.18.21": daysAgo(0) });
-
-  it("waives the age rule for the exact version it names", () => {
-    const violations = findViolations([sameDay], {
-      now: NOW,
-      lookup: publishedToday,
-      exemptions: [waiver],
-    });
-    expect(violations).toEqual([]);
-  });
-
-  it("spends no registry lookup on a waived dependency", () => {
-    const asked: string[] = [];
-    findViolations([sameDay], {
-      now: NOW,
-      lookup: (name, version) => {
-        asked.push(`${name}@${version}`);
-        return daysAgo(0);
-      },
-      exemptions: [waiver],
-    });
-    expect(asked).toEqual([]);
-  });
-
-  it("does not carry over to the next version of the same package", () => {
-    const violations = findViolations(
-      [manifest("docker/agent-cli/package.json", { "opencode-ai": "1.18.22" })],
-      {
-        now: NOW,
-        lookup: lookupFrom({ "opencode-ai@1.18.22": daysAgo(0) }),
-        exemptions: [waiver],
-      },
-    );
-    expect(violations.map((v) => [v.version, v.kind])).toEqual([["1.18.22", "too-new"]]);
-  });
-
-  it("does not apply to the same pin in a different manifest", () => {
-    const violations = findViolations(
-      [manifest("package.json", { "opencode-ai": "1.18.21" })],
-      { now: NOW, lookup: publishedToday, exemptions: [waiver] },
-    );
-    expect(violations.map((v) => v.kind)).toEqual(["too-new"]);
-  });
-
-  it("stops applying once it expires", () => {
-    const expired = { ...waiver, expires: "2026-08-20" };
-    const violations = findViolations([sameDay], {
-      now: NOW,
-      lookup: publishedToday,
-      exemptions: [expired],
-    });
-    expect(violations.map((v) => v.kind)).toEqual(["too-new"]);
-  });
-
-  it("never waives the pin rule — an unpinned spec still fails", () => {
-    const violations = findViolations(
-      [manifest("docker/agent-cli/package.json", { "opencode-ai": "^1.18.21" })],
-      { now: NOW, lookup: publishedToday, exemptions: [{ ...waiver, version: "^1.18.21" }] },
-    );
-    expect(violations.map((v) => v.kind)).toEqual(["not-pinned"]);
-  });
-
-  it("fails closed on an unparseable expiry rather than waiving forever", () => {
-    for (const expires of ["never", "", "2026-13-45", "tomorrow"]) {
-      expect(
-        isActiveExemption({ ...waiver, expires }, waiver, NOW),
-        `${expires} must not waive anything`,
-      ).toBe(false);
-    }
-  });
-
-  it("keeps every live exemption pinned to a real manifest and an exact version", () => {
-    for (const entry of AGE_EXEMPTIONS) {
-      expect([...POLICY_MANIFESTS]).toContain(entry.manifest);
-      expect(entry.version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
-      expect(entry.reason.trim()).not.toBe("");
-      expect(Number.isNaN(Date.parse(`${entry.expires}T00:00:00.000Z`))).toBe(false);
-    }
-  });
-
-  it("waives only versions the manifests actually pin — a stale entry is dead weight", () => {
-    const pinned = new Set(
-      POLICY_MANIFESTS.flatMap((relPath) =>
-        readManifestDeps(REPO_ROOT, relPath).deps.map(
-          ([name, version]) => `${relPath} ${name}@${version}`,
-        ),
-      ),
-    );
-    for (const entry of AGE_EXEMPTIONS) {
-      expect(
-        pinned.has(`${entry.manifest} ${entry.name}@${entry.version}`),
-        `${entry.manifest} no longer pins ${entry.name}@${entry.version} — delete the exemption`,
-      ).toBe(true);
-    }
   });
 });
