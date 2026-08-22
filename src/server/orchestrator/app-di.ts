@@ -204,7 +204,40 @@ export interface AppDeps {
   providerAccountManager?: ProviderAccountManager;
   /**
    * Debounce delay in milliseconds for auto-push after commit.
-   * Defaults to 5000 (5 seconds). Set lower in tests to avoid long waits.
+   * Defaults to 5000 (5 seconds). Set lower in tests to avoid long waits — the
+   * integration tests are the ONLY thing that overrides it; production takes the
+   * default.
+   *
+   * ## What the delay is for, and what it is not for
+   *
+   * The original rationale (`docs/027-github-import` — "during rapid Claude
+   * turns, pushing after every single commit would be wasteful") does not
+   * survive contact with the current turn architecture. Coalescing needs two
+   * commits inside one window, and `arm()` merges only pushes that overlap that
+   * way; a turn takes seconds at minimum and usually minutes, so consecutive
+   * turns essentially never do. The one path that does commit twice in quick
+   * succession — the interrupt fallback — is deliberately built NOT to
+   * (`services/post-interrupt-commit.ts` delays so the work "lands in one
+   * commit"), and the synchronous pushers replace the pending push rather than
+   * coalescing with it.
+   *
+   * What the window actually buys today is ORDERING, discovered rather than
+   * designed: the arm happens inside `postTurnCommit`, and the post-turn PR flow
+   * that runs immediately after it does its own synchronous `git push` (a
+   * `forcePush` when re-arming past a merged pull request — `quickCreatePr`).
+   * The delay is what usually keeps the debounced plain push from racing that
+   * one. On the re-arm path a plain push landing FIRST is rejected
+   * non-fast-forward and produces the alarming "your branch has diverged"
+   * transcript notice for a branch that is fine — the false-alarm class
+   * `services/auto-push-scheduler.ts` documents twice.
+   *
+   * So this number is load-bearing, but only by accident, and only
+   * probabilistically: PR creation generates a title with an LLM and can itself
+   * exceed five seconds, in which case the race is live at the current value
+   * too. Lowering it (to 0, which is where it belongs once coalescing is off the
+   * table) requires making that ordering EXPLICIT first — arming after the PR
+   * flow, or teaching the scheduler to stand down while a ShipIt-owned
+   * synchronous push is in flight, the way it already stands down for a rebase.
    */
   autoPushDebounceMs?: number;
   /**
