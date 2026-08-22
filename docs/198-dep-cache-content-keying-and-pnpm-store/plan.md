@@ -175,8 +175,33 @@ skip and the store mount derive from one decision.
     cost.
 - Known caveat (document in shipit-docs): in-place mutation of hardlinked store files
   (patch-package style) — pnpm's own ecosystem answer (copy-on-patch via
-  `pnpm patch`) applies; the store is also integrity-checked by pnpm on link, so
-  corruption is detected, not silently propagated.
+  `pnpm patch`) applies.
+
+  > **Correction (2026-08-19, docs/276-shared-package-cache-integrity).** This bullet
+  > used to continue: "the store is also integrity-checked by pnpm on link, so
+  > corruption is detected, not silently propagated." **That is false, and nothing in
+  > this design ever relied on it being true — but later work did.**
+  >
+  > **pnpm performs no store-content verification.** Measured against pnpm 11.22.0:
+  > populate a store, overwrite the store file that is hardlinked into `node_modules`
+  > (locate it with `stat -c %i` on the `node_modules` file, then
+  > `find <store> -inum <inode>`), delete `node_modules` entirely, and reinstall — the
+  > poisoned bytes are silently hardlinked back in. This holds **online, offline, with
+  > `verify-store-integrity=true`, and with `package-import-method=copy`**. There is no
+  > setting that turns a check on.
+  >
+  > **And no reinstall is needed to reach an existing session.** Store entries are
+  > hardlinked into `node_modules`, so writing a store file changes the contents of
+  > every already-installed `node_modules` file that links it, immediately, with no
+  > install event anywhere. "Corruption" here therefore covers deliberate poisoning by
+  > anything that can write the store, not just accidental damage.
+  >
+  > `docs/276-shared-package-cache-integrity` prices the consequences: the shared store
+  > is writable by every session of a repo, so this is a cross-session code-execution
+  > channel. Its `plan.md` treats the install path and the hardlink path as two
+  > separate holes precisely because neither has an upstream check to lean on. That doc
+  > initially inherited the wrong claim from this bullet before an independent review
+  > refuted it — which is the reason for correcting it here rather than only there.
 
 ## Shelf (explicitly not scheduled): content-addressed multi-base store
 
