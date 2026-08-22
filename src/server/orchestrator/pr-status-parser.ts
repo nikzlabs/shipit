@@ -597,6 +597,12 @@ export function prStatusEqual(a: PrStatusSummary, b: PrStatusSummary): boolean {
     a.checks.graceUntil === b.checks.graceUntil &&
     a.mergeable === b.mergeable &&
     a.reviewDecision === b.reviewDecision &&
+    // The merge button is disabled off this field, so a change in it has to
+    // reach the client on its own — a push that lands while nothing else about
+    // the PR changes is exactly the transition that re-enables the button.
+    a.branchSync?.state === b.branchSync?.state &&
+    a.branchSync?.ahead === b.branchSync?.ahead &&
+    a.branchSync?.behind === b.branchSync?.behind &&
     a.autoMergeEnabled === b.autoMergeEnabled &&
     a.insertions === b.insertions &&
     a.deletions === b.deletions &&

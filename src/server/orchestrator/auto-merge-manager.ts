@@ -13,6 +13,7 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import type {
   AutoMergeManagedReason,
   AutoMergeState,
+  BranchSyncStatus,
   PrAutoMergeError,
   PrStatusSummary,
 } from "../shared/types/github-types.js";
@@ -27,6 +28,12 @@ export class AutoMergeManager {
    * log again.
    */
   private busyLogged = new Set<string>();
+  /**
+   * The same once-per-wait latch for the branch-sync gate. Separate from
+   * {@link busyLogged} because the two holds have different causes and different
+   * remedies, and one set would let whichever fires first silence the other.
+   */
+  private syncLogged = new Set<string>();
 
   /**
    * @param getRunner resolves the session's runner for the busy gate. Optional —
@@ -34,11 +41,20 @@ export class AutoMergeManager {
    *   an unresolvable runner reads as "not busy" so the merge still happens. The
    *   contract is deliberate: an absent registry must never turn into a merge
    *   that never runs.
+   * @param resolveSync the authoritative branch-sync read (it fetches), called
+   *   once per merge ATTEMPT rather than once per tick. Optional: without it the
+   *   loop falls back to the summary's cheap per-tick reading, which is right in
+   *   every ordinary case and blind only to the remote moving under a stale
+   *   tracking ref.
    */
   constructor(
     private readonly githubAuth: GitHubAuthManager,
     private readonly onChange: (sessionId: string) => void,
     private readonly getRunner?: (sessionId: string) => SessionRunnerInterface | undefined,
+    private readonly resolveSync?: (
+      sessionId: string,
+      headBranch: string,
+    ) => Promise<BranchSyncStatus | undefined>,
   ) {}
 
   /** Get auto-merge state for a session. */
@@ -50,6 +66,7 @@ export class AutoMergeManager {
   delete(sessionId: string): void {
     this.states.delete(sessionId);
     this.busyLogged.delete(sessionId);
+    this.syncLogged.delete(sessionId);
   }
 
   /** Set auto-merge enabled/disabled for a session. */
@@ -64,6 +81,7 @@ export class AutoMergeManager {
       // you it is holding" latch so a re-enable that hits the gate again says so
       // rather than staying silent.
       this.busyLogged.delete(sessionId);
+      this.syncLogged.delete(sessionId);
       // A deliberate user toggle resets the managed-merge lifecycle, so clear
       // the `completed` short-circuit either way (a re-enable must be able to
       // merge again; a disable shouldn't leave stale bookkeeping behind).
@@ -206,6 +224,33 @@ export class AutoMergeManager {
     // poller tick rather than racing into a merge attempt that would fail.
     if (summary.mergeable !== "mergeable") return;
 
+    // The branch on GitHub is behind what the session holds, so merging now
+    // ships the last successful push and silently drops the rest. The busy gate
+    // below covers the ordinary window (a turn's commit and its debounced push
+    // both run inside `agentBusy`) — this covers the window it cannot: a push
+    // that FAILED. The hold then outlives the turn, `agentBusy` goes false, and
+    // nothing else here can tell that the green checks describe an old commit.
+    //
+    // Like the review and conflict gates: no sticky error. The auto-push
+    // scheduler retries, re-arms, and posts its own transcript notice naming
+    // the remedy, so this is a wait rather than a misconfiguration. `behind`
+    // and an absent reading both merge — see `services/branch-sync.ts`.
+    const syncState = summary.branchSync?.state;
+    if (syncState === "ahead" || syncState === "diverged") {
+      // Its own latch, not `busyLogged`: sharing one would let a sync hold
+      // swallow the busy line that follows it (and vice versa), and the two
+      // waits have different remedies.
+      if (!this.syncLogged.has(sessionId)) {
+        this.syncLogged.add(sessionId);
+        console.log(
+          `[auto-merge] Holding merge of PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}:`
+          + ` local branch is ${syncState} of ${summary.headBranch} on GitHub`,
+        );
+      }
+      return;
+    }
+    this.syncLogged.delete(sessionId);
+
     // docs/266 — the PR is ready to merge, but the session is still working.
     // Auto-commit fires AFTER the turn ends, so a merge now ships a PR whose
     // remaining edits land on a branch with a closed PR: `merged-push-guard`
@@ -237,6 +282,25 @@ export class AutoMergeManager {
       return;
     }
     this.busyLogged.delete(sessionId);
+
+    // Last check before the irreversible one, and the only one that asks the
+    // remote rather than this clone's refs. The per-tick reading above is
+    // computed from `refs/remotes/origin/<branch>`, which nothing updates when
+    // the remote branch moves in ANOTHER clone — a force-push from the user's
+    // laptop leaves the tracking ref and HEAD both at the old tip, which reads
+    // as `in-sync` while GitHub holds a history this session has never had.
+    // Affordable here because it runs once per merge ATTEMPT, not once per tick.
+    if (this.resolveSync) {
+      const fresh = await this.resolveSync(sessionId, summary.headBranch)
+        .catch(() => undefined);
+      if (fresh && fresh.state !== "in-sync" && fresh.state !== "behind") {
+        console.log(
+          `[auto-merge] Holding merge of PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}:`
+          + ` the branch is ${fresh.state} of ${summary.headBranch} on GitHub (verified against the remote)`,
+        );
+        return;
+      }
+    }
 
     // Attempt the merge via REST API
     const result = await this.githubAuth.mergePullRequest(

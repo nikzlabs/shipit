@@ -493,6 +493,133 @@ describe("POST /api/sessions/:id/pr/merge — CI-not-ready guard", () => {
   });
 });
 
+/**
+ * The obsolete-merge guard. Every other gate on this route asks GitHub a
+ * question about the remote branch; none of them can see that the remote branch
+ * is simply OLD. ShipIt pushes on a debounce and never force-pushes, so a
+ * rejected push leaves the session holding commits GitHub has never seen behind
+ * a pull request that looks perfectly mergeable — which is how two pull requests
+ * once merged seven and two commits behind (`services/auto-push-scheduler.ts`).
+ *
+ * The client disables the button off the poller's reading; this is the half that
+ * holds against a stale tab, so it re-resolves the state against the real
+ * remote. The remote here is a local bare repo — `sessionManager`'s remote URL
+ * stays the GitHub one (it is what names owner/repo for the merge API), while
+ * git's `origin` is the bare repo the push can actually reach.
+ */
+describe("POST /api/sessions/:id/pr/merge — obsolete-state guard", () => {
+  let bareDir: string;
+
+  const runGit = (cmd: string, cwd: string): string =>
+    execSync(cmd, { cwd, env: { ...process.env, HOME: tmpDir }, stdio: ["pipe", "pipe", "pipe"] })
+      .toString();
+
+  beforeEach(async () => {
+    sessionManager.setBranch(sessionId, "shipit/test-feature");
+    sessionManager.setRemoteUrl(sessionId, "https://github.com/test-user/test-repo.git");
+    await githubAuth.setToken("test-token");
+
+    bareDir = path.join(tmpDir, "bare.git");
+    fs.mkdirSync(bareDir);
+    runGit("git init --bare -b main", bareDir);
+    runGit(`git remote set-url origin ${bareDir}`, sessionDir);
+    runGit("git push origin shipit/test-feature", sessionDir);
+
+    // A green, mergeable PR — so the CI and review gates are satisfied and the
+    // only thing that can hold the merge is the branch's sync state.
+    githubAuth.setGraphqlResult({
+      data: {
+        repository: {
+          pullRequests: {
+            nodes: [{
+              number: 42,
+              title: "Test PR",
+              url: "https://github.com/test-user/test-repo/pull/42",
+              state: "OPEN",
+              mergeable: "MERGEABLE",
+              autoMergeRequest: null,
+              headRefName: "shipit/test-feature",
+              baseRefName: "main",
+              additions: 10,
+              deletions: 5,
+              commits: {
+                nodes: [{
+                  commit: {
+                    oid: "abc123",
+                    statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } },
+                  },
+                }],
+              },
+            }],
+          },
+        },
+      },
+    });
+    prStatusPoller.trackSession(sessionId, "https://github.com/test-user/test-repo.git");
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  const postMerge = () => app.inject({
+    method: "POST",
+    url: `/api/sessions/${sessionId}/pr/merge`,
+    headers: { "Content-Type": "application/json" },
+    payload: JSON.stringify({ method: "squash" }),
+  });
+
+  it("does not hold a branch that carries everything the session has", async () => {
+    const res = await postMerge();
+
+    // The merge itself goes on to fail in this fixture (the stub resolves no PR
+    // for the branch), which is exactly the point: an in-sync branch reaches
+    // the merge, rather than being turned back by this guard.
+    expect(res.statusCode).toBe(200);
+    expect(res.json().message).not.toMatch(/diverged|Pushed|reached GitHub/);
+  });
+
+  it("does not merge a branch the session has moved past — it pushes the missing work instead", async () => {
+    const merge = vi.spyOn(githubAuth, "mergePullRequest");
+    fs.writeFileSync(path.join(sessionDir, "later.md"), "work the remote has never seen\n");
+    runGit("git add -A && git commit -m later", sessionDir);
+    const localHead = runGit("git rev-parse HEAD", sessionDir).trim();
+
+    const res = await postMerge();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: false });
+    expect(res.json().message).toContain("Pushed 1 commit");
+    // Nothing was merged…
+    expect(merge).not.toHaveBeenCalled();
+    // …and the click was not wasted: the work is on the remote, so the next one
+    // merges what the session actually produced.
+    expect(runGit("git rev-parse refs/heads/shipit/test-feature", bareDir).trim()).toBe(localHead);
+  });
+
+  it("refuses outright when the branch has diverged, and repairs nothing", async () => {
+    const merge = vi.spyOn(githubAuth, "mergePullRequest");
+    // The remote branch gains a commit from elsewhere…
+    const otherDir = path.join(tmpDir, "other");
+    fs.mkdirSync(otherDir);
+    runGit(`git clone ${bareDir} .`, otherDir);
+    runGit("git checkout shipit/test-feature", otherDir);
+    fs.writeFileSync(path.join(otherDir, "theirs.md"), "1\n");
+    runGit("git add -A && git commit -m theirs", otherDir);
+    runGit("git push origin shipit/test-feature", otherDir);
+    const remoteTip = runGit("git rev-parse refs/heads/shipit/test-feature", bareDir).trim();
+    // …while this session commits its own work on the old tip.
+    fs.writeFileSync(path.join(sessionDir, "ours.md"), "1\n");
+    runGit("git add -A && git commit -m ours", sessionDir);
+
+    const res = await postMerge();
+
+    expect(res.json()).toMatchObject({ success: false });
+    expect(res.json().message).toContain("diverged");
+    expect(merge).not.toHaveBeenCalled();
+    // The two remedies (pull, force-push) each destroy one side's commits, and
+    // git cannot say which is right — so neither is attempted.
+    expect(runGit("git rev-parse refs/heads/shipit/test-feature", bareDir).trim()).toBe(remoteTip);
+  });
+});
+
 // ---- POST /api/sessions/:id/pr/merge-method ----
 
 describe("POST /api/sessions/:id/pr/merge-method", () => {

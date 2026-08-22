@@ -188,6 +188,70 @@ describe("arming while the session is live", () => {
     });
   });
 
+  /**
+   * The same decision on a different signal. Native auto-merge cannot be called
+   * back once armed: GitHub merges the branch as it currently has it the moment
+   * the checks pass. So a session holding commits GitHub has never seen must not
+   * hand the merge over — ShipIt's own loop can wait for the push to land, and
+   * GitHub cannot.
+   */
+  describe("arming while the branch is not on GitHub yet", () => {
+    const unsynced = (state: "ahead" | "diverged") =>
+      summary({ branchSync: { state, ahead: 2, behind: state === "diverged" ? 1 : 0 } });
+
+    it.each(["ahead", "diverged"] as const)(
+      "toggleAutoMerge keeps a %s branch on the managed loop",
+      async (state) => {
+        const p = makePoller(unsynced(state));
+        const enableAutoMerge = vi.fn(async () => ({ success: true }));
+        const githubAuth = { authenticated: true, enableAutoMerge } as unknown as GitHubAuthManager;
+
+        const result = await toggleAutoMerge(githubAuth, p.poller, "s1", true);
+
+        expect(enableAutoMerge).not.toHaveBeenCalled();
+        expect(result).toEqual({
+          enabled: true,
+          mergeMethod: "squash",
+          managed: true,
+          managedReason: "branch-unsynced",
+        });
+        // Not a misconfiguration: no settings link, no GitHub error text.
+        expect(p.setAutoMergeManaged.mock.calls.at(-1)?.[2]).toEqual({ managedReason: "branch-unsynced" });
+      },
+    );
+
+    it("arms GitHub native once the branch is in sync", async () => {
+      const p = makePoller(summary({ branchSync: { state: "in-sync", ahead: 0, behind: 0 } }));
+      const enableAutoMerge = vi.fn(async () => ({ success: true }));
+      const githubAuth = { authenticated: true, enableAutoMerge } as unknown as GitHubAuthManager;
+
+      await toggleAutoMerge(githubAuth, p.poller, "s1", true);
+
+      expect(enableAutoMerge).toHaveBeenCalledTimes(1);
+    });
+
+    it("arms GitHub native when the sync state is unknown — absence is not a verdict", async () => {
+      const p = makePoller(summary());
+      const enableAutoMerge = vi.fn(async () => ({ success: true }));
+      const githubAuth = { authenticated: true, enableAutoMerge } as unknown as GitHubAuthManager;
+
+      await toggleAutoMerge(githubAuth, p.poller, "s1", true);
+
+      expect(enableAutoMerge).toHaveBeenCalledTimes(1);
+    });
+
+    it("activatePendingAutoMergeForPr keeps a pre-armed unsynced PR managed too", async () => {
+      const p = makePoller(unsynced("ahead"), { enabled: true, mergeMethod: "squash" });
+      const enableAutoMerge = vi.fn(async () => ({ success: true }));
+      const githubAuth = { enableAutoMerge } as unknown as GitHubAuthManager;
+
+      await activatePendingAutoMergeForPr(githubAuth, p.poller, "s1", PR_URL, 42);
+
+      expect(enableAutoMerge).not.toHaveBeenCalled();
+      expect(p.setAutoMergeManaged).toHaveBeenCalledWith("s1", true, { managedReason: "branch-unsynced" });
+    });
+  });
+
   it("activatePendingAutoMergeForPr arms managed for an agent-opened PR", async () => {
     // The common case: activation runs in the post-turn flow, whose runner is
     // still alive.
