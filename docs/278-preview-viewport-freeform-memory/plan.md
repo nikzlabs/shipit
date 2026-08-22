@@ -44,11 +44,22 @@ app reflows and its breakpoints flip while the pointer moves.
 ### Pieces
 
 - `PreviewFrame/ViewportResizeHandles.tsx` (new) — the three handles, the drag
-  shield, the drag badge, and exported pure `computeViewportResize()` for tests.
-  Renders from metrics passed by `PreviewFrame`; writes through
-  `usePreviewStore.getState().setFreeformSize()`. Handles are pointer-only
-  affordances (`aria-hidden`, not focusable): the accessible path to an exact size
-  is the existing labelled width/height inputs in the menu.
+  shield, the drag badge, and exported pure `computeViewportResize()` /
+  `computeKeyboardResize()` for tests. Renders from metrics passed by
+  `PreviewFrame`; writes through `usePreviewStore.getState().setFreeformSize()`.
+- **Keyboard operability (req 9, ported from `shipit/p_799e`).** The edge
+  handles are focusable `role="slider"`s with `aria-label`, `aria-orientation`
+  (describing the grip's bar), and `aria-valuemin/max/now/valuetext`; arrow
+  keys step their own axis by a fixed `KEYBOARD_RESIZE_STEP` (10px). The corner
+  resizes both axes — no single slider value describes that — so it is a
+  `role="button"` acting on all four arrows. The keyboard path deliberately
+  bypasses the drag math: a key press asks for a fixed number of viewport px
+  (no pointer to keep under an edge, so no centred-edge doubling) and clamps to
+  the absolute bounds rather than the panel — like typed input, it may step
+  past the panel and scale-to-fit absorbs it. Handled arrows are
+  `preventDefault`ed so they don't scroll the panel; unhandled keys fall
+  through. Focus indication is the grip pill going accent (the same signal as
+  hover); the labelled menu inputs remain the exact-entry path.
 - `DeviceFrame.tsx` — `useDeviceFrame` additionally exposes the available box
   (panel minus padding) for clamping and for the Freeform default.
 - `PreviewFrame.tsx` — renders the handles into the device container next to the
@@ -79,6 +90,14 @@ from `useDeviceFrame`'s available box). Selecting it activates Custom at that si
 so the handles appear around what the user was already looking at. The rotate
 button's tooltip on a custom size reads "Swap width and height" (it is not
 portrait/landscape there).
+
+**Per-open input re-seeding (req 10, ported from `shipit/yaoggm`).** The
+width/height inputs live in a `CustomSizeInputs` child of `DropdownMenuContent`:
+Radix unmounts the content on close, so the child re-seeds its state from the
+applied size (`customSize`, else the panel-size freeform target) on every open.
+With the state on `DeviceSelector` itself — as originally built here and on main
+— the last-typed values survived, so a size applied by a drag, the Freeform row,
+or a session switch showed stale numbers on the next open.
 
 ## 2. Per-session viewport memory (req 6)
 

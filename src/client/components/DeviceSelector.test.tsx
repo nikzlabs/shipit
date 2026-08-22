@@ -205,6 +205,38 @@ describe("DeviceSelector", () => {
     expect(onCustomSize).toHaveBeenCalledWith(500, 900);
   });
 
+  it("re-seeds the custom inputs from the applied size on every open (req 10)", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<DeviceSelector {...baseProps} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(390);
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Custom width")).not.toBeInTheDocument();
+    });
+    // A size applied elsewhere — a drag, the Freeform row, a session switch —
+    // arrives via props; the next open must show it, not the previous seed.
+    rerender(<DeviceSelector {...baseProps} customSize={{ width: 612, height: 707 }} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(612);
+    expect(screen.getByLabelText("Custom height")).toHaveValue(707);
+  });
+
+  it("does not keep typed-but-unapplied values across opens", async () => {
+    const user = userEvent.setup();
+    render(<DeviceSelector {...baseProps} customSize={{ width: 500, height: 900 }} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    const width = screen.getByLabelText("Custom width");
+    await user.clear(width);
+    await user.type(width, "5555");
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Custom width")).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(500);
+  });
+
   it("labels the rotate button as a swap for custom sizes", () => {
     render(
       <DeviceSelector

@@ -45,6 +45,98 @@ export interface DeviceSelectorProps {
  * the iframe to phone or tablet dimensions and shows a rotate button. A custom width
  * and height can be entered at the bottom of the menu.
  */
+/**
+ * The custom-size inputs, mounted as a child of `DropdownMenuContent`.
+ *
+ * Being a child is the point (docs/278 req 10): Radix unmounts the content on
+ * close, so seeding input state from `initialSize` on mount re-prefills on
+ * every open. With the state on `DeviceSelector` itself the last-typed values
+ * survived, so a size applied elsewhere — a drag, the Freeform row, a session
+ * switch restoring another session's viewport — showed stale numbers on the
+ * next open.
+ */
+function CustomSizeInputs({
+  initialSize,
+  onApply,
+}: {
+  initialSize: { width: number; height: number };
+  onApply: (width: number, height: number) => void;
+}) {
+  const [widthInput, setWidthInput] = useState<string>(String(initialSize.width));
+  const [heightInput, setHeightInput] = useState<string>(String(initialSize.height));
+
+  const parsedWidth = Math.round(Number(widthInput));
+  const parsedHeight = Math.round(Number(heightInput));
+  const widthValid =
+    Number.isFinite(parsedWidth) && parsedWidth >= CUSTOM_SIZE_MIN && parsedWidth <= CUSTOM_SIZE_MAX;
+  const heightValid =
+    Number.isFinite(parsedHeight) && parsedHeight >= CUSTOM_SIZE_MIN && parsedHeight <= CUSTOM_SIZE_MAX;
+  const customValid = widthValid && heightValid;
+
+  const submitCustom = () => {
+    if (customValid) onApply(parsedWidth, parsedHeight);
+  };
+
+  return (
+    <div
+      className="px-3 py-2 flex flex-col gap-1"
+      // Prevent dropdown from closing when interacting with the inputs
+      onKeyDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-center gap-1.5">
+        <input
+          type="number"
+          min={CUSTOM_SIZE_MIN}
+          max={CUSTOM_SIZE_MAX}
+          aria-label="Custom width"
+          aria-invalid={!widthValid}
+          value={widthInput}
+          onChange={(e) => setWidthInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submitCustom();
+            }
+          }}
+          className={`w-16 px-1.5 py-0.5 rounded bg-(--color-bg-secondary) border text-xs text-(--color-text-primary) tabular-nums focus:outline-none ${widthValid ? "border-(--color-border-secondary) focus:border-(--color-accent)" : "border-(--color-error) focus:border-(--color-error)"}`}
+        />
+        <span className="text-(--color-text-tertiary) text-xs">×</span>
+        <input
+          type="number"
+          min={CUSTOM_SIZE_MIN}
+          max={CUSTOM_SIZE_MAX}
+          aria-label="Custom height"
+          aria-invalid={!heightValid}
+          value={heightInput}
+          onChange={(e) => setHeightInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submitCustom();
+            }
+          }}
+          className={`w-16 px-1.5 py-0.5 rounded bg-(--color-bg-secondary) border text-xs text-(--color-text-primary) tabular-nums focus:outline-none ${heightValid ? "border-(--color-border-secondary) focus:border-(--color-accent)" : "border-(--color-error) focus:border-(--color-error)"}`}
+        />
+        <Button
+          variant="secondary"
+          size="md"
+          onClick={submitCustom}
+          disabled={!customValid}
+          title={customValid ? "Apply custom size" : `Width and height must be between ${CUSTOM_SIZE_MIN} and ${CUSTOM_SIZE_MAX}`}
+        >
+          Apply
+        </Button>
+      </div>
+      {!customValid && (
+        <span className="text-[10px] text-(--color-error)">
+          Must be {CUSTOM_SIZE_MIN}–{CUSTOM_SIZE_MAX} px
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function DeviceSelector({
   activePreset,
   isLandscape,
@@ -55,39 +147,19 @@ export function DeviceSelector({
   onCustomSize,
 }: DeviceSelectorProps) {
   const [open, setOpen] = useState(false);
-  const [customWidthInput, setCustomWidthInput] = useState<string>(
-    String(customSize?.width ?? 390),
-  );
-  const [customHeightInput, setCustomHeightInput] = useState<string>(
-    String(customSize?.height ?? 844),
-  );
 
   const phones = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "phone"), []);
   const tablets = useMemo(() => DEVICE_PRESETS.filter((p) => p.category === "tablet"), []);
 
   const isCustomActive = activePreset?.category === "custom";
   // Last custom size wins; the panel's own size on first use; a phone-ish
-  // fallback only while the panel is unmeasured.
+  // fallback only while the panel is unmeasured. Also what the inputs below
+  // are seeded with on each open.
   const freeformTarget = customSize ?? panelSize ?? { width: 390, height: 844 };
 
   const triggerLabel = activePreset
     ? activePreset.label
     : "Responsive";
-
-  const parsedWidth = Math.round(Number(customWidthInput));
-  const parsedHeight = Math.round(Number(customHeightInput));
-  const widthValid =
-    Number.isFinite(parsedWidth) && parsedWidth >= CUSTOM_SIZE_MIN && parsedWidth <= CUSTOM_SIZE_MAX;
-  const heightValid =
-    Number.isFinite(parsedHeight) && parsedHeight >= CUSTOM_SIZE_MIN && parsedHeight <= CUSTOM_SIZE_MAX;
-  const customValid = widthValid && heightValid;
-
-  const submitCustom = () => {
-    if (customValid) {
-      onCustomSize(parsedWidth, parsedHeight);
-      setOpen(false);
-    }
-  };
 
   return (
     <span className="flex items-center gap-1">
@@ -167,62 +239,13 @@ export function DeviceSelector({
             <span className="text-(--color-text-tertiary) text-[10px]">drag edges to resize</span>
             {isCustomActive && <CheckIcon size={ICON_SIZE.XS} className="text-(--color-success)" />}
           </DropdownMenuItem>
-          <div
-            className="px-3 py-2 flex flex-col gap-1"
-            // Prevent dropdown from closing when interacting with the inputs
-            onKeyDown={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min={CUSTOM_SIZE_MIN}
-                max={CUSTOM_SIZE_MAX}
-                aria-label="Custom width"
-                aria-invalid={!widthValid}
-                value={customWidthInput}
-                onChange={(e) => setCustomWidthInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    submitCustom();
-                  }
-                }}
-                className={`w-16 px-1.5 py-0.5 rounded bg-(--color-bg-secondary) border text-xs text-(--color-text-primary) tabular-nums focus:outline-none ${widthValid ? "border-(--color-border-secondary) focus:border-(--color-accent)" : "border-(--color-error) focus:border-(--color-error)"}`}
-              />
-              <span className="text-(--color-text-tertiary) text-xs">×</span>
-              <input
-                type="number"
-                min={CUSTOM_SIZE_MIN}
-                max={CUSTOM_SIZE_MAX}
-                aria-label="Custom height"
-                aria-invalid={!heightValid}
-                value={customHeightInput}
-                onChange={(e) => setCustomHeightInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    submitCustom();
-                  }
-                }}
-                className={`w-16 px-1.5 py-0.5 rounded bg-(--color-bg-secondary) border text-xs text-(--color-text-primary) tabular-nums focus:outline-none ${heightValid ? "border-(--color-border-secondary) focus:border-(--color-accent)" : "border-(--color-error) focus:border-(--color-error)"}`}
-              />
-              <Button
-                variant="secondary"
-                size="md"
-                onClick={submitCustom}
-                disabled={!customValid}
-                title={customValid ? "Apply custom size" : `Width and height must be between ${CUSTOM_SIZE_MIN} and ${CUSTOM_SIZE_MAX}`}
-              >
-                Apply
-              </Button>
-            </div>
-            {!customValid && (
-              <span className="text-[10px] text-(--color-error)">
-                Must be {CUSTOM_SIZE_MIN}–{CUSTOM_SIZE_MAX} px
-              </span>
-            )}
-          </div>
+          <CustomSizeInputs
+            initialSize={freeformTarget}
+            onApply={(width, height) => {
+              onCustomSize(width, height);
+              setOpen(false);
+            }}
+          />
         </DropdownMenuContent>
       </DropdownMenu>
       {activePreset && (

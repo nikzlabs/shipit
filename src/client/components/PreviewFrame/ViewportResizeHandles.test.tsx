@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { ViewportResizeHandles, computeViewportResize } from "./ViewportResizeHandles.js";
+import {
+  ViewportResizeHandles,
+  computeViewportResize,
+  computeKeyboardResize,
+  KEYBOARD_RESIZE_STEP,
+} from "./ViewportResizeHandles.js";
 import { useDeviceFrame } from "./DeviceFrame.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
@@ -74,6 +79,39 @@ describe("computeViewportResize", () => {
 
   it("tolerates a panel smaller than the minimum", () => {
     expect(computeViewportResize(100, 300, 1, 40)).toBe(100);
+  });
+});
+
+describe("computeKeyboardResize", () => {
+  it("steps a handle's own axis by the fixed step", () => {
+    expect(computeKeyboardResize("x", { width: 400, height: 800 }, "ArrowRight"))
+      .toEqual({ width: 400 + KEYBOARD_RESIZE_STEP, height: 800 });
+    expect(computeKeyboardResize("x", { width: 400, height: 800 }, "ArrowLeft"))
+      .toEqual({ width: 400 - KEYBOARD_RESIZE_STEP, height: 800 });
+    expect(computeKeyboardResize("y", { width: 400, height: 800 }, "ArrowDown"))
+      .toEqual({ width: 400, height: 800 + KEYBOARD_RESIZE_STEP });
+    expect(computeKeyboardResize("y", { width: 400, height: 800 }, "ArrowUp"))
+      .toEqual({ width: 400, height: 800 - KEYBOARD_RESIZE_STEP });
+  });
+
+  it("ignores the cross axis on an edge handle, so the event scrolls as usual", () => {
+    expect(computeKeyboardResize("x", { width: 400, height: 800 }, "ArrowDown")).toBeNull();
+    expect(computeKeyboardResize("y", { width: 400, height: 800 }, "ArrowRight")).toBeNull();
+    expect(computeKeyboardResize("x", { width: 400, height: 800 }, "Enter")).toBeNull();
+  });
+
+  it("the corner acts on all four arrows", () => {
+    expect(computeKeyboardResize("xy", { width: 400, height: 800 }, "ArrowRight"))
+      .toEqual({ width: 410, height: 800 });
+    expect(computeKeyboardResize("xy", { width: 400, height: 800 }, "ArrowUp"))
+      .toEqual({ width: 400, height: 790 });
+  });
+
+  it("clamps to the absolute custom-size bounds, not the panel", () => {
+    expect(computeKeyboardResize("x", { width: 105, height: 800 }, "ArrowLeft"))
+      .toEqual({ width: 100, height: 800 });
+    expect(computeKeyboardResize("y", { width: 400, height: 2555 }, "ArrowDown"))
+      .toEqual({ width: 400, height: 2560 });
   });
 });
 
@@ -162,5 +200,38 @@ describe("ViewportResizeHandles", () => {
     render(<Harness scaleOverride={0} />);
     fireEvent.pointerDown(screen.getByTestId("viewport-handle-x"), { clientX: 100, clientY: 50, button: 0 });
     expect(screen.queryByTestId("viewport-drag-shield")).not.toBeInTheDocument();
+  });
+
+  it("arrow keys resize from the keyboard and detach the preset into Custom (req 9)", () => {
+    render(<Harness />);
+    const x = screen.getByTestId("viewport-handle-x");
+    fireEvent.keyDown(x, { key: "ArrowRight" });
+    expect(usePreviewStore.getState().devicePreset).toMatchObject({ id: "custom", label: "Custom" });
+    expect(usePreviewStore.getState().customSize).toEqual({ width: 403, height: 852 });
+    fireEvent.keyDown(screen.getByTestId("viewport-handle-y"), { key: "ArrowUp" });
+    expect(usePreviewStore.getState().customSize).toEqual({ width: 403, height: 842 });
+    fireEvent.keyDown(screen.getByTestId("viewport-handle-xy"), { key: "ArrowDown" });
+    expect(usePreviewStore.getState().customSize).toEqual({ width: 403, height: 852 });
+  });
+
+  it("announces the size as focusable sliders, tracking each keyboard step", () => {
+    render(<Harness />);
+    const x = screen.getByTestId("viewport-handle-x");
+    expect(x).toHaveAttribute("role", "slider");
+    expect(x).toHaveAttribute("tabindex", "0");
+    expect(x).toHaveAttribute("aria-valuenow", "393");
+    expect(x).toHaveAttribute("aria-valuetext", "393 pixels wide");
+    fireEvent.keyDown(x, { key: "ArrowRight" });
+    expect(x).toHaveAttribute("aria-valuenow", "403");
+    const y = screen.getByTestId("viewport-handle-y");
+    expect(y).toHaveAttribute("role", "slider");
+    expect(y).toHaveAttribute("aria-valuetext", "852 pixels tall");
+    expect(screen.getByTestId("viewport-handle-xy")).toHaveAttribute("role", "button");
+  });
+
+  it("leaves keys a handle does not act on to the panel (no store write)", () => {
+    render(<Harness />);
+    fireEvent.keyDown(screen.getByTestId("viewport-handle-x"), { key: "ArrowDown" });
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
   });
 });

@@ -29,6 +29,13 @@
 - [x] `PreviewToolbar.tsx` / `PreviewFrame.tsx`: thread freeform default size; route custom entry through `setFreeformSize`
 - [x] `DeviceSelector.test.tsx`: Freeform row present + fires with expected size; existing tests updated for "Custom" label
 
+## Amendment (2026-08-22, reqs 9–10)
+
+- [x] Handles keyboard-operable (from `shipit/p_799e`): `role="slider"` + `aria-value*` on edges, `role="button"` corner, arrow-key steps via `computeKeyboardResize`, focus-visible grip
+- [x] Custom inputs re-seed per menu open (from `shipit/yaoggm`): `CustomSizeInputs` child remounted by Radix, seeded from the applied size
+- [x] Rotation behaviour explicitly unchanged (`setDevicePreset`, rotate-on-custom, landscape-across-presets)
+- [x] Keyboard + re-seed tests; suites, typecheck, lint green; PR body updated
+
 ## Verification
 
 - [x] `npm run typecheck`, `npm run lint:dev`, `npm run test:dev` + all touched suites green

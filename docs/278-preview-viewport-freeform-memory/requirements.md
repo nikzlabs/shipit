@@ -28,6 +28,12 @@ issue was filed, and this folder covers the genuine remainder.
    control sees no change.
 8. Constraining is pure client-side iframe sizing; no proxy or server changes.
    (Constraint carried verbatim from the issue.)
+9. The freeform size is operable without a pointer: the resize handles are
+   focusable, resize on arrow keys, and announce their axis and current value
+   to assistive technology. (Added 2026-08-22, benchmark amendment.)
+10. The custom width/height inputs show the currently applied size each time
+    the menu opens — never values left over from an earlier session or entry
+    path. (Added 2026-08-22, benchmark amendment.)
 
 ## Requirement provenance
 
@@ -92,3 +98,13 @@ not asked; see Resolved questions)
   detaching from a preset — neither is "grab the edge of what I'm looking at". The
   row activates Custom at the last custom size, or at the current panel size on
   first use, so the handles appear around exactly what the user was seeing.
+- 2026-08-22 — **Amendment (reqs 9, 10).** After cross-branch comparison of the
+  four benchmark implementations, two behaviours were adopted from sibling
+  branches: keyboard-operable slider handles (from `shipit/p_799e` — the
+  original handles here were pointer-only and `aria-hidden`, leaving the
+  freeform size mouse-reachable only) and per-open re-seeding of the custom
+  inputs (from `shipit/yaoggm` — input state seeded once at mount showed stale
+  values after a size was applied elsewhere or a session switch). Explicitly
+  NOT adopted, per the same decision: any change to rotation behaviour — the
+  rotate button stays visible on a typed custom size and swaps the numbers,
+  and `isLandscape` carries across a change of preset.
