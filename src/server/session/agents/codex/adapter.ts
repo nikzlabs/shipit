@@ -213,13 +213,23 @@ export class CodexAdapter
   >();
 
   /**
-   * Codex's config root for this adapter — `<resolved HOME>/.codex` when the
-   * local-mode factory scoped us to an account, else the process-global
-   * {@link codexHome} (which the session container points at the per-session
-   * credentials mount).
+   * A same-harness sub-agent spawn's isolated per-spawn HOME
+   * (`AgentRunParams.homeDir`), captured at `run()`. Outranks the
+   * constructor-injected resolver: a per-spawn answer is more specific than a
+   * per-adapter one. Never set on the resident path, so `writeMcpConfig`
+   * (which runs before `run()`, resident-only) keeps resolving the session
+   * config root.
+   */
+  private spawnHomeOverride: string | undefined;
+
+  /**
+   * Codex's config root for this adapter — `<resolved HOME>/.codex` when a
+   * per-spawn home applies or the local-mode factory scoped us to an account,
+   * else the process-global {@link codexHome} (which the session container
+   * points at the per-session credentials mount).
    */
   private codexConfigDir(): string {
-    const home = this.resolveHome?.();
+    const home = this.spawnHomeOverride ?? this.resolveHome?.();
     return home ? path.join(home, ".codex") : codexHome();
   }
 
@@ -232,6 +242,9 @@ export class CodexAdapter
    * The process stays alive across turns — we create threads and turns within it.
    */
   run(params: AgentRunParams): void {
+    // Before anything reads `codexConfigDir()` below — the isolated per-spawn
+    // HOME of a same-harness sub-agent run, when one applies.
+    this.spawnHomeOverride = params.homeDir;
     this.eventHandler.beginTurn(params.cwd);
 
     // Check binary exists before attempting spawn
@@ -284,7 +297,7 @@ export class CodexAdapter
     // `session-namer.ts` now gate on the same expression this line resolves.
     // All three have to name one root, or the warm-up initializes a directory
     // the turn will not read.
-    const scopedHome = this.resolveHome?.();
+    const scopedHome = this.spawnHomeOverride ?? this.resolveHome?.();
     env.HOME = resolveAgentHome(scopedHome);
     env.CODEX_HOME = this.codexConfigDir();
 

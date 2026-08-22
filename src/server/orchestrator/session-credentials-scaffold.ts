@@ -37,6 +37,21 @@ import { chownTreeToSessionWorker, sealDirMode } from "./session-worker-uid.js";
 export const SESSION_CREDENTIALS_SUBDIR = "sessions";
 
 /**
+ * Subdirectory INSIDE a session's credentials subtree that holds the isolated
+ * per-spawn HOMEs of same-harness sub-agent runs (one `<spawnId>` child each).
+ *
+ * A same-harness consult must never write the session's own `.claude`/`.codex`
+ * subtree: the live primary CLI re-reads its credential file mid-turn, so a
+ * cross-provider provision there 401s the primary within seconds (the
+ * 2026-08-21 GLM-consult incident). Instead each spawn gets its own root under
+ * this directory — inside the per-session subtree so the existing container
+ * mount, chown, seal, and removal all cover it — and the spawned CLI is pointed
+ * at it via the run's `homeDir`. See `provisionSubAgentSpawnHome`
+ * (`session-agent-credentials.ts`).
+ */
+export const SUB_AGENT_HOME_SUBDIR = "sub-agent-homes";
+
+/**
  * Files/dirs (relative to the credentials root) that make up each agent's
  * credential subtree — exactly the paths the session-worker image symlinks
  * into the runtime home (docs/150 — `/home/shipit`, was `/root`; see
@@ -424,6 +439,11 @@ export function ensureSessionCredentialsScaffold(credentialsRoot: string, sessio
   }
   // Generate a token-free gitconfig (identity + brokering credential helper).
   writeSessionGitConfig(credentialsRoot, sessionId);
+  // Sweep spawn homes a crashed orchestrator left behind. Container-create time
+  // is the one moment this is race-free: a fresh container has no worker yet,
+  // so no spawn of THIS session can be in flight, and every dir under here
+  // belongs to a run that died with the previous process.
+  fs.rmSync(path.join(dir, SUB_AGENT_HOME_SUBDIR), { recursive: true, force: true });
   // #2432 — and take away anything an orchestrator-shaped writer left INSIDE
   // the sandbox. Nothing on the session side ever creates this file: the
   // container's credential is brokered per request by `shipit-git-credential`,

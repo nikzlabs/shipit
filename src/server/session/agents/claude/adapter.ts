@@ -491,6 +491,8 @@ export class ClaudeAdapter
       model: params.model,
       // docs/252 phase 3 — base URL + credential for the selected model's service.
       serviceRouting: params.serviceRouting,
+      // A same-harness sub-agent spawn's isolated per-spawn HOME.
+      homeDir: params.homeDir,
       reasoningEffort: params.reasoningEffort,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,

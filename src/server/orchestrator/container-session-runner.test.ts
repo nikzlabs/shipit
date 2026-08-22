@@ -567,6 +567,45 @@ describe("ContainerSessionRunner — sub-agent spawn cancellation (planning#280)
     expect(SUB_AGENT_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(DEFAULT_SUB_AGENT_TIMEOUT_MS);
     expect(Number.isFinite(SUB_AGENT_TRANSPORT_TIMEOUT_MS)).toBe(true);
   });
+
+  // 2026-08-21 incident — a same-harness spawn's isolated per-spawn HOME must
+  // reach the worker, or the CLI falls back to the session subtree the live
+  // primary reads and the isolation silently evaporates.
+  it("forwards the spawn's homeDir to the worker body", async () => {
+    const runner = makeRunner();
+    // A property, not a bare `let`: TS's control flow cannot see the
+    // server-callback assignment and would narrow a local to its initializer.
+    const seen: { body?: Record<string, unknown> } = {};
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        seen.body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ status: "success", text: "ok", truncated: false, durationMs: 1, costUsd: 0 }));
+      });
+    });
+    const sockets: Socket[] = [];
+    server.on("connection", (s) => sockets.push(s));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    runner.setWorkerUrl(`http://127.0.0.1:${addr.port}`);
+
+    const result = await runner.spawnSubAgent({
+      agentId: "claude",
+      prompt: "review",
+      spawnId: "spawn-2",
+      depth: 0,
+      model: "claude-opus-5",
+      homeDir: "/credentials/sub-agent-homes/spawn-2",
+    });
+    expect(result.status).toBe("success");
+    expect(seen.body?.homeDir).toBe("/credentials/sub-agent-homes/spawn-2");
+    // Keep-alive would hold `server.close()` open past the test timeout.
+    for (const s of sockets) s.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
 });
 
 /**

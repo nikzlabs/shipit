@@ -18,11 +18,17 @@ import {
   ensureClaudeUserConfigDefaults,
   ensureClaudeWorkspaceTrusted,
 } from "./agents/claude/user-config.js";
+import { CONTAINER_CREDENTIALS_DIR } from "../shared/fs-constants.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
-import { AGENT_TOKEN_FILES, SUBTREE_STATE_SUBPATHS } from "./token-sync-manager.js";
+import {
+  AGENT_TOKEN_FILES,
+  SUBTREE_STATE_SUBPATHS,
+  syncSubAgentSpawnHomeTokenBack,
+} from "./token-sync-manager.js";
 import {
   AGENT_CREDENTIAL_PATHS,
   SHARED_CREDENTIAL_PATHS,
+  SUB_AGENT_HOME_SUBDIR,
   agentCredentialDirs,
   beginSubtreeBorrow,
   chownSessionCredentialsTree,
@@ -544,4 +550,123 @@ export function removeSubAgentCredentials(
     }
   }
   writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, null);
+}
+
+/**
+ * Host path of the isolated per-spawn HOME a same-harness sub-agent run gets.
+ * Inside the per-session subtree, so the container mount, the tree chown/seal,
+ * and session removal all cover it with no extra plumbing.
+ */
+export function subAgentSpawnHomeDir(
+  credentialsRoot: string,
+  sessionId: string,
+  spawnId: string,
+): string {
+  return path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SUB_AGENT_HOME_SUBDIR, spawnId);
+}
+
+/**
+ * The same directory as seen from INSIDE the session container, where the
+ * per-session subtree is mounted at {@link CONTAINER_CREDENTIALS_DIR}. This is
+ * the value the spawn request carries as `homeDir` for the worker to hand the
+ * sub-agent CLI as its HOME.
+ */
+export function subAgentSpawnHomeContainerDir(spawnId: string): string {
+  return path.posix.join(CONTAINER_CREDENTIALS_DIR, SUB_AGENT_HOME_SUBDIR, spawnId);
+}
+
+/**
+ * Provision a SAME-harness sub-agent spawn's credentials into an isolated
+ * per-spawn home instead of the session's own subtree.
+ *
+ * The session-subtree borrow ({@link provisionSubAgentCredentials}) assumed the
+ * primary was blocked waiting for the consult, but docs/236 made backgrounded
+ * consults the recommended shape — the primary keeps making API calls while the
+ * spawn runs. A same-harness provision then swaps the very credential file the
+ * LIVE primary CLI re-reads: a cross-provider route (a z.ai flat key into
+ * `.claude/`) 401s it within seconds, the quiet auth retry kills the turn and
+ * cancels every in-flight spawn, and the re-dispatched turn repeats the same
+ * consults — a loop (2026-08-21 incident, host session 53cf9934). A
+ * same-provider borrow of another account was quieter but still wrong: the
+ * primary silently ran mid-turn on the borrowed account's bearer.
+ *
+ * So a same-harness spawn never touches the session subtree at all. Its copy
+ * lands under {@link subAgentSpawnHomeDir} — same source-root rule as the
+ * borrow (the resolved provider-account root, else the flat root), same
+ * post-copy config normalization, same worker-uid handoff via the whole-tree
+ * chown — and the spawned CLI is pointed at it via the run's `homeDir`. No
+ * marker write and no borrow-ledger entry: the session's marker keeps naming
+ * the session's own account throughout, so the primary's own token write-backs
+ * flow normally during the consult instead of being refused for the borrow.
+ *
+ * Idempotent per `spawnId`: an account failover re-provisions the same home
+ * after {@link releaseSubAgentSpawnHome} cleared it.
+ */
+export function provisionSubAgentSpawnHome(
+  credentialsRoot: string,
+  sessionId: string,
+  spawnId: string,
+  subAgentId: AgentId,
+  accountId?: string,
+): void {
+  const sourceRoot = accountId
+    ? providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)
+    : credentialsRoot;
+  const home = subAgentSpawnHomeDir(credentialsRoot, sessionId, spawnId);
+  // A fresh root per attempt: clear any leftover from a prior attempt of this
+  // same spawn (account failover re-provisions under the same spawnId).
+  fs.rmSync(home, { recursive: true, force: true });
+  fs.mkdirSync(home, { recursive: true });
+  for (const rel of AGENT_CREDENTIAL_PATHS[subAgentId]) {
+    copyCredentialPath(sourceRoot, home, rel);
+  }
+  // Same planning#444 materialization as the session-subtree provision: a
+  // key-billed harness has no credential material on disk, and its CLI must
+  // still find (or be able to create) its config root under the new HOME.
+  // Above the chown for the same reason spelled out there.
+  for (const rel of agentCredentialDirs(subAgentId)) {
+    try {
+      fs.mkdirSync(path.join(home, rel), { recursive: true });
+    } catch (err) {
+      console.warn(`[session-credentials] could not materialize ${rel} in spawn home for ${subAgentId}:`, err);
+    }
+  }
+  // Normalize the copied config (Claude's onboarding + trust defaults) so the
+  // one-shot CLI starts clean in its fresh home.
+  POST_PROVISION_CONFIG[subAgentId]?.(home);
+  // The home sits inside the per-session subtree, so the whole-tree handoff
+  // covers it (docs/150).
+  chownSessionCredentialsTree(credentialsRoot, sessionId);
+}
+
+/**
+ * Close a spawn home: publish any rotation the sub-agent CLI performed back to
+ * the root the home was provisioned from (freshness-gated — see
+ * {@link syncSubAgentSpawnHomeTokenBack}), then delete the home. `accountId`
+ * MUST be the value the matching {@link provisionSubAgentSpawnHome} ran with;
+ * the pairing is what lets the write-back skip the session-subtree marker
+ * machinery entirely.
+ *
+ * Best-effort on both halves: a failed sync-back costs at worst a slightly
+ * older token on the next provision, and a failed removal is reclaimed by the
+ * container-create sweep in `ensureSessionCredentialsScaffold`.
+ */
+export function releaseSubAgentSpawnHome(
+  credentialsRoot: string,
+  sessionId: string,
+  spawnId: string,
+  subAgentId: AgentId,
+  accountId?: string,
+): void {
+  const home = subAgentSpawnHomeDir(credentialsRoot, sessionId, spawnId);
+  try {
+    syncSubAgentSpawnHomeTokenBack(credentialsRoot, sessionId, home, subAgentId, accountId);
+  } catch (err) {
+    console.warn(`[session-credentials] spawn-home token sync-back failed for ${subAgentId}:`, err);
+  }
+  try {
+    fs.rmSync(home, { recursive: true, force: true });
+  } catch {
+    // Best-effort — swept at the next container create.
+  }
 }

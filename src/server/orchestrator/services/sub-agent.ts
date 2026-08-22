@@ -77,9 +77,12 @@ import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
 import { projectConsultCardForWire } from "../transcript-projection.js";
 import {
   provisionSubAgentCredentials,
+  provisionSubAgentSpawnHome,
   provisionProviderAccountCredentials,
   releaseSubAgentCredentials,
+  releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
+  subAgentSpawnHomeContainerDir,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
 } from "../session-credentials.js";
@@ -452,24 +455,47 @@ export async function runSubAgent(
   let route = resolvedTarget.route ?? selection?.route ?? null;
   let accountId = route?.kind === "account" ? route.id : undefined;
 
-  // A same-provider spawn reuses the pinned agent's already-present credentials
-  // and provisions nothing. A cross-provider spawn provisions the other agent's
-  // subtree — only on a container runner (local mode is a no-op, docs/138).
+  // Credential provisioning happens only on a container runner (local mode is
+  // a no-op, docs/138), and its SHAPE depends on whether the spawn shares the
+  // session's own harness:
+  //
+  //  - **Same harness**: the spawn gets an ISOLATED per-spawn home
+  //    (`provisionSubAgentSpawnHome`) and the run carries its container path as
+  //    `homeDir`. Provisioning into the session subtree here is what caused the
+  //    2026-08-21 401 loop: the LIVE primary CLI re-reads the very credential
+  //    file the borrow swaps (docs/236 backgrounded consults left it running),
+  //    a cross-provider route (a GLM/z.ai flat key under the claude harness)
+  //    fails its next call, and the quiet auth retry kills the turn, cancels
+  //    the spawns, and replays into the same wall.
+  //  - **Cross harness**: the other agent's subtree in the session dir, as
+  //    before — the primary never reads those paths, so there is no collision.
+  //
+  // Captured ONCE, at admission, and used for both the provision and the
+  // release: the session row is mutable under a running turn, and the two
+  // halves disagreeing is worse than either answer.
   const isContainer = runner instanceof ContainerSessionRunner;
   const provisioned = isContainer && !!deps.credentialsDir;
   const credentialsDir = deps.credentialsDir;
-
-  const provisionAttempt = (): void => {
-    if (provisioned && credentialsDir) {
-      console.log(
-        `[sub-agent] provision-credentials session=${sessionId} agent=${subAgentId} account=${accountId ?? "flat"}`,
-      );
-      provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, accountId);
-    }
-  };
+  const sameHarness = subAgentId === session.agentId;
 
   const spawnId = randomUUID();
   const cardId = randomUUID();
+
+  const provisionAttempt = (): void => {
+    if (!provisioned || !credentialsDir) return;
+    if (sameHarness) {
+      console.log(
+        `[sub-agent] provision-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
+        + `account=${accountId ?? "flat"}`,
+      );
+      provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, subAgentId, accountId);
+      return;
+    }
+    console.log(
+      `[sub-agent] provision-credentials session=${sessionId} agent=${subAgentId} account=${accountId ?? "flat"}`,
+    );
+    provisionSubAgentCredentials(credentialsDir, sessionId, subAgentId, accountId);
+  };
   const startedAtMs = Date.now();
   // §7 — transient "Asking Codex…" spinner (live activity only) while in flight.
   // Kept for the live case (it renders pinned at the bottom of the transcript
@@ -643,6 +669,13 @@ export async function runSubAgent(
         prompt,
         spawnId,
         depth,
+        // The isolated per-spawn HOME a same-harness spawn was provisioned
+        // into, as the CONTAINER sees it — the worker hands it to the CLI so
+        // the run never reads (or writes) the session subtree the live
+        // primary is using.
+        ...(sameHarness && provisioned
+          ? { homeDir: subAgentSpawnHomeContainerDir(spawnId) }
+          : {}),
         // docs/261 reqs 5 + 7 — a reviewer and an explicit call both name a level
         // wherever the harness declares levels. Two cases legitimately do not: a
         // **role at Default** (docs/264 req 1), and an **explicit call on a
@@ -740,21 +773,35 @@ export async function runSubAgent(
         + `benched=${failedRoute.id} next=${fallback.route.id}`,
       );
       if (provisioned && credentialsDir) {
-        if (failedRoute.kind === "account") {
-          try {
-            syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedRoute.id);
-          } catch {
-            // Best-effort, matching the terminal sync below.
+        if (sameHarness) {
+          // The isolated home: publish the failed account's rotation back and
+          // clear the home; `provisionAttempt()` below rebuilds it from the
+          // fallback account's root under the same spawnId. No borrow, no
+          // marker — the session subtree was never touched.
+          releaseSubAgentSpawnHome(
+            credentialsDir,
+            sessionId,
+            spawnId,
+            subAgentId,
+            failedRoute.kind === "account" ? failedRoute.id : undefined,
+          );
+        } else {
+          if (failedRoute.kind === "account") {
+            try {
+              syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, failedRoute.id);
+            } catch {
+              // Best-effort, matching the terminal sync below.
+            }
           }
+          // The bare wipe, NOT `releaseSubAgentCredentials`: this failover swaps
+          // one borrowed account for another inside the SAME borrow, and ending
+          // it here would discard the session's own account — the thing the
+          // `finally` restores — and let the re-provision below capture the
+          // cleared marker instead (planning#445). The borrow deliberately stays
+          // open across the gap, which is also what keeps a session-route
+          // write-back refusing while the subtree has no marker at all.
+          removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
         }
-        // The bare wipe, NOT `releaseSubAgentCredentials`: this failover swaps
-        // one borrowed account for another inside the SAME borrow, and ending
-        // it here would discard the session's own account — the thing the
-        // `finally` restores — and let the re-provision below capture the
-        // cleared marker instead (planning#445). The borrow deliberately stays
-        // open across the gap, which is also what keeps a session-route
-        // write-back refusing while the subtree has no marker at all.
-        removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
       }
       route = fallback.route;
       accountId = route.kind === "account" ? route.id : undefined;
@@ -893,38 +940,50 @@ export async function runSubAgent(
     });
     throw err;
   } finally {
-    // §4 — token-sync-back THEN wipe, both targeting the same resolved account
-    // root. Runs on success, failure, crash, or cancel. Skipped for a
-    // same-provider spawn (no window opened) and in local mode.
+    // §4 — token-sync-back THEN wipe. Runs on success, failure, crash, or
+    // cancel; skipped in local mode. The same-harness spawn closes its ISOLATED
+    // home (sync-back to the account/flat root is inside the release, then the
+    // home is deleted) and leaves the session subtree alone — nothing was
+    // displaced, so there is nothing to restore and the primary's own
+    // credentials were never off disk. The cross-harness spawn closes the
+    // session-subtree borrow exactly as before.
     if (provisioned && credentialsDir) {
-      try {
-        if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, accountId);
-        else syncAgentTokenBack(credentialsDir, sessionId, subAgentId);
-      } catch {
-        // Best-effort: a failed sync-back at worst makes the next provision
-        // start from a slightly older token, which heals on its own refresh.
-      }
-      // A same-provider consult temporarily borrows the session's provider
-      // subtree while the primary is blocked waiting for it. Put the account it
-      // borrowed FROM back before the primary resumes — captured by the borrow
-      // itself, at the instant it overwrote the marker (planning#445): reading
-      // it here would find the consult's own account, and reading it before the
-      // spawn (what this used to do) could race a concurrent borrow's cleared
-      // window and restore nothing, stranding the session with no marker and
-      // every later rotation refused. Cross-provider runs touched a different
-      // subtree, so there is nothing to restore.
-      const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, subAgentId);
-      console.log(
-        `[sub-agent] wipe-credentials session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
-        + `account=${accountId ?? "flat"} restore=${restoreAccountId ?? "none"}`,
-      );
-      if (subAgentId === session.agentId && restoreAccountId) {
-        provisionProviderAccountCredentials(
-          credentialsDir,
-          sessionId,
-          subAgentId,
-          restoreAccountId,
+      if (sameHarness) {
+        releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId, subAgentId, accountId);
+        console.log(
+          `[sub-agent] release-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
+          + `account=${accountId ?? "flat"}`,
         );
+      } else {
+        try {
+          if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, subAgentId, accountId);
+          else syncAgentTokenBack(credentialsDir, sessionId, subAgentId);
+        } catch {
+          // Best-effort: a failed sync-back at worst makes the next provision
+          // start from a slightly older token, which heals on its own refresh.
+        }
+        // Close the borrow and put back whatever account it displaced —
+        // captured by the borrow itself, at the instant it overwrote the marker
+        // (planning#445): reading it here would find the consult's own account,
+        // and reading it before the spawn (what this used to do) could race a
+        // concurrent borrow's cleared window and restore nothing, stranding the
+        // session with no marker and every later rotation refused. The restore
+        // condition re-reads the session row deliberately: a session re-pinned
+        // onto this harness mid-consult is exactly the case that needs its
+        // account put back.
+        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, subAgentId);
+        console.log(
+          `[sub-agent] wipe-credentials session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
+          + `account=${accountId ?? "flat"} restore=${restoreAccountId ?? "none"}`,
+        );
+        if (subAgentId === session.agentId && restoreAccountId) {
+          provisionProviderAccountCredentials(
+            credentialsDir,
+            sessionId,
+            subAgentId,
+            restoreAccountId,
+          );
+        }
       }
     }
 

@@ -1977,3 +1977,58 @@ describe("service routing (docs/252 phase 3)", () => {
     }
   });
 });
+
+/**
+ * 2026-08-21 incident — a SAME-harness sub-agent spawn is pointed at an
+ * isolated per-spawn HOME (`AgentRunParams.homeDir`) so its credentials never
+ * displace the session subtree the live primary CLI re-reads mid-turn.
+ */
+describe("per-spawn homeDir (same-harness sub-agent isolation)", () => {
+  const spawnEnv = (): Record<string, string> =>
+    mockChildSpawn.mock.calls[0][2]?.env as Record<string, string>;
+
+  it("points the one-shot CLI's HOME at the isolated root", () => {
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as never);
+    mockChildSpawn.mockClear();
+    new ClaudeProcess().run({
+      prompt: "hi",
+      cwd: "/workspace",
+      homeDir: "/credentials/sub-agent-homes/spawn-1",
+    });
+    expect(spawnEnv().HOME).toBe("/credentials/sub-agent-homes/spawn-1");
+  });
+
+  it("outranks the constructor resolver and scrubs ambient env credentials", () => {
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as never);
+    mockChildSpawn.mockClear();
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-ambient";
+    try {
+      const proc = new ClaudeProcess(() => "/credentials/provider-accounts/claude/acct_1");
+      proc.run({
+        prompt: "hi",
+        cwd: "/workspace",
+        homeDir: "/credentials/sub-agent-homes/spawn-2",
+      });
+      const env = spawnEnv();
+      expect(env.HOME).toBe("/credentials/sub-agent-homes/spawn-2");
+      // The isolated home is a scoped home: an ambient key must not out-prefer
+      // the on-disk login provisioned into it (docs/150's scrub rule).
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    } finally {
+      if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prevKey;
+    }
+  });
+
+  it("keeps the resident streaming path on the resolver when no homeDir is given", () => {
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as never);
+    mockChildSpawn.mockClear();
+    const proc = new StreamingClaudeProcess(() => "/scoped/home");
+    proc.run({ prompt: "hi", cwd: "/workspace" });
+    expect(spawnEnv().HOME).toBe("/scoped/home");
+  });
+});
