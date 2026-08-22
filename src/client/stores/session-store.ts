@@ -50,6 +50,17 @@ export interface RewindRecovery {
 interface SessionState {
   sessionId: string | undefined;
   messages: ChatMessage[];
+  /**
+   * docs/280 — which `/history` payload the in-memory `messages` array was
+   * materialized from, or null once the array has been detached from any
+   * payload (a wholesale replace, a reset). Set by `loadSessionHistory`
+   * whenever it installs; cleared by `setMessages` on plain-array calls.
+   * A validated 304 skips the re-install iff this marker still names the
+   * payload the 304 validated — the ETag carries the server's change stamp
+   * and the sessionId guards the fork/rewind paths that switch sessions
+   * without clearing messages.
+   */
+  historyBaseline: { sessionId: string; etag: string | undefined } | null;
   isLoading: boolean;
   activity: StreamingActivity | undefined;
   /**
@@ -197,6 +208,9 @@ interface SessionState {
   setSessionId: (id: string | undefined) => void;
   setMessages: (
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
+  ) => void;
+  setHistoryBaseline: (
+    baseline: { sessionId: string; etag: string | undefined } | null,
   ) => void;
   appendMessage: (message: ChatMessage) => void;
   updateLastMessage: (updater: (msg: ChatMessage) => ChatMessage) => void;
@@ -360,6 +374,7 @@ const initialResettableState = {
   pendingIssueRef: undefined as { sessionId: string; ref: IssueRef } | undefined,
   quoteReplyText: undefined as string | undefined,
   historyLoaded: false,
+  historyBaseline: null as { sessionId: string; etag: string | undefined } | null,
   rescueState: null as RescueState | null,
   recoveryActionError: null as string | null,
   interruptError: null as string | null,
@@ -391,7 +406,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => ({
       messages:
         typeof messages === "function" ? messages(state.messages) : messages,
+      // A wholesale (plain-array) replace detaches the array from whatever
+      // payload it was materialized from, so the baseline marker no longer
+      // describes it (docs/280). Functional updates — appends, in-place
+      // edits — refine the same transcript and keep the marker valid.
+      ...(typeof messages === "function" ? {} : { historyBaseline: null }),
     })),
+
+  setHistoryBaseline: (historyBaseline) => set({ historyBaseline }),
 
   appendMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),

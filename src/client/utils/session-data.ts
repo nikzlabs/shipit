@@ -412,6 +412,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   const controller = new AbortController();
   inFlightHistoryLoad = { seq, controller };
   let data: HistoryResponse;
+<<<<<<< HEAD
   /**
    * The cache entry `data` came from, when there is one. Carried out of the
    * fetch so the install can memoize its materialization into it — see
@@ -420,6 +421,10 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
    * exactly the old behaviour: a fresh map, every load.
    */
   let cacheEntry: HistoryCacheEntry | undefined;
+=======
+  let etag: string | undefined;
+  let fromCache = false;
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
   // In parallel with the transcript, not after it — two independent conditional
   // GETs on one round trip's worth of latency. Failure is tolerated (`null`):
   // an unreachable file tree must never cost the user their transcript.
@@ -453,7 +458,12 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       // shares — a 304 re-installs the identical array of identical rows, which
       // no subscriber re-renders for.
       data = cached.data;
+<<<<<<< HEAD
       cacheEntry = cached;
+=======
+      etag = cached.etag;
+      fromCache = true;
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
       touch(historyCache, sessionId);
     } else {
       data = await res.json() as HistoryResponse;
@@ -461,8 +471,13 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       // correct degradation (an older server, a proxy that strips it, a test
       // double). Never cache without a tag — the tag is the only thing that
       // makes a later reuse safe.
+<<<<<<< HEAD
       const etag = res.headers?.get("etag");
       if (etag) cacheEntry = remember(historyCache, sessionId, etag, data);
+=======
+      etag = res.headers?.get("etag") ?? undefined;
+      if (etag) remember(historyCache, sessionId, etag, data);
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
     }
   } catch (err) {
     // A load we cancelled ourselves is not a failure. Return rather than throw,
@@ -482,6 +497,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     return;
   }
   const session = useSessionStore.getState();
+<<<<<<< HEAD
   /**
    * Install the persisted transcript, unconditionally (planning#467).
    *
@@ -505,6 +521,39 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
    * and the ordering test in this file's suite.
    */
   session.setMessages(materializeTranscript(data, cacheEntry));
+=======
+  // `inProgress` rides through to the ChatMessage: it marks the rows that
+  // belong to a still-running turn, which is exactly the set an attach-time
+  // `turn_snapshot` replaces (see `turn-snapshot.ts`). `streaming` stays the
+  // narrower "this bubble is being written to" flag the renderer uses.
+  //
+  // docs/280 — the install is conditional on the 304 path. A 304 just had the
+  // server certify the cached payload as the session's current transcript, so
+  // re-installing it wholesale is only needed when the in-memory array is no
+  // longer that payload's materialization (a switch, rewind or reset replaced
+  // or cleared it — `setMessages` detaches the baseline marker on such a
+  // replace). When the array still IS it, plus any live rows a running turn
+  // streamed since, the install would wipe those rows for a render until the
+  // attach-time `turn_snapshot` restores them — redundant work, and visibly
+  // disruptive. The card seeds below deliberately do NOT share this
+  // condition: they must run on every load, because the buffer replay that
+  // re-delivers card events happens on every attach regardless of the 304.
+  const baseline = session.historyBaseline;
+  const transcriptAlreadyInstalled =
+    fromCache &&
+    baseline !== null &&
+    baseline.sessionId === sessionId &&
+    baseline.etag === etag;
+  if (!transcriptAlreadyInstalled) {
+    session.setMessages(
+      data.messages.map((m) => ({
+        ...m,
+        streaming: m.inProgress ?? false,
+      } as unknown as ChatMessage)),
+    );
+    session.setHistoryBaseline({ sessionId, etag });
+  }
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
 
   // Rehydrate the four card stores from the persisted rows. Runs on every
   // completed load, `304` included, and deliberately does NOT share the

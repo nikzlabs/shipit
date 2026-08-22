@@ -634,6 +634,7 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
 });
 
 /**
+<<<<<<< HEAD
  * planning#467 — what a `304` install may and may not cost.
  *
  * The install itself is unconditional: it is the switch-back baseline restore,
@@ -680,12 +681,37 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     return Promise.resolve({ ok: true, status: 200, headers: new Headers({ etag }), json: () => Promise.resolve(body) });
   };
 
+=======
+ * docs/280 — a validated 304 must not clobber the live transcript. The 304
+ * certifies the cached payload is current, so re-installing it wholesale only
+ * wipes the rows a running turn streamed since the last load — until the
+ * attach-time `turn_snapshot` restores them. The install is now skipped when
+ * the in-memory array is still the cached payload's materialization, and the
+ * card seeds deliberately keep running on every load regardless.
+ */
+describe("loadSessionHistory — a validated 304 leaves the live transcript alone", () => {
+  let requests: { url: string; headers: Record<string, string>; cache?: string }[];
+  let etags: Record<string, string>;
+  let bodies: Record<string, { messages: Record<string, unknown>[]; commits: never[]; agentRunning: boolean }>;
+
+  const respond = (sessionId: string) => {
+    const ifNoneMatch = requests[requests.length - 1].headers["If-None-Match"];
+    if (ifNoneMatch === etags[sessionId]) {
+      return Promise.resolve({ ok: true, status: 304, headers: new Headers({ etag: etags[sessionId] }), json: () => { throw new Error("must not parse a 304"); } });
+    }
+    return Promise.resolve({ ok: true, status: 200, headers: new Headers({ etag: etags[sessionId] }), json: () => Promise.resolve(bodies[sessionId]) });
+  };
+
+  const texts = () => useSessionStore.getState().messages.map((m) => m.text);
+
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
   beforeEach(() => {
     useUiStore.getState().reset();
     useSessionStore.getState().reset();
     useGitStore.getState().reset();
     useFileStore.getState().reset();
     usePermissionStore.getState().reset();
+<<<<<<< HEAD
     useBugReportStore.getState().reset();
     useEgressPromptStore.getState().reset();
     useIssueWriteStore.getState().reset();
@@ -701,11 +727,23 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
       if (!url.includes("/history")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ tree: [] }) });
       requests.push({ headers: (init?.headers ?? {}) as Record<string, string> });
       return respond();
+=======
+    __resetHistoryCache();
+    requests = [];
+    etags = { s1: '"v1"' };
+    bodies = { s1: { messages: [{ role: "assistant", text: "ONE" }], commits: [], agentRunning: false } };
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (!url.includes("/history")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ tree: [] }) });
+      const sessionId = url.split("/")[3];
+      requests.push({ url, headers: (init?.headers ?? {}) as Record<string, string>, cache: init?.cache });
+      return respond(sessionId);
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
     }) as unknown as typeof fetch;
   });
 
   afterEach(() => { vi.restoreAllMocks(); __resetHistoryCache(); });
 
+<<<<<<< HEAD
   it("hands the store the identical array, so no subscriber re-renders", async () => {
     useSessionStore.getState().setSessionId("s1");
     await loadSessionHistory("s1");
@@ -778,13 +816,63 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     // deleted (req 5 asks for the guarantee, not for a sample of it).
     etag = '"cards"';
     body = {
+=======
+  it("keeps live rows streamed since the load when the transcript revalidates", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    expect(texts()).toEqual(["ONE"]);
+
+    // A running turn streams a row after the baseline install — a functional
+    // update, the same shape `handleAgentEvent` uses.
+    useSessionStore.getState().setMessages((prev) => [...prev, { role: "assistant", text: "LIVE" }]);
+
+    await loadSessionHistory("s1");
+    expect(requests[1].headers["If-None-Match"]).toBe('"v1"');
+    expect(texts()).toEqual(["ONE", "LIVE"]);
+  });
+
+  it("still materializes from the cache once the array is detached by a wholesale replace", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    // A rewind-complete style wholesale replace detaches the array from the
+    // payload it was materialized from.
+    useSessionStore.getState().setMessages([{ role: "user", text: "trimmed" }]);
+
+    await loadSessionHistory("s1");
+    expect(texts()).toEqual(["ONE"]);
+  });
+
+  it("installs for the incoming session after a fork-style switch that kept the outgoing rows", async () => {
+    // Both sessions answer with the SAME etag string — session stamps are not
+    // unique across sessions, so the marker must compare the session id too.
+    etags.s2 = '"v1"';
+    bodies.s2 = { messages: [{ role: "assistant", text: "S2" }], commits: [], agentRunning: false };
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    useSessionStore.getState().setSessionId("s2");
+    await loadSessionHistory("s2");
+    expect(texts()).toEqual(["S2"]);
+
+    // session-forked / SpawnedSessionCard set the session id WITHOUT clearing
+    // the outgoing rows. The 304 for s1 must not be mistaken for s2's baseline.
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    expect(texts()).toEqual(["ONE"]);
+  });
+
+  it("still re-seeds the card stores on a 304, over a replay-created draft, without touching the transcript", async () => {
+    bodies.s1 = {
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
       messages: [{
         role: "assistant",
         text: "ONE",
         permissionPrompt: { requestId: "r1", phase: "approved", toolName: "bash" },
+<<<<<<< HEAD
         bugReport: { cardId: "b1", phase: "filed", title: "t", body: "b", stage2Ran: true, producer: "session", issueNumber: 7 },
         egressPrompt: { cardId: "e1", phase: "approved", host: "example.com" },
         issueWrite: issueWriteCard("w1", "undone"),
+=======
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
       }],
       commits: [],
       agentRunning: false,
@@ -792,6 +880,7 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     useSessionStore.getState().setSessionId("s1");
     await loadSessionHistory("s1");
     expect(usePermissionStore.getState().cards.r1?.phase).toBe("approved");
+<<<<<<< HEAD
     expect(useBugReportStore.getState().cards.b1?.phase).toBe("filed");
     expect(useEgressPromptStore.getState().cards.e1?.phase).toBe("approved");
     expect(useIssueWriteStore.getState().cards.w1?.undoState).toBe("undone");
@@ -822,6 +911,30 @@ describe("loadSessionHistory — a validated 304 re-installs the same rows, not 
     expect(useBugReportStore.getState().cards.b1?.phase).toBe("filed");
     expect(useEgressPromptStore.getState().cards.e1?.phase).toBe("approved");
     expect(useIssueWriteStore.getState().cards.w1?.undoState).toBe("undone");
+=======
+
+    // The attach-time buffer replay re-delivered the permission card first and
+    // created a draft (non-clobbering upsert). A live row arrived too.
+    usePermissionStore.getState().upsertCard({ requestId: "r1", toolName: "bash" });
+    useSessionStore.getState().setMessages((prev) => [...prev, { role: "assistant", text: "LIVE" }]);
+
+    await loadSessionHistory("s1");
+    // The seed is authoritative and runs on the 304 path: the draft is
+    // overwritten by the persisted phase…
+    expect(usePermissionStore.getState().cards.r1?.phase).toBe("approved");
+    // …while the validated transcript stays put, live row included.
+    expect(texts()).toEqual(["ONE", "LIVE"]);
+  });
+
+  it("installs on a 304 after a full store reset cleared the baseline marker", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+
+    useSessionStore.getState().reset();
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    expect(texts()).toEqual(["ONE"]);
+>>>>>>> bc6f3c4d (The transcript survived every reconnect intact — the primes answer is streaming to completion, and no 304 truncated anyt)
   });
 });
 
