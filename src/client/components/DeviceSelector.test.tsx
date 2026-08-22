@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DeviceSelector } from "./DeviceSelector.js";
-import { DEVICE_PRESETS, findPresetById } from "./device-presets.js";
+import { DEVICE_PRESETS, findPresetById, customPresetFor } from "./device-presets.js";
 
 afterEach(() => {
   cleanup();
@@ -209,5 +209,46 @@ describe("DeviceSelector", () => {
     await waitFor(() => {
       expect(screen.queryByText("Phones")).not.toBeInTheDocument();
     });
+  });
+
+  it("shows the swapped dimensions as the trigger label for a rotated custom size", () => {
+    const custom = customPresetFor({ width: 500, height: 900 });
+    render(
+      <DeviceSelector
+        {...baseProps}
+        activePreset={custom}
+        customSize={{ width: 500, height: 900 }}
+        isLandscape
+      />,
+    );
+    // The applied (portrait) label says 500×900; the on-screen frame is
+    // rotated, so the trigger must report 900×500.
+    expect(screen.getByLabelText("Select device viewport")).toHaveTextContent("900×500");
+  });
+
+  it("prefills the custom inputs from the current custom size on every open", async () => {
+    const user = userEvent.setup();
+    const custom = customPresetFor({ width: 500, height: 900 });
+    const { rerender } = render(
+      <DeviceSelector {...baseProps} activePreset={custom} customSize={{ width: 500, height: 900 }} />,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(500);
+    expect(screen.getByLabelText("Custom height")).toHaveValue(900);
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Custom width")).not.toBeInTheDocument();
+    });
+
+    // The size changes while the menu is closed — e.g. a session switch
+    // restored a different viewport. The next open must reflect it, not the
+    // values last typed into the inputs.
+    const other = customPresetFor({ width: 720, height: 480 });
+    rerender(
+      <DeviceSelector {...baseProps} activePreset={other} customSize={{ width: 720, height: 480 }} />,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(720);
+    expect(screen.getByLabelText("Custom height")).toHaveValue(480);
   });
 });

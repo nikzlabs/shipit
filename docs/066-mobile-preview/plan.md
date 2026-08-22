@@ -80,6 +80,56 @@ setCustomSize: (size: { width: number; height: number } | null) => void;
 
 Persist the viewport selection in the preview store's per-session snapshot (`SessionPreviewSnapshot`) along with preview status and selected port. This keeps each session's mobile/responsive mode independent when switching sessions. The selection is not a global `localStorage` preference.
 
+#### Durable persistence across reloads
+
+The snapshot above is in-memory only, so a page reload used to drop the choice
+and forced the user to re-pick the device every reload — the exact loop
+(reload → check a breakpoint) this feature serves. The store now also mirrors
+the device state to localStorage under `shipit:preview-viewports`, keyed by
+sessionId (per-session scope, still not global):
+
+- `restoreSession(sessionId)` falls back to the mirror when no in-memory
+  snapshot exists (a fresh page load), and records the session as
+  `activeSessionId` — the key the device actions persist under.
+- `setDevicePreset` / `toggleLandscape` / `setCustomSize` write through to the
+  mirror for the active session. Returning to the defaults (Responsive,
+  portrait, no custom size) deletes the entry rather than remembering a no-op.
+- Loaded values are sanitized (localStorage is hand-editable): unknown preset
+  ids, non-boolean landscape, out-of-range dimensions, and a "custom" preset
+  without dimensions are dropped instead of restored.
+- The map is capped at 50 sessions, evicting least-recently-touched entries
+  first (writes re-insert at the end), matching `previewPaths`.
+- Leaving a preset ("Responsive") resets rotation, since rotation is a
+  property of a constrained frame; switching between presets keeps it, so
+  comparing devices in landscape works.
+
+### Consistency fixes
+
+- A rotated custom size reports its rotated dimensions in the selector's
+  trigger label (the applied preset label holds the portrait pair).
+- The custom inputs re-prefill from the applied size on every open (they live
+  in a child component that Radix's content unmount remounts; the previous
+  inline state kept stale values after a session switch or an apply elsewhere).
+- The custom preset is built by `customPresetFor()` in `device-presets.ts`,
+  so the selector and the persistence layer cannot drift in shape.
+
+### Verification harness
+
+End-to-end verification without an inner preview (local mode has none):
+`harness-server.ts` serves a responsive test page on :8080 that reports its
+own `innerWidth/innerHeight`, flips CSS breakpoints, and shows its UA;
+`src/client/mobile-preview-harness.html` + `mobile-preview-harness.tsx` mount
+the real `PreviewFrame` against that port and seed the store for session
+"harness" (reloading the page exercises the persistence restore). The page is
+served by the dev Vite server (root is `src/client`, which is why it lives
+there rather than in this folder); `vite build` only bundles `index.html`, so
+it never reaches the production output. Run:
+
+```bash
+npx tsx docs/066-mobile-preview/harness-server.ts   # :8080
+# then open /mobile-preview-harness.html through the dev service
+```
+
 ### Component structure
 
 ```
@@ -170,11 +220,16 @@ When the ShipIt UI itself is on a mobile viewport (`useIsMobile()`), the device 
 
 | File | Changes |
 |------|---------|
-| `src/client/stores/preview-store.ts` | Add device preset state, landscape toggle, custom size |
+| `src/client/stores/preview-store.ts` | Device preset state, landscape toggle, custom size, durable per-session localStorage persistence |
 | `src/client/components/PreviewFrame.tsx` | Add DeviceSelector, device frame wrapper, scaling logic |
-| `src/client/components/DeviceSelector.tsx` | New component — dropdown with presets |
+| `src/client/components/DeviceSelector.tsx` | Dropdown with presets, custom inputs, rotated-custom label |
+| `src/client/components/device-presets.ts` | Preset data, `customPresetFor()`, custom-size bounds |
+| `src/client/components/PreviewFrame/PreviewToolbar.tsx` | Device controls wiring, size + scale indicator |
 | `src/client/components/PreviewFrame.test.tsx` | Tests for device sizing, scaling, rotation |
-| `src/client/components/DeviceSelector.test.tsx` | Tests for preset selection, custom input |
+| `src/client/components/DeviceSelector.test.tsx` | Tests for preset selection, custom input, label swap, prefill |
+| `src/client/stores/preview-store.test.ts` | Store actions, snapshots, persistence round-trips |
+| `src/client/mobile-preview-harness.html` / `.tsx` | End-to-end harness mounting the real PreviewFrame |
+| `docs/066-mobile-preview/harness-server.ts` | Responsive test page for the harness |
 
 ## Non-goals (v1)
 

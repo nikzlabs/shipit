@@ -46,3 +46,17 @@
 - [x] `PreviewFrame.test.tsx` — scale factor computed correctly for small container
 - [x] Store tests — `setDevicePreset`, `toggleLandscape`, `setCustomSize` update state
 - [x] Store tests — per-session viewport snapshot round-trips correctly
+
+## Durable per-session persistence (docs/066 follow-up)
+
+- [x] Persist the viewport choice per session to localStorage (`shipit:preview-viewports`), restored on page reload when no in-memory snapshot exists
+- [x] Sanitize loaded entries (unknown preset id, non-boolean landscape, out-of-range/custom-without-dims sizes are dropped)
+- [x] MRU cap (50 sessions) with least-recently-touched eviction
+- [x] Return-to-defaults removes the stored entry; `reset()` clears only the active-session key
+- [x] Store tests — reload round-trip (named preset + custom), per-session scoping, corrupt-entry rejection, eviction, defaults-deletion, in-memory-snapshot-wins
+- [x] Leaving a preset ("Responsive") resets rotation; rotation persists across preset switches
+- [x] `DeviceSelector` — rotated custom size swaps the trigger label dimensions (agrees with the on-screen frame)
+- [x] `DeviceSelector` — custom inputs re-prefill from the applied size on every open (child component remounts with Radix's content unmount)
+- [x] `PreviewToolbar` — custom preset built by `customPresetFor()` (one builder everywhere)
+- [x] Component tests — rotated-custom trigger label, custom-input prefill on reopen
+- [x] End-to-end harness: `src/client/mobile-preview-harness.html` + `mobile-preview-harness.tsx` (mounts the real `PreviewFrame`) and `harness-server.ts` (responsive test page on :8080); verified in the running product via the dev service — preset, rotate, custom, scale %, reload persistence, breakpoint flip, UA untouched

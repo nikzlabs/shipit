@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { usePreviewStore } from "./preview-store.js";
-import { findPresetById } from "../components/device-presets.js";
+import { findPresetById, customPresetFor } from "../components/device-presets.js";
 
 describe("preview-store device viewport", () => {
   beforeEach(() => {
@@ -116,6 +116,147 @@ describe("preview-store device viewport", () => {
       expect(usePreviewStore.getState().customSize).toBeNull();
       expect(usePreviewStore.getState().getSnapshot("session-a")).toBeUndefined();
     });
+  });
+});
+
+describe("preview-store remembered device viewports", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    usePreviewStore.getState().reset();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  function stored(): Record<string, unknown> {
+    return JSON.parse(localStorage.getItem("shipit:preview-viewports") ?? "{}") as Record<string, unknown>;
+  }
+
+  it("restoreSession falls back to localStorage when no in-memory snapshot exists", () => {
+    usePreviewStore.getState().restoreSession("session-a");
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    usePreviewStore.getState().toggleLandscape();
+
+    // Fresh page load: the store is re-created, snapshots are gone.
+    usePreviewStore.getState().reset();
+    usePreviewStore.getState().restoreSession("session-a");
+
+    expect(usePreviewStore.getState().activeSessionId).toBe("session-a");
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
+    expect(usePreviewStore.getState().isLandscape).toBe(true);
+  });
+
+  it("round-trips a custom viewport through localStorage", () => {
+    usePreviewStore.getState().restoreSession("session-a");
+    usePreviewStore.getState().setCustomSize({ width: 500, height: 900 });
+    usePreviewStore.getState().setDevicePreset(customPresetFor({ width: 500, height: 900 }));
+
+    usePreviewStore.getState().reset();
+    usePreviewStore.getState().restoreSession("session-a");
+
+    expect(usePreviewStore.getState().devicePreset).toEqual({
+      id: "custom", label: "500×900", width: 500, height: 900, category: "custom",
+    });
+    expect(usePreviewStore.getState().customSize).toEqual({ width: 500, height: 900 });
+  });
+
+  it("keeps the choice scoped per session", () => {
+    usePreviewStore.getState().restoreSession("session-a");
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    usePreviewStore.getState().restoreSession("session-b");
+    usePreviewStore.getState().setDevicePreset(findPresetById("ipad-mini"));
+
+    usePreviewStore.getState().reset();
+    usePreviewStore.getState().restoreSession("session-a");
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
+    usePreviewStore.getState().restoreSession("session-b");
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("ipad-mini");
+  });
+
+  it("removes the entry when the selection returns to defaults", () => {
+    usePreviewStore.getState().restoreSession("session-a");
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    expect(Object.keys(stored())).toEqual(["session-a"]);
+
+    usePreviewStore.getState().setDevicePreset(null);
+    expect(stored()).toEqual({});
+    expect(usePreviewStore.getState().isLandscape).toBe(false);
+  });
+
+  it("clears rotation when leaving a preset, keeps it across preset switches", () => {
+    usePreviewStore.getState().restoreSession("session-a");
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    usePreviewStore.getState().toggleLandscape();
+    usePreviewStore.getState().setDevicePreset(findPresetById("ipad-mini"));
+    expect(usePreviewStore.getState().isLandscape).toBe(true);
+
+    usePreviewStore.getState().setDevicePreset(null);
+    expect(usePreviewStore.getState().isLandscape).toBe(false);
+  });
+
+  it("does not persist while no session is active", () => {
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    expect(localStorage.getItem("shipit:preview-viewports")).toBeNull();
+  });
+
+  it("drops corrupt entries on load instead of restoring them", () => {
+    localStorage.setItem("shipit:preview-viewports", JSON.stringify({
+      "bad-preset": { presetId: "nonexistent", landscape: false, custom: null },
+      "bad-landscape": { presetId: "iphone-16", landscape: "yes", custom: null },
+      "custom-without-dims": { presetId: "custom", landscape: false, custom: null },
+      "oversized-custom": { presetId: "custom", landscape: false, custom: { width: 99999, height: 900 } },
+      ok: { presetId: "iphone-16", landscape: true, custom: null },
+    }));
+    for (const id of ["bad-preset", "bad-landscape", "custom-without-dims", "oversized-custom"]) {
+      usePreviewStore.getState().restoreSession(id);
+      expect(usePreviewStore.getState().devicePreset).toBeNull();
+      expect(usePreviewStore.getState().isLandscape).toBe(false);
+    }
+    usePreviewStore.getState().restoreSession("ok");
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
+    expect(usePreviewStore.getState().isLandscape).toBe(true);
+  });
+
+  it("evicts the least-recently-touched session past the cap", () => {
+    usePreviewStore.getState().restoreSession("s0");
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    for (let i = 1; i < 51; i++) {
+      usePreviewStore.getState().restoreSession(`s${i}`);
+      usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    }
+    expect(Object.keys(stored())).toHaveLength(50);
+    expect(stored().s0).toBeUndefined();
+
+    // Re-touching s1 makes it most recent, so the next write evicts s2.
+    usePreviewStore.getState().restoreSession("s1");
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    usePreviewStore.getState().restoreSession("s51");
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    expect(Object.keys(stored())).toHaveLength(50);
+    expect(stored().s1).toBeDefined();
+    expect(stored().s2).toBeUndefined();
+  });
+
+  it("an in-memory snapshot wins over the localStorage mirror", () => {
+    usePreviewStore.getState().restoreSession("session-b");
+    usePreviewStore.getState().setDevicePreset(findPresetById("iphone-16"));
+    // resumeSessionInternal snapshots the outgoing session on switch-away.
+    usePreviewStore.getState().snapshotSession("session-b");
+    // Defaults while away — the mirror entry is deleted, the snapshot is not.
+    usePreviewStore.getState().setDevicePreset(null);
+    expect(stored()["session-b"]).toBeUndefined();
+
+    usePreviewStore.getState().restoreSession("session-a");
+    usePreviewStore.getState().restoreSession("session-b");
+    expect(usePreviewStore.getState().devicePreset?.id).toBe("iphone-16");
+  });
+
+  it("reset clears the active session key", () => {
+    usePreviewStore.getState().restoreSession("session-a");
+    expect(usePreviewStore.getState().activeSessionId).toBe("session-a");
+    usePreviewStore.getState().reset();
+    expect(usePreviewStore.getState().activeSessionId).toBeNull();
   });
 });
 

@@ -1,7 +1,13 @@
 import { create } from "zustand";
 import { getLocalStorageObject } from "../utils/local-storage.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
-import type { DevicePreset } from "../components/device-presets.js";
+import {
+  findPresetById,
+  customPresetFor,
+  CUSTOM_SIZE_MIN,
+  CUSTOM_SIZE_MAX,
+  type DevicePreset,
+} from "../components/device-presets.js";
 import type {
   ComposeServiceStatus,
   ComposeServicePreviewMode,
@@ -185,6 +191,13 @@ interface PreviewState {
   isLandscape: boolean;
   /** Custom user-entered viewport size (separate from named presets). */
   customSize: { width: number; height: number } | null;
+  /**
+   * The session the current device state belongs to — the one `restoreSession`
+   * last restored. Bookkeeping, not session content: it keys the per-session
+   * localStorage mirror of the viewport choice (survives page reloads), and is
+   * never part of `SessionPreviewSnapshot`.
+   */
+  activeSessionId: string | null;
 
   /** Saved preview state per session, keyed by sessionId. */
   sessionSnapshots: Record<string, SessionPreviewSnapshot>;
@@ -421,9 +434,121 @@ function savePreviewPaths(paths: Record<string, string>): void {
   try { localStorage.setItem(PREVIEW_PATHS_KEY, JSON.stringify(paths)); } catch { /* ignore */ }
 }
 
+// ---- Remembered device viewports (per session, across page reloads) ----
+//
+// The device choice is session-scoped (each project has its own), which is why
+// it lives in `SessionPreviewSnapshot` for switches. A snapshot is in-memory
+// only, so a page reload dropped the choice and every reload forced the user to
+// re-pick the device — the exact loop (reload → check a breakpoint) this
+// feature serves. This localStorage mirror, keyed by sessionId, survives
+// reloads without making the choice global (docs/066 "per-session, not a
+// global preference").
+
+const VIEWPORTS_KEY = "shipit:preview-viewports";
+
+/**
+ * Cap on how many session→viewport entries we remember. One entry per session
+ * the user has picked a device in, so this bounds growth across a long-lived
+ * session list. Eviction is by insertion order (oldest first) — writes re-insert
+ * at the end, so least-recently-touched sessions age out first, like
+ * `previewPaths`.
+ */
+const MAX_REMEMBERED_VIEWPORTS = 50;
+
+interface StoredDeviceViewport {
+  /** Preset id from DEVICE_PRESETS, "custom", or null for "Responsive". */
+  presetId: string | null;
+  landscape: boolean;
+  /** Dimensions of the last applied freeform size, or null. */
+  custom: { width: number; height: number } | null;
+}
+
+/**
+ * Narrow a parsed-but-untrusted localStorage value (hand-editable) to a
+ * `StoredDeviceViewport`, or `null` if it can't be safely restored. A "custom"
+ * preset without usable dimensions cannot be rebuilt and is dropped; the
+ * dimensions are clamped to the same bounds the size inputs enforce.
+ */
+function parseStoredViewport(raw: unknown): StoredDeviceViewport | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const { presetId, landscape, custom } = record;
+  if (presetId !== null && typeof presetId !== "string") return null;
+  if (typeof landscape !== "boolean") return null;
+  if (presetId !== null && presetId !== "custom" && !findPresetById(presetId)) return null;
+  if (custom === null) {
+    // A custom preset without dimensions cannot be rebuilt (the label, width
+    // and height are all derived from them).
+    if (presetId === "custom") return null;
+    return { presetId, landscape, custom: null };
+  }
+  if (typeof custom !== "object" || Array.isArray(custom)) return null;
+  const dims = custom as Record<string, unknown>;
+  const width = typeof dims.width === "number" ? dims.width : Number.NaN;
+  const height = typeof dims.height === "number" ? dims.height : Number.NaN;
+  if (
+    !Number.isFinite(width) || !Number.isFinite(height) ||
+    width < CUSTOM_SIZE_MIN || width > CUSTOM_SIZE_MAX ||
+    height < CUSTOM_SIZE_MIN || height > CUSTOM_SIZE_MAX
+  ) return null;
+  return { presetId, landscape, custom: { width, height } };
+}
+
+function loadViewportMap(): Record<string, StoredDeviceViewport> {
+  return getLocalStorageObject<Record<string, StoredDeviceViewport>>(VIEWPORTS_KEY, {}, (parsed) => {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, StoredDeviceViewport> = {};
+    const entries = Object.entries(parsed as Record<string, unknown>).slice(-MAX_REMEMBERED_VIEWPORTS);
+    for (const [sessionId, value] of entries) {
+      if (!sessionId) continue;
+      const stored = parseStoredViewport(value);
+      if (stored) out[sessionId] = stored;
+    }
+    return out;
+  });
+}
+
+function saveViewportMap(map: Record<string, StoredDeviceViewport>): void {
+  try { localStorage.setItem(VIEWPORTS_KEY, JSON.stringify(map)); } catch { /* ignore */ }
+}
+
+/**
+ * Write the device state under `sessionId` so a reload restores it. The fully
+ * default state ("Responsive", portrait, no custom size) removes the entry
+ * rather than remembering a no-op, so a session the user never configured a
+ * device for costs nothing. Re-writes re-insert at the end for MRU eviction.
+ */
+function persistViewportFor(
+  sessionId: string,
+  state: Pick<PreviewState, "devicePreset" | "isLandscape" | "customSize">,
+): void {
+  const map = loadViewportMap();
+  const { [sessionId]: current, ...rest } = map;
+  if (!state.devicePreset && !state.isLandscape && !state.customSize) {
+    if (current === undefined) return; // nothing stored, nothing to delete — skip the write
+    saveViewportMap(rest);
+    return;
+  }
+  const entries = Object.entries(rest);
+  const kept = entries.length >= MAX_REMEMBERED_VIEWPORTS
+    ? entries.slice(entries.length - MAX_REMEMBERED_VIEWPORTS + 1)
+    : entries;
+  // Spread first, then append: object key order is insertion order, so this
+  // re-inserts `sessionId` last (most recent).
+  saveViewportMap({
+    ...Object.fromEntries(kept),
+    [sessionId]: {
+      presetId: state.devicePreset?.id ?? null,
+      landscape: state.isLandscape,
+      custom: state.customSize,
+    },
+  });
+}
+
 const initialState = {
   ...initialSessionState,
   autoFixEnabled: false,
+  activeSessionId: null,
   servicesDrawerExpanded: loadServicesDrawerExpanded(),
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
   previewPaths: loadPreviewPaths(),
@@ -511,11 +636,35 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   setPreviewProxyError: (previewProxyError) => set({ previewProxyError }),
 
   setDevicePreset: (devicePreset) =>
-    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null }),
+    set((state) => {
+      const next = {
+        devicePreset,
+        customSize: devicePreset?.category === "custom" ? state.customSize : null,
+        // Rotation is a property of a constrained frame; it means nothing for
+        // "Responsive" (fill), and leaving it set would silently pre-rotate
+        // the next preset the user picks.
+        isLandscape: devicePreset === null ? false : state.isLandscape,
+      };
+      if (state.activeSessionId) persistViewportFor(state.activeSessionId, next);
+      return next;
+    }),
 
-  toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
+  toggleLandscape: () =>
+    set((state) => {
+      const isLandscape = !state.isLandscape;
+      if (state.activeSessionId) {
+        persistViewportFor(state.activeSessionId, { ...state, isLandscape });
+      }
+      return { isLandscape };
+    }),
 
-  setCustomSize: (customSize) => set({ customSize }),
+  setCustomSize: (customSize) =>
+    set((state) => {
+      if (state.activeSessionId) {
+        persistViewportFor(state.activeSessionId, { ...state, customSize });
+      }
+      return { customSize };
+    }),
 
   setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 
@@ -560,10 +709,26 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     // A pointer's destination describes one session and is cancelled by leaving
     // it (docs/258) — it is never part of the restored snapshot.
     if (snap) {
-      set({ ...snap, previewLinkIntent: null });
+      set({ ...snap, activeSessionId: sessionId, previewLinkIntent: null });
     } else {
       resetDedupState();
-      set({ ...initialSessionState, previewLinkIntent: null });
+      // The in-memory snapshot holds viewport state across switches; the
+      // localStorage mirror holds it across reloads. Both are per-session, so a
+      // fresh page load (no snapshot) falls back to what was last picked for
+      // this session instead of back to "Responsive".
+      const stored = loadViewportMap()[sessionId];
+      const device = stored
+        ? {
+          devicePreset: stored.presetId === null
+            ? null
+            : stored.presetId === "custom"
+              ? (stored.custom ? customPresetFor(stored.custom) : null)
+              : findPresetById(stored.presetId),
+          isLandscape: stored.landscape,
+          customSize: stored.custom,
+        }
+        : null;
+      set({ ...initialSessionState, ...(device ?? {}), activeSessionId: sessionId, previewLinkIntent: null });
     }
   },
 

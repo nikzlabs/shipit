@@ -10,6 +10,7 @@ import { Button, buttonVariants } from "../ui/button.js";
 import { cn } from "../../utils/cn.js";
 import { StatusDot } from "../ui/status-dot.js";
 import { DeviceSelector } from "../DeviceSelector.js";
+import { customPresetFor } from "../device-presets.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
 import { usePreviewToolbarCollapse } from "../../hooks/usePreviewToolbarCollapse.js";
 import { PreviewPath } from "./PreviewPath.js";
@@ -225,13 +226,7 @@ export function PreviewToolbar({
               onToggleLandscape={toggleLandscape}
               onCustomSize={(width, height) => {
                 setCustomSize({ width, height });
-                setDevicePreset({
-                  id: "custom",
-                  label: `${width}×${height}`,
-                  width,
-                  height,
-                  category: "custom",
-                });
+                setDevicePreset(customPresetFor({ width, height }));
               }}
             />
             {deviceFrameActive && (
