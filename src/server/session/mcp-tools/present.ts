@@ -32,6 +32,14 @@ const TOOL_DESCRIPTION = [
   "Present tab; the path's location is the only difference.",
   "The MIME type is inferred from the file extension (.html, .svg, .md, .png,",
   ".jpg, .gif, .webp); pass `mimeType` only to override it.",
+  "Pass `inline: true` for something SMALL the user should see while reading the",
+  "reply — a thumbnail, a small chart, a short rendered table, a compact HTML",
+  "widget. It renders as a card in the conversation itself AND still appears in",
+  "the Present tab. Everything else is identical: same file argument, same MIME",
+  "inference, same path identity (re-presenting the same file inline updates the",
+  "card already in the transcript rather than adding a second one). Leave it off",
+  "for anything the user needs room to study — a full mockup, a large diagram, a",
+  "long rendered doc — those belong in the Present tab alone.",
   "Returns `{ status, viewUrl }`. To verify how the artifact actually",
   "renders, navigate your browser to `viewUrl` and screenshot it — do NOT open",
   "the file directly, because `viewUrl` applies the same rendering the user",
@@ -60,6 +68,11 @@ const inputSchema = {
       description:
         "Short human-friendly name for the artifact, shown as the heading in the Present tab above the file path (e.g. 'Architecture Diagram', 'Sales Chart v2'). Optional — without it the header falls back to the file's name.",
     },
+    inline: {
+      type: "boolean",
+      description:
+        "Also render the artifact as a card inside the chat conversation, not only in the Present tab. Use it for SMALL artifacts the user should see while reading the reply; leave it off for anything that needs room to study. The card is bounded in height and the artifact still appears in the Present tab. Defaults to false.",
+    },
   },
   required: ["file"],
 };
@@ -77,7 +90,9 @@ const INSTRUCTIONS = [
   "survives a restart, or into the workspace to keep it tracked), then call",
   "`present` with the file path. Each call presents one file and multiple",
   "presentations coexist in the tab, so to show several artifacts at once call",
-  "`present` once per file.",
+  "`present` once per file. Add `inline: true` for a SMALL artifact the user",
+  "should see while reading the reply — it renders as a card in the conversation",
+  "itself and still appears in the Present tab.",
 ].join(" ");
 
 export const presentTool: ToolDescriptor = {
@@ -91,6 +106,7 @@ export const presentTool: ToolDescriptor = {
       file?: string;
       mimeType?: string;
       title?: string;
+      inline?: boolean;
     };
     try {
       const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
@@ -100,6 +116,7 @@ export const presentTool: ToolDescriptor = {
           file: a.file,
           mimeType: a.mimeType,
           title: a.title,
+          inline: a.inline === true,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as {

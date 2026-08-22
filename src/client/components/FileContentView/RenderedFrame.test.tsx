@@ -81,4 +81,40 @@ describe("RenderedFrame — fragment scrolling", () => {
     expect(screen.getByTitle("Rendered content").getAttribute("srcdoc"))
       .not.toContain("scrollIntoView");
   });
+
+  // docs/280 — the inline chat card has to SIZE the frame, and the frame is on an
+  // opaque origin, so the document reports its own height.
+  describe("height reporting", () => {
+    function srcDocFor(props: { kind: "html" | "svg"; reportHeight?: boolean }) {
+      const { unmount } = render(
+        <RenderedFrame kind={props.kind} content="<p>hi</p>" reportHeight={props.reportHeight} />,
+      );
+      const html = screen.getByTitle("Rendered content").getAttribute("srcdoc") ?? "";
+      unmount();
+      return html;
+    }
+
+    it("is off by default — the tab and the dialog size the frame themselves", () => {
+      expect(srcDocFor({ kind: "html" })).not.toContain("content_height");
+      expect(srcDocFor({ kind: "svg" })).not.toContain("content_height");
+    });
+
+    it("measures the BODY box, never documentElement.scrollHeight", () => {
+      const html = srcDocFor({ kind: "html", reportHeight: true });
+      expect(html).toContain("content_height");
+      // The bug a browser check caught: `scrollHeight` is max(content, viewport),
+      // so a one-line artifact in a 220px frame reported 220 and could never
+      // shrink to fit. The body's box is independent of the frame it sits in.
+      expect(html).toContain("document.body");
+      expect(html).toContain("getBoundingClientRect");
+      expect(html).not.toContain("document.documentElement.scrollHeight)");
+    });
+
+    it("drops the viewport-height SVG host, which would echo the frame back", () => {
+      // Without this, `svg` measures 100vh — whatever the embedder last set —
+      // and the height can only ever grow.
+      expect(srcDocFor({ kind: "svg", reportHeight: true })).not.toContain("100vh");
+      expect(srcDocFor({ kind: "svg" })).toContain("100vh");
+    });
+  });
 });

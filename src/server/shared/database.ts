@@ -1493,6 +1493,32 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "session_settings_change")) return;
     db.exec("ALTER TABLE messages ADD COLUMN session_settings_change TEXT");
   },
+  // docs/280 — the "inline presentation" transcript card: an artifact the agent
+  // showed with `present({ inline: true })`, rendered in the conversation rather
+  // than only in the Present tab. The card arrives off the present SSE stream and
+  // is recorded in-band via emitChatCard; without this column it renders live but
+  // vanishes on the next loadSessionHistory, which rebuilds from the DB. The card
+  // is immutable (no lifecycle), so the column is written once on emit and never
+  // patched — a re-present refreshes the artifact, not the row.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "present_inline")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN present_inline TEXT");
+  },
+  // docs/280 — which presentations have a transcript card. This is what makes the
+  // card emit exactly ONCE per artifact: the screenshot loop re-presents the same
+  // path repeatedly, and every one of those re-presents must refresh the existing
+  // card rather than append a duplicate showing identical bytes. It lives beside
+  // the presentation (not in the messages table) because the question the emit
+  // path asks is "does this ARTIFACT already have a card?", and because the row
+  // outlives a container restart — a restarted worker's registry is empty, so an
+  // in-memory marker would re-emit the card the first time the file is presented
+  // again.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(presentations)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "inline")) return;
+    db.exec("ALTER TABLE presentations ADD COLUMN inline INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /**

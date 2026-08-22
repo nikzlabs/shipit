@@ -117,6 +117,7 @@ import type {
   WsReleaseCard,
   WsSubAgentConsultCard,
   WsActionChecklistCard,
+  WsPresentInlineCard,
   WsBranchAutoResetCard,
   WsBranchSyncedCard,
   WsSessionRenamedCard,
@@ -155,6 +156,7 @@ export type WsServerMessage =
   | WsReleaseCard
   | WsSubAgentConsultCard
   | WsActionChecklistCard
+  | WsPresentInlineCard
   | WsBranchAutoResetCard
   | WsBranchSyncedCard
   | WsSessionRenamedCard

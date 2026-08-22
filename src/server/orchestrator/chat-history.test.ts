@@ -64,6 +64,13 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     headSha: "abc12345",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  presentInline: {
+    presentId: "pres_0123456789abcdef0123456789abcdef",
+    filePath: "/persist/chart.svg",
+    mimeType: "image/svg+xml",
+    title: "Latency by region",
+    createdAt: "2026-08-22T00:00:00.000Z",
+  },
   branchAutoReset: {
     cardId: "bar1",
     base: "main",

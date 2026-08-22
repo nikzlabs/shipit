@@ -30,6 +30,7 @@ import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { PresentStore } from "./present-store.js";
+import { emitChatCard, type InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../shared/sub-agent-run.js";
@@ -214,6 +215,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   private readonly _presentStore: PresentStore | undefined;
 
+  /**
+   * docs/280 — where an inline presentation's transcript card is persisted.
+   * Optional for the same reason `_presentStore` is: tests construct runners
+   * without it, and without it an inline present still reaches the Present tab —
+   * only the chat card is skipped, rather than shipping emit-only (which the
+   * card-persistence invariant forbids outright).
+   */
+  private readonly _chatHistoryManager: InProgressPersister | undefined;
+
   // Compose service management
   private _serviceManager: ServiceManager | null = null;
   private _serviceManagerListeners: (() => void)[] = [];
@@ -328,6 +338,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     defaultAgentId: AgentId;
     workerUrl: string;
     presentStore?: PresentStore;
+    chatHistoryManager?: InProgressPersister;
   }) {
     super();
     this.sessionId = opts.sessionId;
@@ -335,6 +346,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this._agentId = opts.defaultAgentId;
     this.workerUrl = opts.workerUrl;
     this._presentStore = opts.presentStore;
+    this._chatHistoryManager = opts.chatHistoryManager;
     // Seed the presentation cache from durable storage (docs/093) so a runner
     // created for a freshly restarted container replays the session's
     // presentations via `present_state` on viewer attach. Metadata only — the
@@ -2690,6 +2702,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             // orchestrator can persist it and re-register the artifact with a
             // freshly-started worker after a container restart.
             resolvedPath?: string;
+            /** docs/280 — also render this artifact as a chat transcript card. */
+            inline?: boolean;
           };
           if (
             typeof evt.presentId === "string"
@@ -2702,13 +2716,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               ...(evt.title !== undefined ? { title: evt.title } : {}),
               filePath: evt.filePath,
               createdAt: evt.createdAt ?? new Date().toISOString(),
+              ...(evt.inline === true ? { inline: true } : {}),
             };
             this.cachePresentation(entry);
             // Persist durably so the Present tab survives a container restart.
             // resolvedPath is required to re-serve bytes later; skip persistence
             // if a (legacy) worker didn't send it — the in-memory cache still works.
+            let inlineCardIsNew = false;
             if (this._presentStore && typeof evt.resolvedPath === "string") {
-              this._presentStore.record({
+              ({ inlineCardIsNew } = this._presentStore.record({
                 presentId: entry.presentId,
                 sessionId: this.sessionId,
                 filePath: entry.filePath,
@@ -2716,7 +2732,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
                 mimeType: entry.mimeType,
                 createdAt: entry.createdAt,
                 ...(entry.title !== undefined ? { title: entry.title } : {}),
-              });
+                ...(entry.inline ? { inline: true } : {}),
+              }));
             }
             this.emitMessage({
               type: "present_content",
@@ -2726,7 +2743,30 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               ...(entry.title !== undefined ? { title: entry.title } : {}),
               filePath: entry.filePath,
               createdAt: entry.createdAt,
+              ...(entry.inline ? { inline: true } : {}),
             });
+            // docs/280 — the transcript card, emitted EXACTLY once per artifact.
+            // The `present_content` above updates the carousel on every present;
+            // this fires only on the transition to inline, which the store
+            // computes inside the same write that flips the flag. A later
+            // re-present refreshes the artifact the card already renders, so the
+            // screenshot loop updates the card in place instead of stacking
+            // copies that all show identical bytes.
+            if (inlineCardIsNew && this._chatHistoryManager) {
+              const card = {
+                presentId: entry.presentId,
+                filePath: entry.filePath,
+                mimeType: entry.mimeType,
+                ...(entry.title !== undefined ? { title: entry.title } : {}),
+                createdAt: entry.createdAt,
+              };
+              emitChatCard(
+                this,
+                { type: "present_inline_card", sessionId: this.sessionId, card },
+                { role: "assistant", text: "", presentInline: card },
+                { chatHistoryManager: this._chatHistoryManager, sessionId: this.sessionId },
+              );
+            }
           }
           break;
         }
