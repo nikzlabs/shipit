@@ -12,4 +12,4 @@
       `/history` load 200 with `ETag "Eb_jSDk459tkOL-OzsC8vJjPI0E"`; SPA
       switch-away-and-back sent `If-None-Match` and got `304`; after the 304 the
       transcript rendered whole and the bug card rendered `filed` (#4242), not a draft
-- [ ] PR open with `Refs planning#467`
+- [x] PR open with `Refs planning#467`
