@@ -209,8 +209,10 @@ export class OpencodeAdapter
 
     // Env discipline (order is load-bearing, same as claude/process.ts): HOME
     // first, then the credential scrub, then service delivery — the scrub
-    // deletes the very variable the delivery writes.
-    const scopedHome = this.resolveHome?.();
+    // deletes the very variable the delivery writes. A per-spawn `homeDir` (a
+    // same-harness sub-agent's isolated credential root) outranks the
+    // constructor-injected resolver.
+    const scopedHome = params.homeDir ?? this.resolveHome?.();
     const home = resolveAgentHome(scopedHome);
     // `$HOME/.local/share/opencode` is a symlink into the credentials tree in
     // every image, and OpenCode's bootstrap mkdir dies EEXIST on it while the

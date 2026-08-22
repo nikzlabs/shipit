@@ -13,6 +13,9 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { OpencodeAdapter } from "./adapter.js";
 import type { AgentEvent, AgentRunParams } from "../agent-process.js";
@@ -357,6 +360,32 @@ describe("OpencodeAdapter", () => {
     expect(spawnEnv.OPENCODE_PROVIDER_API_KEY).toBe("sk-zen-secret");
     expect(spawnEnv.OPENCODE_API_KEY).toBeUndefined();
     child.close(0);
+  });
+
+  // 2026-08-21 incident — a same-harness sub-agent spawn's isolated per-spawn
+  // HOME (`AgentRunParams.homeDir`) outranks the constructor resolver, so the
+  // CLI's XDG data root (auth.json + session store) resolves inside it instead
+  // of the session subtree the live primary reads.
+  it("prefers a per-spawn homeDir over the resolver for the CLI's HOME", () => {
+    // A real, writable dir: run() materializes `$HOME/.local/share/opencode`.
+    const spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "oc-spawn-home-"));
+    try {
+      let spawnEnv: Record<string, string> = {};
+      const child = new FakeChild();
+      const adapter = new OpencodeAdapter({
+        resolveHome: () => "/credentials/provider-accounts/opencode/acct-a",
+        spawnFn: (_cmd, _args, opts) => {
+          spawnEnv = (opts?.env ?? {}) as Record<string, string>;
+          return child as unknown as ChildProcess;
+        },
+      });
+      adapter.run({ ...RUN_PARAMS, homeDir: spawnHome });
+      expect(spawnEnv.HOME).toBe(spawnHome);
+      expect(fs.existsSync(path.join(spawnHome, ".local", "share", "opencode"))).toBe(true);
+      child.close(0);
+    } finally {
+      fs.rmSync(spawnHome, { recursive: true, force: true });
+    }
   });
 
   it("refuses to spawn against routing it cannot express, instead of misrouting", () => {

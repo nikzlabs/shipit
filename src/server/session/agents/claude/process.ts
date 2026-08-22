@@ -212,6 +212,14 @@ export interface ClaudeRunOptions {
    */
   serviceRouting?: ServiceRouting;
   /**
+   * Per-spawn HOME override — a same-harness sub-agent spawn's isolated
+   * credential root (see `AgentRunParams.homeDir`). Takes precedence over the
+   * constructor-injected `resolveHome`, and like a scoped home it triggers the
+   * env credential scrub so an ambient key can't out-prefer the root's own
+   * on-disk login.
+   */
+  homeDir?: string;
+  /**
    * docs/217 — reasoning effort passed as `--effort <level>`. Valid levels:
    * low, medium, high, xhigh, max (validated server-side against the agent's
    * option set). Omitted → the model's adaptive default.
@@ -396,7 +404,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting, homeDir } = opts;
     // New turn — this process is one-shot, but reset explicitly so the latch's
     // scope is stated at the turn boundary rather than inferred from lifetime.
     this.authRaisedThisTurn = false;
@@ -542,8 +550,9 @@ export class ClaudeProcess extends EventEmitter {
     // home overrides both in local mode, where it points at the provider
     // account this session was routed to (there is no per-session credentials
     // mount to make the process-global home account-correct). Resolved once
-    // per spawn, never at construction.
-    const scopedHome = this.resolveHome?.();
+    // per spawn, never at construction. A per-spawn `homeDir` (a same-harness
+    // sub-agent's isolated credential root) outranks both.
+    const scopedHome = homeDir ?? this.resolveHome?.();
     const spawnEnv: Record<string, string> = {
       ...process.env,
       HOME: resolveAgentHome(scopedHome),
@@ -868,7 +877,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   }
 
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, guardDestructiveGit, permissionPromptTool, serviceRouting, homeDir } = opts;
 
     // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
     // `mcp__playwright__*` in both lists (planning#130; docs/125, docs/149).
@@ -918,8 +927,9 @@ export class StreamingClaudeProcess extends EventEmitter {
     // home overrides both in local mode, where it points at the provider
     // account this session was routed to (there is no per-session credentials
     // mount to make the process-global home account-correct). Resolved once
-    // per spawn, never at construction.
-    const scopedHome = this.resolveHome?.();
+    // per spawn, never at construction. A per-spawn `homeDir` (a same-harness
+    // sub-agent's isolated credential root) outranks both.
+    const scopedHome = homeDir ?? this.resolveHome?.();
     const spawnEnv: Record<string, string> = {
       ...process.env,
       HOME: resolveAgentHome(scopedHome),

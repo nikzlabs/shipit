@@ -37,6 +37,7 @@ import {
   ensureSessionCredentialsScaffold,
   perSessionCredentialsDir,
   perSessionCredentialsSubpath,
+  sweepSubAgentSpawnHomes,
 } from "./session-credentials.js";
 import { assertOverlayVolumesMatch, createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import {
@@ -1013,6 +1014,12 @@ export async function createContainer(
   // a non-writable credentials dir (e.g. in unit tests) must not block create.
   try {
     ensureSessionCredentialsScaffold(config.credentialsDir, config.sessionId);
+    // Release sub-agent spawn homes a crashed/restarted orchestrator orphaned.
+    // Here because container create is the one race-free moment: a fresh
+    // container has no worker yet, so no spawn of this session is in flight.
+    // Release, not delete — a stranded token rotation is published back first
+    // (`sweepSubAgentSpawnHomes` docstring has the why).
+    sweepSubAgentSpawnHomes(config.credentialsDir, config.sessionId);
   } catch (err) {
     console.warn(
       `[containers] credentials scaffold failed for ${config.sessionId}:`,

@@ -622,6 +622,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           depth: req.depth,
           model: req.model,
           ...(req.serviceRouting !== undefined ? { serviceRouting: req.serviceRouting } : {}),
+          ...(req.homeDir !== undefined ? { homeDir: req.homeDir } : {}),
           ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
           ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
           ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),

@@ -1820,3 +1820,62 @@ function syncAgentTokenBackToRoot(
   // ownership consistent for the worker after any in-place edits (docs/150).
   chownSessionCredentialsTree(credentialsRoot, sessionId);
 }
+
+/**
+ * Publish a rotation a same-harness sub-agent spawn left in its ISOLATED
+ * per-spawn home (see `provisionSubAgentSpawnHome`) back to the credential root
+ * the home was provisioned from — the provider-account root when `accountId` is
+ * set, the flat root otherwise.
+ *
+ * Deliberately marker- and ledger-free, unlike the two session-subtree
+ * write-backs above: those need identity checks because the session dir can
+ * hold ANY account's copy, while a spawn home holds exactly the copy this
+ * function's own `accountId` parameter provisioned into it — the pairing is by
+ * construction, enforced by the one caller (`releaseSubAgentSpawnHome`) passing
+ * the same value to both. The freshness ordering still applies: a target the
+ * refresher (or another session's write-back) moved past the spawn's copy is
+ * never regressed, and an unorderable file on either side refuses the copy for
+ * the same planning#449 reasons the session paths do.
+ *
+ * No chown: the target roots are orchestrator-owned (never container-mounted),
+ * and the spawn home is deleted by the caller right after.
+ */
+export function syncSubAgentSpawnHomeTokenBack(
+  credentialsRoot: string,
+  sessionId: string,
+  spawnHome: string,
+  agentId: AgentId,
+  accountId?: string,
+): void {
+  const files = AGENT_TOKEN_FILES[agentId];
+  if (!files) return;
+  const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
+  const targetRoot = accountId
+    ? providerAccountCredentialRoot(credentialsRoot, agentId, accountId)
+    : credentialsRoot;
+  for (const rel of files) {
+    const spawnFile = path.join(spawnHome, rel);
+    const spawnReading = classifyTokenFreshness(freshness, spawnFile);
+    if (spawnReading.kind === "absent") continue;
+    if (spawnReading.kind === "unorderable") {
+      logUnorderableToken(
+        "stranded-rotation",
+        { sessionId, agentId, direction: "sync-back", file: spawnFile },
+        `not publishing this spawn home's token to ${targetRoot}: ${UNORDERABLE_HINT}`,
+      );
+      continue;
+    }
+    const targetFile = path.join(targetRoot, rel);
+    const targetReading = classifyTokenFreshness(freshness, targetFile);
+    if (targetReading.kind === "unorderable") {
+      logUnorderableToken(
+        "refused-publish",
+        { sessionId, agentId, direction: "sync-back", file: targetFile },
+        `refusing to overwrite the source credential with ${spawnFile}: ${UNORDERABLE_HINT}`,
+      );
+      continue;
+    }
+    if (targetReading.kind === "ordered" && spawnReading.at <= targetReading.at) continue;
+    atomicCopyFile(spawnFile, targetFile);
+  }
+}

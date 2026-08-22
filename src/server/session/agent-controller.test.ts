@@ -251,4 +251,27 @@ describe("AgentController — /agent/spawn requires a model (docs/261)", () => {
     expect(spawned).toHaveLength(1);
     expect(spawned[0].lastParams?.model).toBe("claude-opus-5");
   });
+
+  // 2026-08-21 incident — the isolated per-spawn HOME must cross THIS seam
+  // (body → runOpts → buildSubAgentRunParams → agent.run) or the sub-agent CLI
+  // silently falls back to the session subtree the live primary reads, and the
+  // isolation evaporates with a green suite. Pinned here because this is the
+  // one boundary between the orchestrator's provisioning and the adapter's env.
+  it("hands the spawn's homeDir through to agent.run", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/agent/spawn",
+      payload: {
+        agentId: "claude",
+        prompt: "review",
+        spawnId: "s-3",
+        model: "claude-opus-5",
+        homeDir: "/credentials/sub-agent-homes/s-3",
+        timeoutMs: 50,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0].lastParams?.homeDir).toBe("/credentials/sub-agent-homes/s-3");
+  });
 });

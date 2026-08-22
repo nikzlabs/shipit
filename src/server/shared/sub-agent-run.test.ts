@@ -264,3 +264,22 @@ describe("runAgentToCompletion", () => {
     }
   });
 });
+
+// 2026-08-21 incident — `homeDir` (a same-harness spawn's isolated credential
+// root) must survive the runOpts → AgentRunParams mapping, or the CLI falls
+// back to the session subtree the live primary reads.
+describe("buildSubAgentRunParams", () => {
+  it("carries homeDir through to the run params, and omits an absent one", async () => {
+    const { buildSubAgentRunParams } = await import("./sub-agent-run.js");
+    const withHome = buildSubAgentRunParams({
+      prompt: "p",
+      cwd: "/workspace",
+      model: "m",
+      homeDir: "/credentials/sub-agent-homes/x",
+    });
+    expect(withHome.homeDir).toBe("/credentials/sub-agent-homes/x");
+
+    const without = buildSubAgentRunParams({ prompt: "p", cwd: "/workspace", model: "m" });
+    expect("homeDir" in without).toBe(false);
+  });
+});
