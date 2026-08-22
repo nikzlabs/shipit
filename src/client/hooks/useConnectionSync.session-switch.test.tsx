@@ -6,6 +6,7 @@ import { useConnectionSync } from "./useConnectionSync.js";
 import { useMessageHandler } from "./useMessageHandler.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { resumeSessionInternal } from "../stores/actions/session-actions.js";
+import { __resetHistoryCache } from "../utils/session-data.js";
 
 /**
  * Hydration ordering over the REAL hook composition — `useSessionWebSocket` +
@@ -67,6 +68,21 @@ let historyResolvers: ((payload: unknown) => void)[] = [];
  */
 let previewStatusResolvers: ((payload: unknown) => void)[] = [];
 let deferPreviewStatus = false;
+/**
+ * Opt-in ETag for `GET /history` (planning#467). Off by default so every test
+ * above keeps taking the plain `200` path — switching them all to a cached
+ * `304` would stop `json()` being called and hang their `historyResolvers`
+ * waits. Set it to make the second load for a session revalidate.
+ */
+let historyEtag: string | null = null;
+/**
+ * Hold the `GET /history` *response* itself, rather than its `json()` body.
+ * A `304` never calls `json()`, so deferring the body cannot hold a cached load
+ * open — and a load that has already completed cannot be raced by the attach
+ * snapshot, which is the thing the ordering test has to reproduce.
+ */
+let deferHistoryFetch = false;
+let historyFetchResolvers: (() => void)[] = [];
 
 /** The three hooks App composes for a session's transport, in App's order. */
 function useConnectionStack(sessionId: string) {
@@ -97,13 +113,26 @@ beforeEach(() => {
   historyResolvers = [];
   previewStatusResolvers = [];
   deferPreviewStatus = false;
+  historyEtag = null;
+  deferHistoryFetch = false;
+  historyFetchResolvers = [];
+  __resetHistoryCache();
   vi.stubGlobal("WebSocket", FakeWebSocket);
-  vi.stubGlobal("fetch", vi.fn((url: string) => {
+  vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
     if (url.includes("/history")) {
-      return Promise.resolve({
-        ok: true,
-        json: () => new Promise((resolve) => historyResolvers.push(resolve)),
-      });
+      if (historyEtag === null) {
+        return Promise.resolve({
+          ok: true,
+          json: () => new Promise((resolve) => historyResolvers.push(resolve)),
+        });
+      }
+      const headers = new Headers({ etag: historyEtag });
+      const ifNoneMatch = (init?.headers as Record<string, string> | undefined)?.["If-None-Match"];
+      const res = ifNoneMatch === historyEtag
+        ? { ok: true, status: 304, headers, json: () => { throw new Error("must not parse a 304"); } }
+        : { ok: true, status: 200, headers, json: () => new Promise((resolve) => historyResolvers.push(resolve)) };
+      if (!deferHistoryFetch) return Promise.resolve(res);
+      return new Promise((resolve) => historyFetchResolvers.push(() => resolve(res)));
     }
     if (url.includes("/preview-status")) {
       return Promise.resolve({
@@ -122,6 +151,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  __resetHistoryCache();
 });
 
 describe("transcript hydration across session switches and reconnects", () => {
@@ -172,6 +202,83 @@ describe("transcript hydration across session switches and reconnects", () => {
     // in-progress rows are replaced, not the other way round.
     await waitFor(() => {
       expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["B live tail"]);
+    });
+  });
+
+  /**
+   * planning#467 asked whether a validated `304` opens a live transcript-
+   * truncation window: the cached payload holds only persisted rows, and
+   * re-installing it wholesale wipes everything the running turn has streamed
+   * since its last boundary.
+   *
+   * It does not, and the reason is the same `historyLoaded` gate the rest of
+   * this file is about — nothing specific to the `304`. The reconnect lowers
+   * the flag, `useMessageHandler` queues the attach snapshot behind it, the
+   * install raises it, and the drain then replaces the in-progress rows with
+   * the snapshot's. Pinned END-TO-END on the cached path because the reasoning
+   * spans four files and the `304` reaches the install by a different route,
+   * so neither the store test nor a hook tested alone can fail on a break here.
+   */
+  it("restores the running turn's tail after a reconnect whose history load answered 304", async () => {
+    historyEtag = '"v1"';
+    useSessionStore.getState().setSessionId("A");
+    const { result } = renderHook(({ id }: { id: string }) => useConnectionStack(id), {
+      initialProps: { id: "A" },
+    });
+
+    // First open: a 200 that caches the payload.
+    await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(1));
+    await act(async () => { historyResolvers[0](historyPayload(["persisted"])); });
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["persisted"]);
+
+    // The turn streams on, past the last persist boundary.
+    act(() => {
+      useSessionStore.getState().setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "streamed since", inProgress: true },
+      ]);
+    });
+
+    // Foreground force-reconnect. Nothing was persisted in the gap, so the
+    // server will revalidate — and the response is held so the attach snapshot
+    // genuinely races it, which is the whole point.
+    deferHistoryFetch = true;
+    await act(async () => { result.current.reconnect(); });
+    expect(useSessionStore.getState().historyLoaded).toBe(false);
+
+    const reconnected = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    await act(async () => { reconnected.simulateOpen(); });
+    await waitFor(() => expect(historyFetchResolvers).toHaveLength(1));
+
+    // Snapshot first on the wire, with the load still outstanding.
+    await act(async () => {
+      reconnected.simulateMessage({
+        type: "turn_snapshot",
+        sessionId: "A",
+        messages: [
+          { role: "assistant", text: "persisted" },
+          { role: "assistant", text: "streamed since" },
+          { role: "assistant", text: "produced while we were down" },
+        ],
+      });
+    });
+    // Queued, not applied. The third row is what makes this discriminating: a
+    // snapshot dispatched immediately would already have added it.
+    expect(useSessionStore.getState().messages.map((m) => m.text))
+      .toEqual(["persisted", "streamed since"]);
+
+    // Now the 304 lands and installs the cached payload, which holds the
+    // persisted row alone.
+    await act(async () => { historyFetchResolvers[0](); });
+    await waitFor(() => expect(useSessionStore.getState().historyLoaded).toBe(true));
+    // No body was ever parsed on the reconnect.
+    expect(historyResolvers).toHaveLength(1);
+
+    // …and the drain put the snapshot on top of it, so the tail is intact.
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages.map((m) => m.text))
+        .toEqual(["persisted", "streamed since", "produced while we were down"]);
     });
   });
 
