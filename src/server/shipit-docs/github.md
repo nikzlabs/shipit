@@ -18,7 +18,9 @@ repository for branches, PRs, and CI.
 ## Auto-push
 
 After each turn, ShipIt auto-commits your working-tree changes and (if GitHub
-auth is configured) pushes to the remote with a 5-second debounce. If your turn
+auth is configured) pushes them to the remote. The push is armed once the
+turn's own post-turn work is done, so a pull request ShipIt opens in the same
+turn pushes first and the auto-push follows it. If your turn
 moves HEAD cleanly yourself, for example with a rebase, ShipIt still detects
 the new branch tip and pushes it. You do not need to manage git yourself.
 

@@ -203,12 +203,11 @@ export interface AppDeps {
   /** Provider account registry/router (docs/150). */
   providerAccountManager?: ProviderAccountManager;
   /**
-   * Debounce delay in milliseconds for auto-push after commit.
-   * Defaults to 5000 (5 seconds). Set lower in tests to avoid long waits — the
-   * integration tests are the ONLY thing that overrides it; production takes the
-   * default.
+   * Debounce delay in milliseconds for auto-push after commit. **Defaults to
+   * 0** — the push is armed as soon as the turn's post-turn work is done, and
+   * the timer exists only so the arm stays off the caller's stack.
    *
-   * ## What the delay is for, and what it is not for
+   * ## Why it is 0, and why it was 5000
    *
    * The original rationale (`docs/027-github-import` — "during rapid Claude
    * turns, pushing after every single commit would be wasteful") does not
@@ -231,13 +230,18 @@ export interface AppDeps {
    * transcript notice for a branch that is fine — the false-alarm class
    * `services/auto-push-scheduler.ts` documents twice.
    *
-   * So this number is load-bearing, but only by accident, and only
-   * probabilistically: PR creation generates a title with an LLM and can itself
-   * exceed five seconds, in which case the race is live at the current value
-   * too. Lowering it (to 0, which is where it belongs once coalescing is off the
-   * table) requires making that ordering EXPLICIT first — arming after the PR
-   * flow, or teaching the scheduler to stand down while a ShipIt-owned
-   * synchronous push is in flight, the way it already stands down for a rebase.
+   * That made the number load-bearing by accident, and only probabilistically:
+   * PR creation generates a title with an LLM and can itself exceed five
+   * seconds, so the race was live at 5000 too. The ordering is now EXPLICIT —
+   * `postTurnCommit` hands the arm to `turn-executor.ts` (`deferPushArm`),
+   * which fires it after the post-turn flows have finished their own git work.
+   * With the race removed rather than out-waited, the delay has nothing left to
+   * do, so it is 0.
+   *
+   * Keep the timer rather than pushing inline: the arm happens inside the
+   * turn's terminal sequence, and a `setTimeout(0)` is what keeps a network
+   * round-trip off that stack. It also leaves `arm()`'s supersede-and-re-arm
+   * behaviour, the rewrite-window deferral and `cancel` all working unchanged.
    */
   autoPushDebounceMs?: number;
   /**
@@ -418,7 +422,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const {
     workspaceDir = "/workspace",
     serveStatic: shouldServeStatic = true,
-    autoPushDebounceMs = 5000,
+    autoPushDebounceMs = 0,
   } = deps;
 
   // Resolved up here, not at the return: every manager below that touches

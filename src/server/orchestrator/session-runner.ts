@@ -971,6 +971,14 @@ export interface SystemTurnDeps {
     turnStartHeadHash: string | null;
     runner: SessionRunnerInterface | null;
     emit: (msg: WsServerMessage) => void;
+    /**
+     * Passed straight to `postTurnCommit`'s option of the same name: take the
+     * auto-push ARM instead of letting the commit fire it, so the caller can
+     * order it after its own git work. The turn executor uses it to keep the
+     * debounced push behind the post-turn PR flow's synchronous push; a caller
+     * that omits it is armed inline, as before.
+     */
+    deferPushArm?: (arm: () => void) => void;
   }) => Promise<string | null>;
   /**
    * docs/163 — resolve the live steer-or-queue gate for the dispatch path.

@@ -588,7 +588,7 @@ export function createRunnerRegistry(
         // (workspace-locked auto-commit + conflict notice + auto-push + commit
         // link). The dispatch path routes through this instead of its inline
         // commit block so both transports commit identically.
-        commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit }) =>
+        commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(
             {
               createGitManager,
@@ -596,7 +596,10 @@ export function createRunnerRegistry(
               sessionManager,
               scheduleAutoPush: (git) => schedulePushGit(git),
             },
-            { sessionDir, sessionId, emit, turnSummary: summary, turnStartHeadHash, runner: turnRunner },
+            {
+              sessionDir, sessionId, emit, turnSummary: summary, turnStartHeadHash, runner: turnRunner,
+              ...(deferPushArm ? { deferPushArm } : {}),
+            },
           ),
         // docs/163 — resolve the live steer-or-queue gate for the dispatch
         // path so a programmatic message arriving mid-turn (`shipit session

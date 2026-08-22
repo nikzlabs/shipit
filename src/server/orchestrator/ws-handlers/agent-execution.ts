@@ -625,7 +625,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         deps: { credentialsDir: ctx.credentialsDir, sessionManager: ctx.sessionManager },
       });
     },
-    commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash: tsh, runner: r, emit }) =>
+    commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash: tsh, runner: r, emit, deferPushArm }) =>
       postTurnCommit(ctx, {
         sessionDir,
         sessionId,
@@ -633,6 +633,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         turnSummary: summary,
         turnStartHeadHash: tsh,
         runner: r,
+        ...(deferPushArm ? { deferPushArm } : {}),
       }),
     postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
       // docs/202 — detect a rebase-then-progress on a merged session and re-arm

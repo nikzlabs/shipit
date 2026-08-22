@@ -1265,6 +1265,7 @@ export async function executeAgentTurn(
           turnStartHeadHash: input.turnStartHeadHash,
           runner,
           emit,
+          deferPushArm: (arm) => { pendingPushArm = arm; },
         });
       }
       // Fallback for minimal test setups that wire `autoCommit` but not
@@ -1355,10 +1356,56 @@ export async function executeAgentTurn(
   let commitPromise: Promise<string | null> | null = null;
   const commitOnce = (): Promise<string | null> => (commitPromise ??= runCommit());
 
+  /**
+   * The auto-push arm the commit handed over, held until the post-turn flows
+   * below have finished their own git work.
+   *
+   * The flows push: `postTurnPrFlow` creates a pull request (a plain push, or a
+   * `forcePush` when re-arming past a merged one), and the release flow can
+   * publish a branch. A debounced plain push racing a force-push is rejected
+   * non-fast-forward and posts the "your branch has diverged" notice for a
+   * branch that is fine. What used to keep them apart was the push debounce
+   * simply being longer than the flow — never a guarantee, since PR creation
+   * writes its title with an LLM. Ordering them removes the race, and is what
+   * lets the debounce be 0.
+   *
+   * Armed exactly once, on every path that reaches the end of the flow —
+   * including the ones where a flow threw, since each is caught individually.
+   * A turn that never commits never sets it, and a `postTurn === "none"` turn
+   * (rebase) returns before the commit, so neither arms anything.
+   */
+  let pendingPushArm: (() => void) | null = null;
+  const armPendingPush = (): void => {
+    const arm = pendingPushArm;
+    pendingPushArm = null;
+    if (!arm) return;
+    try {
+      arm();
+    } catch (err) {
+      // The arm is a `setTimeout` on a scheduler that reports its own outcomes;
+      // a throw here would be this turn's commit going unpushed with nothing
+      // said, which is the failure `services/auto-push-scheduler.ts` exists to
+      // make impossible.
+      console.error("[turn] arming the post-turn auto-push failed:", err);
+    }
+  };
+
   const runCommitAndPrInner = async (): Promise<void> => {
     // docs/169 — rebase turns commit via `git rebase --continue` and force-push
     // after the whole flow; auto-committing here would corrupt the rebase.
     if (postTurn === "none") return;
+    try {
+      await runPostTurnFlows();
+    } finally {
+      // In a `finally` because the arm must survive a throw from any flow that
+      // is NOT individually caught below — the commit is already made, and a
+      // commit that never gets pushed with nothing said is exactly what
+      // CLAUDE.md invariant 3 is about.
+      armPendingPush();
+    }
+  };
+
+  const runPostTurnFlows = async (): Promise<void> => {
     const commitHash = await commitOnce();
     if (commitHash && runner) {
       try {
