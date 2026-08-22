@@ -183,3 +183,62 @@ describe("AutoMergeToggle — managed-merge explanation", () => {
     expect(screen.getAllByText("Configure in GitHub settings").length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * The merge button merges what is on GitHub. When the session holds commits
+ * that never got there, every other gate on this button — CI green, mergeable,
+ * approved — describes a commit the session has already moved past, and the
+ * click ships the branch without that work.
+ */
+describe("MergeButton — unsynced local work", () => {
+  const withSync = (branchSync: unknown) => {
+    usePrStore.setState({
+      statusBySession: { s1: { branchSync } as never },
+      cardBySession: { s1: openCard },
+    });
+  };
+
+  it("disables the merge, and says what is missing, while local commits are unpushed", () => {
+    withSync({ state: "ahead", ahead: 2, behind: 0 });
+    render(<MergeButton sessionId="s1" />);
+
+    const merge = screen.getByText("Squash and merge");
+    expect(merge).toBeDisabled();
+    expect(merge.getAttribute("title")).toContain("2 local commits");
+  });
+
+  it("disables the merge when the branch has diverged from its remote", () => {
+    withSync({ state: "diverged", ahead: 1, behind: 1 });
+    render(<MergeButton sessionId="s1" />);
+
+    const merge = screen.getByText("Squash and merge");
+    expect(merge).toBeDisabled();
+    expect(merge.getAttribute("title")).toContain("diverged");
+  });
+
+  it("keeps the dropdown reachable while the merge is held", async () => {
+    // An unsynced branch can stay unsynced for a long time (a push that keeps
+    // being rejected), and closing the PR or changing the merge method must not
+    // be locked away behind that wait.
+    const user = userEvent.setup();
+    withSync({ state: "ahead", ahead: 1, behind: 0 });
+    render(<MergeButton sessionId="s1" />);
+
+    await user.click(screen.getByLabelText("Select merge method"));
+    expect(screen.getByText("Close pull request")).toBeTruthy();
+  });
+
+  it.each([
+    ["in sync", { state: "in-sync", ahead: 0, behind: 0 }],
+    // The remote is a superset of local work — the merge ships more, not less.
+    ["behind the remote", { state: "behind", ahead: 0, behind: 3 }],
+    // "Cannot tell" is never a reason to block: a session whose workspace was
+    // reclaimed has no tracking ref to read.
+    ["unknown", undefined],
+  ])("leaves the merge enabled when the branch is %s", (_case, branchSync) => {
+    withSync(branchSync);
+    render(<MergeButton sessionId="s1" />);
+
+    expect(screen.getByText("Squash and merge")).not.toBeDisabled();
+  });
+});

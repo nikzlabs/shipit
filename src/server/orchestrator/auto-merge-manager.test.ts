@@ -3,7 +3,12 @@ import { describe, it, expect, vi } from "vitest";
 import { AutoMergeManager } from "./auto-merge-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
-import type { PrMergeableState, PrReviewDecision, PrStatusSummary } from "../shared/types/github-types.js";
+import type {
+  BranchSyncState,
+  PrMergeableState,
+  PrReviewDecision,
+  PrStatusSummary,
+} from "../shared/types/github-types.js";
 
 /**
  * Unit tests for the ShipIt-managed auto-merge executor. The regression these
@@ -212,6 +217,76 @@ describe("AutoMergeManager.handleManaged", () => {
 
     expect(mergePullRequest).not.toHaveBeenCalled();
     expect(manager.get("s1")?.error).toBeUndefined();
+  });
+
+  /**
+   * The same hole the busy gate closes, in the window the busy gate cannot see.
+   * `agentBusy` covers a turn's commit and the debounced push it arms — but a
+   * push that is REJECTED leaves the branch behind for good, and by then the
+   * session is idle and the checks GitHub reports are green for a commit the
+   * session moved past. `services/auto-push-scheduler.ts` records two pull
+   * requests that merged seven and two commits behind exactly this way.
+   */
+  describe("branch-sync gate", () => {
+    const withSync = (state: BranchSyncState, ahead: number, behind: number) => ({
+      ...makeSummary("success", "mergeable"),
+      branchSync: { state, ahead, behind },
+    });
+
+    it.each([
+      ["ahead", withSync("ahead", 2, 0)],
+      ["diverged", withSync("diverged", 1, 1)],
+    ])("does NOT merge when the local branch is %s of the remote", async (_state, summary) => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", summary, "o", "r");
+
+      expect(mergePullRequest).not.toHaveBeenCalled();
+      // A wait, not a misconfiguration — the arming stays live so the merge
+      // happens on its own once the push lands.
+      expect(manager.get("s1")?.error).toBeUndefined();
+      expect(manager.get("s1")?.enabled).toBe(true);
+      expect(manager.get("s1")?.completed).toBeUndefined();
+    });
+
+    it("merges when the remote is AHEAD of local — the PR is a superset, nothing is lost", async () => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", withSync("behind", 0, 3), "o", "r");
+
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("merges when the sync state is unknown — absence is never a verdict", async () => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      // No `branchSync` at all: no workspace, no tracking ref, HEAD elsewhere.
+      // Blocking here would take auto-merge away from every session whose
+      // workspace has been reclaimed.
+      await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("merges once the push lands, with no user action in between", async () => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", withSync("ahead", 1, 0), "o", "r");
+      expect(mergePullRequest).not.toHaveBeenCalled();
+
+      // The next poll reads the pushed branch as in sync — and the arming that
+      // was held is still armed, so the merge happens by itself.
+      await manager.handleManaged("s1", withSync("in-sync", 0, 0), "o", "r");
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    });
   });
 
   // docs/266 — the merge-while-busy hole. PR #2327 merged 4 minutes into a turn

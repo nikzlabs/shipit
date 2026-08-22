@@ -49,6 +49,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { guardMergeSync } from "./services/branch-sync.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition } from "./pr-target.js";
 import type { FastifyReply } from "fastify";
@@ -1186,6 +1187,35 @@ export async function registerGitHubRoutes(
         }
 
         const git = createGitManager(dir);
+
+        // Would this merge ship what the session actually produced? Every gate
+        // above asks about the state GitHub holds; none of them can see that
+        // the state GitHub holds is simply OLD. ShipIt pushes on a debounce and
+        // never force-pushes, so a rejected or still-pending push leaves the
+        // branch on GitHub frozen at its last successful push while the session
+        // carries the rest — and the pull request looks perfectly mergeable.
+        //
+        // Resolved here against the LIVE remote rather than trusted from the
+        // poller summary: the summary is what the client gates on, and a stale
+        // tab is exactly the caller this route exists to catch. `ahead` pushes
+        // and answers "not yet" (the new head's checks have not run);
+        // `diverged` refuses. Anything unknowable proceeds — see
+        // `services/branch-sync.ts`.
+        const headBranch = poller?.getStatus(request.params.id)?.headBranch
+          ?? session?.branch;
+        if (headBranch) {
+          const verdict = await guardMergeSync(git, headBranch);
+          if (verdict.action === "hold") {
+            // A push may have landed, so let the poller re-read the branch —
+            // otherwise the card keeps the old head until the next tick and the
+            // user's second click is gated on stale checks.
+            if (poller && session?.remoteUrl) {
+              await poller.forceRefreshSession(request.params.id).catch(() => {});
+            }
+            return { success: false, message: verdict.message };
+          }
+        }
+
         // docs/266 — this route can end in an ARMING rather than a merge (checks
         // still running). A live session's arming stays on ShipIt's managed
         // loop, where the busy gate holds it; GitHub native would merge the PR

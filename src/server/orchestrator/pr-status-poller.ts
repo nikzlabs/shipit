@@ -23,6 +23,7 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeManagedReason, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
+import { readBranchSync } from "./services/branch-sync.js";
 import {
   buildPrStatusQuery,
   extractFocusedPrNodes,
@@ -1025,15 +1026,24 @@ export class PrStatusPoller {
         // locally from `git diff base...HEAD`) already shows the latest.
         // Using the same local source for both keeps them consistent.
         if (this.createGitManager && session.workspaceDir) {
+          const localGit = this.createGitManager(session.workspaceDir);
           try {
-            const local = await this.createGitManager(session.workspaceDir)
-              .diffStatVsBranch(summary.baseBranch);
+            const local = await localGit.diffStatVsBranch(summary.baseBranch);
             summary.insertions = local.insertions;
             summary.deletions = local.deletions;
           } catch {
             // Workspace gone (archived), bare repo without a checkout, etc.
             // Fall back to GitHub's numbers.
           }
+          // Does the remote branch this PR would merge still carry everything
+          // the session has committed? Local refs only — no network on the poll
+          // path. The merge route re-resolves this against the live remote
+          // before it merges anything; this reading exists so the button is
+          // already disabled when the user looks at it, rather than failing on
+          // the click. Undefined (no workspace, no tracking ref, HEAD elsewhere)
+          // means "cannot tell" and blocks nothing.
+          const sync = await readBranchSync(localGit, summary.headBranch);
+          if (sync) summary.branchSync = sync;
         }
 
         const prev = this.tracker.lastKnown.get(session.id);

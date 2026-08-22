@@ -7,6 +7,7 @@ import {
   WrenchIcon,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
+import type { BranchSyncStatus } from "../../server/shared/types/github-types.js";
 import { GitPullRequestClosedIcon } from "./GitPullRequestClosedIcon.js";
 import { Button } from "./ui/button.js";
 import { DropdownMenuItem } from "./ui/dropdown-menu.js";
@@ -310,21 +311,49 @@ export function ClosePrDropdownItem({ state }: { state: ReturnType<typeof useClo
   );
 }
 
+/**
+ * Why the merge button is disabled because of the branch's sync state, or
+ * undefined when the state is no reason to disable it.
+ *
+ * A merge merges what is on GitHub. When the session holds commits that never
+ * reached it — a push still pending, or one that was rejected and stayed
+ * rejected — the pull request is mergeable and OBSOLETE at the same time, and
+ * every other gate on this button reads it as ready. `behind` is deliberately
+ * not a reason: the remote then carries everything local does and more.
+ *
+ * The server refuses the same two states independently (it re-resolves them
+ * against the live remote, so a stale tab cannot slip past), which is why this
+ * can afford to be a plain disabled state rather than a hard block.
+ */
+function branchSyncBlockReason(sync: BranchSyncStatus | undefined): string | undefined {
+  if (sync?.state === "ahead") {
+    return `Waiting for ${sync.ahead} local commit${sync.ahead === 1 ? "" : "s"} to reach GitHub`
+      + " — merging now would ship the branch without them";
+  }
+  if (sync?.state === "diverged") {
+    return "This session's branch has diverged from its remote — merging now would ship the"
+      + " remote's history, not this session's work";
+  }
+  return undefined;
+}
+
 export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
   const setToast = useUiStore((s) => s.setToast);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  const branchSync = usePrStore((s) => s.statusBySession[sessionId]?.branchSync);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [merging, setMerging] = useState(false);
   const { confirmClose, closing, handleClose, reset } = useClosePr(sessionId);
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
-  const disabled = merging || isAgentRunning;
+  const unsyncedReason = branchSyncBlockReason(branchSync);
+  const disabled = merging || isAgentRunning || unsyncedReason !== undefined;
   const title = isAgentRunning
     ? "Agent is still working; merge will be available when the turn finishes"
-    : undefined;
+    : unsyncedReason;
 
   // Reset the armed-confirm state whenever the menu closes so it never reopens
   // pre-armed.
@@ -359,7 +388,10 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
       </button>
       <button
         onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}
-        disabled={disabled}
+        // Not `disabled` — an unsynced branch can stay unsynced (a push that
+        // keeps being rejected), and this menu is where "Close PR" and the
+        // merge-method choice live. Only the merge itself is held back.
+        disabled={merging || isAgentRunning}
         title={title}
         className="h-6 px-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Select merge method"

@@ -155,6 +155,35 @@ export type PrReviewDecision =
   | "review_required"
   | "none";
 
+/**
+ * Where the session's local branch stands against the same branch on the remote
+ * — the question "would merging this pull request ship what the session has
+ * actually produced?"
+ *
+ *  - `in-sync` — local HEAD is the remote tip. The PR carries everything.
+ *  - `ahead` — the session has commits the remote has not seen. A merge now
+ *    ships the state of the last SUCCESSFUL push, silently dropping them. This
+ *    is not hypothetical: `services/auto-push-scheduler.ts` records an incident
+ *    where two pull requests merged seven and two commits behind after ten
+ *    hours of rejected pushes.
+ *  - `behind` — the remote carries commits the local clone does not. The PR is
+ *    a SUPERSET of local work, so nothing is lost by merging; not a block.
+ *  - `diverged` — both sides have commits the other lacks (a rebase, a reset
+ *    onto a fresh base). A merge ships the remote's history, which is not what
+ *    the session holds. ShipIt never force-pushes on its own, so this needs a
+ *    human decision before the merge.
+ */
+export type BranchSyncState = "in-sync" | "ahead" | "behind" | "diverged";
+
+/** Local-vs-remote commit counts for a session's branch. */
+export interface BranchSyncStatus {
+  state: BranchSyncState;
+  /** Commits on local HEAD that the remote branch does not have. */
+  ahead: number;
+  /** Commits on the remote branch that local HEAD does not have. */
+  behind: number;
+}
+
 export interface WsMergePrResult {
   type: "merge_pr_result";
   success: boolean;
@@ -363,6 +392,17 @@ export interface PrStatusSummary {
    * `"changes_requested"` block the merge button and managed auto-merge. docs/174.
    */
   reviewDecision: PrReviewDecision;
+  /**
+   * Where the session's local branch stands against its remote counterpart,
+   * computed from the local clone's remote-tracking ref (no network). Gates the
+   * merge button and managed auto-merge so neither ships a stale remote tip
+   * while the session holds unpushed commits.
+   *
+   * `undefined` means "could not tell" — no workspace, no tracking ref, a bare
+   * repo. Absence never blocks a merge: only a positive `ahead`/`diverged`
+   * reading does.
+   */
+  branchSync?: BranchSyncStatus;
   autoMergeEnabled: boolean;
   /**
    * Auto-fix state — present when the auto-fix loop (or a manual "Fix CI") has
