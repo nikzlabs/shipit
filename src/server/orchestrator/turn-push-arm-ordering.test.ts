@@ -209,6 +209,45 @@ describe("post-turn auto-push arm ordering", () => {
     runner.dispose({ force: true });
   });
 
+  /**
+   * The path an independent review found, and the reason the arm is not held by
+   * the post-turn flow alone. `tryDrain` COMMITS before it starts a queued turn,
+   * and starting that turn supersedes this one's agent. The `superseded` handler
+   * is settle-only — it is forbidden from running a post-turn commit — and a
+   * retired turn's `done` carries the previous spawn's runToken, so it may be
+   * dropped and never arrive. The commit would then sit local with no scheduler
+   * record and nothing said anywhere: invariant 3's failure, reintroduced by the
+   * deferral itself.
+   */
+  it("arms when the turn is superseded after committing, even with no `done`", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const deps = makeDeps({
+      agentFactory: () => {
+        const a = makeFakeAgent();
+        agents.push(a);
+        return a as unknown as ReturnType<SystemTurnDeps["agentFactory"]>;
+      },
+    });
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "first" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "turn 1 started");
+    // Queued behind it — this is what makes the drain commit.
+    runner.dispatch(testDispatch({ text: "second" }));
+    expect(runner.queueLength).toBe(1);
+
+    // `agent_result` drains: it commits turn 1's work, then starts turn 2 —
+    // and `setAgent` emits `superseded` on turn 1's agent for real. No `done`
+    // ever follows for it, which is the case the runToken guard can produce.
+    agents[0]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => agents.length === 2, "turn 2 started (turn 1 superseded)");
+    expect(order).toContain("commit");
+
+    await waitFor(() => order.includes("push-armed"), "push armed despite supersession");
+    runner.dispose({ force: true });
+  });
+
   it("arms exactly once, however many terminal paths reach the post-turn flow", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: repoDir, defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];

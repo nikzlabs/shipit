@@ -125,6 +125,62 @@ describe("postTurnCommit — gate does not widen, and covers the moved-HEAD push
     expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * The `deferPushArm` contract, at the boundary the production wirings use.
+   * The turn executor relies on it to keep the debounced push behind the PR
+   * flow's own synchronous push; if `postTurnCommit` armed anyway, the ordering
+   * upstream would be decorative.
+   */
+  describe("deferPushArm", () => {
+    it("hands the arm over instead of firing it, and the arm pushes exactly what the inline one would", async () => {
+      const { ctx, scheduleAutoPush } = makeCommittingCtx(undefined);
+      let handed: (() => void) | null = null;
+
+      await postTurnCommit(ctx, {
+        sessionDir: "/workspace",
+        sessionId: "s1",
+        emit: vi.fn(),
+        turnSummary: "did stuff",
+        deferPushArm: (arm) => { handed = arm; },
+      });
+
+      // Nothing armed during the commit — that is the whole point.
+      expect(scheduleAutoPush).not.toHaveBeenCalled();
+      expect(handed).toBeTypeOf("function");
+
+      handed!();
+      expect(scheduleAutoPush).toHaveBeenCalledTimes(1);
+      // Same session id the inline call passes, so the two paths push identically.
+      expect(scheduleAutoPush).toHaveBeenCalledWith(expect.anything(), "s1");
+    });
+
+    it("hands over nothing when the merged-branch guard refuses the push", async () => {
+      // A refused push must not become an arm the caller fires later — that
+      // would route around the guard entirely.
+      const { ctx, scheduleAutoPush } = makeCommittingCtx(undefined);
+      const sm = (ctx as unknown as {
+        sessionManager: { get: ReturnType<typeof vi.fn>; getPrStatus?: ReturnType<typeof vi.fn> };
+      }).sessionManager;
+      sm.get = vi.fn(() => ({ id: "s1", mergedAt: new Date().toISOString() } as unknown as SessionInfo));
+      // The guard reads this to WORD its notice. Absent, it throws and the
+      // guard fails open — which is how this test first passed for the wrong
+      // reason, and is worth knowing about the stub.
+      sm.getPrStatus = vi.fn(() => null);
+      let handed: (() => void) | null = null;
+
+      await postTurnCommit(ctx, {
+        sessionDir: "/workspace",
+        sessionId: "s1",
+        emit: vi.fn(),
+        turnSummary: "did stuff",
+        deferPushArm: (arm) => { handed = arm; },
+      });
+
+      expect(handed).toBeNull();
+      expect(scheduleAutoPush).not.toHaveBeenCalled();
+    });
+  });
+
   it("skips the moved-HEAD push for an ops session too", async () => {
     // The agent ran its own `git commit` — the SUPPORTED way to keep work in an
     // ops session now. autoCommit would find a clean tree and the push would be
