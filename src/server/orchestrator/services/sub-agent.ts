@@ -774,17 +774,12 @@ export async function runSubAgent(
       );
       if (provisioned && credentialsDir) {
         if (sameHarness) {
-          // The isolated home: publish the failed account's rotation back and
-          // clear the home; `provisionAttempt()` below rebuilds it from the
-          // fallback account's root under the same spawnId. No borrow, no
-          // marker — the session subtree was never touched.
-          releaseSubAgentSpawnHome(
-            credentialsDir,
-            sessionId,
-            spawnId,
-            subAgentId,
-            failedRoute.kind === "account" ? failedRoute.id : undefined,
-          );
+          // The isolated home: publish the failed account's rotation back to
+          // the root the home's own PROVENANCE names, and clear the home;
+          // `provisionAttempt()` below rebuilds it from the fallback account's
+          // root under the same spawnId. No borrow, no marker — the session
+          // subtree was never touched.
+          releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
         } else {
           if (failedRoute.kind === "account") {
             try {
@@ -949,7 +944,10 @@ export async function runSubAgent(
     // session-subtree borrow exactly as before.
     if (provisioned && credentialsDir) {
       if (sameHarness) {
-        releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId, subAgentId, accountId);
+        // The write-back target comes from the home's own provenance, so a
+        // stale home (a suppressed removal failure, an account moved on by the
+        // failover loop) can never publish into the wrong root.
+        releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
         console.log(
           `[sub-agent] release-spawn-home session=${sessionId} spawn=${spawnId} agent=${subAgentId} `
           + `account=${accountId ?? "flat"}`,

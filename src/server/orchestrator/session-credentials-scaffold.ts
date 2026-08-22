@@ -47,7 +47,8 @@ export const SESSION_CREDENTIALS_SUBDIR = "sessions";
  * this directory — inside the per-session subtree so the existing container
  * mount, chown, seal, and removal all cover it — and the spawned CLI is pointed
  * at it via the run's `homeDir`. See `provisionSubAgentSpawnHome`
- * (`session-agent-credentials.ts`).
+ * (`session-agent-credentials.ts`); orphans are released (rotation write-back
+ * included) by `sweepSubAgentSpawnHomes` at container create.
  */
 export const SUB_AGENT_HOME_SUBDIR = "sub-agent-homes";
 
@@ -439,11 +440,6 @@ export function ensureSessionCredentialsScaffold(credentialsRoot: string, sessio
   }
   // Generate a token-free gitconfig (identity + brokering credential helper).
   writeSessionGitConfig(credentialsRoot, sessionId);
-  // Sweep spawn homes a crashed orchestrator left behind. Container-create time
-  // is the one moment this is race-free: a fresh container has no worker yet,
-  // so no spawn of THIS session can be in flight, and every dir under here
-  // belongs to a run that died with the previous process.
-  fs.rmSync(path.join(dir, SUB_AGENT_HOME_SUBDIR), { recursive: true, force: true });
   // #2432 — and take away anything an orchestrator-shaped writer left INSIDE
   // the sandbox. Nothing on the session side ever creates this file: the
   // container's credential is brokered per request by `shipit-git-credential`,

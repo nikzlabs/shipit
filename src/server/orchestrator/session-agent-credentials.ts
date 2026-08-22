@@ -576,6 +576,46 @@ export function subAgentSpawnHomeContainerDir(spawnId: string): string {
 }
 
 /**
+ * The spawn home's own record of WHAT was provisioned into it: the harness and
+ * the account (null ⇒ the flat root). Written by
+ * {@link provisionSubAgentSpawnHome} AFTER the copy completes — a home without
+ * the file holds unproven (possibly partial) content and is never published.
+ *
+ * This file, not a caller argument, is what the release and the orphan sweep
+ * sync back from. Two failure shapes forced that: a suppressed removal failure
+ * can leave an OLD account's copy in the home while the failover loop has
+ * already moved `accountId` on (a caller-supplied id would then publish the
+ * failed account's token into the fallback account's root — the
+ * duplicate-bearer class), and an orchestrator restart orphans homes whose
+ * caller — the only party that knew the pairing — is gone.
+ */
+const SPAWN_HOME_PROVENANCE = ".shipit-spawn-home.json";
+
+interface SpawnHomeProvenance {
+  agentId: AgentId;
+  accountId: string | null;
+}
+
+function readSpawnHomeProvenance(home: string): SpawnHomeProvenance | null {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(home, SPAWN_HOME_PROVENANCE), "utf8"),
+    ) as { agentId?: unknown; accountId?: unknown };
+    // hasOwn against the credential-path record, the one enumeration the
+    // compiler keeps complete (planning#443's lesson on the marker reader).
+    if (typeof parsed?.agentId !== "string" || !Object.hasOwn(AGENT_CREDENTIAL_PATHS, parsed.agentId)) {
+      return null;
+    }
+    return {
+      agentId: parsed.agentId as AgentId,
+      accountId: typeof parsed.accountId === "string" ? parsed.accountId : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Provision a SAME-harness sub-agent spawn's credentials into an isolated
  * per-spawn home instead of the session's own subtree.
  *
@@ -620,6 +660,13 @@ export function provisionSubAgentSpawnHome(
   for (const rel of AGENT_CREDENTIAL_PATHS[subAgentId]) {
     copyCredentialPath(sourceRoot, home, rel);
   }
+  // AFTER the copy, deliberately: the provenance file is the release's licence
+  // to publish, so a copy that threw halfway leaves a home with no file — and
+  // partial content that is never synced anywhere. See SPAWN_HOME_PROVENANCE.
+  fs.writeFileSync(
+    path.join(home, SPAWN_HOME_PROVENANCE),
+    JSON.stringify({ agentId: subAgentId, accountId: accountId ?? null }),
+  );
   // Same planning#444 materialization as the session-subtree provision: a
   // key-billed harness has no credential material on disk, and its CLI must
   // still find (or be able to create) its config root under the new HOME.
@@ -641,32 +688,81 @@ export function provisionSubAgentSpawnHome(
 
 /**
  * Close a spawn home: publish any rotation the sub-agent CLI performed back to
- * the root the home was provisioned from (freshness-gated — see
- * {@link syncSubAgentSpawnHomeTokenBack}), then delete the home. `accountId`
- * MUST be the value the matching {@link provisionSubAgentSpawnHome} ran with;
- * the pairing is what lets the write-back skip the session-subtree marker
- * machinery entirely.
+ * the root the home's OWN provenance names (freshness-gated — see
+ * {@link syncSubAgentSpawnHomeTokenBack}), then delete the home.
+ *
+ * The write-back target comes from the {@link SPAWN_HOME_PROVENANCE} file, not
+ * from the caller: the caller's idea of the account can have moved on (the
+ * failover loop re-points `accountId` between attempts) while a suppressed
+ * removal failure left the PREVIOUS account's copy in the home — a
+ * caller-supplied target would then publish one account's token into another
+ * account's root. A home with no provenance (a torn provision) is deleted
+ * without publishing anything.
  *
  * Best-effort on both halves: a failed sync-back costs at worst a slightly
- * older token on the next provision, and a failed removal is reclaimed by the
- * container-create sweep in `ensureSessionCredentialsScaffold`.
+ * older token on the next provision, and a failed removal is reclaimed —
+ * rotation included, thanks to the provenance — by the container-create
+ * {@link sweepSubAgentSpawnHomes}.
  */
 export function releaseSubAgentSpawnHome(
   credentialsRoot: string,
   sessionId: string,
   spawnId: string,
-  subAgentId: AgentId,
-  accountId?: string,
 ): void {
-  const home = subAgentSpawnHomeDir(credentialsRoot, sessionId, spawnId);
-  try {
-    syncSubAgentSpawnHomeTokenBack(credentialsRoot, sessionId, home, subAgentId, accountId);
-  } catch (err) {
-    console.warn(`[session-credentials] spawn-home token sync-back failed for ${subAgentId}:`, err);
+  releaseSpawnHomeAt(credentialsRoot, sessionId, subAgentSpawnHomeDir(credentialsRoot, sessionId, spawnId));
+}
+
+function releaseSpawnHomeAt(credentialsRoot: string, sessionId: string, home: string): void {
+  const provenance = readSpawnHomeProvenance(home);
+  if (provenance) {
+    try {
+      syncSubAgentSpawnHomeTokenBack(
+        credentialsRoot,
+        sessionId,
+        home,
+        provenance.agentId,
+        provenance.accountId ?? undefined,
+      );
+    } catch (err) {
+      console.warn(
+        `[session-credentials] spawn-home token sync-back failed for ${provenance.agentId}:`, err,
+      );
+    }
   }
   try {
     fs.rmSync(home, { recursive: true, force: true });
   } catch {
     // Best-effort — swept at the next container create.
+  }
+}
+
+/**
+ * Container-create sweep of spawn homes a crashed or restarted orchestrator
+ * left behind. Runs when no spawn of this session can be in flight (a fresh
+ * container has no worker yet), so every dir here belongs to a run whose
+ * `finally` never executed — including a run that survived a graceful
+ * orchestrator restart and finished with nobody left to release it.
+ *
+ * Each home is RELEASED, not just deleted: a rotation the consult's CLI
+ * performed is published to the provenance-named root first (freshness-gated),
+ * because with rotating refresh tokens a deleted rotation is not lost work but
+ * the permanent death of the source credential (planning#445's arithmetic,
+ * one directory over).
+ */
+export function sweepSubAgentSpawnHomes(credentialsRoot: string, sessionId: string): void {
+  const dir = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SUB_AGENT_HOME_SUBDIR);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return; // No homes — the common case.
+  }
+  for (const entry of entries) {
+    releaseSpawnHomeAt(credentialsRoot, sessionId, path.join(dir, entry));
+  }
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Best-effort — retried at the next container create.
   }
 }

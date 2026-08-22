@@ -603,7 +603,7 @@ async function runNonTurnSpawn(
     // turn pointed at someone else's.
     if (provisioned && credentialsDir) {
       if (sameHarness) {
-        releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);
+        releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
       } else {
         try {
           if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, target.harnessId, accountId);

@@ -49,6 +49,7 @@ export {
   removeSubAgentCredentials,
   subAgentSpawnHomeContainerDir,
   subAgentSpawnHomeDir,
+  sweepSubAgentSpawnHomes,
   writeSessionAccountMarker,
   writeSessionResidentRoute,
 } from "./session-agent-credentials.js";
