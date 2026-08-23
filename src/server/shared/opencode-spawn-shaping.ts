@@ -29,6 +29,7 @@
 import type { ServiceRouting } from "./types/agent-types.js";
 import { SHIPIT_PROVIDER_ID } from "./spawn-routing.js";
 import { HARNESSES } from "./catalogue/harnesses.js";
+import { visionSupportFor } from "./catalogue/index.js";
 
 const OPENCODE_REASONING_LEVELS: readonly string[] = (
   HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning?.options ?? []
@@ -52,21 +53,38 @@ const OPENCODE_REASONING_LEVELS: readonly string[] = (
  * this is model metadata rather than a style-specific field, so it is written
  * for the anthropic-messages block too — by inheritance, not by measurement.
  *
- * Declared for EVERY routed model rather than per model, because the catalogue
- * carries no per-model modality (`ModelDef` has no such field). Attach an image
- * while routed to a text-only model and the request itself is malformed, so the
- * service rejects it — which is the deliberate trade: a visible error beats the
- * silent drop that declaring nothing gave every model, vision-capable or not.
+ * Declared for every routed model EXCEPT one the catalogue knows to be
+ * text-only (planning#460). It was declared for all of them at first, because
+ * the catalogue could not say which models see; `visionSupportFor` now can, and
+ * `"unverified"` still declares — not knowing must never resolve to withholding
+ * the image, which is the silent drop this whole field exists to fix.
+ *
+ * Withholding it is only half of the text-only answer, and deliberately the
+ * quieter half: on its own it would put the turn back where planning#458 found
+ * it, with `read` reporting *"Image read successfully"* into a model that never
+ * receives the pixels. What the user actually sees is
+ * `imageAttachmentRefusal` (`orchestrator/validation.ts`), applied at both
+ * message-admission points and again in `dispatched-turn.ts` for every ingress
+ * that reaches a turn without passing one.
+ *
+ * **Where those cannot reach, this gate trades a loud failure for a quiet one,
+ * and that is a deliberate trade rather than a covered case.** An image already
+ * on disk that the agent opens by itself carries no attachment for a refusal to
+ * fire on: the blanket claim made that turn die on a provider 400, and this
+ * makes the pixels vanish while `read` reports success. Chosen because the 400
+ * was not scoped to attachments — ANY `read` of ANY image killed the whole turn,
+ * so an agent glancing at a screenshot in the repo could end a text-only
+ * session's work. A dropped image the agent then reports it cannot see is the
+ * smaller failure.
  *
  * Note the failure is HARDER than Claude Code's harness-level `supportsImages:
  * true`, so do not read the two as the same bet (a review of planning#458 drew
  * the distinction): Claude's delivery is a text block naming a file, so image
  * bytes reach the API only if the agent chooses to read it, while this
  * declaration has the CLI hand the file part to the model directly.
- * **planning#460** tracks gating per model once `ModelDef` can say which models
- * see.
  */
-const MODEL_MODALITIES = { input: ["text", "image"], output: ["text"] } as const;
+const IMAGE_MODALITIES = { input: ["text", "image"], output: ["text"] } as const;
+const TEXT_ONLY_MODALITIES = { input: ["text"], output: ["text"] } as const;
 
 /**
  * Levels a style's AI-SDK package REFUSES, so they are never declared as
@@ -140,6 +158,17 @@ export function opencodeProviderConfig(
     if (refused.includes(level)) continue;
     variants[level] = variantPayload(routing.style, level);
   }
+  // planning#460 — the routing already carries the two halves of the selection
+  // triple that the `modelId` argument completes, so the per-model verdict needs
+  // no signature change and no second source of "which model is this turn on".
+  const modalities =
+    visionSupportFor({
+      serviceId: routing.serviceId,
+      billingMode: routing.billingMode,
+      modelId,
+    }) === "no"
+      ? TEXT_ONLY_MODALITIES
+      : IMAGE_MODALITIES;
   return {
     [SHIPIT_PROVIDER_ID]: {
       name: routing.serviceName,
@@ -149,7 +178,7 @@ export function opencodeProviderConfig(
         apiKey: `{env:${routing.credentialTarget.name}}`,
       },
       models: {
-        [modelId]: { name: modelId, variants, modalities: MODEL_MODALITIES },
+        [modelId]: { name: modelId, variants, modalities },
       },
     },
   };

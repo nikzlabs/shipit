@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import type { WsClientMessage, ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
-import { validateImages, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
+import { validateImages, imageAttachmentRefusal, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
+import { modelSelectionOf } from "../session-agent-env.js";
 import { graduateSession } from "../services/graduate-session.js";
 import { pinIssueSeededSession } from "../services/issue-seeded-session.js";
 import { markIssueStartedFromSeed } from "../issue-lifecycle.js";
@@ -91,6 +92,31 @@ export async function handleSendMessage(
       ctx.send({ type: "error", message: imageError });
       return;
     }
+  }
+
+  // planning#460 — refuse an image outright when this session is pinned to a
+  // model the catalogue knows is text-only, before a turn is spent going blind.
+  // Placed beside `validateImages` deliberately: the same "reject a bad
+  // attachment immediately" moment, ahead of the queue check, steering and every
+  // disk read. `msg.uploads` is checked too — that, not `images`, is the shape
+  // the browser composer sends.
+  //
+  // `msg.sessionId ?? getActiveAppSessionId()` is the SAME target the handler
+  // resolves further down as `effectiveSessionId`, and asking it twice with two
+  // rules is how a frame explicitly aimed at session B gets admitted against
+  // session A's model — which could refuse a vision-capable target because the
+  // connection's own session happens to be text-only. A wrong refusal is the one
+  // outcome this design must never produce.
+  const targetSessionId = msg.sessionId ?? ctx.getActiveAppSessionId();
+  const targetSession = targetSessionId ? ctx.sessionManager.get(targetSessionId) : undefined;
+  const visionRefusal = imageAttachmentRefusal(
+    targetSession ? modelSelectionOf(targetSession) : undefined,
+    images,
+    msg.uploads,
+  );
+  if (visionRefusal) {
+    ctx.send({ type: "error", message: visionRefusal });
+    return;
   }
 
   // If Claude is already processing, queue this message and return.

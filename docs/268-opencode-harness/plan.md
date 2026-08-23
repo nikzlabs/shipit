@@ -326,16 +326,94 @@ instead of its container path. Everything else — `validateImages`,
 `saveImagesToUploadsDir`, the prompt block, the adapter, the spawn — is ShipIt's
 own code unchanged.
 
-**What the modality claim costs — planning#460.** It is declared for every
-routed model, because `ModelDef` carries no per-model modality. Attach an image
-while routed to a text-only model and the request is malformed, so the service
-rejects it; the trade is deliberate, since declaring nothing lost the image
-silently for every model, vision-capable or not. It is a *harder* failure than
-Claude Code's harness-level `supportsImages: true`, and the two should not be
-read as the same bet — Claude's delivery is a text block naming a file, so image
-bytes reach the API only if the agent reads it, while this declaration has the
-CLI hand the file part to the model directly. planning#460 tracks gating it per
-model once the catalogue can say which models see.
+**What the modality claim cost, and how it was paid off (planning#460).** It was
+first declared for every routed model, because `ModelDef` carried no per-model
+modality: attaching an image on a text-only route made the request malformed and
+the service rejected it. A deliberate trade — declaring nothing lost the image
+silently for *every* model — but only until the catalogue could say which models
+see. It now can; see [Per-model image input](#per-model-image-input-planning460).
+
+It remains a *harder* failure than Claude Code's harness-level `supportsImages:
+true`, and the two should not be read as the same bet — Claude's delivery is a
+text block naming a file, so image bytes reach the API only if the agent reads
+it, while this declaration has the CLI hand the file part to the model directly.
+
+## Per-model image input (planning#460)
+
+The catalogue now carries a vision verdict per **canonical model**
+(`shared/catalogue/model-vision.ts`), and `visionSupportFor(selection)` resolves
+it.
+
+**Why not a `ModelDef` field**, which is where `reasoningEfforts` lives: that
+field is on the row because the fact it carries genuinely differs between two
+rows of one model (subscription `grok-4.6` offers `xhigh`, the key-billed twin
+offers nothing). Vision does not differ — it is a property of the weights — and
+`canonicalModelKey` is the catalogue's existing home for a fact that is true of
+the model rather than of the offering. `deepseek-v4-flash` is five rows across
+four services; on the row its verdict would be authored five times. A per-row
+override becomes right the day a gateway is *measured* to drop the image part
+while its upstream sees fine, and not before.
+
+**Where the verdicts came from.** Two independent public model endpoints, read
+2026-08-23 — OpenRouter's `architecture.input_modalities` and Vercel AI
+Gateway's `modalities.input`, the same two this catalogue's gateway prices were
+authored from. They agree on every model both carry, which is the evidence for
+treating the fact as service-invariant rather than an assumption that it must be.
+models.dev, OpenCode's own source, is not resolvable from a session container.
+Four models are text-only at both — DeepSeek V4 Flash and Pro, GLM-5.2 and 5.3 —
+and they are the only rows that gate anything. One model has no verdict from
+either source (`gpt-5.3-codex-spark`, ChatGPT-Pro-only with no API) and is marked
+`"unverified"` rather than inferred from its siblings.
+
+**Three states, not a boolean.** `"unverified"` behaves exactly as before this
+change: the image is handed over, and a model that cannot see produces a visible
+failure. Only a `"no"` changes anything. That asymmetry is the design — not
+knowing must never resolve to a refusal, or an unrecognised pin would block
+attachments on a guess.
+
+**Consumers — one gate and two layers of telling the user.** Withholding the
+modality alone was never enough: it would put the turn back where planning#458
+found it, with `read` reporting *"Image read successfully"* into a model that
+never receives the pixels. So the visible half is what most of this change is.
+
+- `opencodeProviderConfig` declares `input: ["text"]` instead of `["text",
+  "image"]` for a `"no"`, so the CLI never issues a malformed request.
+- **Admission** — `imageAttachmentRefusal` (`orchestrator/validation.ts`) refuses
+  the message outright at both admission points, the WS `send_message` handler
+  and `dispatchAgentMessage`, naming the model. Best where it applies: no turn is
+  spent and the user keeps their text. It covers `uploads` as well as `images`,
+  because `uploads` — not `images` — is the shape the browser composer sends, and
+  it asks about `msg.sessionId ?? activeAppSessionId`, the same target the
+  handler resolves later, so a frame aimed at another session cannot be judged
+  against this one's model.
+- **Execution backstop** — the same function again in `runDispatchedTurn`, as a
+  **notice** rather than a refusal: the image is dropped from the prompt and the
+  user is told in the transcript. This is the only point EVERY dispatched ingress
+  passes through, and it exists because admission is not enough twice over:
+
+  1. **Quick Capture** reaches `runner.dispatch` straight from
+     `createHeadlessSession` and never calls `dispatchAgentMessage` at all.
+  2. Admission answers at **enqueue** time, and a session's model can change
+     before its queue drains — so a queued image can execute on a model that was
+     not the one it was admitted against.
+
+  A notice and not a refusal because by that point the turn is committed and the
+  prompt is worth running: throwing away a fire-and-forget capture from a hotkey
+  overlay because one of its files is a PNG costs more than it saves. `uploadPaths`
+  is left intact so the user's bubble still shows the chip.
+
+**The one case nothing catches, stated as a trade rather than covered:** an image
+already on disk that the agent opens by itself carries no attachment, so nothing
+fires and the pixels are dropped where the blanket claim used to produce a
+provider 400. Accepted deliberately — that 400 was not scoped to attachments, so
+ANY `read` of ANY image killed the whole turn, and an agent glancing at a
+screenshot in the repo could end a text-only session's work.
+
+**Deliberately not done here:** the composer still offers an attach affordance
+whatever the session is pinned to. That is not a per-model gap — no client or
+server code reads `capabilities.supportsImages` at all, so grok's evidence-backed
+harness-level `false` is unenforced too. One surface should answer both, so it is
+scoped out to planning#474 rather than half-built here.
 
 ## Independent review outcomes (docs/268, same-day)
 

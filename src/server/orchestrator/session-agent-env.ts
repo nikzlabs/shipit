@@ -505,8 +505,16 @@ function blockedSubjectFor(agentId: AgentId, session: SessionInfo): string | und
   return getService(serviceId)?.name ?? serviceId;
 }
 
-/** The session's persisted triple, or `undefined` when it holds no complete one. */
-function modelSelectionOf(session: SessionInfo): ModelSelection | undefined {
+/**
+ * The session's persisted triple, or `undefined` when it holds no complete one.
+ *
+ * Exported since planning#460, so the two message-admission paths can ask the
+ * catalogue about the pinned model without a second, subtly different reading of
+ * "what is this session on" — an incomplete triple must answer `undefined`
+ * there too, or a half-written selection would resolve to some other model's
+ * capabilities.
+ */
+export function modelSelectionOf(session: SessionInfo): ModelSelection | undefined {
   if (!session.model || !session.serviceId || !session.billingMode) return undefined;
   return {
     serviceId: session.serviceId,

@@ -194,6 +194,56 @@ describe("Integration: quick-capture headless sessions", () => {
     }).trim()).toBe(body.branch);
   });
 
+  it("drops the image and says so when the new session's model cannot see (planning#460)", { timeout: 15_000 }, async () => {
+    // Quick Capture reaches a turn through `runner.dispatch` DIRECTLY — it never
+    // calls `dispatchAgentMessage`, so neither of planning#460's admission gates
+    // sees it. The backstop in `runDispatchedTurn` is what covers this, and it
+    // is a notice rather than a refusal on purpose: a fire-and-forget capture is
+    // worth running for its prompt even when one of its files is unreadable by
+    // the pinned model. What must NOT happen is the image being withheld in
+    // silence, which is all that gating OpenCode's modality would give here.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const { payload, boundary } = buildMultipart(
+      {
+        repoUrl: REPO_URL,
+        initialPrompt: "Match this design",
+        agent: "claude",
+        model: "deepseek-v4-flash",
+        serviceId: "deepseek",
+        billingMode: "key",
+      },
+      [{ name: "file", filename: "screenshot.png", content: png }],
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const { sessionId } = res.json() as { sessionId: string };
+
+    await waitFor(() => createdAgents.some((a) => a.runCalled), 5000, "headless agent start");
+    const prompt = createdAgents[0].lastPrompt ?? "";
+    // The prompt still carries the user's text and NOT an instruction to go read
+    // a picture the model cannot see.
+    expect(prompt).toContain("Match this design");
+    expect(prompt).not.toContain("<attached_images>");
+
+    // And the drop is TOLD, in the transcript — the assertion that separates this
+    // fix from the silent loss it replaces. A version that merely stopped
+    // referencing the image would pass everything above.
+    const history = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    expect(history.body).toContain("cannot read images");
+    expect(history.body).toContain("V4 Flash");
+  });
+
   it("references an attached image in the dispatched first-turn prompt", { timeout: 15_000 }, async () => {
     // Regression: an image attached in the quick-capture overlay is saved into
     // the new session's uploads dir but was NEVER folded into the prompt the

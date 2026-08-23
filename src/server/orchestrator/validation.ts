@@ -2,6 +2,8 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type { ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../shared/types.js";
 import { wrapUntrustedContent } from "../shared/untrusted-input.js";
+import { getModel, getService, visionSupportFor } from "../shared/catalogue/index.js";
+import type { ModelSelection } from "../shared/catalogue/index.js";
 
 // Re-exported from shared for backward compatibility — prefer importing from "../shared/utils.js" directly.
 export { getErrorMessage } from "../shared/utils.js";
@@ -185,6 +187,47 @@ const IMAGE_EXT_TO_MIME: Record<string, string> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
 };
+
+/**
+ * planning#460 — refuse a message that attaches an image while the session is
+ * pinned to a model the catalogue KNOWS cannot read one. Returns the message to
+ * show, or `null` to let the message through.
+ *
+ * This is the half of planning#460 the user actually sees. Gating OpenCode's
+ * modality declaration (`opencode-spawn-shaping.ts`) stops a malformed request,
+ * but on its own it would hand the turn back to the failure planning#458 found:
+ * the agent opens the file, the CLI reports success, the pixels never arrive,
+ * and a turn is spent on a model answering that it cannot see the picture. The
+ * issue asks for the opposite — refused by ShipIt, with something to act on.
+ *
+ * **Only a `"no"` refuses.** `"unverified"` — a model nobody has checked, a
+ * session with no selection yet, a spawn ShipIt does not route — sends the image
+ * exactly as it did before, so this can never block a turn on a guess. See
+ * `VisionSupport` in `shared/catalogue/model-vision.ts`.
+ *
+ * Both attachment shapes count, because both end in the same
+ * `<attached_images>` block: `images` is the API/dispatch shape, and `uploads`
+ * is what the browser composer sends. An upload's kind is read from its
+ * extension, the same rule {@link resolveUploadRefs} applies when it reads the
+ * bytes — asked here without touching the disk, since this runs before a turn
+ * exists.
+ */
+export function imageAttachmentRefusal(
+  selection: ModelSelection | undefined,
+  images: ImageAttachment[] | undefined,
+  uploads: UploadRef[] | undefined,
+): string | null {
+  const carriesImage =
+    (images?.length ?? 0) > 0
+    || (uploads ?? []).some((u) => IMAGE_EXT_TO_MIME[path.extname(u.path).toLowerCase()] !== undefined);
+  if (!carriesImage) return null;
+  if (visionSupportFor(selection) !== "no") return null;
+
+  const label = (selection && getModel(selection)?.label) ?? selection?.modelId ?? "This model";
+  const service = selection && getService(selection.serviceId)?.name;
+  const where = service ? `${label} (${service})` : label;
+  return `${where} cannot read images — it takes text only. Remove the attachment, or switch this session to a model that can see, and send again.`;
+}
 
 /**
  * Resolve upload refs into FileAttachment entries (for text files) or
