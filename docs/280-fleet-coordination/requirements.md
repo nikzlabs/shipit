@@ -20,18 +20,20 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 10. ShipIt exposes an API so a coordinating agent can do this. ShipIt sends everything to the coordinator and does not gate what reaches the user.
 11. The coordinator has explicit presence. The user signals when they are ready to talk. While they are engaged on one topic, other interruptions do not come through. When the user becomes free, the next waiting message plays.
 12. Coordination behavior stays in the agent, flexibly, until the user has learned the workflow in practice. Only patterns that prove stable get hardened into code later.
+13. The coordinating agent is built into ShipIt and ships from day one. The workflow must not depend on an external assistant.
+14. Voice and desktop are one continuous conversation with the same coordinator. At the desktop the user sends text and sees results rendered conveniently in the chat UI; away from it, the same conversation continues by voice.
 
 ## Open questions
 
-- Where does the coordinator run first: only the external general-purpose assistant (Hermes), or also a built-in ShipIt client from the beginning? (User: "maybe we should do it already from the beginning, I don't know.")
-- What capability isolation does the Hermes platform enforce? This decides how much of the untrusted-content boundary is structural rather than instructional.
+- If an external assistant is ever attached as a second API client, what capability isolation does its platform enforce? (Decides how much of the untrusted-content boundary is structural rather than instructional. Not blocking: the first client is built-in, req 13.)
 
 ## Resolved questions
 
 - 2026-08-23 — May a voice reply trigger a PR merge? No for v1; it has its own risks. Yes in the final vision ("merge water reflections" is the target workflow).
 - 2026-08-23 — Push or pull? Pull-first: the user initiates reviews and items wait (req 4). ShipIt pushes everything to the coordinator (req 10); the coordinator owns interrupt and delivery policy through its presence states (req 11). ShipIt holds no interrupt setting.
 - 2026-08-23 — Is a headline-plus-one-shot-reply loop enough, without an agent in the middle? No. Tested live in this conversation: a headline could not carry a design decision. A conversational coordinating agent mediates the channel (req 6, 9).
-- 2026-08-23 — Native coordinator or external assistant? An API for a coordinating agent comes first ("we need an API for an agent to be able to work with ShipIt"). The external assistant is the expected first client; built-in-from-the-start remains open (above).
+- 2026-08-23 — Native coordinator or external assistant? An API for a coordinating agent comes first ("we need an API for an agent to be able to work with ShipIt"). The external assistant is the expected first client; built-in-from-the-start remains open. *(Superseded the same day — see the next receipt.)*
+- 2026-08-23 — External assistant (Hermes) or built-in coordinator as the first client? **Built-in, from day one** (req 13). Reasons, in the user's words: full control of the agent's prompt and environment gives the best experience; at the desktop the user continues the same coordinating agent through the chat UI (req 14); delegating to an existing agent would be a subpar experience; ShipIt already has all the infrastructure. The work splits into two tracks: the agent-agnostic control API (req 10, unchanged), and the built-in coordinator as its first client — external assistants remain possible later.
 - 2026-08-23 — How much coordination mechanism belongs in the API? As little as possible now. Doing too much programmatically before the workflow is learned is the wrong way; the agent coordinating is the most flexible thing. Harden observed patterns later (req 12).
 
 ## See also

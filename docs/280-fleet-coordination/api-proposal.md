@@ -13,7 +13,7 @@ description: Synthesized design draft for the fleet-coordination control API —
 
 ## 1. Fixed context
 
-- The user runs many sessions across many repos and reviews them pull-first, mostly by voice, through an external conversational assistant (Hermes) as the expected first API client. A built-in client may follow — the API is client-agnostic.
+- The user runs many sessions across many repos and reviews them pull-first, by voice on the go and through the chat UI at the desk, via a **built-in ShipIt coordinator** — the first API client (decided 2026-08-23, requirements.md req 13–14). The API stays agent-agnostic; external assistants may attach as later clients.
 - Three architecture rules: the queue and sessions are the source of truth; deep discussion is connect-through with verbatim quoting; the durable record lands in each session's transcript.
 - Out of v1: merge, settings, credentials, archive, live steering, streaming deltas.
 
@@ -132,7 +132,7 @@ No push ever performs an action.
 
 ## 10. Open questions, ranked
 
-Resolved so far: interrupt policy — coordinator-owned presence model, see §9 (2026-08-23). Coordination-mechanism minimalism — see §2 (2026-08-23).
+Resolved so far: interrupt policy — coordinator-owned presence model, see §9 (2026-08-23). Coordination-mechanism minimalism — see §2 (2026-08-23). First client — the built-in ShipIt coordinator, not an external assistant; the API stays agent-agnostic (2026-08-23, requirements.md req 13–14). Consequence to re-examine in the plan phase: which delivery pieces (webhooks, dedicated listener) are still v1 when the first client is internal — without making the API dishonest for future external clients.
 
 1. **Listener topology** — dedicated control listener/port vs shared listener (sharing requires hardening first-party browser auth first). Deployment-dependent.
 2. **Opaque `repoId`** — repos are URL-keyed today; persisted ids are the safer long-lived API but cost a migration.
