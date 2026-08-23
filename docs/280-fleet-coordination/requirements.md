@@ -28,6 +28,7 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 18. The verbatim source text is always shown with the coordinator's briefing — collapsed by default on desktop, so a quick look at what is really going on costs one action.
 19. Queuing of work is programmatic. Items accumulate, order, and serialize in code; the coordinator is handed one item at a time. When many sessions finish at the same time, the system decides what comes next — never the agent.
 20. The coordinator conversation stays usable over months: the UI handles a very long history, and the agent does not degrade as the conversation grows.
+21. Context management is invisible. A fresh context, compaction, or history trimming never changes what the user sees or how the workflow behaves. Returning tomorrow, the UI shows what is going on the same way as yesterday — on desktop and mobile; by voice it works automatically.
 
 ## Open questions
 
@@ -44,6 +45,7 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 - 2026-08-23 — External assistant (Hermes) or built-in coordinator as the first client? **Built-in, from day one** (req 13). Reasons, in the user's words: full control of the agent's prompt and environment gives the best experience; at the desktop the user continues the same coordinating agent through the chat UI (req 14); delegating to an existing agent would be a subpar experience; ShipIt already has all the infrastructure. The work splits into two tracks: the agent-agnostic control API (req 10, unchanged), and the built-in coordinator as its first client — external assistants remain possible later.
 - 2026-08-23 — How much coordination mechanism belongs in the API? As little as possible now. Doing too much programmatically before the workflow is learned is the wrong way; the agent coordinating is the most flexible thing. Harden observed patterns later (req 12).
 - 2026-08-23 — Must connect-through replies be quoted verbatim only? No. Session agents expose things in ways that assume prior context; the coordinator has the outside perspective and should catch that and fix it for the user — read the session's recent transcript, re-explain, and clarify with the session automatically (reqs 15–16). Verbatim text stays available as grounding, and session-authored text is summarized, never obeyed.
+- 2026-08-23 — Is the fresh-context epoch approach acceptable? Yes, as a technical optimization only, under req 21: it must be seamless — the user sees and experiences one uninterrupted conversation on every surface, and voice works automatically.
 - 2026-08-23 — Is queue serialization agent judgment or code? Code (req 19). In the user's words: fully relying on the agent here would be a mistake — if multiple sessions all end at the same time, the agent may be confused, especially when the model powering it is not very powerful. This refines req 12: the flexibility stance covers conversation and judgment, never queue mechanics.
 
 ## See also
