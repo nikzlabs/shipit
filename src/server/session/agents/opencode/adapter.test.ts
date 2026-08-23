@@ -566,9 +566,16 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
   // well-formed 429 is NOT that case — it reports and exits 1 after ~72 s, and
   // "maps a fatal error event" above already covers it.
   describe("stall deadline", () => {
+    const DEADLINE_MS = 45 * 60_000;
+    const homes: string[] = [];
+    afterEach(() => {
+      for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true });
+    });
+
     /** A spawn HOME with a controllable CLI log directory. */
     function tempHome(withLog: boolean): { home: string; logFile: string } {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-stall-"));
+      homes.push(home);
       const logDir = path.join(home, ".local", "share", "opencode", "log");
       if (withLog) fs.mkdirSync(logDir, { recursive: true });
       return { home, logFile: path.join(logDir, "run.log") };
@@ -580,7 +587,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
       adapter.run({ ...RUN_PARAMS, homeDir: home });
 
       // The measured wedge: not one byte, on any channel, ever.
-      vi.advanceTimersByTime(15 * 60_000);
+      vi.advanceTimersByTime(DEADLINE_MS);
       expect(child.kill).toHaveBeenCalled();
 
       // And the kill has to SETTLE the turn. A signal death with no completed
@@ -607,7 +614,7 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
       fs.writeFileSync(logFile, "working");
       fs.utimesSync(logFile, beat, beat);
 
-      vi.advanceTimersByTime(15 * 60_000);
+      vi.advanceTimersByTime(DEADLINE_MS);
       expect(child.kill).not.toHaveBeenCalled();
 
       // The postponement is exactly the remainder, not a fresh full window:
@@ -622,12 +629,62 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
       const { home } = tempHome(false);
       adapter.run({ ...RUN_PARAMS, homeDir: home });
 
-      vi.advanceTimersByTime(14 * 60_000);
+      vi.advanceTimersByTime(DEADLINE_MS - 60_000);
       // A step_start alone: enough to prove liveness, and deliberately NOT a
       // final stop, which would arm the post-turn stop-kill instead.
       child.emitStdout([CAPTURED[0]]);
-      vi.advanceTimersByTime(14 * 60_000);
+      vi.advanceTimersByTime(DEADLINE_MS - 60_000);
       expect(child.kill).not.toHaveBeenCalled();
+    });
+
+    it("never turns a user interrupt into a stall failure", () => {
+      const { adapter, child, events } = makeAdapter();
+      const { home } = tempHome(false);
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+
+      // The user interrupts a second before the deadline. The CLI is known to
+      // survive SIGINT for a while, so the timer would otherwise fire into the
+      // gap and relabel the interrupt as an adapter-detected failure.
+      vi.advanceTimersByTime(DEADLINE_MS - 1_000);
+      adapter.interrupt();
+      vi.advanceTimersByTime(10 * 60_000);
+
+      child.close(null, "SIGTERM");
+      // A signal death with no completed step emits NO result — that is how the
+      // runner tells an interrupt from a failure.
+      expect(events.some((e) => e.type === "agent_result")).toBe(false);
+    });
+
+    it("carries no stall state into the next turn on a reused adapter", () => {
+      // One adapter, two turns — the production shape: the instance outlives
+      // every turn it runs.
+      const children = [new FakeChild(), new FakeChild()];
+      let spawned = 0;
+      const adapter = new OpencodeAdapter({
+        spawnFn: () => children[spawned++] as unknown as ChildProcess,
+      });
+      const events: AgentEvent[] = [];
+      adapter.on("event", (e) => events.push(e));
+      const { home } = tempHome(false);
+
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+      vi.advanceTimersByTime(DEADLINE_MS);
+      children[0].close(null, "SIGTERM");
+      expect(events.filter((e) => e.type === "agent_result")).toHaveLength(1);
+
+      // The second turn succeeds. It must inherit neither the stall reason
+      // (which would report a success as failed) nor a live timer from the
+      // first turn (which would kill this process).
+      events.length = 0;
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+      vi.advanceTimersByTime(DEADLINE_MS - 1_000);
+      children[1].emitStdout(CAPTURED);
+      children[1].close(0);
+
+      expect(children[1].kill).not.toHaveBeenCalled();
+      const result = events.at(-1);
+      expect(result).toMatchObject({ type: "agent_result", status: "success" });
+      if (result?.type === "agent_result") expect(result.error).toBeUndefined();
     });
   });
 

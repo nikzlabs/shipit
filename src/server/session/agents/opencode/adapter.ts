@@ -104,11 +104,24 @@ const STOP_EXIT_GRACE_MS = 5_000;
 
 /**
  * How long a turn may show NO sign of life before the adapter ends it
- * (planning#476). This is the backstop for a CLI wedged on a request that
- * never completes — see {@link OpencodeAdapter.onStallDeadline} for why a
- * clock is the only instrument available, and why 15 minutes.
+ * (planning#476). See {@link OpencodeAdapter.armWatchdog} for why a clock is
+ * the only instrument available at all.
+ *
+ * **This is a ceiling on one quiet OPERATION, not on a turn**, and it is sized
+ * by the longest quiet operation ShipIt itself sanctions: `shipit agent result
+ * --wait --timeout` accepts up to **30 minutes** (`shipit-docs/agent.md`), and
+ * CLAUDE.md instructs agents to collect a detached review exactly that way. A
+ * long `bash` call is silent on every channel for its whole duration — the CLI
+ * logs at the tool BOUNDARIES and nothing in between — so a deadline at or
+ * below 30 minutes would kill a turn doing precisely what the platform told it
+ * to do. 45 minutes clears that supported maximum by half again. Big Gradle and
+ * Docker builds, SDK installs and full test suites sit under it too.
+ *
+ * Deliberately biased long: overshooting costs a wedged turn some extra time
+ * before it reports (and a wedged session is visibly stuck, so a watching user
+ * can still interrupt), while undershooting destroys work in progress.
  */
-const STALL_DEADLINE_MS = 15 * 60_000;
+const STALL_DEADLINE_MS = 45 * 60_000;
 
 /**
  * `<data dir>/log` — the directory the CLI appends its own run log to, read
@@ -455,8 +468,16 @@ export class OpencodeAdapter
    * under it was touched since the deadline was armed, the deadline re-arms
    * instead of killing. A turn that is stepping, calling tools or dispatching
    * requests writes log lines throughout (`loop step=N`, permission
-   * evaluations, `stream …`), so an hour of real work re-arms forever, while
-   * the wedge — which writes nothing — does not. This reads `mtime` only,
+   * evaluations, `stream …`), so a turn crossing those boundaries keeps
+   * re-arming for as long as it keeps crossing them, while the wedge — which
+   * writes nothing at all — does not.
+   *
+   * The cadence is discrete, though, and that bounds what the heartbeat can
+   * promise: it beats at step and tool BOUNDARIES, not during a step or a tool.
+   * One long quiet operation — a 30-minute `bash` call, a model request that
+   * streams for half an hour — produces no beat while it runs, which is exactly
+   * why {@link STALL_DEADLINE_MS} has to clear the longest such operation
+   * rather than merely being "generous". This reads `mtime` only,
    * never file content, and it can only ever POSTPONE the kill: no log, a moved
    * path, a changed format all degrade to the bare deadline rather than to an
    * early kill. That is also why the log's format being an unstable private
@@ -468,13 +489,11 @@ export class OpencodeAdapter
    * the failure it produces is "detected later", which is the direction this
    * whole mechanism is deliberately biased in.
    *
-   * The residual exposure is therefore one model request whose entire lifetime
-   * exceeds {@link STALL_DEADLINE_MS} while logging nothing — the CLI logs at
-   * dispatch and again at step end, nothing in between. 15 minutes is chosen to
-   * sit beyond that: providers cap a single request well below it (Anthropic's
-   * own non-streaming ceiling is 10 minutes), so a step that outlives this has
-   * already lost its connection. Against that: today the turn hangs until the
-   * user interrupts it, forever.
+   * The residual exposure is therefore one operation — model request or tool
+   * call — that outlives {@link STALL_DEADLINE_MS} without reaching a boundary.
+   * That constant is sized against the longest one the platform sanctions; see
+   * its docstring. Against that residue: today the turn hangs until the user
+   * interrupts it, forever.
    */
   private armWatchdog(): void {
     this.lastActivityAt = Date.now();
@@ -509,11 +528,16 @@ export class OpencodeAdapter
     }
 
     const minutes = Math.round(STALL_DEADLINE_MS / 60_000);
+    // Says what happened and stops there. It deliberately does NOT tell the
+    // user that retrying is safe: the deadline fires wherever the silence was,
+    // so the turn may already have run tools that deployed, migrated, uploaded
+    // or otherwise changed something outside this workspace, and a rerun would
+    // repeat them. What was and was not done is the turn's own question.
     this.stallReason =
       `The OpenCode CLI produced no output and showed no activity for ${minutes} minutes, ` +
-      "so ShipIt ended the turn. This is what a stalled request to the model service looks " +
-      "like — the CLI has no request timeout, so it would otherwise wait indefinitely. " +
-      "Running the turn again is safe.";
+      "so ShipIt ended the turn rather than waiting indefinitely. The usual cause is a " +
+      "request to the model service that was accepted and never answered — the CLI has no " +
+      "request timeout of its own. Check what the turn had already done before retrying it.";
     console.warn(`[opencode] stall deadline (${minutes}m) reached — ending the turn`);
     this.emit("log", "server", this.stallReason);
     killChild(proc, "SIGTERM");
@@ -863,6 +887,16 @@ export class OpencodeAdapter
 
     const proc = this.proc;
     if (!proc) return;
+    // Disarm the stall deadline first (planning#476). The CLI is known to
+    // survive SIGINT for a while, so an interrupt landing near the deadline
+    // would otherwise let `onStallDeadline` set a stall reason in the gap — and
+    // a stall reason makes `emitSynthesizedResult` emit a FAILED result where
+    // the signal-death path would correctly emit none, turning the user's own
+    // interrupt into an invented adapter failure.
+    if (this.watchdog) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
     killChild(proc, "SIGINT");
     // The CLI is known to survive SIGINT while stuck in a retry loop; escalate.
     // Held on the adapter and cleared at close so it dies with the turn.

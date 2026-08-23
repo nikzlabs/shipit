@@ -401,16 +401,34 @@ row for 429/500/529 above is superseded by this section.
   warning fired on every turn longer than a minute.
 
 **The fix.** A **stall deadline** in the adapter (`armWatchdog` /
-`onStallDeadline`): 15 minutes with no output on any channel and no growth in
+`onStallDeadline`): 45 minutes with no output on any channel and no growth in
 the CLI's log directory ends the turn with a synthesized failed
 `agent_result`. Because no signal distinguishes "waiting on a model that will
 answer" from "waiting on one that never will", a clock is the only instrument
 available; the log directory is used as a **liveness heartbeat** — `mtime`
-only, never parsed — so a turn that is stepping or running tools keeps
-postponing the deadline indefinitely, and a missing or moved log degrades to
-the bare deadline rather than to an early kill. 15 minutes sits beyond any
-single model request, which providers cap well below it. Guard tests:
-`adapter.test.ts` → "stall deadline".
+only, never parsed — so a turn that keeps reaching step and tool boundaries
+keeps postponing the deadline, and a missing or moved log degrades to the bare
+deadline rather than to an early kill.
+
+Two things the first draft of this got wrong, both caught in review and worth
+keeping written down:
+
+- **The heartbeat beats at boundaries, not continuously.** The CLI logs when a
+  tool is authorized and when a step closes, nothing while either runs, so one
+  long quiet operation produces no beat. The deadline is therefore a ceiling on
+  a single quiet OPERATION, and has to clear the longest one the platform
+  itself sanctions: `shipit agent result --wait --timeout` accepts up to **30
+  minutes**, and CLAUDE.md tells agents to collect a detached review exactly
+  that way. A 15-minute deadline would have killed a turn doing what ShipIt
+  told it to do. 45 clears it by half again, with big builds, SDK installs and
+  full test suites underneath.
+- **The synthesized message must not promise that retrying is safe.** The
+  deadline fires wherever the silence fell, so the turn may already have run
+  tools with effects outside the workspace.
+
+Guard tests: `adapter.test.ts` → "stall deadline", including that a user
+interrupt landing near the deadline still settles as *interrupted* rather than
+as an invented adapter failure.
 
 ## Image attachments (planning#458)
 
