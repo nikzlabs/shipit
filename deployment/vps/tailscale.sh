@@ -178,7 +178,10 @@ fi
 # not conflict with TS_IP:80, while one on 0.0.0.0:80 does.
 port_is_free() {
   local ip="$1" port="$2" rc=0
-  timeout 1 socat "TCP-LISTEN:${port},bind=${ip},reuseaddr" /dev/null >/dev/null 2>&1 || rc=$?
+  # `fork` keeps the probe listening after an accepted connection. Without it a
+  # client that connects during the one-second window ends socat normally, and a
+  # port that is in fact free would be read as taken.
+  timeout 1 socat "TCP-LISTEN:${port},bind=${ip},fork,reuseaddr" /dev/null >/dev/null 2>&1 || rc=$?
   # 124 = `timeout` killed a socat that was sitting in accept(), i.e. the bind
   # succeeded and the address is ours to take. Any other code is a failed bind.
   [ "$rc" -eq 124 ]
@@ -192,15 +195,17 @@ describe_port_holder() {
   ss -ltnp "sport = :${port}" 2>/dev/null | tail -n +2 | head -n 3 || true
 }
 
-port_taken_error() {
+report_holder() {
   local port="$1" holder="$2"
+  [ -n "$holder" ] || return 0
   echo "" >&2
-  echo "Error: cannot expose ShipIt on ${TS_IP}:${port} — that address is already in use." >&2
-  if [ -n "$holder" ]; then
-    echo "" >&2
-    echo "  Already listening on port ${port}:" >&2
-    printf '      %s\n' "$holder" >&2
-  fi
+  echo "  Already listening on port ${port}:" >&2
+  printf '      %s\n' "$holder" >&2
+}
+
+# Shared tail of every "the port is taken" error: what still works, and the one
+# command that fixes it.
+port_taken_advice() {
   echo "" >&2
   echo "  ShipIt itself is unaffected and still running on 127.0.0.1:${BACKEND_PORT}" >&2
   echo "  inside this server; only tailnet access could not be set up." >&2
@@ -210,7 +215,49 @@ port_taken_error() {
   echo "" >&2
   echo "  The port becomes part of the URL you open (http://<host>:<port>) and of" >&2
   echo "  the preview URLs, so any free port works." >&2
+  restore_forwarder
   exit 1
+}
+
+port_taken_error() {
+  local port="$1" holder="$2"
+  echo "" >&2
+  echo "Error: cannot expose ShipIt on ${TS_IP}:${port} — that address is already in use." >&2
+  report_holder "$port" "$holder"
+  port_taken_advice
+}
+
+# Both ports taken: name BOTH, or the message blames port 80 for a fallback that
+# failed on a different port the operator was never told about.
+both_ports_taken_error() {
+  local port="$1" holder="$2" fallback="$3" fallback_holder="$4"
+  echo "" >&2
+  echo "Error: port ${port} is in use on ${TS_IP}, and so is port ${fallback}," >&2
+  echo "       which is what this script falls back to. Neither can be used." >&2
+  report_holder "$port" "$holder"
+  report_holder "$fallback" "$fallback_holder"
+  port_taken_advice
+}
+
+# A rerun is normal — setup.sh runs this script, and re-running it is how the
+# port or the tailnet IP gets changed — and on a rerun OUR OWN forwarder already
+# holds the port. Stop it first, so the preflight measures the machine WITHOUT
+# ShipIt in it; otherwise a healthy rerun reads its own listener as the conflict
+# and moves a working install onto another port. It is started again below, and
+# every error path puts it back exactly as it was found.
+FORWARDER_WAS_ACTIVE=0
+if systemctl is-active --quiet shipit-tailscale-preview.service 2>/dev/null; then
+  FORWARDER_WAS_ACTIVE=1
+  echo "==> Stopping the existing forwarder while the port is checked..."
+  systemctl stop shipit-tailscale-preview.service 2>/dev/null || true
+fi
+
+restore_forwarder() {
+  [ "${FORWARDER_WAS_ACTIVE:-0}" = "1" ] || return 0
+  echo "" >&2
+  echo "  The forwarder that was already running has been started again," >&2
+  echo "  so tailnet access is exactly as it was before this run." >&2
+  systemctl start shipit-tailscale-preview.service 2>/dev/null || true
 }
 
 echo "==> Checking that ${TS_IP}:${LISTEN_PORT} is free..."
@@ -222,7 +269,8 @@ if ! port_is_free "$TS_IP" "$LISTEN_PORT"; then
     port_taken_error "$LISTEN_PORT" "$HOLDER"
   fi
   if ! port_is_free "$TS_IP" "$FALLBACK_PORT"; then
-    port_taken_error "$LISTEN_PORT" "$HOLDER"
+    both_ports_taken_error "$LISTEN_PORT" "$HOLDER" \
+      "$FALLBACK_PORT" "$(describe_port_holder "$FALLBACK_PORT")"
   fi
   TAKEN_PORT="$LISTEN_PORT"
   LISTEN_PORT="$FALLBACK_PORT"
@@ -335,14 +383,15 @@ systemctl restart shipit-tailscale-preview.service
 # cannot see a conflict that appears in between (a service starting at the same
 # time, a socat that fails for some other reason). And `systemctl is-active` can
 # never answer this: systemd supervises the supervisor loop, which stays alive
-# while every bind attempt inside it fails. So prove the listener exists — with
-# `ss` when available (it names the exact address), otherwise by connecting.
+# while every bind attempt inside it fails.
+#
+# Look for OUR socat, holding exactly this address, rather than for "a listener
+# on the port": a listener alone proves nothing about who owns it, so a process
+# that won the race would be reported as success. socat exits on a failed bind,
+# so a live socat with this bind in its argv is itself the proof that the bind
+# succeeded.
 forwarder_is_listening() {
-  if command -v ss &>/dev/null; then
-    ss -ltnH "src = ${TS_IP}:${LISTEN_PORT}" 2>/dev/null | grep -q . && return 0
-    return 1
-  fi
-  timeout 2 bash -c "exec 3<>/dev/tcp/${TS_IP}/${LISTEN_PORT}" 2>/dev/null
+  pgrep -f "TCP-LISTEN:${LISTEN_PORT},bind=${TS_IP}," >/dev/null 2>&1
 }
 
 echo "==> Verifying the forwarder is listening on ${TS_IP}:${LISTEN_PORT}..."
