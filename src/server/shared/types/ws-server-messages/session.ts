@@ -209,7 +209,28 @@ export interface WsSessionAgentFinished {
   sessionId: string;
 }
 
-/** Server → Client: a server-initiated user message (e.g. CI fix prompt). */
+/**
+ * Server → Client: the user message that starts a turn, surfaced to every
+ * attached viewer.
+ *
+ * Two producers, distinguished by `clientRequestId`:
+ *
+ *  - **Server-initiated** (CI fix, child spawn, `POST /agent/dispatch`) — no
+ *    `clientRequestId`. Some of these have an optimistic bubble on the
+ *    dispatching tab, deduped by text; the rest append.
+ *  - **User-typed over the WebSocket** — carries the sender's `clientRequestId`.
+ *    The sending tab already rendered an optimistic bubble and dedupes on that
+ *    id; every OTHER attached viewer (a second tab, the desktop while the user
+ *    types on their phone) has nothing to render without this echo, and used to
+ *    see the agent reply to a message that was never on screen until they
+ *    reloaded.
+ *
+ * Attachments ride along in the same shapes chat history persists, so the echo
+ * renders identically to the reloaded bubble. Per docs/244 the images carry a
+ * content-addressed `src` rather than base64 `data` — safe because the executor
+ * emits this AFTER the user row is persisted, which is what that URL resolves
+ * against.
+ */
 export interface WsSystemUserMessage {
   type: "system_user_message";
   sessionId: string;
@@ -219,6 +240,16 @@ export interface WsSystemUserMessage {
   agentInterface?: AgentInterfaceProvenance;
   /** Another session's agent supplied this prompt, rather than the user. */
   messageOrigin?: SessionMessageOrigin;
+  /**
+   * The sending client's `send_message` / `answer_question` request id. Set only
+   * for user-typed messages, and the exact key that tab dedupes its own
+   * optimistic bubble on — text matching cannot tell a repeated "continue" from
+   * its own echo.
+   */
+  clientRequestId?: string;
+  images?: { data?: string; mediaType: string; src?: string }[];
+  files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
+  uploadPaths?: string[];
 }
 
 /**

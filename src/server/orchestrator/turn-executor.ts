@@ -107,11 +107,27 @@ export interface TurnInput {
   activity?: string;
   permissionMode?: PermissionMode;
   /**
-   * Emit a `system_user_message` bubble (dispatch — the orchestrator initiated
-   * the message) vs. rely on the client's already-rendered optimistic bubble
-   * (WS user-typed).
+   * Emit a `system_user_message` bubble so every attached viewer sees the
+   * message this turn is answering.
+   *
+   * Set on dispatch (the orchestrator initiated the message, so no client has a
+   * bubble) AND on a WS user-typed message (the SENDING tab has an optimistic
+   * bubble, but no other viewer does — it dedupes on `userEcho.clientRequestId`).
+   * The drained-queue re-entry leaves it off: `queue_updated`'s `dequeued` field
+   * already restores that bubble on every viewer.
    */
   emitUserEcho: boolean;
+  /**
+   * Attachments and sender identity for the echo above. Text-only dispatches
+   * omit it entirely.
+   */
+  userEcho?: {
+    /** The sending tab's request id — its optimistic bubble's dedupe key. */
+    clientRequestId?: string;
+    images?: { data?: string; mediaType: string; src?: string }[];
+    files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
+    uploadPaths?: string[];
+  };
   /** Persist the user row (transport owns the payload shape: text-only vs. +images/files). */
   persistUserMessage: (sessionId: string) => void;
   /**
@@ -938,18 +954,9 @@ export async function executeAgentTurn(
     return true;
   };
 
-  // Surface the user message. Dispatch emits a `system_user_message` bubble (no
-  // client-side optimistic bubble to dedupe against); WS skips the echo.
-  if (input.emitUserEcho) {
-    emit({
-      type: "system_user_message",
-      sessionId,
-      text: input.userText,
-      activity,
-      ...(input.agentInterface ? { agentInterface: input.agentInterface } : {}),
-      ...(input.messageOrigin ? { messageOrigin: input.messageOrigin } : {}),
-    });
-  }
+  // Surface the user message to every attached viewer. Deliberately NOT emitted
+  // here — see `emitUserMessageEcho()` below, which runs after the user row is
+  // persisted so the echo's content-addressed image URLs already resolve.
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
 
   // Shared listener: handles agent_init/assistant/tool_result/result/error,
@@ -1019,6 +1026,34 @@ export async function executeAgentTurn(
     ...(adoptsCliStartedTurns ? { adoptsCliStartedTurns: true } : {}),
   });
 
+  /**
+   * Put the turn's user message on every attached viewer's transcript.
+   *
+   * Sequenced deliberately: AFTER the user row is persisted, and BEFORE
+   * `afterUserMessagePersisted`.
+   *
+   *  - After the persist, because the echo's images are content-addressed
+   *    `/images/:hash` URLs (docs/244) that resolve against exactly that row —
+   *    the same persist-then-emit ordering the steered path relies on.
+   *  - Before the hook, because the hook emits the docs/218 "branch updated"
+   *    card, which belongs *after* the user bubble in the transcript.
+   */
+  const emitUserMessageEcho = (): void => {
+    if (!input.emitUserEcho) return;
+    emit({
+      type: "system_user_message",
+      sessionId,
+      text: input.userText,
+      activity,
+      ...(input.agentInterface ? { agentInterface: input.agentInterface } : {}),
+      ...(input.messageOrigin ? { messageOrigin: input.messageOrigin } : {}),
+      ...(input.userEcho?.clientRequestId ? { clientRequestId: input.userEcho.clientRequestId } : {}),
+      ...(input.userEcho?.images ? { images: input.userEcho.images } : {}),
+      ...(input.userEcho?.files ? { files: input.userEcho.files } : {}),
+      ...(input.userEcho?.uploadPaths ? { uploadPaths: input.userEcho.uploadPaths } : {}),
+    });
+  };
+
   // For a resumed session (id already known) persist the user row synchronously
   // before the turn. New sessions defer to the listener's `isNewSession` branch.
   if (!input.isNewSession) {
@@ -1028,9 +1063,20 @@ export async function executeAgentTurn(
     // `emitChatCard` right after the user row, so the card lands at its true
     // transcript position — after the user bubble, before the agent's response —
     // and inside the fresh turn (post `resetRunnerTurnState`, so it isn't wiped).
+    //
+    // The echo rides the same guard for the same reason: a re-dispatch that
+    // didn't write the row didn't start a new user message either, and echoing
+    // again would show the message twice.
     if (persistUserMessageOnce(sessionId)) {
+      emitUserMessageEcho();
       input.afterUserMessagePersisted?.(sessionId);
     }
+  } else {
+    // A brand-new session's row is written by the listener's `isNewSession`
+    // branch, so an image URL in this echo is briefly unresolvable. Harmless in
+    // practice: "new" here means the client sent no session id at all, so no
+    // other viewer has this transcript open to render it.
+    emitUserMessageEcho();
   }
 
   // --- post-turn plumbing (first-wins guards so whichever of agent_result /

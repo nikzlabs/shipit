@@ -1135,6 +1135,13 @@ export async function registerRoutes(
           // before or after the HTTP history it contradicts. Dropping it makes
           // history the single attach-time source, with no race to lose.
           if (buffered.type === "background_tasks") continue;
+          // The turn's user message is persisted BEFORE its echo is emitted, so
+          // this attach's own `GET /history` already carries the bubble. The
+          // echo exists solely for viewers that were attached when it went out;
+          // replaying it here would append the message a second time — and for
+          // a typed message the client can't dedupe it away, because the
+          // rehydrated row has no `clientRequestId` to match.
+          if (buffered.type === "system_user_message") continue;
           send(buffered);
         }
         // UNCONDITIONAL, empty queue included: an empty snapshot is exactly the
