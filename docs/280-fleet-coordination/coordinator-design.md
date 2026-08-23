@@ -63,6 +63,16 @@ Every fleet read and action is a **named brokered tool** that makes a real HTTP 
   - Scale note, corrected: bytes are largely a solved axis (244 + edge compression); what 241 buys is bounded React mount/markdown-parse and a bounded refetch. Mobile uses the same mechanism.
 - Implementation trap (named by two of three): these cards belong to the *coordinator's* transcript while describing another session — coordinator `sessionId` on the WS type, `TRANSCRIPT_SCOPED_MESSAGES` registration, `emitChatCard` persistence, and a guard test are mandatory.
 
+### The smartness sandwich (2026-08-23 — the user's model; solutions home for I4)
+
+Programmatic reliability brackets the agent on both sides; judgment stays in the middle:
+
+- **Durable inbound**: fleet events wait for the coordinator; a crashed or resetting coordinator loses nothing.
+- **Judgment (the agent)**: what deserves the user, how to brief, what to suppress or bring back — steered conversationally ("I don't care about this session for now"; "bring it back in a few days").
+- **Durable outbound — the delivery queue on top of the coordinator, managed by it** through the stateful conversation API (I4): pending deliveries, per-session suppression windows, scheduled returns, standing obligations. The platform executes delivery from this state: surface routing (req 26), one-at-a-time, retries, loud failure (req 29). Every conversational guarantee lives here, never in context — the reset-no-op rule now has a designated home.
+
+Three kinds of state, cleanly split: the **memory repo** is who the user is to the coordinator; **conversation state (I4)** is what is pending between them; **context** is disposable cache. Relation to I1: inbound anti-confusion serialization stays a V2 candidate; the outbound queue is MVP-relevant because reqs 26/29/30 demand something durable there — MVP-minimal is a thin durable outbound queue plus routing, with curation verbs growing as usage teaches (req 12). MVP tool sketch: `deliver(text, ref)`, `suppress(session, until)`, `scheduleReturn(ref, when)`, `listPending()`.
+
 ### Presence and wake: server state, code gates
 
 Presence is **server-authoritative** (WS-lifecycle invariant: transport must not drive server behavior; two devices must agree):

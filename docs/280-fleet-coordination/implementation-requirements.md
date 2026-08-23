@@ -33,6 +33,14 @@ Standing rule: **the MVP builds the minimal thing that satisfies the top-level p
 
 **Solutions.** `api-proposal.md`, auth and structural-scoping section (per-client tokens, scopes, repo allowlists).
 
+## I4. A stateful conversation API for the coordinator
+
+**Requirement.** The coordinator has durable, programmatic state for its conversation with the user: the outbound pending-delivery queue, per-session suppression windows, scheduled returns ("bring it back in a few days"), and standing obligations. This state is separate from the session/fleet APIs and separate from the memory repository, survives context resets and restarts, and is what the platform's delivery machinery executes from.
+
+**Where it comes from.** Product reqs 26, 29, and 30 (reliable routing, loud failure, assistant instructions that hold across time and restarts) meeting req 21 (context is disposable, so no conversational guarantee may live in it). The user's framing: the delivery queue sits **on top of the coordinator, managed by it** — "we separate the smartness of the agent from reliability that would be programmatic."
+
+**Solutions.** `coordinator-design.md`, "smartness sandwich" subsection (tool sketch and layering; MVP-minimal: a thin durable outbound queue plus routing, with curation verbs growing as usage teaches — req 12).
+
 ## Open questions
 
 None. Adoption triggers for anything beyond the MVP minimum are the measurements recorded with the solutions in `coordinator-design.md`, and — for I3 — the moment of exposure beyond the private network.
