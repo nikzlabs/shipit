@@ -180,6 +180,15 @@ export interface PersistedMessage {
   parentCommitHash?: string;
   /** Upload paths consumed by this message (for hydration of pending vs sent state). */
   uploadPaths?: string[];
+  /**
+   * The sending client's per-send id, on user rows only.
+   *
+   * Persisted — not client-only — because it is the identity a `system_user_message`
+   * echo is reconciled against, and that echo can arrive either side of the
+   * receiving tab's history load. A rehydrated row without it cannot be told
+   * apart from a genuinely new message with the same text.
+   */
+  clientRequestId?: string;
   notice?: boolean;
   noticeLevel?: "info" | "warn";
   rolledBack?: boolean;
@@ -456,6 +465,7 @@ interface MessageRow {
   in_progress: number;
   tool_results: string | null;
   upload_paths: string | null;
+  client_request_id: string | null;
   rolled_back: number;
   notice: number;
   notice_level: string | null;
@@ -504,14 +514,15 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, client_request_id, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @client_request_id, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
 `;
 
 const UPDATE_SQL = `
   UPDATE messages SET role=@role, content=@content, tool_use=@tool_use, images=@images,
     files=@files, is_error=@is_error, commit_hash=@commit_hash, parent_commit_hash=@parent_commit_hash,
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
+    client_request_id=@client_request_id,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
     voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, present_inline=@present_inline, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, session_settings_change=@session_settings_change, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
@@ -672,6 +683,7 @@ export class ChatHistoryManager {
       in_progress: msg.inProgress ? 1 : 0,
       tool_results: msg.toolResults ? JSON.stringify(msg.toolResults) : null,
       upload_paths: msg.uploadPaths ? JSON.stringify(msg.uploadPaths) : null,
+      client_request_id: msg.clientRequestId ?? null,
       // Legacy `turn_usage` column — never written from the new path; the
       // per-turn series lives in `usage_turns`.
       turn_usage: null,
@@ -727,6 +739,7 @@ export class ChatHistoryManager {
     if (row.commit_hash) msg.commitHash = row.commit_hash;
     if (row.parent_commit_hash) msg.parentCommitHash = row.parent_commit_hash;
     if (row.upload_paths) msg.uploadPaths = JSON.parse(row.upload_paths) as string[];
+    if (row.client_request_id) msg.clientRequestId = row.client_request_id;
     // `turn_usage` column intentionally ignored — see `PersistedMessage`.
     if (row.subagent_events) msg.subagentEvents = JSON.parse(row.subagent_events) as PersistedMessage["subagentEvents"];
     if (row.notice) msg.notice = true;

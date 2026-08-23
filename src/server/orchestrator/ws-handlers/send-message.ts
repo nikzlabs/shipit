@@ -603,6 +603,11 @@ export async function handleSendMessage(
     ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
     ...(msg.dictated ? { dictated: true } : {}),
     compact: isCompactRequest,
+    // Echo the message to every attached viewer. The sending tab dedupes on its
+    // own `requestId`; a second tab (or the desktop, while this arrived from the
+    // user's phone) has no optimistic bubble and needs the echo to render the
+    // message at all.
+    userEcho: { ...(msg.requestId ? { clientRequestId: msg.requestId } : {}) },
   });
 }
 
@@ -752,5 +757,8 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     // transcript like any other; the answer IS the next turn's prompt.
     ...(msg.dictated ? { dictated: true } : {}),
     isNewSession: false,
+    // Same reason as handleSendMessage: the answering tab rendered the answer
+    // bubble optimistically, every other viewer did not.
+    userEcho: { ...(msg.requestId ? { clientRequestId: msg.requestId } : {}) },
   });
 }

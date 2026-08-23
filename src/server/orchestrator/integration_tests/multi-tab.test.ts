@@ -216,6 +216,83 @@ describe("Integration: multi-tab scenarios", () => {
     tab2.close();
   });
 
+  it("a user message typed in one tab reaches the other tab's transcript", async () => {
+    // The reported bug: send from a phone with the same session open on a
+    // desktop, and the desktop showed the agent's reply to a message that was
+    // never on screen — until a reload or a session switch pulled it out of
+    // persisted history. Only the SENDING client rendered the bubble
+    // (optimistically), and the idle → fresh-turn path emitted nothing for
+    // anyone else. Steering already broadcast `message_steered`; this is the
+    // equivalent for the path that starts a turn.
+    const session = createSession("echo-session");
+
+    const desktop = await TestClient.connect(port, session.sessionId);
+    await desktop.receive(); // preview_status
+    const phone = await TestClient.connect(port, session.sessionId);
+    await phone.receive(); // preview_status
+
+    phone.send({
+      type: "send_message",
+      text: "ship it",
+      sessionId: session.sessionId,
+      requestId: "req-from-phone",
+    } as AnyMsg);
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-echo" });
+
+    // The already-attached viewer that did NOT send is the whole point.
+    const echo = await drainUntil(desktop, (m) => m.type === "system_user_message");
+    expect(echo).toBeTruthy();
+    expect(echo!.text).toBe("ship it");
+    expect(echo!.sessionId).toBe(session.sessionId);
+    // Carries the sender's id so the phone can drop its own optimistic bubble
+    // instead of text-matching (which would collapse a repeated "continue").
+    expect(echo!.clientRequestId).toBe("req-from-phone");
+
+    claude.finish("test-echo");
+    desktop.close();
+    phone.close();
+  });
+
+  it("persists the sender's request id on the user row so history and the echo agree", async () => {
+    // The echo and the receiving tab's own `GET /history` race, and whichever
+    // lands second decides between showing the message zero times and twice.
+    // They are reconcilable only because BOTH carry the same id — matching on
+    // text cannot tell two "continue" sends apart. A mid-turn attach replays the
+    // echo on top of a history that already holds the row, so this is the pair
+    // that has to agree.
+    const session = createSession("echo-identity-session");
+
+    const first = await TestClient.connect(port, session.sessionId);
+    await first.receive(); // preview_status
+    first.send({
+      type: "send_message",
+      text: "ship it",
+      sessionId: session.sessionId,
+      requestId: "req-first",
+    } as AnyMsg);
+    const claude = await waitForClaude(() => lastClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-echo-identity" });
+    await drainUntil(first, (m) => m.type === "session_started");
+
+    const history = await app.inject({ method: "GET", url: `/api/sessions/${session.sessionId}/history` });
+    const rows = history.json().messages as AnyMsg[];
+    const row = rows.find((m) => m.role === "user" && m.text === "ship it");
+    expect(row).toBeTruthy();
+    expect(row!.clientRequestId).toBe("req-first");
+
+    // And a tab attaching mid-turn still receives the replayed echo — it is the
+    // only carrier of a dispatch's activity label — carrying the same id.
+    const late = await TestClient.connect(port, session.sessionId);
+    const replayed = await drainUntil(late, (m) => m.type === "system_user_message");
+    expect(replayed).toBeTruthy();
+    expect(replayed!.clientRequestId).toBe("req-first");
+
+    claude.finish("test-echo-identity");
+    first.close();
+    late.close();
+  });
+
   it("disconnecting from one session does not affect other tabs viewing it", async () => {
     const session1 = createSession("stay-session");
 

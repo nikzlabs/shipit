@@ -70,8 +70,14 @@ export function useMessageHandler(params: {
       // restored only after the transcript is current — and so the snapshot
       // lands on top of history rather than being overwritten by it, with the
       // live events that followed it on the wire applied after, in order.
+      // `system_user_message` joins them: it appends a user bubble, and history
+      // REPLACES the transcript. Applied during hydration against a history
+      // request sampled a moment before the row was written, the bubble it added
+      // is wiped by the load that follows — the very "my message never showed
+      // up" symptom this echo exists to fix, just in a narrower window.
       if (
-        (data.type === "agent_event" || data.type === "sub_agent_spawn" || data.type === "turn_snapshot") &&
+        (data.type === "agent_event" || data.type === "sub_agent_spawn" || data.type === "turn_snapshot"
+          || data.type === "system_user_message") &&
         !useSessionStore.getState().historyLoaded
       ) {
         pendingAgentEventsRef.current.push(data);

@@ -1519,6 +1519,19 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "inline")) return;
     db.exec("ALTER TABLE presentations ADD COLUMN inline INTEGER NOT NULL DEFAULT 0");
   },
+  // The sending client's per-send id, carried on user rows so a user message has
+  // ONE identity that survives rehydration. A message typed on one device is
+  // broadcast live to every other attached viewer (`system_user_message`), and
+  // that echo races the receiving tab's own `GET /history`: whichever lands
+  // second decides whether the tab shows the message zero times or twice.
+  // Matching on text cannot settle it — two "continue" sends are genuinely
+  // distinct messages — so the id is persisted and the echo, the optimistic
+  // bubble and the rehydrated row all agree on it in any arrival order.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "client_request_id")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN client_request_id TEXT");
+  },
 ];
 
 /**

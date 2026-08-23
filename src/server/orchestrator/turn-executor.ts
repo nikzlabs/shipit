@@ -107,11 +107,28 @@ export interface TurnInput {
   activity?: string;
   permissionMode?: PermissionMode;
   /**
-   * Emit a `system_user_message` bubble (dispatch — the orchestrator initiated
-   * the message) vs. rely on the client's already-rendered optimistic bubble
-   * (WS user-typed).
+   * Emit a `system_user_message` bubble so every attached viewer sees the
+   * message this turn is answering.
+   *
+   * Set on dispatch (the orchestrator initiated the message, so no client has a
+   * bubble) AND on a WS user-typed message (the SENDING tab has an optimistic
+   * bubble, but no other viewer does — it dedupes on `userEcho.clientRequestId`).
+   * The drained-queue re-entry leaves it off: `queue_updated`'s `dequeued` field
+   * already restores that bubble on every viewer.
    */
   emitUserEcho: boolean;
+  /**
+   * Attachments and sender identity for the echo above. Text-only dispatches
+   * omit it entirely.
+   */
+  userEcho?: {
+    /** The sending tab's request id — its optimistic bubble's dedupe key. */
+    clientRequestId?: string;
+    images?: { data?: string; mediaType: string; src?: string }[];
+    files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
+    uploadPaths?: string[];
+    userReview?: { filePaths: string[]; commentCount: number };
+  };
   /** Persist the user row (transport owns the payload shape: text-only vs. +images/files). */
   persistUserMessage: (sessionId: string) => void;
   /**
@@ -477,6 +494,33 @@ export async function executeAgentTurn(
     if (persistGuard.done) return false;
     persistGuard.done = true;
     input.persistUserMessage(sid);
+    // Deliberately INSIDE the latch, immediately after the write.
+    //
+    // The echo carries content-addressed `/images/:hash` URLs (docs/244), and
+    // the endpoint that serves them reads the persisted transcript row — so an
+    // echo emitted before the write hands every viewer a URL that 404s, with no
+    // retry. Binding the two here makes the ordering structural rather than a
+    // property of one call site: the row is written on two different paths
+    // (resumed sessions synchronously below, new sessions from the listener on
+    // `agent_init`), and only this latch is on both.
+    //
+    // Sharing the latch is also what stops an auth-heal or quota re-dispatch
+    // from echoing a second bubble for a message that was already announced.
+    if (input.emitUserEcho) {
+      emit({
+        type: "system_user_message",
+        sessionId: sid,
+        text: input.userText,
+        activity,
+        ...(input.agentInterface ? { agentInterface: input.agentInterface } : {}),
+        ...(input.messageOrigin ? { messageOrigin: input.messageOrigin } : {}),
+        ...(input.userEcho?.clientRequestId ? { clientRequestId: input.userEcho.clientRequestId } : {}),
+        ...(input.userEcho?.images ? { images: input.userEcho.images } : {}),
+        ...(input.userEcho?.files ? { files: input.userEcho.files } : {}),
+        ...(input.userEcho?.uploadPaths ? { uploadPaths: input.userEcho.uploadPaths } : {}),
+        ...(input.userEcho?.userReview ? { userReview: input.userEcho.userReview } : {}),
+      });
+    }
     return true;
   };
 
@@ -941,18 +985,10 @@ export async function executeAgentTurn(
     return true;
   };
 
-  // Surface the user message. Dispatch emits a `system_user_message` bubble (no
-  // client-side optimistic bubble to dedupe against); WS skips the echo.
-  if (input.emitUserEcho) {
-    emit({
-      type: "system_user_message",
-      sessionId,
-      text: input.userText,
-      activity,
-      ...(input.agentInterface ? { agentInterface: input.agentInterface } : {}),
-      ...(input.messageOrigin ? { messageOrigin: input.messageOrigin } : {}),
-    });
-  }
+  // The user-message echo used to be emitted here. It now rides
+  // `persistUserMessageOnce` so it can never precede the row its image URLs
+  // resolve against — and so the new-session path, which persists from the
+  // listener, gets it too.
   deps.listenerDeps.sseBroadcast("session_agent_started", { sessionId, activity });
 
   // Shared listener: handles agent_init/assistant/tool_result/result/error,
@@ -1024,6 +1060,8 @@ export async function executeAgentTurn(
 
   // For a resumed session (id already known) persist the user row synchronously
   // before the turn. New sessions defer to the listener's `isNewSession` branch.
+  // Either way `persistUserMessageOnce` emits the user-message echo as part of
+  // the write — see its body.
   if (!input.isNewSession) {
     // docs/218 — fire the post-persist hook ONLY when this call actually wrote
     // the user row (not on an auth-retry re-dispatch, where the guard short-

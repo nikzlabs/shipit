@@ -27,6 +27,7 @@ import { desiredSpawnIdentity, residentRouteNeedsRelease } from "../service-rout
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 import { takeRoleStandingInstructions } from "../services/session-role.js";
 import { dependencyGapAgentPrefix } from "../dependency-staleness.js";
+import { imageHash, imageUrl } from "../transcript-projection.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
 // tests, secret-resolver coverage) keep their import path working while the
@@ -251,6 +252,22 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    * assembled prompt; the persisted user row keeps the verbatim text.
    */
   dictated?: boolean;
+  /**
+   * Echo this user message to every attached viewer as `system_user_message`.
+   *
+   * Set by the user-typed entry points (`send_message`, `answer_question`),
+   * carrying the sender's `requestId` so THAT tab dedupes against its own
+   * optimistic bubble while every other viewer — a second tab, the desktop while
+   * the user types on their phone — finally renders the message. Without it
+   * those viewers saw the agent answer a message that wasn't on screen until
+   * they reloaded.
+   *
+   * Left unset by the queue-drain re-entry below: that message's bubble is
+   * restored on every viewer by `queue_updated`'s `dequeued` field, so an echo
+   * would double it. Presence — not the id, which older clients omit — is what
+   * turns the echo on.
+   */
+  userEcho?: { clientRequestId?: string };
 }): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, userReview } = opts;
 
@@ -380,8 +397,37 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       // Persist the "Send comments" card metadata so the user bubble rehydrates
       // as a UserReviewCard instead of a raw prompt bubble on reload.
       ...(userReview ? { userReview } : {}),
+      // The row and its `system_user_message` echo must agree on one identity:
+      // a receiving tab reconciles the echo against whichever of the two it saw
+      // first, and text cannot tell two "continue" sends apart.
+      ...(opts.userEcho?.clientRequestId ? { clientRequestId: opts.userEcho.clientRequestId } : {}),
     });
   };
+
+  // The same payload, projected for the wire (docs/244 / planning#299): base64
+  // bodies become the content-addressed `/images/:hash` URLs a history load
+  // would serve, so a phone-uploaded screenshot doesn't cross the wire twice.
+  // The executor emits this only after `persistUserMessage` has written the row
+  // these URLs resolve against.
+  const userEcho = opts.userEcho
+    ? {
+        ...(opts.userEcho.clientRequestId ? { clientRequestId: opts.userEcho.clientRequestId } : {}),
+        ...(historyImages && sessionId
+          ? {
+              images: historyImages.map((img) => ({
+                mediaType: img.mediaType,
+                src: imageUrl(sessionId, imageHash(img.data)),
+              })),
+            }
+          : {}),
+        ...(historyFiles ? { files: historyFiles } : {}),
+        ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+        // Without this a "Send comments" submission renders on other viewers as
+        // the raw generated prompt instead of the UserReviewCard the persisted
+        // row rebuilds — the echo has to match what a reload would show.
+        ...(userReview ? { userReview } : {}),
+      }
+    : undefined;
 
   // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
   // base, BEFORE the turn runs. The decision, the git move, the "branch updated"
@@ -742,8 +788,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       prompt,
       userText,
       ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
-      // The client already rendered an optimistic bubble — don't echo.
-      emitUserEcho: false,
+      // The SENDING tab already rendered an optimistic bubble, but no other
+      // attached viewer has one — so echo, and let that tab dedupe on its own
+      // `clientRequestId`.
+      emitUserEcho: userEcho !== undefined,
+      ...(userEcho ? { userEcho } : {}),
       persistUserMessage,
       ...(afterUserMessagePersisted ? { afterUserMessagePersisted } : {}),
       isNewSession,

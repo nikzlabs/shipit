@@ -25,6 +25,11 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   commitHash: "abc123",
   parentCommitHash: "def456",
   uploadPaths: ["/uploads/x.png"],
+  // A user row's identity. Here so the round-trip can tell "the id survives a
+  // reload" from "the id was never stored" — the whole point of persisting it
+  // is that a rehydrated row still reconciles against its `system_user_message`
+  // echo, and a text comparison cannot stand in for it.
+  clientRequestId: "req-1",
   notice: true,
   noticeLevel: "warn",
   rolledBack: true,

@@ -1135,6 +1135,12 @@ export async function registerRoutes(
           // before or after the HTTP history it contradicts. Dropping it makes
           // history the single attach-time source, with no race to lose.
           if (buffered.type === "background_tasks") continue;
+          // `system_user_message` is deliberately NOT skipped: it is the only
+          // carrier of a dispatch's activity label ("Auto-fixing CI…"), which
+          // neither history nor `session_status` restores. It is safe to replay
+          // on top of this attach's own history because the user row and the
+          // echo now share a `clientRequestId`, so the client reconciles them
+          // whichever arrives second.
           send(buffered);
         }
         // UNCONDITIONAL, empty queue included: an empty snapshot is exactly the

@@ -66,6 +66,14 @@ For a card that arrives off the agent-event stream (HTTP relay or post-turn WS):
 
 Transient signals (spinners, `preview_status`, queue counts) are correctly emit-only — only persist what belongs in the scrollback.
 
+**On step 3's "idempotent by id", if the message is both broadcast live AND rehydrated from history.** The live copy *appends*; the history load *replaces* the whole transcript. They race on every attach, reload and switch, and whichever lands second decides whether the user sees the message zero times or twice. The two failures look nothing alike, so one is typically still open after you fix the other. Three things make any arrival order converge:
+
+- **A real id, not the text.** Two "continue" sends are genuinely distinct messages, so a text comparison either collapses them or duplicates them.
+- **Persist the id on the row**, so the rehydrated copy still matches (`messages.client_request_id` is the worked example — the sender's per-send `requestId`, echoed back on `system_user_message`). An id that exists only in browser memory is gone the moment history replaces the transcript.
+- **Queue the live message behind `historyLoaded`** in `useMessageHandler`, alongside `agent_event` / `turn_snapshot` / `sub_agent_spawn`. Otherwise a history response sampled a moment before the row was written wipes what the live message just added.
+
+Guards: `useMessageHandler.test.ts` covers both hydration orders; `multi-tab.test.ts` covers the cross-viewer broadcast.
+
 ## Deploy targets — there is no longer anything to add
 
 ShipIt does not own a deploy pipeline. There is no `deploy-targets/` directory, no `DeployTarget` interface, and no `deploymentManager`. Deploys are triggered by the hosting platform's own Git integration on push, and ShipIt reads their status from the GitHub Deployments API to render it in the PR lifecycle card. See the `deployment-architecture` skill.
