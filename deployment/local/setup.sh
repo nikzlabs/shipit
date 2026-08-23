@@ -754,21 +754,18 @@ fi
 # --- Build + start ---
 shipit_build_and_up
 
+# Short, and ending with the URL — that address is what the reader is here for,
+# so nothing goes after it. The localhost-only line is stated as a property of
+# THIS install with no reference to Tailscale: docs/254 req 3 requires the
+# default path not to mention it, since most local users never use it. Remote
+# access is documented in deployment/README.md for the few who want it.
 echo ""
-echo "==========================================="
-echo "  ShipIt is running"
-echo "==========================================="
-echo ""
-echo "  Open:    http://localhost:4123"
+echo "  Sign in to Claude Code or Codex from the in-app provider flow on first launch."
+echo "  Bound to localhost, so other devices cannot reach it — see deployment/README.md."
 echo "  Update:  $SHIPIT_HOME/deployment/local/update.sh"
 echo "  Stop:    $SHIPIT_HOME/deployment/local/stop.sh"
 echo ""
-echo "  On first launch, sign in to Claude Code or Codex from the in-app provider flow."
-echo ""
-# Stated as a property of THIS install, with no reference to Tailscale: docs/254
-# req 3 requires the default path not to mention it, since most local users will
-# never use it. Remote access is documented in deployment/README.md for the few
-# who want it.
-echo "  ShipIt is bound to localhost, so it is not reachable from other devices."
-echo "  See deployment/README.md if you want to reach it from another device."
+echo "==================================================================="
+echo "  Open ShipIt at   http://localhost:4123"
+echo "==================================================================="
 echo ""
