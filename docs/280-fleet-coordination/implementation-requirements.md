@@ -43,6 +43,14 @@ Also durably here (round three, from the clarification-scope receipt): the **aut
 
 **Solutions.** `coordinator-design.md`, "smartness sandwich" subsection (tool sketch and layering; MVP-minimal: a thin durable outbound queue plus routing, with curation verbs growing as usage teaches — req 12).
 
+## I5. The agent-facing API is token-efficient and simple
+
+**Requirement.** Operating the fleet costs the coordinator little: the agent-facing surface of the control API is token-efficient — small fixed overhead riding the agent's context, small per-operation cost — and simple for the agent to use correctly.
+
+**Where it comes from.** Stated by the user (2026-08-23, after the review rounds closed): "the API should be token-efficient and simple for the agent." The pressure behind it is I2's permanent conversation on a finite context — whatever the tool surface costs, it costs on every turn, for months — under req 20's no-degradation contract. The user's suggested direction to explore, verbatim: "the CLI-based one, wrapping whatever handlers are exposed by the server."
+
+**Solutions.** `coordinator-design.md`, brokered tool-surface section (the CLI exploration is annotated there; choosing the surface is plan work).
+
 ## Open questions
 
 None. Adoption triggers for anything beyond the MVP minimum are the measurements recorded with the solutions in `coordinator-design.md`, and — for I3 — the moment of exposure beyond the private network.
