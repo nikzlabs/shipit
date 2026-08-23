@@ -7,6 +7,7 @@ import {
   prStatusEqual,
 } from "./pr-status-parser.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
+import { noteMergePerformed, resetMergeAttribution } from "./services/merge-attribution.js";
 import * as workflowLoader from "./workflow-loader.js";
 import { NO_CHECKS_GRACE_MS } from "./ci-grace-tracker.js";
 import type { SessionManager } from "./sessions.js";
@@ -1497,6 +1498,125 @@ describe("PrStatusPoller", () => {
         branch: "shipit/abc-feature", mergeSha: "abc123def456789",
       }),
     );
+  });
+
+  // docs/266 req 7 — nothing in ShipIt performs a merge done in GitHub's own web
+  // UI, on a laptop, or by native auto-merge GitHub executed itself, so the
+  // attribution has to come from the observer. The ops review of PR #2327 had
+  // only "[pr-poller] Post-merge: marked <s> as merged", which records that the
+  // merge was OBSERVED, not who performed it.
+  describe("the merge record for a merge performed outside ShipIt", () => {
+    function mergeLines(log: { mock: { calls: unknown[][] } }): string[] {
+      return log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("Merged PR #"));
+    }
+
+    async function observeAMerge(): Promise<void> {
+      const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
+      const mergedRest = {
+        url: "https://github.com/owner/repo/pull/42",
+        number: 42, base: "main", title: "Add feature", body: "x",
+        state: "closed" as const, merged_at: "2026-05-19T12:00:00Z",
+        merge_commit_sha: "abc123def456789", head_sha: "headsha1", additions: 1, deletions: 0,
+      };
+      githubAuth = makeGitHubAuth(withPr, mergedRest);
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The PR drops out of the OPEN bulk view → the REST verify sees it merged.
+      (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: { repository: { pullRequests: { nodes: [] } } },
+      });
+      await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    it("says the merge was observed, not performed here", async () => {
+      resetMergeAttribution();
+      const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+      try {
+        await observeAMerge();
+        expect(mergeLines(log)).toEqual([
+          "[pr-poller] Merged PR #42 (owner/repo) for s1"
+          + " via a merge no ShipIt path recorded (observed, not performed by this orchestrator process)",
+        ]);
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    // A merge ShipIt performed is observed here moments later. Claiming an
+    // outside actor for it would contradict the line the merge path already
+    // wrote, and would make "we did not merge it" worthless.
+    it("stays silent when a ShipIt path performed this merge", async () => {
+      resetMergeAttribution();
+      noteMergePerformed("owner", "repo", 42);
+      const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+      try {
+        await observeAMerge();
+        expect(mergeLines(log)).toEqual([]);
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    // A re-track wipes `mergedSessions` and forces an immediate re-verify — the
+    // same re-entrancy that once repeated "Post-merge: marked <id> as merged"
+    // dozens of times for one session. One merge, one record.
+    it("records the merge once across a re-track", async () => {
+      resetMergeAttribution();
+      const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+      try {
+        await observeAMerge();
+        const verifiesAfterMerge =
+          (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mock.calls.length;
+
+        poller.trackSession("s1", "https://github.com/owner/repo");
+        await vi.advanceTimersByTimeAsync(0);
+
+        // The re-track really did re-enter the terminal branch — otherwise this
+        // case would pass for the wrong reason, proving only that nothing ran.
+        expect((githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mock.calls.length)
+          .toBeGreaterThan(verifiesAfterMerge);
+        expect(mergeLines(log)).toHaveLength(1);
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    // Closed-without-merge is terminal too, and it is not a merge.
+    it("records nothing when the PR was closed unmerged", async () => {
+      resetMergeAttribution();
+      const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+      try {
+        const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
+        const closedRest = {
+          url: "https://github.com/owner/repo/pull/42",
+          number: 42, base: "main", title: "Add feature", body: "x",
+          state: "closed" as const, merged_at: null, merge_commit_sha: null,
+          additions: 1, deletions: 0,
+        };
+        githubAuth = makeGitHubAuth(withPr, closedRest);
+        sessionManager = makeSessionManager([
+          { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+        ]);
+        poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+        poller.trackSession("s1", "https://github.com/owner/repo");
+        await vi.advanceTimersByTimeAsync(0);
+        (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+          data: { repository: { pullRequests: { nodes: [] } } },
+        });
+        await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(mergeLines(log)).toEqual([]);
+      } finally {
+        log.mockRestore();
+      }
+    });
   });
 
   it("fires onPrTerminalState with outcome 'closed' when a PR closes unmerged (docs/196)", async () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { toggleAutoMerge, activatePendingAutoMergeForPr, mergePullRequest, updateMergeMethod } from "./github.js";
+import { resetMergeAttribution } from "./merge-attribution.js";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -342,6 +343,7 @@ describe("mergePullRequest — auto-merge fallback while checks are pending", ()
 
     const result = await mergePullRequest(git, githubAuth, "squash", "https://github.com/o/r.git", {
       preferManaged: true,
+      sessionId: "s1",
     });
 
     expect(enableAutoMerge).not.toHaveBeenCalled();
@@ -352,11 +354,75 @@ describe("mergePullRequest — auto-merge fallback while checks are pending", ()
   it("still arms GitHub native when no session runner is live", async () => {
     const { git, githubAuth, enableAutoMerge } = makeGitAndAuth();
 
-    const result = await mergePullRequest(git, githubAuth, "squash", "https://github.com/o/r.git");
+    const result = await mergePullRequest(git, githubAuth, "squash", "https://github.com/o/r.git", {
+      sessionId: "s1",
+    });
 
     expect(enableAutoMerge).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ autoMergeEnabled: true });
     expect(result.managed).toBeUndefined();
+  });
+});
+
+/**
+ * docs/266 req 7 — the UI merge button is the common way a ShipIt PR gets
+ * merged, and it logged nothing. That is the silence the ops review of PR #2327
+ * hit: it could rule out managed auto-merge (no `[auto-merge]` line all day) but
+ * had no way to tell the merge button apart from GitHub's own web UI.
+ */
+describe("mergePullRequest — the merge record", () => {
+  function makeGitAndAuth(mergeResult: { success: boolean; message: string }) {
+    const git = {
+      getCurrentBranch: vi.fn(async () => "shipit/feature"),
+      getRemotes: vi.fn(async () => [{ name: "origin", url: "https://github.com/o/r.git" }]),
+    } as unknown as GitManager;
+    const githubAuth = {
+      authenticated: true,
+      findPullRequest: vi.fn(async () => ({ number: 42, url: PR_URL })),
+      mergePullRequest: vi.fn(async () => mergeResult),
+      getCheckStatus: vi.fn(async () => ({ state: "pending", total: 1, passed: 0, failed: 0, pending: 1 })),
+      enableAutoMerge: vi.fn(async () => ({ success: true, message: "armed" })),
+    } as unknown as GitHubAuthManager;
+    return { git, githubAuth };
+  }
+
+  function mergeLines(log: { mock: { calls: unknown[][] } }): string[] {
+    return log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("Merged PR #"));
+  }
+
+  it("names the session, the PR, the repo and the method", async () => {
+    resetMergeAttribution();
+    const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+    try {
+      const { git, githubAuth } = makeGitAndAuth({ success: true, message: "merged" });
+
+      await mergePullRequest(git, githubAuth, "squash", "https://github.com/o/r.git", { sessionId: "s1" });
+
+      expect(mergeLines(log)).toEqual([
+        "[pr] Merged PR #42 (o/r) for s1 via the ShipIt merge button (squash)",
+      ]);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  // Arming is not merging. A click on a PR whose checks are still running ends in
+  // an arming — GitHub's or ShipIt's — and neither is a merge that has happened.
+  it("records nothing when the click only arms auto-merge", async () => {
+    resetMergeAttribution();
+    const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+    try {
+      const { git, githubAuth } = makeGitAndAuth({ success: false, message: "checks pending" });
+
+      await mergePullRequest(git, githubAuth, "squash", "https://github.com/o/r.git", { sessionId: "s1" });
+      await mergePullRequest(git, githubAuth, "squash", "https://github.com/o/r.git", {
+        sessionId: "s1", preferManaged: true,
+      });
+
+      expect(mergeLines(log)).toEqual([]);
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 
