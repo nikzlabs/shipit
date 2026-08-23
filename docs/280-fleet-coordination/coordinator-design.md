@@ -74,7 +74,7 @@ Stated plainly (all three): a backgrounded or locked phone cannot receive first-
 
 ### Prompt vs code
 
-**Prompt** (`.md` fragments, composition in TS, byte-stable; interpolates *nothing dynamic* — the cache rule and the fleet-state rule agree): triage among eligible items; digest phrasing and progressive depth; brief-before-asking (req 6); confirmation tiers (echo / read back / explicit confirm — "interesting" is not approval); discuss-vs-answer judgment; untrusted-data discipline; no UUIDs/branches/paths/SHAs aloud.
+**Prompt** (`.md` fragments, composition in TS, byte-stable; interpolates *nothing dynamic* — the cache rule and the fleet-state rule agree): triage among eligible items; digest phrasing and progressive depth; brief-before-asking, and **every ask self-contained on every re-ask — full context restated, never "as we discussed"** (req 6, learned live twice); confirmation tiers (echo / read back / explicit confirm — "interesting" is not approval); discuss-vs-answer judgment; untrusted-data discipline; no UUIDs/branches/paths/SHAs aloud.
 
 **Code**: token minting and scopes; the wake gate and presence store; envelope rendering; untrusted wrappers, ShipIt-derived deep links, verbatim provenance; correlation; card persistence and scoping; STT/TTS/floor control; idempotency on message + spawn; kind gating (no auto-commit, no eviction, excluded from its own queue); `agentTurns` cost accounting.
 
