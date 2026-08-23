@@ -27,10 +27,15 @@
  * the agent container converge on the same physical file.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
-import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import {
+  CONTAINER_WORKSPACE_DIR,
+  STRANDED_CREDENTIAL_MARKER,
+  isStrandedCredentialOf,
+} from "../shared/fs-constants.js";
 import { PROVIDER_ACCOUNTS_SUBDIR, providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { readXaiTokenFreshnessFile } from "./agents/grok/auth-manager.js";
 import {
@@ -80,18 +85,23 @@ import {
  *    the CLI writes THROUGH a file link besides (probe: `codex login
  *    --with-api-key` onto a symlinked `auth.json` left the link in place and
  *    updated the target).
- *  - **opencode** — nothing to lose: ShipIt delivers both OpenCode modes as a
- *    string key in the spawn env (docs/272-opencode-inference §2), so no
- *    credential file is ever provisioned, which is why this table has no
- *    `opencode` row. Its own writer is a plain `writeFile` with no rename
- *    (`Auth.set` → `FileSystem.writeJson`, read out of the pinned binary), so a
- *    link would survive one anyway. **Reopening condition:** the CLI does carry
- *    a console device-code OAuth flow with refresh handling, listed as
- *    follow-up in that doc. Integrating it puts a rotating token in
- *    `~/.local/share/opencode/auth.json` and needs a row here, a
- *    {@link TOKEN_FRESHNESS} reader, and a `token-freshness-guard.test.ts`
- *    fixture — the directory link keeps it safe from the rename half, not from
- *    the rotation half.
+ *  - **opencode** — nothing to lose: every ShipIt-routed OpenCode mode is
+ *    authenticated by a string key in the spawn env (docs/272-opencode-inference
+ *    §2), so no supported run consumes or rotates file auth, which is why this
+ *    table has no `opencode` row. Its own writer is a plain `writeFile` with no
+ *    rename (`Auth.set` → `FileSystem.writeJson`, read out of the pinned
+ *    binary), so a link would survive one anyway. **Reopening condition** —
+ *    and note it is about USE, not about this table: the day a file-backed
+ *    login becomes routable (the CLI already carries a console device-code
+ *    OAuth flow with refresh handling, listed as follow-up in that doc), a
+ *    rotating token lives in `~/.local/share/opencode/auth.json` and needs a
+ *    row here, a {@link TOKEN_FRESHNESS} reader, and a
+ *    `token-freshness-guard.test.ts` fixture. The directory link keeps it safe
+ *    from the rename half, not from the rotation half. Provisioning is already
+ *    willing to carry such a file — `copyCredentialPath` copies the whole
+ *    declared `.local/share/opencode` directory if one exists — so "no file is
+ *    provisioned" is a fact about the current routing, not an invariant the
+ *    code enforces.
  */
 export const AGENT_TOKEN_FILES: Partial<Record<AgentId, readonly string[]>> = {
   claude: [".claude/.credentials.json", ".claude/credentials.json", ".claude/auth.json"],
@@ -1875,16 +1885,22 @@ function syncAgentTokenBackToRoot(
 const STRANDED_TOKEN_SUBDIR = ".shipit-stranded-tokens";
 
 /**
- * The suffix a SESSION-side adapter appends when it quarantines a rotation it
- * could not publish — PR #2514's convention, owned by
- * `session/agents/grok/adapter.ts`. Reused here so one name means one thing on
- * both sides of the container boundary.
+ * How many quarantined artifacts to keep per (target root, token file).
+ *
+ * Unbounded retention is a slow leak of live bearer tokens: one freshness-reader
+ * regression makes every spawn produce another file, forever, and eventually
+ * fills the very volume the next quarantine needs. Bounded retention is safe
+ * *because* these tokens rotate single-use — each rotation invalidates the one
+ * before it, so only the NEWEST stranded copy can still authenticate and the
+ * older ones are already dead. A few spares beyond that are for the human doing
+ * the post-mortem, not for recovery.
  */
-const ADAPTER_QUARANTINE_MARKER = ".stranded-";
+const STRANDED_TOKEN_KEEP = 5;
 
 /**
- * Keep a rotation the release refused (or failed) to publish, instead of
- * letting the caller's `rmSync` of the spawn home destroy it.
+ * Keep a rotation a cleanup path refused (or failed) to publish, instead of
+ * letting the caller's removal destroy it. Returns whether the copy is now
+ * durable somewhere the caller's delete cannot reach.
  *
  * A refusal is not a decision that the token is worthless — it is
  * `classifyTokenFreshness` saying it cannot ORDER the two copies (planning#449),
@@ -1896,54 +1912,96 @@ const ADAPTER_QUARANTINE_MARKER = ".stranded-";
  * answer is the same: put the copy somewhere the delete cannot reach and say
  * where. The destination is left untouched; the two can be diffed by hand.
  *
- * Best-effort by construction: this runs on the failure path, so a throw here
- * must not take the removal with it.
+ * The BOOLEAN is the part that matters. A quarantine can itself fail — a full
+ * volume, a read-only root — and a caller that deletes anyway on the strength
+ * of having *called* this has destroyed the token just the same. Callers whose
+ * removal is optional must gate on the return value.
  */
-function quarantineSpawnHomeToken(targetRoot: string, rel: string, spawnFile: string): void {
+function quarantineTokenCopy(targetRoot: string, rel: string, sourceFile: string): boolean {
   const flat = rel.replaceAll("/", "_");
-  // A file rescued from an adapter's own quarantine already carries a marker
-  // and its own timestamp; keeping that name is both tidier and what keeps two
-  // rescues in the same millisecond from colliding here.
-  const name = flat.includes(ADAPTER_QUARANTINE_MARKER) ? flat : `${flat}${ADAPTER_QUARANTINE_MARKER}${Date.now()}`;
-  const quarantined = path.join(targetRoot, STRANDED_TOKEN_SUBDIR, name);
+  // The stamp is not a unique name: two releases for the same account and token
+  // path in one millisecond would rename onto each other, and the second would
+  // silently replace the first rescued credential. The uuid tail is what makes
+  // the name unique; the stamp stays because it is what makes the directory
+  // readable, and what {@link pruneStrandedTokens} sorts on.
+  const stamped = isStrandedCredential(flat) ? flat : `${flat}${STRANDED_CREDENTIAL_MARKER}${Date.now()}`;
+  const quarantined = path.join(targetRoot, STRANDED_TOKEN_SUBDIR, `${stamped}-${randomUUID().slice(0, 8)}`);
   try {
-    atomicCopyFile(spawnFile, quarantined);
+    atomicCopyFile(sourceFile, quarantined);
     fs.chmodSync(quarantined, 0o600);
-    console.warn(`[session-credentials] quarantined unpublishable spawn-home token at ${quarantined}`);
+    console.warn(`[session-credentials] quarantined unpublishable token at ${quarantined}`);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[session-credentials] failed to quarantine ${spawnFile} at ${quarantined}: ${reason}`);
+    console.warn(`[session-credentials] failed to quarantine ${sourceFile} at ${quarantined}: ${reason}`);
+    return false;
+  }
+  pruneStrandedTokens(targetRoot, flat);
+  return true;
+}
+
+/** Does this flattened name already carry a producer's `.stranded-<epoch>` stamp? */
+function isStrandedCredential(flat: string): boolean {
+  const at = flat.lastIndexOf(STRANDED_CREDENTIAL_MARKER);
+  return at >= 0 && isStrandedCredentialOf(flat, flat.slice(0, at));
+}
+
+/**
+ * Drop all but the newest {@link STRANDED_TOKEN_KEEP} artifacts for one token
+ * file. Sorted by name, whose leading `<flat>.stranded-<epoch ms>` orders
+ * correctly for every timestamp of the same digit length — true until the year
+ * 2286, and a mis-sort costs a spare copy, never the newest one.
+ *
+ * Best-effort: failing to prune is a disk-space problem, and destroying a
+ * rescue to solve one would be the bug this whole path exists to prevent.
+ */
+function pruneStrandedTokens(targetRoot: string, flat: string): void {
+  const dir = path.join(targetRoot, STRANDED_TOKEN_SUBDIR);
+  try {
+    const mine = fs.readdirSync(dir).filter((n) => n.startsWith(`${flat}${STRANDED_CREDENTIAL_MARKER}`)).sort();
+    for (const stale of mine.slice(0, Math.max(0, mine.length - STRANDED_TOKEN_KEEP))) {
+      fs.rmSync(path.join(dir, stale), { force: true });
+    }
+  } catch {
+    // Unreadable directory — leave the pile alone.
   }
 }
 
 /**
- * Carry an adapter's own quarantine out of the spawn home before the home is
- * deleted.
+ * Carry an adapter's own quarantine out of a directory that is about to be
+ * removed. Returns false if any of them could not be rescued.
  *
  * The grok adapter quarantines a CLI rotation it refused to publish beside its
  * destination, and its destination is `$HOME/.grok/auth.json` — which, for a
  * same-harness sub-agent run, is INSIDE the per-spawn home. So #2514's rescue
  * landed in the one directory `releaseSubAgentSpawnHome` then removes, and the
  * only copy of the rotation died anyway. The refusal is also self-concealing:
- * the declared token file is left holding the PRE-rotation copy, so the loop
- * below sees nothing to publish and reports success.
+ * the declared token file is left holding the PRE-rotation copy, so the publish
+ * loop sees nothing to do and reports success.
  *
- * Deliberately keyed on the marker rather than on the harness — any adapter
- * that adopts the convention is covered the day it does, and one that does not
- * has no matching files and pays a single `readdir`.
+ * Deliberately keyed on the shared marker rather than on the harness — any
+ * adapter that adopts the convention is covered the day it does, and one that
+ * does not has no matching files and pays a single `readdir`. Regular files
+ * only, and only names carrying a real stamp: this copies its input verbatim
+ * into a credential root, so it must not be talked into following a symlink or
+ * hauling in whatever else shares the directory.
  */
-function rescueAdapterQuarantines(targetRoot: string, rel: string, spawnFile: string): void {
-  const prefix = `${path.basename(rel)}${ADAPTER_QUARANTINE_MARKER}`;
+function rescueAdapterQuarantines(targetRoot: string, rel: string, copyFile: string): boolean {
+  const dir = path.dirname(copyFile);
+  const base = path.basename(rel);
   let entries: string[];
   try {
-    entries = fs.readdirSync(path.dirname(spawnFile));
+    entries = fs.readdirSync(dir);
   } catch {
-    return; // no such directory in this home — the common case
+    return true; // no such directory in this copy — the common case
   }
+  let allRescued = true;
   for (const entry of entries) {
-    if (!entry.startsWith(prefix)) continue;
-    quarantineSpawnHomeToken(targetRoot, path.join(path.dirname(rel), entry), path.join(path.dirname(spawnFile), entry));
+    if (!isStrandedCredentialOf(entry, base)) continue;
+    const found = path.join(dir, entry);
+    if (!fs.lstatSync(found, { throwIfNoEntry: false })?.isFile()) continue;
+    if (!quarantineTokenCopy(targetRoot, path.join(path.dirname(rel), entry), found)) allRescued = false;
   }
+  return allRescued;
 }
 
 /**
@@ -1963,7 +2021,12 @@ function rescueAdapterQuarantines(targetRoot: string, rel: string, spawnFile: st
  * the same planning#449 reasons the session paths do. Unlike the session paths,
  * a refusal here is followed by the caller DELETING the only copy — so every
  * refusal (and every failed copy) quarantines first, via
- * {@link quarantineSpawnHomeToken}.
+ * {@link quarantineTokenCopy}.
+ *
+ * **Returns whether the home is safe to delete.** False means at least one
+ * rotation is still only in the home: neither published nor quarantined. The
+ * caller must then KEEP the home, because deleting it on the strength of having
+ * *tried* is the same data loss by a longer route.
  *
  * No chown: the target roots are orchestrator-owned (never container-mounted),
  * and the spawn home is deleted by the caller right after.
@@ -1974,21 +2037,22 @@ export function syncSubAgentSpawnHomeTokenBack(
   spawnHome: string,
   agentId: AgentId,
   accountId?: string,
-): void {
+): boolean {
   const files = AGENT_TOKEN_FILES[agentId];
   // No declared token file ⇒ nothing this harness keeps on disk can rotate, so
   // there is nothing for the caller's `rmSync` to destroy. True for OpenCode
   // today and stated at {@link AGENT_TOKEN_FILES}; a harness that gains a
   // file-based login gains an entry there, and this early return stops
   // applying to it in the same edit.
-  if (!files) return;
+  if (!files) return true;
   const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
   const targetRoot = accountId
     ? providerAccountCredentialRoot(credentialsRoot, agentId, accountId)
     : credentialsRoot;
+  let safeToDelete = true;
   for (const rel of files) {
     const spawnFile = path.join(spawnHome, rel);
-    rescueAdapterQuarantines(targetRoot, rel, spawnFile);
+    if (!rescueAdapterQuarantines(targetRoot, rel, spawnFile)) safeToDelete = false;
     const spawnReading = classifyTokenFreshness(freshness, spawnFile);
     if (spawnReading.kind === "absent") continue;
     const targetFile = path.join(targetRoot, rel);
@@ -1998,7 +2062,7 @@ export function syncSubAgentSpawnHomeTokenBack(
         { sessionId, agentId, direction: "sync-back", file: spawnFile },
         `not publishing this spawn home's token to ${targetRoot}: ${UNORDERABLE_HINT}`,
       );
-      quarantineSpawnHomeToken(targetRoot, rel, spawnFile);
+      if (!quarantineTokenCopy(targetRoot, rel, spawnFile)) safeToDelete = false;
       continue;
     }
     const targetReading = classifyTokenFreshness(freshness, targetFile);
@@ -2008,7 +2072,7 @@ export function syncSubAgentSpawnHomeTokenBack(
         { sessionId, agentId, direction: "sync-back", file: targetFile },
         `refusing to overwrite the source credential with ${spawnFile}: ${UNORDERABLE_HINT}`,
       );
-      quarantineSpawnHomeToken(targetRoot, rel, spawnFile);
+      if (!quarantineTokenCopy(targetRoot, rel, spawnFile)) safeToDelete = false;
       continue;
     }
     if (targetReading.kind === "ordered" && spawnReading.at <= targetReading.at) continue;
@@ -2017,7 +2081,61 @@ export function syncSubAgentSpawnHomeTokenBack(
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn(`[session-credentials] failed to publish ${spawnFile} to ${targetFile}: ${reason}`);
-      quarantineSpawnHomeToken(targetRoot, rel, spawnFile);
+      if (!quarantineTokenCopy(targetRoot, rel, spawnFile)) safeToDelete = false;
     }
+  }
+  return safeToDelete;
+}
+
+/**
+ * The same preservation for the CROSS-harness borrow, whose cleanup wipes the
+ * borrowed subtree out of the session's own credentials dir
+ * (`removeSubAgentCredentials`) rather than deleting an isolated home.
+ *
+ * The borrow publishes through `syncAgentTokenBack` / `syncProviderAccountTokenBack`,
+ * which carry the marker and ledger identity checks the spawn-home path does not
+ * need — and which refuse an unorderable file exactly the same way. The wipe
+ * then follows unconditionally, so the borrow had planning#475's bug too: a
+ * Codex consult that rotates into a shape the reader cannot order has its
+ * `auth.json` refused and then deleted, leaving the source holding a refresh
+ * token the CLI already spent.
+ *
+ * Rather than re-deciding what the publish should have done, this asks the
+ * weaker question the caller actually needs answered: **is this copy provably
+ * superseded at the target?** Only a strictly-fresher ordered target says yes.
+ * Anything else — either side unorderable, target absent, target older — keeps
+ * a copy. It runs AFTER the publish, so a successful publish is the ordered
+ * case and costs nothing.
+ *
+ * Unlike the spawn home, the wipe here is NOT optional: leaving a borrowed
+ * cross-provider credential in the session subtree is the docs/138 isolation
+ * failure the borrow exists to bound, and the restoring reprovision would
+ * overwrite it anyway. So this reports nothing — it preserves what it can and
+ * the caller wipes regardless.
+ */
+export function preserveBorrowedTokensBeforeWipe(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId?: string,
+): void {
+  const files = AGENT_TOKEN_FILES[agentId];
+  if (!files) return;
+  const freshness = TOKEN_FRESHNESS[agentId] ?? (() => null);
+  const targetRoot = accountId
+    ? providerAccountCredentialRoot(credentialsRoot, agentId, accountId)
+    : credentialsRoot;
+  const borrowRoot = perSessionCredentialsDir(credentialsRoot, sessionId);
+  for (const rel of files) {
+    const borrowedFile = path.join(borrowRoot, rel);
+    rescueAdapterQuarantines(targetRoot, rel, borrowedFile);
+    const borrowedReading = classifyTokenFreshness(freshness, borrowedFile);
+    if (borrowedReading.kind === "absent") continue;
+    const targetReading = classifyTokenFreshness(freshness, path.join(targetRoot, rel));
+    const superseded = borrowedReading.kind === "ordered"
+      && targetReading.kind === "ordered"
+      && borrowedReading.at <= targetReading.at;
+    if (superseded) continue;
+    quarantineTokenCopy(targetRoot, rel, borrowedFile);
   }
 }

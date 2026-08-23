@@ -65,6 +65,7 @@ export {
   repushProviderAccountToken,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
+  preserveBorrowedTokensBeforeWipe,
 } from "./token-sync-manager.js";
 
 // ---- Per-repo Claude memory sharing ----

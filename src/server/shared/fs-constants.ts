@@ -135,3 +135,26 @@ export const WORKSPACE_HIDDEN_FILES = new Set([
   ".shipit-usage.json",
   ".vibe-sessions.json",
 ]);
+
+/**
+ * Suffix marking a credential copy that a cleanup path REFUSED (or failed) to
+ * publish and preserved instead of deleting — `<name>.stranded-<epoch ms>`.
+ *
+ * Shared across the container boundary on purpose (planning#475). A session
+ * adapter quarantines beside its own destination (grok, PR #2514) and the
+ * orchestrator carries anything it finds out of a directory it is about to
+ * remove; the two are producer and consumer of one filename convention, and
+ * they lived in different processes with the spelling written twice. A silent
+ * rename on either side would have left both suites green while real cleanup
+ * deleted the rescue.
+ */
+export const STRANDED_CREDENTIAL_MARKER = ".stranded-";
+
+/** Does `name` look like `<base>` quarantined by {@link STRANDED_CREDENTIAL_MARKER}? */
+export function isStrandedCredentialOf(name: string, base: string): boolean {
+  if (!name.startsWith(`${base}${STRANDED_CREDENTIAL_MARKER}`)) return false;
+  // The tail is the producer's own epoch-ms stamp. Requiring it keeps the
+  // rescue from sweeping up an unrelated `auth.json.stranded-by-hand` a user
+  // or a future tool dropped beside the credential.
+  return /^\d+$/.test(name.slice(base.length + STRANDED_CREDENTIAL_MARKER.length));
+}
