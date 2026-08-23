@@ -49,6 +49,30 @@ describe("opencodeProviderConfig", () => {
     }
   });
 
+  it("withholds image input for a model the catalogue knows is text-only (planning#460)", () => {
+    // `deepseek-v4-flash` is text-only at BOTH public gateway catalogues
+    // (`model-vision.ts`), and it is the exact model planning#460 names: with the
+    // blanket claim, attaching an image here made the request itself malformed
+    // and the service rejected the turn. The visible half of the fix is
+    // `imageAttachmentRefusal`; this is the half that stops the malformed
+    // request in the paths a refusal cannot cover.
+    const modalities = block(
+      { ...ROUTING, style: "openai-chat-completions", baseUrl: "https://opencode.ai/zen/v1" },
+      "deepseek-v4-flash",
+    ).models?.["deepseek-v4-flash"]?.modalities;
+    expect(modalities?.input).toEqual(["text"]);
+    expect(modalities?.output).toEqual(["text"]);
+  });
+
+  it("declares image input for a model it cannot resolve — not knowing is not a refusal", () => {
+    // The fail-open that keeps planning#460 from reintroducing planning#458's
+    // silent drop by the back door. An id the catalogue does not carry resolves
+    // to `"unverified"`, which declares, so an unrecognised route behaves exactly
+    // as it did before this change.
+    const modalities = block(ROUTING, "no-such-model").models?.["no-such-model"]?.modalities;
+    expect(modalities?.input).toEqual(["text", "image"]);
+  });
+
   it("never inlines the secret — the key is OpenCode's {env:VAR} indirection", () => {
     expect(block(ROUTING).options?.apiKey).toBe("{env:OPENCODE_PROVIDER_API_KEY}");
   });

@@ -63,6 +63,7 @@ import {
   harnessForNativeService,
   loginIntegrationForService,
   serviceForLoginIntegration,
+  visionSupportFor,
 } from "./index.js";
 import type {
   ApiStyle,
@@ -1631,5 +1632,43 @@ describe("credentials", () => {
         }
       }
     });
+  });
+});
+
+/**
+ * planning#460 — image input, resolved per model.
+ *
+ * The table itself (`model-vision.ts`) is exhaustive by construction: it is a
+ * `Record<CanonicalModelKey, …>`, so a model without a verdict is a compile
+ * error and needs no test. What does need one is the RESOLUTION — a row's id and
+ * its canonical key are deliberately allowed to differ, in three separate ways,
+ * and each one is a way for a verdict to reach the wrong model or no model.
+ */
+describe("per-model image input (planning#460)", () => {
+  it("resolves a verdict through every spelling a row id can take", () => {
+    // A vendor's own short id, resolved by `MODEL_ID_ALIASES`.
+    expect(visionSupportFor({ serviceId: "anthropic", billingMode: "sub", modelId: "haiku" })).toBe("yes");
+    // Claude Code's long-context suffix, stripped by `normalizeModelIdForIdentity`.
+    expect(visionSupportFor({ serviceId: "zai", billingMode: "sub", modelId: "glm-5.2[1m]" })).toBe("no");
+    // A gateway's namespace prefix.
+    expect(
+      visionSupportFor({ serviceId: "openrouter", billingMode: "key", modelId: "deepseek/deepseek-v4-flash" }),
+    ).toBe("no");
+    // And the plain case, at the vendor.
+    expect(visionSupportFor({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" })).toBe("no");
+  });
+
+  it("answers unverified — never no — for a selection it cannot resolve", () => {
+    // The fail-open the whole design rests on: a refusal may only follow a
+    // catalogue verdict, so anything unknown has to land on the state that keeps
+    // pre-planning#460 behaviour. A `"no"` here would block attachments on a
+    // session whose pin ShipIt simply does not recognise.
+    expect(visionSupportFor(undefined)).toBe("unverified");
+    expect(visionSupportFor({ serviceId: "deepseek", billingMode: "key", modelId: "no-such-model" })).toBe(
+      "unverified",
+    );
+    expect(visionSupportFor({ serviceId: "no-such-service", billingMode: "key", modelId: "haiku" })).toBe(
+      "unverified",
+    );
   });
 });

@@ -27,7 +27,8 @@ import { executeAgentTurn } from "./turn-executor.js";
 import { releaseResidentOnSpawnChange } from "./resident-spawn-guard.js";
 import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
-import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./validation.js";
+import { resolveFileAttachments, resolveUploadRefs, formatFileContext, imageAttachmentRefusal } from "./validation.js";
+import { modelSelectionOf } from "./session-agent-env.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
 import { buildBugOutcomeNotice } from "./services/bug-report.js";
 import type {
@@ -167,6 +168,41 @@ export async function runDispatchedTurn(
       }
     }
   }
+  // planning#460 — the LAST point an image can still be stopped, and the only one
+  // EVERY dispatched ingress passes through: Quick Capture (which reaches
+  // `runner.dispatch` straight from `createHeadlessSession`, never through
+  // `dispatchAgentMessage`), a drained queue entry, an adopted turn, a chained
+  // turn. The two admission gates are better UX where they apply — they refuse
+  // before a turn is spent, and the user keeps their text — but they answer at
+  // ENQUEUE time, and the session's model can change before the queue drains.
+  // This one answers with the selection the turn is actually about to run on.
+  //
+  // A notice rather than a refusal, and the difference is the point: by here the
+  // turn is committed and the prompt is worth running (a Quick Capture is a
+  // fire-and-forget from a hotkey overlay — throwing it away because one of its
+  // files is a PNG costs more than it saves). So the image is dropped from the
+  // prompt and the user is TOLD, which is the whole of planning#460's ask —
+  // never the silent loss that withholding the modality alone would give.
+  // `uploadPaths` is left intact so the user's bubble still shows the chip.
+  if (images && images.length > 0) {
+    const session = deps.listenerDeps.sessionManager.get(runner.sessionId);
+    const blindNotice = imageAttachmentRefusal(
+      session ? modelSelectionOf(session) : undefined,
+      images,
+      undefined,
+    );
+    if (blindNotice) {
+      emitNoticePostTurn(
+        (m) => runner.emitMessage(m),
+        deps.listenerDeps.chatHistoryManager,
+        runner.sessionId,
+        blindNotice,
+        "warn",
+      );
+      images = undefined;
+    }
+  }
+
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && sessionDir ? saveImagesToUploadsDir(images, sessionDir) : "";

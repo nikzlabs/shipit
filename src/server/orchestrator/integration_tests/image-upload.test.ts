@@ -28,17 +28,19 @@ describe("Integration: Image upload", () => {
   let tmpDir: string;
   let lastClaude: FakeClaudeProcess = null as any;
   let dbManager: DatabaseManager;
+  let sessions: SessionManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     lastClaude = null as any;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-imageupload-"));
+    sessions = new SessionManager(dbManager);
     lastClaude = undefined as unknown as FakeClaudeProcess;
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
       createGitManager: (dir: string) => new GitManager(dir),
-      sessionManager: new SessionManager(dbManager),
+      sessionManager: sessions,
       chatHistoryManager: new ChatHistoryManager(dbManager),
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
@@ -97,6 +99,92 @@ describe("Integration: Image upload", () => {
     lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-session-1" });
     lastClaude.finish("img-session-1");
 
+    client.close();
+  });
+
+  it("refuses an image when the session is pinned to a text-only model (planning#460)", async () => {
+    // The user-facing half of planning#460. Before it, this turn was SPAWNED and
+    // the image was handed to a model that cannot take one — either malforming
+    // the request (OpenCode declares the modality, so the service rejects it) or
+    // spending the turn on a model that answers it cannot see the picture. The
+    // catalogue can now say which models see, so ShipIt refuses first and names
+    // the model, which is the thing the user can act on.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+    sessions.setModelSelection(client.sessionId, {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    });
+
+    client.send({
+      type: "send_message",
+      text: "What is in this screenshot?",
+      images: [
+        { data: TINY_PNG_BASE64, mediaType: "image/png", filename: "shot.png" },
+      ],
+    });
+
+    const msg = await client.receiveType("error");
+    expect((msg as any).message).toContain("V4 Flash");
+    expect((msg as any).message).toContain("cannot read images");
+    // And no turn was started — the whole point is not to spend one going blind.
+    expect(lastClaude).toBeFalsy();
+
+    client.close();
+  });
+
+  it("refuses the composer's shape too — an image arrives as an upload ref (planning#460)", async () => {
+    // The browser sends `uploads: [{path}]`, never inline `images`. A gate that
+    // read `msg.images` alone would pass every test above and refuse nothing a
+    // human ever sends. The check is extension-based and runs before any disk
+    // read, which is why no file has to exist for this.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+    sessions.setModelSelection(client.sessionId, {
+      serviceId: "zai",
+      billingMode: "sub",
+      modelId: "glm-5.2[1m]",
+    });
+
+    client.send({
+      type: "send_message",
+      text: "What is in this screenshot?",
+      uploads: [{ path: "/uploads/shot.png", type: "upload" }],
+    });
+
+    const msg = await client.receiveType("error");
+    expect((msg as any).message).toContain("GLM-5.2");
+    expect(lastClaude).toBeFalsy();
+
+    client.close();
+  });
+
+  it("still sends the image when the pinned model can see (planning#460)", async () => {
+    // The control for the test above: the refusal must be scoped to a catalogue
+    // `"no"`. A gate that also caught vision models would read as "attachments
+    // stopped working" and would be far worse than the bug it replaced.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+    sessions.setModelSelection(client.sessionId, {
+      serviceId: "anthropic",
+      billingMode: "sub",
+      modelId: "claude-sonnet-5",
+    });
+
+    client.send({
+      type: "send_message",
+      text: "What is in this screenshot?",
+      images: [
+        { data: TINY_PNG_BASE64, mediaType: "image/png", filename: "shot.png" },
+      ],
+    });
+
+    await waitForClaude(() => lastClaude);
+    expect(lastClaude.lastPrompt).toContain("<attached_images>");
+
+    lastClaude.emit("event", { type: "system", subtype: "init", session_id: "img-vision-ok" });
+    lastClaude.finish("img-vision-ok");
     client.close();
   });
 

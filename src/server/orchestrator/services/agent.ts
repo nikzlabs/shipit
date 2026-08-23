@@ -24,9 +24,11 @@ import type {
 } from "../../shared/types.js";
 import {
   validateImages,
+  imageAttachmentRefusal,
   resolveFileAttachments,
   resolveUploadRefs,
 } from "../validation.js";
+import { modelSelectionOf } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import type { MaterializeRunnerOutcome } from "./materialize-runner.js";
 import { ServiceError } from "./types.js";
@@ -132,6 +134,19 @@ export async function dispatchAgentMessage(
   if (input.images && input.images.length > 0) {
     const imageError = validateImages(input.images);
     if (imageError) throw new ServiceError(400, imageError);
+  }
+  // planning#460 — the dispatched twin of the WS gate: an image attached while
+  // the session is pinned to a known text-only model is refused here rather than
+  // going blind into a turn. Only a catalogue `"no"` refuses, so a dispatch
+  // against an unpinned or unverified session is unaffected.
+  {
+    const session = deps.sessionManager.get(sessionId);
+    const visionRefusal = imageAttachmentRefusal(
+      session ? modelSelectionOf(session) : undefined,
+      input.images,
+      input.uploads,
+    );
+    if (visionRefusal) throw new ServiceError(400, visionRefusal);
   }
 
   // 2. Runner resolution. The registry returns `undefined` for missing or

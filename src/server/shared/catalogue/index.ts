@@ -30,9 +30,11 @@ import type {
   ServiceDef,
 } from "./types.js";
 import type { ModelIdentity } from "./model-identity.js";
+import { MODEL_VISION, type VisionSupport } from "./model-vision.js";
 
 export * from "./types.js";
 export * from "./model-identity.js";
+export * from "./model-vision.js";
 export { HARNESSES } from "./harnesses.js";
 export { SERVICES, type ServiceId } from "./services.js";
 
@@ -549,6 +551,25 @@ export function selectionHonoursEffort(
   effort: string,
 ): boolean {
   return reasoningOptionsFor(harnessId, selection).some((o) => o.value === effort);
+}
+
+/**
+ * planning#460 — can the model this selection names take an image?
+ *
+ * Resolved through the row's `canonicalModelKey` rather than its id, which is
+ * what makes one verdict serve `deepseek-v4-flash` at DeepSeek,
+ * `deepseek/deepseek-v4-flash` at two gateways and the same id again at OpenCode
+ * Zen and Go. See {@link MODEL_VISION} for why the fact is keyed there and not
+ * on the row.
+ *
+ * A selection naming no catalogue row answers `"unverified"` — the same answer a
+ * model nobody has checked gets, and for the same reason: not knowing must never
+ * resolve to a refusal. That covers a session with no selection yet, a pin on a
+ * retired id, and any spawn ShipIt routes without the catalogue.
+ */
+export function visionSupportFor(selection: ModelSelection | undefined): VisionSupport {
+  const key = selection ? getModel(selection)?.canonicalModelKey : undefined;
+  return key ? MODEL_VISION[key] : "unverified";
 }
 
 /** A catalogue row paired with the identity that names it. */
