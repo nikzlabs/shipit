@@ -331,6 +331,17 @@ are **silent**: no compile error and no existing test fails if you miss them.
   `ln -s /credentials/<dotfiles>` + `chown -h` — and `Dockerfile.prod`
   (~`:101`, root, symlinks only). Miss this and credentials never reach the
   CLI.
+- 🚩 **Link the credential ROOT as a directory, never the token file itself.**
+  A CLI's OAuth refresh is typically a rename, and `rename(2)` does not follow a
+  symlink on its destination — so a link *at* the token path is swapped for a
+  regular file, the path ShipIt watches never moves, publish-back silently
+  no-ops, and the next cleanup deletes the only live token (planning#448, grok:
+  its adapter built a throwaway `GROK_HOME` and linked `auth.json` file-to-file).
+  A link one level up is immune, because both the temp name and the final name
+  resolve through it into the same real directory. Claude, Codex and OpenCode
+  were cleared against this on 2026-08-23 (planning#475); the per-harness
+  evidence, and the reopening condition for OpenCode, is at `AGENT_TOKEN_FILES`
+  in `orchestrator/token-sync-manager.ts`.
 - `deployment/vps/setup.sh`: `HARNESS_ROWS` — one `"id|Label|hint"` row adds the
   harness to the picker AND to the validated set; guard-tested against the
   catalogue. Its preselection, `HARNESS_DEFAULT`, is the approved-set decision

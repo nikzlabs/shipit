@@ -60,6 +60,12 @@ export const SUB_AGENT_HOME_SUBDIR = "sub-agent-homes";
  *   ~/.claude      -> /credentials/.claude
  *   ~/.claude.json -> /credentials/.claude.json
  *   ~/.codex       -> /credentials/.codex
+ *
+ * **Every credential ROOT here is linked as a directory, and that is what keeps
+ * the planning#448 class out of the image** — a CLI's refresh rename swaps a
+ * link at the renamed path, and a link one level up is not at that path. The
+ * per-harness evidence lives at `AGENT_TOKEN_FILES` (`token-sync-manager.ts`);
+ * read it before adding a FILE entry to this table.
  */
 export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   claude: [".claude", ".claude.json"],
