@@ -58,6 +58,29 @@ export async function postTurnCommit(
      * commit_hash on any chat row — so the rewind preview shows "0 files".
      */
     runner?: SessionRunnerInterface | null;
+    /**
+     * Hand the auto-push ARM to the caller instead of arming it here.
+     *
+     * Only the arming moves. The merged-branch decision, and the notice it
+     * emits when it refuses, still happen right after the commit, against the
+     * state the commit produced — deferring the *decision* would let the
+     * docs/202 re-arm (which clears `mergedAt` inside the PR flow) change the
+     * answer underneath it.
+     *
+     * The caller that passes this is `turn-executor.ts`, and its reason is
+     * ordering: the post-turn PR flow does its own synchronous `git push` —
+     * a `forcePush` when re-arming past a merged pull request — and a debounced
+     * plain push racing that one is rejected non-fast-forward, which posts the
+     * "your branch has diverged" notice for a branch that is fine. Until now
+     * the only thing keeping the two apart was the 5s debounce being longer
+     * than the PR flow, which is not a guarantee: PR creation writes its title
+     * with an LLM and can exceed it. Arming after that flow removes the race
+     * instead of out-waiting it, which is what lets the debounce go to 0.
+     *
+     * Callers with no git work of their own after the commit (the interrupt
+     * fallback) omit it and are armed inline, exactly as before.
+     */
+    deferPushArm?: (arm: () => void) => void;
   },
 ): Promise<string | null> {
   // docs/128 / docs/211 — ShipIt does not auto-commit an `ops` or `sandbox`
@@ -162,7 +185,12 @@ export async function postTurnCommit(
         )
       : null;
     if (!block || !sessionId) {
-      ctx.scheduleAutoPush(git, opts.sessionId);
+      // Decided here, armed here or later — see `deferPushArm`. The closure
+      // captures the same `git` and session id the inline call would have used,
+      // so the two paths push identically.
+      const arm = (): void => ctx.scheduleAutoPush(git, opts.sessionId);
+      if (opts.deferPushArm) opts.deferPushArm(arm);
+      else arm();
       return;
     }
     console.warn(

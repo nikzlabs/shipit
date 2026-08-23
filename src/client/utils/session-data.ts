@@ -198,26 +198,44 @@ let inFlightHistoryLoad: { seq: number; controller: AbortController } | null = n
  * sends `If-None-Match`, gets a `304`, and reuses the parsed object: no
  * transfer, no `JSON.parse`, no re-materialising thousands of message objects.
  *
- * Correctness is the server's, not ours: the ETag is a hash of the response
- * body, so a `304` is a positive statement that nothing changed. We never
- * decide for ourselves that a cached transcript is still good.
+ * Correctness is the server's, not ours: a `304` is a positive statement that
+ * nothing changed, and we never decide for ourselves that a cached transcript is
+ * still good. The tag is no longer a hash of the body (planning#324 — the server
+ * cannot afford to build megabytes to discover it has nothing to send); it is
+ * composed from the session's transcript revision, the other payload sources,
+ * and a wire-shape version. Same guarantee, arrived at without the build.
  *
  * Bounded because a transcript is megabytes and a long day touches many
  * sessions. `Map` iterates in insertion order, so the oldest entry is the first
  * key — re-inserting on every hit keeps the bound honest (LRU, not FIFO).
  */
 const HISTORY_CACHE_LIMIT = 6;
-const historyCache = new Map<string, { etag: string; data: HistoryResponse }>();
+
+interface HistoryCacheEntry {
+  etag: string;
+  data: HistoryResponse;
+  /**
+   * The `ChatMessage[]` this payload was last materialized into, memoized —
+   * see `materializeTranscript`. Absent until the first install; dropped with
+   * the entry when a fresh body replaces it, because a new payload can never
+   * reuse the old payload's rows.
+   */
+  materialized?: ChatMessage[];
+}
+
+const historyCache = new Map<string, HistoryCacheEntry>();
 const treeCache = new Map<string, { etag: string; data: FileTreeNode[] }>();
 
-function remember<T>(cache: Map<string, { etag: string; data: T }>, key: string, etag: string, data: T): void {
+function remember<T, E extends { etag: string; data: T }>(cache: Map<string, E>, key: string, etag: string, data: T): E {
   cache.delete(key);
-  cache.set(key, { etag, data });
+  const entry = { etag, data } as E;
+  cache.set(key, entry);
   while (cache.size > HISTORY_CACHE_LIMIT) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
     cache.delete(oldest);
   }
+  return entry;
 }
 
 /**
@@ -270,6 +288,119 @@ async function fetchFileTree(sessionId: string, signal: AbortSignal): Promise<Fi
 }
 
 /**
+ * Turn the payload's rows into the transcript's `ChatMessage[]`, reusing the
+ * previous materialization of the SAME cached payload (planning#467).
+ *
+ * The install itself is unconditional and stays that way — see
+ * `loadSessionHistory`. What this removes is its *cost*, which was the whole of
+ * the complaint: `data.messages.map(...)` allocated a fresh `ChatMessage` for
+ * every row on every load, and `TranscriptRow` takes its message as the `anchor`
+ * prop — "the row's catch-all change signal". A fresh object per row is a memo
+ * miss per row, so every history load re-rendered the entire transcript: the
+ * measured **92 ms at ~2,000 rows** that planning#375's memo work exists to
+ * avoid (`transcript-row-memo.test.tsx`, `visual-elements.ts:reuseUnchanged`).
+ * A foreground reconnect pays it on every alt-tab, and planning#324's cheap
+ * validator made those reconnects *more* frequent, not fewer.
+ *
+ * On a `304` the payload object is the one already in the cache, so the rows it
+ * produces are a pure function of an object we have already mapped. Memoizing
+ * that map returns the identical array of identical rows, which means:
+ * `useSessionStore`'s `messages` selector sees an `Object.is`-equal value and
+ * does not re-render at all, and where it must (a switch-back, which cleared the
+ * array) every row still bails out of its memo.
+ *
+ * Doing it this way rather than skipping the install keeps every guarantee the
+ * install carries — the switch-back baseline restore, wiping client-only rows
+ * such as `useConnectionSync`'s "connection lost" notice — and adds no state
+ * whose validity depends on every future `setMessages` caller behaving.
+ *
+ * The one thing it does assume is what the client already does everywhere: rows
+ * are treated as immutable (every handler rebuilds with `{...m}`). A row mutated
+ * in place would now persist into the next install instead of being discarded by
+ * a re-map.
+ */
+function materializeTranscript(data: HistoryResponse, entry: HistoryCacheEntry | undefined): ChatMessage[] {
+  if (entry?.materialized) return entry.materialized;
+  // `inProgress` rides through to the ChatMessage: it marks the rows that
+  // belong to a still-running turn, which is exactly the set an attach-time
+  // `turn_snapshot` replaces (see `turn-snapshot.ts`). `streaming` stays the
+  // narrower "this bubble is being written to" flag the renderer uses.
+  const rows = data.messages.map((m) => ({
+    ...m,
+    streaming: m.inProgress ?? false,
+  } as unknown as ChatMessage));
+  if (entry) entry.materialized = rows;
+  return rows;
+}
+
+/**
+ * Rehydrate the four authoritative card stores from the persisted rows
+ * (docs/164 bug-report, docs/193 permission, docs/172 egress-prompt,
+ * docs/177 issue-write).
+ *
+ * This runs on EVERY completed load, a `200` and a `304` alike, and must never
+ * be conditioned on the transcript having changed (planning#467). The seeds are
+ * not a consequence of installing the transcript; they are the correction for a
+ * *different* channel. On every attach the orchestrator replays the turn-event
+ * buffer, and that replay deliberately skips only `agent_event`, `turn_snapshot`,
+ * `log_append`, the terminal messages and `background_tasks`
+ * (`route-registry.ts:1112`) — card messages go through. A replayed card lands
+ * via its store's non-clobbering `upsertCard`, i.e. as a fresh draft/pending
+ * entry, and only this authoritative seed restores the persisted phase.
+ *
+ * So "the transcript is unchanged" says nothing about what the replay just wrote
+ * into the card stores. Skipping the seed because the body was cached is exactly
+ * what made a filed bug report render as an editable draft and a resolved
+ * permission re-offer Approve/Deny — the closed PR #2536's failure mode, and the
+ * one thing planning#467 rules out by name.
+ *
+ * The reverse order converges too: a replay landing *after* the seed is a no-op
+ * against an existing entry, which is why `upsertCard` never overwrites.
+ *
+ * Guard test: "re-seeds the card stores on a 304 over a replay-created draft".
+ */
+function seedCardStoresFromHistory(messages: HistoryResponse["messages"]): void {
+  // docs/164 — so each `BugReportCard` renders with its correct phase (a filed
+  // card comes back "filed" with its issue link; a failed one as an editable
+  // draft).
+  const persistedCards = messages
+    .map((m) => (m as { bugReport?: BugReportCardState }).bugReport)
+    .filter((b): b is BugReportCardState => !!b && typeof b.cardId === "string" && !!b.phase);
+  if (persistedCards.length > 0) {
+    useBugReportStore.getState().seedCards(persistedCards);
+  }
+
+  // docs/193 / planning#114 — so each `PermissionRequestCard` renders with its
+  // correct phase (an approved/denied/expired card comes back resolved, not
+  // re-offering Approve/Deny). A still-pending card comes back actionable — the
+  // worker holds the request, so the user can answer it after a reload.
+  const persistedPermissions = messages
+    .map((m) => (m as { permissionPrompt?: PermissionCardState }).permissionPrompt)
+    .filter((p): p is PermissionCardState => !!p && typeof p.requestId === "string" && !!p.phase);
+  if (persistedPermissions.length > 0) {
+    usePermissionStore.getState().seedCards(persistedPermissions);
+  }
+
+  // docs/172 / planning#92 — so each `EgressPromptCard` renders with its correct
+  // phase (a resolved card comes back resolved, not re-offering the buttons).
+  const persistedEgress = messages
+    .map((m) => (m as { egressPrompt?: EgressPromptCardState }).egressPrompt)
+    .filter((e): e is EgressPromptCardState => !!e && typeof e.cardId === "string" && !!e.phase);
+  if (persistedEgress.length > 0) {
+    useEgressPromptStore.getState().seedCards(persistedEgress);
+  }
+
+  // docs/177 — so each `IssueWriteCard` renders with its correct undo state (an
+  // undone card comes back "undone", not re-offering Undo).
+  const persistedWrites = messages
+    .map((m) => (m as { issueWrite?: IssueWriteCard }).issueWrite)
+    .filter((w): w is IssueWriteCard => !!w && typeof w.cardId === "string" && !!w.undoState);
+  if (persistedWrites.length > 0) {
+    useIssueWriteStore.getState().seedCards(persistedWrites);
+  }
+}
+
+/**
  * Fetch session history via HTTP and populate stores.
  * Shared between useConnectionSync (WS reconnect) and session-actions (session resume).
  */
@@ -281,6 +412,14 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   const controller = new AbortController();
   inFlightHistoryLoad = { seq, controller };
   let data: HistoryResponse;
+  /**
+   * The cache entry `data` came from, when there is one. Carried out of the
+   * fetch so the install can memoize its materialization into it — see
+   * `materializeTranscript`. Absent only when the response had no ETag (an
+   * older server, a proxy that strips it, a test double), which degrades to
+   * exactly the old behaviour: a fresh map, every load.
+   */
+  let cacheEntry: HistoryCacheEntry | undefined;
   // In parallel with the transcript, not after it — two independent conditional
   // GETs on one round trip's worth of latency. Failure is tolerated (`null`):
   // an unreachable file tree must never cost the user their transcript.
@@ -297,7 +436,24 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       ...(cached ? { headers: { "If-None-Match": cached.etag } } : {}),
     });
     if (res.status === 304 && cached) {
+      // The cached payload is installed exactly as a fresh body would be —
+      // deliberately, on both paths (planning#467). A 304 is a positive
+      // statement that every payload source is unchanged: the validator is
+      // composed from the transcript revision AND the whole non-transcript rest
+      // (`api-routes-session-spawn.ts`), so the cached object cannot be staler
+      // than a 200 in any field.
+      //
+      // Making the install conditional here was considered and rejected. It
+      // breaks the session switch-back, where `resumeSessionInternal` cleared
+      // `messages` and this install IS the incoming session's baseline restore;
+      // recovering that needs a marker saying whether the array is still the
+      // payload's materialization, and the marker's validity then rests on every
+      // present and future `setMessages` caller. The cost it was reaching for is
+      // removed instead, by `materializeTranscript`, which the install below
+      // shares — a 304 re-installs the identical array of identical rows, which
+      // no subscriber re-renders for.
       data = cached.data;
+      cacheEntry = cached;
       touch(historyCache, sessionId);
     } else {
       data = await res.json() as HistoryResponse;
@@ -306,7 +462,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       // double). Never cache without a tag — the tag is the only thing that
       // makes a later reuse safe.
       const etag = res.headers?.get("etag");
-      if (etag) remember(historyCache, sessionId, etag, data);
+      if (etag) cacheEntry = remember(historyCache, sessionId, etag, data);
     }
   } catch (err) {
     // A load we cancelled ourselves is not a failure. Return rather than throw,
@@ -326,63 +482,34 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     return;
   }
   const session = useSessionStore.getState();
-  // `inProgress` rides through to the ChatMessage: it marks the rows that
-  // belong to a still-running turn, which is exactly the set an attach-time
-  // `turn_snapshot` replaces (see `turn-snapshot.ts`). `streaming` stays the
-  // narrower "this bubble is being written to" flag the renderer uses.
-  session.setMessages(
-    data.messages.map((m) => ({
-      ...m,
-      streaming: m.inProgress ?? false,
-    } as unknown as ChatMessage)),
-  );
+  /**
+   * Install the persisted transcript, unconditionally (planning#467).
+   *
+   * It is a wholesale replace, and during a running turn the payload is a
+   * SUBSET of what is on screen: the in-memory array also holds everything the
+   * turn has streamed since its last persist boundary. That gap is closed by
+   * construction, not by luck. `historyLoaded` is false for the whole of this
+   * load — `useConnectionSync` lowers it on the `closed`/`connecting`
+   * transition, `resumeSessionInternal` lowers it on a switch — and
+   * `useMessageHandler` queues `turn_snapshot` (with `agent_event` and
+   * `sub_agent_spawn`) for exactly as long as it stays false. The attach sends
+   * a fresh snapshot whenever the runner is running
+   * (`route-registry.ts:attachToRunner`), `setHistoryLoaded(true)` below is
+   * strictly after this line, and the queue drains on that flag — so the
+   * snapshot always lands ON TOP of this baseline and its replace-filter
+   * (`turn-snapshot.ts`) restores the live tail whichever order the two
+   * arrived in on the wire.
+   *
+   * So there is no truncation window here, and none specific to the `304`.
+   * Guards: `useMessageHandler.test.ts`, `useConnectionSync.session-switch.test.tsx`,
+   * and the ordering test in this file's suite.
+   */
+  session.setMessages(materializeTranscript(data, cacheEntry));
 
-  // docs/164 — rehydrate the bug-report store from persisted cards so each
-  // `BugReportCard` renders with its correct phase (a filed card comes back
-  // "filed" with its issue link; a failed one as an editable draft). Seeding is
-  // authoritative — it overwrites any draft a turn-event-buffer replay may have
-  // created first on reconnect.
-  const persistedCards = data.messages
-    .map((m) => (m as { bugReport?: BugReportCardState }).bugReport)
-    .filter((b): b is BugReportCardState => !!b && typeof b.cardId === "string" && !!b.phase);
-  if (persistedCards.length > 0) {
-    useBugReportStore.getState().seedCards(persistedCards);
-  }
-
-  // docs/193 / planning#114 — rehydrate the permission store from persisted cards so
-  // each `PermissionRequestCard` renders with its correct phase (an approved/
-  // denied/expired card comes back resolved, not re-offering Approve/Deny). A
-  // still-pending card comes back actionable — the worker holds the request, so
-  // the user can answer it after a reload. Authoritative seed wins over a buffer
-  // replay.
-  const persistedPermissions = data.messages
-    .map((m) => (m as { permissionPrompt?: PermissionCardState }).permissionPrompt)
-    .filter((p): p is PermissionCardState => !!p && typeof p.requestId === "string" && !!p.phase);
-  if (persistedPermissions.length > 0) {
-    usePermissionStore.getState().seedCards(persistedPermissions);
-  }
-
-  // docs/172 / planning#92 — rehydrate the egress-prompt store from persisted cards so
-  // each `EgressPromptCard` renders with its correct phase (a resolved card comes
-  // back resolved, not re-offering the buttons). Authoritative seed wins over a
-  // buffer replay.
-  const persistedEgress = data.messages
-    .map((m) => (m as { egressPrompt?: EgressPromptCardState }).egressPrompt)
-    .filter((e): e is EgressPromptCardState => !!e && typeof e.cardId === "string" && !!e.phase);
-  if (persistedEgress.length > 0) {
-    useEgressPromptStore.getState().seedCards(persistedEgress);
-  }
-
-  // docs/177 — rehydrate the issue-write store from persisted provenance cards
-  // so each `IssueWriteCard` renders with its correct undo state (an undone
-  // card comes back "undone", not re-offering Undo). Authoritative seed wins
-  // over a buffer replay.
-  const persistedWrites = data.messages
-    .map((m) => (m as { issueWrite?: IssueWriteCard }).issueWrite)
-    .filter((w): w is IssueWriteCard => !!w && typeof w.cardId === "string" && !!w.undoState);
-  if (persistedWrites.length > 0) {
-    useIssueWriteStore.getState().seedCards(persistedWrites);
-  }
+  // Rehydrate the four card stores from the persisted rows. Runs on every
+  // completed load, `304` included, and deliberately does NOT share the
+  // transcript's condition — see `seedCardStoresFromHistory`.
+  seedCardStoresFromHistory(data.messages);
 
   // docs/093 — rehydrate the Present tab from durable metadata so it survives a
   // reload / session switch / container restart. `hydrate` replaces the list

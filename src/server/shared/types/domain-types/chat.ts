@@ -222,6 +222,36 @@ export interface ActionChecklistItem {
  * already exists, files moved) — the "honest at click-time" guarantee without a
  * stale *state* or a lock.
  */
+/**
+ * docs/280 — a persisted "inline presentation" transcript card: an artifact the
+ * agent presented with `present({ inline: true })`, rendered in the conversation
+ * itself rather than only in the Present tab.
+ *
+ * Metadata ONLY, exactly like the Present tab's own state: the card carries no
+ * artifact bytes, and the client fetches them on demand from
+ * `GET /api/sessions/:id/present/:presentId/content` (the same lazy disk read
+ * the carousel uses). That is what lets a card written months ago still render
+ * today's file, and what makes re-presenting the same path refresh the card in
+ * place — `presentId` is content-addressed by the path, so the card and the
+ * carousel entry are the same artifact seen from two surfaces.
+ *
+ * The card has no lifecycle: it is written once when the file is first presented
+ * inline and never patched. A later re-present updates the ARTIFACT, not the
+ * card row.
+ */
+export interface PresentInlineCard {
+  /** Stable id — content-addressed by the artifact's path; dedupes replays. */
+  presentId: string;
+  /** The path the agent presented (verbatim), shown in the card header. */
+  filePath: string;
+  /** "text/html", "image/svg+xml", "text/markdown", "image/png", … */
+  mimeType: string;
+  /** Optional display title; the card falls back to the file's name. */
+  title?: string;
+  /** Emit time of the first inline present of this path. */
+  createdAt: string;
+}
+
 export interface ActionChecklistCard {
   /** Stable id — dedupes the live append vs the reconnect/reload replay. */
   cardId: string;
@@ -333,6 +363,69 @@ export interface SessionRenamedCard {
   from: string;
   /** The title it has now. */
   to: string;
+  /** Emit time — doubles as the provenance stamp. */
+  createdAt: string;
+}
+
+/**
+ * docs/279 — one setting that moved, in the words the settings UI uses for it.
+ *
+ * Every field is a SNAPSHOT of user-facing text rather than an internal key or
+ * enum: the card is a record of what the user did, so renaming a capability or
+ * relabelling a mode later must not rewrite what an old row says happened.
+ */
+export interface SessionSettingsChangeEntry {
+  /** User-facing setting name at the time of the change ("GitHub access"). */
+  label: string;
+  /** The value before the change, in user-facing words ("off", "Inherit global"). */
+  from: string;
+  /** The value after it ("on", "Open"). */
+  to: string;
+  /**
+   * True/false when the setting is a two-state GRANT, so the card can render the
+   * direction (granted / revoked) rather than only the words. Absent when it
+   * isn't — the network containment mode is three-state, and forcing it into a
+   * boolean would have to call "Inherit global" either granted or revoked.
+   */
+  granted?: boolean;
+}
+
+/**
+ * docs/279 — a persisted "this session's settings changed" transcript card
+ * (requirements 7 + 8). A capability grant moving is a trust-boundary change, so
+ * it leaves a durable row in the scrollback rather than only a toggle position
+ * the user has to go looking for.
+ *
+ * One card type covers both writers, because they answer the same question —
+ * *what was this session allowed to do, and when did that change?*:
+ *   - `sandbox-capabilities` — a sandbox's `git` / `dangerousGitHubOps` /
+ *     `docker` / `network` grants, edited after creation.
+ *   - `network-mode` — a REGULAR session's egress containment override, changed
+ *     from the same dialog. That change was entirely silent before this card.
+ *
+ * Immutable, no lifecycle — written once on emit, never patched. Shared verbatim
+ * by the live WS payload (`WsSessionSettingsChangeCard`), the persisted row
+ * (`PersistedMessage.sessionSettingsChange`) and the client card, so the three
+ * can't drift. Idempotent on the client by `cardId` (live emit vs reconnect /
+ * reload replay).
+ */
+export interface SessionSettingsChangeCard {
+  /** Stable id — dedupes the live append vs the reconnect/reload replay. */
+  cardId: string;
+  /** Which settings surface moved; drives the card's heading. */
+  scope: "sandbox-capabilities" | "network-mode";
+  /**
+   * The entries that actually CHANGED — never the full set. A card is only
+   * emitted when this is non-empty, so a no-op save leaves no row.
+   */
+  changes: SessionSettingsChangeEntry[];
+  /**
+   * True when applying the change needs a container restart (docs/279: the
+   * container-plumbed grants, and any egress-mode change). Recorded as it was at
+   * emit time — the card is a record of what happened, not a live status, so it
+   * is never patched when the user later restarts.
+   */
+  pendingRestart: boolean;
   /** Emit time — doubles as the provenance stamp. */
   createdAt: string;
 }

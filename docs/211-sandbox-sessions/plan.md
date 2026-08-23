@@ -110,6 +110,14 @@ brokering capabilities on request instead of automatically.
 inferred from workspace files, so an agent cannot self-promote (same rule as
 ops `setKind`).
 
+**Superseded in part by docs/279-mutable-sandbox-capabilities**: `capabilities`
+is no longer immutable — the user can edit the set after creation from the
+per-session Session settings dialog. The server-authoritative property is
+unchanged and is now carried by the edit route being **browser-only** (no
+`containerAccessible`) rather than by there being no writer at all. Statements
+below that call the set immutable, or that say the creation dialog is the only
+place the grants are chosen, describe the pre-docs/279 design.
+
 ### The sandbox invariant (not merely "no remoteUrl")
 
 Codex review flagged that "repo-less" already half-exists (standalone sessions

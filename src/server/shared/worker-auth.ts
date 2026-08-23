@@ -331,11 +331,11 @@ export interface WorkerAuthDecision {
  * planning#421 — step 6 used to ALLOW, as a compatibility fallback for a container
  * created by an orchestrator that predates {@link WORKER_TOKEN_ENV}. That made a
  * tokenless worker serve its whole orchestrator-facing surface to anything on the
- * session subnet, and `docs/271-agent-install-trust-boundary`'s gate on
- * `agent.install` rests on the opposite: what keeps a plugin *service* from
- * POSTing the worker's `/install` directly is that no plugin container holds a
- * token. A guarantee stated in a plan is not something a future change can fail,
- * so it is pinned here instead, by a rule with a test on it.
+ * session subnet. `/install` is the sharpest case: `compose-service-egress.ts`
+ * lets a contained plugin service reach the agent container, so what keeps it
+ * from POSTing the worker's `/install` directly is that no plugin container
+ * holds a token. A guarantee stated in a plan is not something a future change
+ * can fail, so it is pinned here instead, by a rule with a test on it.
  *
  * Failing closed cannot brick the skew case that fallback was written for. A
  * container that outlives a deploy keeps running the image it was created from,

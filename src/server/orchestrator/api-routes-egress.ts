@@ -48,7 +48,19 @@ import type {
   EgressHostReach,
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
+import { emitSessionSettingsChangeCard } from "./services/session-settings.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
+
+/**
+ * docs/279 — the containment override in the words the Session settings dialog
+ * uses for it, for the transcript card. Snapshotted into the row, so relabelling
+ * the options later cannot rewrite what an old card says the user chose.
+ */
+function egressModeLabel(override: boolean | null | undefined): string {
+  if (override === true) return "Contained";
+  if (override === false) return "Open";
+  return "Inherit global";
+}
 
 /** Stable per (session, host) so a re-denied host updates one card, never duplicates. */
 export function egressCardId(sessionId: string, host: string): string {
@@ -311,14 +323,43 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     );
 
     // Set/clear a session's containment override (null = inherit global).
+    //
+    // docs/279 req 8 — this change was entirely silent: it persisted the override
+    // and the only trace was the radio button's own position. Network access is
+    // a trust boundary like any capability grant, so an actual change now leaves
+    // the same persisted transcript card a sandbox capability edit does.
     app.put<{ Params: { id: string }; Body: { override?: boolean | null } }>(
       "/api/egress/session/:id",
       async (request) => {
+        const sessionId = request.params.id;
         const override = request.body?.override;
         if (override === true || override === false || override === null) {
-          store.setSessionOverride(request.params.id, override);
+          const previous = store.getSessionOverride(sessionId);
+          store.setSessionOverride(sessionId, override);
+          if (previous !== override) {
+            // The card's `pendingRestart` is the SAME value this route is about
+            // to report to the dialog, read after the write. It used to be
+            // hardcoded `true` on the reasoning that egress topology is always a
+            // creation-time choice — but "the topology is fixed at creation" is
+            // not "this change alters it": with no running container, or with
+            // one already started in the resolved containment (global Contained,
+            // Inherit → Contained), nothing is pending. The dialog would have
+            // shown no pending row while the transcript card beside it said
+            // "applies on next container start". (Review finding.)
+            emitSessionSettingsChangeCard(
+              { runnerRegistry: deps.runnerRegistry, chatHistoryManager: deps.chatHistoryManager },
+              sessionId,
+              "network-mode",
+              [{
+                label: "Network containment",
+                from: egressModeLabel(previous),
+                to: egressModeLabel(override),
+              }],
+              sessionSettings(store, sessionId, enforcementActive, liveContained(sessionId)).pendingRestart,
+            );
+          }
         }
-        return sessionSettings(store, request.params.id, enforcementActive, liveContained(request.params.id));
+        return sessionSettings(store, sessionId, enforcementActive, liveContained(sessionId));
       },
     );
   }

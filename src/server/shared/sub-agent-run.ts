@@ -78,6 +78,15 @@ export interface SubAgentRunOptions {
   /** Optional model alias/id; defaults to the adapter's default model. */
   model?: string;
   /**
+   * Isolated HOME for this spawn's CLI (container-side path). Set for a
+   * SAME-harness spawn so its credentials live in a per-spawn root instead of
+   * the session subtree the live primary CLI reads — a cross-provider
+   * provision there swaps the primary's credential file mid-turn and 401s it
+   * (see `provisionSubAgentSpawnHome`). Absent ⇒ the CLI runs under the
+   * process-global home exactly as before.
+   */
+  homeDir?: string;
+  /**
    * docs/252 phase 3 — base URL + credential for the selected model's service.
    * A consult is a `(service, billing mode, model)` selection like any other
    * (the invoked agent's own sub-agent defaults), so it needs the same shaping
@@ -172,6 +181,8 @@ export interface SubAgentSpawnRequest {
   model: string;
   /** docs/252 phase 3 — base URL + credential for the sub-agent model's service. */
   serviceRouting?: ServiceRouting;
+  /** Isolated per-spawn HOME (container path) for a same-harness spawn — see {@link SubAgentRunOptions.homeDir}. */
+  homeDir?: string;
   /**
    * Reasoning effort for the sub-agent.
    *
@@ -393,5 +404,6 @@ export function buildSubAgentRunParams(opts: SubAgentRunOptions): AgentRunParams
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.serviceRouting !== undefined ? { serviceRouting: opts.serviceRouting } : {}),
     ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+    ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
   };
 }

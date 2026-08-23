@@ -52,6 +52,14 @@ export interface PresentMeta {
   mimeType: string;
   title?: string;
   createdAt: string;
+  /**
+   * docs/280 — the agent asked for this artifact to ALSO render as a card in the
+   * chat transcript, not only in the Present tab. Sticky per entry: once a file
+   * has been presented inline, re-presenting it (the screenshot loop, which
+   * usually omits the flag) must not demote the card that is already in the
+   * scrollback, so `put` ORs the new value onto the stored one.
+   */
+  inline?: boolean;
 }
 
 export class PresentRegistry {
@@ -78,8 +86,12 @@ export class PresentRegistry {
       mimeType: string;
       title?: string;
       createdAt: string;
+      inline?: boolean;
     },
   ): PresentMeta {
+    // `inline` is sticky (docs/280): the transcript card already exists, so a
+    // later re-present of the same path can only ever turn it on, never off.
+    const inline = input.inline || this.entries.get(presentId)?.inline || false;
     const meta: PresentMeta = {
       presentId,
       resolvedPath: input.resolvedPath,
@@ -87,6 +99,7 @@ export class PresentRegistry {
       mimeType: input.mimeType,
       ...(input.title !== undefined ? { title: input.title } : {}),
       createdAt: input.createdAt,
+      ...(inline ? { inline: true } : {}),
     };
     this.entries.set(presentId, meta);
     return meta;

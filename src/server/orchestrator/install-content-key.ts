@@ -42,10 +42,8 @@
  * resume. Keying on the command list means a repository that changes its
  * `agent.install` is told again, and one that does not stays quiet.
  *
- * That is exactly the shape of docs/271's `INSTALL_WITHHELD_FILE`, and it lives
- * beside it for the same reasons: `<sessionDir>/state/shared/` survives a
- * container recreate, sits outside the clone, and is mounted by no plugin
- * container.
+ * It lives in `<sessionDir>/state/shared/` because that survives a container
+ * recreate, sits outside the clone, and is mounted by no plugin container.
  */
 
 import fs from "node:fs";
@@ -94,8 +92,7 @@ export function contentKeyingIsOff(agent: ContentKeyConfig): boolean {
 
 /**
  * Every entry point takes the session's **clone** — `workspaceDir`, e.g.
- * `/workspace/sessions/{uuid}/workspace` — and derives the state dir from it,
- * exactly as `agent-install-gate.ts` does and for the reason documented there:
+ * `/workspace/sessions/{uuid}/workspace` — and derives the state dir from it.
  * `ContainerSessionRunner.sessionDir` *is* the clone, and reading one level too
  * deep fails silently rather than loudly.
  */

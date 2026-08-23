@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { applyPreTurnReset, type PreTurnResetHookDeps, type PreTurnResetRunner } from "./pre-turn-reset-hook.js";
 import { clearResetSkipEpisode } from "./services/pre-turn-reset.js";
+import { MERGE_RECHECK_TIMEOUT_MS } from "./services/pre-turn-merge-recheck.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionInfo, WsServerMessage } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -358,5 +359,140 @@ describe("applyPreTurnReset — the branch did not move", () => {
     expect(result).toEqual({ agentPrefix: "" });
     expect(h.appended).toHaveLength(0);
     expect(h.emitted).toHaveLength(0);
+  });
+});
+
+/**
+ * docs/282 — the poll-window race, end to end through the hook.
+ *
+ * This is the production incident's exact sequence (session 15ff6abd, PR #101,
+ * 2026-08-22): the branch was committed and pushed, the user merged on GitHub,
+ * and their next message was admitted 1.5 s later — 1.7 s BEFORE the 15-second
+ * poller reached the merge. The gate saw an unmerged session, refused silently,
+ * and the turn's commit landed stacked on already-shipped history.
+ */
+describe("applyPreTurnReset — a merge the poller has not observed yet", () => {
+  /** `origin/<session-branch>`: the branch is fully pushed, so HEAD is what merged. */
+  const PUSHED_TIP = MERGED_SHA;
+
+  /** Distinguishes the branch's own remote ref from the base's — the default
+   * `makeGit` answers BASE_TIP for every ref, which would read as "unpushed". */
+  const raceGit = (): GitManager =>
+    makeGit({
+      getHeadHash: vi.fn().mockResolvedValue(PUSHED_TIP),
+      getRefHash: vi.fn(async (ref: string) =>
+        ref === "origin/shipit/fix-login" ? PUSHED_TIP : BASE_TIP,
+      ),
+    });
+
+  /**
+   * A harness whose session and PR snapshot are LIVE, and whose probe promotes
+   * both — exactly what `verifyMissingPr` + `onMergeDetectedCb` do between them.
+   */
+  function makeRaceHarness(opts: { merges?: boolean; bookkeepingHangs?: boolean } = {}) {
+    const emitted: WsServerMessage[] = [];
+    const appended: PersistedMessage[] = [];
+    let session = makeSession({ mergedAt: undefined, mergedHeadSha: undefined });
+    let prStatus = makePrStatus({ prState: "open" });
+    const forceVerifySessionPrState = vi.fn(async (_id: string, _o?: unknown) => {
+      if (opts.merges === false) return;
+      prStatus = makePrStatus({ prState: "merged" });
+      session = { ...session, mergedAt: "2026-08-22 19:32:02", mergedHeadSha: PUSHED_TIP };
+    });
+
+    const runner = {
+      emitMessage: (msg: WsServerMessage) => { emitted.push(msg); },
+      running: false,
+      chatMessageGroups: [],
+      recordedCards: [],
+      steeredMessages: [],
+      getTurnEventBuffer: () => [],
+      lastPersistedBufferIndex: 0,
+      reevaluateWorkspaceConfig: vi.fn(),
+      notifyWorkspaceRewritten: vi.fn(),
+    } as unknown as PreTurnResetRunner;
+
+    const deps = {
+      sessionManager: {
+        get: () => session,
+        getPrStatus: () => prStatus,
+        clearMerged: vi.fn(),
+      },
+      prStatusPoller: {
+        getStatus: () => prStatus,
+        reArm: vi.fn(),
+        forceVerifySessionPrState,
+        awaitMergeHandling: vi.fn(
+          opts.bookkeepingHangs ? () => new Promise<void>(() => {}) : async () => {},
+        ),
+      },
+      createGitManager: () => raceGit(),
+      sseBroadcast: vi.fn(),
+      chatHistoryManager: {
+        replaceInProgress: vi.fn(),
+        append: (_sid: string, msg: PersistedMessage) => { appended.push(msg); },
+      },
+      getAutoResetMergedBranch: () => true,
+    } as unknown as PreTurnResetHookDeps;
+
+    return { deps, runner, emitted, appended, forceVerifySessionPrState };
+  }
+
+  it("resets the branch on the turn that would otherwise have stranded its commit", async () => {
+    const h = makeRaceHarness();
+    const result = await applyPreTurnReset({ deps: h.deps, runner: h.runner, sessionId: "s1", sessionDir: "/ws" });
+
+    expect(h.forceVerifySessionPrState).toHaveBeenCalledOnce();
+    expect(result.agentPrefix).toContain("was merged into main");
+    result.afterUserMessagePersisted!("s1");
+    expect(h.appended.find((m) => "branchAutoReset" in m)).toMatchObject({
+      branchAutoReset: { base: "main", prNumber: 482, fromSha: MERGED_SHA, toSha: BASE_TIP },
+    });
+  });
+
+  it("leaves the `verifiedAbsent` debounce un-armed, so the NEXT merge is still detected", async () => {
+    // The probe expects an OPEN pull request and runs on every qualifying turn.
+    // Arming the poller's single-probe debounce here would mean a PR merged
+    // moments later falls out of the OPEN bulk view with the debounce already
+    // set, and is never REST-verified — merge detection off until a forced
+    // refresh. See `PrStatusPoller.forceVerifySessionPrState`.
+    const h = makeRaceHarness();
+    await applyPreTurnReset({ deps: h.deps, runner: h.runner, sessionId: "s1", sessionDir: "/ws" });
+    expect(h.forceVerifySessionPrState).toHaveBeenCalledWith("s1", { armAbsentDebounce: false });
+  });
+
+  it("stays silent when the probe confirms the pull request is still open", async () => {
+    const h = makeRaceHarness({ merges: false });
+    const result = await applyPreTurnReset({ deps: h.deps, runner: h.runner, sessionId: "s1", sessionDir: "/ws" });
+
+    expect(result).toEqual({ agentPrefix: "" });
+    expect(h.appended).toHaveLength(0);
+    expect(h.emitted).toHaveLength(0);
+  });
+
+  /**
+   * The reset must NOT run against half-finished merge bookkeeping.
+   * `markMergedAndPruneExcess` stamps `merged_at` before it awaits the
+   * `git push --delete` of the merged head branch, so a recheck that gives up
+   * mid-bookkeeping sees a merged session while that deletion is still in
+   * flight. Resetting there would force-push the branch back for the pending
+   * delete to remove it — a deleted branch instead of a stranded commit. The
+   * turn runs un-reset, exactly as it did before this feature; the next one,
+   * against settled state, resets.
+   */
+  it("refuses to reset while the merge bookkeeping is still in flight", async () => {
+    const h = makeRaceHarness({ bookkeepingHangs: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const pending = applyPreTurnReset({ deps: h.deps, runner: h.runner, sessionId: "s1", sessionDir: "/ws" });
+    await vi.advanceTimersByTimeAsync(MERGE_RECHECK_TIMEOUT_MS + 1);
+    const result = await pending;
+    vi.useRealTimers();
+
+    expect(result).toEqual({ agentPrefix: "" });
+    expect(h.appended).toHaveLength(0);
+    expect(h.emitted).toHaveLength(0);
+    expect(h.runner.notifyWorkspaceRewritten).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

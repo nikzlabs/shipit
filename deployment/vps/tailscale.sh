@@ -43,11 +43,25 @@
 # Optional environment:
 #   SHIPIT_TAILSCALE_AUTHKEY=tskey-auth-...
 #   SHIPIT_TAILSCALE_PORT=80          # tailnet-facing port for ShipIt (default 80;
-#                                     # set e.g. 4123 to avoid the privileged port)
+#                                     # set e.g. 4123 to avoid the privileged port).
+#                                     # When it is NOT set and port 80 is already
+#                                     # taken on the tailnet IP, this script falls
+#                                     # back to 4123 and says so. When it IS set,
+#                                     # a taken port is an error, not a fallback —
+#                                     # the operator picked that port on purpose.
 set -euo pipefail
+
+# Was the port chosen by the operator, or is it our default? Read BEFORE the
+# default is applied: it decides whether a taken port falls back or fails.
+PORT_EXPLICIT=0
+[ -n "${SHIPIT_TAILSCALE_PORT:-}" ] && PORT_EXPLICIT=1
 
 LISTEN_PORT="${SHIPIT_TAILSCALE_PORT:-80}"
 BACKEND_PORT=4123
+# Where the default port falls back to when port 80 is already taken. 4123 is the
+# orchestrator's own port number, and on a VPS it is published on 127.0.0.1 only
+# (deployment/vps/docker-compose.yml), so the tailnet IP side of it is free.
+FALLBACK_PORT=4123
 FORWARD_WRAPPER="/usr/local/bin/shipit-tailscale-forward.sh"
 FORWARD_UNIT="/etc/systemd/system/shipit-tailscale-preview.service"
 # docs/216 — the forwarder advertises the sslip preview host here; the
@@ -57,16 +71,22 @@ FORWARD_UNIT="/etc/systemd/system/shipit-tailscale-preview.service"
 # .release-channel.
 PREVIEW_HOST_FILE="/opt/shipit/.tailnet-preview-host"
 
+# Where the finished access URL is written when the caller asks for it, so
+# setup.sh can end ITS summary with the same URL instead of telling the reader to
+# scroll back up for one. Empty unless the caller sets it; never a fixed path,
+# because a file left in /opt/shipit would go stale the next time the tailnet IP
+# or the port changes.
+ACCESS_URL_FILE="${SHIPIT_ACCESS_URL_FILE:-}"
+
 # --- Terminal colors (only when stdout is a TTY) ----------------------------
-# The access URL and the optional one-time ACL step are easy to scroll past, so
-# the banners, the URLs, and the paste-this block are colored to stand out.
+# One rule: the access URL is what the reader came for, so the closing banner and
+# the URL inside it are the only coloured things here.
 if [ -t 1 ]; then
-  C_BANNER=$'\033[1;33m'   # bold yellow — the can't-miss one-time step
-  C_STEP=$'\033[1;36m'     # bold cyan   — the numbered steps
-  C_PASTE=$'\033[0;32m'    # green       — the literal block to paste
+  C_BANNER=$'\033[1;33m'   # bold yellow — the closing banner
+  C_PASTE=$'\033[0;32m'    # green       — the URL itself
   C_RESET=$'\033[0m'
 else
-  C_BANNER='' C_STEP='' C_PASTE='' C_RESET=''
+  C_BANNER='' C_PASTE='' C_RESET=''
 fi
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -74,15 +94,7 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-echo "==========================================="
-echo "  ShipIt — Tailscale private access"
-echo "==========================================="
-echo ""
-echo "This adds tailnet-only access (app + subdomain previews) without changing"
-echo "any existing Cloudflare path. Previews resolve out of the box via sslip.io"
-echo "wildcard DNS; this script prints the access URL (and an optional upgrade to"
-echo "a native MagicDNS hostname)."
-echo ""
+echo "==> ShipIt — Tailscale access (app + previews; any Cloudflare path is unchanged)"
 
 # --- Install Tailscale ------------------------------------------------------
 if command -v tailscale &>/dev/null; then
@@ -148,6 +160,105 @@ if ! command -v socat &>/dev/null; then
   echo "==> Installing socat (tailnet forwarder)..."
   apt-get update -qq
   apt-get install -y -qq socat
+fi
+
+# --- Port preflight: a taken port must never become a silent half-install -----
+# The forwarder binds TS_IP:LISTEN_PORT. When something else already holds that
+# address — most often a web server on 0.0.0.0:80 — socat exits immediately and
+# the supervisor loop below just retries every 10s, forever. Nothing about that
+# looks broken from outside: the systemd unit stays "active" (the loop is what
+# systemd supervises, and it never exits), so without this check the script would
+# print a success banner and an access URL that either refuses the connection or
+# lands on the OTHER service. That is the failure this preflight exists to stop.
+#
+# Test by ATTEMPTING the bind rather than reading `ss` output, because only a bind
+# answers the question that matters: a listener on some other specific IP:80 does
+# not conflict with TS_IP:80, while one on 0.0.0.0:80 does.
+port_is_free() {
+  local ip="$1" port="$2" rc=0
+  # `fork` keeps the probe listening after an accepted connection. Without it a
+  # client that connects during the one-second window ends socat normally, and a
+  # port that is in fact free would be read as taken.
+  timeout 1 socat "TCP-LISTEN:${port},bind=${ip},fork,reuseaddr" /dev/null >/dev/null 2>&1 || rc=$?
+  # 124 = `timeout` killed a socat that was sitting in accept(), i.e. the bind
+  # succeeded and the address is ours to take. Any other code is a failed bind.
+  [ "$rc" -eq 124 ]
+}
+
+# Best-effort "who holds it", as a bare program name or two — the point is to let
+# the reader recognise the service, not to reproduce an `ss` table. Never fatal:
+# ss may be absent, and the diagnosis is still correct without a name.
+describe_port_holder() {
+  local port="$1" names=""
+  command -v ss &>/dev/null || return 0
+  names="$(ss -ltnpH "sport = :${port}" 2>/dev/null \
+    | grep -o '"[^"]*"' | tr -d '"' | sort -u | paste -sd, - || true)"
+  [ -n "$names" ] && printf ' (%s)' "$names"
+  return 0
+}
+
+# Shared tail of every "the port is taken" error: what still works, and the one
+# command that fixes it.
+port_taken_advice() {
+  echo "       ShipIt itself is unaffected on 127.0.0.1:${BACKEND_PORT}; only tailnet access failed." >&2
+  echo "       Re-run with a free port (it just becomes part of the URL):" >&2
+  echo "           SHIPIT_TAILSCALE_PORT=8080 bash /opt/shipit/deployment/vps/tailscale.sh" >&2
+  restore_forwarder
+  exit 1
+}
+
+port_taken_error() {
+  local port="$1" holder="$2"
+  echo "" >&2
+  echo "Error: ${TS_IP}:${port} is already in use${holder}." >&2
+  port_taken_advice
+}
+
+# Both ports taken: name BOTH, or the message blames port 80 for a fallback that
+# failed on a different port the operator was never told about.
+both_ports_taken_error() {
+  local port="$1" holder="$2" fallback="$3" fallback_holder="$4"
+  echo "" >&2
+  echo "Error: on ${TS_IP}, port ${port}${holder} and the fallback port ${fallback}${fallback_holder} are both in use." >&2
+  port_taken_advice
+}
+
+# A rerun is normal — setup.sh runs this script, and re-running it is how the
+# port or the tailnet IP gets changed — and on a rerun OUR OWN forwarder already
+# holds the port. Stop it first, so the preflight measures the machine WITHOUT
+# ShipIt in it; otherwise a healthy rerun reads its own listener as the conflict
+# and moves a working install onto another port. It is started again below, and
+# every error path puts it back exactly as it was found.
+FORWARDER_WAS_ACTIVE=0
+if systemctl is-active --quiet shipit-tailscale-preview.service 2>/dev/null; then
+  FORWARDER_WAS_ACTIVE=1
+  echo "==> Stopping the existing forwarder while the port is checked..."
+  systemctl stop shipit-tailscale-preview.service 2>/dev/null || true
+fi
+
+restore_forwarder() {
+  [ "${FORWARDER_WAS_ACTIVE:-0}" = "1" ] || return 0
+  echo "       (the forwarder that was already running has been started again)" >&2
+  systemctl start shipit-tailscale-preview.service 2>/dev/null || true
+}
+
+echo "==> Checking that ${TS_IP}:${LISTEN_PORT} is free..."
+if ! port_is_free "$TS_IP" "$LISTEN_PORT"; then
+  HOLDER="$(describe_port_holder "$LISTEN_PORT")"
+  # An explicitly chosen port is the operator's decision — report it, never
+  # silently move it. Only our own default 80 falls back.
+  if [ "$PORT_EXPLICIT" = "1" ]; then
+    port_taken_error "$LISTEN_PORT" "$HOLDER"
+  fi
+  if ! port_is_free "$TS_IP" "$FALLBACK_PORT"; then
+    both_ports_taken_error "$LISTEN_PORT" "$HOLDER" \
+      "$FALLBACK_PORT" "$(describe_port_holder "$FALLBACK_PORT")"
+  fi
+  TAKEN_PORT="$LISTEN_PORT"
+  LISTEN_PORT="$FALLBACK_PORT"
+  echo "    Port ${TAKEN_PORT}${HOLDER} is taken — using port ${FALLBACK_PORT} instead."
+  echo "    That service is untouched; the URL below carries the port."
+  echo "    To pick the port yourself: SHIPIT_TAILSCALE_PORT=<port> (re-run this script)"
 fi
 
 # --- Forwarder: supervisor loop, tailnet IP :LISTEN_PORT -> 127.0.0.1:4123 ---
@@ -236,99 +347,88 @@ systemctl daemon-reload
 systemctl enable --now shipit-tailscale-preview.service
 systemctl restart shipit-tailscale-preview.service
 
+# --- Verify the forwarder really bound --------------------------------------
+# The preflight above tests the port a moment BEFORE the forwarder starts, so it
+# cannot see a conflict that appears in between (a service starting at the same
+# time, a socat that fails for some other reason). And `systemctl is-active` can
+# never answer this: systemd supervises the supervisor loop, which stays alive
+# while every bind attempt inside it fails.
+#
+# Look for OUR socat, holding exactly this address, rather than for "a listener
+# on the port": a listener alone proves nothing about who owns it, so a process
+# that won the race would be reported as success. socat exits on a failed bind,
+# so a live socat with this bind in its argv is itself the proof that the bind
+# succeeded.
+forwarder_is_listening() {
+  pgrep -f "TCP-LISTEN:${LISTEN_PORT},bind=${TS_IP}," >/dev/null 2>&1
+}
+
+echo "==> Verifying the forwarder is listening on ${TS_IP}:${LISTEN_PORT}..."
+FORWARDER_UP=0
+for _ in $(seq 1 15); do
+  if forwarder_is_listening; then
+    FORWARDER_UP=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "$FORWARDER_UP" != "1" ]; then
+  echo "" >&2
+  echo "Error: the forwarder did not start listening on ${TS_IP}:${LISTEN_PORT}." >&2
+  echo "       (systemctl says 'active' either way — it supervises a retry loop.)" >&2
+  echo "       ShipIt itself is unaffected on 127.0.0.1:${BACKEND_PORT}; only tailnet access failed." >&2
+  echo "       Usually the port is taken. Re-run with a free one:" >&2
+  echo "           SHIPIT_TAILSCALE_PORT=8080 bash /opt/shipit/deployment/vps/tailscale.sh" >&2
+  echo "" >&2
+  echo "       Last lines from the forwarder:" >&2
+  journalctl -u shipit-tailscale-preview -n 5 --no-pager 2>/dev/null | sed 's/^/           /' >&2 || true
+  exit 1
+fi
+
 # --- Output -----------------------------------------------------------------
-# Default preview path: sslip.io wildcard DNS. sslip.io is a public resolver
-# that maps any <dashed-ip>.sslip.io name straight back to that IP — here the
-# node's tailnet 100.x address. So {id}--{port}.<dashed-ip>.sslip.io resolves
-# to the node with ZERO policy edits and ZERO owned domain; the forwarder above
-# delivers it to the orchestrator's subdomain proxy (the proxy's regex already
-# matches {uuid}--{port}.anything, so no app changes). Dash notation also dodges
-# the client's dotted-IPv4 guard, which would otherwise refuse to build a
-# subdomain URL for a raw 100.x host. Traffic still rides the WireGuard-encrypted
-# tailnet; HTTP only (there is no wildcard TLS cert for these names).
+# Kept deliberately short: the reader came for one URL, and everything that used
+# to sit between them and it (the preview-subdomain pattern, the forwarder line,
+# the sslip explainer, the full MagicDNS ACL paste block) is either an internal
+# detail they never type by hand or reference material that belongs in
+# deployment/README.md. The last thing printed is the URL, on its own.
+#
+# Which URL is last: the node's native MagicDNS name when Tailscale reports one —
+# the app and its live connection then ride the pure tailnet, and ShipIt routes
+# only preview iframes through sslip.io (docs/216). With no MagicDNS name to read
+# there is nothing to recommend, so the sslip URL takes its place rather than a
+# placeholder nobody can open. sslip.io maps any <dashed-ip>.sslip.io name back
+# to that IP, which is what gives previews a wildcard host with no owned domain;
+# the dash notation also dodges the client's raw-IPv4 guard.
 SSLIP_HOST="${TS_IP//./-}.sslip.io"
-# The node's real MagicDNS name from `tailscale status`; fall back to a clear
-# placeholder rather than an empty string if the FQDN can't be read.
-MAGICDNS_HOST="${TAILSCALE_FQDN:-<your-node>.<tailnet>.ts.net}"
 PORT_SUFFIX=""
 if [ "$LISTEN_PORT" != "80" ]; then
   PORT_SUFFIX=":${LISTEN_PORT}"
 fi
+SSLIP_URL="http://${SSLIP_HOST}${PORT_SUFFIX}"
+if [ -n "$TAILSCALE_FQDN" ]; then
+  ACCESS_URL="http://${TAILSCALE_FQDN}${PORT_SUFFIX}"
+else
+  ACCESS_URL="$SSLIP_URL"
+fi
+
+# Hand the URL to the caller (setup.sh) so its own summary can end with it too.
+if [ -n "$ACCESS_URL_FILE" ]; then
+  printf '%s\n' "$ACCESS_URL" > "$ACCESS_URL_FILE" 2>/dev/null || true
+fi
 
 echo ""
-echo "${C_BANNER}===========================================${C_RESET}"
-echo "${C_BANNER}  Tailscale access configured${C_RESET}"
-echo "${C_BANNER}===========================================${C_RESET}"
+echo "  Tailnet access is ready. Worth knowing:"
+echo "    - HTTP only — these names have no TLS certificate, so the clipboard"
+echo "      and PWA install stay unavailable."
+echo "    - Preview subdomains resolve through sslip.io, a public DNS resolver."
+echo "      Traffic still rides the encrypted tailnet."
+if [ "$ACCESS_URL" != "$SSLIP_URL" ]; then
+  echo "    - If that name does not resolve on a device, use ${SSLIP_URL}"
+fi
+echo "    - Owned domains, HTTPS, and dropping sslip.io: deployment/README.md"
 echo ""
-echo "  Open ShipIt over Tailscale at:"
-echo "${C_PASTE}      http://${SSLIP_HOST}${PORT_SUFFIX}${C_RESET}"
-echo ""
-echo "  Previews resolve automatically — no tailnet policy changes needed — at:"
-echo "${C_PASTE}      {sessionId}--{port}.${SSLIP_HOST}${PORT_SUFFIX}${C_RESET}"
-echo ""
-echo "  How: sslip.io is a public wildcard DNS resolver that maps any"
-echo "  <dashed-ip>.sslip.io name back to that IP — here this node's tailnet"
-echo "  address (${TS_IP}). As long as it answers honestly, the connection then"
-echo "  rides the WireGuard-encrypted tailnet. HTTP only (no wildcard TLS for"
-echo "  these names)."
-echo ""
-echo "  Trust note: with this default, sslip.io is in the resolution path. It"
-echo "  serves a fixed IP-to-name mapping, but because the connection is HTTP"
-echo "  (no cert to pin identity), a resolver outage, a bad/cached answer, or"
-echo "  tampering could point the browser at a non-tailnet endpoint under the"
-echo "  same host. If that dependency isn't acceptable, use the native MagicDNS"
-echo "  hostname below, an owned wildcard domain (HTTPS), or self-host the"
-echo "  open-source sslip.io resolver on this node."
-echo ""
-echo "  Forwarder: ${TS_IP}:${LISTEN_PORT} -> 127.0.0.1:${BACKEND_PORT} (Host preserved)"
-echo "  Any existing Cloudflare tunnel access is unchanged."
-echo ""
-echo "  If a device's DNS refuses sslip.io (some resolvers block public names"
-echo "  that point into CGNAT 100.64/10 as DNS-rebinding protection), use one of"
-echo "  the alternatives below."
-echo ""
-echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
-echo "${C_BANNER}  OPTIONAL — put previews ON the .ts.net name too (drop sslip entirely)${C_RESET}"
-echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
-echo ""
-echo "  To have previews resolve at {sessionId}--{port}.${MAGICDNS_HOST}"
-echo "  (no sslip.io in the path at all), grant this node the MagicDNS wildcard"
-echo "  capability in your tailnet policy file:"
-echo ""
-echo "${C_STEP}    1. Open  https://login.tailscale.com/admin/acls${C_RESET}"
-echo "${C_STEP}    2. Click the 'JSON editor' toggle at the top of the page.${C_RESET}"
-echo "${C_STEP}    3. Add this block as a TOP-LEVEL key inside the policy object${C_RESET}"
-echo "${C_STEP}       — a sibling of \"acls\"/\"groups\", not nested inside them.${C_RESET}"
-echo "${C_STEP}       Mind JSON commas: keys are comma-separated.${C_RESET}"
-echo ""
-echo "${C_PASTE}      \"nodeAttrs\": [${C_RESET}"
-echo "${C_PASTE}        {${C_RESET}"
-echo "${C_PASTE}          \"target\": [\"${TS_IP}\"],${C_RESET}"
-echo "${C_PASTE}          \"attr\": [\"dns-subdomain-resolve\"]${C_RESET}"
-echo "${C_PASTE}        }${C_RESET}"
-echo "${C_PASTE}      ]${C_RESET}"
-echo ""
-echo "${C_STEP}    4. Click Save.${C_RESET}"
-echo ""
-echo "  (In the Visual editor this same grant lives under Definitions ->"
-echo "  Node attributes, but the JSON editor is the direct way to paste it.)"
-echo ""
-echo "  Requires Tailscale v1.96+ on this node and the devices you browse from."
-echo "  Note: Tailscale gates this capability per-tailnet at the control plane"
-echo "  and is still rolling it out, so Save may be rejected with \"tailnet is"
-echo "  not permitted to use the 'dns-subdomain-resolve' node attribute\". If so,"
-echo "  request access from Tailscale (support / feature preview) — the sslip.io"
-echo "  URL above keeps working in the meantime. For real HTTPS instead of HTTP,"
-echo "  point a wildcard DNS record you own (e.g. *.shipit-tail.example.com) at"
-echo "  ${TS_IP} and open ShipIt through that hostname."
-echo ""
-echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
-echo "${C_BANNER}  Open ShipIt over Tailscale at${C_RESET}"
-echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
-echo ""
-echo "${C_PASTE}      http://${MAGICDNS_HOST}${PORT_SUFFIX}${C_RESET}"
-echo ""
-echo "  This is the node's native MagicDNS name. The app and its live connection"
-echo "  ride the pure tailnet (no third-party resolver), and ShipIt automatically"
-echo "  routes preview iframes through sslip.io."
+echo "${C_BANNER}=======================================================================${C_RESET}"
+echo "${C_BANNER}  Open ShipIt at   ${C_PASTE}${ACCESS_URL}${C_RESET}"
+echo "${C_BANNER}=======================================================================${C_RESET}"
 echo ""

@@ -113,7 +113,7 @@ Three-tier **Routes/WS handlers → Services → Managers**: `services/*.ts` are
 
 ### Post-turn flow
 
-After a turn (`agent_result` in `agent-execution.ts`): `postTurnCommit()` auto-commits → `scheduleAutoPush()` debounces a 5s push (if GitHub auth) → PR lifecycle card emitted (if a remote exists). **Critical**: session context (sessionId, sessionDir) is captured at turn *start*, not at "done", so a mid-turn session switch can't corrupt commits.
+After a turn (`agent_result` in `agent-execution.ts`): `postTurnCommit()` auto-commits → PR lifecycle card emitted (if a remote exists) → the auto-push is armed LAST (if GitHub auth). The push is armed after the card flow, not inside the commit, because that flow does its own synchronous `git push` (a `forcePush` when re-arming past a merged PR) and a debounced plain push racing it is rejected non-fast-forward — reported to the user as a branch divergence that never happened. The commit hands the arm to `turn-executor.ts` via `postTurnCommit`'s `deferPushArm`; the merged-branch REFUSAL is still decided at commit time, since the docs/202 re-arm clears `mergedAt` inside the flow. Ordering it this way is what lets the debounce be 0 (`autoPushDebounceMs`, whose doc comment carries the evidence that it never coalesced anything). **Critical**: session context (sessionId, sessionDir) is captured at turn *start*, not at "done", so a mid-turn session switch can't corrupt commits.
 
 Five invariants govern the rest. Each looks reorderable and is not; each is pinned by a guard test.
 
@@ -209,7 +209,9 @@ Two rules, both enforced by `npm run check-deps` (`scripts/check-dependency-age.
 1. **Pin to exact versions** — `"react": "19.2.4"`, never `^`/`~`/`latest`/a range/a tag/a git URL. Floating ranges let a fresh checkout silently pick up a version nobody has run; bumps are deliberate edits, not a side effect of re-running install.
 2. **Minimum age of 7 days** since npm publication — the window lets scanners and the registry's abuse pipeline catch a compromised release before it reaches our build. If you genuinely need a same-day release (a security fix in a transitive), call it out in the PR and get explicit sign-off; don't bypass silently.
 
-To bump: edit `package.json` to the exact version, `npm install` to refresh the lockfile, then `npm run check-deps` before opening the PR.
+**Both rules cover both manifests** — the root `package.json` *and* `docker/agent-cli/package.json`, the agent CLIs baked into the session-worker image. The list is `POLICY_MANIFESTS` in the script; a manifest absent from it is unchecked, so add one there the day it appears. Renovate's `minimumReleaseAge` is a scheduling convenience on top of this, not the gate: it is configured per rule, so a package no rule matches gets no cooldown at all, which is how an `opencode-ai` bump published that same morning once passed CI green.
+
+To bump: edit the manifest to the exact version, `npm install` to refresh the lockfile, then `npm run check-deps` before opening the PR.
 
 A third rule is enforced separately by `npm run check-audit` (`scripts/check-audit.ts`):
 

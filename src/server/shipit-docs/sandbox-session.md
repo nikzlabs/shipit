@@ -7,9 +7,20 @@ does **not** clone, track, preview, auto-commit, or open PRs for any repo on
 your behalf. You bring your own repos and manage them yourself.
 
 A sandbox is created from ShipIt's "advanced session" (`+`) menu. It is marked
-server-side with `kind: "sandbox"` plus a fixed set of `capabilities`, chosen at
+server-side with `kind: "sandbox"` plus a set of `capabilities`, chosen at
 creation. Like the ops kind, these are set server-authoritatively and cannot be
 changed from inside the container — an agent can never self-elevate.
+
+**The user can change them at any time**, from the session's *Session settings*
+dialog or the "Change" control on the sandbox banner. Two consequences for you:
+
+- **A capability you lacked earlier may be granted now.** If something failed for
+  want of a grant, say which capability it needs and let the user turn it on —
+  don't work around it. GitHub access takes effect immediately; Docker and
+  Network access apply when the container next starts, and ShipIt offers the user
+  a restart button for that.
+- **A capability may be taken away.** Revoking one removes your access to it; it
+  does not destroy containers or files you already made.
 
 ## The workspace
 
@@ -34,7 +45,7 @@ changed from inside the container — an agent can never self-elevate.
 
 ## Capabilities
 
-A sandbox grants up to three independent capabilities, decided at creation:
+A sandbox grants up to three independent capabilities:
 
 - **GitHub access** (`git`). When granted, the GitHub credential broker is wired
   so you can clone/push **private** repos and open PRs across any repo the user

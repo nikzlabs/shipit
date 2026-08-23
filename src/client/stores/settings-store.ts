@@ -487,7 +487,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoResolveConflicts: false,
   autoFixCi: false,
   autoResetMergedBranch: true,
-  enableSubAgents: false,
+  enableSubAgents: true,
   failoverCutoffs: {},
   accountSelectionMode: {},
   claudeAuthDiagnostics: {},

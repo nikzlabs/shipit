@@ -94,6 +94,7 @@ import { AddRepoDialog } from "./components/AddRepoDialog.js";
 import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
 import { SandboxDialog } from "./components/SandboxDialog.js";
+import { SessionSettingsDialog } from "./components/SessionSidebar/SessionSettingsDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
@@ -353,6 +354,7 @@ export default function App() {
   const contextTokens = useUiStore((s) => s.contextTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
   const sandboxDialogOpen = useUiStore((s) => s.sandboxDialogOpen);
+  const sessionSettingsDialogOpen = useUiStore((s) => s.sessionSettingsDialogOpen);
   const quickCaptureHotkey = useKeybinding("quick-capture");
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
   const voiceHotkeyModeB = useKeybinding("voice-mode-b");
@@ -2173,6 +2175,7 @@ export default function App() {
               send({ type: "undo_issue_write", cardId })
             }
             onOpenIssue={handleOpenIssue}
+            onAgentInterfaceMessage={handleAgentInterfaceMessage}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}
             onReleaseConfirm={handleReleaseConfirm}
             onReleaseCancel={handleReleaseCancel}
@@ -2743,6 +2746,29 @@ export default function App() {
             }
           }}
         />
+        {/* docs/279 — rendered at App level, not inside the sidebar's SessionItem
+            where it used to live. It has two entry points now (the session
+            overflow menu and the sandbox banner), and on mobile the sidebar is an
+            unmounted drawer — so a dialog owned by a sidebar row would be
+            unreachable from the banner on a phone. */}
+        {wsSessionId && (
+          <SessionSettingsDialog
+            /* Keyed by session: this component is now persistent (it used to be
+               mounted per sidebar row and unmounted with the menu), so without a
+               key its state — the loaded capability set, the selected mode —
+               would survive a session switch. The dialog would then show session
+               A's grants, enabled, while B's fetch was still in flight, and one
+               click would PUT A's whole set onto B. Remounting is the fix rather
+               than clearing state in the effects, because it cannot be partially
+               forgotten when a field is added. (Review finding.) */
+            key={wsSessionId}
+            sessionId={wsSessionId}
+            open={sessionSettingsDialogOpen}
+            onOpenChange={(open) =>
+              useUiStore.getState().setSessionSettingsDialogOpen(open)
+            }
+          />
+        )}
       </div>
     </TooltipProvider>
   );

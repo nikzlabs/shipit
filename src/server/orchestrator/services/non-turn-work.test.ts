@@ -327,7 +327,57 @@ describe("makeNonTurnGenerateText — credential window", () => {
     vi.doUnmock("../session-credentials.js");
   });
 
-  it("provisions the run's credentials before the spawn and wipes them after", async () => {
+  // 2026-08-21 incident — the default non-turn target IS this shape: the
+  // claude harness pointed at a non-Anthropic key (deepseek here, z.ai/GLM in
+  // the incident). Provisioning that into the session subtree swaps the
+  // credential file the LIVE primary claude CLI re-reads mid-turn (session
+  // naming races the first turn) and 401s it. A same-harness run therefore
+  // gets an ISOLATED per-spawn home and the borrow machinery stays untouched.
+  it("gives a same-harness run an isolated spawn home and never borrows the session subtree", async () => {
+    const calls: string[] = [];
+    vi.doMock("../session-credentials.js", () => ({
+      provisionSubAgentCredentials: () => calls.push("provision"),
+      releaseSubAgentCredentials: () => {
+        calls.push("wipe");
+        return "acct_marker";
+      },
+      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
+      releaseSubAgentSpawnHome: () => calls.push("release-home"),
+      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
+      syncAgentTokenBack: () => calls.push("sync"),
+      syncProviderAccountTokenBack: () => calls.push("sync-account"),
+      provisionProviderAccountCredentials: () => calls.push("restore"),
+    }));
+    const { ContainerSessionRunner } = await import("../container-session-runner.js");
+    const { makeNonTurnGenerateText } = await import("./non-turn-work.js");
+    let seenHomeDir: string | undefined;
+    const runner = fakeContainerRunner(ContainerSessionRunner, {
+      spawnSubAgent: async (req: { spawnId: string; homeDir?: string }) => {
+        calls.push("spawn");
+        seenHomeDir = req.homeDir;
+        return OK_RESULT;
+      },
+    });
+    const { deps } = buildDeps({});
+    const generate = makeNonTurnGenerateText({
+      ...(deps as object),
+      getRunnerRegistry: () => ({ get: () => runner }),
+      // The session's primary agent IS the harness the run resolved to.
+      sessionManager: { get: () => ({ agentId: "claude" }) },
+      credentialsDir: TEST_CREDENTIALS_DIR,
+      fallback: async () => "unused",
+    } as never);
+
+    await generate("prompt", "/ws", { sessionId: "s1", purpose: "pr-description" });
+
+    // Home provisioned BEFORE the spawn, released AFTER (sync-back + removal
+    // live inside the release) — and none of the borrow/wipe/restore calls
+    // that used to rewrite the primary's live subtree.
+    expect(calls).toEqual(["provision-home", "spawn", "release-home"]);
+    expect(seenHomeDir).toMatch(/^\/credentials\/sub-agent-homes\//);
+  });
+
+  it("still borrows the session subtree for a cross-harness run, and restores on release", async () => {
     const calls: string[] = [];
     const restored: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
@@ -341,6 +391,9 @@ describe("makeNonTurnGenerateText — credential window", () => {
         calls.push("wipe");
         return "acct_marker";
       },
+      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
+      releaseSubAgentSpawnHome: () => calls.push("release-home"),
+      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
       provisionProviderAccountCredentials: (
@@ -361,12 +414,15 @@ describe("makeNonTurnGenerateText — credential window", () => {
       },
     });
     const { deps } = buildDeps({});
+    // The isolation flag is captured at SPAWN time; the restore condition
+    // re-reads the row at RELEASE time by design (a session re-pinned onto the
+    // run's harness mid-flight is exactly the one that needs its account put
+    // back). Model that: codex at capture, claude at release.
+    const agentIds = ["codex", "claude"];
     const generate = makeNonTurnGenerateText({
       ...(deps as object),
       getRunnerRegistry: () => ({ get: () => runner }),
-      // A session whose primary agent is the same harness the run borrowed —
-      // the case whose subtree must be put back after the consult.
-      sessionManager: { get: () => ({ agentId: "claude" }) },
+      sessionManager: { get: () => ({ agentId: agentIds.length > 1 ? agentIds.shift() : agentIds[0] }) },
       credentialsDir: TEST_CREDENTIALS_DIR,
       fallback: async () => "unused",
     } as never);
@@ -392,6 +448,9 @@ describe("makeNonTurnGenerateText — credential window", () => {
         calls.push("wipe");
         return undefined;
       },
+      provisionSubAgentSpawnHome: () => calls.push("provision-home"),
+      releaseSubAgentSpawnHome: () => calls.push("release-home"),
+      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
       provisionProviderAccountCredentials: () => calls.push("restore"),
@@ -424,14 +483,19 @@ describe("makeNonTurnGenerateText — credential window", () => {
   it("closes the credential window when provisioning itself throws", async () => {
     const calls: string[] = [];
     vi.doMock("../session-credentials.js", () => ({
-      provisionSubAgentCredentials: () => {
-        calls.push("provision");
-        throw new Error("ENOSPC: no space left on device");
-      },
+      provisionSubAgentCredentials: () => calls.push("provision"),
       releaseSubAgentCredentials: () => {
         calls.push("wipe");
         return "acct_marker";
       },
+      // The same-harness path (the default target resolves the session's own
+      // claude harness) — its provision is the one that fails here.
+      provisionSubAgentSpawnHome: () => {
+        calls.push("provision-home");
+        throw new Error("ENOSPC: no space left on device");
+      },
+      releaseSubAgentSpawnHome: () => calls.push("release-home"),
+      subAgentSpawnHomeContainerDir: (spawnId: string) => `/credentials/sub-agent-homes/${spawnId}`,
       syncAgentTokenBack: () => calls.push("sync"),
       syncProviderAccountTokenBack: () => calls.push("sync-account"),
       provisionProviderAccountCredentials: () => calls.push("restore"),
@@ -453,10 +517,10 @@ describe("makeNonTurnGenerateText — credential window", () => {
       fallback: async () => "unused",
     } as never);
 
-    // The generation fails (nothing spawned), but the window closes and the
-    // session goes back to its own account.
+    // The generation fails (nothing spawned), but the window closes: the
+    // per-spawn home is released, and the session subtree was never touched.
     expect(await generate("prompt", "/ws", { sessionId: "s1" })).toBe("");
-    expect(calls).toEqual(["provision", "sync", "wipe", "restore"]);
+    expect(calls).toEqual(["provision-home", "release-home"]);
   });
 });
 

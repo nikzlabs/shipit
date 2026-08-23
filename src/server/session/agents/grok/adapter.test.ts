@@ -690,6 +690,30 @@ describe("GrokAdapter — the per-spawn config root", () => {
     subMode.child.close(0);
   });
 
+  // 2026-08-21 incident — a same-harness sub-agent spawn's isolated per-spawn
+  // HOME (`AgentRunParams.homeDir`) outranks the constructor resolver: the
+  // throwaway config root links its durable auth.json (and HOME itself) out of
+  // THAT root's `.grok`, never the session's.
+  it("prefers a per-spawn homeDir over the resolver for HOME and the auth source", () => {
+    const spawnHome = fs.mkdtempSync(path.join(os.tmpdir(), "grok-spawn-home-"));
+    try {
+      fs.mkdirSync(path.join(spawnHome, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(spawnHome, ".grok", "auth.json"), '{"scope":{"key":"isolated"}}');
+      // The SESSION root has its own auth — the spawn must not read it.
+      fs.mkdirSync(path.join(home, ".grok"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".grok", "auth.json"), '{"scope":{"key":"session"}}');
+
+      const { adapter, child, env } = build();
+      adapter.run({ prompt: "p", cwd: "/workspace", homeDir: spawnHome });
+      expect(env().HOME).toBe(spawnHome);
+      const link = path.join(env().GROK_HOME, "auth.json");
+      expect(fs.readFileSync(link, "utf8")).toBe('{"scope":{"key":"isolated"}}');
+      child.close(0);
+    } finally {
+      fs.rmSync(spawnHome, { recursive: true, force: true });
+    }
+  });
+
   /**
    * planning#435 — the SUBSCRIPTION turn's whole credential handling, and the
    * failure it prevents is silent rather than loud.

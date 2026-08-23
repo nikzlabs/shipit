@@ -151,6 +151,7 @@ function TranscriptRowInner({
     onSendFollowUp: handlers.onSendFollowUp,
     onReleaseConfirm: handlers.onReleaseConfirm,
     onReleaseCancel: handlers.onReleaseCancel,
+    onAgentInterfaceMessage: handlers.onAgentInterfaceMessage,
   });
   if (card) return <>{card}</>;
 

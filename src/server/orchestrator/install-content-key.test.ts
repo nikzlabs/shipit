@@ -1,9 +1,8 @@
 // Follow-up to nikzlabs/shipit#2429 — tell the user at SETUP that the
 // content-keyed install skip is off, rather than after the failure it causes.
 //
-// The fixture mirrors PRODUCTION shapes for the same reason
-// `agent-install-gate.test.ts` does: every entry point takes the session's
-// CLONE (`<sessionRoot>/workspace`), because that is what
+// The fixture mirrors PRODUCTION shapes deliberately: every entry point takes
+// the session's CLONE (`<sessionRoot>/workspace`), because that is what
 // `ContainerSessionRunner.sessionDir` holds. Passing the session ROOT would
 // write the record one level off and pass anyway.
 

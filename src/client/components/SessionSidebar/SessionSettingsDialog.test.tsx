@@ -3,7 +3,7 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionSettingsDialog } from "./SessionSettingsDialog.js";
 import { useSessionStore } from "../../stores/session-store.js";
-import type { EgressAllowlistView } from "../../../server/shared/types.js";
+import type { EgressAllowlistView, SessionCapabilities, SessionInfo } from "../../../server/shared/types.js";
 
 function renderDialog(sessionId = "s1") {
   return render(<SessionSettingsDialog sessionId={sessionId} open onOpenChange={() => {}} />);
@@ -58,7 +58,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  useSessionStore.setState({ isLoading: false });
+  useSessionStore.setState({ isLoading: false, sessions: [] });
 });
 
 describe("SessionSettingsDialog (docs/172)", () => {
@@ -175,5 +175,128 @@ describe("SessionSettingsDialog (docs/172)", () => {
       // …but the restart route was never called by the toggle.
       expect(impl.mock.calls.some(([url]) => url.includes("/container/restart"))).toBe(false);
     });
+  });
+});
+
+/**
+ * docs/279 — the sandbox half of the dialog. The two halves are mutually
+ * exclusive, so these also pin that a sandbox does NOT get the containment radio
+ * group (which would be a second control over the same session's egress).
+ */
+describe("SessionSettingsDialog — sandbox capabilities (docs/279)", () => {
+  const CAPS: SessionCapabilities = {
+    git: false, docker: false, network: true, dangerousGitHubOps: false,
+  };
+
+  /** Mark s1 as a sandbox in the session list — the dialog's own discriminator. */
+  function asSandbox() {
+    useSessionStore.setState({
+      sessions: [{ id: "s1", kind: "sandbox", capabilities: CAPS } as unknown as SessionInfo],
+    });
+  }
+
+  function stubCapabilityFetch(opts: { pendingRestart?: boolean } = {}) {
+    let caps: SessionCapabilities = { ...CAPS };
+    const view = () => ({
+      sessionId: "s1",
+      capabilities: caps,
+      capabilitiesAtStart: CAPS,
+      pendingRestart: opts.pendingRestart ?? false,
+    });
+    const impl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/sessions/s1/capabilities" && init?.method === "PUT") {
+        const sent = JSON.parse((init.body as string) ?? "{}").capabilities as SessionCapabilities;
+        // Stand in for the server's `normalizeCapabilities`, which is what
+        // actually enforces the sub-grant rule.
+        caps = { ...sent, dangerousGitHubOps: sent.git && sent.dangerousGitHubOps };
+        return { ok: true, status: 200, json: async () => view() } as Response;
+      }
+      if (url === "/api/sessions/s1/capabilities") {
+        return { ok: true, status: 200, json: async () => view() } as Response;
+      }
+      if (url.includes("/container/restart") && init?.method === "POST") {
+        return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    });
+    vi.stubGlobal("fetch", impl);
+    return impl;
+  }
+
+  it("renders the capability toggles and no containment radio group", async () => {
+    asSandbox();
+    stubCapabilityFetch();
+    renderDialog();
+    await waitFor(() => expect(screen.getByTestId("session-settings-capabilities")).toBeInTheDocument());
+    expect(screen.getByRole("switch", { name: "GitHub access" })).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "Contained" })).not.toBeInTheDocument();
+  });
+
+  it("never reads the egress allowlist for a sandbox", async () => {
+    asSandbox();
+    const impl = stubCapabilityFetch();
+    renderDialog();
+    await waitFor(() => expect(screen.getByTestId("session-settings-capabilities")).toBeInTheDocument());
+    expect(impl.mock.calls.some(([url]) => url.startsWith("/api/egress/"))).toBe(false);
+  });
+
+  it("PUTs the whole set when a toggle is flipped", async () => {
+    asSandbox();
+    const impl = stubCapabilityFetch();
+    renderDialog();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Docker access" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("switch", { name: "Docker access" }));
+    await waitFor(() =>
+      expect(
+        impl.mock.calls.some(([url, init]) =>
+          url === "/api/sessions/s1/capabilities"
+          && init?.method === "PUT"
+          && JSON.parse((init.body as string) ?? "{}").capabilities.docker === true,
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Docker access" })).toHaveAttribute("aria-checked", "true"),
+    );
+  });
+
+  it("shows the server's pending verdict with a restart action, and never auto-restarts", async () => {
+    asSandbox();
+    const impl = stubCapabilityFetch({ pendingRestart: true });
+    renderDialog();
+    await waitFor(() => expect(screen.getByTestId("session-settings-pending")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("switch", { name: "Docker access" }));
+    await waitFor(() =>
+      expect(impl.mock.calls.some(([url, init]) => url === "/api/sessions/s1/capabilities" && init?.method === "PUT")).toBe(true),
+    );
+    // The toggle itself must never restart the container — only the button does.
+    expect(impl.mock.calls.some(([url]) => url.includes("/container/restart"))).toBe(false);
+
+    await userEvent.click(screen.getByTestId("session-settings-restart"));
+    await waitFor(() =>
+      expect(impl.mock.calls.some(([url, init]) =>
+        url === "/api/sessions/s1/container/restart" && init?.method === "POST")).toBe(true),
+    );
+  });
+
+  it("refuses the restart while an agent turn is running", async () => {
+    asSandbox();
+    stubCapabilityFetch({ pendingRestart: true });
+    useSessionStore.setState({ isLoading: true });
+    renderDialog();
+    await waitFor(() => expect(screen.getByTestId("session-settings-restart")).toBeDisabled());
+  });
+
+  it("keeps the merge sub-grant disabled until GitHub access is on", async () => {
+    asSandbox();
+    stubCapabilityFetch();
+    renderDialog();
+    await waitFor(() => expect(screen.getByRole("switch", { name: "GitHub access" })).toBeEnabled());
+    expect(screen.getByRole("switch", { name: "Allow merging PRs" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("switch", { name: "GitHub access" }));
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Allow merging PRs" })).toBeEnabled(),
+    );
   });
 });

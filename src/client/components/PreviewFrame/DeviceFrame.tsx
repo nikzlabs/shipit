@@ -17,6 +17,13 @@ export interface DeviceFrameMetrics {
   deviceScale: number;
   /** `deviceScale` as an integer percentage for the header label. */
   deviceScalePercent: number;
+  /**
+   * The box a 100%-scale surface can occupy: panel minus frame padding, per
+   * axis. 0 while unmeasured. Clamps the drag handles and seeds the Freeform
+   * menu row's "current panel size" default (docs/278).
+   */
+  availableWidth: number;
+  availableHeight: number;
 }
 
 /**
@@ -56,14 +63,23 @@ export function useDeviceFrame(): DeviceFrameMetrics {
     : null;
   const deviceWidth = activeSize ? (isLandscape ? activeSize.height : activeSize.width) : 0;
   const deviceHeight = activeSize ? (isLandscape ? activeSize.width : activeSize.height) : 0;
+  const availableWidth = Math.max(0, deviceContainerSize.width - DEVICE_PADDING * 2);
+  const availableHeight = Math.max(0, deviceContainerSize.height - DEVICE_PADDING * 2);
   const deviceScale = (() => {
     if (!activeSize || deviceContainerSize.width === 0 || deviceContainerSize.height === 0) return 1;
-    const availableWidth = Math.max(0, deviceContainerSize.width - DEVICE_PADDING * 2);
-    const availableHeight = Math.max(0, deviceContainerSize.height - DEVICE_PADDING * 2);
     return Math.min(1, availableWidth / deviceWidth, availableHeight / deviceHeight);
   })();
   const deviceScalePercent = Math.round(deviceScale * 100);
   const deviceFrameActive = !!activeSize;
 
-  return { deviceContainerRef, deviceFrameActive, deviceWidth, deviceHeight, deviceScale, deviceScalePercent };
+  return {
+    deviceContainerRef,
+    deviceFrameActive,
+    deviceWidth,
+    deviceHeight,
+    deviceScale,
+    deviceScalePercent,
+    availableWidth,
+    availableHeight,
+  };
 }

@@ -11,8 +11,13 @@ import {
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
+  provisionSubAgentSpawnHome,
   releaseSubAgentCredentials,
+  releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
+  subAgentSpawnHomeContainerDir,
+  subAgentSpawnHomeDir,
+  sweepSubAgentSpawnHomes,
   readSessionAccountMarker,
   writeSessionAccountMarker,
   removeSessionCredentials,
@@ -463,6 +468,144 @@ describe("session-credentials", () => {
     syncProviderAccountTokenBack(root, sid, "claude", "acct-a");
     expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
       .toBe("A-ROTATED");
+  });
+
+  /**
+   * The 2026-08-21 incident class: a SAME-harness spawn must never write the
+   * session's own subtree, because the LIVE primary CLI re-reads its credential
+   * file mid-turn — a cross-provider provision there 401s it within seconds and
+   * the quiet auth retry loops the turn. The spawn gets an isolated per-spawn
+   * home instead, and the session subtree stays byte-identical throughout.
+   */
+  describe("same-harness spawn home isolation", () => {
+    const spawnId = "spawn-1234";
+
+    it("provisions into the per-spawn home and leaves the session subtree byte-identical", () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+      provisionProviderAccountCredentials(root, sid, "claude", "acct-b"); // the session runs on B
+      const sessionFile = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
+      const before = fs.readFileSync(sessionFile, "utf-8");
+
+      provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+
+      // The primary's file and marker are untouched — the regression.
+      expect(fs.readFileSync(sessionFile, "utf-8")).toBe(before);
+      expect(readSessionAccountMarker(root, sid).claude).toBe("acct-b");
+      // The spawn home holds the consult's own account copy, plus the CLI's
+      // normalized user config.
+      const home = subAgentSpawnHomeDir(root, sid, spawnId);
+      expect(readTail(path.join(home, ".claude", ".credentials.json"))).toBe("A");
+      expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(true);
+    });
+
+    it("provisions the flat root's copy when no account routes the spawn (the GLM shape)", () => {
+      fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
+      writeClaudeToken(perSessionCredentialsDir(root, sid), "SESSION-LIVE", 9_000);
+
+      provisionSubAgentSpawnHome(root, sid, spawnId, "claude");
+
+      const home = subAgentSpawnHomeDir(root, sid, spawnId);
+      // The flat root's seeded token (`claude-tok`, no expiry shape) was copied.
+      expect(fs.existsSync(path.join(home, ".claude", ".credentials.json"))).toBe(true);
+      expect(readTail(path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json")))
+        .toBe("SESSION-LIVE");
+    });
+
+    it("release publishes a fresher rotation to the account root and removes the home", () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+      const home = subAgentSpawnHomeDir(root, sid, spawnId);
+      writeClaudeToken(home, "A-ROTATED", 15_000); // the consult's CLI rotated
+
+      releaseSubAgentSpawnHome(root, sid, spawnId);
+
+      expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
+        .toBe("A-ROTATED");
+      expect(fs.existsSync(home)).toBe(false);
+    });
+
+    it("release never regresses a target the refresher moved past the spawn's copy", () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A-NEWER", 20_000);
+
+      releaseSubAgentSpawnHome(root, sid, spawnId);
+
+      expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
+        .toBe("A-NEWER");
+    });
+
+    /**
+     * Cross-agent review finding — the release must take its write-back target
+     * from the home's own provenance, never from the caller. A suppressed
+     * removal failure can leave the FAILED account's copy in the home while
+     * the failover loop has already moved on to the fallback account; a
+     * caller-supplied target would then copy one account's bearer into another
+     * account's root (the duplicate-bearer class the marker machinery exists
+     * to prevent, resurfacing one directory over).
+     */
+    it("release publishes to the provenance-named root, whatever the caller's world says", () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);
+      provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+      const home = subAgentSpawnHomeDir(root, sid, spawnId);
+      writeClaudeToken(home, "A-ROTATED", 15_000);
+
+      // The service-level caller has moved `accountId` on to acct-b by now —
+      // and can no longer say so: the release reads only the provenance.
+      releaseSubAgentSpawnHome(root, sid, spawnId);
+
+      expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
+        .toBe("A-ROTATED");
+      expect(readTail(path.join(root, "provider-accounts", "claude", "acct-b", ".claude", ".credentials.json")))
+        .toBe("B");
+    });
+
+    it("release publishes NOTHING from a home with no provenance (a torn provision)", () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+      const home = subAgentSpawnHomeDir(root, sid, spawnId);
+      writeClaudeToken(home, "A-ROTATED", 15_000);
+      fs.rmSync(path.join(home, ".shipit-spawn-home.json"));
+
+      releaseSubAgentSpawnHome(root, sid, spawnId);
+
+      // Unproven content is deleted, never published.
+      expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
+        .toBe("A");
+      expect(fs.existsSync(home)).toBe(false);
+    });
+
+    /**
+     * Cross-agent review finding — an orchestrator restart orphans the home
+     * (the releasing `finally` died with the process), and with rotating
+     * refresh tokens a deleted rotation permanently kills the source
+     * credential. The container-create sweep therefore RELEASES each home —
+     * provenance-driven write-back first — rather than deleting blind.
+     */
+    it("container-create sweep publishes a stranded rotation, then removes the homes", () => {
+      writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
+      provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+      provisionSubAgentSpawnHome(root, sid, "spawn-flat", "claude");
+      const home = subAgentSpawnHomeDir(root, sid, spawnId);
+      writeClaudeToken(home, "A-ROTATED", 15_000); // rotation stranded by a crash
+
+      sweepSubAgentSpawnHomes(root, sid);
+
+      expect(readTail(path.join(root, "provider-accounts", "claude", "acct-a", ".claude", ".credentials.json")))
+        .toBe("A-ROTATED");
+      expect(fs.existsSync(home)).toBe(false);
+      expect(fs.existsSync(subAgentSpawnHomeDir(root, sid, "spawn-flat"))).toBe(false);
+      expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), "sub-agent-homes"))).toBe(false);
+    });
+
+    it("the container path pairs with the host path under the /credentials mount", () => {
+      expect(subAgentSpawnHomeContainerDir(spawnId)).toBe(`/credentials/sub-agent-homes/${spawnId}`);
+      expect(subAgentSpawnHomeDir(root, sid, spawnId)).toBe(
+        path.join(perSessionCredentialsDir(root, sid), "sub-agent-homes", spawnId),
+      );
+    });
   });
 
   /**

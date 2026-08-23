@@ -131,4 +131,48 @@ describe("PresentStore", () => {
     expect(reopened.list("s1").map((p) => p.presentId)).toEqual(["a"]);
     expect(reopened.get("a")?.resolvedPath).toBe("/tmp/chart.html");
   });
+
+  // docs/280 — `inlineCardIsNew` is the transcript card's emit gate, so what
+  // matters is that it answers true EXACTLY once per artifact, whatever the
+  // screenshot loop does afterwards.
+  describe("inline (docs/280)", () => {
+    it("is false for an ordinary present, and the artifact is not inline", () => {
+      expect(store.record(makeEntry()).inlineCardIsNew).toBe(false);
+      expect(store.get("pres_1")?.inline).toBeUndefined();
+    });
+
+    it("is true on the first inline present and false on every re-present", () => {
+      expect(store.record(makeEntry({ inline: true })).inlineCardIsNew).toBe(true);
+      expect(store.record(makeEntry({ inline: true })).inlineCardIsNew).toBe(false);
+      expect(store.record(makeEntry({ inline: true })).inlineCardIsNew).toBe(false);
+      expect(store.get("pres_1")?.inline).toBe(true);
+    });
+
+    it("is true when an already-presented artifact is re-presented inline", () => {
+      expect(store.record(makeEntry()).inlineCardIsNew).toBe(false);
+      expect(store.record(makeEntry({ inline: true })).inlineCardIsNew).toBe(true);
+    });
+
+    it("keeps inline set when the screenshot loop re-presents without the flag", () => {
+      store.record(makeEntry({ inline: true }));
+      // The iteration loop calls `present({ file })` with no `inline` — the card
+      // is already in the scrollback, so it must not be demoted.
+      expect(store.record(makeEntry({ title: "v2" })).inlineCardIsNew).toBe(false);
+      expect(store.get("pres_1")?.inline).toBe(true);
+      expect(store.get("pres_1")?.title).toBe("v2");
+    });
+
+    it("survives a restart, so a re-present after one does not re-emit the card", () => {
+      store.record(makeEntry({ inline: true }));
+      const reopened = new PresentStore(dbManager);
+      expect(reopened.record(makeEntry({ inline: true })).inlineCardIsNew).toBe(false);
+      expect(reopened.listForClient("s1")[0].inline).toBe(true);
+    });
+
+    it("tracks each artifact separately", () => {
+      expect(store.record(makeEntry({ presentId: "a", inline: true })).inlineCardIsNew).toBe(true);
+      expect(store.record(makeEntry({ presentId: "b", inline: true })).inlineCardIsNew).toBe(true);
+      expect(store.record(makeEntry({ presentId: "a", inline: true })).inlineCardIsNew).toBe(false);
+    });
+  });
 });

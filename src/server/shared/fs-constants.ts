@@ -32,6 +32,17 @@ export const CONTAINER_SESSION_STATE_DIR = "/session-state";
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 
 /**
+ * Mount point of the session's private credentials subtree inside session
+ * containers (docs/138): the orchestrator mounts
+ * `<credentialsDir>/sessions/<sessionId>` here, and the image symlinks the
+ * runtime home's credential paths (`~/.claude`, `~/.codex`, …) into it. The
+ * mount itself is built in `orchestrator/container-lifecycle.ts`; session-side
+ * code (and the sub-agent spawn-home path) needs the container-side path
+ * without importing from `orchestrator/`.
+ */
+export const CONTAINER_CREDENTIALS_DIR = "/credentials";
+
+/**
  * docs/262 — where a session's plugin checkouts appear inside the agent
  * container. Two paths, and **both are read-only**: the agent container never
  * gets a writable view of a plugin checkout at any path (req 7). Plugin code

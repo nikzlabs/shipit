@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ContainerSessionRunner } from "./container-session-runner.js";
+import { ContainerSessionRunner, type InstallCompletion } from "./container-session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
 import { ServiceManager } from "./service-manager.js";
@@ -218,7 +218,7 @@ export function adoptExistingServiceManager(
     composeStopPromises: Map<string, Promise<void>>;
     containerManager: SessionContainerManager | null;
     broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
-    installPromise: Promise<{ ok: boolean; withheld?: boolean }> | null;
+    installPromise: Promise<InstallCompletion> | null;
     /**
      * Fresh closure that reads the session's latest secrets (the OLD
      * closure baked into `mgr` references the disposed runner; safe today
@@ -644,7 +644,7 @@ export function setupServiceManager(
   // window around it below so dev servers that race install on a shared
   // bind mount get retried instead of latching to `error`.
   const installCommands = shipitConfig.agent.install;
-  let installPromise: Promise<{ ok: boolean; withheld?: boolean }> | null = null;
+  let installPromise: Promise<InstallCompletion> | null = null;
   // docs/183 — orchestrator-observed install wall-clock for the overlay
   // measurement line below. Captured at kickoff; a marker-skip resolves in ~ms,
   // a real install in seconds, so duration classifies the warm-vs-cold scenario.
@@ -660,13 +660,6 @@ export function setupServiceManager(
     // `agent.install` this session is currently running, which
     // `applyShipitConfigChange` diffs against when `shipit.yaml` changes. An
     // empty list still means "no auto-reinstall", exactly as before.
-    //
-    // docs/271 — this records the config's list, which the gate below may then
-    // withhold, so `appliedInstallCommands` means "what `shipit.yaml` declares",
-    // NOT "what ran". That is the right meaning for its one consumer (the
-    // config-change diff): recording the withheld list is what stops the same
-    // change re-triggering on every read, and a revert to an accepted list still
-    // differs from it and so re-runs.
     runner.setDepReinstallInputs(
       installCommands,
       resolveDepsHashInputs(installCommands, shipitConfig.agent.installInputs) ?? [],
@@ -698,13 +691,17 @@ export function setupServiceManager(
     const s = session;
     void (async () => {
       const res = await p;
-      // docs/271 — a WITHHELD install ran nothing, so publishing would stamp the
-      // rolling base pointer's `markerStamp.installCommands` with a command list
-      // that never executed (`overlay-publish.ts:200-212`). A later fresh session
-      // at the same commit would then get a pre-stamped marker asserting those
-      // commands installed — which is precisely the anchor this gate reads, so
-      // the gate would launder the plugin's list into its own accepted list.
-      if (res.withheld) return;
+      // An UNVERIFIED install observed nothing, and the publisher cannot tell
+      // that from a real success: it takes `installOk` at face value and stamps
+      // the rolling base pointer's `markerStamp.installCommands` with the
+      // declared list (`overlay-publish.ts:200-212`). Three paths resolve
+      // `ok: true` having watched nothing happen — dispose,
+      // dispose-before-worker-ready, and the reconnect resync that cannot tell
+      // success from failure — so without this a dropped SSE stream could
+      // snapshot a missing or half-installed dep tree, publish it as the SHARED
+      // base for the whole scope, and hand every later session at this commit a
+      // pre-stamped marker asserting those commands installed.
+      if (res.unverified) return;
       try {
         const outcomes = await publishOverlayBases({
           runner: r,
@@ -949,6 +946,7 @@ export function setupServiceManager(
   // of being marked `error`. Once install resolves, the gate closes and the
   // manager does one explicit restart pass on services still in `error` /
   // pending-retry state. Skip when there's nothing to wait for.
+  //
   if (installPromise) {
     mgr.setInstallRunning(true);
     const p = installPromise;

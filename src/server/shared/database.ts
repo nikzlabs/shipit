@@ -1409,6 +1409,116 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "muted_at");
   },
+  // docs/278-conditional-history-refetch (planning#324) — a per-session counter that
+  // moves whenever the session's persisted transcript is written, so
+  // `GET /history` can answer "unchanged" without materializing the transcript
+  // to hash it.
+  //
+  // ## Why triggers rather than a bump in `ChatHistoryManager`
+  //
+  // The validator is only worth anything if it moves on EVERY write, and the
+  // writes are spread over ~20 methods plus several ad-hoc `db.prepare(...)`
+  // statements in that class and a `DELETE FROM messages` in `clearAll` below.
+  // A TypeScript-side bump is one forgotten call site away from serving a stale
+  // transcript, and the failure is silent — the client is told nothing changed
+  // and simply never sees the change. Attached to the table, the counter cannot
+  // be missed: a path that writes a row moves it, including paths written after
+  // this migration and raw SQL that never goes near the manager.
+  //
+  // ## Why a counter rather than MAX(id) + COUNT(*)
+  //
+  // Card lifecycle transitions (`updateBugReportCard`, `updatePermissionCard`,
+  // `updateEgressPromptCard`, `updateIssueWriteCard`, `upsertReleaseCard`,
+  // `updateSubAgentConsultCard`) patch a row IN PLACE, so the row count and the
+  // largest id are both unchanged while the content is not. The UPDATE trigger
+  // is what covers them.
+  //
+  // Rows are keyed by session and outlive the session's messages on purpose: a
+  // session whose transcript is deleted and rewritten must not reuse a revision
+  // a client already holds.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS transcript_revisions (
+        session_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL
+      );
+
+      CREATE TRIGGER IF NOT EXISTS messages_revision_insert AFTER INSERT ON messages BEGIN
+        INSERT INTO transcript_revisions (session_id, revision) VALUES (NEW.session_id, 1)
+          ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS messages_revision_update AFTER UPDATE ON messages BEGIN
+        INSERT INTO transcript_revisions (session_id, revision) VALUES (NEW.session_id, 1)
+          ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS messages_revision_delete AFTER DELETE ON messages BEGIN
+        INSERT INTO transcript_revisions (session_id, revision) VALUES (OLD.session_id, 1)
+          ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
+      END;
+
+      -- A row that changes owner LEAVES one session as much as it joins another,
+      -- and the UPDATE trigger above speaks only for the session it arrives in.
+      -- No path in the repository reassigns \`session_id\` today; the guarantee
+      -- this counter advertises is for the ones written later — a repair
+      -- migration that merges two sessions, a fork that moves rows instead of
+      -- copying them — and the old owner's clients would otherwise hold a
+      -- validator that is still "valid" for a transcript missing a row.
+      -- \`WHEN\` keeps it free on every ordinary update.
+      CREATE TRIGGER IF NOT EXISTS messages_revision_reassign AFTER UPDATE OF session_id ON messages
+        WHEN OLD.session_id <> NEW.session_id
+      BEGIN
+        INSERT INTO transcript_revisions (session_id, revision) VALUES (OLD.session_id, 1)
+          ON CONFLICT(session_id) DO UPDATE SET revision = transcript_revisions.revision + 1;
+      END;
+    `);
+  },
+  // docs/279 — the "this session's settings changed" transcript card: a sandbox
+  // capability grant moving after creation, or a regular session's network
+  // containment mode changing. Both are trust-boundary changes the user makes
+  // from the Session settings dialog, and both were previously invisible in the
+  // scrollback — the capability set because it could not change at all, the
+  // network mode because its route only persisted the override.
+  //
+  // One column for both, because they are one card type: the transcript answers
+  // "what was this session allowed to do, and when did that change?" the same way
+  // for either. NULL = ordinary (non-card) message.
+  //
+  // Guarded like every migration appended since docs/252: the migration tests
+  // rewind `user_version` to re-run an earlier step, which replays every step
+  // after it against a table that already has the column.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "session_settings_change")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN session_settings_change TEXT");
+  },
+  // docs/280 — the "inline presentation" transcript card: an artifact the agent
+  // showed with `present({ inline: true })`, rendered in the conversation rather
+  // than only in the Present tab. The card arrives off the present SSE stream and
+  // is recorded in-band via emitChatCard; without this column it renders live but
+  // vanishes on the next loadSessionHistory, which rebuilds from the DB. The card
+  // is immutable (no lifecycle), so the column is written once on emit and never
+  // patched — a re-present refreshes the artifact, not the row.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(messages)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "present_inline")) return;
+    db.exec("ALTER TABLE messages ADD COLUMN present_inline TEXT");
+  },
+  // docs/280 — which presentations have a transcript card. This is what makes the
+  // card emit exactly ONCE per artifact: the screenshot loop re-presents the same
+  // path repeatedly, and every one of those re-presents must refresh the existing
+  // card rather than append a duplicate showing identical bytes. It lives beside
+  // the presentation (not in the messages table) because the question the emit
+  // path asks is "does this ARTIFACT already have a card?", and because the row
+  // outlives a container restart — a restarted worker's registry is empty, so an
+  // in-memory marker would re-emit the card the first time the file is presented
+  // again.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(presentations)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "inline")) return;
+    db.exec("ALTER TABLE presentations ADD COLUMN inline INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 /**
@@ -1493,6 +1603,10 @@ export class DatabaseManager {
   clearAll(): void {
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM messages").run();
+      // planning#324 — AFTER the messages delete, never before: deleting the rows
+      // fires the revision triggers, which would re-create every row this
+      // statement had just removed.
+      this.db.prepare("DELETE FROM transcript_revisions").run();
       this.db.prepare("DELETE FROM usage_turns").run();
       this.db.prepare("DELETE FROM sessions").run();
       this.db.prepare("DELETE FROM repos").run();

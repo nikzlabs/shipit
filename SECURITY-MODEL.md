@@ -52,6 +52,12 @@ ShipIt locks its dependency graph down hard.
 - **Minimum release age.** Dependencies must have been published for a cooldown window
   before they can be added, giving the community, scanners, and npm's own abuse pipeline
   time to catch a compromised release before it reaches the build.
+- **Both checks read both manifests.** The root `package.json` and
+  `docker/agent-cli/package.json` are listed in the script's `POLICY_MANIFESTS`. The
+  second one matters most: it pins the agent CLIs, which run inside the session
+  container with the agent's own credentials, so it is the manifest an attacker would
+  most want to move. Renovate's per-rule cooldown does not substitute for this check —
+  a package no rule names gets no cooldown, silently.
 - **Agent CLIs are lockfile-pinned and installed with `npm ci`.** The Claude Code, Codex,
   and Playwright-MCP CLIs live in a separate `docker/agent-cli/` manifest with a committed
   lockfile. The session-worker image installs them via `npm ci --ignore-scripts`, so

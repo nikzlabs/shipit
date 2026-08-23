@@ -49,7 +49,7 @@ consumers (delegate a self-contained refactor, ask a different model to
 explain a subsystem, generate test fixtures) compose the same way.
 
 The whole feature is gated behind a single global setting (`enableSubAgents`,
-default off). Sessions belonging to users who haven't enabled it behave
+default on). Sessions belonging to users who have turned it off behave
 exactly like docs/138 today — no CLI subcommand wired, no credentials
 provisioned, no behavior change.
 
@@ -857,9 +857,9 @@ persisted output and `shipit agent result` are unaffected.
 
 Two layers of gating, plus one honestly-named v0 regression.
 
-1. **Global setting (§1).** The user must explicitly enable `enableSubAgents`.
-   Default off. Users who never enable it see docs/138's invariant intact,
-   word-for-word, forever.
+1. **Global setting (§1).** `enableSubAgents` gates the whole feature, and the
+   user can turn it off. Default on. Users who turn it off see docs/138's
+   invariant intact, word-for-word, forever.
 2. **Lazy + scoped credential provisioning (§4).** Even for users who enable
    the setting, the cross-agent credential window opens only during the
    lifetime of an active *cross-provider* sub-agent subprocess, and a
@@ -951,7 +951,7 @@ Traceability for the product decisions made during design:
 ## Implementation status (v0)
 
 v0 is implemented end-to-end behind the `enableSubAgents` global setting
-(default off). Key files:
+(default on). Key files:
 
 - **Setting (`enableSubAgents`)** — `credential-store.ts`
   (`get/setEnableSubAgents`), `services/settings.ts` + `services/types.ts`

@@ -3,6 +3,7 @@ import type { ChatMessage } from "./types.js";
 import type { AnswerQuestionFn } from "../AskUserQuestion.js";
 import type { RewindGapAction } from "../RewindPoint.js";
 import type { TrackerId, ReleaseMechanism } from "../../../server/shared/types.js";
+import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
 
 /**
  * Everything a transcript row needs that changes IDENTITY on every render
@@ -41,6 +42,8 @@ export interface RowHandlers {
   onResumeSession?: (sessionId: string) => void;
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   onReleaseCancel?: (version: string) => void;
+  /** docs/280 — dispatch a message an inline presentation composed via the SDK. */
+  onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
 }
@@ -59,6 +62,7 @@ const CALLBACK_KEYS = [
   "onResumeSession",
   "onReleaseConfirm",
   "onReleaseCancel",
+  "onAgentInterfaceMessage",
   "onRequestRewindPreview",
   "onRewindAtGap",
 ] as const satisfies readonly CallbackKey[];

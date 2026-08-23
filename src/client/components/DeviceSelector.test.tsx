@@ -12,6 +12,7 @@ const baseProps = {
   activePreset: null,
   isLandscape: false,
   customSize: null,
+  panelSize: null,
   onSelectPreset: vi.fn(),
   onToggleLandscape: vi.fn(),
   onCustomSize: vi.fn(),
@@ -171,6 +172,99 @@ describe("DeviceSelector", () => {
     await user.type(heightInput, "2560");
     await user.click(screen.getByTitle("Apply custom size"));
     expect(onCustomSize).toHaveBeenCalledWith(100, 2560);
+  });
+
+  it("activates freeform at the panel size on first use", async () => {
+    const user = userEvent.setup();
+    const onCustomSize = vi.fn();
+    render(
+      <DeviceSelector
+        {...baseProps}
+        panelSize={{ width: 720, height: 540 }}
+        onCustomSize={onCustomSize}
+      />,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    await user.click(screen.getByText("Freeform"));
+    expect(onCustomSize).toHaveBeenCalledWith(720, 540);
+  });
+
+  it("activates freeform at the last custom size when one exists", async () => {
+    const user = userEvent.setup();
+    const onCustomSize = vi.fn();
+    render(
+      <DeviceSelector
+        {...baseProps}
+        customSize={{ width: 500, height: 900 }}
+        panelSize={{ width: 720, height: 540 }}
+        onCustomSize={onCustomSize}
+      />,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    await user.click(screen.getByText("Freeform"));
+    expect(onCustomSize).toHaveBeenCalledWith(500, 900);
+  });
+
+  it("re-seeds the custom inputs from the applied size on every open (req 10)", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<DeviceSelector {...baseProps} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(390);
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Custom width")).not.toBeInTheDocument();
+    });
+    // A size applied elsewhere — a drag, the Freeform row, a session switch —
+    // arrives via props; the next open must show it, not the previous seed.
+    rerender(<DeviceSelector {...baseProps} customSize={{ width: 612, height: 707 }} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(612);
+    expect(screen.getByLabelText("Custom height")).toHaveValue(707);
+  });
+
+  it("seeds the inputs from an active named preset, orientation-adjusted (req 10)", async () => {
+    const user = userEvent.setup();
+    const preset = findPresetById("iphone-16")!;
+    render(
+      <DeviceSelector
+        {...baseProps}
+        activePreset={preset}
+        isLandscape={true}
+        panelSize={{ width: 720, height: 540 }}
+      />,
+    );
+    await user.click(screen.getByLabelText("Select device viewport"));
+    // The applied viewport is landscape iPhone 16 (852×393) — the inputs must
+    // show that, not the panel size.
+    expect(screen.getByLabelText("Custom width")).toHaveValue(852);
+    expect(screen.getByLabelText("Custom height")).toHaveValue(393);
+  });
+
+  it("does not keep typed-but-unapplied values across opens", async () => {
+    const user = userEvent.setup();
+    render(<DeviceSelector {...baseProps} customSize={{ width: 500, height: 900 }} />);
+    await user.click(screen.getByLabelText("Select device viewport"));
+    const width = screen.getByLabelText("Custom width");
+    await user.clear(width);
+    await user.type(width, "5555");
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Custom width")).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByLabelText("Select device viewport"));
+    expect(screen.getByLabelText("Custom width")).toHaveValue(500);
+  });
+
+  it("labels the rotate button as a swap for custom sizes", () => {
+    render(
+      <DeviceSelector
+        {...baseProps}
+        activePreset={{ id: "custom", label: "Custom", width: 500, height: 900, category: "custom" }}
+        customSize={{ width: 500, height: 900 }}
+      />,
+    );
+    expect(screen.getByLabelText("Swap width and height")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Switch to/)).not.toBeInTheDocument();
   });
 
   it("renders preset dimensions in the menu", async () => {

@@ -13,6 +13,8 @@ import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
 import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePreviewHealthPoller.js";
 import { useDeviceFrame } from "./DeviceFrame.js";
+import { ViewportResizeHandles } from "./ViewportResizeHandles.js";
+import { CUSTOM_SIZE_MIN, CUSTOM_SIZE_MAX } from "../device-presets.js";
 import { PreviewToolbar, type PortInfo } from "./PreviewToolbar.js";
 import { PreviewErrors } from "./PreviewErrors.js";
 import { ComposeErrorBanner } from "./ComposeErrorBanner.js";
@@ -121,7 +123,26 @@ export function PreviewFrame({
   // ---- Device frame measurement ----
   // When a preset is active, we resize the iframe to the preset width/height
   // and scale it down with `transform: scale()` if it doesn't fit the panel.
-  const { deviceContainerRef, deviceFrameActive, deviceWidth, deviceHeight, deviceScale, deviceScalePercent } = useDeviceFrame();
+  const {
+    deviceContainerRef,
+    deviceFrameActive,
+    deviceWidth,
+    deviceHeight,
+    deviceScale,
+    deviceScalePercent,
+    availableWidth,
+    availableHeight,
+  } = useDeviceFrame();
+
+  // What the Freeform menu row activates on first use: the panel itself, so
+  // the drag handles appear around what the user was already looking at
+  // (docs/278). Null while the container is unmeasured.
+  const freeformPanelSize = availableWidth > 0 && availableHeight > 0
+    ? {
+      width: Math.min(Math.max(Math.round(availableWidth), CUSTOM_SIZE_MIN), CUSTOM_SIZE_MAX),
+      height: Math.min(Math.max(Math.round(availableHeight), CUSTOM_SIZE_MIN), CUSTOM_SIZE_MAX),
+    }
+    : null;
 
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
@@ -709,6 +730,7 @@ export function PreviewFrame({
         deviceHeight={deviceHeight}
         deviceScale={deviceScale}
         deviceScalePercent={deviceScalePercent}
+        freeformPanelSize={freeformPanelSize}
         hasErrors={hasErrors}
         errorCount={errors.length}
         errorPanelOpen={errorPanelOpen}
@@ -874,13 +896,31 @@ export function PreviewFrame({
               style={deviceFrameStyle}
               className={
                 useDeviceFrameStyle
-                  ? `absolute bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "hidden" : ""}`
+                  // `box-content`: the 1px frame border must not come out of the
+                  // viewport itself — under the global border-box preflight a
+                  // "393×852" frame gave the page 391×850 CSS px, so a breakpoint
+                  // set at an exact width (the whole point of the control) never
+                  // fired (docs/278 req 5: the indicator tells the truth).
+                  ? `absolute box-content bg-white rounded-md shadow-2xl border border-(--color-border-secondary) ${hidden ? "hidden" : ""}`
                   : `absolute inset-0 w-full h-full ${hidden ? "hidden" : ""} ${isActive && hasErrors && errorPanelOpen ? "max-h-[60%]" : ""}`
               }
               {...(!slot.containerMode && { sandbox: "allow-scripts allow-same-origin allow-forms allow-popups allow-modals" })}
             />
           );
         })}
+        {/* Drag handles on the constrained surface (docs/278). Rendered after
+            the iframes so they stack above them; the state overlay (z-10)
+            still covers them when it is up. Hidden with the iframe — a drag
+            against a hidden surface would resize nothing visible. */}
+        {deviceFrameActive && !hideIframe && (
+          <ViewportResizeHandles
+            deviceWidth={deviceWidth}
+            deviceHeight={deviceHeight}
+            deviceScale={deviceScale}
+            availableWidth={availableWidth}
+            availableHeight={availableHeight}
+          />
+        )}
         {/* Transition overlay while polling for new session/port (background iframe may be visible underneath) */}
         {isTransitioning && !overlayContent && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/10 pointer-events-none">

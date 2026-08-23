@@ -1162,6 +1162,50 @@ export class GitManager {
   }
 
   /**
+   * Fetch ONE branch and update its remote-tracking ref, so that
+   * `refs/remotes/<remote>/<branch>` is the remote's live tip rather than
+   * whatever this clone last pushed or fetched.
+   *
+   * The refspec is explicit (`+refs/heads/x:refs/remotes/origin/x`) rather than
+   * relying on `git fetch origin <branch>`'s opportunistic tracking-ref update:
+   * that update depends on the configured fetch refspec matching, which is true
+   * of ShipIt's own clones but not of a repo a user brought themselves. The
+   * leading `+` is what makes a rewritten remote branch (a force-push from
+   * elsewhere) update the tracking ref instead of being refused — the point of
+   * the call is to learn the remote's real state, and a refusal here would be
+   * read by the caller as "still in sync".
+   *
+   * Throws when the remote is unreachable or the branch is absent; every caller
+   * treats that as "cannot tell", never as a sync verdict.
+   */
+  async fetchBranch(remote: string, branch: string): Promise<void> {
+    const git = await this.remoteGit(remote);
+    await git.fetch(remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`);
+  }
+
+  /**
+   * How far HEAD and `ref` have drifted apart:
+   * `git rev-list --left-right --count <ref>...HEAD`, which counts BOTH sides of
+   * the symmetric difference in one command — `behind` (commits only on `ref`)
+   * and `ahead` (commits only on HEAD).
+   *
+   * Two counts, not one, because the pair is what separates the three states a
+   * caller has to tell apart: ahead-only, behind-only, and both-at-once
+   * (diverged). Returns null when either side does not resolve — an unborn HEAD,
+   * a tracking ref this clone has never had — which callers read as "unknown".
+   */
+  async aheadBehind(ref: string): Promise<{ ahead: number; behind: number } | null> {
+    try {
+      const out = await this.git.raw(["rev-list", "--left-right", "--count", `${ref}...HEAD`]);
+      const [behind, ahead] = out.trim().split(/\s+/).map((n) => Number.parseInt(n, 10));
+      if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return null;
+      return { ahead, behind };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Check if `ancestor` is an ancestor of `descendant`.
    * Returns true if descendant already contains ancestor (i.e. no rebase needed).
    *

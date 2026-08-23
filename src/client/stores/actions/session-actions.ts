@@ -77,6 +77,26 @@ export function resetSessionState() {
 export function resumeSessionInternal(sessionId: string) {
   // Snapshot outgoing session's preview state before switching
   const outgoingSessionId = useSessionStore.getState().sessionId;
+  // Resuming the session already on screen is not a switch, and running the
+  // switch against it destroys state nothing will restore (planning#467).
+  //
+  // Everything below assumes the incoming session is a different one: it clears
+  // the transcript, the queue and the live status, and lowers `historyLoaded`
+  // so hydration re-runs. On a real switch that is safe because the new session
+  // id gives `useSessionWebSocket` a new URL, so a socket is built, the server
+  // attaches, and a running turn's tail comes back in the attach's
+  // `turn_snapshot`. With the id unchanged the URL is unchanged, so there is no
+  // new socket and no attach — and the re-issued `GET /history` installs the
+  // persisted rows over a transcript whose unpersisted tail has already been
+  // thrown away, with nothing coming to repair it. The tail is gone until a
+  // genuine reconnect or a reload.
+  //
+  // Reachable in one click: `AllSessionsDialog` renders every row with
+  // `isCurrent={false}`, so the session you are looking at is selectable in the
+  // switcher like any other. Returning early costs nothing — every store this
+  // function resets is scoped to the session being resumed, which is the one
+  // already loaded.
+  if (outgoingSessionId === sessionId) return;
   const preview = usePreviewStore.getState();
   if (outgoingSessionId) preview.snapshotSession(outgoingSessionId);
 
@@ -168,6 +188,8 @@ export function fullResetAllStores() {
   // Every session is gone, so the slot keys these are keyed by are dead. The
   // session-scoped `reset()` above deliberately keeps them (docs/089).
   usePreviewStore.getState().clearPreviewPaths();
+  // Same lifecycle for the remembered viewports (docs/278): keyed by dead sessions.
+  usePreviewStore.getState().clearViewportMemory();
   usePresentStore.getState().reset();
   usePluginReposStore.getState().reset();
   usePrStore.getState().reset();

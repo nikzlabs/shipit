@@ -23,6 +23,7 @@ import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeManagedReason, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
+import { readBranchSync, resolveMergeSync } from "./services/branch-sync.js";
 import {
   buildPrStatusQuery,
   extractFocusedPrNodes,
@@ -120,6 +121,28 @@ export class PrStatusPoller {
   private runnerRegistry?: SessionRunnerRegistry;
   /** Optional: called when a merged PR is detected — used to archive the session. */
   private onMergeDetectedCb?: (sessionId: string) => Promise<void>;
+  /**
+   * docs/282 — the IN-FLIGHT {@link onMergeDetectedCb} work, per session.
+   *
+   * Merge detection has two halves and they do not land together: this class
+   * synchronously records the merged snapshot + `mergedHeadSha`, then fires the
+   * callback, which is what stamps `merged_at` (via `markMergedAndPruneExcess`).
+   * Everything that decides whether a session's branch may be reset — the whole
+   * docs/218 gate — reads `mergedAt`, so "the probe resolved" is NOT the same
+   * fact as "this session now reads as merged".
+   *
+   * {@link awaitMergeHandling} exists so the pre-turn recheck can wait for the
+   * second half rather than racing it. Fire-and-forget everywhere else, exactly
+   * as before: the entry is removed when the callback settles, so this holds at
+   * most one promise per session that is merging right now.
+   *
+   * Two clears back that up for the callback that never settles at all, because
+   * a stale entry is not just memory — the recheck would wait out its whole
+   * budget on it, on every qualifying turn, for a merge long since over.
+   * {@link reArm} ends the episode the handler belongs to, and
+   * {@link untrackSession} ends the session's tracking outright.
+   */
+  private readonly mergeHandling = new Map<string, Promise<void>>();
   /**
    * docs/194 — called when a merged PR is detected, with the PR **body** in
    * scope (which `onMergeDetectedCb` lacks). Drives the issue-lifecycle
@@ -244,6 +267,18 @@ export class PrStatusPoller {
       this.githubAuth,
       onSessionChange,
       (sessionId) => opts.runnerRegistry?.get(sessionId),
+      // The authoritative sync read, used once per merge attempt rather than
+      // once per tick — it fetches, so it belongs on the rare path. The cheap
+      // per-tick reading on the summary cannot see the remote moving under a
+      // stale tracking ref (a force-push from another clone), which reads as
+      // `in-sync` and would let the loop merge a history this session does not
+      // have. Undefined (no workspace, no factory) leaves the loop on the
+      // summary's reading alone.
+      async (sessionId, headBranch) => {
+        const dir = this.sessionManager.get(sessionId)?.workspaceDir;
+        if (!dir || !this.createGitManager) return undefined;
+        return resolveMergeSync(this.createGitManager(dir), headBranch);
+      },
     );
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
     // docs/146 — the manager requires the runner registry for its pre-attempt
@@ -409,8 +444,20 @@ export class PrStatusPoller {
    * resolve the canonical owner ourselves (below) before the REST probe — else,
    * on a transferred/renamed repo, `findPullRequestAnyState` filters
    * `head=<old-owner>:<branch>` and matches nothing (planning#161).
+   *
+   * docs/282 — `armAbsentDebounce: false` runs the same definitive probe WITHOUT
+   * arming the `verifiedAbsent` single-probe debounce. Every pre-existing caller
+   * probes a PR it expects to be terminal, where arming is right; the pre-turn
+   * recheck probes one it expects to still be OPEN, on every qualifying turn, and
+   * arming there would be a merge-detection REGRESSION: `verifiedAbsent` is
+   * cleared only by the PR reappearing in the OPEN bulk view or by a forced
+   * refresh, so a PR merged moments after a recheck would fall out of the bulk
+   * view with the debounce already armed and never get REST-verified.
    */
-  async forceVerifySessionPrState(sessionId: string): Promise<void> {
+  async forceVerifySessionPrState(
+    sessionId: string,
+    opts: { armAbsentDebounce?: boolean } = {},
+  ): Promise<void> {
     const repoKey = this.tracker.sessionRepos.get(sessionId);
     const slash = repoKey?.indexOf("/") ?? -1;
     if (!repoKey || slash <= 0) return;
@@ -431,7 +478,30 @@ export class PrStatusPoller {
     // PR branch. A suppressed verify means the only PR on the branch is still the
     // re-armed session's OLD merged PR (docs/202); arming here would wedge
     // convergence if the NEW PR opens-and-merges before being observed open.
-    if (outcome !== "suppressed") this.tracker.verifiedAbsent.add(sessionId);
+    if (outcome !== "suppressed" && (opts.armAbsentDebounce ?? true)) {
+      this.tracker.verifiedAbsent.add(sessionId);
+    }
+  }
+
+  /**
+   * docs/282 — resolve once this session's in-flight merge bookkeeping has
+   * settled, or immediately when none is in flight.
+   *
+   * The caller is the pre-turn merge recheck, and what it needs is the
+   * *second* half of merge detection: `verifyMissingPr` records the merged
+   * snapshot and `mergedHeadSha` synchronously, but `merged_at` — the field the
+   * whole docs/218 reset gate keys off — is stamped by `onMergeDetectedCb`,
+   * which the poll loop deliberately does not await. Awaiting it here covers the
+   * merge THIS turn's probe just discovered and equally one a background poll
+   * discovered a beat earlier (whose `alreadyTerminal` guard means our probe
+   * fires no callback of its own).
+   *
+   * Never rejects — the tracked promise already swallows its own errors — and
+   * the caller bounds it with its own timeout, because the callback does
+   * container and network work that must not be able to strand a turn.
+   */
+  async awaitMergeHandling(sessionId: string): Promise<void> {
+    await this.mergeHandling.get(sessionId);
   }
 
   /** Untrack a session (archived, PR merged, etc.). */
@@ -443,6 +513,7 @@ export class PrStatusPoller {
     this.autoConflictResolveManager?.delete(sessionId);
     this.remediationArbiter.delete(sessionId);
     this.graceTracker.untrack(sessionId);
+    this.mergeHandling.delete(sessionId);
 
     if (repoKey && !this.tracker.repoHasTrackedSessions(repoKey)) {
       this.supervisor.deleteRepoCadence(repoKey);
@@ -565,6 +636,12 @@ export class PrStatusPoller {
    * `trackSession` so the suppression is in place when that poll runs.
    */
   reArm(sessionId: string, supersededPrNumber?: number): void {
+    // docs/282 — the merge this session is being re-armed OUT of is over, so any
+    // handler still tracked for it belongs to no live episode. The `finally`
+    // below is the ordinary removal; this covers the handler that never settles,
+    // which would otherwise make every later qualifying turn wait out the
+    // recheck's whole budget on a merge that is already history.
+    this.mergeHandling.delete(sessionId);
     this.tracker.lastKnown.delete(sessionId);
     this.tracker.lastPrNodes.delete(sessionId);
     this.tracker.mergedSessions.delete(sessionId);
@@ -1025,15 +1102,24 @@ export class PrStatusPoller {
         // locally from `git diff base...HEAD`) already shows the latest.
         // Using the same local source for both keeps them consistent.
         if (this.createGitManager && session.workspaceDir) {
+          const localGit = this.createGitManager(session.workspaceDir);
           try {
-            const local = await this.createGitManager(session.workspaceDir)
-              .diffStatVsBranch(summary.baseBranch);
+            const local = await localGit.diffStatVsBranch(summary.baseBranch);
             summary.insertions = local.insertions;
             summary.deletions = local.deletions;
           } catch {
             // Workspace gone (archived), bare repo without a checkout, etc.
             // Fall back to GitHub's numbers.
           }
+          // Does the remote branch this PR would merge still carry everything
+          // the session has committed? Local refs only — no network on the poll
+          // path. The merge route re-resolves this against the live remote
+          // before it merges anything; this reading exists so the button is
+          // already disabled when the user looks at it, rather than failing on
+          // the click. Undefined (no workspace, no tracking ref, HEAD elsewhere)
+          // means "cannot tell" and blocks nothing.
+          const sync = await readBranchSync(localGit, summary.headBranch);
+          if (sync) summary.branchSync = sync;
         }
 
         const prev = this.tracker.lastKnown.get(session.id);
@@ -1402,9 +1488,18 @@ export class PrStatusPoller {
         console.warn(`[pr-poller] merged PR #${pr.number} for ${sessionId} had no head.sha — auto-reset anchor not recorded`);
       }
       if (this.onMergeDetectedCb) {
-        this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
-          console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
-        });
+        // docs/282 — still fire-and-forget for the poll loop, but the promise is
+        // now observable: this callback is what stamps `merged_at`, and the
+        // pre-turn recheck must not decide against a session that has been
+        // *found* merged but not yet *marked* merged. See `mergeHandling`.
+        const handling = this.onMergeDetectedCb(sessionId)
+          .catch((err: unknown) => {
+            console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
+          })
+          .finally(() => {
+            if (this.mergeHandling.get(sessionId) === handling) this.mergeHandling.delete(sessionId);
+          });
+        this.mergeHandling.set(sessionId, handling);
       }
       // docs/194 — drive the issue-lifecycle "→ completed" transition from the
       // merged PR body. This is the parse site the body is in scope at (the

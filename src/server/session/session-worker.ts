@@ -584,9 +584,10 @@ export class SessionWorker extends EventEmitter {
         file?: string;
         mimeType?: string;
         title?: string;
+        inline?: boolean;
       };
     }>("/agent-ops/present/submit", async (request, reply) => {
-      const { file, mimeType, title } = request.body ?? {};
+      const { file, mimeType, title, inline } = request.body ?? {};
       if (typeof file !== "string" || file.length === 0) {
         return reply.code(400).send({ error: "file is required and must be a path string" });
       }
@@ -630,6 +631,10 @@ export class SessionWorker extends EventEmitter {
         mimeType: resolvedMime,
         createdAt,
         ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
+        // docs/280 — also render this artifact as a card in the chat transcript.
+        // Sticky in the registry, so the screenshot loop's plain re-present
+        // cannot turn it back off.
+        ...(inline === true ? { inline: true } : {}),
       });
 
       this.broadcastSSE({
@@ -641,6 +646,8 @@ export class SessionWorker extends EventEmitter {
           ...(meta.title !== undefined ? { title: meta.title } : {}),
           filePath: meta.filePath,
           createdAt: meta.createdAt,
+          // docs/280 — the orchestrator emits the transcript card off this flag.
+          ...(meta.inline ? { inline: true } : {}),
           // docs/093 — the container-internal absolute path, carried on the SSE
           // event (not the client-facing WS message) so the orchestrator can
           // persist it and re-register this artifact with a freshly-started

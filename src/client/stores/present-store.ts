@@ -61,6 +61,13 @@ export interface Presentation {
   filePath: string;
   createdAt: string;
   /**
+   * docs/280 — the artifact also has a card in the chat transcript. The carousel
+   * shows it either way; the flag exists so the two surfaces agree about which
+   * artifacts are inline (the card's "Open in Present tab" jump, and any future
+   * carousel affordance that wants to say so).
+   */
+  inline?: boolean;
+  /**
    * Lazily-fetched artifact bytes (a `data:` URI for binary images, raw text
    * for HTML/SVG/markdown). `undefined` until the pane fetches it; cached here
    * so re-selecting the entry doesn't refetch.
@@ -75,6 +82,7 @@ interface PresentationMeta {
   title?: string;
   filePath: string;
   createdAt: string;
+  inline?: boolean;
 }
 
 /**
@@ -170,6 +178,7 @@ function toEntry(p: PresentationMeta, content?: string): Presentation {
     filePath: p.filePath,
     createdAt: p.createdAt,
     ...(p.title !== undefined ? { title: p.title } : {}),
+    ...(p.inline ? { inline: true } : {}),
     ...(content !== undefined ? { content } : {}),
   };
 }

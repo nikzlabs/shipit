@@ -14,11 +14,14 @@ import { CompactionCard } from "../../CompactionCard.js";
 import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
+import { PresentInlineCard } from "../../PresentInlineCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
 import { SessionRenamedCard } from "../../SessionRenamedCard.js";
+import { SessionSettingsChangeCard } from "../../SessionSettingsChangeCard.js";
 import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
+import type { AgentInterfaceProvenance } from "../../../../server/shared/agent-interface-sdk/protocol.js";
 import type { ReleaseMechanism } from "../../../../server/shared/types.js";
 import { SubAgentConsultCardRow } from "./SubAgentCards.js";
 import type { TrackerId } from "../../../../server/shared/types.js";
@@ -57,6 +60,12 @@ export interface MessageCardCallbacks {
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   /** docs/171 — cancel a proposed release (sends the cancel reply). */
   onReleaseCancel?: (version: string) => void;
+  /**
+   * docs/280 — dispatch a message an INLINE presentation composed through the
+   * Agent Interface SDK. Same handler the Present tab and the service Preview
+   * use; the card only ever calls it while it is on screen.
+   */
+  onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
 }
 
 /**
@@ -321,6 +330,23 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     );
   }
 
+  // docs/280 — inline presentation card. Carries no chat text of its own: the
+  // message holds the artifact's METADATA and the component pulls the bytes from
+  // the present store on demand, which is what lets a re-present refresh the card
+  // in place. Wider than the other cards because an artifact needs room to read.
+  if (msg.presentInline) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-3xl w-full">
+          <PresentInlineCard
+            card={msg.presentInline}
+            {...(cb.onAgentInterfaceMessage ? { onAgentInterfaceMessage: cb.onAgentInterfaceMessage } : {})}
+          />
+        </div>
+      </div>
+    );
+  }
+
   // docs/218 — branch-updated card. Carries no chat text of its own; renders the
   // static `BranchUpdatedCard` straight from the message payload (no store, no
   // lifecycle). Shown right after the user's message when a merged session's
@@ -344,6 +370,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <SessionRenamedCard card={msg.sessionRenamed} />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/279 — session-settings-changed card. Carries no chat text of its own;
+  // renders the static `SessionSettingsChangeCard` straight from the message
+  // payload (no store, no lifecycle). The durable record that a sandbox
+  // capability grant or a session's network mode moved, and when.
+  if (msg.sessionSettingsChange) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <SessionSettingsChangeCard card={msg.sessionSettingsChange} />
         </div>
       </div>
     );

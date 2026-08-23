@@ -1138,6 +1138,16 @@ export interface AgentRunParams {
    */
   serviceRouting?: ServiceRouting;
   /**
+   * Per-spawn HOME override for the CLI. Set by the sub-agent spawn path when a
+   * SAME-harness spawn's credentials were provisioned into an isolated
+   * per-spawn root (`provisionSubAgentSpawnHome`), so the spawned CLI reads
+   * that root instead of the session subtree the live primary reads. Takes
+   * precedence over the adapter's constructor-injected `resolveHome` (the
+   * local-mode account scoping, docs/150 req 19) — a per-spawn answer is more
+   * specific than a per-adapter one. Absent ⇒ unchanged resolution.
+   */
+  homeDir?: string;
+  /**
    * Reasoning/effort level for this run, an agent-specific token from the
    * agent's `reasoning.options` (Claude: low…max via `--effort`; Codex:
    * none…xhigh via `model_reasoning_effort`). Undefined = pass no flag (the
