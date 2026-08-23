@@ -135,6 +135,12 @@ export class PrStatusPoller {
    * second half rather than racing it. Fire-and-forget everywhere else, exactly
    * as before: the entry is removed when the callback settles, so this holds at
    * most one promise per session that is merging right now.
+   *
+   * Two clears back that up for the callback that never settles at all, because
+   * a stale entry is not just memory — the recheck would wait out its whole
+   * budget on it, on every qualifying turn, for a merge long since over.
+   * {@link reArm} ends the episode the handler belongs to, and
+   * {@link untrackSession} ends the session's tracking outright.
    */
   private readonly mergeHandling = new Map<string, Promise<void>>();
   /**
@@ -507,6 +513,7 @@ export class PrStatusPoller {
     this.autoConflictResolveManager?.delete(sessionId);
     this.remediationArbiter.delete(sessionId);
     this.graceTracker.untrack(sessionId);
+    this.mergeHandling.delete(sessionId);
 
     if (repoKey && !this.tracker.repoHasTrackedSessions(repoKey)) {
       this.supervisor.deleteRepoCadence(repoKey);
@@ -629,6 +636,12 @@ export class PrStatusPoller {
    * `trackSession` so the suppression is in place when that poll runs.
    */
   reArm(sessionId: string, supersededPrNumber?: number): void {
+    // docs/282 — the merge this session is being re-armed OUT of is over, so any
+    // handler still tracked for it belongs to no live episode. The `finally`
+    // below is the ordinary removal; this covers the handler that never settles,
+    // which would otherwise make every later qualifying turn wait out the
+    // recheck's whole budget on a merge that is already history.
+    this.mergeHandling.delete(sessionId);
     this.tracker.lastKnown.delete(sessionId);
     this.tracker.lastPrNodes.delete(sessionId);
     this.tracker.mergedSessions.delete(sessionId);

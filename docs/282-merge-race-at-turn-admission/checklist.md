@@ -16,3 +16,17 @@
 - [x] Poller tests for `awaitMergeHandling` and the un-armed debounce.
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`.
 - [x] Cross-reference from `docs/218-auto-reset-merged-branch-on-continue/plan.md`.
+
+## From the independent review
+
+- [x] Three-valued outcome: an expired budget that leaves the merge bookkeeping
+      in flight must NOT reset, or the force-push races the pending head-branch
+      delete. Guarded by a hook test that fails without it.
+- [x] `mergeHandling` lifecycle: cleared on `reArm` and `untrackSession`, so a
+      handler that never settles cannot tax every later turn. Guarded.
+- [x] A remote-tracking ref that does not resolve no longer excludes the probe.
+- [x] Dropped the redundant `work.catch` in `withTimeout` and the test that
+      claimed to guard it — `Promise.race` already handles a late-rejecting
+      loser, so neither could ever fail.
+- [x] Corrected the timeout rationale: the awaited callback work is the
+      head-branch delete, not container pruning or the bare-cache refresh.

@@ -135,9 +135,9 @@ export async function applyPreTurnReset(args: {
   // against a pull request ShipIt has not noticed merging yet, run on the merged
   // tip, and strand its commit there. Refresh it first, in the narrow state
   // where a fresh answer could change the outcome. Fail-safe and bounded — a
-  // refusal, an error or a timeout leaves the state as the poller had it, which
-  // is what every turn ran on before this.
-  await recheckMergeBeforeTurn(
+  // refusal or an error leaves the state as the poller had it, which is what
+  // every turn ran on before this.
+  const recheck = await recheckMergeBeforeTurn(
     {
       getSession: (id) => deps.sessionManager.get(id),
       getPrStatus: (id) => deps.sessionManager.getPrStatus(id),
@@ -149,6 +149,12 @@ export async function applyPreTurnReset(args: {
     sessionId,
     sessionDir,
   );
+  // The one case the recheck does not merely inform: the merge landed inside
+  // this call but its bookkeeping did not finish, and part of that bookkeeping
+  // is deleting the merged head branch on GitHub. Resetting now would recreate
+  // that branch for the pending delete to remove. The turn runs un-reset — the
+  // pre-docs/282 behaviour — and the next one, against settled state, resets.
+  if (recheck === "unsettled") return NO_RESET;
 
   const reset = await autoResetMergedBranchOnContinue(
     {

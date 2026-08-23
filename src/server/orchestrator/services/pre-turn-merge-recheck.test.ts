@@ -111,8 +111,29 @@ describe("recheckMergeBeforeTurn — the production race", () => {
       awaitMergeHandling: vi.fn(async () => {}),
     };
 
-    await expect(recheckMergeBeforeTurn(deps, "s1", "/ws")).resolves.toBe(true);
+    await expect(recheckMergeBeforeTurn(deps, "s1", "/ws")).resolves.toBe("merged");
     expect(verifyPrState).toHaveBeenCalledOnce();
+  });
+
+  it("still probes when the remote-tracking ref is missing rather than merely different", async () => {
+    // `origin/<session-branch>` can legitimately be absent — a clone restored
+    // from the bare cache after GitHub deleted the merged head branch, or any
+    // prune — while HEAD is still exactly the commit GitHub merged, which the
+    // gate's anchor clause accepts. Reading "unresolvable" as "moved" would skip
+    // the probe on a branch the reset could safely have rescued.
+    let session: SessionInfo | undefined = makeSession();
+    const verifyPrState = vi.fn(async () => {
+      session = { ...session!, mergedAt: "2026-08-22 19:32:02", mergedHeadSha: PUSHED_TIP };
+    });
+    const deps: PreTurnMergeRecheckDeps = {
+      getSession: () => session,
+      getPrStatus: () => makePrStatus(),
+      createGitManager: () => makeGit({ getRefHash: vi.fn().mockResolvedValue(null) }),
+      verifyPrState,
+      awaitMergeHandling: vi.fn(async () => {}),
+    };
+
+    await expect(recheckMergeBeforeTurn(deps, "s1", "/ws")).resolves.toBe("merged");
   });
 
   it("waits for the merge bookkeeping, so a probe that lands before `mergedAt` still reports merged", async () => {
@@ -131,12 +152,12 @@ describe("recheckMergeBeforeTurn — the production race", () => {
       }),
     };
 
-    await expect(recheckMergeBeforeTurn(deps, "s1", "/ws")).resolves.toBe(true);
+    await expect(recheckMergeBeforeTurn(deps, "s1", "/ws")).resolves.toBe("merged");
   });
 
   it("reports not-merged when the pull request is genuinely still open", async () => {
     const h = makeHarness();
-    await expect(run(h)).resolves.toBe(false);
+    await expect(run(h)).resolves.toBe("unchanged");
     expect(h.verifyPrState).toHaveBeenCalledOnce();
   });
 });
@@ -144,25 +165,25 @@ describe("recheckMergeBeforeTurn — the production race", () => {
 describe("recheckMergeBeforeTurn — states that must not cost a round-trip", () => {
   it("skips a session ShipIt already knows merged (the gate has what it needs)", async () => {
     const h = makeHarness({ session: makeSession({ mergedAt: "2026-08-22 19:32:02" }) });
-    await expect(run(h)).resolves.toBe(false);
+    await expect(run(h)).resolves.toBe("unchanged");
     expect(h.verifyPrState).not.toHaveBeenCalled();
   });
 
   it("skips a session with no observed pull request", async () => {
     const h = makeHarness({ prStatus: null });
-    await expect(run(h)).resolves.toBe(false);
+    await expect(run(h)).resolves.toBe("unchanged");
     expect(h.verifyPrState).not.toHaveBeenCalled();
   });
 
   it("skips a session whose last observation is already terminal", async () => {
     const h = makeHarness({ prStatus: makePrStatus({ prState: "closed" }) });
-    await expect(run(h)).resolves.toBe(false);
+    await expect(run(h)).resolves.toBe("unchanged");
     expect(h.verifyPrState).not.toHaveBeenCalled();
   });
 
   it("skips a workspace-less session", async () => {
     const h = makeHarness({ session: makeSession({ remoteUrl: undefined, branch: undefined }) });
-    await expect(run(h)).resolves.toBe(false);
+    await expect(run(h)).resolves.toBe("unchanged");
     expect(h.verifyPrState).not.toHaveBeenCalled();
   });
 
@@ -170,23 +191,23 @@ describe("recheckMergeBeforeTurn — states that must not cost a round-trip", ()
     const h = makeHarness({
       git: makeGit({ getRefHash: vi.fn().mockResolvedValue("0000000000000000000000000000000000000009") }),
     });
-    await expect(run(h)).resolves.toBe(false);
+    await expect(run(h)).resolves.toBe("unchanged");
     expect(h.verifyPrState).not.toHaveBeenCalled();
   });
 
   it("skips a dirty tree — the reset's own precondition, so a fresh merge changes nothing", async () => {
     const h = makeHarness({ git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) });
-    await expect(run(h)).resolves.toBe(false);
+    await expect(run(h)).resolves.toBe("unchanged");
     expect(h.verifyPrState).not.toHaveBeenCalled();
   });
 
   it("skips a detached HEAD / mid-rebase workspace", async () => {
     const detached = makeHarness({ git: makeGit({ currentBranchOrNull: vi.fn().mockResolvedValue(null) }) });
-    await expect(run(detached)).resolves.toBe(false);
+    await expect(run(detached)).resolves.toBe("unchanged");
     expect(detached.verifyPrState).not.toHaveBeenCalled();
 
     const rebasing = makeHarness({ git: makeGit({ isRebaseInProgress: vi.fn().mockResolvedValue(true) }) });
-    await expect(run(rebasing)).resolves.toBe(false);
+    await expect(run(rebasing)).resolves.toBe("unchanged");
     expect(rebasing.verifyPrState).not.toHaveBeenCalled();
   });
 });
@@ -194,24 +215,37 @@ describe("recheckMergeBeforeTurn — states that must not cost a round-trip", ()
 describe("recheckMergeBeforeTurn — fail-safe", () => {
   it("swallows a probe failure and leaves the turn on the poller's last known state", async () => {
     const h = makeHarness({ verifyPrState: async () => { throw new Error("502 from GitHub"); } });
-    await expect(run(h)).resolves.toBe(false);
+    await expect(run(h)).resolves.toBe("unchanged");
   });
 
   it("gives up on the timeout rather than holding the turn open", async () => {
     const h = makeHarness({ verifyPrState: () => new Promise<void>(() => {}) });
-    await expect(run(h, 10)).resolves.toBe(false);
+    await expect(run(h, 10)).resolves.toBe("unchanged");
   });
 
-  it("does not leave an unhandled rejection behind when the probe fails after the timeout", async () => {
-    // The losing side of the race still rejects; without a handler that is an
-    // unhandled rejection, which in this process is fatal rather than noisy.
-    const h = makeHarness({
-      verifyPrState: () =>
-        new Promise<void>((_resolve, reject) => {
-          setTimeout(() => { reject(new Error("late failure")); }, 20);
-        }),
-    });
-    await expect(run(h, 5)).resolves.toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 40));
+  /**
+   * The dangerous timeout, and the reason the outcome is three-valued rather
+   * than a boolean. `markMergedAndPruneExcess` stamps `merged_at` FIRST and only
+   * then awaits `git push --delete` of the merged head branch, so a budget that
+   * expires mid-bookkeeping leaves the session reading as merged with that
+   * deletion still in flight. Acting on it would reset the branch and force-push
+   * it back for the pending delete to remove — a deleted branch instead of a
+   * stranded commit.
+   */
+  it("reports `unsettled` when the merge landed but its bookkeeping did not finish", async () => {
+    let session: SessionInfo | undefined = makeSession();
+    const deps: PreTurnMergeRecheckDeps = {
+      getSession: () => session,
+      getPrStatus: () => makePrStatus(),
+      createGitManager: () => makeGit(),
+      // The probe records the merge; the bookkeeping never returns.
+      verifyPrState: vi.fn(async () => {
+        session = { ...session!, mergedAt: "2026-08-22 19:32:02", mergedHeadSha: PUSHED_TIP };
+      }),
+      awaitMergeHandling: vi.fn(() => new Promise<void>(() => {})),
+    };
+
+    await expect(recheckMergeBeforeTurn(deps, "s1", "/ws", { timeoutMs: 10 }))
+      .resolves.toBe("unsettled");
   });
 });

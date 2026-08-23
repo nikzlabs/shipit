@@ -59,13 +59,19 @@ could not change the outcome:
 
 - **The poller's last observation must say the PR is OPEN.** In-memory. No open
   PR ⇒ nothing could have merged out from under us.
-- **A reset must be applicable.** HEAD equals the local `origin/<session-branch>`
-  ref (the branch is fully pushed, so if the PR merged then HEAD *is* the merged
-  head — and a branch with unpushed commits fails the gate's `head-moved` clause
-  however fresh the state is), plus `checkResetPreconditions` — the same
-  clean-tree / on-branch / no-sequencer clauses the reset requires. That function
-  is now exported and shared rather than copied, so "would a reset be applicable
-  here?" keeps one definition.
+- **A reset must be applicable.** The local `origin/<session-branch>` ref must
+  not *disagree* with HEAD — a branch carrying unpushed commits fails the gate's
+  `head-moved` clause however fresh the merge state is — plus
+  `checkResetPreconditions`, the same clean-tree / on-branch / no-sequencer
+  clauses the reset requires. That function is now exported and shared rather
+  than copied, so "would a reset be applicable here?" keeps one definition.
+
+  A ref that does not *resolve* is deliberately not treated as one that differs.
+  `origin/<session-branch>` can legitimately be absent — a clone restored from
+  the bare cache after GitHub deleted the merged head branch, or any prune —
+  while HEAD is still exactly the commit GitHub merged, which is what the gate's
+  anchor clause accepts. Only a resolvable, disagreeing ref proves the branch
+  moved; an unavailable one proves nothing, so it must not exclude the probe.
 
 So the cost lands on turns of sessions with an open PR and a clean, fully-pushed
 branch: one REST probe plus the canonical-owner GraphQL probe
@@ -91,10 +97,32 @@ discovered itself — the same one-beat error as the poll window.
 So `PrStatusPoller` now keeps the in-flight callback promise per session and
 exposes `awaitMergeHandling(sessionId)`. It covers the merge this probe
 discovered *and* one a background poll discovered a beat earlier (whose
-`alreadyTerminal` guard means our probe fires no callback of its own). The
-recheck bounds both halves with one timeout, because that callback does container
-pruning, a remote branch delete and a bare-cache refresh — none of which may be
-able to strand a turn (req 6).
+`alreadyTerminal` guard means our probe fires no callback of its own). The entry
+removes itself when the callback settles; `reArm` and `untrackSession` clear it
+too, because a handler that never settles would otherwise make every later
+qualifying turn wait out the whole budget on a merge the session has since been
+re-armed out of.
+
+The recheck bounds both halves with one timeout, because that callback awaits a
+`git push --delete` of the merged head branch (plus the docs/266 merge-time
+notice and any self-merge wake), none of which may be able to strand a turn
+(req 6).
+
+### A timeout is not "nothing happened" — the third outcome
+
+`markMergedAndPruneExcess` stamps `merged_at` **first** and only then awaits the
+head-branch deletion (`services/session.ts`). So an expired budget can land with
+the session reading as merged while that deletion is still in flight — and if the
+gate acted on it, the reset would force-push the branch back for the pending
+delete to remove it. That trades a stranded commit for a deleted branch, and if a
+new pull request had been opened from it in the meantime, GitHub closes that PR
+with it.
+
+Hence `MergeRecheckOutcome` is three-valued. On `unsettled` the hook skips the
+reset for this turn entirely: the turn runs un-reset, which is exactly the
+pre-docs/282 behaviour (req 6), and the next turn — against settled state —
+resets. The rule is the general one: never take a destructive action on state you
+know is mid-flight.
 
 ### `armAbsentDebounce: false` is load-bearing
 
@@ -144,9 +172,14 @@ deciding on stale input.
 
 ## Tests
 
-- `services/pre-turn-merge-recheck.test.ts` — fires in the incident's state;
-  waits for `mergedAt`; spends no round-trip in each state where it must not;
-  survives an error, a timeout, and a late rejection after a timeout.
+- `services/pre-turn-merge-recheck.test.ts` — fires in the incident's state and
+  with a missing remote-tracking ref; waits for `mergedAt`; spends no round-trip
+  in each state where it must not; survives an error and a timeout; reports
+  `unsettled` when the merge landed but its bookkeeping did not finish.
+- `pre-turn-reset-hook.test.ts` (`refuses to reset while the merge bookkeeping is
+  still in flight`) — the destructive case the third outcome exists for.
+- `pr-status-poller.test.ts` (`drops a never-settling merge handler when the
+  session is re-armed`) — the `mergeHandling` lifecycle clear.
 - `pre-turn-reset-hook.test.ts` (`a merge the poller has not observed yet`) — the
   end-to-end reproduction: a session that is not merged at admission, whose probe
   discovers the merge, ends the turn setup with the branch reset and the card

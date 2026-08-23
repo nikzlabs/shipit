@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { applyPreTurnReset, type PreTurnResetHookDeps, type PreTurnResetRunner } from "./pre-turn-reset-hook.js";
 import { clearResetSkipEpisode } from "./services/pre-turn-reset.js";
+import { MERGE_RECHECK_TIMEOUT_MS } from "./services/pre-turn-merge-recheck.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionInfo, WsServerMessage } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -388,7 +389,7 @@ describe("applyPreTurnReset — a merge the poller has not observed yet", () => 
    * A harness whose session and PR snapshot are LIVE, and whose probe promotes
    * both — exactly what `verifyMissingPr` + `onMergeDetectedCb` do between them.
    */
-  function makeRaceHarness(opts: { merges?: boolean } = {}) {
+  function makeRaceHarness(opts: { merges?: boolean; bookkeepingHangs?: boolean } = {}) {
     const emitted: WsServerMessage[] = [];
     const appended: PersistedMessage[] = [];
     let session = makeSession({ mergedAt: undefined, mergedHeadSha: undefined });
@@ -421,7 +422,9 @@ describe("applyPreTurnReset — a merge the poller has not observed yet", () => 
         getStatus: () => prStatus,
         reArm: vi.fn(),
         forceVerifySessionPrState,
-        awaitMergeHandling: vi.fn(async () => {}),
+        awaitMergeHandling: vi.fn(
+          opts.bookkeepingHangs ? () => new Promise<void>(() => {}) : async () => {},
+        ),
       },
       createGitManager: () => raceGit(),
       sseBroadcast: vi.fn(),
@@ -465,5 +468,31 @@ describe("applyPreTurnReset — a merge the poller has not observed yet", () => 
     expect(result).toEqual({ agentPrefix: "" });
     expect(h.appended).toHaveLength(0);
     expect(h.emitted).toHaveLength(0);
+  });
+
+  /**
+   * The reset must NOT run against half-finished merge bookkeeping.
+   * `markMergedAndPruneExcess` stamps `merged_at` before it awaits the
+   * `git push --delete` of the merged head branch, so a recheck that gives up
+   * mid-bookkeeping sees a merged session while that deletion is still in
+   * flight. Resetting there would force-push the branch back for the pending
+   * delete to remove it — a deleted branch instead of a stranded commit. The
+   * turn runs un-reset, exactly as it did before this feature; the next one,
+   * against settled state, resets.
+   */
+  it("refuses to reset while the merge bookkeeping is still in flight", async () => {
+    const h = makeRaceHarness({ bookkeepingHangs: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const pending = applyPreTurnReset({ deps: h.deps, runner: h.runner, sessionId: "s1", sessionDir: "/ws" });
+    await vi.advanceTimersByTimeAsync(MERGE_RECHECK_TIMEOUT_MS + 1);
+    const result = await pending;
+    vi.useRealTimers();
+
+    expect(result).toEqual({ agentPrefix: "" });
+    expect(h.appended).toHaveLength(0);
+    expect(h.emitted).toHaveLength(0);
+    expect(h.runner.notifyWorkspaceRewritten).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

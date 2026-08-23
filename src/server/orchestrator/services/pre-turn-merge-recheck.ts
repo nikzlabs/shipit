@@ -72,13 +72,23 @@ import { checkResetPreconditions } from "./pre-turn-reset.js";
  * giving up and letting the turn start.
  *
  * It bounds two calls whose own failure modes are not this feature's to fix: a
- * REST probe with no client-side deadline, and `onMergeDetectedCb`, which does
- * container pruning, a remote branch delete and a bare-cache refresh. Neither
- * may be able to strand a user's turn — an expired budget costs the reset for
- * this one turn (the poller reports the merge moments later, exactly as it does
- * today), while a hang would cost the turn entirely.
+ * REST probe with no client-side deadline, and `onMergeDetectedCb`, whose
+ * awaited work is a `git push --delete` of the merged head branch plus the
+ * docs/266 merge-time notice and any self-merge wake. Neither may be able to
+ * strand a user's turn — an expired budget costs the reset for this one turn
+ * (the poller reports the merge moments later, exactly as it does today), while
+ * a hang would cost the turn entirely.
  */
 export const MERGE_RECHECK_TIMEOUT_MS = 8_000;
+
+/**
+ * What the recheck learned, and what the caller may therefore act on.
+ *
+ * `unsettled` is the one that is not merely informational: it means the merge
+ * landed but its bookkeeping had NOT finished inside the budget, so the caller
+ * must not run the reset this turn. See {@link recheckMergeBeforeTurn}.
+ */
+export type MergeRecheckOutcome = "unchanged" | "merged" | "unsettled";
 
 export interface PreTurnMergeRecheckDeps {
   getSession: (id: string) => SessionInfo | undefined;
@@ -102,68 +112,99 @@ export interface PreTurnMergeRecheckDeps {
 }
 
 /**
- * Refresh this session's merge state before the docs/218 gate runs. Returns
- * true only when the recheck itself discovered the merge — the caller uses that
- * for one log line; the reset decision stays entirely with the gate, which reads
- * the session state this may have just updated.
+ * Refresh this session's merge state before the docs/218 gate runs.
+ *
+ * The reset decision stays entirely with the gate, which reads the session state
+ * this may have just updated — with ONE exception, which the return value
+ * carries: `unsettled` means the caller must not reset this turn. See
+ * {@link MergeRecheckOutcome} and the timeout branch below.
  */
 export async function recheckMergeBeforeTurn(
   deps: PreTurnMergeRecheckDeps,
   sessionId: string,
   sessionDir: string,
   opts: { timeoutMs?: number } = {},
-): Promise<boolean> {
+): Promise<MergeRecheckOutcome> {
   try {
     const session = deps.getSession(sessionId);
     // Already merged as far as ShipIt is concerned: the gate has everything it
     // needs and a probe would tell it nothing new. Same for a session with no
     // branch or no remote — there is no pull request to have merged.
-    if (!session || session.mergedAt || !session.branch || !session.remoteUrl) return false;
+    if (!session || session.mergedAt || !session.branch || !session.remoteUrl) return "unchanged";
 
     // The cheapest and most selective clause, and the only in-memory one: a
     // session whose last observation is anything but an OPEN pull request has
     // nothing that could have merged since.
-    if (deps.getPrStatus(sessionId)?.prState !== "open") return false;
+    if (deps.getPrStatus(sessionId)?.prState !== "open") return "unchanged";
 
     const git = deps.createGitManager(sessionDir);
 
     // Would a reset be applicable at all? Cheapest first: a branch carrying
     // unpushed commits fails the gate's `head-moved` clause however fresh the
-    // merge state is, and the equality also buys the fact the gate will need —
-    // HEAD is the commit GitHub would have merged.
+    // merge state is.
+    //
+    // A remote-tracking ref that does not RESOLVE is deliberately not treated as
+    // "differs". `origin/<session-branch>` can legitimately be absent — a clone
+    // restored from the bare cache after GitHub deleted the merged head branch,
+    // or any prune — while local HEAD still equals the commit GitHub merged,
+    // which is exactly what `computeResetBlocker`'s anchor clause accepts. Only
+    // a ref that resolves and disagrees proves the branch moved; an unavailable
+    // one proves nothing, so it must not exclude the probe.
     const head = await git.getHeadHash();
-    if (!head || head !== (await git.getRefHash(`origin/${session.branch}`))) return false;
-    if (await checkResetPreconditions(session, git)) return false;
+    if (!head) return "unchanged";
+    const remoteTip = await git.getRefHash(`origin/${session.branch}`);
+    if (remoteTip && remoteTip !== head) return "unchanged";
+    if (await checkResetPreconditions(session, git)) return "unchanged";
 
     // The only network in this module. Both halves are bounded together: the
     // probe records the merge, the wait lets `merged_at` land (see the dep).
-    await withTimeout(
-      (async () => {
-        await deps.verifyPrState(sessionId);
-        await deps.awaitMergeHandling(sessionId);
-      })(),
-      opts.timeoutMs ?? MERGE_RECHECK_TIMEOUT_MS,
-      sessionId,
-    );
-
-    const merged = Boolean(deps.getSession(sessionId)?.mergedAt);
-    if (merged) {
-      // The ops line for this race. An investigation that finds a turn running
-      // on a freshly-reset branch needs to see that the merge was discovered
-      // HERE and not by the poller, because the poller's own line lands after.
-      console.log(
-        `[pre-turn-reset] merge observed at turn admission for ${sessionId} — the poller had not `
-          + "seen it yet; the branch reset is decided against the fresh state",
+    try {
+      await withTimeout(
+        (async () => {
+          await deps.verifyPrState(sessionId);
+          await deps.awaitMergeHandling(sessionId);
+        })(),
+        opts.timeoutMs ?? MERGE_RECHECK_TIMEOUT_MS,
+        sessionId,
       );
+    } catch (err) {
+      // An expired budget is not "nothing happened". `markMergedAndPruneExcess`
+      // stamps `merged_at` FIRST and only then awaits `git push --delete` of the
+      // merged head branch (`services/session.ts`), so a timeout can land with
+      // the session reading as merged while that deletion is still in flight.
+      // Letting the gate act on that would reset the branch and force-push it
+      // back, for the pending delete to remove the branch we just recreated —
+      // trading a stranded commit for a deleted one. So: report `unsettled` and
+      // let the turn run un-reset, which is what it did before this feature.
+      // The next turn sees settled state and resets then.
+      if (deps.getSession(sessionId)?.mergedAt) {
+        console.warn(
+          `[pre-turn-reset] merge recheck for ${sessionId} found the pull request merged but its `
+            + "bookkeeping did not settle in time — skipping the branch reset for this turn rather "
+            + "than racing the in-flight head-branch delete:",
+          err,
+        );
+        return "unsettled";
+      }
+      throw err;
     }
-    return merged;
+
+    if (!deps.getSession(sessionId)?.mergedAt) return "unchanged";
+    // The ops line for this race. An investigation that finds a turn running on
+    // a freshly-reset branch needs to see that the merge was discovered HERE and
+    // not by the poller, because the poller's own line lands after.
+    console.log(
+      `[pre-turn-reset] merge observed at turn admission for ${sessionId} — the poller had not `
+        + "seen it yet; the branch reset is decided against the fresh state",
+    );
+    return "merged";
   } catch (err) {
     console.warn(
       `[pre-turn-reset] merge recheck failed for ${sessionId} (running the turn on the poller's `
         + "last known state):",
       err,
     );
-    return false;
+    return "unchanged";
   }
 }
 
@@ -171,14 +212,13 @@ export async function recheckMergeBeforeTurn(
  * Resolve `work`, or reject once `ms` has passed. The timer is always cleared,
  * so a fast path leaves nothing holding the event loop open.
  *
- * The bare `catch` is not redundant with the race: on a timeout the race is
- * already settled, so a LATER rejection from `work` has no handler and would
- * surface as an unhandled rejection. Attaching one leaves the race's own view of
- * `work` untouched, so a rejection that arrives *before* the deadline still
- * propagates to the caller.
+ * `work` needs no extra `catch` for the timeout case: `Promise.race` subscribes
+ * to every input, so a loser that rejects after the race has settled is already
+ * a HANDLED rejection — it resolves to a no-op call on the settled deferred
+ * rather than an unhandled one. (An earlier revision added one and claimed
+ * otherwise; it was dead code no mutation could have caught.)
  */
 async function withTimeout(work: Promise<void>, ms: number, sessionId: string): Promise<void> {
-  work.catch(() => {});
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([

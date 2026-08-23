@@ -2638,6 +2638,36 @@ describe("PrStatusPoller — turn-admission merge probe", () => {
   });
 
   /**
+   * A handler that never settles would otherwise sit in the map for the life of
+   * the process, and it is not memory that makes that expensive: the pre-turn
+   * recheck would wait out its whole budget on it, on every qualifying turn,
+   * for a merge the session has long since been re-armed out of.
+   */
+  it("drops a never-settling merge handler when the session is re-armed", async () => {
+    const { githubAuth, sessionManager, sseBroadcast } = makeHarness(mergedRest);
+    const onMergeDetected = vi.fn(() => new Promise<void>(() => {})); // never settles
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    await poller.forceVerifySessionPrState("s1", { armAbsentDebounce: false });
+    expect(onMergeDetected).toHaveBeenCalledWith("s1");
+
+    poller.reArm("s1", 101);
+
+    // The wait is free again — without the clear this would hang forever.
+    let settled = false;
+    const waiting = (async () => {
+      await poller.awaitMergeHandling("s1");
+      settled = true;
+    })();
+    await vi.advanceTimersByTimeAsync(0);
+    await waiting;
+    expect(settled).toBe(true);
+    poller.destroy();
+  });
+
+  /**
    * The recheck probes a pull request it expects to still be OPEN, on every
    * qualifying turn. Arming `verifiedAbsent` there would leave the debounce set
    * when that PR merges moments later and drops out of the OPEN bulk view — so
