@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Coordinator mode — desktop conversation (mock)</title>
+<title>Coordinator mode — desktop conversation (interactive mock)</title>
 <style>
-  /* Self-contained mock. Token values copied from src/client/themes/{dark,light}.css (2026-08-23). */
+  /* Self-contained interactive mock (second feedback round). Token values copied from
+     src/client/themes/{dark,light}.css (2026-08-23). Fake data; clicks are scripted. */
   .dark {
     --bg-primary:#030712; --bg-secondary:#111827; --bg-tertiary:#1f2937; --bg-elevated:#1f2937;
     --bg-hover:rgba(255,255,255,.05); --bg-active:rgba(255,255,255,.1);
@@ -38,23 +39,38 @@
   }
   .app { display:flex; height:100vh; min-height:640px; }
 
-  /* ---------- sidebar (today's sidebar + the pinned coordinator destination) ---------- */
-  .sidebar { width:264px; flex:none; background:var(--bg-secondary); border-right:1px solid var(--border-primary);
-             display:flex; flex-direction:column; overflow-y:auto; }
-  .side-head { padding:12px 14px; font-weight:600; font-size:13px; color:var(--text-secondary);
-               display:flex; align-items:center; gap:8px; }
-  .coord-pin { margin:4px 8px 10px; padding:10px 12px; border-radius:8px; background:var(--accent-subtle);
-               border:1px solid var(--border-primary); display:flex; align-items:center; gap:10px; cursor:default; }
-  .coord-pin .dot { width:8px; height:8px; border-radius:50%; background:var(--success); flex:none; }
-  .coord-pin b { font-size:13px; }
-  .coord-pin small { display:block; color:var(--text-secondary); font-size:11px; }
-  .group { padding:10px 14px 2px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-tertiary); }
-  .sess { display:flex; align-items:center; gap:8px; padding:6px 14px; font-size:13px; color:var(--text-secondary); }
-  .sess:hover { background:var(--bg-hover); }
-  .sess .att { width:6px; height:6px; border-radius:50%; background:var(--attention); flex:none; }
-  .sess .ok  { width:6px; height:6px; border-radius:50%; background:var(--success); opacity:.55; flex:none; }
-  .sess .run { width:6px; height:6px; border-radius:50%; background:var(--info); flex:none; }
-  .sess span.t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* ---------- the queue panel: coordinator mode's left rail (reqs 35–37).
+       It REPLACES the session sidebar in this mode — one rail, attention only. ---------- */
+  .qpanel { width:304px; flex:none; background:var(--bg-secondary); border-right:1px solid var(--border-primary);
+            overflow-y:auto; display:flex; flex-direction:column; }
+  .qback { font-size:11.5px; color:var(--text-tertiary); padding:10px 14px 0; cursor:pointer; }
+  .qback:hover { color:var(--text-secondary); }
+  .qtitle { padding:6px 14px 8px; position:relative; }
+  .qtitle b { font-size:13px; }
+  .qtitle small { display:block; color:var(--text-tertiary); font-size:11px; margin-top:2px; }
+  .qgroup { padding:8px 14px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-tertiary); }
+  .qitem { margin:0 10px 8px; border:1px solid var(--border-primary); border-left:3px solid var(--attention);
+           border-radius:8px; background:var(--bg-primary); padding:9px 11px; position:relative; cursor:pointer;
+           transition:opacity .35s ease; }
+  .qitem:hover { background:var(--bg-hover); }
+  .qitem.inchat { border-left-color:var(--accent); }
+  .qitem.fresh { border-left-color:var(--border-secondary); }
+  .qitem.resolved { opacity:0; pointer-events:none; }
+  .qmeta { display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--text-tertiary); margin-bottom:4px; flex-wrap:wrap; }
+  .qbadge { font-size:10px; padding:0 6px; border-radius:999px; background:var(--warning-subtle); color:var(--attention-text); }
+  .qbadge.fail { background:var(--error-subtle); color:var(--error); }
+  .qnow { color:var(--accent); font-weight:500; }
+  .qitem .t { display:block; font-size:12.5px; font-weight:600; margin-bottom:4px; }
+  .qbrief { font-size:12px; color:var(--text-secondary); }
+  .qbrief.briefing { color:var(--text-tertiary); animation:pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.45; } }
+  @media (prefers-reduced-motion: reduce) { .qbrief.briefing { animation:none; } }
+  .qact { display:flex; gap:10px; margin-top:7px; font-size:11.5px; align-items:center; }
+  .qgo { color:var(--text-link); font-weight:500; }
+  .qopen { color:var(--text-tertiary); text-decoration:none; margin-left:auto; }
+  .qfoot { margin-top:auto; padding:10px 14px; font-size:11px; color:var(--text-tertiary);
+           border-top:1px solid var(--border-primary); position:relative; }
+  .qfoot .rest { color:var(--text-secondary); margin-bottom:5px; }
 
   /* ---------- main column ---------- */
   .main { flex:1; display:flex; flex-direction:column; min-width:0; }
@@ -67,10 +83,13 @@
   .chip .st { width:7px; height:7px; border-radius:50%; }
   .chip.free .st { background:var(--success); }
   .toggle { display:inline-flex; align-items:center; gap:7px; padding:4px 10px; border-radius:999px; font-size:12px;
-            border:1px solid var(--border-primary); color:var(--text-secondary); background:var(--bg-secondary); cursor:default; }
+            border:1px solid var(--border-primary); color:var(--text-secondary); background:var(--bg-secondary); cursor:pointer; }
   .toggle .sw { width:26px; height:15px; border-radius:999px; background:var(--border-secondary); position:relative; }
   .toggle .sw::after { content:""; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%;
                        background:var(--bg-primary); }
+  .toggle.on { color:var(--success); }
+  .toggle.on .sw { background:var(--success); }
+  .toggle.on .sw::after { left:auto; right:2px; }
   .avail { font-size:12px; color:var(--text-tertiary); }
 
   /* ---------- transcript ---------- */
@@ -118,6 +137,14 @@
   .rcpt b { color:var(--text-primary); font-weight:500; }
   .rcpt .tick { color:var(--success); }
 
+  /* option chips on a presented ask (req 35): a click becomes your message */
+  .opts { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
+  .opt { font-size:12px; padding:5px 12px; border-radius:999px; border:1px solid var(--border-secondary);
+         background:var(--bg-secondary); color:var(--text-primary); cursor:pointer; }
+  .opt:hover { background:var(--bg-hover); border-color:var(--accent); }
+  .opts .or { font-size:11px; color:var(--text-tertiary); }
+  .opts.done .opt { opacity:.45; pointer-events:none; }
+
   /* composer */
   .composer { border-top:1px solid var(--border-primary); background:var(--bg-primary); }
   .composer .inner { max-width:760px; margin:0 auto; padding:12px 20px 14px; }
@@ -125,52 +152,20 @@
          background:var(--bg-secondary); padding:10px 12px; }
   .box .ph { color:var(--text-tertiary); flex:1; }
   .micbtn { display:flex; align-items:center; gap:7px; padding:5px 11px; border-radius:8px;
-            background:var(--accent); color:var(--accent-text); font-size:12px; font-weight:500; }
+            background:var(--accent); color:var(--accent-text); font-size:12px; font-weight:500; cursor:pointer; }
   .kbd { font:11px ui-monospace,monospace; border:1px solid var(--border-secondary); border-bottom-width:2px;
          border-radius:4px; padding:0 5px; color:var(--text-secondary); background:var(--bg-tertiary); }
-  .hint { font-size:11px; color:var(--text-tertiary); margin-top:6px; text-align:right; }
+  .hint { font-size:11px; color:var(--text-tertiary); margin-top:6px; text-align:left; }
 
-  /* ---------- queue panel (reqs 35–37) ---------- */
-  .qpanel { width:292px; flex:none; background:var(--bg-secondary); border-left:1px solid var(--border-primary);
-            overflow-y:auto; display:flex; flex-direction:column; }
-  .qtitle { padding:12px 14px 6px; position:relative; }
-  .qtitle b { font-size:13px; }
-  .qtitle small { display:block; color:var(--text-tertiary); font-size:11px; margin-top:2px; }
-  .qgroup { padding:10px 14px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-tertiary); }
-  .qitem { margin:0 10px 8px; border:1px solid var(--border-primary); border-left:3px solid var(--attention);
-           border-radius:8px; background:var(--bg-primary); padding:9px 11px; position:relative; cursor:pointer; }
-  .qitem:hover { background:var(--bg-hover); }
-  .qitem.inchat { border-left-color:var(--accent); }
-  .qmeta { display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--text-tertiary); margin-bottom:4px; flex-wrap:wrap; }
-  .qbadge { font-size:10px; padding:0 6px; border-radius:999px; background:var(--warning-subtle); color:var(--attention-text); }
-  .qbadge.fail { background:var(--error-subtle); color:var(--error); }
-  .qnow { color:var(--accent); font-weight:500; }
-  .qitem .t { display:block; font-size:12.5px; font-weight:600; margin-bottom:4px; }
-  .qbrief { font-size:12px; color:var(--text-secondary); }
-  .qact { display:flex; gap:10px; margin-top:7px; font-size:11.5px; align-items:center; }
-  .qgo { color:var(--text-link); font-weight:500; }
-  .qopen { color:var(--text-tertiary); text-decoration:none; margin-left:auto; }
-  .qrow { display:flex; gap:8px; align-items:center; padding:3px 16px; font-size:12px; color:var(--text-secondary); }
-  .qrow.dim { color:var(--text-tertiary); }
-  .qd { width:6px; height:6px; border-radius:50%; flex:none; }
-  .qd.run { background:var(--info); }
-  .qd.ok { background:var(--success); opacity:.55; }
-  .qfoot { margin-top:auto; padding:10px 14px; font-size:11px; color:var(--text-tertiary);
-           border-top:1px solid var(--border-primary); position:relative; }
-  @media (max-width:1120px) { .sidebar { display:none; } }
-
-  /* option chips on a presented ask (req 35) */
-  .opts { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
-  .opt { font-size:12px; padding:5px 12px; border-radius:999px; border:1px solid var(--border-secondary);
-         background:var(--bg-secondary); color:var(--text-primary); cursor:pointer; }
-  .opt:hover { background:var(--bg-hover); border-color:var(--accent); }
-  .opts .or { font-size:11px; color:var(--text-tertiary); }
-
-  /* controls (mock-only chrome) */
-  .mockbar { position:fixed; bottom:10px; left:12px; display:flex; gap:8px; z-index:9; }
+  /* mock chrome */
+  .mockbar { position:fixed; bottom:10px; right:12px; display:flex; gap:8px; z-index:9; }
   .mockbar button { font-size:11px; padding:4px 10px; border-radius:999px; border:1px solid var(--border-secondary);
                     background:var(--bg-elevated); color:var(--text-secondary); cursor:pointer; }
   .mockbar button[aria-pressed="true"] { background:var(--accent-subtle); color:var(--text-primary); }
+  .toast { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); background:var(--bg-elevated);
+           border:1px solid var(--border-secondary); color:var(--text-secondary); font-size:12px;
+           padding:7px 14px; border-radius:999px; opacity:0; transition:opacity .25s ease; pointer-events:none; z-index:10; }
+  .toast.show { opacity:1; }
 
   /* requirement pins (hidden unless notes mode) */
   .pin { display:none; position:absolute; top:-7px; right:-6px; font-size:10px; padding:1px 7px; border-radius:999px;
@@ -186,26 +181,45 @@
   <button id="notesBtn" aria-pressed="false" onclick="document.body.classList.toggle('notes');this.setAttribute('aria-pressed',document.body.classList.contains('notes'))">Show req notes</button>
   <button onclick="const h=document.documentElement;h.classList.toggle('dark');h.classList.toggle('light')">Light / dark</button>
 </div>
+<div class="toast" id="toast"></div>
 
 <div class="app">
-  <!-- Sidebar: today's sidebar, unchanged, plus the pinned coordinator destination (plan §2 chrome). The standing queue panel (reqs 35–37) is on the right. -->
-  <aside class="sidebar">
-    <div class="side-head">ShipIt</div>
-    <div class="coord-pin" style="position:relative">
-      <span class="dot"></span>
-      <span><b>Coordinator</b><small>free · hands-free off</small></span>
-      <span class="pin">plan §2 · pinned destination</span>
+
+  <!-- Coordinator mode's left rail IS the queue (reqs 35–37, second feedback round):
+       it replaces the session sidebar — one rail, only what needs you. Clicks are scripted fake data. -->
+  <aside class="qpanel">
+    <div class="qback" onclick="toast('Mock: back to the ordinary session sidebar (outside coordinator mode).')">‹ All sessions</div>
+    <div class="qtitle">
+      <b>Needs you</b>
+      <small>Only what waits on you. Reading it sends nothing.</small>
+      <span class="pin left" style="top:0">req 37 · the queue replaces the sidebar; attention only</span>
     </div>
-    <div class="group">Reef Quest</div>
-    <div class="sess"><span class="ok"></span><span class="t">Water reflections — settled: planar</span></div>
-    <div class="sess"><span class="att"></span><span class="t">Character generation #12 — failed</span></div>
-    <div class="sess"><span class="run"></span><span class="t">Character generation #11–20</span></div>
-    <div class="sess"><span class="att"></span><span class="t">Level generator — caves</span></div>
-    <div class="group">shipit</div>
-    <div class="sess"><span class="ok"></span><span class="t">Release 0.9 — merged</span></div>
-    <div class="sess"><span class="run"></span><span class="t">Voice-note latency probe</span></div>
-    <div class="group">hermes-tools</div>
-    <div class="sess"><span class="ok"></span><span class="t">Webhook bridge cleanup</span></div>
+
+    <div id="qlist">
+      <div class="qgroup">Reef Quest</div>
+
+      <div class="qitem" id="qi-gen12" role="button" onclick="takeItem('gen12')">
+        <span class="pin left">plan §4 · standing brief, written at arrival</span>
+        <div class="qmeta"><span class="qbadge fail">failure</span><span>Character generation #12</span><span>· 09:41</span><span class="qnow" hidden>· in the chat now</span></div>
+        <span class="t">Asset 3 of 10 failed — corrupt source sheet</span>
+        <div class="qbrief">The moray-eel reference sheet is corrupt at the source; the other nine sessions run clean. Regenerate the sheet (~10 min) or skip the eel.</div>
+        <div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#" onclick="event.stopPropagation();toast('Mock: would open the session itself.')">open session ↗</a></div>
+      </div>
+
+      <div class="qitem" id="qi-caves" role="button" onclick="takeItem('caves')">
+        <span class="pin left">req 36 · enough context after days away</span>
+        <div class="qmeta"><span class="qbadge">completed</span><span>Level generator — caves</span><span>· waiting since 09:07</span><span class="qnow" hidden>· in the chat now</span></div>
+        <span class="t">All 40 cave layouts regenerated clean</span>
+        <div class="qbrief">Thursday you asked for all 40 cave layouts to be regenerated after the tunnel-width fix. All 40 came out valid on the first pass — the fix held; no manual patches. Nothing to decide unless you want spot checks.</div>
+        <div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#" onclick="event.stopPropagation();toast('Mock: would open the session itself.')">open session ↗</a></div>
+      </div>
+    </div>
+
+    <div class="qfoot">
+      <div class="rest" id="qrest">Nothing else needs you — 11 sessions running clean · shipit and hermes-tools quiet.</div>
+      New items appear the moment they happen: ShipIt's own line first, the coordinator's brief replaces it.
+      <span class="pin left" style="top:-9px">req 37 · the rest stays out — one line, not items</span>
+    </div>
   </aside>
 
   <main class="main">
@@ -213,15 +227,15 @@
       <h1>Coordinator</h1>
       <div class="presence" style="position:relative">
         <span class="chip free"><span class="st"></span>Free</span>
-        <span class="toggle"><span>Hands-free</span><span class="sw"></span></span>
+        <span class="toggle" id="hfToggle" onclick="hfFlip()"><span>Hands-free</span><span class="sw"></span></span>
         <span class="avail">Availability: Auto ▾</span>
         <span class="pin left">reqs 11 · 23 · 33</span>
       </div>
     </div>
 
-    <div class="scroll">
+    <div class="scroll" id="scroll">
       <div class="legend">Req-note pins map each element to the requirement it demonstrates. They are mock chrome, not UI.</div>
-      <div class="col">
+      <div class="col" id="chatcol">
         <div class="daysep">Saturday, August 23</div>
 
         <div class="row user">
@@ -230,7 +244,7 @@
         </div>
 
         <div class="row coord">
-          <span class="pin">req 7 · overview on request; the panel shows the same state standing (req 37)</span>
+          <span class="pin">req 7 · overview on request; the panel shows the queue standing (req 37)</span>
           <div class="who">Coordinator · 09:12</div>
           <div class="body">
             <p>Quiet night. <b>Reef Quest</b>: two things need you — <b>water reflections</b> finished the shader pass and has a question, and the level-generator run for the caves completed clean. <b>shipit</b>: release 0.9 merged; the latency probe is still running, nothing waiting. <b>hermes-tools</b> is idle.</p>
@@ -253,8 +267,7 @@
         </div>
 
         <div class="row user">
-          <div class="via"><span class="mic"></span> dictated · 09:14
-          </div>
+          <div class="via"><span class="mic"></span> dictated · 09:14</div>
           Have it profile both, then let's decide.
         </div>
 
@@ -272,7 +285,7 @@
             <span class="src">Reef Quest / Water reflections</span>
             <span class="untr">session output — untrusted</span>
             <span>· reply · 09:31</span>
-            <a class="open" href="#">open session ↗</a>
+            <a class="open" href="#" onclick="event.preventDefault();toast('Mock: would open the session itself.')">open session ↗</a>
           </div>
           <div class="fold" onclick="document.getElementById('verb1').classList.toggle('open')">▸ 42 lines — profiling table, per-scene timings, two screenshots</div>
           <div class="excerpt">harbor scene, 1080p, mid-tier target
@@ -316,25 +329,6 @@ full table and captures in the session transcript…</div>
           </div>
         </div>
 
-        <div class="row user">
-          <span class="pin left">req 35 · a panel click became your message</span>
-          <div class="via"><span aria-hidden="true">▤</span> from the queue panel · 09:44</div>
-          Take: Character generation #12 — failed.
-        </div>
-
-        <div class="row coord">
-          <span class="pin">reqs 2 · 31 · 36 — one topic, presented with cold context</span>
-          <div class="who">Coordinator · 09:44</div>
-          <div class="body">
-            <p><b>Character generation #12</b> (Reef Quest — one of the ten you started at 09:34). It failed on the third of ten assets: the moray-eel reference sheet is corrupt at the source. The other nine sessions run clean. Two ways out: regenerate the sheet first — about ten minutes, then #12 resumes — or skip the eel and let #12 finish with nine assets.</p>
-            <div class="opts">
-              <span class="opt">Regenerate the sheet</span>
-              <span class="opt">Skip the eel</span>
-              <span class="or">— or just say it</span>
-            </div>
-          </div>
-        </div>
-
       </div>
     </div>
 
@@ -344,54 +338,130 @@ full table and captures in the session transcript…</div>
         <div class="box">
           <span class="ph">Message the coordinator…</span>
           <span class="kbd">⌥D</span>
-          <span class="micbtn"><span class="mic"></span> Dictate</span>
+          <span class="micbtn" onclick="toast('Mock: dictation is not wired — click the queue items and option chips.')"><span class="mic"></span> Dictate</span>
         </div>
-        <div class="hint">Same conversation everywhere — desk, phone, hands-free (req 14).</div>
+        <div class="hint">Same conversation everywhere — desk, phone, hands-free (req 14). Mock: click items and chips.</div>
       </div>
     </div>
   </main>
-
-  <!-- The standing queue panel (reqs 35–37): pure reading — no message, no click needed to see it; a click on an item starts the exchange in the chat. -->
-  <aside class="qpanel">
-    <div class="qtitle">
-      <b>Fleet — standing state</b>
-      <small>Always current. Reading it sends nothing.</small>
-      <span class="pin left" style="top:2px">req 37 · standing state — no message, no click</span>
-    </div>
-
-    <div class="qgroup">Reef Quest</div>
-
-    <div class="qitem inchat">
-      <span class="pin left">plan §4 · standing brief, written at arrival</span>
-      <div class="qmeta"><span class="qbadge fail">failure</span><span>Character generation #12</span><span>· 09:41</span><span class="qnow">· in the chat now</span></div>
-      <span class="t">Asset 3 of 10 failed — corrupt source sheet</span>
-      <div class="qbrief">The moray-eel reference sheet is corrupt at the source; the other nine sessions run clean. Regenerate the sheet (~10 min) or skip the eel.</div>
-    </div>
-
-    <div class="qitem">
-      <span class="pin left">req 36 · enough context after days away</span>
-      <div class="qmeta"><span class="qbadge">completed</span><span>Level generator — caves</span><span>· waiting since 09:07</span></div>
-      <span class="t">All 40 cave layouts regenerated clean</span>
-      <div class="qbrief">Thursday you asked for all 40 cave layouts to be regenerated after the tunnel-width fix. All 40 came out valid on the first pass — the fix held; no manual patches. Nothing to decide unless you want spot checks.</div>
-      <div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#">open session ↗</a></div>
-    </div>
-
-    <div class="qrow"><span class="qd run"></span>Character generation #11–20 — 9 running clean</div>
-    <div class="qrow"><span class="qd run"></span>Kraken boss — investigating</div>
-    <div class="qrow dim"><span class="qd ok"></span>Water reflections — settled: planar · 09:34</div>
-
-    <div class="qgroup">shipit</div>
-    <div class="qrow"><span class="qd run"></span>Latency probe — running · nothing waiting</div>
-    <div class="qrow dim"><span class="qd ok"></span>Release 0.9 — merged</div>
-
-    <div class="qgroup">hermes-tools</div>
-    <div class="qrow dim"><span class="qd ok"></span>Idle — no sessions today</div>
-
-    <div class="qfoot">
-      New arrivals appear the moment they happen: ShipIt's own line first, then the coordinator's brief replaces it — usually within a minute or two.
-      <span class="pin left" style="top:-9px">plan §4 · fresh line until briefed</span>
-    </div>
-  </aside>
 </div>
+
+<script>
+/* Scripted interactivity, fake data. The flow it demonstrates (reqs 35–37, plan §4):
+   click a queue item → your message enters the chat → the coordinator presents it there,
+   with option chips → a chip click is also your message → relay + confirmation → the item resolves. */
+var ITEMS = {
+  gen12: {
+    session: "Character generation #12", take: "Take: Character generation #12 — failed.",
+    t1: "09:44", t2: "09:45",
+    present: '<p><b>Character generation #12</b> (Reef Quest — one of the ten you started at 09:34). It failed on the third of ten assets: the moray-eel reference sheet is corrupt at the source. The other nine sessions run clean. Two ways out: regenerate the sheet first — about ten minutes, then #12 resumes — or skip the eel and let #12 finish with nine assets.</p>',
+    chips: [
+      { label: "Regenerate the sheet", words: "Regenerate the moray-eel sheet, then continue.",
+        confirm: "<p>Done — it is regenerating the sheet; #12 resumes in about ten minutes. This item is closed; anything new comes back through me.</p>" },
+      { label: "Skip the eel", words: "Skip the eel; finish with nine assets.",
+        confirm: "<p>Done — #12 continues with nine assets. The eel stays parked as future work. This item is closed.</p>" }
+    ]
+  },
+  caves: {
+    session: "Level generator — caves", take: "Take: Level generator — caves.",
+    t1: "09:48", t2: "09:49",
+    present: '<p><b>Level generator — caves</b> (Reef Quest, started Thursday on your word). You asked for all 40 cave layouts to be regenerated after the tunnel-width fix. The run is done: all 40 valid on the first pass — the fix held, no manual patches. Nothing to decide — close it, or spot-check a few layouts first?</p>',
+    chips: [
+      { label: "Close it", words: "Good — close it.",
+        confirm: "<p>Closed. The caves run is done and off your list.</p>" },
+      { label: "Spot-check three", words: "Have it render three random layouts first.",
+        confirm: "<p>Asked — it renders three random layouts and I bring them back as one new item. This one is closed.</p>" }
+    ]
+  },
+  kraken: {
+    session: "Kraken boss — battle mechanics", take: "Take: Kraken boss — battle mechanics.",
+    t1: "09:52", t2: "09:53",
+    present: '<p><b>Kraken boss — battle mechanics</b> (Reef Quest, the investigation you started at 09:34). The survey is done: three reference fights compared on pacing, readability, and asset cost. Before prototyping it asks one scoping call — should the kraken be beatable in the vertical slice, or a scripted escape the player cannot win?</p>',
+    chips: [
+      { label: "Beatable", words: "Beatable — a real fight in the slice.",
+        confirm: "<p>Sent. It prototypes a beatable fight and comes back with the pacing plan. Closed here.</p>" },
+      { label: "Scripted escape", words: "Scripted escape for the slice; a real fight later.",
+        confirm: "<p>Sent. It prototypes the escape sequence; the beatable version stays parked. Closed here.</p>" }
+    ]
+  }
+};
+var open = 2;
+
+function el(html) { var d = document.createElement("div"); d.innerHTML = html; return d.firstElementChild; }
+function scrollDown() { var s = document.getElementById("scroll"); s.scrollTop = s.scrollHeight; }
+function addRow(html) { document.getElementById("chatcol").appendChild(el(html)); scrollDown(); }
+function toast(msg) {
+  var t = document.getElementById("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(function(){ t.classList.remove("show"); }, 2600);
+}
+function esc(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+
+function takeItem(id) {
+  var it = ITEMS[id], card = document.getElementById("qi-" + id);
+  if (!it || card.classList.contains("inchat") || card.classList.contains("fresh")) return;
+  card.classList.add("inchat");
+  var now = card.querySelector(".qnow"); if (now) now.hidden = false;
+  var act = card.querySelector(".qact"); if (act) act.remove();
+  addRow('<div class="row user"><span class="pin left">req 35 · a panel click became your message</span>' +
+    '<div class="via"><span aria-hidden="true">▤</span> from the queue panel · ' + it.t1 + '</div>' + esc(it.take) + '</div>');
+  addRow('<div class="row coord"><span class="pin">reqs 2 · 31 · 36 — one topic, presented with cold context</span>' +
+    '<div class="who">Coordinator · ' + it.t1 + '</div><div class="body">' + it.present +
+    '<div class="opts" id="opts-' + id + '">' + it.chips.map(function(c, i) {
+      return '<span class="opt" role="button" onclick="answer(\'' + id + '\',' + i + ')">' + esc(c.label) + '</span>';
+    }).join("") + '<span class="or">— or just say it</span></div></div></div>');
+}
+
+function answer(id, i) {
+  var it = ITEMS[id], c = it.chips[i];
+  var opts = document.getElementById("opts-" + id);
+  if (!opts || opts.classList.contains("done")) return;
+  opts.classList.add("done");
+  addRow('<div class="row user"><span class="pin left">req 35 · an option click is also your message</span>' +
+    '<div class="via"><span aria-hidden="true">▤</span> clicked · ' + it.t2 + '</div>' + esc(c.words) + '</div>');
+  addRow('<div class="row relay"><span class="arrow">→</span><span class="dest">' + esc(it.session) + '</span>' +
+    '<span>"' + esc(c.words) + '"</span><span class="rc res">✓ answered · item resolved</span></div>');
+  addRow('<div class="row coord"><div class="who">Coordinator · ' + it.t2 + '</div><div class="body">' + c.confirm + '</div></div>');
+  var card = document.getElementById("qi-" + id);
+  card.classList.add("resolved");
+  setTimeout(function(){ card.remove(); refreshFoot(); }, 400);
+}
+
+function refreshFoot() {
+  open = document.querySelectorAll(".qitem").length;
+  document.getElementById("qrest").textContent = open === 0
+    ? "Queue empty — nothing needs you. 11 sessions running clean · shipit and hermes-tools quiet."
+    : "Nothing else needs you — 11 sessions running clean · shipit and hermes-tools quiet.";
+  /* one repo group in this mock — hide its header with its last item */
+  document.querySelectorAll(".qgroup").forEach(function(g){ g.style.display = open === 0 ? "none" : ""; });
+}
+
+function hfFlip() {
+  var t = document.getElementById("hfToggle"); t.classList.toggle("on");
+  toast(t.classList.contains("on")
+    ? "Hands-free on — arrivals would be spoken on your phone; nothing pings here (req 26)."
+    : "Hands-free off — this surface carries arrivals ambiently (req 22).");
+}
+
+/* The fresh → briefed transition (plan §4): a new item lands as ShipIt's own line,
+   then the coordinator's arrival brief replaces it (§6 wake cause 5). */
+setTimeout(function() {
+  var g = document.getElementById("qlist");
+  g.appendChild(el('<div class="qitem fresh" id="qi-kraken" role="button" onclick="takeItem(\'kraken\')">' +
+    '<span class="pin left">plan §4 · fresh: ShipIt’s line until briefed</span>' +
+    '<div class="qmeta"><span class="qbadge">question</span><span>Kraken boss — battle mechanics</span><span class="qt-when">· just now</span><span class="qnow" hidden>· in the chat now</span></div>' +
+    '<span class="t">Session waiting — has a question</span>' +
+    '<div class="qbrief briefing">New item — the coordinator is reading it and writing the brief…</div></div>'));
+  refreshFoot();
+}, 2600);
+setTimeout(function() {
+  var card = document.getElementById("qi-kraken"); if (!card) return;
+  card.classList.remove("fresh");
+  card.querySelector(".qt-when").textContent = "· 09:46 · briefed 09:47";
+  card.querySelector(".t").textContent = "Beatable boss, or scripted escape?";
+  var b = card.querySelector(".qbrief"); b.classList.remove("briefing");
+  b.textContent = "The survey compared three reference fights. One scoping call before prototyping: beatable in the vertical slice, or a scripted escape? Cost and pacing notes are ready.";
+  card.appendChild(el('<div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#" onclick="event.stopPropagation();toast(\'Mock: would open the session itself.\')">open session ↗</a></div>'));
+}, 6200);
+</script>
 </body>
 </html>
