@@ -34,11 +34,21 @@
  * composer concept and stays one: a dispatched turn passes no intent, so it
  * follows the global `autoResetMergedBranch` setting — which is exactly what
  * the box shows when it is ticked.
+ *
+ * ## Freshness comes first (docs/282)
+ *
+ * The gate is only ever as right as the merge state it reads, and that state is
+ * poll-driven — so a turn admitted within the poll window of a merge used to
+ * evaluate it against a session that did not read as merged yet, and run on the
+ * merged tip. {@link recheckMergeBeforeTurn} refreshes it here, ahead of the
+ * gate, in the narrow state where a fresh answer could change the outcome. It
+ * decides nothing itself: the gate still owns whether the branch moves.
  */
 
 import { randomUUID } from "node:crypto";
 import type { BranchAutoResetCard, WsServerMessage } from "../shared/types.js";
 import { autoResetMergedBranchOnContinue, clearResetSkipEpisode } from "./services/pre-turn-reset.js";
+import { recheckMergeBeforeTurn } from "./services/pre-turn-merge-recheck.js";
 import { detectAndReArmResetSession, type ReArmDeps } from "./services/pr-rearm.js";
 import {
   emitChatCard,
@@ -119,6 +129,26 @@ export async function applyPreTurnReset(args: {
   intent?: boolean;
 }): Promise<PreTurnResetHookResult> {
   const { deps, runner, sessionId, sessionDir, intent } = args;
+
+  // docs/282 — the gate below reads the session's merge state, and that state is
+  // poll-driven: a turn admitted inside the poll window would evaluate it
+  // against a pull request ShipIt has not noticed merging yet, run on the merged
+  // tip, and strand its commit there. Refresh it first, in the narrow state
+  // where a fresh answer could change the outcome. Fail-safe and bounded — a
+  // refusal, an error or a timeout leaves the state as the poller had it, which
+  // is what every turn ran on before this.
+  await recheckMergeBeforeTurn(
+    {
+      getSession: (id) => deps.sessionManager.get(id),
+      getPrStatus: (id) => deps.sessionManager.getPrStatus(id),
+      createGitManager: deps.createGitManager,
+      verifyPrState: (id) =>
+        deps.prStatusPoller.forceVerifySessionPrState(id, { armAbsentDebounce: false }),
+      awaitMergeHandling: (id) => deps.prStatusPoller.awaitMergeHandling(id),
+    },
+    sessionId,
+    sessionDir,
+  );
 
   const reset = await autoResetMergedBranchOnContinue(
     {

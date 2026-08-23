@@ -122,6 +122,22 @@ export class PrStatusPoller {
   /** Optional: called when a merged PR is detected — used to archive the session. */
   private onMergeDetectedCb?: (sessionId: string) => Promise<void>;
   /**
+   * docs/282 — the IN-FLIGHT {@link onMergeDetectedCb} work, per session.
+   *
+   * Merge detection has two halves and they do not land together: this class
+   * synchronously records the merged snapshot + `mergedHeadSha`, then fires the
+   * callback, which is what stamps `merged_at` (via `markMergedAndPruneExcess`).
+   * Everything that decides whether a session's branch may be reset — the whole
+   * docs/218 gate — reads `mergedAt`, so "the probe resolved" is NOT the same
+   * fact as "this session now reads as merged".
+   *
+   * {@link awaitMergeHandling} exists so the pre-turn recheck can wait for the
+   * second half rather than racing it. Fire-and-forget everywhere else, exactly
+   * as before: the entry is removed when the callback settles, so this holds at
+   * most one promise per session that is merging right now.
+   */
+  private readonly mergeHandling = new Map<string, Promise<void>>();
+  /**
    * docs/194 — called when a merged PR is detected, with the PR **body** in
    * scope (which `onMergeDetectedCb` lacks). Drives the issue-lifecycle
    * "→ completed" transition: parse `Closes/Refs <pointer>` lines and broker the
@@ -422,8 +438,20 @@ export class PrStatusPoller {
    * resolve the canonical owner ourselves (below) before the REST probe — else,
    * on a transferred/renamed repo, `findPullRequestAnyState` filters
    * `head=<old-owner>:<branch>` and matches nothing (planning#161).
+   *
+   * docs/282 — `armAbsentDebounce: false` runs the same definitive probe WITHOUT
+   * arming the `verifiedAbsent` single-probe debounce. Every pre-existing caller
+   * probes a PR it expects to be terminal, where arming is right; the pre-turn
+   * recheck probes one it expects to still be OPEN, on every qualifying turn, and
+   * arming there would be a merge-detection REGRESSION: `verifiedAbsent` is
+   * cleared only by the PR reappearing in the OPEN bulk view or by a forced
+   * refresh, so a PR merged moments after a recheck would fall out of the bulk
+   * view with the debounce already armed and never get REST-verified.
    */
-  async forceVerifySessionPrState(sessionId: string): Promise<void> {
+  async forceVerifySessionPrState(
+    sessionId: string,
+    opts: { armAbsentDebounce?: boolean } = {},
+  ): Promise<void> {
     const repoKey = this.tracker.sessionRepos.get(sessionId);
     const slash = repoKey?.indexOf("/") ?? -1;
     if (!repoKey || slash <= 0) return;
@@ -444,7 +472,30 @@ export class PrStatusPoller {
     // PR branch. A suppressed verify means the only PR on the branch is still the
     // re-armed session's OLD merged PR (docs/202); arming here would wedge
     // convergence if the NEW PR opens-and-merges before being observed open.
-    if (outcome !== "suppressed") this.tracker.verifiedAbsent.add(sessionId);
+    if (outcome !== "suppressed" && (opts.armAbsentDebounce ?? true)) {
+      this.tracker.verifiedAbsent.add(sessionId);
+    }
+  }
+
+  /**
+   * docs/282 — resolve once this session's in-flight merge bookkeeping has
+   * settled, or immediately when none is in flight.
+   *
+   * The caller is the pre-turn merge recheck, and what it needs is the
+   * *second* half of merge detection: `verifyMissingPr` records the merged
+   * snapshot and `mergedHeadSha` synchronously, but `merged_at` — the field the
+   * whole docs/218 reset gate keys off — is stamped by `onMergeDetectedCb`,
+   * which the poll loop deliberately does not await. Awaiting it here covers the
+   * merge THIS turn's probe just discovered and equally one a background poll
+   * discovered a beat earlier (whose `alreadyTerminal` guard means our probe
+   * fires no callback of its own).
+   *
+   * Never rejects — the tracked promise already swallows its own errors — and
+   * the caller bounds it with its own timeout, because the callback does
+   * container and network work that must not be able to strand a turn.
+   */
+  async awaitMergeHandling(sessionId: string): Promise<void> {
+    await this.mergeHandling.get(sessionId);
   }
 
   /** Untrack a session (archived, PR merged, etc.). */
@@ -1424,9 +1475,18 @@ export class PrStatusPoller {
         console.warn(`[pr-poller] merged PR #${pr.number} for ${sessionId} had no head.sha — auto-reset anchor not recorded`);
       }
       if (this.onMergeDetectedCb) {
-        this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
-          console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
-        });
+        // docs/282 — still fire-and-forget for the poll loop, but the promise is
+        // now observable: this callback is what stamps `merged_at`, and the
+        // pre-turn recheck must not decide against a session that has been
+        // *found* merged but not yet *marked* merged. See `mergeHandling`.
+        const handling = this.onMergeDetectedCb(sessionId)
+          .catch((err: unknown) => {
+            console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
+          })
+          .finally(() => {
+            if (this.mergeHandling.get(sessionId) === handling) this.mergeHandling.delete(sessionId);
+          });
+        this.mergeHandling.set(sessionId, handling);
       }
       // docs/194 — drive the issue-lifecycle "→ completed" transition from the
       // merged PR body. This is the parse site the body is in scope at (the
