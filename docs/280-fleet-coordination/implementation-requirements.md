@@ -5,7 +5,7 @@ description: Technical-tier requirements with their provenance — what each mus
 
 # Implementation-level requirements
 
-Split from `requirements.md` on 2026-08-23 at the user's direction. The product statement stays at the top level: **the user always talks to the coordinator agent; whatever is delivered is delivered from the agent, and whatever the user sends is sent to the agent.** This document holds the technical requirements underneath that experience — each stated as what must be achieved, with **where it comes from**. Potential solutions, and which one is currently chosen, live in the separate design doc, `coordinator-design.md`; this document names none.
+Split from `requirements.md` on 2026-08-23 at the user's direction. The product statement stays at the top level — now numbered, scoped, in req 10: within the coordinator conversation, delivery comes from the agent and input goes to the agent. This document holds the technical requirements underneath that experience — each stated as what must be achieved, with **where it comes from**. Potential solutions, and which one is currently chosen, live in the separate design doc, `coordinator-design.md`; this document names none.
 
 Standing rule: **the MVP builds the minimal thing that satisfies the top-level product requirements.** Anything here beyond the minimum is adopted only when observed evidence demands it.
 
@@ -35,7 +35,9 @@ Standing rule: **the MVP builds the minimal thing that satisfies the top-level p
 
 ## I4. A stateful conversation API for the coordinator
 
-**Requirement.** The coordinator has durable, programmatic state for its conversation with the user: the outbound pending-delivery queue, per-session suppression windows, scheduled returns ("bring it back in a few days"), and standing obligations. This state is separate from the session/fleet APIs and separate from the memory repository, survives context resets and restarts, and is what the platform's delivery machinery executes from.
+**Requirement.** The coordinator has durable, programmatic state for its conversation with the user: the outbound pending-delivery queue, per-session suppression windows, and scheduled returns ("bring it back in a few days"). This state is the **sole executable source** of pending commitments — the memory repository may keep historical notes but no actionable ledger. It is separate from the session/fleet APIs and from the memory repository, survives context resets and restarts, and is what the platform's delivery machinery executes from.
+
+Also durably here (round three, from the clarification-scope receipt): the **autonomous-clarification cap** — the coordinator's self-initiated clarification round-trips are capped per item, the cap survives retries, restarts, and context changes, and exhausting it surfaces the item to the user. The numeric default lives with the solutions in the design doc.
 
 **Where it comes from.** Product reqs 26, 29, and 30 (reliable routing, loud failure, assistant instructions that hold across time and restarts) meeting req 21 (context is disposable, so no conversational guarantee may live in it). The user's framing: the delivery queue sits **on top of the coordinator, managed by it** — "we separate the smartness of the agent from reliability that would be programmatic."
 
