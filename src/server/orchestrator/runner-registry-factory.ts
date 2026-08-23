@@ -588,7 +588,7 @@ export function createRunnerRegistry(
         // (workspace-locked auto-commit + conflict notice + auto-push + commit
         // link). The dispatch path routes through this instead of its inline
         // commit block so both transports commit identically.
-        commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit }) =>
+        commitTurn: ({ sessionDir, sessionId, summary, turnStartHeadHash, runner: turnRunner, emit, deferPushArm }) =>
           postTurnCommit(
             {
               createGitManager,
@@ -596,7 +596,10 @@ export function createRunnerRegistry(
               sessionManager,
               scheduleAutoPush: (git) => schedulePushGit(git),
             },
-            { sessionDir, sessionId, emit, turnSummary: summary, turnStartHeadHash, runner: turnRunner },
+            {
+              sessionDir, sessionId, emit, turnSummary: summary, turnStartHeadHash, runner: turnRunner,
+              ...(deferPushArm ? { deferPushArm } : {}),
+            },
           ),
         // docs/163 — resolve the live steer-or-queue gate for the dispatch
         // path so a programmatic message arriving mid-turn (`shipit session
@@ -772,21 +775,7 @@ export function createRunnerRegistry(
           };
         }
 
-        // docs/271 — surface a withheld `agent.install` in the transcript. The
-        // runner decides; this only reports, and it is wired here because the
-        // `ChatHistoryManager` lives at this level. `emitNoticeInTurn` persists
-        // as well as emits, and picks the in-turn vs post-turn placement itself
-        // — which matters because a withheld install fires from session setup,
-        // where no turn is running.
-        if ("onInstallWithheld" in runner) {
-          (runner as { onInstallWithheld?: (message: string) => void }).onInstallWithheld = (
-            message: string,
-          ) => {
-            emitNoticeInTurn(runner, runner.sessionId, message, chatHistoryManager, "warn");
-          };
-        }
-
-        // nikzlabs/shipit#2429 — same wiring, same reason: the runner decides that a
+        // nikzlabs/shipit#2429 — the runner decides that a
         // tree rewrite left its dependencies unverified, and this only reports
         // it. Persisted rather than emitted, because the whole failure is one
         // the user meets LATER — a service that runs while every request fails

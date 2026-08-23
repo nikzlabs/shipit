@@ -27,7 +27,7 @@
 - [x] Record a gap instead of returning silently (non-keyable install; failed re-install)
 - [x] Carry the rewrite label through `onWorkspaceRewritten`, consumed per install
 - [x] Clear the gap only on positive evidence (install ok, or a marker skip)
-- [x] Persisted transcript notice, wired like docs/271's withheld-install notice
+- [x] Persisted transcript notice, wired via `onDependenciesUnverified`
 - [x] `dependencies` alongside `GET /api/sessions/:id/services` + `shipit service list`
 - [x] Co-located tests (text, runner state, route shape, shim rendering)
 - [x] Update agent-facing docs with the new signal and how to read it

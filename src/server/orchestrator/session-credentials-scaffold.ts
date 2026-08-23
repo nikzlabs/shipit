@@ -37,6 +37,22 @@ import { chownTreeToSessionWorker, sealDirMode } from "./session-worker-uid.js";
 export const SESSION_CREDENTIALS_SUBDIR = "sessions";
 
 /**
+ * Subdirectory INSIDE a session's credentials subtree that holds the isolated
+ * per-spawn HOMEs of same-harness sub-agent runs (one `<spawnId>` child each).
+ *
+ * A same-harness consult must never write the session's own `.claude`/`.codex`
+ * subtree: the live primary CLI re-reads its credential file mid-turn, so a
+ * cross-provider provision there 401s the primary within seconds (the
+ * 2026-08-21 GLM-consult incident). Instead each spawn gets its own root under
+ * this directory — inside the per-session subtree so the existing container
+ * mount, chown, seal, and removal all cover it — and the spawned CLI is pointed
+ * at it via the run's `homeDir`. See `provisionSubAgentSpawnHome`
+ * (`session-agent-credentials.ts`); orphans are released (rotation write-back
+ * included) by `sweepSubAgentSpawnHomes` at container create.
+ */
+export const SUB_AGENT_HOME_SUBDIR = "sub-agent-homes";
+
+/**
  * Files/dirs (relative to the credentials root) that make up each agent's
  * credential subtree — exactly the paths the session-worker image symlinks
  * into the runtime home (docs/150 — `/home/shipit`, was `/root`; see

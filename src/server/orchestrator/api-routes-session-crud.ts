@@ -21,6 +21,8 @@ import {
   archiveSession,
   applyTemplate,
   createSandboxSession,
+  readSandboxCapabilities,
+  updateSandboxCapabilities,
   forkSession,
   forkReportSinks,
   gitRemoteCredentialResolver,
@@ -409,6 +411,56 @@ export async function registerSessionCrudRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to create sandbox session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET/PUT /api/sessions/:id/capabilities — docs/279: read and edit a sandbox
+  // session's capability grants after creation.
+  //
+  // Registered here, with the browser-facing session routes, and with NO
+  // `containerAccessible` flag. That is deliberate and load-bearing: docs/211
+  // made `capabilities` un-self-elevatable by making it immutable, so once it is
+  // writable, "only the browser can reach this route" IS requirement 4's
+  // guarantee. The same reason the egress settings routes are browser-only.
+  const sessionSettingsDeps = () => ({
+    sessionManager,
+    runnerRegistry: deps.runnerRegistry,
+    chatHistoryManager: deps.chatHistoryManager,
+    ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
+    sseBroadcast: deps.sseBroadcast,
+  });
+
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/capabilities",
+    async (request, reply) => {
+      try {
+        return readSandboxCapabilities(sessionSettingsDeps(), request.params.id);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read capabilities: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  app.put<{ Params: { id: string }; Body: { capabilities?: unknown } }>(
+    "/api/sessions/:id/capabilities",
+    async (request, reply) => {
+      try {
+        return updateSandboxCapabilities(
+          sessionSettingsDeps(),
+          request.params.id,
+          request.body?.capabilities,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to update capabilities: ${getErrorMessage(err)}` });
       }
     },
   );

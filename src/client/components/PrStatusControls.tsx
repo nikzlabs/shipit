@@ -7,6 +7,7 @@ import {
   WrenchIcon,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
+import type { AutoMergeManagedReason, BranchSyncStatus } from "../../server/shared/types/github-types.js";
 import { GitPullRequestClosedIcon } from "./GitPullRequestClosedIcon.js";
 import { Button } from "./ui/button.js";
 import { DropdownMenuItem } from "./ui/dropdown-menu.js";
@@ -43,14 +44,50 @@ function ToggleSwitch({
 }
 
 /**
+ * The tooltip shell shared by the "ShipIt is deliberately holding this" cases —
+ * same trigger, same box, different words. Extracted when the second such case
+ * arrived so the two cannot drift apart visually.
+ */
+function ManagedWaitInfo({ label, body }: { label: string; body: ReactNode }) {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-(--color-text-secondary) hover:text-(--color-text-primary) focus:outline-none focus:ring-2 focus:ring-(--color-border-focus)"
+            aria-label={label}
+            onClick={(event) => event.preventDefault()}
+          >
+            <InfoIcon size={ICON_SIZE.XS} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent
+          side="bottom"
+          align="end"
+          collisionPadding={12}
+          className="z-[60] w-[min(calc(100vw-2rem),16rem)] whitespace-normal p-2.5 text-(--color-text-secondary)"
+        >
+          <div>
+            <span className="block font-medium text-(--color-text-primary)">
+              ShipIt will merge this PR itself.
+            </span>
+            <span className="block mt-0.5">{body}</span>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/**
  * Hover tooltip explaining ShipIt-managed auto-merge.
  *
- * Two very different states share the `managed` flag (docs/266). The GitHub-
- * refused fallback names the missing repo precondition and links to settings.
- * The live-session case is not an error at all — ShipIt is deliberately holding
- * the merge until the session stops working — so it gets its own wording and no
- * settings link, which would otherwise tell the user to go fix a repository
- * that is configured perfectly well.
+ * Three states share the `managed` flag (docs/266). The GitHub-refused fallback
+ * names the missing repo precondition and links to settings. The other two are
+ * not errors at all — ShipIt is deliberately holding the merge — so they get
+ * their own wording and no settings link, which would otherwise tell the user to
+ * go fix a repository that is configured perfectly well.
  */
 function ManagedMergeInfo({
   settingsUrl,
@@ -59,41 +96,31 @@ function ManagedMergeInfo({
 }: {
   settingsUrl?: string;
   reason?: string;
-  managedReason?: "native-unavailable" | "session-live";
+  managedReason?: AutoMergeManagedReason;
 }) {
   if (managedReason === "session-live") {
     return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              className="inline-flex h-5 w-5 items-center justify-center rounded text-(--color-text-secondary) hover:text-(--color-text-primary) focus:outline-none focus:ring-2 focus:ring-(--color-border-focus)"
-              aria-label="Auto-merge is waiting for this session"
-              onClick={(event) => event.preventDefault()}
-            >
-              <InfoIcon size={ICON_SIZE.XS} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent
-            side="bottom"
-            align="end"
-            collisionPadding={12}
-            className="z-[60] w-[min(calc(100vw-2rem),16rem)] whitespace-normal p-2.5 text-(--color-text-secondary)"
-          >
-            <div>
-              <span className="block font-medium text-(--color-text-primary)">
-                ShipIt will merge this PR itself.
-              </span>
-              <span className="block mt-0.5">
-                This session is still working, so the merge waits until it finishes and CI
-                passes — otherwise the agent&rsquo;s remaining changes would land after the
-                PR closed.
-              </span>
-            </div>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
+      <ManagedWaitInfo
+        label="Auto-merge is waiting for this session"
+        body={<>
+          This session is still working, so the merge waits until it finishes and CI
+          passes — otherwise the agent&rsquo;s remaining changes would land after the
+          PR closed.
+        </>}
+      />
+    );
+  }
+
+  if (managedReason === "branch-unsynced") {
+    return (
+      <ManagedWaitInfo
+        label="Auto-merge is waiting for this branch to reach GitHub"
+        body={<>
+          This session has commits GitHub has not got yet, so the merge waits until they
+          land — GitHub&rsquo;s own auto-merge would ship the branch without them, and
+          ShipIt cannot call it back once it is armed.
+        </>}
+      />
     );
   }
 
@@ -310,21 +337,49 @@ export function ClosePrDropdownItem({ state }: { state: ReturnType<typeof useClo
   );
 }
 
+/**
+ * Why the merge button is disabled because of the branch's sync state, or
+ * undefined when the state is no reason to disable it.
+ *
+ * A merge merges what is on GitHub. When the session holds commits that never
+ * reached it — a push still pending, or one that was rejected and stayed
+ * rejected — the pull request is mergeable and OBSOLETE at the same time, and
+ * every other gate on this button reads it as ready. `behind` is deliberately
+ * not a reason: the remote then carries everything local does and more.
+ *
+ * The server refuses the same two states independently (it re-resolves them
+ * against the live remote, so a stale tab cannot slip past), which is why this
+ * can afford to be a plain disabled state rather than a hard block.
+ */
+function branchSyncBlockReason(sync: BranchSyncStatus | undefined): string | undefined {
+  if (sync?.state === "ahead") {
+    return `Waiting for ${sync.ahead} local commit${sync.ahead === 1 ? "" : "s"} to reach GitHub`
+      + " — merging now would ship the branch without them";
+  }
+  if (sync?.state === "diverged") {
+    return "This session's branch has diverged from its remote — merging now would ship the"
+      + " remote's history, not this session's work";
+  }
+  return undefined;
+}
+
 export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
   const setToast = useUiStore((s) => s.setToast);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  const branchSync = usePrStore((s) => s.statusBySession[sessionId]?.branchSync);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [merging, setMerging] = useState(false);
   const { confirmClose, closing, handleClose, reset } = useClosePr(sessionId);
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
-  const disabled = merging || isAgentRunning;
+  const unsyncedReason = branchSyncBlockReason(branchSync);
+  const disabled = merging || isAgentRunning || unsyncedReason !== undefined;
   const title = isAgentRunning
     ? "Agent is still working; merge will be available when the turn finishes"
-    : undefined;
+    : unsyncedReason;
 
   // Reset the armed-confirm state whenever the menu closes so it never reopens
   // pre-armed.
@@ -359,7 +414,10 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
       </button>
       <button
         onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}
-        disabled={disabled}
+        // Not `disabled` — an unsynced branch can stay unsynced (a push that
+        // keeps being rejected), and this menu is where "Close PR" and the
+        // merge-method choice live. Only the merge itself is held back.
+        disabled={merging || isAgentRunning}
         title={title}
         className="h-6 px-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         aria-label="Select merge method"

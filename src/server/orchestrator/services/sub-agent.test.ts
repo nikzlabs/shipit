@@ -29,9 +29,14 @@ import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
 import { credentialRouteEnvName } from "../../shared/types/domain-types/credential-route.js";
 import type { AccountSelection } from "../provider-account-manager.js";
+import { ContainerSessionRunner } from "../container-session-runner.js";
 import {
+  clearSubtreeBorrows,
   perSessionCredentialsDir,
   provisionSubAgentCredentials,
+  readSessionAccountMarker,
+  subAgentSpawnHomeDir,
+  writeSessionAccountMarker,
 } from "../session-credentials.js";
 
 interface FakeSession {
@@ -114,6 +119,14 @@ function makeDeps(opts: {
   rolePrompt?: string;
   /** docs/275 — override the registry's eligible set where a test spawns a harness the default rows don't cover. */
   eligibleModels?: { serviceId: string; serviceName: string; billingMode: string; modelId: string; label: string }[];
+  /**
+   * 2026-08-21 regression — credential provisioning runs only for a
+   * ContainerSessionRunner with a credentialsDir. `containerRunner` grafts the
+   * class prototype onto the fake (own props shadow the accessors) so
+   * `instanceof` passes without constructing a real container runner.
+   */
+  credentialsDir?: string;
+  containerRunner?: boolean;
 }) {
   const session: FakeSession | null =
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
@@ -156,6 +169,12 @@ function makeDeps(opts: {
     chatMessageGroups: [] as never[],
     steeredMessages: [] as never[],
     recordedCards: [] as never[],
+    // Own properties (even where undefined/empty) so the containerRunner
+    // graft's prototype members — which read the absent `this.turn` — never
+    // fire. These are every runner member the card-persistence path touches.
+    committedBodyIds: undefined,
+    getTurnEventBuffer: () => [] as never[],
+    lastPersistedBufferIndex: 0,
     spawnSubAgent: vi.fn(async () =>
       opts.spawnResults?.shift() ?? opts.spawnResult ?? {
         status: "success",
@@ -169,6 +188,9 @@ function makeDeps(opts: {
       },
     ),
   };
+  // After the literal, so every own data property above shadows the class's
+  // prototype accessors instead of being routed through them.
+  if (opts.containerRunner) Object.setPrototypeOf(runner, ContainerSessionRunner.prototype);
   const selectAccountForTurn = vi.fn((_provider: string, selectOpts?: { exclude?: string[] }): AccountSelection => ({
     ok: true as const,
     route: { kind: "account" as const, id: selectOpts?.exclude?.length ? "acct-secondary" : "acct-primary" },
@@ -281,6 +303,7 @@ function makeDeps(opts: {
     usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
     recordAgentRateLimits,
     chatHistoryManager: { replaceInProgress, append, updateSubAgentConsultCard } as never,
+    ...(opts.credentialsDir !== undefined ? { credentialsDir: opts.credentialsDir } : {}),
   };
   return {
     deps, runner, emitMessage, record, replaceInProgress, append, updateSubAgentConsultCard,
@@ -1870,5 +1893,145 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
   it("is a no-op without a credentialsDir (local mode)", () => {
     const sessionManager = { list: () => [{ id: "sessA", agentId: "claude" }] } as never;
     expect(() => sweepSubAgentCredentialsOnSignOut("codex", { sessionManager })).not.toThrow();
+  });
+});
+
+/**
+ * 2026-08-21 incident (host session 53cf9934) — a spawn whose harness equals
+ * the session's pinned harness used to provision its credentials INTO the
+ * session's own subtree, the very files the LIVE primary CLI re-reads
+ * mid-turn. A cross-provider route (GLM's z.ai flat key under the claude
+ * harness) then 401'd the primary within seconds; the quiet auth retry killed
+ * the turn, cancelled every in-flight spawn, and replayed the same prompt into
+ * the same wall, looping. The fix gives every same-harness spawn an ISOLATED
+ * per-spawn home and hands its container path to the run as `homeDir`.
+ *
+ * These tests run the REAL provisioning against a temp credentials root (the
+ * prototype graft makes the fake pass the ContainerSessionRunner gate) and pin
+ * both halves: the session subtree stays byte-identical through a same-harness
+ * spawn, and the cross-harness borrow keeps its existing shape.
+ */
+describe("runSubAgent — same-harness spawns never touch the session's live credentials", () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-spawn-home-"));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    // Cross-harness tests open a borrow; the service's finally closes it, but
+    // keep the process-local ledger clean even if an assertion throws first.
+    clearSubtreeBorrows();
+  });
+
+  const claudeCreds = (tail: string) =>
+    JSON.stringify({ claudeAiOauth: { accessToken: `tok-${tail}`, refreshToken: "r", expiresAt: 10_000 } });
+  const seedClaude = (dir: string, tail: string) => {
+    fs.mkdirSync(path.join(dir, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".claude", ".credentials.json"), claudeCreds(tail));
+  };
+
+  /** Wire a capture into the spawn fake: what did the worker-side see mid-run? */
+  function captureSpawn(runner: { spawnSubAgent: unknown }, sessionFile: string) {
+    const seen: { homeDir?: string; sessionBytes?: string; marker?: string; homeToken?: string } = {};
+    runner.spawnSubAgent = vi.fn(async (req: { spawnId: string; homeDir?: string }) => {
+      seen.homeDir = req.homeDir;
+      seen.sessionBytes = fs.readFileSync(sessionFile, "utf-8");
+      seen.marker = readSessionAccountMarker(root, "s1").claude;
+      const homeFile = path.join(subAgentSpawnHomeDir(root, "s1", req.spawnId), ".claude", ".credentials.json");
+      if (fs.existsSync(homeFile)) seen.homeToken = fs.readFileSync(homeFile, "utf-8");
+      return { status: "success", text: "ok", truncated: false, durationMs: 5, costUsd: 0 };
+    }) as never;
+    return seen;
+  }
+
+  it("an account-routed same-harness spawn runs from an isolated home; the primary's file stays byte-identical", async () => {
+    seedClaude(path.join(root, "provider-accounts", "claude", "acct-primary"), "CONSULT");
+    const sessionDir = perSessionCredentialsDir(root, "s1");
+    seedClaude(sessionDir, "PRIMARY-LIVE");
+    writeSessionAccountMarker(root, "s1", "claude", "acct-session");
+    const sessionFile = path.join(sessionDir, ".claude", ".credentials.json");
+    const before = fs.readFileSync(sessionFile, "utf-8");
+
+    const { deps, runner } = makeDeps({ credentialsDir: root, containerRunner: true });
+    const seen = captureSpawn(runner, sessionFile);
+
+    const result = await runSubAgent(deps, "s1", { target: explicit("claude"), prompt: "review", depth: 0 });
+
+    // Mid-run: the spawn got its own home with the routed account's copy, and
+    // the primary's file and marker were untouched — the incident's regression.
+    expect(seen.homeDir).toBe(`/credentials/sub-agent-homes/${result.spawnId}`);
+    expect(seen.homeToken).toContain("tok-CONSULT");
+    expect(seen.sessionBytes).toBe(before);
+    expect(seen.marker).toBe("acct-session");
+    // Post-run: still byte-identical, and the spawn home is gone.
+    expect(fs.readFileSync(sessionFile, "utf-8")).toBe(before);
+    expect(readSessionAccountMarker(root, "s1").claude).toBe("acct-session");
+    expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
+  });
+
+  // The incident's exact shape: a string-delivered credential (GLM via z.ai)
+  // resolves NO account, so the old code provisioned the FLAT root over the
+  // session subtree ("provision-credentials agent=claude account=flat").
+  it("a string-routed (flat) same-harness spawn is isolated too — the GLM shape", async () => {
+    seedClaude(root, "FLAT"); // the flat source-of-truth root
+    const sessionDir = perSessionCredentialsDir(root, "s1");
+    seedClaude(sessionDir, "PRIMARY-LIVE");
+    writeSessionAccountMarker(root, "s1", "claude", "acct-session");
+    const sessionFile = path.join(sessionDir, ".claude", ".credentials.json");
+    const before = fs.readFileSync(sessionFile, "utf-8");
+
+    const { deps, runner } = makeDeps({
+      credentialsDir: root,
+      containerRunner: true,
+      credentialRoutes: [{
+        id: "anthropic-key", serviceId: "anthropic", billingMode: "key", via: "string",
+        status: "ready", priority: 0, isPrimary: true, label: "test", createdAt: 0, updatedAt: 0,
+      }],
+    });
+    const seen = captureSpawn(runner, sessionFile);
+
+    const result = await runSubAgent(deps, "s1", {
+      target: explicit("claude", { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" }),
+      prompt: "review",
+      depth: 0,
+    });
+
+    expect(seen.homeDir).toBe(`/credentials/sub-agent-homes/${result.spawnId}`);
+    expect(seen.homeToken).toContain("tok-FLAT");
+    expect(seen.sessionBytes).toBe(before);
+    expect(fs.readFileSync(sessionFile, "utf-8")).toBe(before);
+    expect(readSessionAccountMarker(root, "s1").claude).toBe("acct-session");
+    expect(fs.existsSync(subAgentSpawnHomeDir(root, "s1", result.spawnId))).toBe(false);
+  });
+
+  // The control: a CROSS-harness spawn keeps the session-subtree borrow it has
+  // always used — those paths collide with nothing the primary reads.
+  it("a cross-harness spawn still borrows the session subtree and gets no homeDir", async () => {
+    fs.mkdirSync(path.join(root, "provider-accounts", "codex", "acct-primary", ".codex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "provider-accounts", "codex", "acct-primary", ".codex", "auth.json"),
+      '{"tokens":{"access_token":"codex-consult"}}',
+    );
+    const sessionDir = perSessionCredentialsDir(root, "s1");
+    seedClaude(sessionDir, "PRIMARY-LIVE");
+
+    const { deps, runner } = makeDeps({ credentialsDir: root, containerRunner: true });
+    const seen: { homeDir?: string; codexOnDisk?: boolean; marker?: string } = {};
+    runner.spawnSubAgent = vi.fn(async (req: { homeDir?: string }) => {
+      seen.homeDir = req.homeDir;
+      seen.codexOnDisk = fs.existsSync(path.join(sessionDir, ".codex", "auth.json"));
+      seen.marker = readSessionAccountMarker(root, "s1").codex;
+      return { status: "success", text: "ok", truncated: false, durationMs: 5, costUsd: 0 };
+    }) as never;
+
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "review", depth: 0 });
+
+    // Mid-run: the borrow, exactly as before — subtree provisioned, marker set.
+    expect(seen.homeDir).toBeUndefined();
+    expect(seen.codexOnDisk).toBe(true);
+    expect(seen.marker).toBe("acct-primary");
+    // Post-run: temporary auth wiped, marker cleared.
+    expect(fs.existsSync(path.join(sessionDir, ".codex", "auth.json"))).toBe(false);
+    expect(readSessionAccountMarker(root, "s1").codex).toBeUndefined();
   });
 });

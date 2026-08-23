@@ -1,7 +1,16 @@
 import { create } from "zustand";
 import { getLocalStorageObject } from "../utils/local-storage.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
-import type { DevicePreset } from "../components/device-presets.js";
+import { customPreset, type DevicePreset } from "../components/device-presets.js";
+import { useSessionStore } from "./session-store.js";
+import {
+  loadViewportMemory,
+  saveViewportMemory,
+  viewportEntryFromState,
+  viewportStateFromEntry,
+  withViewportEntry,
+  type PersistedViewport,
+} from "./viewport-memory.js";
 import type {
   ComposeServiceStatus,
   ComposeServicePreviewMode,
@@ -133,7 +142,14 @@ const MAX_STARTUP_STEP_LOG_LINES = 50;
 /** Time window in ms for deduplication — same error within this window is dropped. */
 const DEDUP_WINDOW_MS = 1000;
 
-/** Per-session state that gets snapshotted on session switch. */
+/**
+ * Per-session state that gets snapshotted on session switch.
+ *
+ * The device-viewport choice is deliberately NOT here (docs/278): it lives in
+ * `viewportMemory`, written through on every mutation and localStorage-backed,
+ * so it survives a page reload — which this in-memory snapshot cannot. The
+ * rest of the snapshot is transport state the server re-sends anyway.
+ */
 export interface SessionPreviewSnapshot {
   status: PreviewStatus | null;
   selectedPort: number | null;
@@ -144,9 +160,6 @@ export interface SessionPreviewSnapshot {
   composeError: string | null;
   composeNotConfigured: boolean;
   secrets: SecretsState;
-  devicePreset: DevicePreset | null;
-  isLandscape: boolean;
-  customSize: { width: number; height: number } | null;
 }
 
 interface PreviewState {
@@ -183,8 +196,17 @@ interface PreviewState {
   devicePreset: DevicePreset | null;
   /** True when the active preset is rotated to landscape (swap width/height). */
   isLandscape: boolean;
-  /** Custom user-entered viewport size (separate from named presets). */
+  /** Custom viewport size, always stored as rendered (docs/278). */
   customSize: { width: number; height: number } | null;
+
+  /**
+   * Remembered viewport choice per session (docs/278 req 6). The single source
+   * of truth for restoring the viewport: hydrated from localStorage at load,
+   * written through (against the *current* session) by every viewport setter,
+   * and read back by `restoreSession` — on switches and on cold loads alike.
+   * Like `previewPaths`, it deliberately outlives the session-scoped `reset()`.
+   */
+  viewportMemory: Record<string, PersistedViewport>;
 
   /** Saved preview state per session, keyed by sessionId. */
   sessionSnapshots: Record<string, SessionPreviewSnapshot>;
@@ -256,10 +278,21 @@ interface PreviewState {
   setSecrets: (secrets: SecretsState) => void;
   /** Set the active device preset (or null to return to "Responsive"). */
   setDevicePreset: (preset: DevicePreset | null) => void;
-  /** Swap width and height on the active preset. */
+  /**
+   * Swap the rendered width and height. On a named preset this flips
+   * `isLandscape`; on a custom size it swaps the stored dims instead, so a
+   * custom size is always stored as rendered (docs/278).
+   */
   toggleLandscape: () => void;
-  /** Set a custom viewport size; selecting null clears it. */
-  setCustomSize: (size: { width: number; height: number } | null) => void;
+  /**
+   * Activate a freeform/custom viewport at `width`×`height` — one atomic set of
+   * synthetic preset + `customSize` + `isLandscape: false`. Atomic because the
+   * drag handles call this per pointermove; chained setters would render (and
+   * persist) partial states.
+   */
+  setFreeformSize: (width: number, height: number) => void;
+  /** Forget every remembered viewport. Full reset only — see `reset`. */
+  clearViewportMemory: () => void;
   /** Save current top-level state into sessionSnapshots[sessionId]. */
   snapshotSession: (sessionId: string) => void;
   /** Restore from snapshot if exists, otherwise reset to defaults. */
@@ -323,6 +356,52 @@ export function resetDedupState(): void {
   idCounter = 0;
 }
 
+// ---- Viewport write-through (docs/278) ----
+
+/**
+ * Debounce for flushing `viewportMemory` to localStorage. A drag emits ~60
+ * viewport mutations per second; the state map is updated synchronously in the
+ * same `set()` (so it is always correct at mutation time, whatever session the
+ * flush later fires under) and only the serialization is deferred.
+ */
+export const VIEWPORT_FLUSH_DEBOUNCE_MS = 300;
+
+let viewportFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Flush the pending write, if any. A no-op when nothing is unsaved, so the
+ * page-hide listeners below don't serialize on every tab switch. */
+function flushViewportMemoryNow(): void {
+  if (!viewportFlushTimer) return;
+  clearTimeout(viewportFlushTimer);
+  viewportFlushTimer = null;
+  saveViewportMemory(usePreviewStore.getState().viewportMemory);
+}
+
+function scheduleViewportFlush(): void {
+  if (viewportFlushTimer) clearTimeout(viewportFlushTimer);
+  viewportFlushTimer = setTimeout(flushViewportMemoryNow, VIEWPORT_FLUSH_DEBOUNCE_MS);
+}
+
+/**
+ * The `viewportMemory` update for the viewport fields about to be set, keyed by
+ * the session the user is making the choice in — read from the session store at
+ * mutation time, which is what keeps a debounced flush from ever attributing a
+ * choice to whatever session is on screen when the timer fires. No session
+ * (home screen) means nothing to remember.
+ */
+function viewportMemoryUpdate(
+  current: Record<string, PersistedViewport>,
+  viewport: {
+    devicePreset: DevicePreset | null;
+    isLandscape: boolean;
+    customSize: { width: number; height: number } | null;
+  },
+): { viewportMemory: Record<string, PersistedViewport> } | Record<string, never> {
+  const sessionId = useSessionStore.getState().sessionId;
+  if (!sessionId) return {};
+  return { viewportMemory: withViewportEntry(current, sessionId, viewportEntryFromState(viewport)) };
+}
+
 const initialSessionState: SessionPreviewSnapshot = {
   status: null,
   selectedPort: null,
@@ -333,9 +412,13 @@ const initialSessionState: SessionPreviewSnapshot = {
   composeError: null,
   composeNotConfigured: false,
   secrets: emptySecretsState,
-  devicePreset: null,
+};
+
+/** Live viewport fields at their defaults — the "Responsive" state. */
+const initialViewportState = {
+  devicePreset: null as DevicePreset | null,
   isLandscape: false,
-  customSize: null,
+  customSize: null as { width: number; height: number } | null,
 };
 
 const SERVICES_DRAWER_EXPANDED_KEY = "shipit:preview-services:expanded";
@@ -423,10 +506,12 @@ function savePreviewPaths(paths: Record<string, string>): void {
 
 const initialState = {
   ...initialSessionState,
+  ...initialViewportState,
   autoFixEnabled: false,
   servicesDrawerExpanded: loadServicesDrawerExpanded(),
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
   previewPaths: loadPreviewPaths(),
+  viewportMemory: loadViewportMemory(),
   // Ephemeral state — never persisted into a session snapshot.
   servicesDrawerIdleCollapsed: false,
   previewProxyError: null as PreviewState["previewProxyError"],
@@ -510,12 +595,65 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
 
   setPreviewProxyError: (previewProxyError) => set({ previewProxyError }),
 
-  setDevicePreset: (devicePreset) =>
-    set({ devicePreset, customSize: devicePreset?.category === "custom" ? get().customSize : null }),
+  setDevicePreset: (devicePreset) => {
+    set((state) => {
+      const viewport = {
+        devicePreset,
+        isLandscape: state.isLandscape,
+        customSize: devicePreset?.category === "custom" ? state.customSize : null,
+      };
+      return { ...viewport, ...viewportMemoryUpdate(state.viewportMemory, viewport) };
+    });
+    scheduleViewportFlush();
+  },
 
-  toggleLandscape: () => set((state) => ({ isLandscape: !state.isLandscape })),
+  toggleLandscape: () => {
+    set((state) => {
+      if (state.devicePreset?.category === "custom") {
+        // Custom sizes are stored as rendered (docs/278): swap the stored dims
+        // instead of flipping a flag the label and persistence would then have
+        // to reconcile against.
+        const current = state.customSize ?? {
+          width: state.devicePreset.width,
+          height: state.devicePreset.height,
+        };
+        const viewport = {
+          devicePreset: customPreset(current.height, current.width),
+          isLandscape: false,
+          customSize: { width: current.height, height: current.width },
+        };
+        return { ...viewport, ...viewportMemoryUpdate(state.viewportMemory, viewport) };
+      }
+      const viewport = {
+        devicePreset: state.devicePreset,
+        isLandscape: !state.isLandscape,
+        customSize: state.customSize,
+      };
+      return { isLandscape: viewport.isLandscape, ...viewportMemoryUpdate(state.viewportMemory, viewport) };
+    });
+    scheduleViewportFlush();
+  },
 
-  setCustomSize: (customSize) => set({ customSize }),
+  setFreeformSize: (width, height) => {
+    set((state) => {
+      const viewport = {
+        devicePreset: customPreset(width, height),
+        isLandscape: false,
+        customSize: { width, height },
+      };
+      return { ...viewport, ...viewportMemoryUpdate(state.viewportMemory, viewport) };
+    });
+    scheduleViewportFlush();
+  },
+
+  clearViewportMemory: () => {
+    if (viewportFlushTimer) {
+      clearTimeout(viewportFlushTimer);
+      viewportFlushTimer = null;
+    }
+    saveViewportMemory({});
+    set({ viewportMemory: {} });
+  },
 
   setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
 
@@ -548,22 +686,26 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
           composeError: state.composeError,
           composeNotConfigured: state.composeNotConfigured,
           secrets: state.secrets,
-          devicePreset: state.devicePreset,
-          isLandscape: state.isLandscape,
-          customSize: state.customSize,
         },
       },
     })),
 
   restoreSession: (sessionId) => {
     const snap = get().sessionSnapshots[sessionId];
+    // The viewport is resolved from `viewportMemory` in BOTH branches, never
+    // from the snapshot (docs/278). Two reasons: the memory is what survives a
+    // page reload (req 6), and on a cold load the URL→store sync effect runs
+    // resumeSessionInternal against a half-initialized store, so an accidental
+    // defaults-snapshot exists by the time this runs — a fallback-only read
+    // would never fire.
+    const viewport = viewportStateFromEntry(get().viewportMemory[sessionId]);
     // A pointer's destination describes one session and is cancelled by leaving
     // it (docs/258) — it is never part of the restored snapshot.
     if (snap) {
-      set({ ...snap, previewLinkIntent: null });
+      set({ ...snap, ...viewport, previewLinkIntent: null });
     } else {
       resetDedupState();
-      set({ ...initialSessionState, previewLinkIntent: null });
+      set({ ...initialSessionState, ...viewport, previewLinkIntent: null });
     }
   },
 
@@ -601,6 +743,10 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       // which is the one job this map has. Clearing belongs to
       // `clearPreviewPaths`, called only from the full reset.
       previewPaths: state.previewPaths,
+      // Same reasoning, same lifecycle: cross-session memory survives the
+      // session-scoped reset; `clearViewportMemory` (full reset) clears it.
+      // Spreading `initialState` would otherwise resurrect the load-time map.
+      viewportMemory: state.viewportMemory,
     }));
   },
 
@@ -618,6 +764,19 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         : state
     )),
 }));
+
+// Flush a pending viewport write when the page goes away or is backgrounded.
+// The debounce trades a ≤300ms loss window for not serializing on every drag
+// frame; these are the last-chance hooks that close that window for the common
+// "pick a viewport, then immediately reload" sequence. `pagehide` covers
+// reload/close/navigate; `visibilitychange`→hidden covers mobile background
+// kills, where `pagehide` may never fire. Flushing twice is idempotent.
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushViewportMemoryNow);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushViewportMemoryNow();
+  });
+}
 
 // Re-export DevicePreset type for convenience so consumers don't need to know the source.
 export type { DevicePreset } from "../components/device-presets.js";

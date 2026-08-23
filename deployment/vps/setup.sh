@@ -1025,8 +1025,28 @@ if [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   bash /opt/shipit/deployment/vps/cloudflare.sh
 fi
 
+TAILSCALE_FAILED=false
+TAILSCALE_URL=""
 if [ "$INSTALL_TAILSCALE" = "true" ]; then
-  bash /opt/shipit/deployment/vps/tailscale.sh
+  # Do not let a failed access step abort the whole install under `set -e`:
+  # ShipIt is already built and running by this point, so aborting here would
+  # replace the summary — the one place that says what DID work and what to do
+  # next — with a bare non-zero exit. tailscale.sh prints its own diagnosis
+  # (a taken port is the common one); the summary below repeats the headline so
+  # it is not scrolled past.
+  #
+  # It also hands back the access URL it printed, so this summary can END with
+  # that URL. Without it the last thing on screen would be an instruction to
+  # scroll back up past the whole summary to find the URL — and the URL is the
+  # one thing the reader is here for. A temp file, not a fixed path: the value
+  # is stale the moment the tailnet IP or the port changes.
+  TAILSCALE_URL_FILE="$(mktemp)"
+  if SHIPIT_ACCESS_URL_FILE="$TAILSCALE_URL_FILE" bash /opt/shipit/deployment/vps/tailscale.sh; then
+    TAILSCALE_URL="$(cat "$TAILSCALE_URL_FILE" 2>/dev/null || true)"
+  else
+    TAILSCALE_FAILED=true
+  fi
+  rm -f "$TAILSCALE_URL_FILE"
 fi
 
 if [ -f "$CONFIG_FILE" ]; then
@@ -1034,59 +1054,52 @@ if [ -f "$CONFIG_FILE" ]; then
   source "$CONFIG_FILE"
 fi
 
+# The summary is deliberately short, and it ENDS with the URL to open: a reader
+# who has just watched several minutes of build output wants one address, not a
+# reference card. Everything conditional here is a warning or a failure — those
+# stay. The routine reference material (log commands, the update path) is one
+# line each, and the rest lives in deployment/README.md.
 echo ""
 echo "==========================================="
-echo "  Setup complete!"
+echo "  Setup complete"
 echo "==========================================="
 echo ""
-if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
-  echo "  Cloudflare URL: https://$DOMAIN"
+if [ "$TAILSCALE_FAILED" = "true" ]; then
+  echo "  WARNING: Tailscale access FAILED — see the error above."
+  echo "  Fix the cause and re-run: bash /opt/shipit/deployment/vps/tailscale.sh"
+  echo ""
 fi
-if [ "$INSTALL_TAILSCALE" = "true" ]; then
-  echo "  Tailscale access is configured."
+if [ "${ZERO_TRUST_DONE:-}" != "true" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
+  echo "  WARNING: Cloudflare Zero Trust was disabled by explicit override, so this"
+  echo "  instance is public unless another access layer protects it. To enable it,"
+  echo "  re-run cloudflare.sh without SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1."
+  echo ""
 fi
-if [ "$INSTALL_CLOUDFLARE" != "true" ] && [ "$INSTALL_TAILSCALE" != "true" ]; then
-  echo "  ShipIt is running on localhost inside the VPS: http://127.0.0.1:4123"
-  echo "  Configure Cloudflare or Tailscale later to access it remotely."
-fi
-echo ""
-
-if [ "${ZERO_TRUST_DONE:-}" = "true" ]; then
-  echo "  Zero Trust access control is configured."
-  echo "  To manage policies later: https://one.dash.cloudflare.com -> Access -> Applications"
-elif [ "$INSTALL_CLOUDFLARE" = "true" ]; then
-  echo "  WARNING: Cloudflare Zero Trust was disabled by explicit override."
-  echo "  Your instance is publicly accessible unless another access layer protects it."
-  echo "  To enable Zero Trust, run cloudflare.sh again without"
-  echo "  SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1 and provide a Cloudflare API token."
-fi
-
-echo ""
-echo "  Next steps:"
-if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
-  echo "    1. Open https://$DOMAIN in your browser"
-elif [ "$INSTALL_TAILSCALE" = "true" ]; then
-  echo "    1. Open the Tailscale URL printed above by tailscale.sh"
-else
-  echo "    1. Run cloudflare.sh or tailscale.sh when you're ready to expose ShipIt"
-fi
-if [ "${ZERO_TRUST_DONE:-}" = "true" ]; then
-  echo "    2. Authenticate through Cloudflare Zero Trust"
-elif [ "$INSTALL_CLOUDFLARE" = "true" ]; then
-  echo "    2. This Cloudflare route is public because you explicitly disabled Zero Trust"
-else
-  echo "    2. Complete the access setup you chose"
-fi
-echo "    3. ShipIt will prompt you to sign in with your Claude account (OAuth)"
-echo "    4. Start coding!"
-echo ""
-echo "  Useful commands:"
-echo "    View logs:      docker compose -f /opt/shipit/deployment/vps/docker-compose.yml logs -f shipit"
-if [ "$INSTALL_CLOUDFLARE" = "true" ]; then
-  echo "    Tunnel logs:    journalctl -u cloudflared -f"
-fi
-echo "    Updater logs:   journalctl -u shipit-updater -f"
-echo "    Restart:        docker compose -f /opt/shipit/deployment/vps/docker-compose.yml restart"
-echo ""
+echo "  Sign in with your Claude account when ShipIt opens."
+echo "  Logs:    docker compose -f /opt/shipit/deployment/vps/docker-compose.yml logs -f shipit"
 echo "  Updates: Settings -> Advanced -> Software Updates (in the ShipIt UI)"
+echo "  More:    /opt/shipit/deployment/README.md"
+echo ""
+
+# The closing address. Cloudflare wins when both are set up: it is the public,
+# HTTPS one, and the tailnet URL was printed by tailscale.sh moments ago.
+if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
+  ACCESS_URL="https://$DOMAIN"
+elif [ -n "$TAILSCALE_URL" ]; then
+  ACCESS_URL="$TAILSCALE_URL"
+else
+  ACCESS_URL=""
+fi
+
+if [ -n "$ACCESS_URL" ]; then
+  echo "======================================================================="
+  echo "  Open ShipIt at   $ACCESS_URL"
+  echo "======================================================================="
+else
+  echo "======================================================================="
+  echo "  ShipIt runs on 127.0.0.1:4123 inside this server — not reachable yet."
+  echo "  Add access: bash /opt/shipit/deployment/vps/cloudflare.sh   (public, HTTPS)"
+  echo "           or bash /opt/shipit/deployment/vps/tailscale.sh    (private tailnet)"
+  echo "======================================================================="
+fi
 echo ""

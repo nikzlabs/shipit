@@ -20,6 +20,7 @@ import { SubAgentSpawnChipRow } from "./cards/SubAgentCards.js";
 import { TranscriptRow } from "./TranscriptRow.js";
 import { RowHandlersProvider, type RowHandlers } from "./row-context.js";
 import type { TrackerId } from "../../../server/shared/types.js";
+import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
 
 /** Shared, so "no active search" is the same reference on every render. */
 const NO_MATCHES_BY_MESSAGE = new Map<number, SearchMatch[]>();
@@ -81,6 +82,7 @@ export function MessageList({
   onResumeSession,
   onReleaseConfirm,
   onReleaseCancel,
+  onAgentInterfaceMessage,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -128,6 +130,8 @@ export function MessageList({
   onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   /** docs/171 — cancel a proposed release from its inline card. */
   onReleaseCancel?: (version: string) => void;
+  /** docs/280 — dispatch a message an inline presentation composed via the SDK. */
+  onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
 }) {
   const hasRewindControls = !!onRewindAtGap;
 
@@ -325,6 +329,7 @@ export function MessageList({
     onResumeSession,
     onReleaseConfirm,
     onReleaseCancel,
+    onAgentInterfaceMessage,
     onRequestRewindPreview,
     onRewindAtGap,
   };

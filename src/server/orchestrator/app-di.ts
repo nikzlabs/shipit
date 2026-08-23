@@ -203,8 +203,45 @@ export interface AppDeps {
   /** Provider account registry/router (docs/150). */
   providerAccountManager?: ProviderAccountManager;
   /**
-   * Debounce delay in milliseconds for auto-push after commit.
-   * Defaults to 5000 (5 seconds). Set lower in tests to avoid long waits.
+   * Debounce delay in milliseconds for auto-push after commit. **Defaults to
+   * 0** — the push is armed as soon as the turn's post-turn work is done, and
+   * the timer exists only so the arm stays off the caller's stack.
+   *
+   * ## Why it is 0, and why it was 5000
+   *
+   * The original rationale (`docs/027-github-import` — "during rapid Claude
+   * turns, pushing after every single commit would be wasteful") does not
+   * survive contact with the current turn architecture. Coalescing needs two
+   * commits inside one window, and `arm()` merges only pushes that overlap that
+   * way; a turn takes seconds at minimum and usually minutes, so consecutive
+   * turns essentially never do. The one path that does commit twice in quick
+   * succession — the interrupt fallback — is deliberately built NOT to
+   * (`services/post-interrupt-commit.ts` delays so the work "lands in one
+   * commit"), and the synchronous pushers replace the pending push rather than
+   * coalescing with it.
+   *
+   * What the window actually buys today is ORDERING, discovered rather than
+   * designed: the arm happens inside `postTurnCommit`, and the post-turn PR flow
+   * that runs immediately after it does its own synchronous `git push` (a
+   * `forcePush` when re-arming past a merged pull request — `quickCreatePr`).
+   * The delay is what usually keeps the debounced plain push from racing that
+   * one. On the re-arm path a plain push landing FIRST is rejected
+   * non-fast-forward and produces the alarming "your branch has diverged"
+   * transcript notice for a branch that is fine — the false-alarm class
+   * `services/auto-push-scheduler.ts` documents twice.
+   *
+   * That made the number load-bearing by accident, and only probabilistically:
+   * PR creation generates a title with an LLM and can itself exceed five
+   * seconds, so the race was live at 5000 too. The ordering is now EXPLICIT —
+   * `postTurnCommit` hands the arm to `turn-executor.ts` (`deferPushArm`),
+   * which fires it after the post-turn flows have finished their own git work.
+   * With the race removed rather than out-waited, the delay has nothing left to
+   * do, so it is 0.
+   *
+   * Keep the timer rather than pushing inline: the arm happens inside the
+   * turn's terminal sequence, and a `setTimeout(0)` is what keeps a network
+   * round-trip off that stack. It also leaves `arm()`'s supersede-and-re-arm
+   * behaviour, the rewrite-window deferral and `cancel` all working unchanged.
    */
   autoPushDebounceMs?: number;
   /**
@@ -385,7 +422,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const {
     workspaceDir = "/workspace",
     serveStatic: shouldServeStatic = true,
-    autoPushDebounceMs = 5000,
+    autoPushDebounceMs = 0,
   } = deps;
 
   // Resolved up here, not at the return: every manager below that touches

@@ -23,32 +23,46 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useApi, ApiError } from "../../hooks/useApi.js";
-import type { EgressAllowlistView, EgressSessionSettings } from "../../../server/shared/types.js";
+import { SandboxCapabilityToggles } from "../SandboxCapabilityToggles.js";
+import { DEFAULT_SANDBOX_CAPABILITIES } from "../../../server/shared/types.js";
+import type {
+  EgressAllowlistView,
+  EgressSessionSettings,
+  SandboxCapabilitiesView,
+  SessionCapabilities,
+} from "../../../server/shared/types.js";
 
 /**
- * Per-session settings dialog (docs/172 / planning#92).
+ * Per-session settings dialog (docs/172 / planning#92, docs/279).
  *
- * Holds the session-scoped half of egress configuration — the network
- * containment override (Inherit / Contained / Open). It used to live as a bare
- * Radix radio group at the bottom of the session's overflow menu, where its
- * `text-sm` rows with no icon broke the menu's visual rhythm; it now opens from
- * a "Session settings…" menu item into this dialog, styled to match the Sandbox
- * capability picker. This is deliberately separate from the global Settings →
- * Network dialog (app-wide allowlist); per-session lives with the session.
+ * Holds everything scoped to ONE session:
+ *   - for a **sandbox**, its capability grants (docs/279 req 5) — editable after
+ *     creation, rendered from the same `SandboxCapabilityToggles` the creation
+ *     dialog uses;
+ *   - for every **other** session, the network containment override
+ *     (Inherit / Contained / Open).
  *
- * Egress is a CREATION-TIME network-topology choice: the firewall + DNS resolver
- * + SNI-proxy sidecars are plumbed into the container's netns when it is created.
- * Changing the mode on a RUNNING session persists the override (PUT) but does
- * NOT re-plumb the live container. So the dialog surfaces a **pending** state
- * (the server diffs the now-resolved containment against what the live container
- * actually started with — `EgressSessionSettings.pendingRestart`) and offers
- * "Restart to apply now", which reuses the existing container-restart lifecycle
- * control (POST /api/sessions/:id/container/restart). Restart is never automatic
- * and is disabled while an agent turn is running (it would kill the agent).
+ * The two are mutually exclusive on purpose. A sandbox's Network access IS a
+ * capability (docs/211: it only ever tightens), so showing the containment radio
+ * group beside it would put two controls over one session's egress in one dialog
+ * — a second source of truth for the same question.
  *
- * Wired with direct fetches for the read/override (GET the effective view, PUT to
- * set/clear) so it doesn't depend on the Settings store, which is single-session-
- * scoped and only loaded while that dialog is open.
+ * Deliberately separate from the global Settings → Network dialog (app-wide
+ * allowlist); per-session lives with the session.
+ *
+ * Both halves are CREATION-TIME container choices: the firewall + DNS resolver +
+ * SNI-proxy sidecars, and the Docker plumbing, are installed when the container
+ * is created. Changing either on a RUNNING session persists it but does NOT
+ * re-plumb the live container. So the dialog surfaces a **pending** state — the
+ * server diffs what is now resolved against what the live container actually
+ * started with (`EgressSessionSettings.pendingRestart` /
+ * `SandboxCapabilitiesView.pendingRestart`) — and offers "Restart to apply now",
+ * which reuses the existing container-restart lifecycle control
+ * (POST /api/sessions/:id/container/restart). Restart is never automatic and is
+ * disabled while an agent turn is running (it would kill the agent).
+ *
+ * Wired with direct fetches so it doesn't depend on the Settings store, which is
+ * single-session-scoped and only loaded while that dialog is open.
  */
 
 type Mode = "inherit" | "contained" | "open";
@@ -80,8 +94,20 @@ export function SessionSettingsDialog({
   // next container start. Null while loading / when no container is running.
   const [pendingRestart, setPendingRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  // docs/279 — a sandbox's capability grants. `undefined` until the fetch
+  // resolves (the toggles render disabled meanwhile); never fetched at all for a
+  // non-sandbox session, which has no capability set.
+  const [capabilities, setCapabilities] = useState<SessionCapabilities | undefined>(undefined);
+  const [savingCapabilities, setSavingCapabilities] = useState(false);
 
   const api = useApi();
+  // docs/279 — which half of this dialog applies. Read from the session list
+  // (the same source the sandbox banner and the sidebar badge use) rather than
+  // inferred from a failed capabilities fetch, so the dialog renders the right
+  // shape on the first frame instead of flipping after a round-trip.
+  const isSandbox = useSessionStore(
+    (s) => s.sessions.find((session) => session.id === sessionId)?.kind === "sandbox",
+  );
   // The active session's live "is an agent turn running" flag. The dialog only
   // renders for the current session, so this is the right session's state. A
   // restart would kill the running agent (see CLAUDE.md never-kill rules), so it
@@ -90,7 +116,7 @@ export function SessionSettingsDialog({
 
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read the session's current override when the dialog opens
   useEffect(() => {
-    if (!open) return;
+    if (!open || isSandbox) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -110,7 +136,36 @@ export function SessionSettingsDialog({
     return () => {
       cancelled = true;
     };
-  }, [sessionId, open]);
+  }, [sessionId, open, isSandbox]);
+
+  // docs/279 — a sandbox's grants + the server's pending-restart verdict. A
+  // separate fetch from the egress one above because the two are mutually
+  // exclusive halves of this dialog: a sandbox has no containment override to
+  // read, and every other session has no capability set.
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: read this sandbox's grants when the dialog opens
+  useEffect(() => {
+    if (!open || !isSandbox) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/capabilities`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const view = (await res.json()) as SandboxCapabilitiesView;
+        if (!cancelled) {
+          setCapabilities(view.capabilities);
+          setPendingRestart(view.pendingRestart);
+        }
+      } catch (err) {
+        // Leave the toggles disabled rather than rendering a guessed set the
+        // user could act on: an optimistic default here would show grants this
+        // session may not have.
+        console.error("[session-capabilities] failed to read grants:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, open, isSandbox]);
 
   const handleChange = async (next: Mode) => {
     const prev = mode;
@@ -134,6 +189,40 @@ export function SessionSettingsDialog({
     }
   };
 
+  /**
+   * docs/279 — write the whole capability set. Optimistic: the toggle moves
+   * immediately and reverts on failure, matching how the network mode above
+   * behaves, because the round-trip is a local write and a settings toggle that
+   * lags a click reads as broken.
+   *
+   * The server returns the normalized set it actually stored, which is not
+   * always what was sent — `normalizeCapabilities` clears `dangerousGitHubOps`
+   * when `git` is off — so the response, not the optimistic value, is what the
+   * toggles end up showing.
+   */
+  const handleCapabilitiesChange = async (next: SessionCapabilities) => {
+    const prev = capabilities;
+    setCapabilities(next);
+    setSavingCapabilities(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/capabilities`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ capabilities: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const view = (await res.json()) as SandboxCapabilitiesView;
+      setCapabilities(view.capabilities);
+      setPendingRestart(view.pendingRestart);
+    } catch (err) {
+      setCapabilities(prev);
+      useUiStore.getState().setToast({ message: "Failed to update this session's capabilities" });
+      console.error("[session-capabilities] failed to write grants:", err);
+    } finally {
+      setSavingCapabilities(false);
+    }
+  };
+
   const handleRestart = async () => {
     if (restarting || agentRunning) return;
     setRestarting(true);
@@ -146,7 +235,11 @@ export function SessionSettingsDialog({
       // The new container starts with the now-resolved mode, so nothing is
       // pending anymore.
       setPendingRestart(false);
-      useUiStore.getState().setToast({ message: "Restarting container to apply the new network mode" });
+      useUiStore.getState().setToast({
+        message: isSandbox
+          ? "Restarting container to apply the new capabilities"
+          : "Restarting container to apply the new network mode",
+      });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : String(err);
       useUiStore.getState().setToast({ message: `Failed to restart container: ${message}` });
@@ -176,37 +269,53 @@ export function SessionSettingsDialog({
           <div>
             <DialogTitle className="text-base">Session settings</DialogTitle>
             <DialogDescription className="text-xs">
-              Network access for this session only. Applies the next time its container starts.
+              {isSandbox
+                ? "What the agent in this sandbox may use. GitHub access applies at once; Docker and Network apply the next time its container starts."
+                : "Network access for this session only. Applies the next time its container starts."}
             </DialogDescription>
           </div>
         </div>
 
-        <div className="px-5 pt-2 pb-1" role="radiogroup" aria-label="Network access">
-          <ModeOption
-            icon={<ShieldCheckIcon size={ICON_SIZE.SM} />}
-            title="Inherit global"
-            desc={`Follow the workspace setting (currently ${globalLabel}). Change it in Settings → Network.`}
-            selected={mode === "inherit"}
-            disabled={mode === undefined}
-            onSelect={() => void handleChange("inherit")}
-          />
-          <ModeOption
-            icon={<ShieldCheckIcon size={ICON_SIZE.SM} weight="fill" />}
-            title="Contained"
-            desc="Default-deny — only the allowlist (LLM API, GitHub, registries, your added hosts) is reachable, with inline prompts for new hosts."
-            selected={mode === "contained"}
-            disabled={mode === undefined}
-            onSelect={() => void handleChange("contained")}
-          />
-          <ModeOption
-            icon={<ShieldSlashIcon size={ICON_SIZE.SM} />}
-            title="Open"
-            desc="Unrestricted outbound network access — no allowlist, no prompts."
-            selected={mode === "open"}
-            disabled={mode === undefined}
-            onSelect={() => void handleChange("open")}
-          />
-        </div>
+        {/* docs/279 — a sandbox edits its capability grants here; every other
+            session edits its containment override. Mutually exclusive: a
+            sandbox's Network access IS one of these grants, so rendering both
+            would give one session's egress two controls. */}
+        {isSandbox ? (
+          <div className="px-5 pt-1.5 pb-1" data-testid="session-settings-capabilities">
+            <SandboxCapabilityToggles
+              capabilities={capabilities ?? DEFAULT_SANDBOX_CAPABILITIES}
+              onChange={(next) => void handleCapabilitiesChange(next)}
+              disabled={capabilities === undefined || savingCapabilities}
+            />
+          </div>
+        ) : (
+          <div className="px-5 pt-2 pb-1" role="radiogroup" aria-label="Network access">
+            <ModeOption
+              icon={<ShieldCheckIcon size={ICON_SIZE.SM} />}
+              title="Inherit global"
+              desc={`Follow the workspace setting (currently ${globalLabel}). Change it in Settings → Network.`}
+              selected={mode === "inherit"}
+              disabled={mode === undefined}
+              onSelect={() => void handleChange("inherit")}
+            />
+            <ModeOption
+              icon={<ShieldCheckIcon size={ICON_SIZE.SM} weight="fill" />}
+              title="Contained"
+              desc="Default-deny — only the allowlist (LLM API, GitHub, registries, your added hosts) is reachable, with inline prompts for new hosts."
+              selected={mode === "contained"}
+              disabled={mode === undefined}
+              onSelect={() => void handleChange("contained")}
+            />
+            <ModeOption
+              icon={<ShieldSlashIcon size={ICON_SIZE.SM} />}
+              title="Open"
+              desc="Unrestricted outbound network access — no allowlist, no prompts."
+              selected={mode === "open"}
+              disabled={mode === undefined}
+              onSelect={() => void handleChange("open")}
+            />
+          </div>
+        )}
 
         {/* Pending — the selected mode resolves to a different containment than the
             live container was started with. Egress is plumbed at container
@@ -225,7 +334,9 @@ export function SessionSettingsDialog({
               label={
                 agentRunning
                   ? "Wait for the current turn to finish"
-                  : "Restart this session's container to apply the new network mode now"
+                  : isSandbox
+                    ? "Restart this session's container to apply the new capabilities now"
+                    : "Restart this session's container to apply the new network mode now"
               }
             >
               {/* span wrapper so the tooltip still shows while the button is disabled */}
@@ -261,9 +372,20 @@ export function SessionSettingsDialog({
         )}
 
         <p className="px-5 pb-4.5 pt-2 text-[11px] text-(--color-text-tertiary)">
-          Containment can&rsquo;t fully air-gap a session — the agent&rsquo;s lifeline (the LLM API and
-          ShipIt) always stays open. For a workspace with no internet beyond that, start a new
-          <span className="text-(--color-text-secondary)"> Sandbox</span> session with Network access off.
+          {isSandbox ? (
+            <>
+              Turning a capability off removes the agent&rsquo;s access to it — it deletes no files or
+              images. Restarting the container to apply a change does restart this session&rsquo;s
+              services. Network access off isn&rsquo;t an air-gap either: the agent&rsquo;s lifeline
+              (the LLM API and ShipIt) always stays open.
+            </>
+          ) : (
+            <>
+              Containment can&rsquo;t fully air-gap a session — the agent&rsquo;s lifeline (the LLM API and
+              ShipIt) always stays open. For a workspace with no internet beyond that, start a new
+              <span className="text-(--color-text-secondary)"> Sandbox</span> session with Network access off.
+            </>
+          )}
         </p>
       </DialogContent>
     </Dialog>

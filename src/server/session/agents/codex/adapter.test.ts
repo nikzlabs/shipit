@@ -2196,6 +2196,26 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(probed).toContain(`${root}/.codex`);
   });
 
+  // 2026-08-21 incident — a same-harness sub-agent spawn's isolated per-spawn
+  // HOME (`AgentRunParams.homeDir`) outranks the constructor resolver, and both
+  // variables move together (the CLI prefers CODEX_HOME over HOME).
+  it("prefers a per-spawn homeDir over the resolver, for HOME, CODEX_HOME, and the auth probe", async () => {
+    const spawnHome = "/credentials/sub-agent-homes/spawn-9";
+    const probed: (string | undefined)[] = [];
+
+    const adapter = new CodexAdapter(
+      (configDir) => { probed.push(configDir); return true; },
+      { resolveHome: () => "/credentials/provider-accounts/codex/acct-a" },
+    );
+    adapter.on("event", () => { /* drain */ });
+    adapter.run({ prompt: "Hello", cwd: "/workspace", homeDir: spawnHome });
+
+    await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+    expect(lastSpawnEnv?.HOME).toBe(spawnHome);
+    expect(lastSpawnEnv?.CODEX_HOME).toBe(`${spawnHome}/.codex`);
+    expect(probed).toContain(`${spawnHome}/.codex`);
+  });
+
   // docs/150-multiple-provider-subscriptions req 12 — failover moves work between subscriptions only.
   it("does not fall back to the env key for a scoped account with no auth.json", () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";

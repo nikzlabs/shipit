@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent, ToolResultEntry } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, NonTurnFailureCard, SessionMessageOrigin } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SelfMergeWatchCard, SessionReportCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard, PresentInlineCard, BranchAutoResetCard, BranchSyncedCard, SessionRenamedCard, SessionSettingsChangeCard, NonTurnFailureCard, SessionMessageOrigin } from "../shared/types.js";
 import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
 import { retireBackgroundSubagentResult } from "./subagent-completion.js";
@@ -290,6 +290,8 @@ export interface PersistedMessage {
    * the transient "Submitted · N sent" ack, is client-only and never persisted).
    */
   actionChecklist?: ActionChecklistCard;
+  /** docs/280 — an artifact the agent presented with `inline: true`. */
+  presentInline?: PresentInlineCard;
   /**
    * docs/218 — when set, this message renders an inline "Branch updated to latest
    * base" card. Emitted right after the user's message when a merged session's
@@ -317,6 +319,16 @@ export interface PersistedMessage {
    * Immutable static payload — written once on emit, never patched.
    */
   sessionRenamed?: SessionRenamedCard;
+  /**
+   * docs/279 — when set, this message renders an inline "session settings
+   * changed" card: a sandbox capability grant edited after creation, or a
+   * regular session's network containment mode changed (requirements 7 + 8).
+   * A side-channel card off the agent-event stream (it originates in an HTTP
+   * route and routinely lands post-turn), emitted through `emitChatCard` and
+   * persisted here so the trust boundary moving is still in the scrollback
+   * tomorrow. Immutable static payload — written once on emit, never patched.
+   */
+  sessionSettingsChange?: SessionSettingsChangeCard;
   /**
    * docs/196 — when set, this message renders an inline "Child PR merged /
    * closed" card in the PARENT session's transcript. Surfaced from a PR-poller
@@ -459,9 +471,11 @@ interface MessageRow {
   sub_agent_consult: string | null;
   non_turn_failure: string | null;
   action_checklist: string | null;
+  present_inline: string | null;
   branch_auto_reset: string | null;
   branch_synced: string | null;
   session_renamed: string | null;
+  session_settings_change: string | null;
   child_merged: string | null;
   self_merge_watch: string | null;
   session_report: string | null;
@@ -490,8 +504,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, branch_auto_reset, branch_synced, session_renamed, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @branch_auto_reset, @branch_synced, @session_renamed, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, non_turn_failure, action_checklist, present_inline, branch_auto_reset, branch_synced, session_renamed, session_settings_change, child_merged, self_merge_watch, session_report, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id, agent_interface, message_origin)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @non_turn_failure, @action_checklist, @present_inline, @branch_auto_reset, @branch_synced, @session_renamed, @session_settings_change, @child_merged, @self_merge_watch, @session_report, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id, @agent_interface, @message_origin)
 `;
 
 const UPDATE_SQL = `
@@ -500,7 +514,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, non_turn_failure=@non_turn_failure, action_checklist=@action_checklist, present_inline=@present_inline, branch_auto_reset=@branch_auto_reset, branch_synced=@branch_synced, session_renamed=@session_renamed, session_settings_change=@session_settings_change, child_merged=@child_merged, self_merge_watch=@self_merge_watch, session_report=@session_report, release_card=@release_card,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id, agent_interface=@agent_interface, message_origin=@message_origin
   WHERE id = @id
 `;
@@ -538,6 +552,7 @@ export class ChatHistoryManager {
   private stmtFinalizeRowById;
   private stmtDeleteRowById;
   private stmtDeleteExpiredSnapshots;
+  private stmtTranscriptRevision;
 
   constructor(dbManager: DatabaseManager) {
     this.db = dbManager.db;
@@ -616,6 +631,31 @@ export class ChatHistoryManager {
     this.stmtFinalizeRowById = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE id = ?");
     this.stmtDeleteRowById = this.db.prepare("DELETE FROM messages WHERE id = ?");
     this.stmtDeleteExpiredSnapshots = this.db.prepare("DELETE FROM rewind_snapshots WHERE expires_at_ms <= ?");
+    this.stmtTranscriptRevision = this.db.prepare(
+      "SELECT revision FROM transcript_revisions WHERE session_id = ?",
+    );
+  }
+
+  /**
+   * planning#324 — how many times this session's persisted transcript has been
+   * written. A value that has not moved is a positive statement that no row of
+   * this session's history was inserted, patched or deleted since it was read;
+   * `GET /history` folds it into the response's ETag so a tab returning to the
+   * foreground can be told "unchanged" without the transcript being loaded,
+   * projected and hashed first.
+   *
+   * The counter is maintained by three triggers on `messages` rather than by
+   * this class (see the migration in `database.ts` for why), so it holds for
+   * every write path — appends, the in-place card patches that leave the row
+   * count and the largest id untouched, and full rewrites through
+   * `saveMessages` / `replaceInProgress` alike.
+   *
+   * 0 for a session that has never had a message. That is a real value, not a
+   * failure: it changes as soon as anything is written.
+   */
+  transcriptRevision(sessionId: string): number {
+    const row = this.stmtTranscriptRevision.get(sessionId) as { revision: number } | undefined;
+    return row?.revision ?? 0;
   }
 
   private toRow(sessionId: string, msg: PersistedMessage) {
@@ -651,8 +691,10 @@ export class ChatHistoryManager {
       sub_agent_consult: msg.subAgentConsult ? JSON.stringify(msg.subAgentConsult) : null,
       non_turn_failure: msg.nonTurnFailure ? JSON.stringify(msg.nonTurnFailure) : null,
       action_checklist: msg.actionChecklist ? JSON.stringify(msg.actionChecklist) : null,
+      present_inline: msg.presentInline ? JSON.stringify(msg.presentInline) : null,
       branch_auto_reset: msg.branchAutoReset ? JSON.stringify(msg.branchAutoReset) : null,
       session_renamed: msg.sessionRenamed ? JSON.stringify(msg.sessionRenamed) : null,
+      session_settings_change: msg.sessionSettingsChange ? JSON.stringify(msg.sessionSettingsChange) : null,
       branch_synced: msg.branchSynced ? JSON.stringify(msg.branchSynced) : null,
       child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
       self_merge_watch: msg.selfMergeWatch ? JSON.stringify(msg.selfMergeWatch) : null,
@@ -702,8 +744,10 @@ export class ChatHistoryManager {
     if (row.sub_agent_consult) msg.subAgentConsult = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
     if (row.non_turn_failure) msg.nonTurnFailure = JSON.parse(row.non_turn_failure) as NonTurnFailureCard;
     if (row.action_checklist) msg.actionChecklist = JSON.parse(row.action_checklist) as ActionChecklistCard;
+    if (row.present_inline) msg.presentInline = JSON.parse(row.present_inline) as PresentInlineCard;
     if (row.branch_auto_reset) msg.branchAutoReset = JSON.parse(row.branch_auto_reset) as BranchAutoResetCard;
     if (row.session_renamed) msg.sessionRenamed = JSON.parse(row.session_renamed) as SessionRenamedCard;
+    if (row.session_settings_change) msg.sessionSettingsChange = JSON.parse(row.session_settings_change) as SessionSettingsChangeCard;
     if (row.branch_synced) msg.branchSynced = JSON.parse(row.branch_synced) as BranchSyncedCard;
     if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
     if (row.self_merge_watch) msg.selfMergeWatch = JSON.parse(row.self_merge_watch) as SelfMergeWatchCard;

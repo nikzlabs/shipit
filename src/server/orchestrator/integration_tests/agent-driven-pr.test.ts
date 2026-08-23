@@ -781,6 +781,65 @@ describe("repo-aware PR brokering (docs/211)", () => {
   );
 
   it(
+    "docs/279 — revoking GitHub access closes the brokered PR/Actions verbs too, not just the token",
+    { timeout: 20_000 },
+    async () => {
+      // docs/211 gated only the credential route, on the reasoning that a
+      // token-less container cannot reach GitHub. The brokered verbs beside it
+      // run SERVER-side with the orchestrator's own credential, so that
+      // reasoning never covered them — and once the grant is editable, a revoke
+      // that leaves them open is not a revoke (docs/279 req 2).
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await createBareSession();
+      sessionManager.setKind(sessionId, "sandbox");
+      sessionManager.setCapabilities(sessionId, { git: false, docker: false, network: true, dangerousGitHubOps: false });
+
+      const calls: { method: "GET" | "POST" | "PATCH"; url: string; payload: Record<string, unknown> }[] = [
+        { method: "POST", url: `/api/sessions/${sessionId}/pr/agent-create`, payload: { title: "x", body: "y" } },
+        { method: "PATCH", url: `/api/sessions/${sessionId}/pr/1`, payload: { title: "x" } },
+        { method: "POST", url: `/api/sessions/${sessionId}/pr/1/comment`, payload: { body: "x" } },
+        { method: "POST", url: `/api/sessions/${sessionId}/pr/1/ready`, payload: {} },
+        { method: "POST", url: `/api/sessions/${sessionId}/pr/1/close`, payload: {} },
+        { method: "POST", url: `/api/sessions/${sessionId}/pr/1/reopen`, payload: {} },
+        { method: "POST", url: `/api/sessions/${sessionId}/pr/1/merge`, payload: {} },
+        { method: "POST", url: `/api/sessions/${sessionId}/actions/runs/rerun`, payload: { runId: 1 } },
+        { method: "GET", url: `/api/sessions/${sessionId}/pr/list`, payload: {} },
+        { method: "GET", url: `/api/sessions/${sessionId}/pr/view`, payload: {} },
+        { method: "GET", url: `/api/sessions/${sessionId}/pr/status`, payload: {} },
+        { method: "GET", url: `/api/sessions/${sessionId}/actions/runs`, payload: {} },
+        { method: "GET", url: `/api/sessions/${sessionId}/actions/workflows`, payload: {} },
+      ];
+
+      for (const call of calls) {
+        const res = await app.inject({
+          method: call.method,
+          url: call.url,
+          payload: call.payload,
+        });
+        expect(
+          { url: call.url, status: res.statusCode },
+        ).toEqual({ url: call.url, status: 403 });
+      }
+    },
+  );
+
+  it(
+    "docs/279 — the same verbs are unaffected for a sandbox with GitHub access ON",
+    { timeout: 15_000 },
+    async () => {
+      // The gate must deny ONLY a sandbox with `git` off. A granted sandbox gets
+      // whatever the route would otherwise answer — anything but 403.
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await createBareSession();
+      sessionManager.setKind(sessionId, "sandbox");
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true, dangerousGitHubOps: false });
+
+      const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/list` });
+      expect(res.statusCode).not.toBe(403);
+    },
+  );
+
+  it(
     "git-credential broker is unaffected for a normal repo-bound session",
     { timeout: 15_000 },
     async () => {

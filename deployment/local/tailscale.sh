@@ -48,10 +48,7 @@ else
   C_BANNER='' C_PASTE='' C_RESET=''
 fi
 
-echo "==========================================="
-echo "  ShipIt — Tailscale access (local install)"
-echo "==========================================="
-echo ""
+echo "==> ShipIt — Tailscale access (local install)"
 
 # --- Preflight: check and instruct, never auto-install ----------------------
 # Mirrors deployment/local/setup.sh's posture: a local machine is the user's own,
@@ -151,31 +148,23 @@ if [ -z "${SHIPIT_TAILNET_IP:-}" ]; then
   exit 1
 fi
 SSLIP_HOST="${SHIPIT_TAILNET_IP//./-}.sslip.io"
-TS_IP="$SHIPIT_TAILNET_IP"
 
+# Kept short, and the URL is last: it is the one thing the reader is here for.
+# The sslip.io name is what the URL uses (not the raw tailnet IP), because
+# previews need a host that can carry a wildcard subdomain — the reasoning is in
+# the header comment above and in deployment/README.md, not in this output.
 echo ""
-echo "${C_BANNER}===========================================${C_RESET}"
-echo "${C_BANNER}  Tailscale access configured${C_RESET}"
-echo "${C_BANNER}===========================================${C_RESET}"
+echo "  Tailnet access is ready. Worth knowing:"
+echo "    - On this machine, http://localhost:4123 keeps working as before."
+echo "    - HTTP only — these names have no TLS certificate, so the clipboard"
+echo "      and PWA install stay unavailable."
+echo "    - sslip.io, a public DNS resolver, resolves this name; some networks"
+echo "      block names that point into 100.64/10 and cannot reach it."
+echo "    - If Tailscale is down at start, ShipIt starts on localhost and picks"
+echo "      the tailnet binding back up on the next start."
+echo "    - Owned domains, HTTPS, and the full reasoning: deployment/README.md"
 echo ""
-echo "  Open ShipIt from any device on your tailnet at:"
-echo "${C_PASTE}      http://${SSLIP_HOST}:4123${C_RESET}"
-echo ""
-echo "  Use that URL rather than http://${TS_IP}:4123 — previews are served at"
-echo "  {sessionId}--{port}.<host>, and a raw IP address cannot carry a wildcard"
-echo "  subdomain, so previews are blank on the raw-IP URL."
-echo ""
-echo "  On this machine, http://localhost:4123 keeps working as before."
-echo ""
-echo "  Notes:"
-echo "    - Traffic rides the encrypted tailnet, but the connection is HTTP: there"
-echo "      is no wildcard TLS certificate for these names. Clipboard and PWA"
-echo "      install need a secure context and will be unavailable."
-echo "    - sslip.io is a public DNS resolver, so it sits in the resolution path."
-echo "      Some networks block public names that resolve into CGNAT (100.64/10)"
-echo "      as DNS-rebinding protection; if a device can't resolve the host, that"
-echo "      is usually why."
-echo "    - If Tailscale is down when ShipIt starts, it still starts on localhost"
-echo "      and picks the tailnet binding back up on the next start."
-echo "    - For real HTTPS, point a wildcard record you own at ${TS_IP}."
+echo "${C_BANNER}=======================================================================${C_RESET}"
+echo "${C_BANNER}  Open ShipIt on your tailnet at   ${C_PASTE}http://${SSLIP_HOST}:4123${C_RESET}"
+echo "${C_BANNER}=======================================================================${C_RESET}"
 echo ""

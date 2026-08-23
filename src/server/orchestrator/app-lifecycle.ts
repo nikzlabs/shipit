@@ -13,6 +13,7 @@ import { SessionContainerManager, resolveAgentDockerLimits } from "./session-con
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { PresentStore } from "./present-store.js";
+import type { InProgressPersister } from "./chat-card-persistence.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { preservePartialTurnOnWorkerLoss } from "./startup-tasks.js";
@@ -365,6 +366,13 @@ export interface RunnerFactoryDeps {
    */
   presentStore?: PresentStore;
   /**
+   * docs/280 — where an inline presentation's transcript card is persisted.
+   * Passed into every `ContainerSessionRunner` because the card is emitted from
+   * the present SSE stream, which the runner owns; without it an inline present
+   * still reaches the Present tab and only the chat card is skipped.
+   */
+  chatHistoryManager?: InProgressPersister;
+  /**
    * docs/150 — local mode only. The account-scoped agent factory; each
    * in-process runner gets a `createAgent` bound to it so its CLI spawns
    * against the provider account THIS session was routed to. Absent (or with
@@ -592,6 +600,27 @@ async function attemptContainerCreate(
     const createStart = Date.now();
     const sc = await mgr.create(config);
     console.log(`[timing] container.create for ${sessionId} took ${Date.now() - createStart}ms`);
+    // docs/279 — record the grants this container was actually plumbed with, so
+    // a later edit to the durable set can be diffed against them ("pending ·
+    // applies on next container start"). Recorded HERE, beside the
+    // `sandboxDockerAccess` derivation above that reads the same set, because
+    // this is the point the grant becomes container plumbing. Sandbox-only:
+    // every other session has no capability set, and an absent record correctly
+    // reads as "nothing to pend".
+    //
+    // Known race, accepted (review finding): `opts.session` was captured before
+    // the await above, while `resolveEgressConfig` re-reads the session from
+    // SQLite *during* creation. So a capability edit that lands mid-create can
+    // plumb egress from the new value and record the old one. It needs the user
+    // to toggle a grant in the seconds a container is booting, and the failure
+    // is a pending indicator that is offered (or withheld) once too often — not
+    // a wrong grant, since the durable set is what every broker reads. Recording
+    // the same object Docker was derived from is the lesser evil: re-reading
+    // here would make the snapshot disagree with the Docker plumbing instead,
+    // which is the half that cannot be corrected without a restart anyway.
+    if (opts.session?.kind === "sandbox" && opts.session.capabilities) {
+      mgr.recordCapabilitiesAtStart(sessionId, opts.session.capabilities);
+    }
     console.log(`[container] Container ready for ${sessionId} at ${sc.workerUrl}`);
     runner.setWorkerUrl(sc.workerUrl);
     mgr.clearCreateError(sessionId);
@@ -616,7 +645,8 @@ export function buildRunnerFactory(
 ): SessionRunnerFactory | undefined {
   const {
     deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog,
-    oomBreaker, presentStore, localAgentFactory, providerAccountManager, credentialStore,
+    oomBreaker, presentStore, chatHistoryManager, localAgentFactory, providerAccountManager,
+    credentialStore,
   } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
@@ -720,6 +750,7 @@ export function buildRunnerFactory(
         defaultAgentId: o.defaultAgentId,
         workerUrl: existing.workerUrl,
         ...(presentStore ? { presentStore } : {}),
+      ...(chatHistoryManager ? { chatHistoryManager } : {}),
       });
     }
 
@@ -734,6 +765,7 @@ export function buildRunnerFactory(
         defaultAgentId: o.defaultAgentId,
         workerUrl: "http://0.0.0.0:0",
         ...(presentStore ? { presentStore } : {}),
+      ...(chatHistoryManager ? { chatHistoryManager } : {}),
       });
 
       void (async () => {
@@ -781,6 +813,7 @@ export function buildRunnerFactory(
       defaultAgentId: o.defaultAgentId,
       workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
       ...(presentStore ? { presentStore } : {}),
+      ...(chatHistoryManager ? { chatHistoryManager } : {}),
     });
     console.log(`[container] ${existing ? "Replacing stale" : "Creating"} container for session ${o.sessionId}...`);
     void createContainerForRunner({

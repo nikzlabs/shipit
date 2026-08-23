@@ -41,6 +41,33 @@ import {
 import type { AgentId } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 
+/**
+ * planning#324 — the wire-shape half of the `/history` validator.
+ *
+ * The transcript revision covers the session's ROWS. This constant covers the
+ * one input the rows cannot see: how those rows are TURNED INTO a response. That
+ * is the whole derivation, not just the last step of it —
+ *
+ *   - `ChatHistoryManager.fromRow` (which columns are decoded, and into what:
+ *     the legacy `agent_review` → `aiReview` degradation is exactly this kind of
+ *     change),
+ *   - the ordering and filtering of the rows `load` selects,
+ *   - `projectMessagesForWire` (a new field, a different clamp, a reshaped tool
+ *     result, a changed image URL scheme),
+ *   - the assembly of the payload object itself.
+ *
+ * Change any of them and the response body changes with no write to `messages`
+ * at all, so every validator a client already holds stays valid against a
+ * payload that is no longer shaped the way it was cached — and the client keeps
+ * serving the old shape until its LRU entry ages out or the page reloads.
+ *
+ * **Bump it when the wire derivation changes without a data change.** One move
+ * invalidates every held validator at once. Nothing enforces this mechanically:
+ * it is the price of a validator derived from the data rather than hashed from
+ * the bytes, and the reason to keep the list above current.
+ */
+const HISTORY_VALIDATOR_VERSION = 1;
+
 export async function registerSessionSpawnRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -99,8 +126,6 @@ export async function registerSessionSpawnRoutes(
       reply.code(404).send({ error: "Session not found" });
       return;
     }
-    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
-
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
     if (session.workspaceDir) {
       try {
@@ -152,8 +177,9 @@ export async function registerSessionSpawnRoutes(
     // idempotent by presentId, so this and the WS replay can't double-render.
     const presentations = deps.presentStore?.listForClient(request.params.id) ?? [];
 
-    const payload = {
-      messages,
+    // Everything in the response EXCEPT the transcript. Small, and hashed
+    // directly — see the validator below.
+    const rest = {
       commits,
       agentRunning,
       backgroundTasks,
@@ -168,20 +194,45 @@ export async function registerSessionSpawnRoutes(
     // planning#375 — revalidate instead of re-download. Switching between
     // sessions is constant, and this response is megabytes on a long one.
     //
-    // The tag is the hash of the BODY, not a composed version stamp, and that
-    // is the point: the payload is assembled from seven independent sources
-    // (chat rows, git log, runner state, background tasks, usage, presentations,
-    // rewind snapshot), so a stamp that forgets one serves a stale transcript.
-    // Hashing what is about to be sent cannot be wrong. It saves the transfer
-    // and the client's parse, not the server-side build.
-    const body = JSON.stringify(payload);
-    const etag = etagFor(body);
+    // planning#324 — and revalidate CHEAPLY. Returning focus to a tab reconnects
+    // the socket unconditionally (deliberately: a backgrounded socket can read
+    // OPEN while being dead), which re-issues this request, so on an alt-tab the
+    // "nothing changed" answer is the common one. Hashing the body to discover
+    // that meant loading every row, decoding ~44 JSON columns per row,
+    // projecting the result and hashing megabytes — the whole cost of a change,
+    // paid to report the absence of one.
+    //
+    // So the validator is COMPOSED rather than hashed off the body, and composed
+    // in the one way that is safe: the transcript — the expensive part, and the
+    // only part whose cost grows with the session — contributes its revision
+    // (planning#324's per-session counter, moved by every write to `messages`),
+    // and the six other sources contribute themselves. `messages` is a pure
+    // function of the session id and that revision, so a matching tag is as
+    // strong a statement as the body hash was. What it must NOT become is a
+    // stamp that speaks for a source it does not read: the payload is assembled
+    // from seven independent sources, and one forgotten source is a permanently
+    // stale surface for the client. `HISTORY_VALIDATOR_VERSION` carries the
+    // eighth input, which is not a source at all — the wire projection's own
+    // shape, which no counter derived from the data can see.
+    const transcriptRevision = deps.chatHistoryManager.transcriptRevision(request.params.id);
+    const etag = etagFor(JSON.stringify([
+      HISTORY_VALIDATOR_VERSION,
+      request.params.id,
+      transcriptRevision,
+      rest,
+    ]));
     // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
     // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
     if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
-      reply.code(304).send();
+      // RFC 9110 §15.4.5 — a 304 carries the validator of the representation it
+      // is standing in for. The client keeps the tag it sent either way; this is
+      // for the intermediaries between us and it.
+      reply.header("etag", etag).code(304).send();
       return;
     }
+    // Only now — a request that ends in a 304 never materializes the transcript.
+    const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
+    const body = JSON.stringify({ messages, ...rest });
     // `no-cache` = revalidate every time, never serve blind from the browser's
     // own cache. A stale transcript is worse than a round trip.
     reply.header("etag", etag).header("cache-control", "no-cache").type("application/json");

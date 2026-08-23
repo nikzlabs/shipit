@@ -423,8 +423,12 @@ export class GrokAdapter
 
     // Env discipline — the order is load-bearing and is claude/process.ts's:
     // HOME first, then the credential scrub, then service delivery, because the
-    // scrub deletes the very variable the delivery writes.
-    const scopedHome = this.resolveHome?.();
+    // scrub deletes the very variable the delivery writes. A per-spawn
+    // `homeDir` (a same-harness sub-agent's isolated credential root) outranks
+    // the constructor-injected resolver; the throwaway spawn home below then
+    // links its durable auth.json out of THAT root's `.grok` instead of the
+    // session's.
+    const scopedHome = params.homeDir ?? this.resolveHome?.();
     const home = resolveAgentHome(scopedHome);
     const configRoot = this.makeSpawnHome(grokHome(home));
     if (configRoot === null) {

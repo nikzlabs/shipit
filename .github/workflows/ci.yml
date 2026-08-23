@@ -59,6 +59,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      egress: ${{ steps.filter.outputs.egress }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -71,6 +72,7 @@ jobs:
           if [ -z "$BASE_SHA" ]; then
             echo "Not a pull request — running the full gates."
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "egress=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # pull_request workflows check out GitHub's synthetic merge commit.
@@ -86,6 +88,22 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          # The egress sidecar image is built by no other job, so it needs its own
+          # narrow gate: the Dockerfile plus everything that goes into it (the tier
+          # scripts, the Go proxy source, these checks). Kept separate from `code`
+          # because a normal TypeScript PR should not pay for a Docker build.
+          #
+          # The two egress-*.ts files are in here because the job reads the expected
+          # uids OUT of them. Without them, a PR that deliberately changes a uid — the
+          # one PR that can actually cause the image/orchestrator drift this job exists
+          # to catch — would be exactly the PR that skips the job, and would merge with
+          # the image still on the old uid. ci.yml is in here so a change to the job
+          # exercises the job.
+          if printf '%s\n' "$changed" | grep -qE '^(docker/Dockerfile\.egress-sidecar|src/server/orchestrator/egress-dns\.ts|src/server/orchestrator/egress-proxy-install\.ts|\.github/workflows/ci\.yml)$|^docker/egress-sidecar/'; then
+            echo "egress=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "egress=false" >> "$GITHUB_OUTPUT"
           fi
 
   check:
@@ -113,6 +131,12 @@ jobs:
           key: node-modules-ubuntu24-node24-${{ hashFiles('package-lock.json') }}
       - if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
+      # The production images install this nested manifest with npm ci. Run its
+      # lockfile validation here too, but skip extraction of the large platform
+      # binaries: a split upstream publish can otherwise leave Renovate's lock
+      # missing optional platform records and fail only during deployment.
+      - run: npm ci --ignore-scripts --dry-run
+        working-directory: docker/agent-cli
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run check-deps
@@ -138,3 +162,81 @@ jobs:
       - if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: npm ci
       - run: npm test
+
+  # The egress firewall sidecar (docs/172-agent-containment, egress-control.md) is a
+  # containment control: it runs privileged in the agent container's network namespace
+  # with NET_ADMIN. Until this job existed, NOTHING in CI built a Docker image — so its
+  # Dockerfile was never built by CI even once. That is not hypothetical: PR #2392
+  # (Renovate, alpine 3.20 -> 3.24 and golang 1.23.5 -> 1.24.3) merged green with the
+  # image unbuilt, and whether it still worked was found out afterwards, by hand.
+  #
+  # The interesting failure mode is not a broken build — that one is loud, and the build
+  # step catches it. It is an image that builds perfectly and no longer *contains*: if
+  # `adduser` picks a different uid, the firewall's owner-match rules stop matching the
+  # process they were written for and the sidecar fails open, silently, with a green
+  # build. So image-checks.sh asserts the image's contract with the orchestrator, and
+  # the expected uids are read from the server source rather than restated here.
+  #
+  # Deliberately NOT covered: the Tier A self-test inside init-firewall.sh. It installs
+  # an iptables policy, so it needs NET_ADMIN and a shared network namespace, neither of
+  # which a stock runner has. That stays in the host-level planning#92 verification.
+  egress-sidecar-image:
+    name: Egress Sidecar Image
+    needs: changes
+    # Job-level skip, not `paths` on the trigger — see the NOTE on `on:` above: a
+    # trigger-level path filter never reports and would block PRs forever, while a
+    # skipped job reports success.
+    if: needs.changes.outputs.egress == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      # Build context is `docker/`, matching the Dockerfile's own header and deploy.sh.
+      - name: Build the sidecar image
+        run: docker build -f docker/Dockerfile.egress-sidecar -t shipit-egress-sidecar:ci docker/
+      # Asserted here rather than in image-checks.sh because that script runs with the
+      # entrypoint overridden to `sh`, so from inside the container it cannot observe
+      # what the default actually is.
+      - name: Verify the image's default entrypoint and user
+        run: |
+          set -euo pipefail
+          # Tier A runs on the image DEFAULT entrypoint: installEgressFirewall() in
+          # src/server/orchestrator/egress-firewall-install.ts creates its container
+          # with no Entrypoint override, so whatever the image defaults to is what
+          # installs containment. A default that silently became a *successful* no-op
+          # — say allow-subnet.sh, which is right there in the same image — would exit
+          # zero, install nothing, and be indistinguishable from success to the caller.
+          entrypoint=$(docker image inspect shipit-egress-sidecar:ci --format '{{json .Config.Entrypoint}}')
+          echo "default entrypoint: $entrypoint"
+          if [ "$entrypoint" != '["/usr/local/bin/init-firewall.sh"]' ]; then
+            echo "Unexpected default entrypoint — Tier A installs containment through it." >&2
+            echo "See installEgressFirewall() in src/server/orchestrator/egress-firewall-install.ts." >&2
+            exit 1
+          fi
+          # Tier A needs root to exercise NET_ADMIN. The non-root uids in this image are
+          # applied per-container by the orchestrator (the resolver and proxy sidecars),
+          # never as an image-wide default, so a default USER here would break Tier A.
+          user=$(docker image inspect shipit-egress-sidecar:ci --format '{{.Config.User}}')
+          if [ -n "$user" ]; then
+            echo "Image sets a default USER ('$user'); Tier A's installer expects root." >&2
+            exit 1
+          fi
+          echo "default user: root (unset), as Tier A requires"
+      - name: Verify the image's contract with the orchestrator
+        run: |
+          set -euo pipefail
+          # Read the expected uids from the server source instead of hardcoding them,
+          # so this fails when the image and the orchestrator disagree — whichever side
+          # moved. Hardcoding here would just create a third copy to drift.
+          resolver_uid=$(sed -n 's/^export const EGRESS_RESOLVER_UID = \([0-9]*\);.*/\1/p' src/server/orchestrator/egress-dns.ts)
+          proxy_uid=$(sed -n 's/^export const EGRESS_PROXY_UID = \([0-9]*\);.*/\1/p' src/server/orchestrator/egress-proxy-install.ts)
+          if [ -z "$resolver_uid" ] || [ -z "$proxy_uid" ]; then
+            echo "Could not read EGRESS_RESOLVER_UID / EGRESS_PROXY_UID from the server source." >&2
+            echo "If those constants were renamed or moved, update this step to match." >&2
+            exit 1
+          fi
+          echo "orchestrator expects: resolver uid=$resolver_uid, proxy uid=$proxy_uid"
+          # Bind-mounted, not COPYed: test code stays out of a privileged image.
+          docker run --rm \
+            -v "$PWD/docker/egress-sidecar/image-checks.sh:/image-checks.sh:ro" \
+            --entrypoint sh shipit-egress-sidecar:ci \
+            /image-checks.sh "$resolver_uid" "$proxy_uid"

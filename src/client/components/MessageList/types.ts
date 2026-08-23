@@ -4,9 +4,11 @@ import type {
   CompactionCard as CompactionCardData,
   SubAgentConsultCard as SubAgentConsultCardData,
   ActionChecklistCard as ActionChecklistCardData,
+  PresentInlineCard as PresentInlineCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
   BranchSyncedCard as BranchSyncedCardData,
   SessionRenamedCard as SessionRenamedCardData,
+  SessionSettingsChangeCard as SessionSettingsChangeCardData,
   SelfMergeWatchCard as SelfMergeWatchCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
@@ -441,6 +443,15 @@ export interface ChatMessage {
    */
   actionChecklist?: ActionChecklistCardData;
   /**
+   * docs/280 — when set, this message renders a `PresentInlineCard`: an artifact
+   * the agent showed with `present({ inline: true })`, rendered right here in the
+   * conversation instead of only in the Present tab. Metadata only — the bytes
+   * come from the present store / the session API on demand, which is why a card
+   * written weeks ago still renders the file's current contents and why
+   * re-presenting the same path refreshes this card in place.
+   */
+  presentInline?: PresentInlineCardData;
+  /**
    * docs/218 — when set, this message renders a `BranchUpdatedCard` inline ("Branch
    * updated to latest <base>"), shown right after the user's message when a merged
    * session's branch was auto-reset to `origin/<base>` before the turn ran. The
@@ -466,6 +477,15 @@ export interface ChatMessage {
    * full payload on the message; the component renders straight from it.
    */
   sessionRenamed?: SessionRenamedCardData;
+  /**
+   * docs/279 — when set, this message renders an inline "session settings
+   * changed" card: a sandbox capability grant edited after creation, or a
+   * regular session's network containment mode changed (requirements 7 + 8).
+   * The card has no lifecycle and no store, so both the live
+   * `session_settings_change_card` WS handler and a history rehydration carry
+   * the full payload on the message; the component renders straight from it.
+   */
+  sessionSettingsChange?: SessionSettingsChangeCardData;
 }
 
 export interface TextSegment {

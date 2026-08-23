@@ -7,6 +7,20 @@
 
 export type DeviceCategory = "phone" | "tablet" | "custom";
 
+/** Minimum allowed value for a custom viewport dimension (px). */
+export const CUSTOM_SIZE_MIN = 100;
+/** Maximum allowed value for a custom viewport dimension (px). */
+export const CUSTOM_SIZE_MAX = 2560;
+
+/**
+ * The synthetic preset that represents a freeform/custom size. The label is a
+ * constant — the toolbar's dimension indicator carries the numbers — so the
+ * trigger stays stable during a drag and can never disagree with the surface.
+ */
+export function customPreset(width: number, height: number): DevicePreset {
+  return { id: "custom", label: "Custom", width, height, category: "custom" };
+}
+
 export interface DevicePreset {
   id: string;
   label: string;

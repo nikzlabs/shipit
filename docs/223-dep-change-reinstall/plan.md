@@ -157,9 +157,9 @@ So both paths record a `DependencyGap` on the runner
 the two surfaces the reporter was actually looking at:
 
 - **The transcript** — a persisted `[System]` warn notice, wired in
-  `runner-registry-factory.ts` exactly like docs/271's withheld-install notice.
-  Persisted rather than emitted because the failure is met LATER: a notice that
-  vanished on reload would be gone at the moment it is needed.
+  `runner-registry-factory.ts` via `onDependenciesUnverified`. Persisted rather
+  than emitted because the failure is met LATER: a notice that vanished on
+  reload would be gone at the moment it is needed.
 - **`shipit service list` / `GET /api/sessions/:id/services`** — a `dependencies`
   field riding alongside the list, the same shape and for the same reason as
   planning#382's `failure`. A service row cannot explain a failure whose cause is
@@ -173,9 +173,8 @@ report names what moved the tree rather than being a fact with no cause; it is
 *consumed* when an install starts, so a later watcher-driven failure cannot
 inherit a rewrite it had nothing to do with. And the gap is **cleared only on
 positive evidence** — an install that ran and succeeded, or a content-keyed
-marker skip. Not a withheld install (docs/271: it did not run), and not the
-"worker restarted, we cannot tell" resync, which synthesizes a completion from no
-evidence at all.
+marker skip. Not the "worker restarted, we cannot tell" resync, which
+synthesizes a completion from no evidence at all.
 
 A **failed** install already latches `dependsOnInstall` services to `error`, which
 is the loud half. It is still reported here because that covers only gated
@@ -218,8 +217,8 @@ the gap notice above:
   channel for the failure case is the gap prefix, and a session that hits both
   must not read two paragraphs that sound the same. The notice therefore opens
   by saying nothing is broken, and never borrows the gap notice's phrasing.
-- **A record beside the install marker** (`.install-not-content-keyed`, the
-  shape of docs/271's `INSTALL_WITHHELD_FILE`) so the panel reads a state
+- **A record beside the install marker** (`.install-not-content-keyed`) so the
+  panel reads a state
   detected once at setup, and the operator log line fires once per *distinct*
   command list rather than once per container recreate. The record is cleared
   the moment the config resolves an input set again, so it cannot outlive the

@@ -4,7 +4,6 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { formatRelativeDate } from "../../utils/dates.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "../ui/dropdown-menu.js";
 import { OverflowMenu } from "../ui/overflow-menu.js";
-import { SessionSettingsDialog } from "./SessionSettingsDialog.js";
 import { PrStateBadge } from "../PrLifecycleCard.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
@@ -57,7 +56,6 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const hasChildren = (childCount ?? 0) > 0 && !!onToggleChildren;
 
   const [menuOpen, setMenuOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -354,7 +352,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                 {isCurrent && (
                   <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                    <DropdownMenuItem onSelect={() => useUiStore.getState().setSessionSettingsDialogOpen(true)}>
                       <SlidersHorizontalIcon size={ICON_SIZE.SM} />
                       Session settings
                     </DropdownMenuItem>
@@ -372,13 +370,6 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
         </div>
       )}
 
-      {isCurrent && (
-        <SessionSettingsDialog
-          sessionId={session.id}
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-        />
-      )}
     </div>
   );
 }

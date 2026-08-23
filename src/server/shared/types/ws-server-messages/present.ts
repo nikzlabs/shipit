@@ -26,6 +26,13 @@ export interface WsPresentContentMessage {
   filePath: string;
   /** ISO8601 timestamp the worker accepted the presentation. */
   createdAt: string;
+  /**
+   * docs/280 — this artifact also renders as a card in the chat transcript. The
+   * card itself is a separate, PERSISTED message (`present_inline_card`); this
+   * flag only tells the carousel that the entry has a transcript twin, so the
+   * card and the Present tab agree about which artifacts are inline.
+   */
+  inline?: boolean;
 }
 
 /**
@@ -53,6 +60,8 @@ export interface PresentStateEntry {
   title?: string;
   filePath: string;
   createdAt: string;
+  /** docs/280 — the artifact also has a card in the chat transcript. */
+  inline?: boolean;
 }
 
 /**

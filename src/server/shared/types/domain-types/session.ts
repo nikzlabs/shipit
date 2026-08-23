@@ -8,8 +8,10 @@ import type { SecretFinding } from "../../secret-scan.js";
 // ---- Session types ----
 
 /**
- * docs/211 — the capability set chosen at sandbox-session creation. Each flag is
- * an independent, immutable per-session grant:
+ * docs/211 — the capability set a sandbox session runs under. Chosen at creation
+ * and editable afterwards (docs/279-mutable-sandbox-capabilities), always through
+ * a server-authoritative, browser-only write. Each flag is an independent
+ * per-session grant:
  *   - `git`     (UI "GitHub access") — the GitHub credential broker: clone/push
  *               private repos and broker PR ops. Off ⇒ no GitHub token (public
  *               HTTPS clones may still work; "off" is *not* a network seal).
@@ -26,10 +28,7 @@ import type { SecretFinding } from "../../secret-scan.js";
  *               (merge being the first). Off ⇒ `gh pr merge` is refused at the
  *               broker. Only meaningful when `git` is also granted. Defaults to
  *               `false`; this is the most prompt-injection-exposed verb, so it is
- *               never on unless the user explicitly opts in at creation.
- *
- * Capability *wiring* (threading `docker`/`network`/`git` into the container and
- * brokers) lands in docs/211 Phase 2; the foundation persists the chosen set.
+ *               never on unless the user explicitly opts in.
  */
 export interface SessionCapabilities {
   git: boolean;
@@ -55,7 +54,17 @@ export const DEFAULT_SANDBOX_CAPABILITIES: SessionCapabilities = {
  * docs/211 — coerce arbitrary (possibly partial / untrusted) input into a fully
  * populated {@link SessionCapabilities}, falling back to
  * {@link DEFAULT_SANDBOX_CAPABILITIES} for any missing or non-boolean field.
- * Used at the creation route (client payload) and `fromRow` (persisted JSON).
+ * Used at the creation route (client payload), the docs/279 edit route, and
+ * `fromRow` (persisted JSON).
+ *
+ * It also enforces docs/224's **sub-grant rule**: `dangerousGitHubOps` is
+ * meaningless without `git` (the merge verb it unlocks runs through the GitHub
+ * credential broker `git` gates), so `git: false` clears it. That rule lived
+ * only in `SandboxDialog`'s local toggle state — i.e. client-side, on the one
+ * payload the server explicitly does not trust — which was survivable while
+ * creation was the only writer. With the set editable it belongs here, in the
+ * coercer both trust boundaries already run through, so no caller can persist a
+ * grant that reads as "may merge PRs" on a session with no GitHub access.
  */
 export function normalizeCapabilities(input: unknown): SessionCapabilities {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
@@ -63,12 +72,47 @@ export function normalizeCapabilities(input: unknown): SessionCapabilities {
     const v = obj[key];
     return typeof v === "boolean" ? v : DEFAULT_SANDBOX_CAPABILITIES[key];
   };
+  const git = flag("git");
   return {
-    git: flag("git"),
+    git,
     docker: flag("docker"),
     network: flag("network"),
-    dangerousGitHubOps: flag("dangerousGitHubOps"),
+    dangerousGitHubOps: git && flag("dangerousGitHubOps"),
   };
+}
+
+/**
+ * docs/279 — a sandbox session's capability set as the browser reads it: the
+ * durable grants, what the LIVE container was actually created with, and whether
+ * the two disagree in a way only a container restart can settle.
+ *
+ * Deliberately the same shape of answer as {@link EgressSessionSettings}'s
+ * `startedContained` / `pendingRestart` pair, and for the same reason: the
+ * container-plumbed half of a grant (`docker`'s `DOCKER_HOST` + bridge network,
+ * `network`'s egress topology) is installed into the container at creation and
+ * cannot be re-plumbed live, so the write always succeeds and the *application*
+ * of it is what pends. The server computes `pendingRestart` and the client
+ * renders it, rather than re-deriving a second answer from the two sets.
+ */
+export interface SandboxCapabilitiesView {
+  sessionId: string;
+  /** The durable, server-authoritative grants — what a broker check reads now. */
+  capabilities: SessionCapabilities;
+  /**
+   * What this session's running container was created with. `null` when no
+   * container is running, and when one is running that the orchestrator only
+   * rediscovered (its boot-time grants aren't knowable) — the same
+   * "absent means unknown" convention `egressContainedAtStart` uses. Unknown
+   * yields no pending diff rather than a false one.
+   */
+  capabilitiesAtStart: SessionCapabilities | null;
+  /**
+   * True when a granted/revoked capability is one the live container carries in
+   * its plumbing and it differs from what that container started with, so the
+   * change applies at the next container start. Drives the dialog's
+   * "Pending · applies on next container start" row + "Restart to apply now".
+   */
+  pendingRestart: boolean;
 }
 
 /**

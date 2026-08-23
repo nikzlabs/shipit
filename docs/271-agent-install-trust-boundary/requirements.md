@@ -1,194 +1,232 @@
 ---
 issue: planning#400
-title: agent.install must not be a route out of a plugin container
-description: The trust boundary between a contained plugin container that can write the workspace and the agent container that executes shipit.yaml's agent.install.
+title: Plugin code is trusted at the package.json dependency level
+description: Where plugin-authored code sits in ShipIt's trust model, and what that settles about executing shipit.yaml's agent.install.
 ---
 
-# Requirements — `agent.install` trust boundary
+# Requirements — `agent.install` and the plugin trust level
 
-Tracked by planning#400. This is **route 2** of the three routes planning#384
-identified; route 1 (`.git`) shipped as
-[docs/266](../266-orchestrator-git-trust-boundary/requirements.md) and route 3
-(the compose file) closed as planning#386.
+Tracked by planning#400. This was opened as **route 2** of the three routes
+planning#384 identified — route 1 (`.git`) shipped as
+[docs/266](../266-orchestrator-git-trust-boundary/requirements.md), route 3 (the
+compose file) closed as planning#386. Route 2 turned out not to be a boundary at
+all: see requirement 1.
 
 This document states **what must be true**. The design is in
 [plan.md](./plan.md).
 
-## The boundary, in one sentence
+## The trust position, in one sentence
 
-**Code that can write a session's workspace at *less* authority than the agent
-container must not thereby reach *unattended* execution *inside* the agent
-container.**
+**Plugin code is trusted at the same level as a `package.json` dependency: it may
+reach unattended execution inside the agent container, and that is accepted
+rather than defended against.**
 
-Both italics are load-bearing, and each was checked rather than assumed:
-
-- **Less authority.** Only one writer of the workspace qualifies. A plugin CLI
-  run and a plugin service each get `<workspaceDir>` bind-mounted read-write at
-  `/project` — verified at `plugin-cli-run.ts:444`
-  (`addSessionMount(deps.workspaceDir, CONTAINER_PROJECT_DIR, false)`, where the
-  third argument is `readOnly`) and `plugin-compose.ts:1131`
-  (`{ type: "bind", source: opts.workspaceDir, target: CONTAINER_PROJECT_DIR }`,
-  no `read_only`). Those containers are contained: capabilities dropped, no
-  credential store, restricted egress. Every *other* writer — the agent itself,
-  an `npm postinstall`, a project compose service — is the project's own code at
-  the project's own authority, so for those this route is not an escalation and
-  closing it is not required (req 4).
-- **Unattended.** A plugin causing the *agent* to run something is settled and
-  in scope of the grant a declaration makes: docs/262 req 22 says in its own
-  words that "instructions the agent follows are the sharpest form of the trust
-  a declaration grants", and req 29 says a plugin's companion-CLI output is
-  material the agent reads and may act on. What is different about
-  `agent.install` is that no agent and no user is in the loop: the commands are
-  executed by `spawn(command, { shell: true, cwd: this.workspaceDir })`
-  (`install-controller.ts:560`) from a config re-read on a file-watcher event
-  (`service-manager-setup.ts:1113-1126`), with nothing written to the transcript
-  and nobody asked.
-- **Inside the agent container.** Concrete, not abstract: that container mounts
-  the credential store at `/credentials` (Claude CLI auth, the GitHub token —
-  `session-container.ts:166`), and carries the agent's network posture rather
-  than the plugin's.
+This replaced the boundary the document was opened to state. See requirement 1,
+[Requirement history](#requirement-history), and the 2026-08-21 receipt under
+Resolved questions.
 
 ## Requirements
 
-1. Code running in a contained plugin container MUST NOT be able to cause
-   execution inside the agent container by writing the session's workspace.
+1. Plugin code is trusted at the same level as a `package.json` dependency.
+2. (empty)
+3. (empty)
+4. (empty)
+5. (empty)
+6. A plugin MUST be able to write the consuming project's files, including
+   `shipit.yaml` itself.
+7. (empty)
+8. (empty)
+9. (empty)
+10. (empty)
+11. (empty)
+12. (empty)
 
-2. Requirement 1 MUST hold for a plugin **service** as well as for a plugin
-   **CLI run**, including a write made at a moment when no agent turn is in
-   flight. *(Stated by the requester: a service "is the sharper case, because it
-   is long-running and can write the file at any time rather than only while a
-   companion CLI runs".)*
+Numbers are stable and never reused. `(empty)` marks a retired requirement —
+what it said and why it went is in [Requirement history](#requirement-history).
 
-3. `agent.install` commands MUST NOT be executed on the strength of an
-   acceptance the user gave for a **different** command list. *(Stated by the
-   requester: "The user accepted the commands the repo had **then**, not the
-   ones it has now.")*
+**Two requirements remain, and both are about plugins:** 1 places plugin code in
+the trust model, 6 says what a plugin may write. Neither asks ShipIt to withhold
+anything, so `agent.install` runs as it did before this feature.
 
-4. Requirement 1 is NOT required to hold against an ordinary `npm postinstall`,
-   the agent itself, or the project's own compose services. Those write the
-   workspace at the authority they already hold, so the route gives them
-   nothing. A design that closes only the plugin path satisfies this feature —
-   which is the opposite of docs/266-orchestrator-git-trust-boundary req 2, deliberately, because the executor
-   here is the session worker rather than the orchestrator. *(Stated by the
-   requester: "For an npm `postinstall` this is not an escalation — the writer
-   and the executor are the same uid in the same container.")*
+## Open questions
 
-5. Requirement 1 MUST hold on **every** path that reads a changed
-   `agent.install`, not only the live watcher delta the issue names. The
-   requester read one path; a second one exists and is not covered by it — see
-   [Verified](#what-was-verified-and-what-was-not), *the restart path*.
-   *(Inferred, not stated — see Provenance.)*
-
-6. A plugin MUST still be able to write the consuming project's files —
-   **including `shipit.yaml` itself**. This is not a new requirement; it is
-   docs/262 req 29, settled by the requester on 2026-08-15 in their own words —
-   *"plugins should be able to write to the user repo, that is their purpose"* —
-   together with its consequence, that "the project's own files are NOT a
-   containment boundary and must never be described as one". Reaffirmed for this
-   feature on 2026-08-17: what changes is that ShipIt stops *executing* a changed
-   `agent.install` unattended, not what a plugin may *write*. *(Carried in from
-   docs/262; reaffirmed — see Resolved questions, Q1.)*
-
-7. A change to `agent.install` that ShipIt does not execute MUST appear in the
-   **chat transcript**, naming both the command list that is in force and the
-   one that was withheld, and MUST still be there after a reload. It MUST NOT
-   break the session: the clone, file tree, agent chat, and
-   previously-installed dependencies keep working; only the un-accepted
-   execution is withheld. *(The transcript answer was given by the requester on
-   2026-08-17 — see Resolved questions, Q2. The rest is inferred from the shape
-   docs/178 already chose for the same class of decision — "The clone, file
-   tree, diffs, and agent chat still work while untrusted; only foreign-code
-   execution is gated" (`service-manager-setup.ts:388-398`). See Provenance.)*
-
-8. Whatever ShipIt withholds, the user MUST have a way to get it. A user who
-   *wants* the new install command MUST be able to have it run **by asking the
-   agent**, without editing ShipIt's configuration, accepting a prompt, or
-   restarting the session — the agent runs commands in that container already,
-   so this is authority the user has already granted it. *(Answered by the
-   requester on 2026-08-17 — see Resolved questions, Q2.)*
-
-9. The design MUST state this route as **closed**, **partly closed**, or **left
-   open**, and an open remainder MUST have a named owner (an issue), not a
-   silence. *(Carried over from docs/266-orchestrator-git-trust-boundary req 4, which set this convention for
-   the three routes as a set.)*
-
-10. The design MUST record what could not be verified, distinguishing "read the
-    code that would have to hold" from "inherited the claim from a doc".
-    *(Carried over from docs/266-orchestrator-git-trust-boundary req 8.)*
-
-11. A session that has never had a plugin MUST be unaffected — same install
-    behaviour as today, and no new message in its transcript. *(Answered by the
-    requester on 2026-08-17 — see Resolved questions, Q3.)*
-
-12. A plugin MUST NOT be able to escape requirement 1 by **removing its own
-    declaration** from `shipit.yaml` in the same write that changes
-    `agent.install`. *(Inferred while designing req 11 — see Provenance. It is
-    recorded as a requirement rather than a design note because req 11's
-    plain reading, "a session that declares a plugin", is exactly the reading
-    that leaves this open.)*
+None.
 
 ## Resolved questions
 
-- **2026-08-17 — May a plugin ever change what `agent.install` runs?** The issue
-  listed three shapes and decided none. Requirement 6 already answered two of
-  them: excluding the control files from the plugin `/project` mount, and
-  narrowing what `/project` contains, both take away a write docs/262 req 29
-  grants in plain words. The requester answered **re-gate the execution**: leave
-  the mount alone, let a plugin write `shipit.yaml` like any other project file,
-  and stop ShipIt running a changed `agent.install` unattended. Requirement 6
-  now says so, and requirement 29 of docs/262 stands unchanged.
+- **2026-08-21 — Does req 3 still have a reason to exist?** Raised by the
+  requester reading reqs 3 and 7: *"I don't get it"* and *"why would it not
+  execute some changes?"*
 
-- **2026-08-17 — When ShipIt withholds a changed `agent.install`, what does the
-  user see?** Two shapes were put: a prompt to accept (what docs/178 uses for
-  the repo trust gate, needing a new per-session, per-command-list acceptance
-  store and new client UI, since the existing trust store is keyed by remote URL
-  globally), or a **transcript card** naming what was withheld, leaving the user
-  to ask the agent for it. The requester chose the **transcript card**.
-  Requirements 7 and 8 now say so. The reasoning that made it sufficient rather
-  than merely cheaper: the agent runs commands in that container anyway, so
-  "ask the agent to run it" is not a weaker acceptance than a button — it is the
-  same authority, exercised where a human can see it.
+  The plain answer to "why" was: **because a plugin might have written them.**
+  Req 3 was never about install commands in general — it was old req 1 applied to
+  the one file that reaches unattended execution, and the requester's sentence for
+  it, *"The user accepted the commands the repo had **then**, not the ones it has
+  now"*, was said about a repo a plugin can edit. With req 1 reversed that reason
+  was gone, so the question being unanswerable from the document was the finding
+  rather than a gap in the writing.
 
-- **2026-08-17 — Which sessions pay for it?** Applying the gate to every session
-  is uniform, and costs a message on the very common "the agent edited
-  `shipit.yaml` because I asked it to" path. Scoping it to plugin-bearing
-  sessions costs nothing where no plugin container holds the mount, which
-  requirement 4 says is everywhere else. The requester chose **only
-  plugin-bearing sessions**; requirement 11 states it, and requirement 12
-  records the bypass that the obvious reading of it would leave open.
+  The one residual argument — a changed list is something the user has not seen,
+  so running it is a surprise — does not survive contact with docs/178: ShipIt
+  already runs whatever the repo says, and the agent edits `shipit.yaml` on
+  request all the time.
 
-## Provenance
+  **Answer: retire req 3**, with 7, 8 and 11 following it. `agent.install` runs
+  as it did before this feature. This also dissolves the ops incident that opened
+  the branch — a withheld install is precisely what stranded that session — and
+  retires the acceptance-record mechanism rather than continuing to harden it.
 
-Requirements 1–4 and 6 are the requester's, in the sense that each traces to a
-sentence in planning#400 or to a resolved question in docs/262; the quoted words
-are shown at each. Requirements 9 and 10 are conventions docs/266 set for this
-set of three routes and are carried over unchanged.
+- **2026-08-21 — Where does plugin code sit in the trust model?** Requester:
+  *"The plugin could change `package.json`, for example, which would be allowed
+  by ShipIt but potentially install malicious packages... For now only I used
+  them and only for my own repos."*
 
-Requirements 5 and 12, and the second half of 7, are **inferred**, and are
-recorded as requirements rather than left implicit because each would otherwise
-be decided silently inside the design:
+  Checked and correct — and a defect in req 4's reasoning rather than in the
+  design. A plugin may write any project file (req 6), `package.json` is one, and
+  the already-accepted `npm ci` executes what it says. So a plugin reached
+  unattended execution in the credential-bearing container **without changing
+  `agent.install` at all**, and the gate never fired. It generalises to every
+  accepted command that interprets workspace content (`make`, `pip install -r`, a
+  repo script); closing those would treat the project's own files as a
+  containment boundary, which req 6 forbids in the requester's own words. Old
+  reqs 1 and 6 were in direct tension, and old req 1 was not achievable.
 
-- **5** is inferred from requirement 3 rather than from a new answer: an
-  acceptance that binds on Tuesday's file-watcher event and not on Wednesday's
-  container restart is not an acceptance of a command list at all.
-- **7**'s "does not break the session" half is inferred from docs/178's existing
-  shape for the same class of decision; its "appears in the chat transcript"
-  half is the requester's, answered on 2026-08-17.
-- **12** is inferred from requirement 11, and is the one place where taking the
-  requester's answer at its plain word would have left the route open. The
-  answer chosen was "only plugin-bearing sessions"; a plugin that deletes its own
-  `plugins.use` entry in the same write makes the session look plugin-free at
-  exactly the moment the check runs. The requirement records the property so the
-  design cannot quietly satisfy req 11 and miss it.
+  **Answer: replace req 1** — *"the plugin code is considered trusted on the same
+  level as `package.json` dependencies."* Reqs 2, 4, 5 and 12 retired with it.
 
-Requirements 6, 7 and 8 changed in the same diff as the receipts above, per the
-requirements discipline. Nothing here promotes a mechanism into a requirement:
-"read the install marker" and "check for the session's plugin data directory"
-are how requirements 3 and 12 get satisfied, and they live in `plan.md`.
+- **2026-08-17 — May a plugin ever change what `agent.install` runs?** Three
+  shapes were put; two (excluding control files from the plugin mount, narrowing
+  what `/project` contains) take away a write req 6 grants in plain words.
+  Answer: **re-gate the execution** — let a plugin write `shipit.yaml` like any
+  other project file, and stop ShipIt running a changed list unattended.
+  **Overtaken on 2026-08-21:** the question presupposed that a plugin changing
+  `agent.install` was a problem to solve. Req 1 now says it is not.
 
-Nothing here promotes a mechanism into a requirement. "Re-gate rather than
-narrow the mount" is a design position and lives in Q1 and in `plan.md`, not in
-the numbered list.
+- **2026-08-17 — When ShipIt withholds a change, what does the user see?** A
+  prompt to accept (docs/178's shape, needing a new per-session acceptance store
+  and client UI) or a **transcript card**. Answer: the transcript card — reqs 7
+  and 8. What made it sufficient rather than merely cheaper: the agent runs
+  commands in that container anyway, so "ask the agent" is the same authority,
+  exercised where a human can see it. **Overtaken on 2026-08-21** — reqs 7 and 8
+  retired with req 3; nothing is withheld, so there is nothing to show.
+
+- **2026-08-17 — Which sessions pay for it?** Every session (uniform, but costs a
+  message on the common "the agent edited `shipit.yaml` because I asked it to"
+  path) or only plugin-bearing ones. Answer: **only plugin-bearing sessions** —
+  req 11. **Overtaken on 2026-08-21** — with no gate, the answer is "no session
+  pays for it".
+
+## Requirement history
+
+Where each requirement came from, and what the retired ones said. Numbers are
+stable and never reused.
+
+The retired entries below **summarise** each requirement rather than reproducing
+it in full — enough to see what was asked and why it went. The verbatim text of
+every one is in git history (`git log -p -- docs/271-agent-install-trust-boundary/requirements.md`);
+an earlier revision of this section claimed the full text was preserved here,
+which was not true.
+
+| # | Source |
+|---|---|
+| 1 | Requester, 2026-08-21, in these words. **Replaced** the original req 1 (below). |
+| 6 | docs/262 req 29, settled 2026-08-15: *"plugins should be able to write to the user repo, that is their purpose"* — with its consequence that the project's own files are NOT a containment boundary. Reaffirmed here 2026-08-17. |
+
+### Retired (2026-08-21) — because req 1 was reversed
+
+- **1 (old)** — *"Code running in a contained plugin container MUST NOT be able
+  to cause execution inside the agent container by writing the session's
+  workspace."* The feature's founding premise. Withdrawn: see the 2026-08-21
+  receipt.
+
+  Its "unattended" clause is worth keeping in view even now. A plugin causing the
+  *agent* to run something was always in scope of what declaring a plugin grants
+  (docs/262 req 22 — "instructions the agent follows are the sharpest form of the
+  trust a declaration grants"). What was different about `agent.install` is that
+  no agent and no user is in the loop.
+
+- **2** — *"Requirement 1 MUST hold for a plugin service as well as a plugin CLI
+  run, including a write made when no agent turn is in flight."* Requester's
+  words: a service "is the sharper case, because it is long-running and can write
+  the file at any time". The observation stands; there is nothing left for it to
+  hold against.
+
+- **4** — *"Requirement 1 is NOT required to hold against an ordinary `npm
+  postinstall`, the agent itself, or the project's own compose services."*
+  Requester: *"For an npm `postinstall` this is not an escalation — the writer and
+  the executor are the same uid in the same container."* A carve-out from req 1;
+  req 1 has moved to where the carve-out was. **Its reasoning is also what broke
+  the old req 1** — a plugin can *author* a postinstall, and `npm ci` runs it.
+
+- **5** — *"Requirement 1 MUST hold on every path that reads a changed
+  `agent.install`."* Inferred. The second path it found (the restart path) is
+  real and still documented under What was verified; it is simply no longer a
+  path something must hold on.
+
+- **12** — *"A plugin MUST NOT be able to escape requirement 1 by removing its
+  own declaration in the same write that changes `agent.install`."* Inferred from
+  req 11. With nothing to evade, that is an ordinary project write under req 6.
+
+**Both inferences this document made — 5 and 12 — were retired by the same
+answer.** Neither was wrong given its premise; each existed only to close a gap
+in a premise since withdrawn. That is the point of recording an inference as a
+numbered requirement rather than burying it in the design: when the premise
+moves, the inference is visible and goes with it.
+
+Nothing here promotes a mechanism into a requirement. "Read the install marker"
+and "check for the session's plugin data directory" are how requirements get
+satisfied, and they live in `plan.md`.
+
+
+### Retired (2026-08-21) — because they were never about plugins
+
+Both were documentation conventions carried from docs/266, which set them for the
+**three-route set** planning#384 identified. They constrained how this feature's
+design doc had to be written, not what ShipIt had to do — so they sat in a list
+of plugin requirements without being about plugins. The requester asked exactly
+that: *"how is this related to plugins?"*
+
+- **9** — *"The design MUST state this route as closed, partly closed, or left
+  open, and any remainder MUST have a named owner."* The framing it depends on is
+  gone: with req 1 reversed there is no boundary here to be closed or open, so
+  "which is it" became a category error rather than a question with an answer.
+  What survives is recorded plainly instead — `plan.md` says the gate was removed
+  and why, and there are no remainders left to own.
+
+- **10** — *"The design MUST record what could not be verified, distinguishing
+  code read at the source from claims inherited from a doc."* Good discipline,
+  and still followed — see [What was verified, and what was
+  not](#what-was-verified-and-what-was-not), which is kept because its readings
+  are still true. But it is a repo-wide writing rule (`CLAUDE.md`, *Verify an
+  inherited guarantee at the source*), not something this feature must do.
+
+### Retired (2026-08-21) — because req 3 went
+
+Req 3 was the only requirement asking ShipIt to withhold anything. These three
+described what happened when it did, so none of them has a subject any more.
+
+- **3** — *"`agent.install` MUST NOT be executed on the strength of an acceptance
+  the user gave for a different command list."* Requester's words: *"The user
+  accepted the commands the repo had **then**, not the ones it has now."* Retired
+  because its justification was old req 1; see the 2026-08-21 receipt.
+
+- **7** — *"A change to `agent.install` that ShipIt does not execute MUST appear
+  in the chat transcript, naming both lists, and MUST still be there after a
+  reload."* Transcript half: requester, 2026-08-17. "Does not break the session"
+  half: inferred from docs/178's shape (`service-manager-setup.ts:388-398`).
+  Nothing is withheld now, so there is nothing to narrate.
+
+- **8** — *"Whatever ShipIt withholds, the user MUST have a way to get it — by
+  asking the agent."* Requester, 2026-08-17. The reasoning that made it
+  sufficient rather than merely cheaper is still worth keeping: the agent runs
+  commands in that container anyway, so "ask the agent" was never a weaker
+  acceptance than a button — it is the same authority, exercised where a human
+  can see it. Retired because nothing is withheld.
+
+- **11** — *"A session that has never had a plugin MUST be unaffected."*
+  Requester, 2026-08-17. It scoped the gate to plugin-bearing sessions. With no
+  gate, every session is unaffected and the requirement is vacuous rather than
+  wrong.
 
 ## What was verified, and what was not
 

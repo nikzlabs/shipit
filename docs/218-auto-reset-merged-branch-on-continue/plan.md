@@ -63,6 +63,13 @@ Resetting there is the wrong place:
 So the trigger is the **pre-turn path of an interactive message** (mirroring how
 docs/202/216 are post-turn, turn-gated).
 
+That choice has one cost, and `docs/282-merge-race-at-turn-admission` pays it: a
+pre-turn gate is only as right as the merge state it reads, and that state is
+poll-driven, so a turn admitted inside the ~15-second poll window used to
+evaluate this gate against a session that did not read as merged yet and run on
+the merged tip. The merge state is now refreshed at turn admission, ahead of the
+gate; nothing about the trigger or the gate itself changed.
+
 ## Why `reset --hard`, not rebase
 
 GitHub's three merge methods all leave the branch's local commits **not replayable**:

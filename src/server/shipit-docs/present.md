@@ -75,12 +75,48 @@ update is decided entirely by the path:
 So make distinct artifacts distinct files. If you reuse one path for a genuinely
 different artifact, it *replaces* the previous one rather than adding alongside.
 
+## Inline — showing something small in the conversation
+
+The Present tab is the right surface for something the user needs room to
+study. It is the wrong one for something small they should just *see* while
+reading your reply. Pass **`inline: true`** and the artifact renders as a card
+**in the chat transcript itself**:
+
+```
+// A small chart, right where you talk about it
+present({ file: "/persist/latency.svg", title: "Latency by region", inline: true })
+```
+
+Everything else is identical — same `file` argument, same MIME inference, same
+path identity — and the artifact **still appears in the Present tab**, so
+nothing is lost by choosing inline. What changes:
+
+- The card renders in the scrollback and stays there, like any other transcript
+  card. It survives a session switch, a reload, and a container restart.
+- The card is **bounded in height**. A small artifact shrinks to fit; a large
+  one scrolls inside its box. Nothing is rejected for being big — but a big
+  artifact reads badly in a box, which is the whole reason to leave `inline`
+  off for one.
+- Re-presenting the same path **updates the card that is already there**. You do
+  not get a second card from the screenshot loop, and you do not need to repeat
+  `inline: true` on the re-presents.
+- Presenting inline does **not** yank the Present tab open, since you already
+  put the artifact in front of the user.
+- Inline HTML runs its own JavaScript and receives the
+  [Agent Interface SDK](./agent-interface-sdk.md) while the card is on screen —
+  so a small inline form or picker can send a composed message back to you.
+
+Use it for: a thumbnail or screenshot, a small chart, a short rendered table or
+markdown summary, a compact HTML widget. Leave it off for: a full mockup, a
+large diagram, a long rendered doc, anything with its own scrolling layout.
+
 ## Parameters
 
 ```json
 {
   "file": "/persist/architecture.html",
-  "title": "Architecture Diagram"
+  "title": "Architecture Diagram",
+  "inline": true
 }
 ```
 
@@ -98,6 +134,9 @@ different artifact, it *replaces* the previous one rather than adding alongside.
   shows the **full file path** beneath it; `title` is the friendly name on top.
   Optional — without it the header uses the file's name — but helpful when you
   present multiple artifacts in a session.
+- **`inline`** — also render the artifact as a card in the chat conversation,
+  not only in the Present tab. Defaults to `false`. See
+  [Inline](#inline--showing-something-small-in-the-conversation) above.
 
 `present` returns `{ status, viewUrl }`. `viewUrl` serves the rendered artifact
 for the screenshot loop below. There is no id to track: re-presenting the same

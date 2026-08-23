@@ -1115,8 +1115,13 @@ export interface ExplicitResetOutcome {
  * which calls this same function — one implementation, so the two paths cannot
  * disagree about what "resettable state" means, and the explicit refusal
  * inherits planning#341's uncommitted-path list for free).
+ *
+ * docs/282 — and a third caller, the pre-turn merge recheck, which uses it as
+ * the local half of its gate: it spends a GitHub round-trip only where these
+ * clauses already hold, so "would a reset even be applicable here?" keeps one
+ * definition rather than gaining a cheaper, drifting copy.
  */
-async function checkResetPreconditions(
+export async function checkResetPreconditions(
   session: SessionInfo,
   git: GitManager,
 ): Promise<(ResetSkip & { clause: ResetPreconditionClause }) | null> {

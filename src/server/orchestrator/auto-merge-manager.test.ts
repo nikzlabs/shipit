@@ -3,7 +3,12 @@ import { describe, it, expect, vi } from "vitest";
 import { AutoMergeManager } from "./auto-merge-manager.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
-import type { PrMergeableState, PrReviewDecision, PrStatusSummary } from "../shared/types/github-types.js";
+import type {
+  BranchSyncState,
+  PrMergeableState,
+  PrReviewDecision,
+  PrStatusSummary,
+} from "../shared/types/github-types.js";
 
 /**
  * Unit tests for the ShipIt-managed auto-merge executor. The regression these
@@ -214,6 +219,134 @@ describe("AutoMergeManager.handleManaged", () => {
     expect(manager.get("s1")?.error).toBeUndefined();
   });
 
+  /**
+   * The same hole the busy gate closes, in the window the busy gate cannot see.
+   * `agentBusy` covers a turn's commit and the debounced push it arms — but a
+   * push that is REJECTED leaves the branch behind for good, and by then the
+   * session is idle and the checks GitHub reports are green for a commit the
+   * session moved past. `services/auto-push-scheduler.ts` records two pull
+   * requests that merged seven and two commits behind exactly this way.
+   */
+  describe("branch-sync gate", () => {
+    const withSync = (state: BranchSyncState, ahead: number, behind: number) => ({
+      ...makeSummary("success", "mergeable"),
+      branchSync: { state, ahead, behind },
+    });
+
+    it.each([
+      ["ahead", withSync("ahead", 2, 0)],
+      ["diverged", withSync("diverged", 1, 1)],
+    ])("does NOT merge when the local branch is %s of the remote", async (_state, summary) => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", summary, "o", "r");
+
+      expect(mergePullRequest).not.toHaveBeenCalled();
+      // A wait, not a misconfiguration — the arming stays live so the merge
+      // happens on its own once the push lands.
+      expect(manager.get("s1")?.error).toBeUndefined();
+      expect(manager.get("s1")?.enabled).toBe(true);
+      expect(manager.get("s1")?.completed).toBeUndefined();
+    });
+
+    it("merges when the remote is AHEAD of local — the PR is a superset, nothing is lost", async () => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", withSync("behind", 0, 3), "o", "r");
+
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("merges when the sync state is unknown — absence is never a verdict", async () => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      // No `branchSync` at all: no workspace, no tracking ref, HEAD elsewhere.
+      // Blocking here would take auto-merge away from every session whose
+      // workspace has been reclaimed.
+      await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * The per-tick reading is computed from this clone's own tracking ref, which
+     * nothing updates when the remote branch moves in ANOTHER clone. Local HEAD
+     * and the tracking ref then both sit at the old tip and read `in-sync`,
+     * while GitHub holds a history this session has never had — so the loop asks
+     * the remote once more before the irreversible call.
+     */
+    it("asks the remote before merging, and holds when the local reading was stale", async () => {
+      const mergePullRequest = vi.fn().mockResolvedValue({ success: true, message: "merged" });
+      const manager = new AutoMergeManager(
+        { mergePullRequest } as unknown as GitHubAuthManager,
+        vi.fn(),
+        undefined,
+        async () => ({ state: "diverged", ahead: 1, behind: 1 }),
+      );
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", withSync("in-sync", 0, 0), "o", "r");
+
+      expect(mergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("merges when the fresh read confirms the branch is current", async () => {
+      const mergePullRequest = vi.fn().mockResolvedValue({ success: true, message: "merged" });
+      const resolveSync = vi.fn().mockResolvedValue({ state: "in-sync", ahead: 0, behind: 0 });
+      const manager = new AutoMergeManager(
+        { mergePullRequest } as unknown as GitHubAuthManager,
+        vi.fn(),
+        undefined,
+        resolveSync,
+      );
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", withSync("in-sync", 0, 0), "o", "r");
+
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+      // Read for the branch the pull request is on, not the session's record.
+      expect(resolveSync).toHaveBeenCalledWith("s1", "feature");
+    });
+
+    it("still merges when the fresh read cannot be taken (it throws)", async () => {
+      const mergePullRequest = vi.fn().mockResolvedValue({ success: true, message: "merged" });
+      const manager = new AutoMergeManager(
+        { mergePullRequest } as unknown as GitHubAuthManager,
+        vi.fn(),
+        undefined,
+        async () => { throw new Error("remote unreachable"); },
+      );
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", withSync("in-sync", 0, 0), "o", "r");
+
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("merges once the push lands, with no user action in between", async () => {
+      const { manager, mergePullRequest } = makeManager();
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", withSync("ahead", 1, 0), "o", "r");
+      expect(mergePullRequest).not.toHaveBeenCalled();
+
+      // The next poll reads the pushed branch as in sync — and the arming that
+      // was held is still armed, so the merge happens by itself.
+      await manager.handleManaged("s1", withSync("in-sync", 0, 0), "o", "r");
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // docs/266 — the merge-while-busy hole. PR #2327 merged 4 minutes into a turn
   // that was applying reviewer feedback; auto-commit fires AFTER the turn, so
   // those edits landed on a branch whose PR was already closed and
@@ -291,6 +424,45 @@ describe("AutoMergeManager.handleManaged", () => {
       await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
 
       expect(mergePullRequest).not.toHaveBeenCalled();
+    });
+
+    // The latch is per WAIT, and an idle tick between two busy episodes ends
+    // one. Without this, a single shared or never-cleared latch makes every
+    // later hold silent, and the log stops being the record of why a merge did
+    // not happen.
+    it("logs the hold again on a second busy episode", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+      try {
+        // A merge that fails leaves the arming live and sets no `completed`, so
+        // the loop keeps running — which is what lets one manager see two
+        // separate busy episodes without a toggle in between (a toggle clears
+        // the latch by itself, and would hide the very defect this pins).
+        const box: { runner: { running: boolean; agentBusy: boolean } } = {
+          runner: { running: true, agentBusy: true },
+        };
+        const manager = new AutoMergeManager(
+          { mergePullRequest: vi.fn().mockResolvedValue({ success: false, message: "nope" }) } as unknown as GitHubAuthManager,
+          vi.fn(),
+          () => box.runner as unknown as SessionRunnerInterface,
+        );
+        manager.setEnabled("s1", true);
+        manager.setManaged("s1", true);
+        const holds = () => log.mock.calls.filter((c) => String(c[0]).includes("agent busy")).length;
+
+        await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+        expect(holds()).toBe(1);
+
+        // An idle tick gets past the gate — that ends the wait.
+        box.runner = { running: false, agentBusy: false };
+        await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+        // The next turn starts: a new wait, so a new record.
+        box.runner = { running: true, agentBusy: true };
+        await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+        expect(holds()).toBe(2);
+      } finally {
+        log.mockRestore();
+      }
     });
 
     it("merges when the session has no runner (container reclaimed, session gone)", async () => {

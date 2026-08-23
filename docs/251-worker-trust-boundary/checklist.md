@@ -11,9 +11,9 @@
 - [x] `requireWorkerToken(env)` + `MissingWorkerTokenError` in `worker-auth-guard.ts`; empty value treated as absent.
 - [x] The container entry point resolves the token and `process.exit(1)`s with one line naming the variable, instead of serving.
 - [x] `registerWorkerAuthGuard` no longer reads `process.env` — one reader, at the entry point.
-- [x] Tests that fail on the pre-fix code: policy table (`/install`, `/terminal/start`, `/agent/start` from a peer), the Fastify guard, and a peer's `POST /install` against the real `SessionWorker` route table — the dependency docs/271 states but does not own.
+- [x] Tests that fail on the pre-fix code: policy table (`/install`, `/terminal/start`, `/agent/start` from a peer), the Fastify guard, and a peer's `POST /install` against the real `SessionWorker` route table.
 - [x] `requireWorkerToken` unit tests (present / absent / empty), plus an end-to-end one that runs the entry point the way the container does (`node --import tsx session-worker.ts`) and asserts it exits 1 without binding a port.
-- [x] `SECURITY-MODEL.md`, `docs/271-agent-install-trust-boundary/plan.md` item 4, `server-test-setup.ts` rationale updated.
+- [x] `SECURITY-MODEL.md` and `server-test-setup.ts` rationale updated. (The `docs/271-agent-install-trust-boundary` item this also updated is gone — that feature was removed on 2026-08-21.)
 
 ## Worker
 - [x] `session/worker-auth-guard.ts`: `registerWorkerAuthGuard(app, { token, log })` wiring `onRequest`, 403 + one log line per denial.

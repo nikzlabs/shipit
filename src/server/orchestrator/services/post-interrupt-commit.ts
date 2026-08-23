@@ -70,6 +70,14 @@ export async function runPostInterruptCommit(args: {
   const sessionId = runner.sessionId;
   const sessionDir = runner.sessionDir;
 
+  // The same ordering `turn-executor.ts` applies, for the same reason: the PR
+  // lifecycle flow below does its own synchronous `git push` — a `forcePush`
+  // when re-arming past a merged pull request — and a plain auto-push racing it
+  // is rejected non-fast-forward, which reports a divergence that never
+  // happened. Held here and fired in the `finally`, so it survives a throwing
+  // PR flow: the commit is already made, and one that never pushes and never
+  // explains itself is what the whole auto-push module exists to prevent.
+  const pending: { arm: (() => void) | null } = { arm: null };
   try {
     const commitHash = await postTurnCommit(
       {
@@ -83,6 +91,7 @@ export async function runPostInterruptCommit(args: {
         sessionId,
         emit: (msg) => runner.emitMessage(msg),
         turnSummary: runner.turnSummary || "Interrupted turn",
+        deferPushArm: (arm) => { pending.arm = arm; },
       },
     );
     if (!commitHash || runner.disposed) return;
@@ -104,6 +113,14 @@ export async function runPostInterruptCommit(args: {
     });
   } catch (err) {
     console.error("[interrupt-commit] failed:", getErrorMessage(err));
+  } finally {
+    const arm = pending.arm;
+    pending.arm = null;
+    try {
+      arm?.();
+    } catch (armErr) {
+      console.error("[interrupt-commit] arming the auto-push failed:", getErrorMessage(armErr));
+    }
   }
 }
 

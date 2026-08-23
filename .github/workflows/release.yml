@@ -145,6 +145,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Keep the nested production-image lock validation in sync with ci.yml.
+      - run: npm ci --ignore-scripts --dry-run
+        working-directory: docker/agent-cli
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run check-deps

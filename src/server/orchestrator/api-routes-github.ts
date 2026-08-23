@@ -49,8 +49,11 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { guardMergeSync } from "./services/branch-sync.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolvePrTarget, gitCredentialAllowed, mergeDisposition } from "./pr-target.js";
+import type { FastifyReply } from "fastify";
+import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { assessMergeAutoPublish } from "./release-autopublish-check.js";
 import { onWorkspaceRewritten } from "./workspace-rewrite.js";
@@ -95,6 +98,44 @@ function readReleaseConfig(dir: string): { branch?: string; versionSourcePath?: 
   }
 }
 
+/**
+ * docs/279 — refuse an agent-facing GitHub broker call for a sandbox whose
+ * `git` capability is off, and say so. Returns true when it answered the
+ * request, so the handler's next statement is `return`.
+ *
+ * docs/211 gated only `POST .../git/credential` — the route that hands out a
+ * TOKEN — on the reasoning that without a token the agent cannot reach GitHub.
+ * That reasoning does not hold for the brokered verbs beside it: `gh pr create`,
+ * `gh pr merge`, comment, ready, close, reopen and the Actions reads all run
+ * SERVER-side with the orchestrator's own credential and never hand the agent a
+ * token, so a token-less container could still act on GitHub through them.
+ *
+ * It was survivable while the grant was fixed at creation — a sandbox created
+ * with GitHub access off had a container wired for it from the start, and the
+ * question "what happens when it is revoked?" could not arise. Making the set
+ * editable is what raises it, and requirement 2 answers it: a change the live
+ * container can honour applies straight away. A revoke that leaves fifteen
+ * brokered verbs open is not a revoke.
+ *
+ * Deliberately applied to the READS as well (`pr/list`, `pr/view`, the Actions
+ * routes): they read through the user's credential and can reach private repos,
+ * so "GitHub access" not covering them would be a surprising carve-out.
+ *
+ * A no-op for every non-sandbox session — `gitCredentialAllowed` denies only a
+ * sandbox with `git` explicitly off — so this changes nothing for repo-bound or
+ * ops sessions. 403 rather than 404: the session exists, the capability does not.
+ */
+function gitBrokerDenied(
+  session: Pick<SessionInfo, "kind" | "capabilities"> | undefined,
+  reply: FastifyReply,
+): boolean {
+  // An absent session is not this guard's business — the handler's own 404 (or
+  // its deliberate `session ?? { remoteUrl: "" }` fallback) still decides.
+  if (!session || gitCredentialAllowed(session)) return false;
+  reply.code(403).send({ error: "GitHub access is not granted for this sandbox session" });
+  return true;
+}
+
 export async function registerGitHubRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
@@ -109,6 +150,7 @@ export async function registerGitHubRoutes(
     if (!dir) return;
     try {
       const session = sessionManager.get(request.params.id);
+      if (gitBrokerDenied(session, reply)) return;
       const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
       const git = createGitManager(gitDir);
       return { pr: await getPrStatus(deps.githubAuthManager, git, remoteUrl) };
@@ -227,6 +269,7 @@ export async function registerGitHubRoutes(
     { config: { containerAccessible: true } },
     async (request, reply) => {
       const session = sessionManager.get(request.params.id);
+      if (gitBrokerDenied(session, reply)) return;
       if (!session) {
         reply.code(404).send({ error: "Session not found" });
         return;
@@ -294,6 +337,7 @@ export async function registerGitHubRoutes(
     { config: { containerAccessible: true } },
     async (request, reply) => {
       const session = sessionManager.get(request.params.id);
+      if (gitBrokerDenied(session, reply)) return;
       if (!session) {
         reply.code(404).send({ error: "Session not found" });
         return;
@@ -369,6 +413,7 @@ export async function registerGitHubRoutes(
     { config: { containerAccessible: true } },
     async (request, reply) => {
       const session = sessionManager.get(request.params.id);
+      if (gitBrokerDenied(session, reply)) return;
       if (!session) {
         reply.code(404).send({ error: "Session not found" });
         return;
@@ -545,6 +590,7 @@ export async function registerGitHubRoutes(
       }
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
         const git = createGitManager(gitDir);
         return await editPullRequest(git, deps.githubAuthManager, {
@@ -574,6 +620,7 @@ export async function registerGitHubRoutes(
       if (!dir) return;
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
         const stateRaw = request.query.state;
@@ -608,6 +655,7 @@ export async function registerGitHubRoutes(
       if (!dir) return;
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
         let num: number | undefined;
@@ -654,6 +702,7 @@ export async function registerGitHubRoutes(
       if (!dir) return;
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
         const limitRaw = request.query.limit ? Number(request.query.limit) : undefined;
@@ -695,6 +744,7 @@ export async function registerGitHubRoutes(
       }
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
         const result = await viewWorkflowRun(git, deps.githubAuthManager, {
@@ -744,6 +794,7 @@ export async function registerGitHubRoutes(
       }
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, body);
         const git = createGitManager(gitDir);
         return await rerunWorkflowRun(git, deps.githubAuthManager, {
@@ -770,6 +821,7 @@ export async function registerGitHubRoutes(
       if (!dir) return;
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
         const workflows = await listWorkflows(git, deps.githubAuthManager, { remoteUrl });
@@ -793,6 +845,7 @@ export async function registerGitHubRoutes(
       if (!dir) return;
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
         const git = createGitManager(gitDir);
         const result = await viewWorkflow(git, deps.githubAuthManager, {
@@ -827,6 +880,7 @@ export async function registerGitHubRoutes(
       }
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
         const git = createGitManager(gitDir);
         return await commentOnPullRequest(git, deps.githubAuthManager, request.body?.body ?? "", {
@@ -989,6 +1043,7 @@ export async function registerGitHubRoutes(
       }
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
         const git = createGitManager(gitDir);
         return await markPrReady(git, deps.githubAuthManager, {
@@ -1019,6 +1074,7 @@ export async function registerGitHubRoutes(
       }
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
         const git = createGitManager(gitDir);
         return await closePullRequest(git, deps.githubAuthManager, {
@@ -1049,6 +1105,7 @@ export async function registerGitHubRoutes(
       }
       try {
         const session = sessionManager.get(request.params.id);
+        if (gitBrokerDenied(session, reply)) return;
         const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
         const git = createGitManager(gitDir);
         return await reopenPullRequest(git, deps.githubAuthManager, {
@@ -1130,6 +1187,33 @@ export async function registerGitHubRoutes(
         }
 
         const git = createGitManager(dir);
+
+        // Would this merge ship what the session actually produced? Every gate
+        // above asks about the state GitHub holds; none of them can see that
+        // the state GitHub holds is simply OLD. ShipIt pushes on a debounce and
+        // never force-pushes, so a rejected or still-pending push leaves the
+        // branch on GitHub frozen at its last successful push while the session
+        // carries the rest — and the pull request looks perfectly mergeable.
+        //
+        // Resolved here against the LIVE remote rather than trusted from the
+        // poller summary: the summary is what the client gates on, and a stale
+        // tab is exactly the caller this route exists to catch. `ahead` pushes
+        // and answers "not yet" (the new head's checks have not run);
+        // `diverged` refuses. Anything unknowable proceeds — see
+        // `services/branch-sync.ts`, which also resolves WHICH branch to read
+        // (the workspace's current one, the same branch `mergePullRequest`
+        // below resolves its pull request from).
+        const verdict = await guardMergeSync(git);
+        if (verdict.action === "hold") {
+          // A push may have landed, so let the poller re-read the branch —
+          // otherwise the card keeps the old head until the next tick and the
+          // user's second click is gated on stale checks.
+          if (poller && session?.remoteUrl) {
+            await poller.forceRefreshSession(request.params.id).catch(() => {});
+          }
+          return { success: false, message: verdict.message };
+        }
+
         // docs/266 — this route can end in an ARMING rather than a merge (checks
         // still running). A live session's arming stays on ShipIt's managed
         // loop, where the busy gate holds it; GitHub native would merge the PR
@@ -1176,6 +1260,7 @@ export async function registerGitHubRoutes(
     { config: { containerAccessible: true } },
     async (request, reply) => {
       const session = sessionManager.get(request.params.id);
+      if (gitBrokerDenied(session, reply)) return;
       if (!session) {
         reply.code(404).send({ error: "Session not found" });
         return;

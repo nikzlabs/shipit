@@ -90,7 +90,10 @@ import { ContainerSessionRunner } from "../container-session-runner.js";
 import {
   provisionProviderAccountCredentials,
   provisionSubAgentCredentials,
+  provisionSubAgentSpawnHome,
   releaseSubAgentCredentials,
+  releaseSubAgentSpawnHome,
+  subAgentSpawnHomeContainerDir,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
 } from "../session-credentials.js";
@@ -526,6 +529,14 @@ async function runNonTurnSpawn(
   const credentialsDir = deps.credentialsDir;
   const provisioned = runner instanceof ContainerSessionRunner && !!credentialsDir;
   const accountId = target.route?.kind === "account" ? target.route.id : undefined;
+  // Captured once, like `runSubAgent`'s flag: a spawn on the session's OWN
+  // harness must not write the session subtree — the primary CLI is routinely
+  // LIVE while non-turn work runs (session naming races the first turn), and a
+  // provision there swaps the credential file it re-reads mid-turn (the
+  // 2026-08-21 401 loop). Such a spawn gets an isolated per-spawn home instead;
+  // an unpinned or unknown session keeps the cross-harness path, where there is
+  // no live same-subtree reader to collide with.
+  const sameHarness = deps.sessionManager?.get(sessionId)?.agentId === target.harnessId;
   try {
     // Inside the try, so the `finally` always closes the borrow it opens
     // (planning#445): a provisioning failure that threw past the cleanup used to
@@ -534,7 +545,11 @@ async function runNonTurnSpawn(
     // to end. `runSubAgent` opens its window in the same place, for the same
     // reason.
     if (provisioned && credentialsDir) {
-      provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, accountId);
+      if (sameHarness) {
+        provisionSubAgentSpawnHome(credentialsDir, sessionId, spawnId, target.harnessId, accountId);
+      } else {
+        provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, accountId);
+      }
     }
     const result = await runner.spawnSubAgent({
       agentId: target.harnessId,
@@ -543,6 +558,9 @@ async function runNonTurnSpawn(
       depth: 0,
       model: target.selection.modelId,
       ...(target.serviceRouting ? { serviceRouting: target.serviceRouting } : {}),
+      ...(sameHarness && provisioned
+        ? { homeDir: subAgentSpawnHomeContainerDir(spawnId) }
+        : {}),
       timeoutMs: NON_TURN_SPAWN_TIMEOUT_MS,
       maxOutputChars: NON_TURN_MAX_OUTPUT_CHARS,
     });
@@ -576,36 +594,41 @@ async function runNonTurnSpawn(
     emitNonTurnFailure(deps, { sessionId, purpose, target, detail: getErrorMessage(err) });
     return "";
   } finally {
-    // Token-sync-back THEN wipe, both targeting the same resolved account root —
-    // and then put the session's own pinned account back, because a
-    // same-harness run borrows the subtree the primary agent reads from.
-    // `runSubAgent`'s `finally` in full, for the same reasons: a background
-    // generation must not leave a credential behind, and must not leave the
-    // session's next turn pointed at someone else's.
+    // Token-sync-back THEN wipe. A same-harness run closes its ISOLATED home
+    // (the sync-back to the account/flat root is inside the release) and never
+    // touched the session subtree, so there is nothing to restore. A
+    // cross-harness run closes the session-subtree borrow: `runSubAgent`'s
+    // `finally` in full, for the same reasons — a background generation must
+    // not leave a credential behind, and must not leave the session's next
+    // turn pointed at someone else's.
     if (provisioned && credentialsDir) {
-      try {
-        if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, target.harnessId, accountId);
-        else syncAgentTokenBack(credentialsDir, sessionId, target.harnessId);
-      } catch {
-        // Best-effort: a failed sync-back at worst makes the next provision
-        // start from a slightly older token, which heals on its own refresh.
-      }
-      // docs/260 — which account to put back is the credential subtree's own
-      // recorded identity (the marker), not a session row: the row records no
-      // route any more. planning#445 — and the borrow itself captured it, at the
-      // instant it overwrote the marker: reading it here would find the borrow's
-      // own account, and reading it *before* the borrow (what this used to do)
-      // could race a concurrent borrow's cleared window and restore nothing,
-      // stranding the session with no marker and every rotation refused.
-      const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, target.harnessId);
-      const session = deps.sessionManager?.get(sessionId);
-      if (session?.agentId === target.harnessId && restoreAccountId) {
-        provisionProviderAccountCredentials(
-          credentialsDir,
-          sessionId,
-          target.harnessId,
-          restoreAccountId,
-        );
+      if (sameHarness) {
+        releaseSubAgentSpawnHome(credentialsDir, sessionId, spawnId);
+      } else {
+        try {
+          if (accountId) syncProviderAccountTokenBack(credentialsDir, sessionId, target.harnessId, accountId);
+          else syncAgentTokenBack(credentialsDir, sessionId, target.harnessId);
+        } catch {
+          // Best-effort: a failed sync-back at worst makes the next provision
+          // start from a slightly older token, which heals on its own refresh.
+        }
+        // docs/260 — which account to put back is the credential subtree's own
+        // recorded identity (the marker), not a session row: the row records no
+        // route any more. planning#445 — and the borrow itself captured it, at the
+        // instant it overwrote the marker: reading it here would find the borrow's
+        // own account, and reading it *before* the borrow (what this used to do)
+        // could race a concurrent borrow's cleared window and restore nothing,
+        // stranding the session with no marker and every rotation refused.
+        const restoreAccountId = releaseSubAgentCredentials(credentialsDir, sessionId, target.harnessId);
+        const session = deps.sessionManager?.get(sessionId);
+        if (session?.agentId === target.harnessId && restoreAccountId) {
+          provisionProviderAccountCredentials(
+            credentialsDir,
+            sessionId,
+            target.harnessId,
+            restoreAccountId,
+          );
+        }
       }
     }
   }

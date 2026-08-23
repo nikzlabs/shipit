@@ -5,9 +5,11 @@ import type {
   CompactionCard,
   SubAgentConsultCard,
   ActionChecklistCard,
+  PresentInlineCard,
   BranchAutoResetCard,
   BranchSyncedCard,
   SessionRenamedCard,
+  SessionSettingsChangeCard,
   NonTurnFailureCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
@@ -250,6 +252,27 @@ export interface WsSubAgentConsultCard {
  * reusable message composer), so there is no follow-up update message — the
  * durable record of a submit is the user message the card sends, not card state.
  */
+/**
+ * docs/280 — the persisted "inline presentation" transcript card. Emitted via
+ * `emitChatCard` (so it broadcasts live AND records in-band with the turn,
+ * surviving a reconnect, a session switch, and a full reload) the first time a
+ * file is presented with `inline: true`. Carries the full `PresentInlineCard`
+ * (metadata only — the bytes are fetched on demand, as everywhere else in the
+ * present flow); the card has no lifecycle, so there is no follow-up update
+ * message. A later re-present of the same path refreshes the ARTIFACT, which the
+ * card re-renders, rather than producing a second card. Idempotent on the client
+ * by `card.presentId`.
+ *
+ * NOT to be confused with `present_content` (`WsPresentContentMessage`), which
+ * updates the Present-tab carousel. An inline present fires both: one for the
+ * tab, one for the scrollback.
+ */
+export interface WsPresentInlineCard {
+  type: "present_inline_card";
+  sessionId: string;
+  card: PresentInlineCard;
+}
+
 export interface WsActionChecklistCard {
   type: "action_checklist_card";
   sessionId: string;
@@ -300,6 +323,27 @@ export interface WsSessionRenamedCard {
   type: "session_renamed_card";
   sessionId: string;
   card: SessionRenamedCard;
+}
+
+/**
+ * docs/279 — the persisted "this session's settings changed" transcript card
+ * (requirements 7 + 8): a sandbox capability grant, or a regular session's
+ * network-containment mode, changed by the user from the Session settings dialog.
+ *
+ * Emitted via `emitChatCard` so it broadcasts live AND is persisted in-band. The
+ * change originates in an HTTP route rather than the agent-event stream, which is
+ * exactly the side-channel shape CLAUDE.md's persistence invariant covers, and it
+ * routinely lands post-turn (the user changes a setting while nothing is running)
+ * — the case `emitChatCard` handles by appending a finalized row.
+ *
+ * The card has no lifecycle, so there is no follow-up update message: it records
+ * that the grant moved and, at that moment, whether applying it needed a restart.
+ * Idempotent on the client by `card.cardId`.
+ */
+export interface WsSessionSettingsChangeCard {
+  type: "session_settings_change_card";
+  sessionId: string;
+  card: SessionSettingsChangeCard;
 }
 
 /**
