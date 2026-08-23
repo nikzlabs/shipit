@@ -20,17 +20,22 @@ import type { Handler } from "./types.js";
  * appears, instead of the tab showing an agent reply to a message it never
  * rendered until the next reload.
  *
- * The id is checked before the text comparison below, and is the only reliable
- * key for a typed message: repeated one-word sends ("continue", "yes") are
- * genuinely distinct messages that text matching would collapse into one.
+ * The id — not the text — is the reconciliation key for a typed message, for
+ * two reasons. Repeated one-word sends ("continue", "yes") are genuinely
+ * distinct messages that text matching would collapse into one. And the id is
+ * PERSISTED on the user row, so it still matches after the transcript is
+ * rehydrated from history — which is what makes the echo and the history load
+ * safe to arrive in either order (a mid-turn attach replays this message on top
+ * of a history that already contains it).
  */
 export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data) => {
   const session = useSessionStore.getState();
   const echoedRequestId = data.clientRequestId;
   if (echoedRequestId !== undefined
     && session.messages.some((m) => m.clientRequestId === echoedRequestId)) {
-    // This tab is the sender — its optimistic bubble already carries the text,
-    // the attachments and the exact position. Nothing to add.
+    // Already on screen — as this tab's own optimistic bubble, or as the row a
+    // history load just rehydrated. Either way the text, the attachments and
+    // the position are already right.
     session.setIsLoading(true);
     if (data.activity) session.setActivity({ label: data.activity });
     return;
@@ -43,11 +48,15 @@ export const handleSystemUserMessage: Handler<WsSystemUserMessage> = (_ctx, data
     ...(data.images ? { images: data.images } : {}),
     ...(data.files ? { files: data.files } : {}),
     ...(data.uploadPaths ? { uploadPaths: data.uploadPaths } : {}),
+    ...(data.userReview ? { userReview: data.userReview } : {}),
+    // Kept on the bubble so a second delivery of the same echo — a mid-turn
+    // reconnect replays the turn buffer — reconciles instead of duplicating.
+    ...(echoedRequestId !== undefined ? { clientRequestId: echoedRequestId } : {}),
   };
   session.setMessages((prev) => {
-    // A typed message that got this far belongs to a DIFFERENT viewer than the
-    // sender, so it is always new — skip the text comparison, which cannot tell
-    // a second "continue" from the first.
+    // A typed message that got this far is on a viewer that has neither sent nor
+    // loaded it, so it is always new — skip the text comparison, which cannot
+    // tell a second "continue" from the first.
     if (echoedRequestId !== undefined) return [...prev, appended];
     const tail = prev[prev.length - 1];
     if (tail?.role === "user" && tail.text === data.text) {

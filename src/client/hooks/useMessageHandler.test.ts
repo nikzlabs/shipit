@@ -88,6 +88,80 @@ describe("useMessageHandler", () => {
     });
   });
 
+  it("queues a user-message echo until HTTP history has loaded", async () => {
+    // A message typed on another device arrives as `system_user_message` and
+    // APPENDS a bubble, while the history load REPLACES the transcript. Applied
+    // under a history response sampled a moment before the row was written, the
+    // bubble is wiped by the load that follows — the same "my message never
+    // showed up" symptom the echo exists to fix, in a narrower window.
+    const event: WsServerMessage = {
+      type: "system_user_message",
+      sessionId: "session-1",
+      text: "sent from my phone",
+      clientRequestId: "req-phone",
+    };
+    const queued = [messageEvent(event)];
+    const drainMessages = vi.fn(() => queued.splice(0));
+
+    renderHook(() =>
+      useMessageHandler({
+        lastMessage: messageEvent(event),
+        drainMessages,
+        send: vi.fn(),
+        terminalRef: { current: null },
+      })
+    );
+
+    expect(useSessionStore.getState().messages).toEqual([]);
+
+    // History lands first and happens NOT to contain the row (it was sampled
+    // before the write), so the drained echo is what puts the message on screen.
+    act(() => {
+      useSessionStore.getState().setMessages([{ role: "user", text: "earlier turn" }]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages).toMatchObject([
+        { role: "user", text: "earlier turn" },
+        { role: "user", text: "sent from my phone", clientRequestId: "req-phone" },
+      ]);
+    });
+  });
+
+  it("drops a queued echo whose row the history load already carried", async () => {
+    // The other order: history was sampled after the write, so the row — with
+    // the same persisted id — is already on screen when the echo drains.
+    const event: WsServerMessage = {
+      type: "system_user_message",
+      sessionId: "session-1",
+      text: "sent from my phone",
+      clientRequestId: "req-phone",
+    };
+    const queued = [messageEvent(event)];
+    const drainMessages = vi.fn(() => queued.splice(0));
+
+    renderHook(() =>
+      useMessageHandler({
+        lastMessage: messageEvent(event),
+        drainMessages,
+        send: vi.fn(),
+        terminalRef: { current: null },
+      })
+    );
+
+    act(() => {
+      useSessionStore.getState().setMessages([
+        { role: "user", text: "sent from my phone", clientRequestId: "req-phone" },
+      ]);
+      useSessionStore.getState().setHistoryLoaded(true);
+    });
+
+    await waitFor(() => {
+      expect(useSessionStore.getState().messages).toHaveLength(1);
+    });
+  });
+
   /**
    * The session-switch entry into the "switched away mid-turn, switched back,
    * and the earlier messages are gone" hole. The switch clears the transcript

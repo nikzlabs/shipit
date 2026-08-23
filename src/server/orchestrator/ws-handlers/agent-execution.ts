@@ -397,6 +397,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       // Persist the "Send comments" card metadata so the user bubble rehydrates
       // as a UserReviewCard instead of a raw prompt bubble on reload.
       ...(userReview ? { userReview } : {}),
+      // The row and its `system_user_message` echo must agree on one identity:
+      // a receiving tab reconciles the echo against whichever of the two it saw
+      // first, and text cannot tell two "continue" sends apart.
+      ...(opts.userEcho?.clientRequestId ? { clientRequestId: opts.userEcho.clientRequestId } : {}),
     });
   };
 
@@ -418,6 +422,10 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           : {}),
         ...(historyFiles ? { files: historyFiles } : {}),
         ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+        // Without this a "Send comments" submission renders on other viewers as
+        // the raw generated prompt instead of the UserReviewCard the persisted
+        // row rebuilds — the echo has to match what a reload would show.
+        ...(userReview ? { userReview } : {}),
       }
     : undefined;
 

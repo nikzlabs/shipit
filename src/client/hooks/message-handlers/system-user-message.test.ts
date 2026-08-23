@@ -64,7 +64,7 @@ describe("handleSystemUserMessage (user-typed echo)", () => {
       clientRequestId: "req-from-phone",
     });
     expect(useSessionStore.getState().messages).toEqual([
-      { role: "user", text: "ship it" },
+      { role: "user", text: "ship it", clientRequestId: "req-from-phone" },
     ]);
   });
 
@@ -119,6 +119,39 @@ describe("handleSystemUserMessage (user-typed echo)", () => {
     const messages = useSessionStore.getState().messages;
     expect(messages).toHaveLength(4);
     expect(messages[3]).toMatchObject({ role: "user", text: "continue" });
+  });
+
+  it("reconciles against a row rehydrated from history, which carries the same id", () => {
+    // The echo and the receiving tab's `GET /history` race. History wins the
+    // race here — the row is already in the transcript, without the
+    // `pendingDispatch`/optimistic markers, because it came from the DB.
+    useSessionStore.setState({
+      messages: [{ role: "user", text: "ship it", clientRequestId: "req-persisted" }],
+    });
+    handleSystemUserMessage(ctx, {
+      type: "system_user_message",
+      sessionId: "s1",
+      text: "ship it",
+      clientRequestId: "req-persisted",
+    });
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+  });
+
+  it("keeps the id on the appended bubble so a replayed echo does not duplicate it", () => {
+    // A mid-turn reconnect replays the turn-event buffer, so the same echo can
+    // be delivered twice to a viewer that never sent it.
+    const echo = {
+      type: "system_user_message" as const,
+      sessionId: "s1",
+      text: "ship it",
+      clientRequestId: "req-replayed",
+    };
+    handleSystemUserMessage(ctx, echo);
+    handleSystemUserMessage(ctx, echo);
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+    expect(useSessionStore.getState().messages[0]).toMatchObject({
+      clientRequestId: "req-replayed",
+    });
   });
 
   it("carries attachments so a phone-uploaded image renders on the desktop", () => {

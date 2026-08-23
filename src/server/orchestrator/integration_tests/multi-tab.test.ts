@@ -254,13 +254,14 @@ describe("Integration: multi-tab scenarios", () => {
     phone.close();
   });
 
-  it("a tab attaching later gets the user message from history, not a replayed echo", async () => {
-    // The echo is buffered in the turn-event log like every other emit, but the
-    // user row is persisted BEFORE it goes out — so a late attach's own history
-    // load already has the bubble and replaying would double it. Worse, it
-    // could not be deduped away: the rehydrated row carries no
-    // `clientRequestId`.
-    const session = createSession("echo-replay-session");
+  it("persists the sender's request id on the user row so history and the echo agree", async () => {
+    // The echo and the receiving tab's own `GET /history` race, and whichever
+    // lands second decides between showing the message zero times and twice.
+    // They are reconcilable only because BOTH carry the same id — matching on
+    // text cannot tell two "continue" sends apart. A mid-turn attach replays the
+    // echo on top of a history that already holds the row, so this is the pair
+    // that has to agree.
+    const session = createSession("echo-identity-session");
 
     const first = await TestClient.connect(port, session.sessionId);
     await first.receive(); // preview_status
@@ -271,27 +272,23 @@ describe("Integration: multi-tab scenarios", () => {
       requestId: "req-first",
     } as AnyMsg);
     const claude = await waitForClaude(() => lastClaude);
-    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-echo-replay" });
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-echo-identity" });
     await drainUntil(first, (m) => m.type === "session_started");
 
-    // `session_status` is sent after the replay loop, so it is a safe boundary:
-    // anything the replay would have emitted has arrived by the time it does.
-    const late = await TestClient.connect(port, session.sessionId);
-    const seen: AnyMsg[] = [];
-    for (let i = 0; i < 30; i++) {
-      const msg: AnyMsg = await late.receive(3000);
-      seen.push(msg);
-      if (msg.type === "session_status") break;
-    }
-    expect(seen.some((m) => m.type === "session_status")).toBe(true);
-    expect(seen.some((m) => m.type === "system_user_message")).toBe(false);
-
-    // The bubble is in persisted history instead — which is what a reload reads.
     const history = await app.inject({ method: "GET", url: `/api/sessions/${session.sessionId}/history` });
     const rows = history.json().messages as AnyMsg[];
-    expect(rows.some((m) => m.role === "user" && m.text === "ship it")).toBe(true);
+    const row = rows.find((m) => m.role === "user" && m.text === "ship it");
+    expect(row).toBeTruthy();
+    expect(row!.clientRequestId).toBe("req-first");
 
-    claude.finish("test-echo-replay");
+    // And a tab attaching mid-turn still receives the replayed echo — it is the
+    // only carrier of a dispatch's activity label — carrying the same id.
+    const late = await TestClient.connect(port, session.sessionId);
+    const replayed = await drainUntil(late, (m) => m.type === "system_user_message");
+    expect(replayed).toBeTruthy();
+    expect(replayed!.clientRequestId).toBe("req-first");
+
+    claude.finish("test-echo-identity");
     first.close();
     late.close();
   });

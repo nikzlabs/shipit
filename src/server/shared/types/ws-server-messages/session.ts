@@ -250,6 +250,8 @@ export interface WsSystemUserMessage {
   images?: { data?: string; mediaType: string; src?: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
+  /** "Send comments" metadata, so the echo renders the `UserReviewCard` a reload would. */
+  userReview?: { filePaths: string[]; commentCount: number };
 }
 
 /**
