@@ -15,7 +15,7 @@ description: Synthesized design draft for the fleet-coordination control API —
 
 - The user runs many sessions across many repos and reviews them pull-first, by voice on the go and through the chat UI at the desk, via a **built-in ShipIt coordinator** — the first API client (decided 2026-08-23, requirements.md req 13–14). The API stays agent-agnostic; external assistants may attach as later clients.
 - Three architecture rules: the queue and sessions are the source of truth; deep discussion is connect-through with verbatim quoting *(superseded 2026-08-23 by req 18 — verbatim is screen-only and chronological; voice carries the coordinator's own words)*; the durable record lands in each session's transcript.
-- Out of v1: settings, credentials, archive, live steering, streaming deltas. Merge: whether merge-on-explicit-request ships in the MVP is an open question (req 28); autonomous merge is a stated future capability.
+- Out of v1: settings, credentials, archive, live steering, streaming deltas — and merge: **the MVP contains no merge API at all** (resolved 2026-08-23; req 28 is a future grant, inert until activated).
 
 ## 2. The model: attention episodes, not a notification inbox
 
