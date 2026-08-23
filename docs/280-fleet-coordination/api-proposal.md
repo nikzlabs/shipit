@@ -113,6 +113,8 @@ One durable, monotonic **event journal**; resource mutation + event append in on
 
 Progressive depth: digest (counts by repo and kind, top exceptional items only) → item (repo, session, headline, available actions; no UUIDs/branches/paths/SHAs aloud) → options (labels with one-line gists, never bare numbers; say if multi-select) → full closing message only on request, chunked, code sections announced. Ordinals are per-review conveniences, always accompanied by repo + session name.
 
+**No command vocabulary (2026-08-23, req 30).** Early sketches of this workflow used reserved control words ("skip," "snooze," "next," "details"); the user struck them as the opposite of the requirement — "that the implementation would be hardcoded to these words is not a requirement." The user speaks ordinarily; the assistant maps intent onto its tools. Any keyword-looking list in this document is example phrasing only, and the item-lifecycle verbs here (snooze etc.) are *agent/API* operations, never words the user must say.
+
 **A spoken decision must carry enough context to decide by ear alone (requirements.md req 6).** Field-tested in the design conversation itself: a note naming three mechanisms without explaining the problem each solves was undecidable. The coordinator must brief before asking.
 
 Confirmation tiers: exact offered option → echo and send; ambiguous free text → read back; plan approval and batch dispatch → explicit confirmation. "Interesting" is not approval.
