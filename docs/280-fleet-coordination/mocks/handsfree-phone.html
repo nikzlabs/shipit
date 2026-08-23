@@ -73,8 +73,13 @@
   .hf.off { color:var(--text-tertiary); }
   .hf.off .sw { background:var(--border-secondary); }
   .hf.off .sw::after { right:auto; left:2px; }
-  .waitchip { margin:10px 14px 0; align-self:flex-start; font-size:11px; padding:3px 10px; border-radius:999px;
-              background:var(--bg-tertiary); border:1px solid var(--border-primary); color:var(--text-secondary); }
+  .waithead { margin:10px 14px 6px; font-size:11px; color:var(--text-secondary); }
+  .qcard { margin:0 14px 6px; display:flex; gap:7px; align-items:flex-start; border:1px solid var(--border-primary);
+           border-left:3px solid var(--attention-text); border-radius:8px; padding:7px 9px; background:var(--bg-secondary);
+           font-size:11.5px; }
+  .qcard .qb { font-size:9.5px; padding:0 5px; border-radius:999px; background:var(--warning-subtle);
+               color:var(--attention-text); flex:none; margin-top:1px; }
+  .qcard .qt { color:var(--text-secondary); }
   .chat { padding:12px 14px; display:flex; flex-direction:column; gap:10px; overflow:hidden; flex:1; }
   .cmsg { font-size:12.5px; color:var(--text-primary); }
   .cmsg .w { color:var(--text-tertiary); font-size:10px; margin-bottom:2px; }
@@ -143,7 +148,8 @@
           <div class="appbar"><span class="applogo">S</span><b>Coordinator</b>
             <span class="hf"><span>hands-free</span><span class="sw"></span></span>
           </div>
-          <span class="waitchip">2 waiting — spoken when you're free</span>
+          <div class="waithead">1 waiting — spoken when you're free · tap to take it now</div>
+          <div class="qcard"><span class="qb">completed</span><span class="qt">Caves level generator — all 40 layouts came out clean after Thursday's tunnel-width fix. Nothing to decide unless you want spot checks.</span></div>
           <div class="chat">
             <div class="cmsg"><div class="w">Coordinator · 9:41</div>Reef Quest, water reflections — planar or screen-space for the slice? Offered to profile the harbor first.</div>
             <div class="umsg">Have it profile the harbor at both settings first.</div>
@@ -152,7 +158,7 @@
           <div class="appfoot"><span class="ph">Talk or type…</span><span class="micb"><span class="micg"></span></span></div>
         </div>
       </div>
-      <div class="cap"><b>Visibility on demand (req 26)</b>The same one conversation, whenever you look. Where-you-are governs delivery, never visibility. No queue to manage by hand — the chip is the coordinator's own count.</div>
+      <div class="cap"><b>Visibility on demand (reqs 26, 35–37)</b>The same one conversation and the same standing queue, whenever you look. Reading costs nothing; each waiting item carries the coordinator's cold-context brief, and a tap takes it into the conversation.</div>
     </div>
 
     <!-- 4: loud failure -->

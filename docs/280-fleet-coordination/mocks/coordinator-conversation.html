@@ -130,8 +130,44 @@
          border-radius:4px; padding:0 5px; color:var(--text-secondary); background:var(--bg-tertiary); }
   .hint { font-size:11px; color:var(--text-tertiary); margin-top:6px; text-align:right; }
 
+  /* ---------- queue panel (reqs 35–37) ---------- */
+  .qpanel { width:292px; flex:none; background:var(--bg-secondary); border-left:1px solid var(--border-primary);
+            overflow-y:auto; display:flex; flex-direction:column; }
+  .qtitle { padding:12px 14px 6px; position:relative; }
+  .qtitle b { font-size:13px; }
+  .qtitle small { display:block; color:var(--text-tertiary); font-size:11px; margin-top:2px; }
+  .qgroup { padding:10px 14px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-tertiary); }
+  .qitem { margin:0 10px 8px; border:1px solid var(--border-primary); border-left:3px solid var(--attention);
+           border-radius:8px; background:var(--bg-primary); padding:9px 11px; position:relative; cursor:pointer; }
+  .qitem:hover { background:var(--bg-hover); }
+  .qitem.inchat { border-left-color:var(--accent); }
+  .qmeta { display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--text-tertiary); margin-bottom:4px; flex-wrap:wrap; }
+  .qbadge { font-size:10px; padding:0 6px; border-radius:999px; background:var(--warning-subtle); color:var(--attention-text); }
+  .qbadge.fail { background:var(--error-subtle); color:var(--error); }
+  .qnow { color:var(--accent); font-weight:500; }
+  .qitem .t { display:block; font-size:12.5px; font-weight:600; margin-bottom:4px; }
+  .qbrief { font-size:12px; color:var(--text-secondary); }
+  .qact { display:flex; gap:10px; margin-top:7px; font-size:11.5px; align-items:center; }
+  .qgo { color:var(--text-link); font-weight:500; }
+  .qopen { color:var(--text-tertiary); text-decoration:none; margin-left:auto; }
+  .qrow { display:flex; gap:8px; align-items:center; padding:3px 16px; font-size:12px; color:var(--text-secondary); }
+  .qrow.dim { color:var(--text-tertiary); }
+  .qd { width:6px; height:6px; border-radius:50%; flex:none; }
+  .qd.run { background:var(--info); }
+  .qd.ok { background:var(--success); opacity:.55; }
+  .qfoot { margin-top:auto; padding:10px 14px; font-size:11px; color:var(--text-tertiary);
+           border-top:1px solid var(--border-primary); position:relative; }
+  @media (max-width:1120px) { .sidebar { display:none; } }
+
+  /* option chips on a presented ask (req 35) */
+  .opts { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
+  .opt { font-size:12px; padding:5px 12px; border-radius:999px; border:1px solid var(--border-secondary);
+         background:var(--bg-secondary); color:var(--text-primary); cursor:pointer; }
+  .opt:hover { background:var(--bg-hover); border-color:var(--accent); }
+  .opts .or { font-size:11px; color:var(--text-tertiary); }
+
   /* controls (mock-only chrome) */
-  .mockbar { position:fixed; bottom:10px; right:12px; display:flex; gap:8px; z-index:9; }
+  .mockbar { position:fixed; bottom:10px; left:12px; display:flex; gap:8px; z-index:9; }
   .mockbar button { font-size:11px; padding:4px 10px; border-radius:999px; border:1px solid var(--border-secondary);
                     background:var(--bg-elevated); color:var(--text-secondary); cursor:pointer; }
   .mockbar button[aria-pressed="true"] { background:var(--accent-subtle); color:var(--text-primary); }
@@ -152,7 +188,7 @@
 </div>
 
 <div class="app">
-  <!-- Sidebar: today's sidebar, unchanged, plus the pinned coordinator destination (plan §2 chrome). No queue rail — deliberately (round-3 ruling). -->
+  <!-- Sidebar: today's sidebar, unchanged, plus the pinned coordinator destination (plan §2 chrome). The standing queue panel (reqs 35–37) is on the right. -->
   <aside class="sidebar">
     <div class="side-head">ShipIt</div>
     <div class="coord-pin" style="position:relative">
@@ -161,9 +197,10 @@
       <span class="pin">plan §2 · pinned destination</span>
     </div>
     <div class="group">Reef Quest</div>
-    <div class="sess"><span class="att"></span><span class="t">Water reflections — shader pass</span></div>
-    <div class="sess"><span class="run"></span><span class="t">Character generation #6–10</span></div>
-    <div class="sess"><span class="ok"></span><span class="t">Level generator — caves</span></div>
+    <div class="sess"><span class="ok"></span><span class="t">Water reflections — settled: planar</span></div>
+    <div class="sess"><span class="att"></span><span class="t">Character generation #12 — failed</span></div>
+    <div class="sess"><span class="run"></span><span class="t">Character generation #11–20</span></div>
+    <div class="sess"><span class="att"></span><span class="t">Level generator — caves</span></div>
     <div class="group">shipit</div>
     <div class="sess"><span class="ok"></span><span class="t">Release 0.9 — merged</span></div>
     <div class="sess"><span class="run"></span><span class="t">Voice-note latency probe</span></div>
@@ -193,7 +230,7 @@
         </div>
 
         <div class="row coord">
-          <span class="pin">req 7 · overview is judgment over a live queue read</span>
+          <span class="pin">req 7 · overview on request; the panel shows the same state standing (req 37)</span>
           <div class="who">Coordinator · 09:12</div>
           <div class="body">
             <p>Quiet night. <b>Reef Quest</b>: two things need you — <b>water reflections</b> finished the shader pass and has a question, and the level-generator run for the caves completed clean. <b>shipit</b>: release 0.9 merged; the latency probe is still running, nothing waiting. <b>hermes-tools</b> is idle.</p>
@@ -275,7 +312,26 @@ full table and captures in the session transcript…</div>
               <span class="rcpt"><b>Kraken boss — battle mechanics</b> · investigation <span class="tick">✓</span></span>
               <span class="rcpt">trigger: your 09:34 message</span>
             </div>
-            <p style="margin-top:8px">Everything comes back through me — nothing else needs you right now.</p>
+            <p style="margin-top:8px">Everything comes back through me. The caves run still waits whenever you want it — nothing else needs you.</p>
+          </div>
+        </div>
+
+        <div class="row user">
+          <span class="pin left">req 35 · a panel click became your message</span>
+          <div class="via"><span aria-hidden="true">▤</span> from the queue panel · 09:44</div>
+          Take: Character generation #12 — failed.
+        </div>
+
+        <div class="row coord">
+          <span class="pin">reqs 2 · 31 · 36 — one topic, presented with cold context</span>
+          <div class="who">Coordinator · 09:44</div>
+          <div class="body">
+            <p><b>Character generation #12</b> (Reef Quest — one of the ten you started at 09:34). It failed on the third of ten assets: the moray-eel reference sheet is corrupt at the source. The other nine sessions run clean. Two ways out: regenerate the sheet first — about ten minutes, then #12 resumes — or skip the eel and let #12 finish with nine assets.</p>
+            <div class="opts">
+              <span class="opt">Regenerate the sheet</span>
+              <span class="opt">Skip the eel</span>
+              <span class="or">— or just say it</span>
+            </div>
           </div>
         </div>
 
@@ -294,6 +350,48 @@ full table and captures in the session transcript…</div>
       </div>
     </div>
   </main>
+
+  <!-- The standing queue panel (reqs 35–37): pure reading — no message, no click needed to see it; a click on an item starts the exchange in the chat. -->
+  <aside class="qpanel">
+    <div class="qtitle">
+      <b>Fleet — standing state</b>
+      <small>Always current. Reading it sends nothing.</small>
+      <span class="pin left" style="top:2px">req 37 · standing state — no message, no click</span>
+    </div>
+
+    <div class="qgroup">Reef Quest</div>
+
+    <div class="qitem inchat">
+      <span class="pin left">plan §4 · standing brief, written at arrival</span>
+      <div class="qmeta"><span class="qbadge fail">failure</span><span>Character generation #12</span><span>· 09:41</span><span class="qnow">· in the chat now</span></div>
+      <span class="t">Asset 3 of 10 failed — corrupt source sheet</span>
+      <div class="qbrief">The moray-eel reference sheet is corrupt at the source; the other nine sessions run clean. Regenerate the sheet (~10 min) or skip the eel.</div>
+    </div>
+
+    <div class="qitem">
+      <span class="pin left">req 36 · enough context after days away</span>
+      <div class="qmeta"><span class="qbadge">completed</span><span>Level generator — caves</span><span>· waiting since 09:07</span></div>
+      <span class="t">All 40 cave layouts regenerated clean</span>
+      <div class="qbrief">Thursday you asked for all 40 cave layouts to be regenerated after the tunnel-width fix. All 40 came out valid on the first pass — the fix held; no manual patches. Nothing to decide unless you want spot checks.</div>
+      <div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#">open session ↗</a></div>
+    </div>
+
+    <div class="qrow"><span class="qd run"></span>Character generation #11–20 — 9 running clean</div>
+    <div class="qrow"><span class="qd run"></span>Kraken boss — investigating</div>
+    <div class="qrow dim"><span class="qd ok"></span>Water reflections — settled: planar · 09:34</div>
+
+    <div class="qgroup">shipit</div>
+    <div class="qrow"><span class="qd run"></span>Latency probe — running · nothing waiting</div>
+    <div class="qrow dim"><span class="qd ok"></span>Release 0.9 — merged</div>
+
+    <div class="qgroup">hermes-tools</div>
+    <div class="qrow dim"><span class="qd ok"></span>Idle — no sessions today</div>
+
+    <div class="qfoot">
+      New arrivals appear the moment they happen: ShipIt's own line first, then the coordinator's brief replaces it — usually within a minute or two.
+      <span class="pin left" style="top:-9px">plan §4 · fresh line until briefed</span>
+    </div>
+  </aside>
 </div>
 </body>
 </html>
