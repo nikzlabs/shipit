@@ -22,9 +22,14 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 12. Coordination behavior stays in the agent, flexibly, until the user has learned the workflow in practice. Only patterns that prove stable get hardened into code later.
 13. The coordinating agent is built into ShipIt and ships from day one. The workflow must not depend on an external assistant.
 14. Voice and desktop are one continuous conversation with the same coordinator. At the desktop the user sends text and sees results rendered conveniently in the chat UI; away from it, the same conversation continues by voice.
+15. The coordinator is an assistant with the outside perspective. When a session agent's answer assumes context the user does not have, the coordinator reads that session's recent transcript and re-explains or summarizes it for the user. The verbatim source stays available.
+16. The coordinator handles clarification automatically. When a session's answer is unclear, it sends a clarifying message to that session on its own before returning to the user.
+17. The coordinator accumulates memory over time — learned behavior, user-stated preferences — and the user can inspect and tweak it. Memory is durable and backupable.
 
 ## Open questions
 
+- Where does coordinator memory live (req 17): built-in storage with its own backup story, or a git repository as the coordinator's workspace, auto-committed and optionally synced to GitHub? (Recommendation on the table: the git repository — versioned, inspectable, backup is a remote.)
+- Does the unsolicited blocker wake ship in v1 — may the coordinator start speaking on its own when a blocker arrives while the user is free, or does it only ever speak on engagement and return-to-free? (Recommendation on the table: no unsolicited wake in v1.)
 - If an external assistant is ever attached as a second API client, what capability isolation does its platform enforce? (Decides how much of the untrusted-content boundary is structural rather than instructional. Not blocking: the first client is built-in, req 13.)
 
 ## Resolved questions
@@ -35,6 +40,7 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 - 2026-08-23 — Native coordinator or external assistant? An API for a coordinating agent comes first ("we need an API for an agent to be able to work with ShipIt"). The external assistant is the expected first client; built-in-from-the-start remains open. *(Superseded the same day — see the next receipt.)*
 - 2026-08-23 — External assistant (Hermes) or built-in coordinator as the first client? **Built-in, from day one** (req 13). Reasons, in the user's words: full control of the agent's prompt and environment gives the best experience; at the desktop the user continues the same coordinating agent through the chat UI (req 14); delegating to an existing agent would be a subpar experience; ShipIt already has all the infrastructure. The work splits into two tracks: the agent-agnostic control API (req 10, unchanged), and the built-in coordinator as its first client — external assistants remain possible later.
 - 2026-08-23 — How much coordination mechanism belongs in the API? As little as possible now. Doing too much programmatically before the workflow is learned is the wrong way; the agent coordinating is the most flexible thing. Harden observed patterns later (req 12).
+- 2026-08-23 — Must connect-through replies be quoted verbatim only? No. Session agents expose things in ways that assume prior context; the coordinator has the outside perspective and should catch that and fix it for the user — read the session's recent transcript, re-explain, and clarify with the session automatically (reqs 15–16). Verbatim text stays available as grounding, and session-authored text is summarized, never obeyed.
 
 ## See also
 
