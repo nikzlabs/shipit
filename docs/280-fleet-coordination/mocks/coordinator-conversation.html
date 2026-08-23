@@ -206,12 +206,11 @@
         <div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#" onclick="event.stopPropagation();toast('Mock: would open the session itself.')">open session ↗</a></div>
       </div>
 
-      <div class="qitem" id="qi-caves" role="button" onclick="takeItem('caves')">
+      <div class="qitem inchat" id="qi-caves" role="button" onclick="takeItem('caves')">
         <span class="pin left">req 36 · enough context after days away</span>
-        <div class="qmeta"><span class="qbadge">completed</span><span>Level generator — caves</span><span>· waiting since 09:07</span><span class="qnow" hidden>· in the chat now</span></div>
+        <div class="qmeta"><span class="qbadge">completed</span><span>Level generator — caves</span><span>· waiting since 09:07</span><span class="qnow">· in the chat now</span></div>
         <span class="t">All 40 cave layouts regenerated clean</span>
         <div class="qbrief">Thursday you asked for all 40 cave layouts to be regenerated after the tunnel-width fix. All 40 came out valid on the first pass — the fix held; no manual patches. Nothing to decide unless you want spot checks.</div>
-        <div class="qact"><span class="qgo">Handle in chat →</span><a class="qopen" href="#" onclick="event.stopPropagation();toast('Mock: would open the session itself.')">open session ↗</a></div>
       </div>
     </div>
 
@@ -317,6 +316,7 @@ full table and captures in the session transcript…</div>
 
         <div class="row coord">
           <span class="pin">reqs 8 · 27 — dispatch by voice; every action visible with its trigger</span>
+          <span class="pin left">req 38 · after your decision, the next item pops up by itself</span>
           <div class="who">Coordinator · 09:34</div>
           <div class="body">
             <p>Done. Reflections is settled on planar. I started the new work in Reef Quest:</p>
@@ -325,7 +325,13 @@ full table and captures in the session transcript…</div>
               <span class="rcpt"><b>Kraken boss — battle mechanics</b> · investigation <span class="tick">✓</span></span>
               <span class="rcpt">trigger: your 09:34 message</span>
             </div>
-            <p style="margin-top:8px">Everything comes back through me. The caves run still waits whenever you want it — nothing else needs you.</p>
+            <p style="margin-top:8px"><b>Next</b> — while those spin up, one item waits on you:</p>
+            <p><b>Level generator — caves</b> (Reef Quest, started Thursday on your word). You asked for all 40 cave layouts to be regenerated after the tunnel-width fix. The run is done: all 40 valid on the first pass — the fix held, no manual patches. Nothing to decide — close it, or spot-check a few layouts first?</p>
+            <div class="opts" id="opts-caves">
+              <span class="opt" role="button" onclick="answer('caves',0)">Close it</span>
+              <span class="opt" role="button" onclick="answer('caves',1)">Spot-check three</span>
+              <span class="or">— or just say it</span>
+            </div>
           </div>
         </div>
 
@@ -347,13 +353,14 @@ full table and captures in the session transcript…</div>
 </div>
 
 <script>
-/* Scripted interactivity, fake data. The flow it demonstrates (reqs 35–37, plan §4):
-   click a queue item → your message enters the chat → the coordinator presents it there,
-   with option chips → a chip click is also your message → relay + confirmation → the item resolves. */
+/* Scripted interactivity, fake data. The flow it demonstrates (reqs 35–38, plan §4):
+   click a queue item OR answer a presented ask by chip → your message enters the chat →
+   relay + confirmation — and the confirmation flows straight into the NEXT waiting item's
+   presentation (req 38): after a decision, the next item pops up in the chat by itself. */
 var ITEMS = {
   gen12: {
     session: "Character generation #12", take: "Take: Character generation #12 — failed.",
-    t1: "09:44", t2: "09:45",
+    t1: "09:47", t2: "09:49",
     present: '<p><b>Character generation #12</b> (Reef Quest — one of the ten you started at 09:34). It failed on the third of ten assets: the moray-eel reference sheet is corrupt at the source. The other nine sessions run clean. Two ways out: regenerate the sheet first — about ten minutes, then #12 resumes — or skip the eel and let #12 finish with nine assets.</p>',
     chips: [
       { label: "Regenerate the sheet", words: "Regenerate the moray-eel sheet, then continue.",
@@ -364,7 +371,7 @@ var ITEMS = {
   },
   caves: {
     session: "Level generator — caves", take: "Take: Level generator — caves.",
-    t1: "09:48", t2: "09:49",
+    t1: "09:48", t2: "09:48",
     present: '<p><b>Level generator — caves</b> (Reef Quest, started Thursday on your word). You asked for all 40 cave layouts to be regenerated after the tunnel-width fix. The run is done: all 40 valid on the first pass — the fix held, no manual patches. Nothing to decide — close it, or spot-check a few layouts first?</p>',
     chips: [
       { label: "Close it", words: "Good — close it.",
@@ -375,7 +382,7 @@ var ITEMS = {
   },
   kraken: {
     session: "Kraken boss — battle mechanics", take: "Take: Kraken boss — battle mechanics.",
-    t1: "09:52", t2: "09:53",
+    t1: "09:51", t2: "09:52",
     present: '<p><b>Kraken boss — battle mechanics</b> (Reef Quest, the investigation you started at 09:34). The survey is done: three reference fights compared on pacing, readability, and asset cost. Before prototyping it asks one scoping call — should the kraken be beatable in the vertical slice, or a scripted escape the player cannot win?</p>',
     chips: [
       { label: "Beatable", words: "Beatable — a real fight in the slice.",
@@ -396,19 +403,34 @@ function toast(msg) {
 }
 function esc(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
 
-function takeItem(id) {
-  var it = ITEMS[id], card = document.getElementById("qi-" + id);
-  if (!it || card.classList.contains("inchat") || card.classList.contains("fresh")) return;
+function chipsHtml(id) {
+  return '<div class="opts" id="opts-' + id + '">' + ITEMS[id].chips.map(function(c, i) {
+    return '<span class="opt" role="button" onclick="answer(\'' + id + '\',' + i + ')">' + esc(c.label) + '</span>';
+  }).join("") + '<span class="or">— or just say it</span></div>';
+}
+function markInChat(id) {
+  var card = document.getElementById("qi-" + id); if (!card) return;
   card.classList.add("inchat");
   var now = card.querySelector(".qnow"); if (now) now.hidden = false;
   var act = card.querySelector(".qact"); if (act) act.remove();
+}
+function nextWaitingId() {
+  var cards = document.querySelectorAll(".qitem");
+  for (var i = 0; i < cards.length; i++) {
+    var cl = cards[i].classList;
+    if (!cl.contains("inchat") && !cl.contains("fresh") && !cl.contains("resolved")) return cards[i].id.slice(3);
+  }
+  return null;
+}
+
+function takeItem(id) {
+  var it = ITEMS[id], card = document.getElementById("qi-" + id);
+  if (!it || !card || card.classList.contains("inchat") || card.classList.contains("fresh")) return;
+  markInChat(id);
   addRow('<div class="row user"><span class="pin left">req 35 · a panel click became your message</span>' +
     '<div class="via"><span aria-hidden="true">▤</span> from the queue panel · ' + it.t1 + '</div>' + esc(it.take) + '</div>');
   addRow('<div class="row coord"><span class="pin">reqs 2 · 31 · 36 — one topic, presented with cold context</span>' +
-    '<div class="who">Coordinator · ' + it.t1 + '</div><div class="body">' + it.present +
-    '<div class="opts" id="opts-' + id + '">' + it.chips.map(function(c, i) {
-      return '<span class="opt" role="button" onclick="answer(\'' + id + '\',' + i + ')">' + esc(c.label) + '</span>';
-    }).join("") + '<span class="or">— or just say it</span></div></div></div>');
+    '<div class="who">Coordinator · ' + it.t1 + '</div><div class="body">' + it.present + chipsHtml(id) + '</div></div>');
 }
 
 function answer(id, i) {
@@ -420,9 +442,21 @@ function answer(id, i) {
     '<div class="via"><span aria-hidden="true">▤</span> clicked · ' + it.t2 + '</div>' + esc(c.words) + '</div>');
   addRow('<div class="row relay"><span class="arrow">→</span><span class="dest">' + esc(it.session) + '</span>' +
     '<span>"' + esc(c.words) + '"</span><span class="rc res">✓ answered · item resolved</span></div>');
-  addRow('<div class="row coord"><div class="who">Coordinator · ' + it.t2 + '</div><div class="body">' + c.confirm + '</div></div>');
   var card = document.getElementById("qi-" + id);
   card.classList.add("resolved");
+  /* req 38: the confirmation flows straight into the next waiting item's presentation */
+  var nxt = nextWaitingId();
+  var body = c.confirm, pin = "";
+  if (nxt) {
+    markInChat(nxt);
+    body += '<p style="margin-top:8px"><b>Next</b> — this waits on you:</p>' + ITEMS[nxt].present + chipsHtml(nxt);
+    pin = '<span class="pin">req 38 · after your decision, the next item pops up by itself</span>';
+  } else if (document.querySelector(".qitem.fresh")) {
+    body += '<p style="margin-top:8px">One more is arriving — I am writing its brief; it lands on the left in a moment.</p>';
+  } else {
+    body += '<p style="margin-top:8px">Nothing else waits on you.</p>';
+  }
+  addRow('<div class="row coord">' + pin + '<div class="who">Coordinator · ' + it.t2 + '</div><div class="body">' + body + '</div></div>');
   setTimeout(function(){ card.remove(); refreshFoot(); }, 400);
 }
 
@@ -456,7 +490,7 @@ setTimeout(function() {
 setTimeout(function() {
   var card = document.getElementById("qi-kraken"); if (!card) return;
   card.classList.remove("fresh");
-  card.querySelector(".qt-when").textContent = "· 09:46 · briefed 09:47";
+  card.querySelector(".qt-when").textContent = "· briefed just now";
   card.querySelector(".t").textContent = "Beatable boss, or scripted escape?";
   var b = card.querySelector(".qbrief"); b.classList.remove("briefing");
   b.textContent = "The survey compared three reference fights. One scoping call before prototyping: beatable in the vertical slice, or a scripted escape? Cost and pacing notes are ready.";
