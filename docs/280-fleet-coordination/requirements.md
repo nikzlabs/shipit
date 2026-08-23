@@ -61,6 +61,6 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 
 ## See also
 
-- `implementation-requirements.md` in this folder — optimization-level requirements split out of this document (queue serialization, context-lifecycle mechanism). The MVP may ship without them; each is evidence-gated.
+- `implementation-requirements.md` in this folder — technical-tier requirements with their provenance (what must be achieved and where it comes from); their potential solutions live in `coordinator-design.md`. The MVP may ship with the minimal answers; anything beyond is evidence-gated.
 - `api-proposal.md` in this folder — pre-plan design draft for the control API (server substrate, endpoint surface, auth, push). Subordinate to this document.
 - `coordinator-design.md` in this folder — the synthesized coordinator design. Subordinate to this document.

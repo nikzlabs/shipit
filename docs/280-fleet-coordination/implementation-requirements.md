@@ -1,31 +1,30 @@
 ---
 title: Fleet coordination — implementation-level requirements
-description: Optimization-level requirements split out of the product requirements — the MVP may ship without them; each is evidence-gated.
+description: Technical-tier requirements with their provenance — what each must achieve and where it comes from. Solutions live in coordinator-design.md.
 ---
 
 # Implementation-level requirements
 
-Split from `requirements.md` on 2026-08-23 at the user's direction: "these queues happen before the agent — it's the underlying implementation for me… on a different level… split it from the overall product to the optimization requirements." The product statement stays at the top level: **the user always talks to the coordinator agent; whatever is delivered is delivered from the agent, and whatever the user sends is sent to the agent.** Everything below is machinery underneath that experience.
+Split from `requirements.md` on 2026-08-23 at the user's direction. The product statement stays at the top level: **the user always talks to the coordinator agent; whatever is delivered is delivered from the agent, and whatever the user sends is sent to the agent.** This document holds the technical requirements underneath that experience — each stated as what must be achieved, with **where it comes from**. Potential solutions, and which one is currently chosen, live in the separate design doc, `coordinator-design.md`; this document names none.
 
-Standing rule: **the MVP builds the minimal thing that satisfies the top-level product requirements.** Items here are V2 candidates, adopted only when observed evidence demands them.
+Standing rule: **the MVP builds the minimal thing that satisfies the top-level product requirements.** Anything here beyond the minimum is adopted only when observed evidence demands it.
 
-## I1. Programmatic queue serialization
+## I1. Simultaneous completions must not confuse the coordinator
 
-Items accumulate, order, and serialize in code before the coordinator; the coordinator is handed one item at a time, and the system — not the agent — decides what comes next when many sessions finish simultaneously.
+**Requirement.** When many sessions finish at the same time, the user still experiences orderly, one-at-a-time, comprehensible delivery. No arrival is lost, duplicated, or garbled by volume.
 
-- **Status: V2 candidate, evidence-gated.** In the user's words: "it's optimizing against models that cannot handle multiple conversations at a time — maybe we don't even need it."
-- **Provenance:** originally product req 19 (2026-08-23, same day), mandated because "if multiple sessions all end at the same time, the agent may be confused, especially when the model powering it is not very powerful." Reclassified the same day as implementation-level.
-- **MVP behavior instead:** the coordinator receives arrivals (the wake envelope may carry the batch) and manages presentation with its own judgment — req 12's flexibility. Adopt I1 when a session of observed use shows the coordinator juggling badly or misordering under simultaneous completions.
-- The serialized-wake design (top item + counts, next-item tool call) is fully worked out in `coordinator-design.md` and waits.
+**Where it comes from.** Product reqs 1–2 and 5–6 (items delivered and discussed item by item, decidable by ear) meeting an observed model limitation: an agent — especially on a weaker model — may be confused when handed multiple conversations at once ("if multiple sessions all end at the same time, the agent may be confused, especially if the model powering it is not very powerful"). Whether this pressure requires machinery at all is open — "maybe we don't even need it" — which is why it is a requirement on the outcome, not on a mechanism.
 
-## I2. Context-lifecycle mechanism
+**Solutions.** `coordinator-design.md`, wake-model section (MVP and optimization tiers).
 
-How the coordinator's model context is kept healthy over a permanent conversation.
+## I2. A permanent conversation on a finite context window
 
-- **v1: the harness's own built-in auto-compaction** — "it's kind of free; use the harness compaction and then see how it goes."
-- **Escalation ladder, evidence-gated** (full analysis and measurements in `coordinator-design.md`): timing-controlled native compaction (agreed 60% arm / 80% act occupancy thresholds) → the verified fresh-context reset seeded from the memory repository plus a verbatim tail (the existing `conversation_replay` production path; companion work specified). A future reset seed may draw on active-session information — to be explored against the no-stale-fleet-state rule.
-- **What stays at product level in `requirements.md`:** req 20 (usable over months, no degradation) and req 21 (context management is invisible on every surface). Those are the acceptance contract this mechanism must meet, whichever rung of the ladder is active.
+**Requirement.** The coordinator's model context is finite and fills on heavy days; the conversation is permanent (product req 14). Whatever keeps the context healthy must satisfy the product-level acceptance contract: no degradation over months (req 20) and complete invisibility to the user on every surface (req 21).
+
+**Where it comes from.** Product reqs 14, 20, 21 colliding with the physical context limit of every harness; sharpened by the user's observation that a heavy single day needs the same treatment as any calendar boundary — the clock has no role, context weight does.
+
+**Solutions.** `coordinator-design.md`, context-lifecycle section (the current choice, the escalation ladder, and the analysis behind them).
 
 ## Open questions
 
-None. Both items are settled as V2-candidates behind the MVP; their adoption triggers are the recorded measurements.
+None. Adoption triggers for anything beyond the MVP minimum are the measurements recorded with the solutions in `coordinator-design.md`.
