@@ -1220,7 +1220,8 @@ export async function registerGitHubRoutes(
         // during a later turn with no idea one was running.
         const preferManaged = poller?.hasLiveRunner(request.params.id) === true;
         const result = await mergePullRequest(
-          git, deps.githubAuthManager, request.body?.method, session?.remoteUrl, { preferManaged },
+          git, deps.githubAuthManager, request.body?.method, session?.remoteUrl,
+          { preferManaged, sessionId: request.params.id },
         );
         if (result.managed && poller) {
           poller.setAutoMergeEnabled(request.params.id, true);
@@ -1294,6 +1295,7 @@ export async function registerGitHubRoutes(
         const git = createGitManager(gitDir);
         return await agentMergePullRequest(git, deps.githubAuthManager, {
           number: num,
+          sessionId: request.params.id,
           method: request.body?.method,
           auto: request.body?.auto,
           remoteUrl,

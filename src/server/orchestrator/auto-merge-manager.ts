@@ -8,6 +8,7 @@
  * REST API and updates state in place.
  */
 
+import { noteMergePerformed } from "./services/merge-attribution.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type {
@@ -324,6 +325,12 @@ export class AutoMergeManager {
       // docs/266 — the merge record. Without it an incident review cannot tell
       // whether a PR was merged by a human, by GitHub native auto-merge, or by
       // this loop (the merge routes and this manager logged nothing at all).
+      //
+      // The note is the same record in machine-readable form: the poller
+      // observes this merge moments later and must not report it as an outside
+      // one. It logs nothing itself, so the line below stays the only line this
+      // path emits.
+      noteMergePerformed(owner, repo, summary.prNumber);
       console.log(
         `[auto-merge] Merged PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}`
         + ` via managed merge (${mergeState.mergeMethod}, reason=${mergeState.managedReason ?? "native-unavailable"})`,

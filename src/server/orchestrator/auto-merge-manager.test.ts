@@ -546,4 +546,44 @@ describe("AutoMergeManager.handleManaged", () => {
 
     expect(mergePullRequest).not.toHaveBeenCalled();
   });
+
+  // docs/266 req 7 — this line was the first of the four merge records and is the
+  // one the other three were shaped to match. Two things are pinned: its own
+  // wording, and that it satisfies the family pattern one grep has to find
+  // (`services/merge-attribution.test.ts` holds the other three to the same one).
+  describe("the merge record", () => {
+    it("names the session, the PR, the repo, the method and the managed reason", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+      try {
+        const { manager } = makeManager();
+        manager.setEnabled("s1", true);
+        manager.setManaged("s1", true, { managedReason: "session-live" });
+
+        await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+        const merged = log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("Merged PR #"));
+        expect(merged).toEqual([
+          "[auto-merge] Merged PR #42 (o/r) for s1 via managed merge (squash, reason=session-live)",
+        ]);
+        expect(merged[0]).toMatch(/Merged PR #\d+ \(\S+\/\S+\) for \S+ via /);
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it("records nothing when the merge fails", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+      try {
+        const { manager } = makeManager({ success: false, message: "no" });
+        manager.setEnabled("s1", true);
+        manager.setManaged("s1", true);
+
+        await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+        expect(log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("Merged PR #"))).toEqual([]);
+      } finally {
+        log.mockRestore();
+      }
+    });
+  });
 });

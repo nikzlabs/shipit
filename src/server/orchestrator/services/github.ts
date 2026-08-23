@@ -20,6 +20,7 @@ import { ServiceError } from "./types.js";
 import { validateNonEmptyString } from "./validation.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
+import { logMergePerformed } from "./merge-attribution.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
 import { formatUnreadableWorkspaceNotice } from "./unreadable-workspace-notice.js";
@@ -392,13 +393,20 @@ export async function createPullRequest(
  * session with a live runner keeps that arming on ShipIt's managed loop rather
  * than handing it to GitHub. The caller records the managed state, since this
  * function has no poller.
+ *
+ * `opts.sessionId` is required rather than optional because docs/266 req 7 asks
+ * which SESSION a merge belongs to; a merge path that cannot name one should not
+ * compile. It is logged here rather than at the route so the record cannot drift
+ * from the branch that actually succeeded.
  */
 export async function mergePullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  method?: string,
-  remoteUrl?: string,
-  opts: { preferManaged?: boolean } = {},
+  // Declared as `T | undefined` rather than `?` so the required `opts` below can
+  // follow them positionally (TS1016). Callers already pass both explicitly.
+  method: string | undefined,
+  remoteUrl: string | undefined,
+  opts: { preferManaged?: boolean; sessionId: string },
 ): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; managed?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
@@ -412,7 +420,20 @@ export async function mergePullRequest(
   const mergeMethod = (method || "merge") as "merge" | "squash" | "rebase";
   const result = await githubAuthManager.mergePullRequest(resolved.owner, resolved.repo, pr.number, mergeMethod);
 
-  if (result.success) return { success: true, message: "Pull request merged" };
+  if (result.success) {
+    // docs/266 req 7 — the merge record for the UI card's merge button, the
+    // common case. Only on a real merge: the pending-checks branch below ends in
+    // an ARMING, and arming is not merging.
+    logMergePerformed({
+      owner: resolved.owner,
+      repo: resolved.repo,
+      prNumber: pr.number,
+      sessionId: opts.sessionId,
+      via: "the ShipIt merge button",
+      method: mergeMethod,
+    });
+    return { success: true, message: "Pull request merged" };
+  }
 
   // If merge failed because checks are pending, enable auto-merge
   const checks = await githubAuthManager.getCheckStatus(resolved.owner, resolved.repo, head);
@@ -450,7 +471,7 @@ export async function mergePullRequest(
 export async function agentMergePullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  opts: { number: number; method?: string; auto?: boolean; remoteUrl?: string },
+  opts: { number: number; sessionId: string; method?: string; auto?: boolean; remoteUrl?: string },
 ): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; url?: string }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
@@ -501,7 +522,21 @@ export async function agentMergePullRequest(
 
   // checks.state is "success" or "none" (no checks configured) → merge now.
   const result = await githubAuthManager.mergePullRequest(owner, repo, opts.number, mergeMethod);
-  if (result.success) return { success: true, message: `Merged PR #${opts.number}`, url: pr.url };
+  if (result.success) {
+    // docs/266 req 7 — the merge record for the agent's own `gh pr merge`. The
+    // owner/repo field is load-bearing here in a way it is not on the UI route:
+    // a sandbox session merges an explicit PR number in a repository that need
+    // not be the session's own.
+    logMergePerformed({
+      owner,
+      repo,
+      prNumber: opts.number,
+      sessionId: opts.sessionId,
+      via: "gh pr merge",
+      method: mergeMethod,
+    });
+    return { success: true, message: `Merged PR #${opts.number}`, url: pr.url };
+  }
   // GitHub rejected the merge (branch protection, required review, conflicts).
   // Surface its reason verbatim — never force.
   return { success: false, message: result.message };

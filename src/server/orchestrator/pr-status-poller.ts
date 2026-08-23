@@ -24,6 +24,7 @@ import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeManagedReason, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { readBranchSync, resolveMergeSync } from "./services/branch-sync.js";
+import { logMergeObserved } from "./services/merge-attribution.js";
 import {
   buildPrStatusQuery,
   extractFocusedPrNodes,
@@ -1474,6 +1475,15 @@ export class PrStatusPoller {
     }
 
     if (isMerged && !alreadyTerminal) {
+      // docs/266 req 7 — attribute the merges nothing local performed: the
+      // GitHub web UI, a laptop, or native auto-merge GitHub executed on its
+      // own. Nothing in ShipIt runs those, so the record has to come from the
+      // observer. Silent when this process performed the merge itself (the
+      // merge routes and the managed loop each log their own line), so the
+      // line's claim of an outside actor is never a contradiction. `verifyMissingPr`
+      // is the only terminal-promotion site, and `!alreadyTerminal` is the
+      // fire-once edge — so this is once per real merge, not once per re-track.
+      logMergeObserved({ owner, repo, prNumber: pr.number, sessionId });
       // docs/218 — record the merged PR's head-branch tip as the session's
       // auto-reset safety anchor, BEFORE the merge side effects (archive,
       // issue-lifecycle close, notify-on-merge) fire. We deliberately store the
