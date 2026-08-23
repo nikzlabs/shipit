@@ -32,7 +32,7 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 
 ## Open questions
 
-- What is the coordinator's context-lifecycle policy: ShipIt-triggered compaction at chosen moments, fresh-context resets, or a hybrid — and what triggers it (a context-weight threshold plus which "least disturbing" boundaries)? The day boundary has no inherent value (user, 2026-08-23): a heavy single day needs the same treatment. Analysis in progress; docs/178 + docs/276 already give ShipIt on-demand compaction on all three harnesses.
+- What acts when the coordinator's context fills: ShipIt-triggered native compaction (Sol's recommendation), or a fresh-context reset seeded from the memory repo plus a verbatim tail (Opus's recommendation, and the one on the table)? Trigger and boundaries are agreed (arm at 60% occupancy, act at 80%, between turns at a quiet moment; the calendar has no role — user, 2026-08-23). Full analysis: coordinator-design.md, context-lifecycle section.
 - Does the unsolicited blocker wake ship in v1 — may the coordinator start speaking on its own when a blocker arrives while the user is free, or does it only ever speak on engagement and return-to-free? (Recommendation on the table: no unsolicited wake in v1.)
 - If an external assistant is ever attached as a second API client, what capability isolation does its platform enforce? (Decides how much of the untrusted-content boundary is structural rather than instructional. Not blocking: the first client is built-in, req 13.)
 
