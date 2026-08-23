@@ -60,6 +60,14 @@ export const SUB_AGENT_HOME_SUBDIR = "sub-agent-homes";
  *   ~/.claude      -> /credentials/.claude
  *   ~/.claude.json -> /credentials/.claude.json
  *   ~/.codex       -> /credentials/.codex
+ *
+ * **Every TOKEN file sits below a directory-linked root, and that is what keeps
+ * the planning#448 class out of the image** — a CLI's refresh rename swaps a
+ * link at the renamed path, and a link one level up is not at that path. Note
+ * the claim is about token files, not about this table: `.claude.json` IS a
+ * file-to-file link, and is safe only because it is the CLI's user config and
+ * carries no bearer. The per-harness evidence lives at `AGENT_TOKEN_FILES`
+ * (`token-sync-manager.ts`); read it before adding a FILE entry here.
  */
 export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   claude: [".claude", ".claude.json"],

@@ -23,6 +23,7 @@ import { providerAccountCredentialRoot } from "./provider-account-manager.js";
 import {
   AGENT_TOKEN_FILES,
   SUBTREE_STATE_SUBPATHS,
+  preserveBorrowedTokensBeforeWipe,
   syncSubAgentSpawnHomeTokenBack,
 } from "./token-sync-manager.js";
 import {
@@ -499,14 +500,48 @@ export function provisionSubAgentCredentials(
  * Ordering is load-bearing: the wipe runs while the ledger entry is still in
  * place, so a write-back racing the wipe sees "a borrow is in flight" rather
  * than an absent marker it might repair.
+ *
+ * The preservation ahead of the wipe is planning#475, and it is here rather
+ * than inside {@link removeSubAgentCredentials} on purpose: this is the path
+ * where deleting the credential is INCIDENTAL to closing a borrow. Sign-out and
+ * revocation call the bare wipe because deleting the credential is the *point*,
+ * and quarantining a bearer the user just disconnected would defeat them.
  */
 export function releaseSubAgentCredentials(
   credentialsRoot: string,
   sessionId: string,
   subAgentId: AgentId,
 ): string | undefined {
+  // The marker still names the borrowed account — the wipe below is what clears
+  // it — so read it now, while it can still say where a rotation belongs.
+  preserveBorrowedTokens(
+    credentialsRoot,
+    sessionId,
+    subAgentId,
+    readSessionAccountMarker(credentialsRoot, sessionId)[subAgentId],
+  );
   removeSubAgentCredentials(credentialsRoot, sessionId, subAgentId);
   return endSubtreeBorrow(sessionId, subAgentId);
+}
+
+/**
+ * Quarantine anything in a borrowed subtree that the preceding publish did not
+ * carry to `accountId`'s root, so the wipe cannot be the end of it
+ * (planning#475). Best-effort and silent on success; the wipe follows either
+ * way, because leaving a borrowed cross-provider credential in the session
+ * subtree is the docs/138 isolation failure the borrow exists to bound.
+ */
+function preserveBorrowedTokens(
+  credentialsRoot: string,
+  sessionId: string,
+  subAgentId: AgentId,
+  accountId: string | undefined,
+): void {
+  try {
+    preserveBorrowedTokensBeforeWipe(credentialsRoot, sessionId, subAgentId, accountId);
+  } catch (err) {
+    console.warn(`[session-credentials] borrow preservation failed for ${subAgentId}:`, err);
+  }
 }
 
 /**
@@ -714,9 +749,12 @@ export function releaseSubAgentSpawnHome(
 
 function releaseSpawnHomeAt(credentialsRoot: string, sessionId: string, home: string): void {
   const provenance = readSpawnHomeProvenance(home);
+  // A home with no provenance holds unproven (possibly partial) content that is
+  // never published — and so has nothing to preserve either.
+  let safeToDelete = true;
   if (provenance) {
     try {
-      syncSubAgentSpawnHomeTokenBack(
+      safeToDelete = syncSubAgentSpawnHomeTokenBack(
         credentialsRoot,
         sessionId,
         home,
@@ -727,7 +765,23 @@ function releaseSpawnHomeAt(credentialsRoot: string, sessionId: string, home: st
       console.warn(
         `[session-credentials] spawn-home token sync-back failed for ${provenance.agentId}:`, err,
       );
+      // A throw tells us nothing about which files it got to, so assume none.
+      safeToDelete = false;
     }
+  }
+  // The removal is CONDITIONAL, and that is the whole guarantee (planning#475).
+  // Publishing and quarantining can both fail for the same reason — a full
+  // volume, a root gone read-only — and a delete that fires anyway destroys the
+  // rotation exactly as if neither had been attempted. Keeping the home costs a
+  // directory until the next container-create sweep retries this same function;
+  // deleting it costs the account. The sweep is why "keep" is not "keep
+  // forever", and session removal takes the whole subtree regardless.
+  if (!safeToDelete) {
+    console.warn(
+      `[session-credentials] KEEPING spawn home ${home}: a rotation in it is neither published nor `
+      + "quarantined, and deleting it now would be the only copy. Retried at the next container create.",
+    );
+    return;
   }
   try {
     fs.rmSync(home, { recursive: true, force: true });
@@ -761,8 +815,12 @@ export function sweepSubAgentSpawnHomes(credentialsRoot: string, sessionId: stri
     releaseSpawnHomeAt(credentialsRoot, sessionId, path.join(dir, entry));
   }
   try {
-    fs.rmSync(dir, { recursive: true, force: true });
+    // `rmdir`, NOT a recursive `rm`: a release that could neither publish nor
+    // quarantine a rotation deliberately KEEPS its home, and a recursive sweep
+    // of the parent would delete the thing that decision just saved. An empty
+    // parent is tidied; a non-empty one is left for the next sweep to retry.
+    fs.rmdirSync(dir);
   } catch {
-    // Best-effort — retried at the next container create.
+    // Not empty (a retained home) or already gone — both fine.
   }
 }

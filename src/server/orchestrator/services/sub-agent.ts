@@ -79,6 +79,7 @@ import {
   provisionSubAgentCredentials,
   provisionSubAgentSpawnHome,
   provisionProviderAccountCredentials,
+  preserveBorrowedTokensBeforeWipe,
   releaseSubAgentCredentials,
   releaseSubAgentSpawnHome,
   removeSubAgentCredentials,
@@ -787,6 +788,23 @@ export async function runSubAgent(
             } catch {
               // Best-effort, matching the terminal sync below.
             }
+          }
+          // planning#475 — the wipe below is unconditional, and the publish
+          // above refuses an unorderable file, so without this a consult that
+          // rotated into a shape the reader cannot order loses the rotation
+          // here. This is the one borrow-wipe site that does NOT go through
+          // `releaseSubAgentCredentials`, so it needs the preservation spelled
+          // out. The failed route names its own root; a `string` route borrowed
+          // the flat one.
+          try {
+            preserveBorrowedTokensBeforeWipe(
+              credentialsDir,
+              sessionId,
+              subAgentId,
+              failedRoute.kind === "account" ? failedRoute.id : undefined,
+            );
+          } catch {
+            // Best-effort, matching the sync above.
           }
           // The bare wipe, NOT `releaseSubAgentCredentials`: this failover swaps
           // one borrowed account for another inside the SAME borrow, and ending

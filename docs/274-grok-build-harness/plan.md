@@ -1146,6 +1146,24 @@ planning#449's fail-safe (an unorderable reader must not overwrite) is a
 separate guard on that path; it is not a substitute for the copy-back, and it
 did not cause this miss.
 
+**Where that quarantine goes when the shared root is itself disposable
+(planning#475).** `publishSpawnAuthBack` writes a refused rotation beside its
+destination as `<dest>.stranded-<ts>`, and `dest` is `$HOME/.grok/auth.json`.
+For an ordinary turn that is the durable session credentials mount. For a
+**same-harness sub-agent spawn** it is the isolated per-spawn home (docs/236 /
+`provisionSubAgentSpawnHome`), which `releaseSubAgentSpawnHome` deletes moments
+later — so the rescue landed in the one directory it could not survive, and the
+refusal is self-concealing besides: `auth.json` still holds the pre-rotation
+copy, so the orchestrator's own publish sees nothing to do and reports success.
+The orchestrator side now carries any `.stranded-` file out of a spawn home
+before removing it (`rescueAdapterQuarantines`, `token-sync-manager.ts`). The
+adapter keeps deciding *when* to quarantine — it cannot tell a throwaway home
+from a durable one, and the party that deletes the directory is the right one
+to empty it first — but the suffix is no longer its own private spelling: both
+sides now read `STRANDED_CREDENTIAL_MARKER` from `shared/fs-constants.ts`. Two
+independent literals in two processes is a contract that can be renamed on one
+side with both suites still green and the rescue deleted for real.
+
 **3. The old refresh token was still accepted ~4 minutes after rotation.**
 The sibling rotated the 06:46Z token at 13:19:08Z (new `refresh_token`
 sha256 `6a127259…`). This session, four minutes later, still held that

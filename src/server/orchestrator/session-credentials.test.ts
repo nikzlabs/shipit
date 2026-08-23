@@ -600,6 +600,267 @@ describe("session-credentials", () => {
       expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), "sub-agent-homes"))).toBe(false);
     });
 
+    /**
+     * planning#448's other half, at the cleanup site PR #2514 did not cover.
+     * A refusal is `classifyTokenFreshness` saying it cannot ORDER the two
+     * copies (planning#449) — not that the spawn's copy is worthless. Refusing
+     * and then `rmSync`-ing the home turns "we cannot tell which is newer" into
+     * "the newer one is gone", which for a single-use refresh token is the
+     * permanent death of the source credential.
+     */
+    describe("a refused publish is quarantined, never deleted", () => {
+      const strandedDir = (accountRoot: string) => path.join(accountRoot, ".shipit-stranded-tokens");
+      const strandedFiles = (accountRoot: string) => {
+        try {
+          return fs.readdirSync(strandedDir(accountRoot));
+        } catch {
+          return [];
+        }
+      };
+      /** Valid JSON credential with no expiry — what an `unorderable` reading looks like. */
+      const unorderableCreds = (tail: string) => `{"claudeAiOauth":{"accessToken":"tok-${tail}"}}`;
+
+      it("keeps a rotation whose OWN copy cannot be ordered", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+        const home = subAgentSpawnHomeDir(root, sid, spawnId);
+        // The consult's CLI rotated, but in a shape this agent's reader no
+        // longer understands — the planning#449 failure mode.
+        fs.writeFileSync(path.join(home, ".claude", ".credentials.json"), unorderableCreds("ROTATED"));
+
+        releaseSubAgentSpawnHome(root, sid, spawnId);
+
+        expect(fs.existsSync(home)).toBe(false);
+        // The destination is deliberately untouched — the publish was refused.
+        expect(readTail(path.join(accountRoot, ".claude", ".credentials.json"))).toBe("A");
+        const kept = strandedFiles(accountRoot);
+        expect(kept).toHaveLength(1);
+        expect(readTail(path.join(strandedDir(accountRoot), kept[0]))).toBe("ROTATED");
+      });
+
+      it("keeps a rotation the TARGET's own unreadability refused", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+        const home = subAgentSpawnHomeDir(root, sid, spawnId);
+        writeClaudeToken(home, "A-ROTATED", 15_000);
+        // The source went unorderable after the provision (a reader that has
+        // stopped matching its CLI reads EVERY real file this way).
+        fs.writeFileSync(path.join(accountRoot, ".claude", ".credentials.json"), unorderableCreds("A"));
+
+        releaseSubAgentSpawnHome(root, sid, spawnId);
+
+        expect(fs.existsSync(home)).toBe(false);
+        const kept = strandedFiles(accountRoot);
+        expect(kept).toHaveLength(1);
+        expect(readTail(path.join(strandedDir(accountRoot), kept[0]))).toBe("A-ROTATED");
+      });
+
+      it("leaves nothing behind when the publish succeeds", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+        writeClaudeToken(subAgentSpawnHomeDir(root, sid, spawnId), "A-ROTATED", 15_000);
+
+        releaseSubAgentSpawnHome(root, sid, spawnId);
+
+        expect(readTail(path.join(accountRoot, ".claude", ".credentials.json"))).toBe("A-ROTATED");
+        expect(strandedFiles(accountRoot)).toEqual([]);
+      });
+
+      /**
+       * PR #2514's rescue, rescued in turn. The grok adapter quarantines a
+       * rotation it could not publish beside its destination — and in a
+       * same-harness spawn that destination is `$HOME/.grok/auth.json`, i.e.
+       * INSIDE the home this release then deletes. The refusal is also
+       * self-concealing: the declared token file still holds the pre-rotation
+       * copy, so the ordinary publish sees nothing to do and reports success.
+       */
+      it("carries an adapter's own in-home quarantine out before the removal", () => {
+        const accountRoot = path.join(root, "provider-accounts", "grok", "acct-x");
+        const writeGrokAuth = (dir: string, tail: string, expiresAt: string) => {
+          const p = path.join(dir, ".grok", "auth.json");
+          fs.mkdirSync(path.dirname(p), { recursive: true });
+          fs.writeFileSync(p, JSON.stringify({ "xai:api": { access_token: `tok-${tail}`, expires_at: expiresAt } }));
+        };
+        writeGrokAuth(accountRoot, "X", "2026-08-23T18:00:00.000Z");
+        provisionSubAgentSpawnHome(root, sid, spawnId, "grok", "acct-x");
+        const home = subAgentSpawnHomeDir(root, sid, spawnId);
+        // What the adapter leaves behind: the token file untouched at the old
+        // copy, the rotation only in its own `.stranded-` sibling.
+        fs.writeFileSync(
+          path.join(home, ".grok", "auth.json.stranded-1756000000000"),
+          JSON.stringify({ "xai:api": { access_token: "tok-ROTATED" } }),
+        );
+
+        releaseSubAgentSpawnHome(root, sid, spawnId);
+
+        expect(fs.existsSync(home)).toBe(false);
+        const kept = strandedFiles(accountRoot);
+        // The producer's own stamp is preserved; only a uniqueness tail is added.
+        expect(kept).toHaveLength(1);
+        expect(kept[0]).toMatch(/^\.grok_auth\.json\.stranded-1756000000000-[0-9a-f]{8}$/);
+        expect(JSON.parse(fs.readFileSync(path.join(strandedDir(accountRoot), kept[0]), "utf-8")))
+          .toMatchObject({ "xai:api": { access_token: "tok-ROTATED" } });
+      });
+
+      /**
+       * Why the quarantine sits in its own directory rather than beside its
+       * destination as `.credentials.json.stranded-…`: provisioning copies the
+       * DECLARED credential paths wholesale, so a sibling inside `.claude/`
+       * would ride into every later session subtree and spawn home — one
+       * refusal fanning a live bearer out across the host.
+       */
+      it("does not fan the quarantined bearer out into later provisions", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+        fs.writeFileSync(
+          path.join(subAgentSpawnHomeDir(root, sid, spawnId), ".claude", ".credentials.json"),
+          unorderableCreds("ROTATED"),
+        );
+        releaseSubAgentSpawnHome(root, sid, spawnId);
+        expect(strandedFiles(accountRoot)).toHaveLength(1);
+
+        provisionProviderAccountCredentials(root, sid, "claude", "acct-a");
+        provisionSubAgentSpawnHome(root, sid, "spawn-next", "claude", "acct-a");
+
+        for (const dir of [perSessionCredentialsDir(root, sid), subAgentSpawnHomeDir(root, sid, "spawn-next")]) {
+          expect(fs.existsSync(path.join(dir, ".shipit-stranded-tokens"))).toBe(false);
+          expect(fs.readdirSync(path.join(dir, ".claude"))).toEqual([".credentials.json"]);
+        }
+      });
+
+      /**
+       * Cross-agent review finding — a quarantine can itself fail (a full
+       * volume, a root gone read-only), and a release that deletes anyway on
+       * the strength of having *tried* has destroyed the token by a longer
+       * route. The home is kept instead, and the container-create sweep is what
+       * makes "kept" mean "retried" rather than "kept forever".
+       */
+      it("KEEPS the home when the rotation could be neither published nor quarantined", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        provisionSubAgentSpawnHome(root, sid, spawnId, "claude", "acct-a");
+        const home = subAgentSpawnHomeDir(root, sid, spawnId);
+        const homeToken = path.join(home, ".claude", ".credentials.json");
+        fs.writeFileSync(homeToken, unorderableCreds("ROTATED"));
+        // A plain FILE where the quarantine directory has to go: every write
+        // under it fails with ENOTDIR, whatever the process's privileges.
+        fs.writeFileSync(strandedDir(accountRoot), "not a directory");
+
+        releaseSubAgentSpawnHome(root, sid, spawnId);
+        expect(readTail(homeToken)).toBe("ROTATED");
+
+        // …and the sweep retries rather than blind-deleting, so the home and
+        // its parent both survive the pass.
+        sweepSubAgentSpawnHomes(root, sid);
+        expect(readTail(homeToken)).toBe("ROTATED");
+
+        // Once the obstruction clears, the same retry rescues and cleans up.
+        fs.rmSync(strandedDir(accountRoot));
+        sweepSubAgentSpawnHomes(root, sid);
+        expect(fs.existsSync(home)).toBe(false);
+        expect(strandedFiles(accountRoot)).toHaveLength(1);
+      });
+
+      /**
+       * Cross-agent review finding — `Date.now()` alone is not a unique name.
+       * Two releases for the same account and token path inside one millisecond
+       * renamed onto each other, and the second silently replaced the first
+       * rescued credential.
+       */
+      it("does not let two rescues in the same millisecond overwrite each other", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        const now = vi.spyOn(Date, "now").mockReturnValue(1_756_000_000_000);
+        try {
+          for (const id of ["spawn-1", "spawn-2"]) {
+            provisionSubAgentSpawnHome(root, sid, id, "claude", "acct-a");
+            fs.writeFileSync(
+              path.join(subAgentSpawnHomeDir(root, sid, id), ".claude", ".credentials.json"),
+              unorderableCreds(id.toUpperCase()),
+            );
+            releaseSubAgentSpawnHome(root, sid, id);
+          }
+        } finally {
+          now.mockRestore();
+        }
+
+        const kept = strandedFiles(accountRoot).map((n) => readTail(path.join(strandedDir(accountRoot), n)));
+        expect(kept.sort()).toEqual(["SPAWN-1", "SPAWN-2"]);
+      });
+
+      /**
+       * Cross-agent review finding — unbounded retention is a slow leak of live
+       * bearer tokens, and eventually causes the disk-full condition that makes
+       * the *next* quarantine fail. Bounded is safe because these tokens rotate
+       * single-use: only the newest stranded copy can still authenticate.
+       */
+      it("keeps a bounded number of artifacts, newest first", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        for (let i = 0; i < 8; i++) {
+          provisionSubAgentSpawnHome(root, sid, `spawn-${i}`, "claude", "acct-a");
+          fs.writeFileSync(
+            path.join(subAgentSpawnHomeDir(root, sid, `spawn-${i}`), ".claude", ".credentials.json"),
+            unorderableCreds(`R${i}`),
+          );
+          releaseSubAgentSpawnHome(root, sid, `spawn-${i}`);
+        }
+
+        const kept = strandedFiles(accountRoot).map((n) => readTail(path.join(strandedDir(accountRoot), n)));
+        expect(kept).toHaveLength(5);
+        // The newest survives — the only one that can still authenticate.
+        expect(kept).toContain("R7");
+        expect(kept).not.toContain("R0");
+      });
+    });
+
+    /**
+     * Cross-agent review finding — the CROSS-harness borrow had the same
+     * destroy-on-refusal bug in its own cleanup: `syncAgentTokenBack` refuses an
+     * unorderable file, and `removeSubAgentCredentials` then wipes the borrowed
+     * subtree unconditionally. Its rotation had nowhere to go at all.
+     */
+    describe("cross-harness borrow cleanup", () => {
+      const strandedFiles = (accountRoot: string) => {
+        try {
+          return fs.readdirSync(path.join(accountRoot, ".shipit-stranded-tokens"));
+        } catch {
+          return [];
+        }
+      };
+
+      it("preserves a refused rotation before the borrowed subtree is wiped", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        provisionSubAgentCredentials(root, sid, "claude", "acct-a");
+        const borrowed = path.join(perSessionCredentialsDir(root, sid), ".claude", ".credentials.json");
+        // The consult rotated into a shape the reader cannot order.
+        fs.writeFileSync(borrowed, '{"claudeAiOauth":{"accessToken":"tok-ROTATED"}}');
+
+        releaseSubAgentCredentials(root, sid, "claude");
+
+        expect(fs.existsSync(borrowed)).toBe(false); // the wipe still runs — docs/138
+        const kept = strandedFiles(accountRoot);
+        expect(kept).toHaveLength(1);
+        expect(readTail(path.join(accountRoot, ".shipit-stranded-tokens", kept[0]))).toBe("ROTATED");
+      });
+
+      it("keeps nothing when the borrowed copy is provably superseded", () => {
+        const accountRoot = path.join(root, "provider-accounts", "claude", "acct-a");
+        writeClaudeToken(accountRoot, "A", 12_000);
+        provisionSubAgentCredentials(root, sid, "claude", "acct-a");
+        // The ordinary case: nothing rotated, so the source is already current.
+
+        releaseSubAgentCredentials(root, sid, "claude");
+
+        expect(strandedFiles(accountRoot)).toEqual([]);
+      });
+    });
+
     it("the container path pairs with the host path under the /credentials mount", () => {
       expect(subAgentSpawnHomeContainerDir(spawnId)).toBe(`/credentials/sub-agent-homes/${spawnId}`);
       expect(subAgentSpawnHomeDir(root, sid, spawnId)).toBe(

@@ -71,6 +71,7 @@ import type {
   McpServerStatus,
 } from "../agent-process.js";
 import { resolveAgentHome, grokHome, type AgentHomeResolver } from "../../../shared/agent-home.js";
+import { STRANDED_CREDENTIAL_MARKER } from "../../../shared/fs-constants.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
@@ -1121,13 +1122,21 @@ export class GrokAdapter
    * Copy a replaced `$GROK_HOME/auth.json` next to the shared root instead of
    * letting `rmSync` destroy it. The dest itself is left untouched (the
    * publish was refused). Next-turn diagnosis can diff the two.
+   *
+   * `dest` is only DURABLE for an ordinary turn. In a same-harness sub-agent
+   * spawn it is the isolated per-spawn home, which the orchestrator deletes
+   * moments later — so the name below is a contract, not a local choice: the
+   * orchestrator's release carries `.stranded-` files out of a home before
+   * removing it (planning#475). Hence the shared constant; the two sides used
+   * to spell it separately, in different processes, where a rename on either
+   * would leave both suites green and the rescue deleted for real.
    */
   private quarantineSpawnAuth(): void {
     const spawnHome = this.spawnHome;
     const dest = this.spawnAuthDest;
     if (!spawnHome || !dest) return;
     const spawnAuth = path.join(spawnHome, "auth.json");
-    const quarantined = `${dest}.stranded-${Date.now()}`;
+    const quarantined = `${dest}${STRANDED_CREDENTIAL_MARKER}${Date.now()}`;
     try {
       atomicCopyFile(spawnAuth, quarantined);
       console.warn(`[grok] quarantined unpublishable auth.json at ${quarantined}`);
