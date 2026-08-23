@@ -25,6 +25,9 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 15. The coordinator is an assistant with the outside perspective. When a session agent's answer assumes context the user does not have, the coordinator reads that session's recent transcript and re-explains or summarizes it for the user. The verbatim source stays available.
 16. The coordinator handles clarification automatically. When a session's answer is unclear, it sends a clarifying message to that session on its own before returning to the user.
 17. The coordinator accumulates memory over time — learned behavior, user-stated preferences — and the user can inspect and tweak it. Memory is durable and backupable.
+18. The verbatim source text is always shown with the coordinator's briefing — collapsed by default on desktop, so a quick look at what is really going on costs one action.
+19. Queuing of work is programmatic. Items accumulate, order, and serialize in code; the coordinator is handed one item at a time. When many sessions finish at the same time, the system decides what comes next — never the agent.
+20. The coordinator conversation stays usable over months: the UI handles a very long history, and the agent does not degrade as the conversation grows.
 
 ## Open questions
 
@@ -41,6 +44,7 @@ Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dicta
 - 2026-08-23 — External assistant (Hermes) or built-in coordinator as the first client? **Built-in, from day one** (req 13). Reasons, in the user's words: full control of the agent's prompt and environment gives the best experience; at the desktop the user continues the same coordinating agent through the chat UI (req 14); delegating to an existing agent would be a subpar experience; ShipIt already has all the infrastructure. The work splits into two tracks: the agent-agnostic control API (req 10, unchanged), and the built-in coordinator as its first client — external assistants remain possible later.
 - 2026-08-23 — How much coordination mechanism belongs in the API? As little as possible now. Doing too much programmatically before the workflow is learned is the wrong way; the agent coordinating is the most flexible thing. Harden observed patterns later (req 12).
 - 2026-08-23 — Must connect-through replies be quoted verbatim only? No. Session agents expose things in ways that assume prior context; the coordinator has the outside perspective and should catch that and fix it for the user — read the session's recent transcript, re-explain, and clarify with the session automatically (reqs 15–16). Verbatim text stays available as grounding, and session-authored text is summarized, never obeyed.
+- 2026-08-23 — Is queue serialization agent judgment or code? Code (req 19). In the user's words: fully relying on the agent here would be a mistake — if multiple sessions all end at the same time, the agent may be confused, especially when the model powering it is not very powerful. This refines req 12: the flexibility stance covers conversation and judgment, never queue mechanics.
 
 ## See also
 
