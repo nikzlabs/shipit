@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ROLE_PILL_CLASS, RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
@@ -54,6 +54,17 @@ const DEEP_DIVE = pinnedRole({ name: "deep dive", description: "Long-form invest
 
 function setRoles(roles: RoleView[]) {
   useSettingsStore.setState({ roles } as never);
+}
+
+async function openRoleMenu() {
+  // Radix opens dropdown triggers on pointerdown. Using the complete synthetic
+  // click sequence can race focus work when the full client suite runs.
+  fireEvent.pointerDown(screen.getByTestId("role-selector-trigger"), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: "mouse",
+  });
+  await screen.findByTestId("role-selector-menu", {}, { timeout: 2000 });
 }
 
 afterEach(() => {
@@ -496,8 +507,8 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
 
   it("opens, and brings the parameters back when asked (req 15)", async () => {
     renderLocked();
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
-    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-adjust-parameters"));
     expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
     expect(screen.getByTestId("reasoning-trigger")).toBeInTheDocument();
     // The one parameter the lock genuinely reaches — and it reaches it for every
@@ -527,8 +538,8 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
     );
     const { rerender } = render(renderSession("session-a"));
 
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
-    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-adjust-parameters"));
     expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
 
     rerender(renderSession("session-b"));
@@ -545,15 +556,15 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
     // req 4 is unchanged: what loosened is what the lock reaches, not the lock.
     // The menu exists, and there is nothing in it but the parameters.
     renderLocked();
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await openRoleMenu();
     expect(screen.getByTestId("role-selector-menu")).toBeInTheDocument();
     expect(screen.queryByTestId("role-option-deep dive")).toBeNull();
   });
 
   it("stops opening once the parameters are out — no caret onto an empty menu", async () => {
     renderLocked();
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
-    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-adjust-parameters"));
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
     expect(screen.queryByTestId("role-selector-menu")).toBeNull();
   });
@@ -586,13 +597,13 @@ describe("role parameter reveal is scoped to one session", () => {
     );
     const { rerender } = render(renderSession("session-a", "deep dive"));
 
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
-    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-adjust-parameters"));
     expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
 
     rerender(renderSession("session-b", "deep dive"));
-    await userEvent.click(screen.getByTestId("role-selector-trigger"));
-    await userEvent.click(screen.getByTestId("role-option-triage"));
+    await openRoleMenu();
+    fireEvent.click(screen.getByTestId("role-option-triage"));
     expect(onRoleChange).toHaveBeenLastCalledWith("triage");
     rerender(renderSession("session-b", "triage"));
     expect(screen.queryByTestId("model-trigger")).toBeNull();
