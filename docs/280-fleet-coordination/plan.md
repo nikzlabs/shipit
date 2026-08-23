@@ -1,0 +1,138 @@
+---
+issue: planning#473
+title: Fleet coordination — implementation plan
+description: The settled design and build map for the built-in coordinator — session kind, control surface, conversation state, presence, voice loop, context lifecycle — with the deferred, evidence-gated designs in one place.
+---
+
+# Fleet coordination — implementation plan
+
+Implements [`requirements.md`](./requirements.md) (product reqs 1–34) and [`implementation-requirements.md`](./implementation-requirements.md) (I1–I5). Requirements are cited as `(req N)` / `(I N)`; nothing here overrides them.
+
+**Provenance.** Distilled 2026-08-23 from two consultation-era drafts — `coordinator-design.md` (Sol `8526cb4e`, Opus `400a5791`, Grok `f0d0504a`) and `api-proposal.md` (Sol `3287e962`, `a424a4d1`) — removed when this plan landed; git history and planning#473 keep the full analysis, and the consultation runs are re-readable via `shipit agent result <run-id>` in the originating session. Code-anchor claims below were verified at source 2026-08-23.
+
+**Design stance (req 12).** As little coordination mechanism as possible: the agent owns coordination behavior flexibly until the workflow is learned; only proven patterns harden into code. Every ambiguous choice defaults to "agent behavior, not mechanism."
+
+## 1. Shape
+
+One built-in coordinating agent (req 9, 13) runs as a special ShipIt session and manages the whole fleet with the user through one continuous conversation (req 3, 14) — visual at the desk, spoken in hands-free through a first-party Android app (req 25). Three layers, strictly (receipt 2026-08-23): the **fleet control surface** at the bottom, consumed by the coordinator only; the **coordinator** in the middle; **UI and voice surfaces** on top as clients of the coordinator's conversation, never of the raw fleet surface.
+
+## 2. The coordinator session
+
+A fourth session kind (`SessionMode`: `std | ops | sandbox | coordinator`), server-authoritative, set at creation, never writable from the container — the property that makes `ops` safe today.
+
+| Property | Value |
+|---|---|
+| Cardinality | One per deployment; creation idempotent; metadata row auto-created, container started only when a turn runs. |
+| Workspace | A dedicated **memory repository** (req 17): preferences, learned behavior, historical thread notes as markdown — auto-committed, pushed directly to its own repo (no PR flow), optional GitHub remote for backup. Never fleet state, never pending commitments (those are I4's). Git history makes drift visible. |
+| Prompt | Precomputed at module load per the prompt-cache contract; interpolates nothing dynamic. |
+| Fleet visibility | **Excluded** from attention derivation and from its own session list — otherwise its own turns wake itself. |
+| Topology | Orthogonal to the parent→child spawn tree; never a parent of fleet sessions; not archivable or forkable through ordinary actions. |
+| Chrome | Its own pinned destination above repo groups (the Ops-group precedent); development tabs hidden. The existing attention sidebar keeps today's behavior in its own mode (receipt: round-three closure); coordinator-mode chrome beyond the pinned destination is deliberately unspecified until used. |
+| Lifecycle | The normal runner/container machinery — transcript persistence, rehydration, WS fan-out, resume. No preview, no PR lifecycle, no warm pool. |
+
+Rejected unanimously by the consultations (kept as guardrails): an orchestrator-embedded agent loop (a second runtime inside the trust boundary ingesting untrusted prose, outside every post-turn invariant); reusing `ops`/`sandbox` identity; the coordinator as parent of fleet sessions (the shim is parent-scoped and same-repo; docs/255-ops-session-inventory refused that hole).
+
+## 3. The control surface (req 10, I5)
+
+Two layers, built together:
+
+**The substrate: brokered orchestrator handlers.** Every fleet read and action is a named server-side handler with validation, kind/scope gating, idempotency where it matters, and audit — the same handlers a future external client would reach over HTTP (I3). Scopes: `queue:read|manage`, `sessions:read|message|spawn|transcript`. Forbidden operations are structurally absent: no merge (req 28 — no such handler exists in the MVP), no settings, no credentials, no PR mutation, no terminal, no files, no generic invoke.
+
+**The agent-facing surface: a brokered CLI (I5, user direction).** The coordinator operates the fleet through CLI subcommands in the session containers' own `shipit`-command pattern — thin verbs whose every invocation hits the brokered handlers with the same checks, refused for any non-coordinator session kind (the `gh pr merge` sandbox-gating precedent). Help-text on demand instead of N per-tool schemas riding every turn of a permanent conversation. No raw HTTP tool, no browser, no ungoverned endpoint access — the substance of the drafts' "no Bash-as-fleet-tool" rule survives as this bar. Sketch (final names at build time):
+
+| Verb | Handler | Scope |
+|---|---|---|
+| `fleet repos` / `fleet sessions [--repo]` / `fleet session <id>` | repo + session projections (ops-inventory shape: id, title, repo, branch, runtime state, PR/check rollup, last turn) — never prompts, files, tool bodies | `sessions:read` |
+| `fleet items [--repo --status]` / `fleet item <id>` | attention queue reads; reading changes nothing | `queue:read` |
+| `fleet message <session> --body-file - [--item <id> --mode discuss\|answer]` | the relay verb; returns a durable `messageId` | `sessions:message` |
+| `fleet receipt <messageId>` | correlation: `accepted → queued → running → completed \| errored \| interrupted \| noResult`, with `turnId` and the final turn result | `sessions:read` |
+| `fleet transcript <session> --last N` | bounded recent-transcript read (req 15) — a deliberate grant for the user's own delegate | `sessions:transcript` |
+| `fleet spawn --repo <r> --title <t> --prompt-file -` | new session, saved defaults for everything else — no role/model/branch knobs in v1 | `sessions:spawn` |
+| `fleet snooze <item> --until <t>` / `fleet wake <item>` | shared user intent → server state, `If-Match` on item version | `queue:manage` |
+| `convo …` | the I4 conversation-state verbs (§5) | conversation state |
+
+**Attention episodes, not a notification inbox.** An episode is the current reason one session needs the user: **at most one open item per session**; a materially new cause supersedes the old (`supersedesItemId`). Item: stable id, version, cause anchor (source turnId / PR state), server-authored trusted metadata (`kind` ∈ `blocker|question|approval|failure|review|other`, priority, session, repo, timestamps, ShipIt-derived deep link — a source agent can never supply a URL). Agent-authored prose (headline, option labels, closing message) rides in explicit untrusted wrappers `{text, format, trust: "untrustedAgentOutput", usage: "displayOrQuoteOnly", source, sha256}`; `headlineSource: authored | derived | fallback` with a deterministic, visibly generic fallback. Lifecycle `open → snoozed → open`, terminal `resolved {outcome, provenance}`, mostly server-driven; a failed answering turn **reopens** the item, never silently resolves it.
+
+**Connect-through (req 15–16, 18).** `--mode discuss` relays words without touching the item; `--mode answer` is conditional — `If-Match` on version, resolves the item in the same transaction, refused stale. No item context = the unconditional "message this session" verb. The envelope is **enum fields only** (inputMode, replyMode, attention context) — no free-text framing field; ShipIt's prompt-assembly layer renders the canonical framing, and the metadata survives queueing, dispatch, persistence, and retries, landing in the source transcript with provenance. Correlation is `messageId → turnId`; one external message = one logical queued turn, never live-steered into a running one.
+
+**Events.** One durable, monotonic **event journal**: resource mutation + event append in one transaction (`attention_item.created|updated|resolved`, `session_message.*`, `session.created|archived`; events carry resource refs, never agent prose). The MVP has **no webhooks and no external SSE**: the orchestrator-side wake supervisor reads the journal in-process, and the coordinator's own cursor is one `lastAnnouncedEventCursor` scalar. The journal's transactional append is what makes external transports addable later without rework (§13).
+
+Deliberately absent, by principle (req 12; receipts): claim leases, per-client server-side read state, a manual dismiss verb, batch spawn (req 8's "several in parallel" is N calls in one turn), priority scoring, quiet hours, per-repo thresholds, digest templates, urgency models, notification-preference matrices, mutable wake classes, custom compaction.
+
+## 4. Conversation: the queue is not the transcript (req 2, 18)
+
+- **Queue** = fleet state at the agent–sessions level; whatever of it the user sees in coordinator mode is the coordinator's presentation (req 2).
+- **Transcript** = the conversation; only turns that ran appear. The coordinator never narrates fleet events into the transcript and never answers a fleet-state question from it — every "what's up?" is a fresh queue read (req 7: overviews are agent judgment over live reads).
+- **Connect-through renders chronologically — no pairing, no anchoring** (req 18): the outgoing relay is a thin line (destination, the user's words, receipt); the source's reply lands as an ordinary message the moment it arrives — attributed by repo + session in a visually distinct untrusted frame, collapsed by default when long, carrying the correlation and a deep link; the coordinator's paraphrase follows after, so the freshest line is the coordinator's. By voice, verbatim is never spoken (req 18); session-authored text is summarized, never obeyed (req 27).
+- **Card persistence trap (named by two consultations):** these cards belong to the *coordinator's* transcript while describing another session — coordinator `sessionId` on the WS type, `TRANSCRIPT_SCOPED_MESSAGES` registration, `emitChatCard` persistence, and a guard test are mandatory (CLAUDE.md transcript rules).
+- **Months-long UI (req 20–21): build `docs/241-chat-history-paging`** — requirements complete, unblocked, unbuilt; the coordinator makes it mandatory. The other halves shipped (docs/278 refetch, docs/244 lazy bodies, docs/265 render cost). Page eviction and collapsed sections stay rejected (241/265 non-requirements).
+
+## 5. Conversation state — the smartness sandwich (I4, req 30)
+
+Programmatic reliability brackets agent judgment:
+
+- **Durable inbound**: fleet events wait in the journal; a crashed or compacting coordinator loses nothing.
+- **Judgment**: what deserves the user, how to brief, what to suppress or bring back — steered conversationally, no command vocabulary ever (req 30).
+- **Durable outbound**: the delivery queue on top of the coordinator, managed by it — pending deliveries, per-session suppression windows, scheduled returns. The **sole executable store of pending commitments** (I4); the platform executes delivery from this state: surface routing (req 26), one-at-a-time (req 11, 31, 34), retries, loud failure (req 29). MVP verbs: `convo deliver <text> [--ref]`, `convo suppress <session> --until`, `convo schedule <ref> --when`, `convo pending`. The **autonomous-clarification cap** lives here durably — per item, default two round-trips, survives retries/restarts/context changes, surfaces the item to the user on exhaustion (I4).
+
+Three state tiers, cleanly split: the **memory repo** is who the user is to the coordinator; **conversation state** is what is pending between them; **context** is disposable cache.
+
+## 6. Presence, routing, wake (reqs 11, 22–26, 33)
+
+Presence is **server-authoritative** (the WS-lifecycle invariant: transport never drives server behavior; two devices must agree): `availability: present|offline` (heartbeat lease — a missing heartbeat is `offline`, never "free"), `focus: free|engaged(topic)` with typed refs, a single **voice-output lease** (one device plays audio; all render text), and one derived **delivery target** — the hands-free channel while hands-free is on, otherwise the most-recently-active visual surface, otherwise none — with req 33's explicit settings overriding the derivation. Engagement never silently ends: after ~30 min without an utterance it goes **stale**, which suppresses unsolicited delivery exactly as `engaged` does (items wait, req 4); `free` is entered only by a user utterance, an explicit toggle, or the exchange completing — never by timeout, so nothing is delivered into a topic the user may still be on (reqs 11, 23, 34). Entering hands-free counts as becoming free (req 23).
+
+Routing (the one-place-at-a-time model, req 26): explicit hands-free wins over everything, stickily — arrivals are spoken through the phone app, lock screen included, one item per speaking turn (req 23), no other surface pings, ended only by explicit toggle. Hands-free off + an active visual surface: that surface carries arrivals ambiently — nothing interrupts, the coordinator never starts speaking (req 22); between two visible surfaces, pings follow the delivery target above (most recently active), and passive rendering is shared and harmless everywhere. Nothing active: items wait (req 4). Explicit availability overrides inference in both directions (req 33), riding the existing browser-notification machinery. Visibility ≠ delivery: every surface renders the queue and the conversation on demand. Delivery failure surfaces loudly at the next opportunity — the single exemption from req 26's *routing* suppression (req 29); it does not enter an open topic: like everything else, it waits for `free` (req 23).
+
+Wake causes, v1 — everything else journals and waits: (1) a user utterance, always; (2) `engaged → free` with a non-empty queue — **one coalesced turn** whose envelope carries the arrivals; the coordinator manages presentation with its own judgment (I1's serialized narrowing is deferred, §13); (3) the correlated completion of the engaged topic's relay; (4) **the spoken-delivery wake — a level condition, not an edge**: an unannounced journal backlog (cursor behind) while the delivery target is hands-free and focus is `free`, re-evaluated on journal advancement, on delivery-target changes (entering hands-free with items already waiting plays the top one — req 11's receipted rule), and on focus changes; one coalesced turn (reqs 11, 23; spoken delivery needs the agent, req 10). Ambient visual delivery needs no wake cause: the visual attention surfaces are ShipIt's own (req 10, 22) and update from fleet state directly. Level-triggered gate on the journal cursor; no per-event turns, no periodic digest, never wake while the runner is busy (turn arithmetic: a bad day is ~40 turns; per-event would be hundreds).
+
+**Structural injection containment (req 27, 16):** system-wake turns are read-only with one carve-out — in a correlated-completion turn the coordinator may send clarifying messages to the engaged topic's own session, capped (I4). Spawn, answer, snooze, and messages to any other session require a turn containing a current user utterance; every write logs its trigger (user-message id, or the correlated completion id). The blast radius of a manipulative source reply is more questions to itself, never actions elsewhere.
+
+## 7. Voice loop and surfaces (reqs 14, 23–25, 32)
+
+- **Desktop**: the same conversation in the chat UI (req 14). The dictation shortcut (req 32) is its own button + hotkey, in-window for the MVP — dictation straight to the coordinator, which decides what the idea becomes. Quick capture (docs/145-quick-capture-overlay) stays independent and intact.
+- **Browser voice mode**: explicit entry (one gesture unlocks audio, acquires presence + the voice lease, consents to auto-submit). Client state machine `listening → transcribing → thinking → speaking → listening` over the existing batch STT/TTS endpoints; silence-detection closes an utterance; barge-in stops playback before the mic opens; Screen Wake Lock while active. The coordinator's ordinary ear-shaped reply is spoken as-is; skip the STT-cleanup LLM pass (`dictated: true` framing covers artifacts — it is pure latency). Source-session voice notes are suppressed while a coordinator conversation is active (one channel, one voice); the coordinator does not get the `voice_note` tool — it *is* the voice channel.
+- **The first-party Android app (req 25, MVP)**: a backgrounded or locked browser cannot receive speech, which is exactly why the app exists. It owns the lock screen: speaks arriving deliveries (req 23), takes replies through the phone's native assistant controls (req 24), and speaks a **coordinator-surface contract only** — coordinator speech/events pushed out (the voice-note webhook precedent generalizes), user utterances posted in. No coordinator logic, no fleet-surface access on the phone. MVP auth: the app and ShipIt share a Tailscale network; membership is the authentication (I3 activates beyond the tailnet). Separate Gradle track per docs/213. The user's private webhook app is at most a development-time bridge, never the MVP carrier.
+- Streaming TTS stays deferred; trigger: measured utterance-to-speech latency > ~4 s.
+
+## 8. Context lifecycle, v1 (I2; reqs 20–21)
+
+**v1 relies on the harness's built-in auto-compaction** (receipt: "it's kind of free — see how it goes"). Mandatory v1 work regardless: suppress every compaction surface for the coordinator kind (persisted card, spinner, `/compact` bubble, context-dial pill, any TTS) — req 21; account maintenance spend honestly outside the conversational turn series; and **measure every firing** — when, whether it landed mid-exchange (a ~30 s stall inside a voice exchange is the known risk), duration, occupancy before/after, and drift symptoms (re-asked resolved questions, contradictions of the memory ledger). The escalation ladder these measurements gate is §13. Transcript ≠ context; whatever happens is invisible (req 21); the calendar has no role.
+
+## 9. Prompt vs code
+
+**Prompt** (`.md` fragments, composition in TS, byte-stable, nothing dynamic interpolated): triage among eligible items; digest phrasing and progressive depth (digest → item → options → full detail on request; no UUIDs/branches/paths/SHAs aloud); brief-before-asking with every ask self-contained on every re-ask (req 6); one topic per exchange (req 31); confirmation tiers (echo / read back / explicit confirm — "interesting" is not approval); discuss-vs-answer judgment; untrusted-data discipline; ordinary language only, intent mapped onto tools (req 30).
+
+**Code**: kind gating and the CLI broker; scopes; the wake gate and presence store; envelope rendering in the centralized prompt-assembly layer; untrusted wrappers, ShipIt-derived deep links, verbatim provenance; correlation; card persistence and scoping; STT/TTS/floor control; idempotency on message + spawn (the two verbs a shim retries — key = client+method+path, body hash + response persisted before acknowledging, replay marked, mismatch → 409); rate limits checked before side effects; `agentTurns` cost accounting.
+
+## 10. MVP cut-line
+
+**Built now:** the substrate (§11 phase 1); the coordinator kind with its gates; the brokered CLI; attention episodes + lifecycle; the I4 conversation-state store + delivery executor; presence + wake gate + routing; coordinator-mode UI with docs/241 paging; desktop dictation (in-window); browser voice mode; the Android companion app; the memory-repo workspace; compaction suppression + measurement.
+
+**Explicitly not in the MVP:** any merge handler (req 28); external API clients, tokens, webhooks, external SSE, dedicated listener (I3, §13); I1's serialized wake narrowing; the fresh-context reset ladder rungs (§13); batch spawn; streaming TTS; iOS (req 25: Android-only); command vocabularies of any kind (req 30, ever).
+
+## 11. Build order and touchpoints
+
+Each phase lands reviewable; guard tests named per CLAUDE.md patterns.
+
+1. **Substrate** — server-side attention derivation shared, not duplicated (the single definition lives client-side in `useAttentionInfo.ts` today; it must become shared domain logic or two definitions drift); first-class **persisted turn results** (closing message captured at turn settlement per backend — today's `turnSummary` is in-memory); **attention-item production + lifecycle** at settlement and interrupt points, with supersession, reusing authored/derived voice-note headlines + deterministic fallbacks; the **event journal** (transactional append). Touchpoints: `orchestrator/` services + `database.ts` migrations; reuse ops-inventory projection, session mute, the voice-note router (gains the queue as a sink).
+2. **Coordinator kind** — `SessionMode` fourth variant (prompt precomputed at load; prompt-architecture skill applies); session-table kind column; gates (excluded from attention + own list; memory auto-commit + direct push, no PR flow; no preview/warm-pool; not archivable/forkable via ordinary actions); pinned chrome destination.
+3. **Control surface** — brokered handlers + `shipit fleet`/`convo` subcommands in the agent shim (`session/agent-shim/`), kind-gated server-side; envelope rendering in prompt assembly; idempotency + rate limits; audit trail.
+4. **Conversation state (I4)** — durable store (SQLite), the four verbs, the platform delivery executor (routing, one-at-a-time, retries, loud failure), the clarification cap. Guard: cap survives restart; exhaustion surfaces the item.
+5. **Presence + wake** — server presence store (heartbeat lease, focus, voice lease); the level-triggered wake gate on the journal cursor; injection containment (write-gating keyed on live user-message id; every write logs its trigger). Guards: read-only system-wake; carve-out cap; never-wake-while-busy.
+6. **Client** — coordinator mode (transcript rendering: untrusted collapsed frames, connect-through cards via `emitChatCard`, `TRANSCRIPT_SCOPED_MESSAGES`, `sessionId` scoping + guard tests); presence controls (hands-free toggle, req 33 overrides); dictation button + in-window shortcut; **build docs/241 paging**.
+7. **Voice + app** — browser voice mode state machine over existing STT/TTS; the Android companion app (coordinator-surface contract, lock-screen speech, native-assistant replies; tailnet).
+8. **Prompt + memory + measurement** — instruction sheet per §9; memory-repo bootstrap; compaction-surface suppression + firing measurements.
+
+## 12. Settled during build (defaults recorded, final call at the naming site)
+
+The coordinator's default model (a session property — model selection exists; triage and phrasing, not code reasoning, so default cheap/fast); supersession conditions per item kind; closing-message extraction point per backend; retention (events ~30 days, resolved items ~90, configurable later); turn budgets (launch conservative, surface in errors); away-mode reply-confirmation etiquette (instruction-sheet detail); the req-18 exchange-*end* boundary (receipted as plan-phase; settle where the transcript-intake code lands).
+
+## 13. Deferred designs — evidence-gated (the I-doc solutions home)
+
+Adoption triggers are the measurements in §8 and the conditions below; nothing here is MVP work.
+
+- **I1 — serialized wake narrowing.** If observed use shows the model juggling badly under simultaneous completions: the wake envelope narrows to the top item plus counts, ordering becomes deterministic in code, and the next item is a tool call. User-driven queries read any filtered view in either tier.
+- **I2 — the escalation ladder.** (1) today: pure auto-compaction; (2) timing control: fire the same native compaction at chosen boundaries (arm 60% / act 80% of `agent_result.contextTokens / contextWindow` — the last call's occupancy, never turn-wide sums; between settled turns; 80% sits below every harness's own trigger, so a backstop firing is an alarmed miss) — if measurements show firings landing at bad moments; (3) **the fresh-context reset** — if drift symptoms appear or compaction cost/latency proves worse than a cold start. The reset primitive exists in production, verified at source 2026-08-23: `setConversationReplay`/`consumeConversationReplay` (`orchestrator/sessions.ts`), applied at spawn by `session-agent-run-params.ts` (drops the resume id + seeds the system prompt), written today by rewind/fork/snapshot-restore/unresumable-recovery — harness-agnostic by construction because it lives at the run-params layer. Seed = static framing + the memory repo + the last ~10 user-anchored groups / ≤15 K tokens **verbatim, text-only** (no LLM at the seam, nothing drifts). Companion work if chosen: the *"a reset is a no-op for every guarantee"* audit (every cap/cursor/obligation server-side — I4 already is); a bounded text-only replay-seed variant (`buildConversationReplay` is unbounded today); seed-injection hardening (write-gate keys on a live user-message id, relayed verbatim bodies excluded from the seed, role-label patterns stripped, named guard test); reset only with no resident agent process (the docs/150 precedent); plus the **self-history tool** (bounded read/search of the coordinator's own persisted transcript) and the epoch-invisibility rules (no announcements; "epoch" is an internal diagnostic id; UI date separators stay cosmetic and unaligned). A future seed may get smarter than a verbatim tail (e.g. active-session-aware) — explored only against the standing rule that seeds carry no stale fleet state. Why the reset outranks richer compaction if escalation is ever needed: a compaction summary is the only artifact with no durable backing store — its errors compound (~150–250 compositions/yr on a 200 K window, the concrete req-20 risk) and it is memory the user can never inspect or edit, against the reasoning that chose the git repo (req 17); the coordinator is uniquely reset-safe because its context is entirely derived from re-readable stores.
+- **I3 — per-client auth.** Activates on any exposure beyond the tailnet: per-client PATs minted in Settings (`clientId`, hashed secret, scopes, optional repo allowlist, expiry; not one shared secret; OAuth addable later without changing scopes); the dedicated control listener/port property (control tokens rejected on `/api/*`, browser credentials rejected on the control subtree, narrow service deps); webhooks (receiver secret distinct from inbound auth, at-least-once, ~24 h backoff, dedupe by eventId) and external SSE with `Last-Event-ID` resume + `410 cursorExpired` resync; opaque persisted `repoId` before any external client sees repo references.
+- **I5 — alternative surface.** Named per-operation tools (schemas in-context) if the CLI proves error-prone for weaker models; the substrate is identical, so switching is additive.
+- **Recorded for later:** batch spawn (`clientRequestId`-receipted partial batches); `turn.delta` streaming TTS; when Projects ship — one coordinator per Project vs per owner as a *named* docs/231 exception; either way the coordinator's capability must not cross silently, least of all in audio.
