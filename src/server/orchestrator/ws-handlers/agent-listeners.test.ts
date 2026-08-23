@@ -545,6 +545,52 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
+    it("DOES add a row for a quota refusal on a metered key, which never fails over", () => {
+      // The other half of the rule above, and the case it got wrong. The
+      // suppression is valid only because the executor re-runs the turn — but
+      // `stopsOnFailure` is `billingMode === "key"`, so a metered key gets no
+      // failover at all. Suppressing there gave the turn neither a retry to
+      // explain it nor a row saying why, and a reload showed a failed turn with
+      // no reason in it. Found by the planning#453 review, made reachable by
+      // that PR: until Grok's adapter started forwarding the provider's own
+      // "Out of credits" text, no key-billed refusal matched the classifier.
+      const d = deps();
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "grok",
+      });
+      runner.running = true;
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+        getCapturedRoutePolicy: () => ({
+          billingMode: "key",
+          serviceId: "xai",
+          stopsOnFailure: true,
+          vendorOwnedRecovery: true,
+        }),
+      });
+
+      // The verbatim text the grok CLI produced at the 429 recorder.
+      const refusal =
+        "Out of credits: Your team has either used all available credits or "
+        + "reached its monthly spending limit.";
+      agent.emit("event", {
+        type: "agent_result",
+        status: "error",
+        sessionId: "cli-session",
+        error: refusal,
+      } as AgentEvent);
+
+      const calls = (d.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>).mock.calls;
+      const rows = calls.flatMap((c) => c[1] as { isError?: boolean; text?: string }[]);
+      expect(rows.some((m) => m.isError && m.text === `Error: ${refusal}`)).toBe(true);
+      runner.dispose({ force: true });
+    });
+
     it("adds no row for a user-interrupted turn", () => {
       const { agent, runner, d } = wire();
       runner.wasInterrupted = true;

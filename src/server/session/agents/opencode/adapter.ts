@@ -16,6 +16,37 @@
  *    which the adapter test locks with a truncated real capture.
  *
  * All wire facts verified against CLI 1.18.15 (docs/268 plan.md, Phase 0).
+ *
+ * ## Two Claude events this adapter never emits, and the basis for each
+ *
+ * Stated here rather than left as an absence, per docs/266 item 13's
+ * probed / structural / not-wired rule.
+ *
+ *  - **`agent_rate_limits` — structural, and the constraint is ShipIt's
+ *    catalogue rather than the CLI.** The transport is not the problem: an
+ *    `{"type":"error"}` event carries the provider's **full `responseHeaders`
+ *    map** verbatim on stdout, measured 2026-08-23 at a local recorder (a 401
+ *    control printed every header, `metadata.url` included). What is missing
+ *    is a window to put in one. `agent_rate_limits` describes a SUBSCRIPTION
+ *    window, and every route OpenCode can take is either a metered key — where
+ *    no subscription window exists, and the per-minute `x-ratelimit-*` buckets
+ *    an API returns are a different quantity that must not be rendered as one
+ *    — or **OpenCode Go**, the one subscription it carries (`carriers`), whose
+ *    quota is declared-unread by a human decision: Go's caps are
+ *    dollar-denominated with no per-key usage API (docs/272 req 6,
+ *    `opencode-go-usage`). OpenCode has no `account` target at all, so it
+ *    cannot reach Anthropic's or xAI's OAuth windows. So the conclusion is
+ *    that no route ShipIt can currently take needs this wired — NOT that the
+ *    channel is ready: the 401 that proved headers survive is a
+ *    *non-retryable* error, and the quota-relevant statuses (429/500/529)
+ *    emit nothing at all and hang the turn (planning#476). Whichever change
+ *    makes a window reachable will have to re-probe the response that would
+ *    carry it.
+ *  - **`agent_user_replay` — structural.** It echoes a steer the CLI accepted
+ *    mid-turn. This adapter is one spawn per turn with the prompt written to
+ *    stdin and then EOF (`supportsSteering: false`), so no user message ever
+ *    reaches a running process and there is nothing to echo. Only a resident
+ *    process would change that.
  */
 
 import { EventEmitter } from "node:events";

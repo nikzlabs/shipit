@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   MAX_LIMIT_NOTICE_CHARS,
   UNKNOWN_RESET_LOCKOUT_MS,
@@ -16,6 +19,17 @@ import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap, SubscriptionLi
  */
 const SESSION_LIMIT_NOTICE = "You've hit your session limit · resets 5:10pm (UTC)";
 const NOON_UTC = Date.parse("2026-08-06T12:00:00.000Z");
+
+/**
+ * The grok adapter's captured-stream fixtures. Reached from here on purpose:
+ * the adapter half and the matcher half of planning#453 are one fix, and
+ * asserting the matcher against the *same bytes* the adapter replays is what
+ * keeps them from drifting apart.
+ */
+const GROK_FIXTURES = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../session/agents/grok/__fixtures__",
+);
 
 /** docs/252 req 10 — quota belongs to a service's SUBSCRIPTION, not to a harness. */
 const serviceOf = (agentId: AgentId): string => (agentId === "claude" ? "anthropic" : "openai");
@@ -351,6 +365,21 @@ describe("exhaustionLockoutUntil", () => {
  *
  * `channel: "error"` = `agent_result.error` (unanchored {@link detectHardExhaustion}).
  * `channel: "text"`  = final assistant text (anchored {@link detectHardExhaustionInTurnText}).
+ *
+ * **The channel is now settled, so expect `"error"`.** Probed 2026-08-23
+ * against CLI 1.0.1 at a local recorder (docs/274 plan.md, "What the CLI does
+ * to the service's words"): a refused Grok turn ends `is_error: true` with no
+ * assistant text at all, so `turnSummary` is empty and the anchored text
+ * matcher is never reached. A capture arriving as `"text"` would itself be the
+ * finding.
+ *
+ * **And the transport was the real blocker, not this fixture.** The reason no
+ * capture existed is not only that no plan was spent — it is that until
+ * planning#453's fix the adapter discarded the text on the way past
+ * (`errors[]` was unread; see `session/agents/grok/stream.ts`). Whatever xAI
+ * says now reaches this matcher verbatim, and the recorder probe showed the
+ * CLI adds nothing to a JSON body beyond joining `code`/`type` to the message
+ * with `": "`.
  */
 const GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE: {
   channel: "error" | "text";
@@ -387,16 +416,29 @@ const GROK_NON_SUBSCRIPTION_COPY = [
 ] as const;
 
 /**
- * planning#453 — Grok has no quota reader, so these two matchers are the
- * *only* spent-plan signal. The gap is that we have never seen a SuperGrok
- * subscription emit a limit notice on the headless wire, so the patterns
- * stay as they are. What we can pin from the code and from the binary:
+ * planning#453 — Grok's spent-plan wording, and what is and is not settled
+ * about it.
  *
- *   - which matcher applies to which channel
+ * These matchers are a **second** signal for Grok, not the only one:
+ * `XaiLimitsProvider` reads the SuperGrok weekly pool (planning#454). The
+ * issue, and an earlier version of this comment, said otherwise from the
+ * `quota: null` era.
+ *
+ * Pinned below:
+ *
+ *   - which matcher applies to which channel, and that a Grok refusal reaches
+ *     only the error one (probed — the turn ends with no assistant text)
  *   - that the text channel's provider prefix is Claude/Codex, not Grok
  *   - that free-tier and credit-balance copy must not fire either detector
+ *   - that the real captured refusal DOES fire the error channel, read out of
+ *     the adapter's own fixture
  *   - a skip that becomes the lock the moment a real capture fills
  *     {@link GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE}
+ *
+ * **Still genuinely unknown**, and the reason that skip stays: which words a
+ * spent SuperGrok *subscription* uses. The recorder probe chose its own 429
+ * body, so it establishes the transport and the channel and says nothing about
+ * xAI's wording. The real string could still be something these patterns miss.
  */
 describe("Grok exhaustion channels (planning#453)", () => {
   it("does not treat free-tier or credit-balance copy as a spent subscription", () => {
@@ -446,16 +488,50 @@ describe("Grok exhaustion channels (planning#453)", () => {
     expect(detectHardExhaustionInTurnText(tuiWeekly)).toBeNull();
   });
 
-  // The grok adapter synthesizes this when a fatal `{"type":"error",…}`
-  // event ends the turn without a `result`. The provider's own wording is
-  // logged and then dropped, so neither matcher can see it. Documented,
-  // not repaired, in docs/274 — forwarding that message is a separate
-  // change and would still need a captured string to match against.
+  // The grok adapter's last-resort wording, for a turn that died saying
+  // nothing at all. It must stay unmatched — it describes a dead process, not
+  // a spent plan. (It is no longer what a *refused* turn reports: the adapter
+  // now forwards the provider's own text from `errors[]` and from a fatal
+  // event's `message`. The case below is the other half of that.)
   it("does not fire on the grok adapter's synthesized fatal-error result", () => {
     expect(detectHardExhaustion("Grok exited with code 1 before producing a result")).toBeNull();
     expect(
       detectHardExhaustionInTurnText("Grok exited with code 1 before producing a result"),
     ).toBeNull();
+  });
+
+  /**
+   * planning#453 — the two halves joined, against a real capture.
+   *
+   * The text is read out of the grok adapter's own vendored fixture rather
+   * than retyped, so the pair cannot drift: if the adapter's capture changes,
+   * this asserts the matcher against whatever it changed to. The fixture is
+   * CLI 1.0.1 driven at a local HTTP recorder answering 429 (no plan spent) —
+   * see `session/agents/grok/adapter.test.ts` for its provenance.
+   *
+   * What it locks is the finding, not a new pattern: `EXHAUSTION_PATTERNS`
+   * already covered this wording. The list was never the binding constraint —
+   * the adapter was dropping the text before the classifier could see it.
+   */
+  it("matches the real captured Grok refusal on the error channel", () => {
+    const fixture = path.join(
+      GROK_FIXTURES,
+      "rate-limited-429-grok-4.5.ndjson",
+    );
+    const result = fs
+      .readFileSync(fixture, "utf8")
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as { type: string; errors?: string[] })
+      .find((e) => e.type === "result");
+    const text = result?.errors?.[0];
+    expect(text, "the fixture's errored result must carry an errors[] entry").toBeTruthy();
+
+    expect(detectHardExhaustion(text!)).not.toBeNull();
+    // And NOT on the text channel: generic credit language is dropped there on
+    // purpose, and a Grok refusal never reaches it anyway (the turn ends with
+    // no assistant text). Both facts, one assertion.
+    expect(detectHardExhaustionInTurnText(text!)).toBeNull();
   });
 
   it.skipIf(GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE === null)(

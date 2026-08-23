@@ -62,13 +62,23 @@ const CLOCK_RESET_UTC = /resets?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*
  * only weekly/monthly/5h *usage* limits. `usage` is optional for the same
  * reason — "session limit" and "session usage limit" are the same event.
  *
- * Grok (planning#453): this list is still Claude/Codex wording, and xAI's
- * subscription has no quota reader (`quota: null`), so a miss here is the
- * *only* miss — there is no meter to fall back on. Strings exist in the grok
- * binary that this list does not match (`You hit your weekly limit.`,
- * `usage balance exhausted`, a free-tier `You hit your free usage limit.`).
- * None of them has been seen on a SuperGrok *headless* turn. Do not widen
- * against `strings` output; the capture fixture in the co-located test is
+ * Grok (planning#453): this list is still Claude/Codex wording. It is a second
+ * signal here, not the only one — `XaiLimitsProvider` reads the SuperGrok
+ * weekly pool (`xai-plan-usage`), which is what planning#454 established. An
+ * earlier version of this note said the opposite, from the `quota: null` era.
+ *
+ * Strings exist in the grok binary that this list does not match, and their
+ * provenance decides how much they are worth. `You hit your free usage limit.`
+ * and `You hit your weekly limit.` live in `xai-grok-pager` — the **TUI**,
+ * which renders them locally from the billing endpoint, so they cannot appear
+ * on the headless wire at all. `usage balance exhausted` lives in
+ * `xai-grok-shell`'s own server-error classifier, so it is xAI *server*
+ * vocabulary, and a 2026-08-23 recorder probe confirms such a string reaches
+ * `agent_result.error` verbatim. It stays unmatched anyway: nothing shows xAI
+ * sends it for a spent *subscription* rather than a credit balance, which is
+ * what the co-located test's negatives assert.
+ *
+ * So do not widen against `strings` output. The capture fixture in that test is
  * the one-assignment change once a real notice is in hand. See
  * `docs/274-grok-build-harness`.
  */

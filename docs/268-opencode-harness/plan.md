@@ -282,6 +282,88 @@ a `shipit agent run` cross-agent spawn in a real install and an
 image-attachment turn (`supportsImages` stayed false until observed — that
 probe has since been run, below).
 
+## Rate limits, and the 429 that reports nothing (planning#453)
+
+Probed 2026-08-23 against CLI **1.18.18** at a local HTTP recorder, one
+variable — the status code — across `400 / 401 / 402 / 403 / 429 / 500 / 529`.
+No quota was spent to obtain any of it.
+
+### `agent_rate_limits`: the transport is fine; there is no window to send
+
+The error event carries the provider's **complete `responseHeaders` map**,
+verbatim, on stdout. The 401 control:
+
+```jsonc
+{"type":"error","timestamp":…,"sessionID":"ses_…","error":{"name":"APIError",
+  "data":{"message":"invalid x-api-key","statusCode":401,"isRetryable":false,
+    "responseHeaders":{"content-type":"application/json","date":"…",…},
+    "responseBody":"{\"type\":\"error\",…}",
+    "metadata":{"url":"http://127.0.0.1:8789/v1/messages"}}}}
+```
+
+`OpencodeEvent` in `shared/opencode-stream.ts` types only three of those
+fields, and the adapter test's `ERROR_EVENT` fixture was trimmed to match —
+which is why the header channel was not known to exist.
+
+So OpenCode *could* emit `agent_rate_limits`. What stops it is the catalogue,
+not the CLI. `agent_rate_limits` describes a **subscription** window, and every
+route OpenCode can take is one of:
+
+- a **metered key**, where no subscription window exists at all. An API's
+  `x-ratelimit-*` headers are per-minute request/token buckets — a different
+  quantity, and rendering them in the subscription pill would be a lie.
+- **OpenCode Go**, the single subscription it carries (`carriers: ["opencode",
+  "codex"]`), whose quota is declared-unread by a human decision: dollar caps,
+  no per-key usage API (docs/272 req 6, `opencode-go-usage`).
+
+OpenCode has **no `account` target**, so Anthropic's and xAI's OAuth windows
+are unreachable by construction (`service-routing.ts` states the same axis from
+the other side).
+
+**State the conclusion at its actual strength**: no route ShipIt can currently
+take needs this wired. That is *not* the same as "the channel is ready". The
+401 that proved headers survive is a **non-retryable** error, and the statuses
+that would actually carry quota information — 429 and the 5xx pair — emit
+nothing at all (next section). Whichever change makes a subscription window
+reachable will have to re-probe the response that would carry it, because the
+one probe that matters has not been run and cannot be until that response
+reports anything. Basis recorded in the adapter header per
+docs/266 item 13.
+
+### The defect the probe actually found: a 429 hangs the turn
+
+Far more serious than the missing badge, and **not** repaired here.
+
+| status | reports? | exit | wall clock |
+|---|---|---|---|
+| 400 / 401 / 402 / 403 | yes — a full `{"type":"error"}` event | 1 | ~3.5 s |
+| **429**, **500**, **529** | **no — zero bytes on stdout** | **never exits** | **killed at the deadline** |
+
+The split is **retryability**, not severity: the statuses the AI SDK considers
+retryable are exactly the silent ones. On a 429 the CLI logs `AI_APICallError`
+to its own `$HOME/.local/share/opencode/log/opencode.log`, writes **nothing**
+to stdout, and then sits — a separate 15-minute run confirmed it is a hang and
+not slowness. Two requests reach the recorder: the `build` stream fails
+immediately without retrying, the `title` side-agent retries at 2 s and 4 s and
+gives up. Then silence.
+
+Note this **corrects the Phase 0 finding above** for CLI 1.18.18. That entry
+(against 1.18.15) reads "on a fatal API error (401) the CLI emits … and then
+hangs; the process never exits". At 1.18.18 a 401 emits and exits **1**,
+promptly. What hangs is the retryable class — which Phase 0 also saw ("on a
+retryable 5xx it retries with no stdout at all") without connecting it to a
+missing exit. The adapter's kill-after-`error` machinery is therefore aimed at
+a case that no longer occurs, and the case that does occur reaches none of it.
+
+What that means in production: an OpenCode turn refused for quota never
+produces `agent_result`, never reaches `detectHardExhaustion`, never benches
+the account, and never ends. The adapter's inactivity watchdog only *warns*
+(deliberately — a long bash tool call is legitimately silent for minutes), so
+the turn hangs until the user interrupts it. Filed as **planning#476**; the
+fix needs a design decision the rate-limits work does not own, because the two
+candidate mitigations — killing on prolonged silence, or reading the CLI's own
+log file — each cost something the current adapter contract protects.
+
 ## Image attachments (planning#458)
 
 The deferred probe, run 2026-08-20 against CLI **1.18.18** on the dogfood inner

@@ -82,8 +82,35 @@ export interface GrokEvent {
   parent_tool_use_id?: string | null;
   is_error?: boolean;
   duration_ms?: number;
-  /** The turn's final assistant text on a success; the failure reason on an error. */
+  /**
+   * The turn's final assistant text — **on a SUCCESS only**.
+   *
+   * Do not read this as "the failure reason on an error", which is Claude's
+   * contract and was assumed to be Grok's. Measured against CLI 1.0.1 at a
+   * local recorder: a `result` event with `is_error: true` carries no `result`
+   * key at all, and puts the reason in {@link GrokEvent.errors} instead. The
+   * two fields are disjoint per event, not alternatives for the same slot.
+   */
   result?: string;
+  /**
+   * The failure reasons on an errored `result` event — the field Grok actually
+   * uses where Claude reuses `result`.
+   *
+   * Load-bearing for quota detection, which is how the divergence was found.
+   * Every vendored fixture is a successful tool-tour, so nothing had ever
+   * exercised an errored terminal event, and the adapter's `raw.result`
+   * fallback replaced the provider's own words with `Grok ended the turn with
+   * subtype "error_during_execution"` — a string no exhaustion pattern can
+   * match. A metered 429 at a local recorder arrives here as
+   * `["Out of credits: <the service's own message>"]`, which
+   * `EXHAUSTION_PATTERNS` already matches; it simply never reached the
+   * classifier. See `docs/274-grok-build-harness/plan.md`, "Exhaustion".
+   *
+   * An ARRAY because the CLI can report more than one; the adapter joins them.
+   * The entry is the service's own `code` and `error` joined by `": "`, so the
+   * vendor's wording reaches ShipIt verbatim rather than through CLI copy.
+   */
+  errors?: string[];
   total_cost_usd?: number;
   usage?: GrokUsage;
   modelUsage?: Record<string, GrokModelUsage | undefined>;
@@ -117,4 +144,40 @@ export function parseGrokLine(line: string): GrokEvent | null {
     return { type: "error", message_text: event.message };
   }
   return event as unknown as GrokEvent;
+}
+
+/**
+ * The reason text for an errored `result` event, in the order the CLI actually
+ * fills the fields.
+ *
+ * `errors` first, because that is the one Grok populates (see
+ * {@link GrokEvent.errors}); `result` second, because a future release adopting
+ * Claude's single-field shape should not silently regress to the placeholder;
+ * the placeholder last, so a shape nobody has seen still names its subtype.
+ *
+ * Blank and whitespace-only entries are dropped rather than joined, so an empty
+ * `errors: [""]` falls through to the next source instead of handing the
+ * orchestrator's exhaustion classifier an empty string to test.
+ *
+ * **On the `result` fallback and false positives.** Whatever this returns is
+ * tested by `detectHardExhaustion`, where a match benches the account for 15
+ * minutes — so the expensive direction is admitting the *model's* prose, and
+ * `result` on an errored event would be exactly that (a `subtype:
+ * "error_max_turns"` turn whose trailing summary happens to mention "out of
+ * credits"). The fallback is kept anyway, for two reasons: Grok has never been
+ * observed filling `result` on an error, so removing it would be a behaviour
+ * change against a shape nobody has captured; and the hazard is unchanged from
+ * before this function existed, since `raw.result` was the *only* source then.
+ * Reading `errors[]` first strictly narrows the exposure rather than widening
+ * it — the CLI-authored field now wins over the model-authored one. If an
+ * errored event carrying `result` is ever captured, that capture is the
+ * evidence for dropping this arm.
+ */
+export function grokResultErrorText(event: GrokEvent): string {
+  const listed = (event.errors ?? [])
+    .filter((e): e is string => typeof e === "string" && e.trim().length > 0)
+    .join("; ");
+  if (listed.length > 0) return listed;
+  if (typeof event.result === "string" && event.result.trim().length > 0) return event.result;
+  return `Grok ended the turn with subtype "${event.subtype ?? "unknown"}"`;
 }

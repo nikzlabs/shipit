@@ -123,6 +123,37 @@ export function stopsOnCredentialFailure(session: CredentialFailureSubject | und
 }
 
 /**
+ * Can this turn's quota refusal be handed to the docs/150 req 14 failover — the
+ * captured route's policy first, the session's selection when it captured none?
+ *
+ * Extracted because **two modules have to agree on it and were not asked to.**
+ * `turn-executor.ts`'s `quotaRetryAllowed` decides whether the retry runs;
+ * `agent-listeners.ts` suppresses the turn's terminal error row on the premise
+ * that it will ("the retry owns the user-visible outcome", planning#438). Where
+ * they disagree the user loses the explanation entirely — and they disagreed for
+ * every **metered key**, because `stopsOnFailure` is `billingMode === "key"`:
+ * no failover, and no row either. A key holder saw a turn fail with the reason
+ * suppressed, and after a reload with nothing at all.
+ *
+ * Latent until a key-billed harness produced quota wording the classifier
+ * recognized, which is what planning#453's Grok fix started doing.
+ *
+ * The executor applies one further condition this cannot see — it refuses to
+ * re-dispatch an ADOPTED turn (docs/140), whose prompt belongs to the previous
+ * turn. That asymmetry is deliberately left: it can only make the listener
+ * *keep* a row the executor then declines to replace, which is the safe
+ * direction. An over-suppression loses the failure; an over-persistence costs
+ * one extra row.
+ */
+export function quotaRefusalCanFailOver(
+  capturedRoutePolicy: CredentialFailurePolicy | undefined,
+  session: CredentialFailureSubject | undefined,
+): boolean {
+  if (capturedRoutePolicy) return !capturedRoutePolicy.stopsOnFailure;
+  return !stopsOnCredentialFailure(session);
+}
+
+/**
  * The sentence a stopped turn leaves in the transcript (req 12: "ShipIt stops
  * and says so").
  *

@@ -34,7 +34,7 @@ import {
   detectHardExhaustionInTurnText,
   exhaustionLockoutUntil,
 } from "./ws-handlers/agent-rate-limits.js";
-import { credentialFailurePolicyForRoute, stopsOnCredentialFailure } from "./credential-failure-policy.js";
+import { credentialFailurePolicyForRoute, quotaRefusalCanFailOver } from "./credential-failure-policy.js";
 import type { CredentialFailurePolicy } from "./credential-failure-policy.js";
 import { ProviderRouteUnavailableError } from "./provider-route-preflight.js";
 
@@ -775,9 +775,12 @@ export async function executeAgentTurn(
     // docs/140 — never re-dispatch an ADOPTED turn: the prompt this closure
     // would re-run is the previous turn's. See `servingAdoptedTurn`.
     if (servingAdoptedTurn) return false;
-    const policy = capturedRoutePolicy();
-    if (policy) return !policy.stopsOnFailure;
-    return !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
+    // Shared with the listener's error-row suppression, which is valid only
+    // when this answers true — see `quotaRefusalCanFailOver`.
+    return quotaRefusalCanFailOver(
+      capturedRoutePolicy(),
+      deps.listenerDeps.sessionManager.get(sessionId),
+    );
   };
 
   const retryOnNextAccount = async (
