@@ -2577,6 +2577,127 @@ describe("PrStatusPoller — catch-up probe", () => {
 
 // ---- Workflow detection: none → pending override ----
 
+// ---- docs/282: the merge-state probe the pre-turn recheck runs ----
+
+describe("PrStatusPoller — turn-admission merge probe", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const mergedRest = {
+    url: "https://github.com/owner/repo/pull/101",
+    number: 101, base: "main", title: "Benchmark", body: "",
+    state: "closed" as const, merged_at: "2026-08-22T19:32:02Z",
+    additions: 4, deletions: 1, head_sha: "d7cfc48",
+  };
+
+  function makeHarness(restProbe: unknown) {
+    const githubAuth = makeGitHubAuth(
+      { data: { repository: { pullRequests: { nodes: [] } } } },
+      restProbe,
+    );
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/benchmark", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    return { githubAuth, sessionManager, sseBroadcast: vi.fn() };
+  }
+
+  /**
+   * `merged_at` is stamped by `onMergeDetectedCb`, which the poll loop fires and
+   * forgets. The pre-turn recheck decides against `mergedAt`, so it must be able
+   * to wait for that half — otherwise it reads the session one beat too early
+   * and answers "not merged" for a merge it just discovered itself.
+   */
+  it("awaitMergeHandling resolves only once the merge bookkeeping has settled", async () => {
+    const { githubAuth, sessionManager, sseBroadcast } = makeHarness(mergedRest);
+    let release!: () => void;
+    const onMergeDetected = vi.fn(
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    await poller.forceVerifySessionPrState("s1", { armAbsentDebounce: false });
+    expect(onMergeDetected).toHaveBeenCalledWith("s1");
+
+    let settled = false;
+    const waiting = (async () => {
+      await poller.awaitMergeHandling("s1");
+      settled = true;
+    })();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false); // the callback is still running
+
+    release();
+    await waiting;
+    expect(settled).toBe(true);
+
+    // Nothing in flight afterwards, so a later turn's wait is free.
+    await poller.awaitMergeHandling("s1");
+    poller.destroy();
+  });
+
+  /**
+   * A handler that never settles would otherwise sit in the map for the life of
+   * the process, and it is not memory that makes that expensive: the pre-turn
+   * recheck would wait out its whole budget on it, on every qualifying turn,
+   * for a merge the session has long since been re-armed out of.
+   */
+  it("drops a never-settling merge handler when the session is re-armed", async () => {
+    const { githubAuth, sessionManager, sseBroadcast } = makeHarness(mergedRest);
+    const onMergeDetected = vi.fn(() => new Promise<void>(() => {})); // never settles
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    await poller.forceVerifySessionPrState("s1", { armAbsentDebounce: false });
+    expect(onMergeDetected).toHaveBeenCalledWith("s1");
+
+    poller.reArm("s1", 101);
+
+    // The wait is free again — without the clear this would hang forever.
+    let settled = false;
+    const waiting = (async () => {
+      await poller.awaitMergeHandling("s1");
+      settled = true;
+    })();
+    await vi.advanceTimersByTimeAsync(0);
+    await waiting;
+    expect(settled).toBe(true);
+    poller.destroy();
+  });
+
+  /**
+   * The recheck probes a pull request it expects to still be OPEN, on every
+   * qualifying turn. Arming `verifiedAbsent` there would leave the debounce set
+   * when that PR merges moments later and drops out of the OPEN bulk view — so
+   * the poll would skip its REST verify and merge detection would stop until a
+   * forced refresh.
+   */
+  it("leaves the missing-PR debounce un-armed when asked, so the next poll still verifies", async () => {
+    const openRest = { ...mergedRest, state: "open" as const, merged_at: null };
+    const { githubAuth, sessionManager, sseBroadcast } = makeHarness(openRest);
+    const onMergeDetected = vi.fn().mockResolvedValue(undefined);
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    await poller.forceVerifySessionPrState("s1", { armAbsentDebounce: false });
+    const probesAfterRecheck = (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    // The PR merges right after the recheck: it is absent from the OPEN bulk
+    // view, and the poll must be free to REST-verify it.
+    (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue(mergedRest);
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mock.calls.length)
+      .toBeGreaterThan(probesAfterRecheck);
+    expect(onMergeDetected).toHaveBeenCalledWith("s1");
+    poller.destroy();
+  });
+});
+
 describe("PrStatusPoller — workflow-aware CI state", () => {
   beforeEach(() => {
     vi.useFakeTimers();
