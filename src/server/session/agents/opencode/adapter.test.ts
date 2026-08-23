@@ -559,6 +559,78 @@ describe("OpencodeAdapter — compaction (docs/276)", () => {
     expect(child.kill).toHaveBeenCalled();
   });
 
+  // planning#476 — the wedge these three lock is a REAL measured shape, not a
+  // hypothetical: at CLI 1.18.18, a response the CLI never finishes reading
+  // (body never ended, or a connection accepted and never answered) leaves
+  // stdout, stderr AND the CLI's own log completely empty, with no exit. A
+  // well-formed 429 is NOT that case — it reports and exits 1 after ~72 s, and
+  // "maps a fatal error event" above already covers it.
+  describe("stall deadline", () => {
+    /** A spawn HOME with a controllable CLI log directory. */
+    function tempHome(withLog: boolean): { home: string; logFile: string } {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-stall-"));
+      const logDir = path.join(home, ".local", "share", "opencode", "log");
+      if (withLog) fs.mkdirSync(logDir, { recursive: true });
+      return { home, logFile: path.join(logDir, "run.log") };
+    }
+
+    it("ends a turn that never produced output and never exited", () => {
+      const { adapter, child, events } = makeAdapter();
+      const { home } = tempHome(false);
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+
+      // The measured wedge: not one byte, on any channel, ever.
+      vi.advanceTimersByTime(15 * 60_000);
+      expect(child.kill).toHaveBeenCalled();
+
+      // And the kill has to SETTLE the turn. A signal death with no completed
+      // step normally emits no result at all (that is how a user interrupt
+      // reads as interrupted), so without the stall reason this would still
+      // strand the turn — just with a dead process.
+      child.close(null, "SIGTERM");
+      const result = events.at(-1);
+      expect(result?.type).toBe("agent_result");
+      expect(result).toMatchObject({ status: "error" });
+      if (result?.type === "agent_result") {
+        expect(result.error).toMatch(/no output and showed no activity/);
+      }
+    });
+
+    it("postpones on a log heartbeat, and still fires once that goes stale", () => {
+      const { adapter, child } = makeAdapter();
+      const { home, logFile } = tempHome(true);
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+
+      // A turn doing real work appends to the CLI's log throughout, even while
+      // stdout stays empty (it is only written at exit).
+      const beat = new Date(Date.now() + 60_000);
+      fs.writeFileSync(logFile, "working");
+      fs.utimesSync(logFile, beat, beat);
+
+      vi.advanceTimersByTime(15 * 60_000);
+      expect(child.kill).not.toHaveBeenCalled();
+
+      // The postponement is exactly the remainder, not a fresh full window:
+      // the CLI logs during startup on every turn, so a whole-window re-arm
+      // would hand every wedge a free second window and double the worst case.
+      vi.advanceTimersByTime(61_000);
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    it("re-arms on output, so a turn still producing events is never cut short", () => {
+      const { adapter, child } = makeAdapter();
+      const { home } = tempHome(false);
+      adapter.run({ ...RUN_PARAMS, homeDir: home });
+
+      vi.advanceTimersByTime(14 * 60_000);
+      // A step_start alone: enough to prove liveness, and deliberately NOT a
+      // final stop, which would arm the post-turn stop-kill instead.
+      child.emitStdout([CAPTURED[0]]);
+      vi.advanceTimersByTime(14 * 60_000);
+      expect(child.kill).not.toHaveBeenCalled();
+    });
+  });
+
   it("no-ops a mid-turn compact() instead of throwing", () => {
     const child = new FakeChild();
     const errors: Error[] = [];

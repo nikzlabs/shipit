@@ -364,6 +364,54 @@ fix needs a design decision the rate-limits work does not own, because the two
 candidate mitigations — killing on prolonged silence, or reading the CLI's own
 log file — each cost something the current adapter contract protects.
 
+### Corrected: the status code is not what hangs (planning#476)
+
+The table above was re-probed at 1.18.18 on 2026-08-23 while fixing
+planning#476, at a local recorder with the **response shape** as the variable
+rather than only the status code. Two of its claims do not survive, and the
+row for 429/500/529 above is superseded by this section.
+
+- **A well-formed 429 does not hang.** The CLI retries the turn's own stream
+  six times over ~72 s (backoff ≈ 2 s → 34 s), then emits a complete
+  `{"type":"error"}` event — message, `statusCode: 429`, `isRetryable: true`,
+  full `responseHeaders`, `responseBody` — and exits **1**. Measured
+  identically for `anthropic-messages` and `openai-chat-completions`, and for
+  a 429 with an empty body. So the adapter already fails such a turn honestly,
+  `detectHardExhaustion` already sees it, and the req-14 failover already
+  applies. It also means the header channel the *"Two Claude events this
+  adapter never emits"* docstring calls unproven for retryable statuses is in
+  fact present on a 429.
+- **What hangs is a response the CLI never finishes reading** — headers sent
+  and the body never ended, or a connection accepted and never answered. Then
+  stdout, stderr **and the CLI's own log** are all empty (the log's last line
+  is `llm runtime selected`) and the process never exits. That reproduces the
+  reported "two requests then silence" signature exactly, and it is the shape
+  the original probe most likely produced.
+- **Consequence for the fix: option (b) is not merely unattractive, it is
+  empty.** Reading the CLI's log for the retry state cannot end this hang,
+  because in the case that hangs the log has no retry state — nothing is
+  written to it at all.
+- **`opencode run --format json` does not stream.** It accumulates the turn's
+  events and writes the whole log at process **exit**. Verified by delaying
+  step 2's model call by 60 s and watching step 1's events — generated at
+  4.3 s by their own `timestamp` fields — arrive at 64.4 s with everything
+  else, then re-verified under a PTY to rule out stdio buffering. This is why
+  `_isStreaming` is false, and it is what made the old 60 s "no output"
+  watchdog meaningless: silence is the normal state of every turn, so that
+  warning fired on every turn longer than a minute.
+
+**The fix.** A **stall deadline** in the adapter (`armWatchdog` /
+`onStallDeadline`): 15 minutes with no output on any channel and no growth in
+the CLI's log directory ends the turn with a synthesized failed
+`agent_result`. Because no signal distinguishes "waiting on a model that will
+answer" from "waiting on one that never will", a clock is the only instrument
+available; the log directory is used as a **liveness heartbeat** — `mtime`
+only, never parsed — so a turn that is stepping or running tools keeps
+postponing the deadline indefinitely, and a missing or moved log degrades to
+the bare deadline rather than to an early kill. 15 minutes sits beyond any
+single model request, which providers cap well below it. Guard tests:
+`adapter.test.ts` → "stall deadline".
+
 ## Image attachments (planning#458)
 
 The deferred probe, run 2026-08-20 against CLI **1.18.18** on the dogfood inner
@@ -519,13 +567,21 @@ met and surfaced five substantive defects, all fixed and test-locked:
    failure was only logged. Both now follow Claude's contract (no result /
    fail the run).
 
-One residual it named is accepted and documented rather than fixed: a
+One residual it named was accepted and documented rather than fixed: a
 DROPPED final `step_finish` combined with the MCP keep-alive means no
-stop-kill is armed and the turn runs until the user interrupts (which now
+stop-kill is armed and the turn runs until the user interrupts (which
 settles correctly as interrupted). The alternative — killing on stream
 silence — would kill legitimate long silent tool calls (OpenCode emits tool
 events only at completion), which is worse. A warn-only 60s watchdog
-(Claude parity) narrates the state.
+(Claude parity) narrated the state.
+
+**Superseded by planning#476.** That warn-only watchdog is now a stall
+deadline that ends the turn, and this residual is covered by it — see
+[Corrected: the status code is not what hangs](#corrected-the-status-code-is-not-what-hangs-planning476)
+for why the 60 s warning was not merely insufficient but meaningless (the CLI
+writes its whole event log at exit, so *every* turn over a minute tripped it),
+and for what makes killing on silence safe now that a liveness heartbeat
+carries the signal the stream cannot.
 
 ## Known risks / review checklist
 
