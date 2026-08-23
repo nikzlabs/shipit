@@ -25,6 +25,14 @@ Standing rule: **the MVP builds the minimal thing that satisfies the top-level p
 
 **Solutions.** `coordinator-design.md`, context-lifecycle section (the current choice, the escalation ladder, and the analysis behind them).
 
+## I3. Clients beyond the trust boundary must be individually authenticated and capability-scoped
+
+**Requirement.** Any client reaching ShipIt from outside the deployment's private network holds an individual identity with named capabilities, deny-by-default, individually revocable.
+
+**Where it comes from.** Product req 27's authority boundary meeting network exposure. **V2 by user decision (2026-08-23):** the MVP's phone app and ShipIt share a Tailscale network, and network membership is the authentication — "authentication would not be needed." This requirement activates the day any surface is exposed beyond the tailnet.
+
+**Solutions.** `api-proposal.md`, auth and structural-scoping section (per-client tokens, scopes, repo allowlists).
+
 ## Open questions
 
-None. Adoption triggers for anything beyond the MVP minimum are the measurements recorded with the solutions in `coordinator-design.md`.
+None. Adoption triggers for anything beyond the MVP minimum are the measurements recorded with the solutions in `coordinator-design.md`, and — for I3 — the moment of exposure beyond the private network.

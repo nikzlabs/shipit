@@ -87,6 +87,8 @@ One durable, monotonic **event journal**; resource mutation + event append in on
 
 ## 5. Auth and structural scoping
 
+**Status (2026-08-23): this section is the V2 solutions home for implementation requirement I3.** The MVP runs entirely inside the deployment's Tailscale network — membership is the authentication, no tokens ("authentication would not be needed"). Everything below activates when any surface is exposed beyond the tailnet. Also note the layering correction in `coordinator-design.md`: the control API's only consumer is the coordinator; UI and voice surfaces are clients of the coordinator, not of this API.
+
 - **Per-client personal access tokens**, minted once in Settings: `clientId`, label, hashed secret (`shipit_ctl_` prefix, ≥256-bit, constant-time compare), scopes, optional `repoAllowlist`, expiry (default 90 days). Not one shared secret; not OAuth (add OAuth 2.1 + PKCE later without changing scopes).
 - Scopes: `queue:read`, `queue:manage`, `sessions:read`, `sessions:message`, `sessions:spawn`. No scope implies another.
 - **Forbidden operations are structurally impossible**: the control API lives on a dedicated listener (or strictly isolated subtree) that registers only `/api/control/v1/*` + health. No browser routes, WS, preview, merge, PR mutation, settings, credentials, terminal, git, files, generic proxy. Control tokens are never accepted on `/api/*`; the route plugin receives narrow service deps, not `ApiDeps`. No generic "invoke anything" endpoint exists.
