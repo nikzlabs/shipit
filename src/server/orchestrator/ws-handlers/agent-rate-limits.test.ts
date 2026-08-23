@@ -416,16 +416,29 @@ const GROK_NON_SUBSCRIPTION_COPY = [
 ] as const;
 
 /**
- * planning#453 — Grok has no quota reader, so these two matchers are the
- * *only* spent-plan signal. The gap is that we have never seen a SuperGrok
- * subscription emit a limit notice on the headless wire, so the patterns
- * stay as they are. What we can pin from the code and from the binary:
+ * planning#453 — Grok's spent-plan wording, and what is and is not settled
+ * about it.
  *
- *   - which matcher applies to which channel
+ * These matchers are a **second** signal for Grok, not the only one:
+ * `XaiLimitsProvider` reads the SuperGrok weekly pool (planning#454). The
+ * issue, and an earlier version of this comment, said otherwise from the
+ * `quota: null` era.
+ *
+ * Pinned below:
+ *
+ *   - which matcher applies to which channel, and that a Grok refusal reaches
+ *     only the error one (probed — the turn ends with no assistant text)
  *   - that the text channel's provider prefix is Claude/Codex, not Grok
  *   - that free-tier and credit-balance copy must not fire either detector
+ *   - that the real captured refusal DOES fire the error channel, read out of
+ *     the adapter's own fixture
  *   - a skip that becomes the lock the moment a real capture fills
  *     {@link GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE}
+ *
+ * **Still genuinely unknown**, and the reason that skip stays: which words a
+ * spent SuperGrok *subscription* uses. The recorder probe chose its own 429
+ * body, so it establishes the transport and the channel and says nothing about
+ * xAI's wording. The real string could still be something these patterns miss.
  */
 describe("Grok exhaustion channels (planning#453)", () => {
   it("does not treat free-tier or credit-balance copy as a spent subscription", () => {

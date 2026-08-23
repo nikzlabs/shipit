@@ -310,8 +310,11 @@ the expansion of every line, with file pointers and gotchas, is in
       delete it). Refresh-token idle lifetime and a possible reuse-grace
       window are unobserved; revisit on `invalid_grant`. Evidence in
       plan.md, "No orchestrator-side refresher".
-- [x] **planning#453 — the premise was wrong, and the real defect was upstream
-      of the matcher.** Two of the item's three parts are now settled by probe
+- [ ] **planning#453 — the premise was wrong, and the real defect was upstream
+      of the matcher.** Still open, and deliberately narrower than it was: the
+      transport defect is fixed and the channel is settled, but the item's own
+      named deliverable — a verbatim SuperGrok string — is not obtained, so the
+      box stays unchecked. Two of the item's three parts are settled by probe
       (CLI 1.0.1 at a local HTTP recorder answering 429, 2026-08-23 — no plan
       spent); the third is deliberately still open and no longer blocking.
       - **Channel (item 3): answered empirically — `error`.** A refused Grok
@@ -331,15 +334,20 @@ the expansion of every line, with file pointers and gotchas, is in
         back on", from the `quota: null` era that planning#454 reversed —
         `XaiLimitsProvider` supplies the meter, so the classifier is a second
         signal here as it is for Claude and Codex.
-      - **Still open, deliberately**: no verbatim SuperGrok *subscription*
-        string. `GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE` stays `null`. Nothing
-        needs widening for it — the wire transform is measured (the CLI passes
-        a JSON body's wording through verbatim), so the remaining value is
-        confirming which words xAI picks, not a code change. Exhausting a
-        SuperGrok plan to find out is not proportionate: it is a shared weekly
-        pool across Chat/Build/API/Imagine/Voice, so the cost is the plan being
-        down for up to seven days across every xAI product, and a human
-        decision either way.
+      - **What keeps this open**: no verbatim SuperGrok *subscription* string.
+        `GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE` stays `null` and its lock stays
+        skipped. The recorder chose its own 429 body, so the probe establishes
+        the transport and the channel and says **nothing** about xAI's wording
+        — the real string could still be one these patterns miss, and until it
+        is seen "nothing needs widening" is not a claim this work can make.
+        What did change is that a capture is now worth having: before the
+        transport fix the text was discarded before any matcher could see it,
+        so a captured string would have changed nothing.
+      - **Not worth exhausting a plan to find out, though.** SuperGrok's is a
+        shared weekly pool across Chat, Build, API, Imagine and Voice, so the
+        cost is the plan down for up to seven days across every xAI product —
+        for a string that a natural hit will supply for free now that the wire
+        reaches the classifier. A human decision either way.
 - [x] `agent_rate_limits` for Grok — **probed, not available, and not a gap.**
       No window, percentage or reset on the wire; the only `Retry-After` reader
       in the 1.0.1 binary is the GCS uploader, not the inference client. The

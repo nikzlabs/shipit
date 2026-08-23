@@ -318,8 +318,16 @@ route OpenCode can take is one of:
 
 OpenCode has **no `account` target**, so Anthropic's and xAI's OAuth windows
 are unreachable by construction (`service-routing.ts` states the same axis from
-the other side). This becomes wireable the day either fact changes; the header
-channel is already there for it. Basis recorded in the adapter header per
+the other side).
+
+**State the conclusion at its actual strength**: no route ShipIt can currently
+take needs this wired. That is *not* the same as "the channel is ready". The
+401 that proved headers survive is a **non-retryable** error, and the statuses
+that would actually carry quota information — 429 and the 5xx pair — emit
+nothing at all (next section). Whichever change makes a subscription window
+reachable will have to re-probe the response that would carry it, because the
+one probe that matters has not been run and cannot be until that response
+reports anything. Basis recorded in the adapter header per
 docs/266 item 13.
 
 ### The defect the probe actually found: a 429 hangs the turn

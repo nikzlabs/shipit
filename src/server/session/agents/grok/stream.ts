@@ -158,6 +158,20 @@ export function parseGrokLine(line: string): GrokEvent | null {
  * Blank and whitespace-only entries are dropped rather than joined, so an empty
  * `errors: [""]` falls through to the next source instead of handing the
  * orchestrator's exhaustion classifier an empty string to test.
+ *
+ * **On the `result` fallback and false positives.** Whatever this returns is
+ * tested by `detectHardExhaustion`, where a match benches the account for 15
+ * minutes — so the expensive direction is admitting the *model's* prose, and
+ * `result` on an errored event would be exactly that (a `subtype:
+ * "error_max_turns"` turn whose trailing summary happens to mention "out of
+ * credits"). The fallback is kept anyway, for two reasons: Grok has never been
+ * observed filling `result` on an error, so removing it would be a behaviour
+ * change against a shape nobody has captured; and the hazard is unchanged from
+ * before this function existed, since `raw.result` was the *only* source then.
+ * Reading `errors[]` first strictly narrows the exposure rather than widening
+ * it — the CLI-authored field now wins over the model-authored one. If an
+ * errored event carrying `result` is ever captured, that capture is the
+ * evidence for dropping this arm.
  */
 export function grokResultErrorText(event: GrokEvent): string {
   const listed = (event.errors ?? [])

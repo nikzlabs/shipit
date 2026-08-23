@@ -1388,16 +1388,19 @@ sites (`agent-listeners.ts` req-7 stamp, `turn-executor.ts` req-14 retry,
 A third site, independent of `agent_result`: `willRetryOnQuotaError`
 (`turn-executor.ts`) runs the unanchored error matcher on the adapter's
 `error` **event** message. That is spawn/process failure, not a CLI result.
-Grok's fatal stream `{"type":"error","message":…}` currently does **not**
-take this path — it is logged, then the close handler synthesizes an
-`agent_result` whose wording is `Grok exited with code N…`. Forwarding
-`message_text` could go via an adapter `error` emit *or* `agent_result.error`.
+Grok's fatal stream `{"type":"error","message":…}` does not take that path —
+it is held and forwarded onto the synthesized `agent_result.error` instead
+(planning#453), which is the channel the table above describes. Before that it
+was logged and dropped, and the close handler's `Grok exited with code N…` was
+all the matcher saw.
 
-On an errored turn the adapter copies `raw.result` onto `error` — the same
-field that carries the model's summary on success (identical to Claude). A
-`subtype: "error_max_turns"` turn whose trailing text mentions "out of
-credits" would therefore hit the unanchored error-channel patterns.
-Pre-existing, not Grok-specific, not repaired here.
+The `raw.result` hazard this section used to name — a `subtype:
+"error_max_turns"` turn whose trailing *model* text mentions "out of credits"
+reaching the unanchored patterns — is narrowed rather than removed.
+`grokResultErrorText` reads `errors[]` first, so the CLI-authored field now
+wins over the model-authored one; `result` survives only as a fallback for a
+shape Grok has never been observed producing. Still pre-existing, still not
+Grok-specific.
 
 The text matcher is the PROVIDER_NOTICE-style one: it must be the *start* of
 a short message (`^[^a-z0-9]*`, so a bullet or emoji may precede it but no
@@ -1468,11 +1471,13 @@ skipped test then fails until the matcher covers that exact string; the
 always-on negatives pin the free-tier and credit-balance copy that a
 loosening must still refuse. How to obtain the string is a human decision.
 
-### Related gap, not repaired here
+### Related gap — repaired (planning#453)
 
 A fatal `{"type":"error","message":…}` event (the unauthenticated shape,
-verified) is logged and then dropped. The close handler synthesizes
-`Grok exited with code N before producing a result`, so neither matcher
-ever sees the provider's wording. Forwarding `message_text` onto
-`agent_result.error` would still need a captured string to match against;
-it is a separate change.
+verified) used to be logged and then dropped, leaving the close handler's
+`Grok exited with code N before producing a result` as the only thing either
+matcher saw. The adapter now holds `message_text` and forwards it onto the
+synthesized `agent_result.error`, cleared per `run()` so it cannot cross into
+the next turn. The exit-code wording remains for a turn that died saying
+nothing at all — which must stay unmatched, since it describes a dead process
+and not a spent plan.

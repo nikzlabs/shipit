@@ -6,6 +6,7 @@ import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js
 import { resetRunnerTurnState } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { CredentialFailurePolicy } from "../credential-failure-policy.js";
+import { quotaRefusalCanFailOver } from "../credential-failure-policy.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import {
@@ -957,7 +958,23 @@ export function wireAgentListeners(
       // the user-visible outcome. If no account is left, the turn ends as a
       // `ProviderRouteUnavailableError` through the `error` handler, which
       // persists the routing message instead — the one the user can act on.
-      sawHardExhaustionThisTurn = detected !== null;
+      //
+      // **…but only when that gate will actually run** (planning#453 review).
+      // `stopsOnFailure` is `billingMode === "key"`, so a metered key gets no
+      // failover at all — and suppressing unconditionally handed that turn the
+      // worst of both: no retry to explain it and no row saying why, leaving a
+      // reloaded transcript with a failed turn and no reason in it. The two
+      // modules now ask one shared question so they cannot drift apart again;
+      // `quotaRefusalCanFailOver`'s docstring carries the reasoning.
+      sawHardExhaustionThisTurn =
+        detected !== null
+        && quotaRefusalCanFailOver(
+          opts.getCapturedRoutePolicy?.(),
+          // The same subject the executor's gate reads (`sessionId` there is
+          // this capture). Undefined only in tests, where the policy resolves
+          // to "can fail over" and behaviour is unchanged.
+          opts.capturedSessionId ? deps.sessionManager.get(opts.capturedSessionId) : undefined,
+        );
       const exhaustedSessionId = opts.capturedSessionId;
       if (exhaustedSessionId && deps.markSessionAccountExhausted && detected) {
         deps.markSessionAccountExhausted(
