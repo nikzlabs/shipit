@@ -504,6 +504,133 @@ describe("GrokAdapter — the paths a capture cannot show", () => {
 });
 
 /**
+ * planning#453 — an ERRORED terminal event, which no tour capture contains.
+ *
+ * Every fixture above is a successful tool tour, so nothing had ever exercised
+ * the failure shape, and the adapter was written to Claude's contract: read the
+ * reason off `result`. Grok does not do that. On an error it emits no `result`
+ * key at all and puts the reason in an `errors` ARRAY — so the adapter fell
+ * through to its placeholder and replaced the provider's own words with
+ * `Grok ended the turn with subtype "error_during_execution"`.
+ *
+ * That is a quota bug, not a cosmetic one. `agent_result.error` is what the
+ * orchestrator's `detectHardExhaustion` reads (`agent-listeners.ts`'s req-7
+ * stamp and `turn-executor.ts`'s req-14 failover both key off it), and the
+ * placeholder matches no pattern — so a Grok turn refused for quota looked like
+ * a generic failure, the account was never benched, and the next turn walked
+ * into the same wall.
+ *
+ * `__fixtures__/rate-limited-429-grok-4.5.ndjson` is a real capture, taken the
+ * way the rest of this file's fixtures were except for who answered: CLI 1.0.1
+ * driven against a LOCAL HTTP recorder returning 429 on `POST /v1/responses`,
+ * on 2026-08-23, so no plan was spent to obtain it. The recorder chose the
+ * 429 *body*; the CLI chose everything else — the event shape, the field, the
+ * retry behaviour (`duration_ms: 120012` — two attempts a minute apart), and
+ * the `"<code>: <error>"` join that lands the service's own wording in
+ * `errors[0]` verbatim.
+ */
+describe("GrokAdapter — an errored terminal event (planning#453)", () => {
+  const homes: string[] = [];
+  afterEach(() => {
+    for (const h of homes.splice(0)) fs.rmSync(h, { recursive: true, force: true });
+  });
+
+  /** The capture's own error text, read from the fixture so the two cannot drift. */
+  function capturedRefusal(): string {
+    const line = capture("rate-limited-429-grok-4.5.ndjson")
+      .map((l) => JSON.parse(l) as { type: string; errors?: string[] })
+      .find((e) => e.type === "result");
+    return line?.errors?.[0] ?? "";
+  }
+
+  it("reports the provider's own refusal, not a placeholder naming the subtype", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    h.child.emitStdout(capture("rate-limited-429-grok-4.5.ndjson"));
+    h.child.close(1);
+
+    const result = h.events.find((e) => e.type === "agent_result") as { status: string; error?: string };
+    expect(result.status).toBe("error");
+    expect(result.error).toBe(capturedRefusal());
+    expect(result.error).not.toContain("error_during_execution");
+  });
+
+  it("puts that text where the exhaustion classifier can reach it", () => {
+    // The whole point of the fix: this exact string already matches
+    // `EXHAUSTION_PATTERNS`' `/out of (?:quota|credits)/i`. Nothing needed
+    // widening — the text simply never arrived. Asserted here rather than by
+    // importing the orchestrator matcher, which is that module's own test.
+    expect(capturedRefusal()).toMatch(/out of credits/i);
+    expect(capturedRefusal()).toMatch(/^Out of credits: /);
+  });
+
+  it("keeps a SUCCESS reading its text off `result`, which is where success puts it", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    h.child.emitStdout(capture("tool-tour-grok-4.6.ndjson"));
+    h.child.close(0);
+    const result = h.events.find((e) => e.type === "agent_result") as { status: string; error?: string };
+    expect(result.status).toBe("success");
+    expect(result.error).toBeUndefined();
+  });
+
+  it("forwards a fatal `error` event's message instead of naming the exit code", () => {
+    // The other shape a refusal can take: `{"type":"error","message":…}` with no
+    // result event after it. The close handler is the only place a terminal
+    // result can come from, and it used to say `Grok exited with code 1 before
+    // producing a result` — discarding the one sentence that says why.
+    const h = makeHarness();
+    homes.push(h.home);
+    h.child.emitStdout([JSON.stringify({ type: "error", message: "usage limit reached" })]);
+    h.child.close(1);
+    const result = h.events.find((e) => e.type === "agent_result") as { status: string; error?: string };
+    expect(result.status).toBe("error");
+    expect(result.error).toBe("usage limit reached");
+  });
+
+  it("still names the exit code when the CLI died without saying anything", () => {
+    const h = makeHarness();
+    homes.push(h.home);
+    h.child.emitStdout(capture("tool-tour-grok-4.6.ndjson").slice(0, 5));
+    h.child.close(1);
+    const result = h.events.find((e) => e.type === "agent_result") as { error?: string };
+    expect(result.error).toContain("exited with code 1");
+  });
+
+  it("does not carry one turn's fatal message into the next", () => {
+    // One adapter, two spawns. Production builds an adapter per turn, but the
+    // same instance serves consecutive runs here and on the sub-agent path, so
+    // a held error must not outlive the turn that produced it.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "grok-adapter-test-"));
+    homes.push(home);
+    const children: FakeChild[] = [];
+    const events: AgentEvent[] = [];
+    const adapter = new GrokAdapter({
+      resolveHome: () => home,
+      spawnFn: () => {
+        const c = new FakeChild();
+        children.push(c);
+        return c as unknown as ChildProcess;
+      },
+    });
+    adapter.on("event", (e) => events.push(e));
+
+    adapter.run({ prompt: "first", cwd: "/workspace" });
+    children[0].emitStdout([JSON.stringify({ type: "error", message: "usage limit reached" })]);
+    children[0].close(1);
+
+    adapter.run({ prompt: "second", cwd: "/workspace" });
+    children[1].emitStdout(capture("tool-tour-grok-4.6.ndjson").slice(0, 5));
+    children[1].close(1);
+
+    const results = events.filter((e) => e.type === "agent_result") as { error?: string }[];
+    expect(results).toHaveLength(2);
+    expect(results[0].error).toBe("usage limit reached");
+    expect(results[1].error).toContain("exited with code 1");
+  });
+});
+
+/**
  * planning#444 second half — WHICH grok a spawn runs.
  *
  * `@xai-official/grok` ships two programs called `grok`: the npm `.bin` shim is

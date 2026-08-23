@@ -310,10 +310,38 @@ the expansion of every line, with file pointers and gotchas, is in
       delete it). Refresh-token idle lifetime and a possible reuse-grace
       window are unobserved; revisit on `invalid_grant`. Evidence in
       plan.md, "No orchestrator-side refresher".
-- [ ] **Open, waiting on a live capture** (planning#453): the verbatim
-      SuperGrok *subscription* exhaustion string on the headless `-p` wire,
-      and which channel it arrives on. Fill
-      `GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE` in `agent-rate-limits.test.ts`
-      and widen the matcher against that exact text. Do not paste TUI copy
-      from `strings` on the grok binary. How to obtain the string (wait for
-      a natural hit vs. deliberately exhaust the plan) is a human decision.
+- [x] **planning#453 — the premise was wrong, and the real defect was upstream
+      of the matcher.** Two of the item's three parts are now settled by probe
+      (CLI 1.0.1 at a local HTTP recorder answering 429, 2026-08-23 — no plan
+      spent); the third is deliberately still open and no longer blocking.
+      - **Channel (item 3): answered empirically — `error`.** A refused Grok
+        turn ends `is_error: true` with no assistant text, so `turnSummary` is
+        empty and the anchored text matcher is never reached. Previously
+        answered from the code as a conditional.
+      - **The adapter was discarding the text.** An errored `result` event
+        carries no `result` key — the reason is in an `errors[]` ARRAY — so
+        every refused turn reported `Grok ended the turn with subtype
+        "error_during_execution"`, which matches nothing. `Out of credits: …`
+        already matched `EXHAUSTION_PATTERNS`; it never reached the
+        classifier. Fixed (`grokResultErrorText`), plus the fatal
+        `{"type":"error","message":…}` shape now forwards its message instead
+        of naming only the exit code. Capture vendored at
+        `__fixtures__/rate-limited-429-grok-4.5.ndjson`.
+      - **The issue's framing is stale.** It says Grok "has no quota to fall
+        back on", from the `quota: null` era that planning#454 reversed —
+        `XaiLimitsProvider` supplies the meter, so the classifier is a second
+        signal here as it is for Claude and Codex.
+      - **Still open, deliberately**: no verbatim SuperGrok *subscription*
+        string. `GROK_SUBSCRIPTION_EXHAUSTION_CAPTURE` stays `null`. Nothing
+        needs widening for it — the wire transform is measured (the CLI passes
+        a JSON body's wording through verbatim), so the remaining value is
+        confirming which words xAI picks, not a code change. Exhausting a
+        SuperGrok plan to find out is not proportionate: it is a shared weekly
+        pool across Chat/Build/API/Imagine/Voice, so the cost is the plan being
+        down for up to seven days across every xAI product, and a human
+        decision either way.
+- [x] `agent_rate_limits` for Grok — **probed, not available, and not a gap.**
+      No window, percentage or reset on the wire; the only `Retry-After` reader
+      in the 1.0.1 binary is the GCS uploader, not the inference client. The
+      meter comes from `XaiLimitsProvider` instead. Basis recorded in the
+      adapter header per docs/266 item 13.

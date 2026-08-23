@@ -46,6 +46,30 @@
  *    delete the rotation. `publishSpawnAuthBack` copies a replaced file back
  *    onto the shared root (freshness-guarded) so the existing token-sync path
  *    can see it.
+ *
+ * ## Two Claude events this adapter never emits, and the basis for each
+ *
+ * Stated here rather than left as an absence, per docs/266 item 13's
+ * probed / structural / not-wired rule.
+ *
+ *  - **`agent_rate_limits` — probed, and not a gap.** The wire carries no
+ *    window: the terminal `result` reports cost and tokens, never a
+ *    percentage, a window length or a reset instant, and the ONLY reader of a
+ *    `Retry-After` header anywhere in the 1.0.1 binary is the GCS file
+ *    uploader (`xai-file-utils/src/storage_client.rs`) — the inference client
+ *    has none, so a 429's reset time is discarded before the CLI formats
+ *    anything. Measured 2026-08-23 at a local recorder answering 429 with
+ *    `Retry-After` and `x-ratelimit-*`: none of it reached stdout. Nothing is
+ *    missing downstream, because `xai:sub` gets its meter from a different
+ *    mechanism entirely — `XaiLimitsProvider` (`xai-plan-usage`) pulls
+ *    `GET /v1/billing?format=credits`. Grok's badge is populated; it is simply
+ *    not populated from here.
+ *  - **`agent_user_replay` — structural.** It echoes a steer the CLI accepted
+ *    mid-turn. Grok is one spawn per turn with the prompt in a file and stdin
+ *    `ignore`d, so no user message ever reaches a running process and there is
+ *    nothing to echo (`supportsSteering: false`; see `case "user"`, where every
+ *    event on this wire is a tool result instead). Not deferred work — the
+ *    shape forecloses it, and only a resident process would change that.
  */
 
 import { EventEmitter } from "node:events";
@@ -74,7 +98,7 @@ import { resolveAgentHome, grokHome, type AgentHomeResolver } from "../../../sha
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
-import { parseGrokLine, type GrokEvent } from "./stream.js";
+import { grokResultErrorText, parseGrokLine, type GrokEvent } from "./stream.js";
 import { normalizeGrokToolCall, normalizeGrokToolResult } from "./grok-tool-normalizer.js";
 import { renderGrokConfigToml, type GrokMcpServer } from "./config-toml.js";
 
@@ -313,6 +337,17 @@ export class GrokAdapter
   private turnSessionId = "";
   private sawResult = false;
   private sawAnyEvent = false;
+  /**
+   * The text of a fatal `{"type":"error","message":…}` event, held for the
+   * synthesized result.
+   *
+   * Held rather than emitted (Claude's contract): no `result` event follows a
+   * fatal error, so the close handler is the only place a terminal result can
+   * come from, and it used to name only the exit code. That threw away the one
+   * sentence saying *why* — including, when the provider refuses a turn on this
+   * shape, the quota wording the orchestrator's exhaustion classifier reads.
+   */
+  private fatalErrorText: string | null = null;
   private latestCallContextTokens: number | undefined;
   /**
    * This turn's tool_use id → RAW wire tool name. Grok's tool_result blocks
@@ -346,6 +381,7 @@ export class GrokAdapter
     }
     this.sawResult = false;
     this.sawAnyEvent = false;
+    this.fatalErrorText = null;
     this.latestCallContextTokens = undefined;
     this.turnCallNames.clear();
     // docs/276 — a compaction spawn needs NO special argv. Grok intercepts a
@@ -923,7 +959,7 @@ export class GrokAdapter
           ...(contextTokens !== undefined ? { contextTokens } : {}),
           ...(contextWindow !== undefined ? { contextWindow } : {}),
           ...(typeof raw.duration_ms === "number" ? { durationMs: raw.duration_ms } : {}),
-          ...(errored ? { error: raw.result ?? `Grok ended the turn with subtype "${raw.subtype ?? "unknown"}"` } : {}),
+          ...(errored ? { error: grokResultErrorText(raw) } : {}),
         };
       }
 
@@ -931,6 +967,7 @@ export class GrokAdapter
         // The unauthenticated / fatal shape: `{"type":"error","message":…}` on
         // stdout followed by exit 1 (verified on an unauthenticated run). No
         // result ever follows, so the close handler synthesizes one from this.
+        if (raw.message_text) this.fatalErrorText = raw.message_text;
         this.emit("log", "server", `Grok error: ${raw.message_text ?? "unknown"}`);
         return null;
 
@@ -958,11 +995,16 @@ export class GrokAdapter
       return;
     }
     if (exitCode === 0) return;
+    // The CLI's own reason wins over the exit code when it gave one. The exit
+    // code is a fact about the process; `message_text` is what the provider
+    // said, and it is the only form a quota refusal takes on this shape.
     this.emit("event", {
       type: "agent_result",
       status: "error",
       sessionId: this.turnSessionId,
-      error: `Grok exited with code ${String(exitCode)} before producing a result`,
+      error:
+        this.fatalErrorText
+        ?? `Grok exited with code ${String(exitCode)} before producing a result`,
     });
   }
 

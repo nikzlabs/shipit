@@ -1274,15 +1274,103 @@ established. If subscription mode turns out to have real levels (planning#435),
 `--effort` becomes part of a complete Grok target with nothing further to
 change.
 
-## Exhaustion is the only spent-plan signal (req 16)
+## Exhaustion as a spent-plan signal (req 16)
 
-The `sub` mode declares `quota: null` — an explicit arm of `BillingModeDef`,
-not a fourth `QuotaIntegrationId` nothing implements. xAI publishes no
-per-account usage API (every candidate route 404s; probed with planning#435).
-The usage pill is therefore empty on purpose: an honest absence, not an
-invented indicator. For Claude and Codex the exhaustion classifier is a
-*second* signal beside a meter. For a SuperGrok subscription it is the
-**only** signal that the plan is spent.
+> **Superseded opening, kept because the reversal is the point.** This section
+> used to read "Exhaustion is the **only** spent-plan signal", on the premise
+> that `sub` declared `quota: null` and xAI published no usage API. planning#454
+> reversed both: `GET /v1/billing?format=credits` returns the weekly pool,
+> `xai:sub` declares `xai-plan-usage`, and `XaiLimitsProvider` reads it (see
+> "Quota: the empty pill, and the reader that turned out to exist" above). So
+> Grok is now like Claude and Codex — the classifier is a **second** signal
+> beside a meter, and a miss here no longer leaves the user with nothing.
+> The premise outlived its own correction by two phases; planning#453 was filed
+> against it and inherited the overstatement.
+
+### The channel was open and the adapter was not reading it (planning#453)
+
+Everything below about *matchers* stands. What did not stand is the sentence
+this section used to state as fact, and which the issue was reasoned from:
+
+> On an errored turn the adapter copies `raw.result` onto `error`.
+
+**It does not, because Grok does not put it there.** Probed 2026-08-23 against
+CLI 1.0.1 at a local HTTP recorder answering `429` on `POST /v1/responses` (no
+plan spent). The terminal event:
+
+```jsonc
+{"type":"result","subtype":"error_during_execution","is_error":true,
+ "duration_ms":120012,                       // two attempts, a minute apart
+ "errors":["Out of credits: Your team has either used all available credits …"],
+ …}                                          // NO `result` key at all
+```
+
+`result` and `errors` are **disjoint per event**: a success carries `result`
+and no `errors`, an error carries `errors` and no `result`. Claude reuses one
+field for both and the adapter was written to that contract, so every errored
+Grok turn reported the placeholder `Grok ended the turn with subtype
+"error_during_execution"` — a string no pattern matches. Nothing had caught it
+because every vendored fixture is a successful tool tour: the test suite could
+not fail on it.
+
+So the pattern list was never the binding constraint. `Out of credits: …`
+already matches `EXHAUSTION_PATTERNS`' `/out of (?:quota|credits)/i`; the text
+simply never reached the classifier. The adapter now reads `errors[]`
+(`grokResultErrorText` in `stream.ts`), and the fatal
+`{"type":"error","message":…}` shape forwards its `message_text` onto the
+synthesized result instead of naming only the exit code. Capture vendored at
+`__fixtures__/rate-limited-429-grok-4.5.ndjson`.
+
+#### What the CLI does to the service's words, measured
+
+Six bodies through the same recorder, one variable each (2026-08-23, CLI
+1.0.1). The transform matters because it decides what the matcher sees:
+
+| Service response | `result.errors[0]` |
+|---|---|
+| `429` `{"code":"Out of credits","error":"…"}` | `Out of credits: …` |
+| `429` `{"error":"usage balance exhausted"}` | `usage balance exhausted` |
+| `429` `{"code":"usage limit reached","error":"You've reached your SuperGrok usage limit. It resets at …"}` | `usage limit reached: You've reached your SuperGrok usage limit. It resets at …` |
+| `429` `{"error":{"message":"usage limit reached","type":"rate_limit_error"}}` | `rate_limit_error: usage limit reached` |
+| `429` non-JSON body | `Request failed (HTTP 429).` — **the service's text is dropped** |
+| `402` `{"code":"spending limit","error":"…"}` | `Internal error: {"message":"API error (status 402 Payment Required): spending limit: …","http_status":402}` |
+
+Four things follow.
+
+**The vendor's wording reaches ShipIt verbatim** on any JSON body — the CLI
+joins `code`/`type` and `message`/`error` with `": "` and adds nothing. So a
+real SuperGrok notice will arrive as xAI wrote it, and the matcher is the only
+thing standing between it and a benched account.
+
+**A 429 is retried for ~120 s** before the CLI gives up (two attempts a minute
+apart, visible as `duration_ms: 120014` in every 429 row). A 402 fails in
+16 ms. A quota-refused Grok turn therefore takes two minutes to report.
+
+**A 429 does not carry its status in the message**, where other 4xx do
+(`http_status: 402`). So the non-JSON 429 degrades to `Request failed (HTTP
+429).`, which names no cause. Deliberately still unmatched: a bare 429 is also
+how short-term throttling arrives, and `EXHAUSTION_PATTERNS`' docstring
+excludes it for exactly that reason.
+
+**The channel question (planning#453 item 3) is now answered by probe, not by
+reading.** A Grok quota refusal arrives on the **error** channel: the CLI ends
+the turn `is_error: true` with no assistant text at all, so `turnSummary` is
+empty and `detectHardExhaustionInTurnText` is never reached. The anchored text
+matcher is not the one to widen for this harness.
+
+### `agent_rate_limits`: probed, and not available from this wire
+
+Grok emits no window telemetry, so the badge cannot be fed from the stream the
+way Claude's `rate_limit_event` and Codex's `account/rateLimits/updated` feed
+it. The terminal event carries cost and tokens; no percentage, no window
+length, no reset instant. Corroborated from the binary: the **only** reader of
+a `Retry-After` header anywhere in 1.0.1 is the GCS file uploader
+(`xai-file-utils/src/storage_client.rs`) — the inference client has none, so a
+429's reset time is dropped before the CLI formats anything. The recorder above
+returned `Retry-After: 3600` and `x-ratelimit-*`; none of it reached stdout.
+
+This costs nothing, because `XaiLimitsProvider` already supplies the meter by a
+different route. Recorded in the adapter's own header per docs/266 item 13.
 
 ### Two channels, and they do not share a matcher (planning#453)
 
@@ -1294,7 +1382,7 @@ sites (`agent-listeners.ts` req-7 stamp, `turn-executor.ts` req-14 retry,
 
 | Channel | When | Matcher | How Grok can populate it |
 |---|---|---|---|
-| **Turn error** | `agent_result.error` is set | `detectHardExhaustion` → unanchored `EXHAUSTION_PATTERNS` | A `result` event with `is_error: true` (or a non-success `subtype`). The adapter copies `raw.result` onto `error`. Generic API language (`quota exceeded`, `out of credits`) is in this list. |
+| **Turn error** | `agent_result.error` is set | `detectHardExhaustion` → unanchored `EXHAUSTION_PATTERNS` | A `result` event with `is_error: true` (or a non-success `subtype`). The adapter takes the reason from `errors[]` (`grokResultErrorText`) — **not** from `raw.result`, which an errored event does not carry; see the correction above. Generic API language (`quota exceeded`, `out of credits`) is in this list. |
 | **Conversation text** | there is **no** error | `detectHardExhaustionInTurnText` → anchored `TURN_TEXT_NOTICE_PATTERNS`, ≤ `MAX_LIMIT_NOTICE_CHARS` (240) | The last `agent_assistant` text (`runner.turnSummary`). The error is checked *instead of*, never before-falling-through-to, the text. |
 
 A third site, independent of `agent_result`: `willRetryOnQuotaError`
