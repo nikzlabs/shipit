@@ -430,7 +430,7 @@ ShipIt previews are served on subdomains (`{sessionId}--{port}.<host>`). Tailsca
 
 **Default — sslip.io (zero setup, works today).** The script prints an access URL built from the node's tailnet IP in dash notation, e.g. `http://100-70-78-74.sslip.io`. [sslip.io](https://sslip.io/) is a public wildcard DNS resolver that maps any `<dashed-ip>.sslip.io` name straight back to that IP, so previews resolve at `{sessionId}--{port}.100-70-78-74.sslip.io` with **no tailnet policy edit and no owned domain**. As long as it answers honestly, the connection then rides the WireGuard-encrypted tailnet. HTTP only (there is no wildcard TLS cert for these names). The forwarder listens on port 80 by default so the URL needs no port suffix.
 
-**If port 80 is already taken on the node**, the script says so and moves the forwarder to port 4123 by itself; every URL it prints then carries `:4123`, and the service holding port 80 is left alone. To choose the port yourself, set `SHIPIT_TAILSCALE_PORT` (e.g. `SHIPIT_TAILSCALE_PORT=8080`) — an explicitly chosen port is never moved: if it is taken, the script names what holds it and stops. Either way the script proves the forwarder is really listening before it prints an access URL, because `systemctl status shipit-tailscale-preview` reports `active` even when every bind attempt fails (systemd supervises the retry loop, which stays alive).
+**If port 80 is already taken**, the script says so and moves the forwarder to port 4123 itself; the URL it prints then carries `:4123`, and whatever holds port 80 is left alone. Set `SHIPIT_TAILSCALE_PORT` (e.g. `8080`) to choose the port yourself — a port you chose is never moved: if it is taken, the script names what holds it and stops. Either way it proves the forwarder is really listening before printing a URL, because `systemctl status shipit-tailscale-preview` reports `active` even when every bind attempt fails (systemd supervises the retry loop, which stays alive).
 
 Two caveats with this default:
 
@@ -439,7 +439,7 @@ Two caveats with this default:
 
 #### Optional — a cleaner hostname via native MagicDNS
 
-If you'd rather use the node's native MagicDNS name (`http://<node>.<tailnet>.ts.net`, previews at `{sessionId}--{port}.<node>.<tailnet>.ts.net` — the script prints the actual name) and drop the third-party resolver, grant the node Tailscale's MagicDNS wildcard capability once. After running the script, add the `nodeAttrs` block it prints (with your node's tailnet IP already filled in) to your [tailnet policy file](https://login.tailscale.com/admin/acls):
+If you'd rather use the node's native MagicDNS name (`http://<node>.<tailnet>.ts.net` — the script prints the actual name) and drop the third-party resolver, grant the node Tailscale's MagicDNS wildcard capability once. After running the script, add this `nodeAttrs` block to your [tailnet policy file](https://login.tailscale.com/admin/acls), using the node's tailnet IP:
 
 1. Open the [Access controls page](https://login.tailscale.com/admin/acls).
 2. Click the **JSON editor** toggle at the top (Tailscale defaults to the Visual editor, which has
@@ -459,8 +459,8 @@ If you'd rather use the node's native MagicDNS name (`http://<node>.<tailnet>.ts
 }
 ```
 
-Replace `<node-tailscale-ip>` with the VPS's `100.x.y.z` tailnet IP (the script prints it pre-filled;
-a `tag:` target works too and survives the node's IP changing). The same grant is also reachable in
+Replace `<node-tailscale-ip>` with the VPS's `100.x.y.z` tailnet IP — `tailscale ip -4` on the node
+prints it (a `tag:` target works too, and survives the node's IP changing). The same grant is also reachable in
 the Visual editor under **Definitions → Node attributes**, but the JSON editor is the direct
 paste-it-in path.
 
