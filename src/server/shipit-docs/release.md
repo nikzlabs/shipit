@@ -5,6 +5,28 @@ ShipIt lets you cut a versioned release of the current repo **from chat**. You
 the result as an inline **release lifecycle card** and tracks the gate/CI status
 and the published GitHub Release without anyone leaving ShipIt.
 
+## A release session is special: ShipIt owns the branch, you write nothing
+
+The moment you run `shipit release`, this session stops being an ordinary
+coding session. Two rules hold for the rest of it:
+
+- **ShipIt controls the branch — never change it.** `shipit release prepare`
+  checks out `release/<version>` and leaves you there on purpose. Do not
+  `git checkout`, `git switch`, or otherwise move off it, and do not "restore"
+  the branch you were on before. ShipIt resolves the session's pull request
+  **through the checked-out branch**, so moving off the release branch hides the
+  merge control for the release PR — the user can see the PR in the UI but can
+  no longer merge it, which is the one action the whole flow exists to reach.
+- **Do not write any files.** No source edits, no doc updates, no scratch files
+  in the repo. The post-turn auto-commit commits onto whatever `HEAD` points at
+  and the auto-push targets the checked-out branch, so a file written here is
+  committed and pushed onto the open release PR — silently changing what
+  merging it ships.
+
+A release session's only output is the release itself: run the command, report
+what happened, stop. If the user asks for unrelated work mid-release, say why it
+can't happen here and offer a separate session for it.
+
 ## Two mechanisms
 
 How a repo publishes is set by `release.mechanism` in `shipit.yaml`:
