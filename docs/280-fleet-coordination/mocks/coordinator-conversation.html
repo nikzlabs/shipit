@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coordinator mode — desktop conversation (mock)</title>
+<style>
+  /* Self-contained mock. Token values copied from src/client/themes/{dark,light}.css (2026-08-23). */
+  .dark {
+    --bg-primary:#030712; --bg-secondary:#111827; --bg-tertiary:#1f2937; --bg-elevated:#1f2937;
+    --bg-hover:rgba(255,255,255,.05); --bg-active:rgba(255,255,255,.1);
+    --text-primary:#f3f4f6; --text-secondary:#9ca3af; --text-tertiary:#6b7280; --text-inverse:#030712; --text-link:#60a5fa;
+    --border-primary:#212c3b; --border-secondary:#374151;
+    --accent:#3b82f6; --accent-text:#ffffff; --accent-subtle:rgba(59,130,246,.15);
+    --success:#22c55e; --success-subtle:rgba(34,197,94,.15);
+    --error:#ef4444; --error-subtle:rgba(239,68,68,.15);
+    --warning:#f59e0b; --warning-subtle:rgba(245,158,11,.15);
+    --info:#60a5fa; --info-subtle:rgba(96,165,250,.15);
+    --pr:#a78bfa; --attention:#f59e0b; --attention-text:#f59e0b;
+  }
+  .light {
+    --bg-primary:#ffffff; --bg-secondary:#f9fafb; --bg-tertiary:#f3f4f6; --bg-elevated:#ffffff;
+    --bg-hover:rgba(0,0,0,.04); --bg-active:rgba(0,0,0,.08);
+    --text-primary:#111827; --text-secondary:#4b5563; --text-tertiary:#9ca3af; --text-inverse:#ffffff; --text-link:#2563eb;
+    --border-primary:#dfe1e6; --border-secondary:#d1d5db;
+    --accent:#2563eb; --accent-text:#ffffff; --accent-subtle:rgba(37,99,235,.1);
+    --success:#16a34a; --success-subtle:rgba(22,163,74,.1);
+    --error:#dc2626; --error-subtle:rgba(220,38,38,.1);
+    --warning:#d97706; --warning-subtle:rgba(217,119,6,.1);
+    --info:#2563eb; --info-subtle:rgba(37,99,235,.1);
+    --pr:#7c3aed; --attention:#d97706; --attention-text:#b45309;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
+  body {
+    font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg-primary); color:var(--text-primary);
+  }
+  .app { display:flex; height:100vh; min-height:640px; }
+
+  /* ---------- sidebar (today's sidebar + the pinned coordinator destination) ---------- */
+  .sidebar { width:264px; flex:none; background:var(--bg-secondary); border-right:1px solid var(--border-primary);
+             display:flex; flex-direction:column; overflow-y:auto; }
+  .side-head { padding:12px 14px; font-weight:600; font-size:13px; color:var(--text-secondary);
+               display:flex; align-items:center; gap:8px; }
+  .coord-pin { margin:4px 8px 10px; padding:10px 12px; border-radius:8px; background:var(--accent-subtle);
+               border:1px solid var(--border-primary); display:flex; align-items:center; gap:10px; cursor:default; }
+  .coord-pin .dot { width:8px; height:8px; border-radius:50%; background:var(--success); flex:none; }
+  .coord-pin b { font-size:13px; }
+  .coord-pin small { display:block; color:var(--text-secondary); font-size:11px; }
+  .group { padding:10px 14px 2px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-tertiary); }
+  .sess { display:flex; align-items:center; gap:8px; padding:6px 14px; font-size:13px; color:var(--text-secondary); }
+  .sess:hover { background:var(--bg-hover); }
+  .sess .att { width:6px; height:6px; border-radius:50%; background:var(--attention); flex:none; }
+  .sess .ok  { width:6px; height:6px; border-radius:50%; background:var(--success); opacity:.55; flex:none; }
+  .sess .run { width:6px; height:6px; border-radius:50%; background:var(--info); flex:none; }
+  .sess span.t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  /* ---------- main column ---------- */
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .topbar { display:flex; align-items:center; gap:12px; padding:10px 16px;
+            border-bottom:1px solid var(--border-primary); background:var(--bg-primary); }
+  .topbar h1 { font-size:15px; font-weight:600; }
+  .presence { display:flex; align-items:center; gap:8px; margin-left:auto; }
+  .chip { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px;
+          border:1px solid var(--border-primary); font-size:12px; color:var(--text-secondary); background:var(--bg-secondary); }
+  .chip .st { width:7px; height:7px; border-radius:50%; }
+  .chip.free .st { background:var(--success); }
+  .toggle { display:inline-flex; align-items:center; gap:7px; padding:4px 10px; border-radius:999px; font-size:12px;
+            border:1px solid var(--border-primary); color:var(--text-secondary); background:var(--bg-secondary); cursor:default; }
+  .toggle .sw { width:26px; height:15px; border-radius:999px; background:var(--border-secondary); position:relative; }
+  .toggle .sw::after { content:""; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%;
+                       background:var(--bg-primary); }
+  .avail { font-size:12px; color:var(--text-tertiary); }
+
+  /* ---------- transcript ---------- */
+  .scroll { flex:1; overflow-y:auto; padding:20px 0 12px; }
+  .col { max-width:760px; margin:0 auto; padding:0 20px; display:flex; flex-direction:column; gap:14px; }
+  .daysep { text-align:center; font-size:11px; color:var(--text-tertiary); }
+
+  .row { position:relative; }
+  .user { margin-left:auto; max-width:78%; background:var(--accent-subtle);
+          border:1px solid var(--border-primary); border-radius:12px 12px 4px 12px; padding:9px 13px; }
+  .user .via { display:flex; gap:6px; align-items:center; font-size:11px; color:var(--text-tertiary); margin-bottom:3px; }
+  .mic { display:inline-block; width:10px; height:10px; border-radius:3px 3px 5px 5px; border:1.5px solid currentColor; position:relative; }
+  .coord { max-width:86%; padding:2px 0; }
+  .coord .who { font-size:11px; color:var(--text-tertiary); margin-bottom:3px; }
+  .coord .body { color:var(--text-primary); }
+  .coord .body p + p { margin-top:8px; }
+
+  /* thin relay line (plan §4: destination, the user's words, receipt) */
+  .relay { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-secondary);
+           padding:5px 12px; border-left:2px solid var(--border-secondary); }
+  .relay .arrow { color:var(--text-tertiary); }
+  .relay .dest { color:var(--text-primary); font-weight:500; }
+  .relay .rc { margin-left:auto; font-size:11px; color:var(--success); white-space:nowrap; }
+  .relay .rc.res { color:var(--pr); }
+
+  /* verbatim frame: visually distinct, untrusted, attributed, collapsed when long */
+  .verb { border:1px dashed var(--border-secondary); border-radius:10px; background:var(--bg-secondary); overflow:hidden; }
+  .verb .head { display:flex; align-items:center; gap:8px; padding:7px 12px; font-size:12px; color:var(--text-secondary); }
+  .verb .src { font-weight:600; color:var(--text-primary); }
+  .verb .untr { font-size:10px; padding:1px 7px; border-radius:999px; background:var(--warning-subtle); color:var(--attention-text); }
+  .verb .open { margin-left:auto; color:var(--text-link); font-size:11px; text-decoration:none; white-space:nowrap; }
+  .verb .fold { border-top:1px solid var(--border-primary); padding:6px 12px; font-size:12px; color:var(--text-tertiary); cursor:pointer; }
+  .verb .fold:hover { background:var(--bg-hover); }
+  .verb .excerpt { border-top:1px solid var(--border-primary); padding:8px 12px;
+                   font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--text-secondary);
+                   white-space:pre; overflow-x:auto; display:none; }
+  .verb.open .excerpt { display:block; }
+  .clarif { font-size:11px; color:var(--text-tertiary); padding:2px 12px 0; }
+  .clarif b { color:var(--text-secondary); font-weight:500; }
+
+  /* spawn receipts */
+  .receipts { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .rcpt { font-size:11px; padding:3px 9px; border-radius:6px; background:var(--bg-tertiary);
+          border:1px solid var(--border-primary); color:var(--text-secondary); }
+  .rcpt b { color:var(--text-primary); font-weight:500; }
+  .rcpt .tick { color:var(--success); }
+
+  /* composer */
+  .composer { border-top:1px solid var(--border-primary); background:var(--bg-primary); }
+  .composer .inner { max-width:760px; margin:0 auto; padding:12px 20px 14px; }
+  .box { display:flex; align-items:center; gap:10px; border:1px solid var(--border-secondary); border-radius:10px;
+         background:var(--bg-secondary); padding:10px 12px; }
+  .box .ph { color:var(--text-tertiary); flex:1; }
+  .micbtn { display:flex; align-items:center; gap:7px; padding:5px 11px; border-radius:8px;
+            background:var(--accent); color:var(--accent-text); font-size:12px; font-weight:500; }
+  .kbd { font:11px ui-monospace,monospace; border:1px solid var(--border-secondary); border-bottom-width:2px;
+         border-radius:4px; padding:0 5px; color:var(--text-secondary); background:var(--bg-tertiary); }
+  .hint { font-size:11px; color:var(--text-tertiary); margin-top:6px; text-align:right; }
+
+  /* controls (mock-only chrome) */
+  .mockbar { position:fixed; bottom:10px; right:12px; display:flex; gap:8px; z-index:9; }
+  .mockbar button { font-size:11px; padding:4px 10px; border-radius:999px; border:1px solid var(--border-secondary);
+                    background:var(--bg-elevated); color:var(--text-secondary); cursor:pointer; }
+  .mockbar button[aria-pressed="true"] { background:var(--accent-subtle); color:var(--text-primary); }
+
+  /* requirement pins (hidden unless notes mode) */
+  .pin { display:none; position:absolute; top:-7px; right:-6px; font-size:10px; padding:1px 7px; border-radius:999px;
+         background:var(--info-subtle); color:var(--info); border:1px solid var(--border-primary); white-space:nowrap; }
+  .notes .pin { display:inline-block; }
+  .pin.left { right:auto; left:-6px; }
+  .legend { display:none; max-width:760px; margin:0 auto 6px; padding:8px 20px; font-size:11px; color:var(--text-tertiary); }
+  .notes .legend { display:block; }
+</style>
+</head>
+<body>
+<div class="mockbar">
+  <button id="notesBtn" aria-pressed="false" onclick="document.body.classList.toggle('notes');this.setAttribute('aria-pressed',document.body.classList.contains('notes'))">Show req notes</button>
+  <button onclick="const h=document.documentElement;h.classList.toggle('dark');h.classList.toggle('light')">Light / dark</button>
+</div>
+
+<div class="app">
+  <!-- Sidebar: today's sidebar, unchanged, plus the pinned coordinator destination (plan §2 chrome). No queue rail — deliberately (round-3 ruling). -->
+  <aside class="sidebar">
+    <div class="side-head">ShipIt</div>
+    <div class="coord-pin" style="position:relative">
+      <span class="dot"></span>
+      <span><b>Coordinator</b><small>free · hands-free off</small></span>
+      <span class="pin">plan §2 · pinned destination</span>
+    </div>
+    <div class="group">Reef Quest</div>
+    <div class="sess"><span class="att"></span><span class="t">Water reflections — shader pass</span></div>
+    <div class="sess"><span class="run"></span><span class="t">Character generation #6–10</span></div>
+    <div class="sess"><span class="ok"></span><span class="t">Level generator — caves</span></div>
+    <div class="group">shipit</div>
+    <div class="sess"><span class="ok"></span><span class="t">Release 0.9 — merged</span></div>
+    <div class="sess"><span class="run"></span><span class="t">Voice-note latency probe</span></div>
+    <div class="group">hermes-tools</div>
+    <div class="sess"><span class="ok"></span><span class="t">Webhook bridge cleanup</span></div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <h1>Coordinator</h1>
+      <div class="presence" style="position:relative">
+        <span class="chip free"><span class="st"></span>Free</span>
+        <span class="toggle"><span>Hands-free</span><span class="sw"></span></span>
+        <span class="avail">Availability: Auto ▾</span>
+        <span class="pin left">reqs 11 · 23 · 33</span>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <div class="legend">Req-note pins map each element to the requirement it demonstrates. They are mock chrome, not UI.</div>
+      <div class="col">
+        <div class="daysep">Saturday, August 23</div>
+
+        <div class="row user">
+          <div class="via"><span class="mic"></span> dictated · 09:12</div>
+          Morning. What's up?
+        </div>
+
+        <div class="row coord">
+          <span class="pin">req 7 · overview is judgment over a live queue read</span>
+          <div class="who">Coordinator · 09:12</div>
+          <div class="body">
+            <p>Quiet night. <b>Reef Quest</b>: two things need you — <b>water reflections</b> finished the shader pass and has a question, and the level-generator run for the caves completed clean. <b>shipit</b>: release 0.9 merged; the latency probe is still running, nothing waiting. <b>hermes-tools</b> is idle.</p>
+            <p>The reflections question is the one worth your time. Take it now?</p>
+          </div>
+        </div>
+
+        <div class="row user">
+          <div class="via"><span class="mic"></span> dictated · 09:13</div>
+          Yes, go.
+        </div>
+
+        <div class="row coord">
+          <span class="pin">reqs 2 · 6 · 31 — one topic, full context, decision named</span>
+          <div class="who">Coordinator · 09:13</div>
+          <div class="body">
+            <p><b>Water reflections</b> (Reef Quest). The session finished the planar-reflection pass and hit a fork: planar looks correct from every shore angle but doubles draw calls in the harbor scene; screen-space is nearly free but breaks at grazing angles — exactly the shots you flagged last week. It asks which approach to keep for the vertical slice.</p>
+            <p>If you want numbers first, I can have it profile the harbor at both settings before you decide.</p>
+          </div>
+        </div>
+
+        <div class="row user">
+          <div class="via"><span class="mic"></span> dictated · 09:14
+          </div>
+          Have it profile both, then let's decide.
+        </div>
+
+        <div class="row relay">
+          <span class="pin">plan §4 · thin relay line: destination, your words, receipt</span>
+          <span class="arrow">→</span>
+          <span class="dest">Water reflections</span>
+          <span>"Profile the harbor scene at both settings."</span>
+          <span class="rc">✓ queued · turn started</span>
+        </div>
+
+        <div class="row verb" id="verb1">
+          <span class="pin left">req 18 · verbatim, chronological, attributed, collapsed when long</span>
+          <div class="head">
+            <span class="src">Reef Quest / Water reflections</span>
+            <span class="untr">session output — untrusted</span>
+            <span>· reply · 09:31</span>
+            <a class="open" href="#">open session ↗</a>
+          </div>
+          <div class="fold" onclick="document.getElementById('verb1').classList.toggle('open')">▸ 42 lines — profiling table, per-scene timings, two screenshots</div>
+          <div class="excerpt">harbor scene, 1080p, mid-tier target
+  planar:        3.1 ms  (draw calls 2.0×, correct at all angles)
+  screen-space:  1.2 ms  (artifacts at grazing angles, worst at dawn light)
+full table and captures in the session transcript…</div>
+          <div class="clarif"><b>Coordinator asked one clarifying question first</b> (units were missing) — autonomous round-trip 1 of 2, logged with its trigger.</div>
+        </div>
+
+        <div class="row coord">
+          <span class="pin">req 18 · the paraphrase follows; freshest line is the coordinator's</span>
+          <div class="who">Coordinator · 09:32</div>
+          <div class="body">
+            <p>Profiled. Planar costs <b>3.1 ms</b> in the harbor against <b>1.2 ms</b> for screen-space, but planar stays correct at every angle — the screen-space artifacts land exactly in your dawn shots. My read: keep planar for the slice and optimize the draw calls later. Decide now, or park it?</p>
+          </div>
+        </div>
+
+        <div class="row user">
+          <div class="via"><span class="mic"></span> dictated · 09:34</div>
+          Keep planar. Then start ten more character generations, and in parallel have someone investigate the battle mechanics for the kraken boss.
+        </div>
+
+        <div class="row relay">
+          <span class="arrow">→</span>
+          <span class="dest">Water reflections</span>
+          <span>"Keep planar for the slice; optimize draw calls later."</span>
+          <span class="rc res">✓ answered · item resolved</span>
+        </div>
+
+        <div class="row coord">
+          <span class="pin">reqs 8 · 27 — dispatch by voice; every action visible with its trigger</span>
+          <div class="who">Coordinator · 09:34</div>
+          <div class="body">
+            <p>Done. Reflections is settled on planar. I started the new work in Reef Quest:</p>
+            <div class="receipts">
+              <span class="rcpt"><b>Character generation #11–20</b> · 10 sessions <span class="tick">✓</span></span>
+              <span class="rcpt"><b>Kraken boss — battle mechanics</b> · investigation <span class="tick">✓</span></span>
+              <span class="rcpt">trigger: your 09:34 message</span>
+            </div>
+            <p style="margin-top:8px">Everything comes back through me — nothing else needs you right now.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="inner" style="position:relative">
+        <span class="pin left" style="top:2px">req 32 · dictation button + in-window shortcut</span>
+        <div class="box">
+          <span class="ph">Message the coordinator…</span>
+          <span class="kbd">⌥D</span>
+          <span class="micbtn"><span class="mic"></span> Dictate</span>
+        </div>
+        <div class="hint">Same conversation everywhere — desk, phone, hands-free (req 14).</div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
