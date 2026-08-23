@@ -43,11 +43,25 @@
 # Optional environment:
 #   SHIPIT_TAILSCALE_AUTHKEY=tskey-auth-...
 #   SHIPIT_TAILSCALE_PORT=80          # tailnet-facing port for ShipIt (default 80;
-#                                     # set e.g. 4123 to avoid the privileged port)
+#                                     # set e.g. 4123 to avoid the privileged port).
+#                                     # When it is NOT set and port 80 is already
+#                                     # taken on the tailnet IP, this script falls
+#                                     # back to 4123 and says so. When it IS set,
+#                                     # a taken port is an error, not a fallback —
+#                                     # the operator picked that port on purpose.
 set -euo pipefail
+
+# Was the port chosen by the operator, or is it our default? Read BEFORE the
+# default is applied: it decides whether a taken port falls back or fails.
+PORT_EXPLICIT=0
+[ -n "${SHIPIT_TAILSCALE_PORT:-}" ] && PORT_EXPLICIT=1
 
 LISTEN_PORT="${SHIPIT_TAILSCALE_PORT:-80}"
 BACKEND_PORT=4123
+# Where the default port falls back to when port 80 is already taken. 4123 is the
+# orchestrator's own port number, and on a VPS it is published on 127.0.0.1 only
+# (deployment/vps/docker-compose.yml), so the tailnet IP side of it is free.
+FALLBACK_PORT=4123
 FORWARD_WRAPPER="/usr/local/bin/shipit-tailscale-forward.sh"
 FORWARD_UNIT="/etc/systemd/system/shipit-tailscale-preview.service"
 # docs/216 — the forwarder advertises the sslip preview host here; the
@@ -150,6 +164,86 @@ if ! command -v socat &>/dev/null; then
   apt-get install -y -qq socat
 fi
 
+# --- Port preflight: a taken port must never become a silent half-install -----
+# The forwarder binds TS_IP:LISTEN_PORT. When something else already holds that
+# address — most often a web server on 0.0.0.0:80 — socat exits immediately and
+# the supervisor loop below just retries every 10s, forever. Nothing about that
+# looks broken from outside: the systemd unit stays "active" (the loop is what
+# systemd supervises, and it never exits), so without this check the script would
+# print a success banner and an access URL that either refuses the connection or
+# lands on the OTHER service. That is the failure this preflight exists to stop.
+#
+# Test by ATTEMPTING the bind rather than reading `ss` output, because only a bind
+# answers the question that matters: a listener on some other specific IP:80 does
+# not conflict with TS_IP:80, while one on 0.0.0.0:80 does.
+port_is_free() {
+  local ip="$1" port="$2" rc=0
+  timeout 1 socat "TCP-LISTEN:${port},bind=${ip},reuseaddr" /dev/null >/dev/null 2>&1 || rc=$?
+  # 124 = `timeout` killed a socat that was sitting in accept(), i.e. the bind
+  # succeeded and the address is ours to take. Any other code is a failed bind.
+  [ "$rc" -eq 124 ]
+}
+
+# Best-effort "who holds it" for the error message. Never fatal: ss may be absent,
+# and the diagnosis is still correct without the process name.
+describe_port_holder() {
+  local port="$1"
+  command -v ss &>/dev/null || return 0
+  ss -ltnp "sport = :${port}" 2>/dev/null | tail -n +2 | head -n 3 || true
+}
+
+port_taken_error() {
+  local port="$1" holder="$2"
+  echo "" >&2
+  echo "Error: cannot expose ShipIt on ${TS_IP}:${port} — that address is already in use." >&2
+  if [ -n "$holder" ]; then
+    echo "" >&2
+    echo "  Already listening on port ${port}:" >&2
+    printf '      %s\n' "$holder" >&2
+  fi
+  echo "" >&2
+  echo "  ShipIt itself is unaffected and still running on 127.0.0.1:${BACKEND_PORT}" >&2
+  echo "  inside this server; only tailnet access could not be set up." >&2
+  echo "" >&2
+  echo "  Re-run with a free port, for example:" >&2
+  echo "      SHIPIT_TAILSCALE_PORT=8080 bash /opt/shipit/deployment/vps/tailscale.sh" >&2
+  echo "" >&2
+  echo "  The port becomes part of the URL you open (http://<host>:<port>) and of" >&2
+  echo "  the preview URLs, so any free port works." >&2
+  exit 1
+}
+
+echo "==> Checking that ${TS_IP}:${LISTEN_PORT} is free..."
+if ! port_is_free "$TS_IP" "$LISTEN_PORT"; then
+  HOLDER="$(describe_port_holder "$LISTEN_PORT")"
+  # An explicitly chosen port is the operator's decision — report it, never
+  # silently move it. Only our own default 80 falls back.
+  if [ "$PORT_EXPLICIT" = "1" ]; then
+    port_taken_error "$LISTEN_PORT" "$HOLDER"
+  fi
+  if ! port_is_free "$TS_IP" "$FALLBACK_PORT"; then
+    port_taken_error "$LISTEN_PORT" "$HOLDER"
+  fi
+  TAKEN_PORT="$LISTEN_PORT"
+  LISTEN_PORT="$FALLBACK_PORT"
+  echo ""
+  echo "${C_BANNER}===========================================${C_RESET}"
+  echo "${C_BANNER}  Port ${TAKEN_PORT} is taken — using port ${FALLBACK_PORT} instead${C_RESET}"
+  echo "${C_BANNER}===========================================${C_RESET}"
+  echo ""
+  if [ -n "$HOLDER" ]; then
+    echo "  Something else already listens on port ${TAKEN_PORT} on this server:"
+    printf '      %s\n' "$HOLDER"
+    echo ""
+  fi
+  echo "  Tailnet access is set up on port ${FALLBACK_PORT}, so every URL below carries"
+  echo "  ':${FALLBACK_PORT}'. Nothing else changes, and the service on port ${TAKEN_PORT} is left alone."
+  echo ""
+  echo "  To choose the port yourself, re-run with:"
+  echo "      SHIPIT_TAILSCALE_PORT=<port> bash /opt/shipit/deployment/vps/tailscale.sh"
+  echo ""
+fi
+
 # --- Forwarder: supervisor loop, tailnet IP :LISTEN_PORT -> 127.0.0.1:4123 ---
 # docs/216 — a supervisor loop, not a one-shot `exec socat`. It polls the live
 # tailnet IPv4 and, when it changes (or the socat child dies), (1) rewrites the
@@ -235,6 +329,50 @@ EOF
 systemctl daemon-reload
 systemctl enable --now shipit-tailscale-preview.service
 systemctl restart shipit-tailscale-preview.service
+
+# --- Verify the forwarder really bound --------------------------------------
+# The preflight above tests the port a moment BEFORE the forwarder starts, so it
+# cannot see a conflict that appears in between (a service starting at the same
+# time, a socat that fails for some other reason). And `systemctl is-active` can
+# never answer this: systemd supervises the supervisor loop, which stays alive
+# while every bind attempt inside it fails. So prove the listener exists — with
+# `ss` when available (it names the exact address), otherwise by connecting.
+forwarder_is_listening() {
+  if command -v ss &>/dev/null; then
+    ss -ltnH "src = ${TS_IP}:${LISTEN_PORT}" 2>/dev/null | grep -q . && return 0
+    return 1
+  fi
+  timeout 2 bash -c "exec 3<>/dev/tcp/${TS_IP}/${LISTEN_PORT}" 2>/dev/null
+}
+
+echo "==> Verifying the forwarder is listening on ${TS_IP}:${LISTEN_PORT}..."
+FORWARDER_UP=0
+for _ in $(seq 1 15); do
+  if forwarder_is_listening; then
+    FORWARDER_UP=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "$FORWARDER_UP" != "1" ]; then
+  echo "" >&2
+  echo "Error: the tailnet forwarder is not listening on ${TS_IP}:${LISTEN_PORT}." >&2
+  echo "" >&2
+  echo "  'systemctl status shipit-tailscale-preview' will say 'active' regardless —" >&2
+  echo "  it supervises a retry loop that stays alive while the bind keeps failing." >&2
+  echo "  This check, not that one, is the signal." >&2
+  echo "" >&2
+  echo "  Recent forwarder log:" >&2
+  journalctl -u shipit-tailscale-preview -n 15 --no-pager 2>/dev/null | sed 's/^/      /' >&2 || true
+  echo "" >&2
+  echo "  ShipIt itself is unaffected and still running on 127.0.0.1:${BACKEND_PORT}" >&2
+  echo "  inside this server; only tailnet access could not be set up." >&2
+  echo "" >&2
+  echo "  Most often the port is taken. Re-run with a free one:" >&2
+  echo "      SHIPIT_TAILSCALE_PORT=8080 bash /opt/shipit/deployment/vps/tailscale.sh" >&2
+  exit 1
+fi
 
 # --- Output -----------------------------------------------------------------
 # Default preview path: sslip.io wildcard DNS. sslip.io is a public resolver

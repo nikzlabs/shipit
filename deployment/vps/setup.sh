@@ -1025,8 +1025,17 @@ if [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   bash /opt/shipit/deployment/vps/cloudflare.sh
 fi
 
+TAILSCALE_FAILED=false
 if [ "$INSTALL_TAILSCALE" = "true" ]; then
-  bash /opt/shipit/deployment/vps/tailscale.sh
+  # Do not let a failed access step abort the whole install under `set -e`:
+  # ShipIt is already built and running by this point, so aborting here would
+  # replace the summary — the one place that says what DID work and what to do
+  # next — with a bare non-zero exit. tailscale.sh prints its own diagnosis
+  # (a taken port is the common one); the summary below repeats the headline so
+  # it is not scrolled past.
+  if ! bash /opt/shipit/deployment/vps/tailscale.sh; then
+    TAILSCALE_FAILED=true
+  fi
 fi
 
 if [ -f "$CONFIG_FILE" ]; then
@@ -1042,8 +1051,13 @@ echo ""
 if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   echo "  Cloudflare URL: https://$DOMAIN"
 fi
-if [ "$INSTALL_TAILSCALE" = "true" ]; then
+if [ "$INSTALL_TAILSCALE" = "true" ] && [ "$TAILSCALE_FAILED" != "true" ]; then
   echo "  Tailscale access is configured."
+fi
+if [ "$TAILSCALE_FAILED" = "true" ]; then
+  echo "  Tailscale access FAILED to set up — see the error above for the cause."
+  echo "  ShipIt is running on localhost inside the VPS: http://127.0.0.1:4123"
+  echo "  Fix the cause and re-run: bash /opt/shipit/deployment/vps/tailscale.sh"
 fi
 if [ "$INSTALL_CLOUDFLARE" != "true" ] && [ "$INSTALL_TAILSCALE" != "true" ]; then
   echo "  ShipIt is running on localhost inside the VPS: http://127.0.0.1:4123"
@@ -1065,6 +1079,8 @@ echo ""
 echo "  Next steps:"
 if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   echo "    1. Open https://$DOMAIN in your browser"
+elif [ "$TAILSCALE_FAILED" = "true" ]; then
+  echo "    1. Fix the Tailscale error above, then re-run tailscale.sh"
 elif [ "$INSTALL_TAILSCALE" = "true" ]; then
   echo "    1. Open the Tailscale URL printed above by tailscale.sh"
 else
