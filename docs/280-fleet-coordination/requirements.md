@@ -9,7 +9,7 @@ description: One voice channel, mediated by a coordinating agent, to review and 
 Requirements as stated by the user (Nik), captured 2026-08-23 from a voice-dictated design conversation. Statements are what the feature must do — never how.
 
 1. The user must not need to scan or click through the session list to find work that needs them. ShipIt tells them what needs attention.
-2. Each attention item tells what happened, gives a short summary, and names the decision needed. In the coordinator's conversation and its queue, what the user deals with is always the coordinator's presentation: verbatim session output never appears there — it works at the level between the agent and the sessions.
+2. Each attention item tells what happened, gives a short summary, and names the decision needed. In the coordinator-managed queue and in each item as the coordinator presents it, what the user deals with is always the coordinator's presentation: verbatim session output never appears there — it works at the level between the agent and the sessions, and enters the conversation only as req 18's reference copies in the transcript.
 3. The workflow works by voice, away from the screen, as one conversation that covers every session in every repository.
 4. Items wait for the user. The user reviews when they have time; responding at arrival time is never required.
 5. The user can hear what needs attention and give feedback by voice, item by item.
