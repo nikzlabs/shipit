@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { AutoMergeManager } from "./auto-merge-manager.js";
+import { logMergeObserved, resetMergeAttribution } from "./services/merge-attribution.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type {
@@ -566,6 +567,29 @@ describe("AutoMergeManager.handleManaged", () => {
           "[auto-merge] Merged PR #42 (o/r) for s1 via managed merge (squash, reason=session-live)",
         ]);
         expect(merged[0]).toMatch(/Merged PR #\d+ \(\S+\/\S+\) for \S+ via /);
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    // The wiring, not just the line. The manager notes its merge into the shared
+    // memory so the poller's terminal observation stays quiet about it — and
+    // that call is invisible to every assertion above, so without this case
+    // deleting it would leave the whole suite green and put a contradictory
+    // "no ShipIt path recorded" line in the log for a merge ShipIt performed.
+    it("silences the poller's observation of the merge it just performed", async () => {
+      resetMergeAttribution();
+      const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+      try {
+        const { manager } = makeManager();
+        manager.setEnabled("s1", true);
+        manager.setManaged("s1", true);
+
+        await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+        logMergeObserved({ owner: "o", repo: "r", prNumber: 42, sessionId: "s1" });
+
+        expect(log.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("no ShipIt path recorded")))
+          .toEqual([]);
       } finally {
         log.mockRestore();
       }

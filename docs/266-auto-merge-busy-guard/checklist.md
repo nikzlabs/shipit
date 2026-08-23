@@ -28,3 +28,5 @@
 - [x] `sessionId` required on both service merge functions, so a path that cannot name a session does not compile
 - [x] Tests pinning all four lines, the silence rule, the bound, and the shared family pattern
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`
+- [x] Independent review against the constraints and req 7
+- [x] Review findings applied: lowercase the key (a remote whose casing differs from GitHub's canonical name missed on every merge); reword the observed line so it states its own bound instead of asserting "outside ShipIt"; emit it before the terminal persist so a crash cannot suppress it forever; type `method` closed at the formatter; test the manager's note wiring and assert the re-track really re-verified

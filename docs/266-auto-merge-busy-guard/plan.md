@@ -174,7 +174,7 @@ grep finds:
 | Managed loop (`auto-merge-manager.ts`) | `[auto-merge] Merged PR #N (owner/repo) for <session> via managed merge (squash, reason=…)` |
 | UI merge button (`POST /api/sessions/:id/pr/merge`) | `[pr] Merged PR #N (owner/repo) for <session> via the ShipIt merge button (squash)` |
 | Agent's `gh pr merge` (`POST /api/sessions/:id/pr/:number/merge`, docs/224) | `[pr] Merged PR #N (owner/repo) for <session> via gh pr merge (squash)` |
-| Merged outside ShipIt (web UI, a laptop, native auto-merge GitHub ran itself) | `[pr-poller] Merged PR #N (owner/repo) for <session> via a merge outside ShipIt (observed, not performed by this orchestrator)` |
+| Merged outside ShipIt (web UI, a laptop, native auto-merge GitHub ran itself) | `[pr-poller] Merged PR #N (owner/repo) for <session> via a merge no ShipIt path recorded (observed, not performed by this orchestrator process)` |
 
 Three things decide the shape.
 
@@ -193,17 +193,48 @@ inference from silence.
 **That observation must not contradict the other three.** A merge ShipIt
 performs is observed here seconds later, so `services/merge-attribution.ts`
 keeps a bounded, per-process set of the PRs this orchestrator merged
-(`owner/repo#number`, FIFO-evicted at 256) and the observation is silent for
-one of them. The set is deliberately not persisted: its only reader runs within
-seconds of the write, and a restart inside that window degrades to reporting a
-ShipIt merge as an outside one — a log being a record rather than a proof.
+(`owner/repo#number` lowercased, FIFO-evicted at 256) and the observation is
+silent for one of them.
+
+The key is **lowercased** because the two sides resolve the repository
+differently and GitHub treats the two forms as one: a performed merge parses the
+remote URL the user configured (`resolveGitHubRemote`), while the poller
+switches to GitHub's canonical `nameWithOwner` (`canonicalApiTarget`, added for
+transferred repos). Without the normalization a remote whose casing differs from
+GitHub's own would miss on **every** merge, so every ShipIt merge would also be
+reported as one ShipIt did not perform. Found in review.
+
+**The observed line states its own bound rather than over-claiming.** Three
+cases leave the set without an entry for a merge ShipIt did perform: an
+orchestrator restart between the two (the set is per-process), a poll already in
+flight observing the merge before the merge call's continuation records it, and
+a repository renamed in between. So the line does not say "nobody in ShipIt
+merged this" — it says no ShipIt path in this orchestrator process *recorded*
+merging it, which is exactly what is known. That is still the positive record
+req 7 asked for: it separates a merge ShipIt performed from one it did not, and
+names its bound instead of overstating. Persisting the set would close the
+restart case and neither of the other two, for a durable write on every merge.
+
+**The observation is emitted before the terminal state is persisted.**
+`alreadyTerminal` is computed from the state that persist overwrites, so a crash
+between the two would restart into `prevState === "merged"` and suppress the
+line forever — the record lost for exactly the merge an incident review came
+looking for. Found in review.
 
 Every field is a ShipIt-controlled token — a session id, a PR number, an
-owner/repo, a merge method, a fixed verb from a closed `MergeVia` union. No PR
+owner/repo, a closed `MergeMethod`, a fixed verb from a closed `MergeVia`. No PR
 title, branch description, or GitHub error string goes in. The `owner/repo`
 field is load-bearing on the sandbox route in a way it is not on the others: a
 sandbox session merges an explicit PR number in a repository that need not be
 its own.
+
+`method` is typed closed at the formatter even though both routes take
+`method?: string` off the request body and cast it unchecked before calling
+GitHub. That cast is pre-existing and deliberately left alone — narrowing it
+would silently turn an invalid method into a `merge`, a behaviour change this
+observability fix has no business making — and it is not a hole in practice,
+since GitHub rejects a method outside the set and no line is written for a
+failed merge.
 
 `sessionId` is a *required* field on both service functions rather than an
 optional one, so a merge path that cannot name a session does not compile.
@@ -228,10 +259,10 @@ optional one, so a merge path that cannot name a session does not compile.
 - `services/github-auto-merge-arming.test.ts` — a live session arms managed, not native, and carries no settings URL or GitHub error; a quiet session still arms native; the GitHub-refused fallback reports `native-unavailable`; the merge button's pending-checks fallback arms managed for a live session and native otherwise.
 - `integration_tests/pr-merge.test.ts` — the UI route 409s during post-turn work, not just mid-turn.
 - `PrStatusControls.test.tsx` — the live-session tooltip explains the wait and offers no settings link; the misconfiguration tooltip is unchanged.
-- `services/merge-attribution.test.ts` — each line's wording; the observation is silent for a merge this process performed (by route log or by the managed loop's bare note); a different PR or a same-numbered PR in another repo is not silenced; the memory is bounded and evicts oldest first; every line matches the one family pattern.
-- `auto-merge-manager.test.ts` — the managed line's own wording, that it matches the same family pattern, and that a failed merge records nothing.
+- `services/merge-attribution.test.ts` — each line's wording; the observation is silent for a merge this process performed (by route log or by the managed loop's bare note); the key matches across the casing difference between a remote URL and GitHub's canonical name (mutation-checked); a different PR or a same-numbered PR in another repo is not silenced; the memory is bounded and evicts oldest first; every line matches the one family pattern.
+- `auto-merge-manager.test.ts` — the managed line's own wording, that it matches the same family pattern, that a failed merge records nothing, and that the manager's merge silences the poller's observation. That last one is the WIRING, not the line: the note is invisible to every other assertion, so without it deleting the call left the whole suite green (mutation-checked).
 - `services/github-agent-merge.test.ts` / `services/github-auto-merge-arming.test.ts` — each route's record names the session, PR, repo and method; neither records an arming, and `gh pr merge` records nothing for an already-merged PR.
-- `pr-status-poller.test.ts` — the outside merge is recorded as observed; nothing is recorded when a ShipIt path performed it, when the PR closed unmerged, or a second time across a re-track.
+- `pr-status-poller.test.ts` — the outside merge is recorded as observed; nothing is recorded when a ShipIt path performed it, when the PR closed unmerged, or a second time across a re-track. The re-track case asserts a second REST verification actually happened, so it cannot pass by proving nothing ran.
 
 The registry fake (`pr-poller-test-helpers.ts`) grew an `agentBusy` that follows
 `running` unless overridden. Without that it could never report the exact state —

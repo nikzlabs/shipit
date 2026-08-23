@@ -1541,7 +1541,7 @@ describe("PrStatusPoller", () => {
         await observeAMerge();
         expect(mergeLines(log)).toEqual([
           "[pr-poller] Merged PR #42 (owner/repo) for s1"
-          + " via a merge outside ShipIt (observed, not performed by this orchestrator)",
+          + " via a merge no ShipIt path recorded (observed, not performed by this orchestrator process)",
         ]);
       } finally {
         log.mockRestore();
@@ -1571,9 +1571,16 @@ describe("PrStatusPoller", () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
       try {
         await observeAMerge();
+        const verifiesAfterMerge =
+          (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mock.calls.length;
+
         poller.trackSession("s1", "https://github.com/owner/repo");
         await vi.advanceTimersByTimeAsync(0);
 
+        // The re-track really did re-enter the terminal branch — otherwise this
+        // case would pass for the wrong reason, proving only that nothing ran.
+        expect((githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mock.calls.length)
+          .toBeGreaterThan(verifiesAfterMerge);
         expect(mergeLines(log)).toHaveLength(1);
       } finally {
         log.mockRestore();

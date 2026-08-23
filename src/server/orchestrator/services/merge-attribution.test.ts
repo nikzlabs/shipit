@@ -69,7 +69,7 @@ describe("merge attribution", () => {
       logMergeObserved({ owner: "o", repo: "r", prNumber: 9, sessionId: "s3" });
       expect(c.lines()).toEqual([
         "[pr-poller] Merged PR #9 (o/r) for s3"
-        + " via a merge outside ShipIt (observed, not performed by this orchestrator)",
+        + " via a merge no ShipIt path recorded (observed, not performed by this orchestrator process)",
       ]);
     } finally {
       c.restore();
@@ -88,7 +88,7 @@ describe("merge attribution", () => {
       });
       logMergeObserved({ owner: "o", repo: "r", prNumber: 7, sessionId: "s1" });
 
-      expect(c.lines().filter((l) => l.includes("outside ShipIt"))).toEqual([]);
+      expect(c.lines().filter((l) => l.includes("no ShipIt path recorded"))).toEqual([]);
       expect(c.lines()).toHaveLength(1);
     } finally {
       c.restore();
@@ -102,6 +102,23 @@ describe("merge attribution", () => {
     try {
       noteMergePerformed("o", "r", 42);
       logMergeObserved({ owner: "o", repo: "r", prNumber: 42, sessionId: "s1" });
+
+      expect(c.lines()).toEqual([]);
+    } finally {
+      c.restore();
+    }
+  });
+
+  // The two sides resolve owner/repo differently — a performed merge parses the
+  // remote URL the user configured, the poller uses GitHub's canonical
+  // `nameWithOwner` — and GitHub treats the two case-insensitively. Without the
+  // normalization a remote whose casing differs from GitHub's own misses on
+  // EVERY merge, so every ShipIt merge would also be reported as an outside one.
+  it("matches across the casing difference between a remote URL and GitHub's canonical name", () => {
+    const c = capture();
+    try {
+      noteMergePerformed("NikZLabs", "ShipIt", 42);
+      logMergeObserved({ owner: "nikzlabs", repo: "shipit", prNumber: 42, sessionId: "s1" });
 
       expect(c.lines()).toEqual([]);
     } finally {

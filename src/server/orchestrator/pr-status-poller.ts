@@ -1376,6 +1376,23 @@ export class PrStatusPoller {
       || prevState === "merged"
       || prevState === "closed";
 
+    // docs/266 req 7 — attribute the merges nothing local performed: the GitHub
+    // web UI, a laptop, or native auto-merge GitHub executed on its own. Nothing
+    // in ShipIt runs those, so the record has to come from the observer. Silent
+    // when this process performed the merge itself (the merge routes and the
+    // managed loop each log their own line), so the two never contradict.
+    // `verifyMissingPr` is the only terminal-promotion site and `!alreadyTerminal`
+    // the fire-once edge, so this is once per real merge, not once per re-track.
+    //
+    // Emitted HERE, ahead of the persist below, and not down with the other
+    // merge side effects. `alreadyTerminal` is computed from the state that
+    // persist overwrites, so a crash between the two would restart into
+    // `prevState === "merged"` and suppress this line forever — the record lost
+    // for exactly the merge an incident review came looking for.
+    if (isMerged && !alreadyTerminal) {
+      logMergeObserved({ owner, repo, prNumber: pr.number, sessionId });
+    }
+
     // Terminal state — merged or closed-without-merge. Build a summary
     // mirroring the previous catchUpProbe shape (placeholder checks /
     // mergeable, since REST doesn't give us a rollup and the PR is now
@@ -1475,15 +1492,6 @@ export class PrStatusPoller {
     }
 
     if (isMerged && !alreadyTerminal) {
-      // docs/266 req 7 — attribute the merges nothing local performed: the
-      // GitHub web UI, a laptop, or native auto-merge GitHub executed on its
-      // own. Nothing in ShipIt runs those, so the record has to come from the
-      // observer. Silent when this process performed the merge itself (the
-      // merge routes and the managed loop each log their own line), so the
-      // line's claim of an outside actor is never a contradiction. `verifyMissingPr`
-      // is the only terminal-promotion site, and `!alreadyTerminal` is the
-      // fire-once edge — so this is once per real merge, not once per re-track.
-      logMergeObserved({ owner, repo, prNumber: pr.number, sessionId });
       // docs/218 — record the merged PR's head-branch tip as the session's
       // auto-reset safety anchor, BEFORE the merge side effects (archive,
       // issue-lifecycle close, notify-on-merge) fire. We deliberately store the
