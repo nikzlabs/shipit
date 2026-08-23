@@ -507,6 +507,40 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
     );
   });
 
+  it("keeps the revealed parameters in the session where they were requested", async () => {
+    const renderSession = (sessionId: string) => (
+      <MessageInput
+        onSend={vi.fn()}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession
+        focusKey={sessionId}
+        sessionId={sessionId}
+        sessionRoleName="deep dive"
+        roleLocked
+      />
+    );
+    const { rerender } = render(renderSession("session-a"));
+
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+
+    rerender(renderSession("session-b"));
+    expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
+    expect(screen.queryByTestId("model-trigger")).toBeNull();
+    expect(screen.queryByTestId("reasoning-trigger")).toBeNull();
+
+    rerender(renderSession("session-a"));
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+    expect(screen.getByTestId("reasoning-trigger")).toBeInTheDocument();
+  });
+
   it("offers no OTHER role while it is open (req 4)", async () => {
     // req 4 is unchanged: what loosened is what the lock reaches, not the lock.
     // The menu exists, and there is nothing in it but the parameters.
@@ -522,6 +556,49 @@ describe("a locked role keeps the ROUTE to the parameters (docs/272 reqs 4, 5, 1
     await userEvent.click(screen.getByTestId("role-adjust-parameters"));
     await userEvent.click(screen.getByTestId("role-selector-trigger"));
     expect(screen.queryByTestId("role-selector-menu")).toBeNull();
+  });
+});
+
+describe("role parameter reveal is scoped to one session", () => {
+  const TRIAGE = pinnedRole({ name: "triage" });
+
+  beforeEach(() => {
+    setRoles([DEEP_DIVE, TRIAGE]);
+  });
+
+  it("folds a fresh role pick without clearing another session's reveal", async () => {
+    const onRoleChange = vi.fn();
+    const renderSession = (sessionId: string, sessionRoleName: string) => (
+      <MessageInput
+        onSend={vi.fn()}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={onRoleChange}
+        hasActiveSession
+        focusKey={sessionId}
+        sessionId={sessionId}
+        sessionRoleName={sessionRoleName}
+      />
+    );
+    const { rerender } = render(renderSession("session-a", "deep dive"));
+
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
+
+    rerender(renderSession("session-b", "deep dive"));
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-option-triage"));
+    expect(onRoleChange).toHaveBeenLastCalledWith("triage");
+    rerender(renderSession("session-b", "triage"));
+    expect(screen.queryByTestId("model-trigger")).toBeNull();
+
+    rerender(renderSession("session-a", "deep dive"));
+    expect(screen.getByTestId("model-trigger")).toBeInTheDocument();
   });
 });
 
