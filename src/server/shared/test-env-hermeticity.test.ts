@@ -1,5 +1,5 @@
 /**
- * The pin for `server-test-setup.ts`'s credential strip.
+ * The pin for `server-test-setup.ts`'s ambient environment strips.
  *
  * A ShipIt session container materializes the user's real credentials into the
  * agent's `process.env` — a catalogue `storageEnv` per credential group, plus a
@@ -47,6 +47,13 @@ describe("server test environment is hermetic", () => {
       n.startsWith(CREDENTIAL_ROUTE_ENV_PREFIX),
     );
     expect(leaked, `${CREDENTIAL_ROUTE_ENV_PREFIX}* leaked into a server test`).toEqual([]);
+  });
+
+  it("strips inherited sub-agent depth", () => {
+    expect(
+      process.env.SHIPIT_AGENT_DEPTH,
+      "SHIPIT_AGENT_DEPTH leaked into a server test, so primary-agent fixtures run as nested agents",
+    ).toBeUndefined();
   });
 
   /**

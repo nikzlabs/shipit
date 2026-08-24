@@ -44,13 +44,14 @@ export default defineConfig({
           // the suite is green whether or not the strip runs at all, which is
           // the CI-invisibility that let the divergence exist.
           //
-          // Deliberately a real catalogue `storageEnv` and a real
-          // `SHIPIT_CREDENTIAL_*` name. The marker is not a credential and is
-          // therefore NOT stripped: it is how the pin tells "the strip worked"
-          // apart from "this block was deleted".
+          // Deliberately a real catalogue `storageEnv`, a real
+          // `SHIPIT_CREDENTIAL_*` name, and the depth variable every sub-agent
+          // inherits. The marker is not stripped: it is how the pin tells "the
+          // strip worked" apart from "this block was deleted".
           env: {
             DEEPSEEK_API_KEY: "sk-sentinel-ambient-credential",
             SHIPIT_CREDENTIAL_CRED_SENTINEL: "sk-sentinel-ambient-credential",
+            SHIPIT_AGENT_DEPTH: "7",
             SHIPIT_TEST_AMBIENT_ENV_MARKER: "1",
           },
         },

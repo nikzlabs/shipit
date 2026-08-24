@@ -6,7 +6,7 @@
  * behind the real remote. This helper fetches the *real* remote in the
  * workspace clone so the branch is cut from the genuine latest commit.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -168,7 +168,17 @@ describe("fetchAndResolveDefaultBranch", () => {
     const c2 = commitFile(remoteDir, "shipit.yaml", "agent:\n  memory: 3072\n", "c2");
     expect(c2).not.toBe(c1);
 
-    const { resetTarget, fetched } = await fetchAndResolveDefaultBranch(cloneDir);
+    // Session containers set both variables. simple-git treats them as unsafe
+    // and refuses to spawn unless this fetch drops them from its child env.
+    vi.stubEnv("PAGER", "cat");
+    vi.stubEnv("GIT_PAGER", "cat");
+    let result: Awaited<ReturnType<typeof fetchAndResolveDefaultBranch>>;
+    try {
+      result = await fetchAndResolveDefaultBranch(cloneDir);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const { resetTarget, fetched } = result;
 
     expect(fetched).toBe(true);
     // resetTarget is `rev-parse origin/HEAD` — must be the NEW commit.
