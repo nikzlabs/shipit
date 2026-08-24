@@ -151,6 +151,8 @@ describe("applyLocalMcp", () => {
   });
 
   it("applies `runtimeEnv` for the spawn only (Codex env indirection)", () => {
+    const toolsBeforeRun = process.env.SHIPIT_MCP_TOOLS;
+    const browsersBeforeRun = process.env.PLAYWRIGHT_BROWSERS_PATH;
     const agent = fakeAgent(
       { runtimeEnv: { SHIPIT_MCP_TOOLS: "present", PLAYWRIGHT_BROWSERS_PATH: "/opt/pb" } },
       ["SHIPIT_MCP_TOOLS", "PLAYWRIGHT_BROWSERS_PATH"],
@@ -161,7 +163,8 @@ describe("applyLocalMcp", () => {
 
     expect(agent.envAtRun.SHIPIT_MCP_TOOLS).toBe("present");
     expect(agent.envAtRun.PLAYWRIGHT_BROWSERS_PATH).toBe("/opt/pb");
-    expect(process.env.SHIPIT_MCP_TOOLS).toBeUndefined();
+    expect(process.env.SHIPIT_MCP_TOOLS).toBe(toolsBeforeRun);
+    expect(process.env.PLAYWRIGHT_BROWSERS_PATH).toBe(browsersBeforeRun);
   });
 
   it("registers the config cleanup on the process's `done` event", () => {

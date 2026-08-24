@@ -4,6 +4,7 @@ import {
   type GitRemoteCredentialResolver,
   credentialledGit,
   resolveTreeRemoteCredential,
+  sanitizeGitEnv,
 } from "../shared/git-remote-credential.js";
 import type { GitManager } from "../shared/git.js";
 
@@ -314,7 +315,10 @@ export async function fetchAndResolveDefaultBranch(
     : await resolveTreeRemoteCredential(workspaceDir, "origin", opts?.resolveRemoteCredential);
   const sg = credential
     ? credentialledGit(workspaceDir, credential, gitOptions)
-    : safeSimpleGit(workspaceDir, gitOptions).env({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
+    : safeSimpleGit(workspaceDir, gitOptions).env({
+      ...sanitizeGitEnv(process.env),
+      GIT_TERMINAL_PROMPT: "0",
+    });
   let fetched = false;
   let authError = false;
   try {

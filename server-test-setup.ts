@@ -120,6 +120,16 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
 Reflect.deleteProperty(process.env, "SHIPIT_WORKER_TOKEN");
 
 /**
+ * A sub-agent process inherits this variable from its parent. CI runners and a
+ * primary local agent do not set it, so tests that rely on the absent-value
+ * default otherwise pass there and fail only when a reviewer runs the suite.
+ *
+ * Strip it before test modules load. A test that exercises nested-agent depth
+ * sets the variable in its own body, after this setup file runs.
+ */
+Reflect.deleteProperty(process.env, "SHIPIT_AGENT_DEPTH");
+
+/**
  * No server test may touch the network through git.
  *
  * Several integration tests drive paths that clone or fetch from a *fake*
