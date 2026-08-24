@@ -229,7 +229,13 @@ than today, not more (req 5).
 nothing else (req 4), so a locked session still shows the role's name in place of the three controls
 — and still reaches those controls the one way they have ever been reached, by asking for them
 inside the role control (req 15). `roleParamsRevealed` is therefore the user's own act and only
-that: `revealedFor === roleInForce`, with no lock clause in it.
+that: the role name must match the reveal entry for the current session ID (with the composer's
+`focusKey` as the session-less fallback), with no lock clause in it. The session scope is
+load-bearing: one mounted composer serves every session, so keying the reveal by the role name
+alone expanded the controls in every session that used the same role. The in-memory scope map
+keeps the look local without turning it into persisted session configuration, and restores it
+only when the user returns to the session where they asked for it while the composer remains
+mounted. A composer remount still folds it, as an unpersisted look should.
 
 **Both halves of that were shipped wrong, in opposite directions, and the second is the reason the
 first is worth reading.** As first shipped, a locked pill had *no menu at all* — "Adjust

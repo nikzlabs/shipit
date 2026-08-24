@@ -26,6 +26,8 @@ Implementation to-do for this branch. See [`plan.md`](./plan.md).
 - [x] A locked role keeps the model and reasoning controls, in both layouts (req 4, second half)
 - [x] …and keeps the ROUTE to them, not the controls themselves: the locked pill opens onto
       "Adjust parameters…" and no roles, and the row stays short until the user asks (reqs 5, 15)
+- [x] Parameter reveal is scoped to the current session, so expanding a role does not expand the
+      same role in other sessions while the composer remains mounted
 
 ## Verification
 

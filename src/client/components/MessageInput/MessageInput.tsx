@@ -239,11 +239,14 @@ export function MessageInput({
   // state: "Adjust parameters…" brings the three controls back beside the name
   // (req 15). The role stays in force until one of them actually moves, and the
   // reveal is deliberately local and unpersisted — it is a look, not a setting.
-  // Keyed off the role name so switching role folds the parameters away again,
-  // which is what stops a revealed row from outliving the decision that opened
-  // it.
+  // It is keyed by both the composer scope and the role name: switching role
+  // folds the parameters away again, while switching sessions cannot carry an
+  // expanded role into another session that happens to use the same role.
+  // Keeping one entry per scope also restores the expanded state if the user
+  // returns to that session while this composer remains mounted.
   const { roles, hasRoles } = useRolePickerState();
-  const [revealedFor, setRevealedFor] = useState<string | undefined>(undefined);
+  const roleRevealScope = sessionId ?? focusKey ?? surface;
+  const [revealedRoleByScope, setRevealedRoleByScope] = useState<Record<string, string>>({});
   // **Before a session is active there is no row to read the role from**, and
   // that is where this was reported broken: on `/{repo}/new` the composer sits
   // on a WARM session, `SessionManager.list()` filters `warm = 0`, so the
@@ -307,7 +310,23 @@ export function MessageInput({
   // OPENS (see `RoleSelector`), and offers the parameters and no role. So the
   // reveal stays what it has always been — the user's own act — and req 5 holds
   // for the whole of a session's life rather than for its first turn.
-  const roleParamsRevealed = !roleInForce || revealedFor === roleInForce;
+  const roleParamsRevealed =
+    !roleInForce || revealedRoleByScope[roleRevealScope] === roleInForce;
+  const revealRoleParameters = () => {
+    if (!roleInForce) return;
+    setRevealedRoleByScope((current) => ({
+      ...current,
+      [roleRevealScope]: roleInForce,
+    }));
+  };
+  const foldRoleParameters = () => {
+    setRevealedRoleByScope((current) => {
+      if (!(roleRevealScope in current)) return current;
+      const next = { ...current };
+      Reflect.deleteProperty(next, roleRevealScope);
+      return next;
+    });
+  };
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
@@ -1066,8 +1085,8 @@ export function MessageInput({
                     : {})}
                   {...(roleInForce ? { sessionRoleName: roleInForce } : {})}
                   roleParamsRevealed={roleParamsRevealed}
-                  onAdjustRoleParameters={() => { if (roleInForce) setRevealedFor(roleInForce); }}
-                  onRoleSelected={() => setRevealedFor(undefined)}
+                  onAdjustRoleParameters={revealRoleParameters}
+                  onRoleSelected={foldRoleParameters}
                   onLeaveRole={leavePendingRole}
                   roleLocked={roleLocked}
                   modelInfo={modelInfo ?? null}
@@ -1287,12 +1306,12 @@ export function MessageInput({
                     // role the user has just left behind. "No role" (req 18)
                     // needs no fold — with nothing in force the three controls
                     // are back on their own (`roleParamsRevealed`).
-                    setRevealedFor(undefined);
+                    foldRoleParameters();
                     setPendingRole(name);
                     onRoleChange?.(name);
                   }}
                   {...(roleInForce && !roleParamsRevealed
-                    ? { onAdjustParameters: () => setRevealedFor(roleInForce) }
+                    ? { onAdjustParameters: revealRoleParameters }
                     : {})}
                   locked={roleLocked}
                   disabled={disabled || isLoading || inert}
