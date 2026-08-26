@@ -60,6 +60,10 @@ function makeFakeManager(opts: {
     isStandby: () => false,
     claimStandby: () => undefined,
     destroy: async (sessionId: string) => { state.destroyCalls.push(sessionId); },
+    // A constant is enough here: `create` is faked, so nothing ever compares
+    // the snapshot. Cancellation itself is covered in `app-lifecycle.test.ts`
+    // and `container-lifecycle.test.ts`.
+    teardownEpoch: () => 0,
     prepareOverlaySpecs: async () => [],
     preparePnpmStore: () => undefined,
     buildConfigForWorkspace: () => ({ sessionId: "s1" }),
