@@ -190,6 +190,8 @@ export function fullResetAllStores() {
   usePreviewStore.getState().clearPreviewPaths();
   // Same lifecycle for the remembered viewports (docs/278): keyed by dead sessions.
   usePreviewStore.getState().clearViewportMemory();
+  // Same again for the remembered preview targets (planning#478).
+  usePreviewStore.getState().clearPreviewTargetMemory();
   usePresentStore.getState().reset();
   usePluginReposStore.getState().reset();
   usePrStore.getState().reset();

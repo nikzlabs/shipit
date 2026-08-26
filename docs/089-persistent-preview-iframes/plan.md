@@ -145,7 +145,6 @@ The preview store is global and gets `reset()` on every session switch, wiping e
 ```
 interface SessionPreviewSnapshot {
   status: PreviewStatus | null;
-  selectedPort: number | null;
   errors: PreviewError[];
   startupSteps: StartupStep[];
   autoFixRetries: number;
@@ -160,6 +159,54 @@ New methods:
 - `getSnapshot(sessionId)` — read-only access for background frames
 
 `autoFixEnabled` stays global (user preference). `reset()` clears everything including snapshots (used by `fullResetAllStores`).
+
+### Which service the pane is on (planning#478)
+
+The snapshot above shipped with `selectedPort` in it, and that was the wrong
+handle. **A port is a fact about the present**: it exists only while its service
+is running, `preview_status` carries only the ports currently running, and the
+orchestrator's default (`buildPreviewStatus` → `detectedPorts[0]`) is *the first
+running preview service*. Three ordinary events therefore moved the pane to a
+different app with nobody touching it:
+
+- a service restarting — it leaves `detectedPorts`, the handler cleared
+  `selectedPort` for not being among them, and the pane fell onto another
+  service **permanently**;
+- a *second* service starting — it can become `detectedPorts[0]`, and an
+  unselected pane follows that number;
+- switching back to a session whose container was reclaimed while it was off
+  screen — the services report in one at a time, and the first one up won.
+
+So the session's target is remembered **by service name**, in
+`previewTargetMemory` — a localStorage-backed `Record<sessionId, {service?,
+port}>` built exactly like `viewportMemory` (docs/278), and, like it, deliberately
+*not* part of `SessionPreviewSnapshot`, which cannot survive a reload.
+`selectedPort` is now derived from it, never owned: `reconcilePreviewTarget()`
+recomputes it inside `setStatus` / `setServices` / `updateService` /
+`restoreSession`, so no call site has to remember to.
+
+Two rules make the pane hold still:
+
+1. **The pane pins what it shows, even unasked.** A session with no memory yet
+   records the service behind the default port the first time a preview is
+   running. The user never had to make a choice for their choice to be honoured
+   — which is what stops a service that starts *later* from taking the pane.
+   Pinning waits for `service_list` when the source is `detected` (every such
+   port belongs to a Compose service, so no row yet means the list simply hasn't
+   landed) rather than recording the weaker port-only handle for something that
+   has a name.
+2. **A target that isn't running is fallen back from, never forgotten.** The
+   pane shows the server's default while the remembered service is down, and
+   returns to it the moment it reports `running` again. The memory is dropped
+   only when the user selects something else, or when an authoritative
+   (non-empty) `service_list` no longer declares that name at all — a rename or
+   a removal, after which the pane re-pins.
+
+**Known gap:** while the remembered service is down, the pane does show a
+different service rather than an explanatory "this service is stopped" state.
+Building that state is the stricter answer, but the toolbar's port selector is
+built from running ports only and cannot represent a stopped selection today.
+The fallback is bounded — it reverts by itself — where forgetting was not.
 
 ### Session switch flow (session-actions.ts)
 
@@ -182,7 +229,8 @@ Multiple iframes emit `postMessage` errors. Extract sessionId from `event.origin
 | `src/client/components/PreviewFrame.tsx` | Iframe pool (main change) |
 | `src/client/hooks/useIframePool.ts` | Slot map + LRU eviction |
 | `src/client/hooks/usePreviewHealthPoller.ts` | Slot creation; enters at the remembered path |
-| `src/client/stores/preview-store.ts` | Snapshot/restore per session; `previewPaths` |
+| `src/client/stores/preview-store.ts` | Snapshot/restore per session; `previewPaths`; `resolvePreviewTarget` / `reconcilePreviewTarget` |
+| `src/client/stores/preview-target-memory.ts` | Per-session remembered preview service (planning#478) |
 | `src/client/stores/actions/session-actions.ts` | Snapshot on switch instead of reset |
 | `src/client/hooks/usePreviewErrors.ts` | Origin-based session filtering |
 
