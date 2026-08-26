@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { emptyDepDirsContradictingMarker, overlayMountedDepDirs } from "./overlay-dep-check.js";
+import { classifyEmptyDepDirs, overlayMountedDepDirs } from "./overlay-dep-check.js";
 
 /**
  * docs/183 — install-marker dep-dir contradiction check. The overlay-mount
  * labeling parser (`overlayMountedDepDirs`) is pure and covered first; the
- * fs-coupled emptiness decision (`emptyDepDirsContradictingMarker`) reads the
+ * fs-coupled emptiness decision (`classifyEmptyDepDirs`) reads the
  * shipit config + does a non-recursive readdir per dep dir, exercised against
  * real temp workspaces below. The mount type (overlay vs plain) only affects the
  * log label, never the reinstall decision, so an empty plain dir is detected
@@ -52,7 +52,7 @@ describe("overlayMountedDepDirs", () => {
   });
 });
 
-describe("emptyDepDirsContradictingMarker", () => {
+describe("classifyEmptyDepDirs", () => {
   let workspace: string;
 
   beforeEach(() => {
@@ -68,27 +68,28 @@ describe("emptyDepDirsContradictingMarker", () => {
     // node_modules is the leftover overlay mountpoint left behind after the flag
     // is rolled off — a matching marker must be distrusted.
     fs.mkdirSync(path.join(workspace, "node_modules"));
-    expect(emptyDepDirsContradictingMarker(workspace)).toEqual([
-      { depDir: "node_modules", overlay: false },
-    ]);
+    expect(classifyEmptyDepDirs(workspace)).toEqual({
+      contradicting: [{ depDir: "node_modules", overlay: false }],
+      hoistedAway: [],
+    });
   });
 
   it("does NOT flag a populated dep dir (skip preserved)", () => {
     fs.mkdirSync(path.join(workspace, "node_modules"));
     fs.writeFileSync(path.join(workspace, "node_modules", "x.js"), "//");
-    expect(emptyDepDirsContradictingMarker(workspace)).toEqual([]);
+    expect(classifyEmptyDepDirs(workspace)).toEqual({ contradicting: [], hoistedAway: [] });
   });
 
   it("does NOT flag an ABSENT dep dir (legit dep-less / non-Node repo)", () => {
     // node_modules never created — a repo whose install does not populate the
     // default dep dir keeps its marker-skip rather than reinstalling forever.
-    expect(emptyDepDirsContradictingMarker(workspace)).toEqual([]);
+    expect(classifyEmptyDepDirs(workspace)).toEqual({ contradicting: [], hoistedAway: [] });
   });
 
   it("respects the `agent.dep-dirs: []` opt-out even when a dir is empty", () => {
     fs.writeFileSync(path.join(workspace, "shipit.yaml"), "agent:\n  dep-dirs: []\n");
     fs.mkdirSync(path.join(workspace, "node_modules")); // empty, but opted out
-    expect(emptyDepDirsContradictingMarker(workspace)).toEqual([]);
+    expect(classifyEmptyDepDirs(workspace)).toEqual({ contradicting: [], hoistedAway: [] });
   });
 
   it("returns only the empty dep dirs when several are declared", () => {
@@ -100,8 +101,107 @@ describe("emptyDepDirsContradictingMarker", () => {
     fs.mkdirSync(path.join(workspace, "node_modules"));
     fs.mkdirSync(path.join(workspace, "packages", "app", "node_modules"), { recursive: true });
     fs.writeFileSync(path.join(workspace, "packages", "app", "node_modules", "dep.js"), "//");
-    expect(emptyDepDirsContradictingMarker(workspace)).toEqual([
-      { depDir: "node_modules", overlay: false },
-    ]);
+    expect(classifyEmptyDepDirs(workspace)).toEqual({
+      contradicting: [{ depDir: "node_modules", overlay: false }],
+      hoistedAway: [],
+    });
+  });
+
+  /**
+   * planning#480 — the npm-workspaces shape. The overlay store mounts a volume
+   * at every declared dep dir, so `server/node_modules` is present-and-empty
+   * rather than absent, and the module doc's absence hatch never fires.
+   */
+  it("excuses an empty workspace dep dir npm hoisted into the root tree", () => {
+    fs.writeFileSync(
+      path.join(workspace, "shipit.yaml"),
+      "agent:\n  dep-dirs:\n    - node_modules\n    - server/node_modules\n    - web/node_modules\n",
+    );
+    writeHoistingRootTree(workspace, { "@fix/server": "server", "@fix/web": "web" });
+    // The overlay mount points: present, and empty because the root install
+    // hoisted both workspaces' dependencies.
+    fs.mkdirSync(path.join(workspace, "server", "node_modules"), { recursive: true });
+    fs.mkdirSync(path.join(workspace, "web", "node_modules"), { recursive: true });
+
+    expect(classifyEmptyDepDirs(workspace)).toEqual({
+      contradicting: [],
+      hoistedAway: ["server/node_modules", "web/node_modules"],
+    });
+  });
+
+  it("flags every dep dir of a workspaces repo whose ROOT tree is empty", () => {
+    // docs/183 mode 1 and mode 2, on the very repo shape the exemption is for: a
+    // freshly-mounted (or freshly-unmounted) overlay leaves EVERY declared dir
+    // empty, including the root one. With no root tree there is no hidden
+    // lockfile to read, so nothing is excused and the reinstall still fires —
+    // which is what keeps a laundered install exit fatal too.
+    fs.writeFileSync(
+      path.join(workspace, "shipit.yaml"),
+      "agent:\n  dep-dirs:\n    - node_modules\n    - server/node_modules\n",
+    );
+    fs.mkdirSync(path.join(workspace, "node_modules"), { recursive: true });
+    fs.mkdirSync(path.join(workspace, "server", "node_modules"), { recursive: true });
+
+    expect(classifyEmptyDepDirs(workspace)).toEqual({
+      contradicting: [
+        { depDir: "node_modules", overlay: false },
+        { depDir: "server/node_modules", overlay: false },
+      ],
+      hoistedAway: [],
+    });
+  });
+
+  it("still flags an empty sub-dir the root tree does NOT record as a workspace", () => {
+    // A laundered sub-install (`npm --prefix game ci … || true`) beside a real
+    // root install: the root tree is populated but names no `game` workspace, so
+    // there is no evidence the deps went anywhere and the failure stands.
+    fs.writeFileSync(
+      path.join(workspace, "shipit.yaml"),
+      "agent:\n  dep-dirs:\n    - node_modules\n    - game/node_modules\n",
+    );
+    writeHoistingRootTree(workspace, { "@fix/server": "server" });
+    fs.mkdirSync(path.join(workspace, "game", "node_modules"), { recursive: true });
+
+    expect(classifyEmptyDepDirs(workspace)).toEqual({
+      contradicting: [{ depDir: "game/node_modules", overlay: false }],
+      hoistedAway: [],
+    });
+  });
+
+  it("does NOT excuse a declared build output that happens to sit under a workspace", () => {
+    // docs/183 invites declaring a build output in `dep-dirs`. The hoisting rule
+    // is npm's and applies only to `node_modules`, so an empty `server/dist` is
+    // still the contradiction it always was.
+    fs.writeFileSync(
+      path.join(workspace, "shipit.yaml"),
+      "agent:\n  dep-dirs:\n    - node_modules\n    - server/dist\n",
+    );
+    writeHoistingRootTree(workspace, { "@fix/server": "server" });
+    fs.mkdirSync(path.join(workspace, "server", "dist"), { recursive: true });
+
+    expect(classifyEmptyDepDirs(workspace)).toEqual({
+      contradicting: [{ depDir: "server/dist", overlay: false }],
+      hoistedAway: [],
+    });
   });
 });
+
+/**
+ * Write the root `node_modules` an npm workspaces install produces: a populated
+ * tree carrying npm's hidden lockfile, whose `link: true` entries name each
+ * workspace it reified. Shape verified against npm 10 — see
+ * `npm-workspace-hoist.ts`.
+ */
+function writeHoistingRootTree(workspace: string, links: Record<string, string>): void {
+  const packages: Record<string, unknown> = { "": { name: "root", version: "1.0.0" } };
+  for (const [name, target] of Object.entries(links)) {
+    packages[`node_modules/${name}`] = { resolved: target, link: true };
+    packages[target] = { name, version: "1.0.0" };
+  }
+  const root = path.join(workspace, "node_modules");
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(
+    path.join(root, ".package-lock.json"),
+    JSON.stringify({ name: "root", lockfileVersion: 3, packages }),
+  );
+}

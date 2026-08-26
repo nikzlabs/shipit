@@ -39,6 +39,16 @@
  * benefit (the live rollback signature is an empty leftover dir, never an absent
  * one). Absence keeps the skip; only present-but-empty distrusts the marker.
  *
+ * **That absence hatch is unreachable under the overlay dep store**, which is why
+ * {@link hoistedAwayDepDirs} exists (planning#480). The store mounts an overlay
+ * at every declared dep dir, and a mount point is a directory — so inside the
+ * container a declared dep dir is never absent, only present-and-possibly-empty.
+ * An npm-workspaces monorepo whose root install hoists everything therefore hit
+ * the fatal branch on every session, permanently. The narrow exemption reads
+ * npm's own hidden-lockfile record of the hoist; it cannot excuse an empty ROOT
+ * dep dir, so every mode above still forces the reinstall it always did. Its
+ * module doc carries the full argument.
+ *
  * Cost note: this runs on every `/install`. It reads the shipit config (already
  * cached on disk) and does a single non-recursive `readdir` per declared dep dir
  * — an O(N dep dirs) emptiness probe, never a recursive scan.
@@ -47,6 +57,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { hoistedAwayDepDirs } from "./npm-workspace-hoist.js";
 
 /**
  * Parse `/proc/self/mounts` content and return the subset of `depDirs` whose
@@ -86,27 +97,42 @@ export interface ContradictingDepDir {
   overlay: boolean;
 }
 
+/** How the declared dep dirs that are present-but-EMPTY divide up. */
+export interface EmptyDepDirReport {
+  /**
+   * The empty dirs that CONTRADICT the install (see module doc) — the ones the
+   * skip path treats as a marker miss and the post-install path fails on.
+   */
+  contradicting: ContradictingDepDir[];
+  /**
+   * The empty dirs excused because npm's own record shows their package's
+   * dependencies were hoisted into an ancestor tree. Reported, not silently
+   * dropped: a declaration this install does not produce is still worth naming,
+   * it is just not a failure. See {@link hoistedAwayDepDirs}.
+   */
+  hoistedAway: string[];
+}
+
 /**
- * The declared dep dirs that are present-but-EMPTY — i.e. the dirs that
- * contradict a matching install marker (see module doc). Returns `[]` when no
- * dep dir is empty (the dep dir is populated, or absent, or the repo opted out
- * with `agent.dep-dirs: []`), or when the config can't be read (conservative:
- * never force a reinstall on a read failure).
+ * Classify the declared dep dirs that are present-but-EMPTY (see module doc).
+ * Both fields are `[]` when no dep dir is empty (populated, or absent, or the
+ * repo opted out with `agent.dep-dirs: []`), and when the config can't be read
+ * (conservative: never force a reinstall — or fail an install — on a read
+ * failure).
  *
- * Each empty dir is labeled with whether it is an overlay mount, purely for the
- * gate's warning line; `/proc/self/mounts` being unavailable just leaves the
- * label `false` and never changes the reinstall decision.
+ * Each contradicting dir is labeled with whether it is an overlay mount, purely
+ * for the gate's warning line; `/proc/self/mounts` being unavailable just leaves
+ * the label `false` and never changes the reinstall decision.
  */
-export function emptyDepDirsContradictingMarker(
-  workspaceRoot: string,
-): ContradictingDepDir[] {
+export function classifyEmptyDepDirs(workspaceRoot: string): EmptyDepDirReport {
+  const none: EmptyDepDirReport = { contradicting: [], hoistedAway: [] };
   let depDirs: string[];
   try {
     depDirs = resolveShipitConfig(workspaceRoot).agent.depDirs;
   } catch {
-    return [];
+    return none;
   }
-  if (depDirs.length === 0) return [];
+  if (depDirs.length === 0) return none;
 
   // Best-effort overlay labeling. A read failure (no /proc, non-container) just
   // means no dir is labeled overlay — the emptiness decision below is unchanged.
@@ -118,7 +144,7 @@ export function emptyDepDirsContradictingMarker(
     // ignore — treat nothing as overlay-backed
   }
 
-  const contradicting: ContradictingDepDir[] = [];
+  const empty: string[] = [];
   for (const depDir of depDirs) {
     const abs = path.join(workspaceRoot, depDir);
     let entries: string[];
@@ -131,9 +157,19 @@ export function emptyDepDirsContradictingMarker(
       // skip — only a dir we can confirm is present-but-empty contradicts.
       continue;
     }
-    if (entries.length === 0) {
-      contradicting.push({ depDir, overlay: overlaySet.has(depDir) });
-    }
+    if (entries.length === 0) empty.push(depDir);
   }
-  return contradicting;
+  if (empty.length === 0) return none;
+
+  // planning#480 — an empty dep dir whose package npm hoisted elsewhere is the
+  // shape the module doc's absence hatch was written for, made unreachable by the
+  // overlay store's mount points. Excuse it here, once, so the skip path and the
+  // post-install path stay the same predicate (the docs/272 invariant).
+  const hoistedAway = new Set(hoistedAwayDepDirs(workspaceRoot, empty));
+  return {
+    contradicting: empty
+      .filter((depDir) => !hoistedAway.has(depDir))
+      .map((depDir) => ({ depDir, overlay: overlaySet.has(depDir) })),
+    hoistedAway: empty.filter((depDir) => hoistedAway.has(depDir)),
+  };
 }

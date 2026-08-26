@@ -70,6 +70,30 @@ export function formatEmptyDepDirsFailureMessage(depDirs: string[]): string {
 }
 
 /**
+ * The advisory warning for an install that exited 0 and left a declared dep dir
+ * empty **because npm hoisted its package's dependencies elsewhere**
+ * (planning#480). Not a failure — npm's own record proves the install reified
+ * that workspace — but still worth naming, for the same reason the failure
+ * message names dirs: the declaration does not describe what this repo's install
+ * produces, and only the user can decide whether to trim it.
+ *
+ * Streamed to `install_log` rather than raised as `install_error`, so it reaches
+ * the user without failing an install that genuinely succeeded.
+ */
+export function formatHoistedDepDirsWarning(depDirs: string[]): string {
+  const list = depDirs.join(", ");
+  const plural = depDirs.length === 1 ? "" : "s";
+  const is = depDirs.length === 1 ? "is" : "are";
+  return (
+    `[install] declared dep dir${plural} left empty by a hoisting install: ${list}. ` +
+    `npm's own record (.package-lock.json) shows the${plural ? "se" : ""} package${plural} ` +
+    `${is} linked into an ancestor node_modules, so the dependencies are installed — ` +
+    `just not there. Treating the install as successful. Removing ${plural ? "these entries" : "this entry"} ` +
+    `from agent.dep-dirs in shipit.yaml would silence this and skip an empty overlay mount.`
+  );
+}
+
+/**
  * The `install_error` message for an install whose commands all exited 0 but
  * left a declared dep dir holding a tree that does not match its
  * `package-lock.json` (nikzlabs#2496 — the STALE half of the same gate

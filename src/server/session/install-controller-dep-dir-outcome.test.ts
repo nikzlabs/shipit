@@ -13,7 +13,7 @@
  * what ShipIt thought had happened.
  *
  * The predicate is deliberately the SAME one `/install` already applies to a
- * matching marker (`emptyDepDirsContradictingMarker`): a declared dep dir that
+ * matching marker (`classifyEmptyDepDirs`): a declared dep dir that
  * is present-and-EMPTY contradicts the claim that the deps are installed. It
  * is applied on both sides now — ShipIt refuses to TRUST such a marker, so it
  * must equally refuse to WRITE one.
@@ -21,6 +21,10 @@
  * ABSENT stays fine on both sides, and that asymmetry is load-bearing: a repo
  * with no install-managed dep dir (the default `node_modules` on a non-Node
  * project) must not be told its install failed.
+ *
+ * planning#480 — and so does an empty dir npm HOISTED away, which the overlay
+ * dep store's mount points turn from absent into present-and-empty. Same
+ * predicate, both sides, so the skip path and this one cannot diverge.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -34,6 +38,16 @@ import type { WorkerSSEEvent } from "./sse-broadcaster.js";
 import type { McpConfigController } from "./mcp-config-controller.js";
 import { INSTALL_MARKER_FILE } from "../shared/fs-constants.js";
 
+/**
+ * Build a temp workspace whose `shipit.yaml` carries `agentBlock`.
+ *
+ * **Quote a bare `true` in `agent.install`** (`- "true"`, never `- true`): YAML
+ * parses the unquoted form as a BOOLEAN, `resolveShipitConfig` rejects it, and
+ * every dep-dir check in this file then takes its "config unreadable → check
+ * nothing" branch. Three tests here were passing that way — asserting a success
+ * the checks never actually evaluated — until planning#480 needed one of them
+ * to discriminate.
+ */
 function makeWorkspace(agentBlock: string): { workspaceDir: string; stateDir: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "install-dep-outcome-"));
   const workspaceDir = path.join(root, "workspace");
@@ -172,7 +186,7 @@ describe("install outcome — declared dep dirs must actually hold something", (
     // absence as no contradiction, and so must this one, or every such repo
     // would be told its install failed and never start a gated service.
     const { workspaceDir, stateDir } = makeWorkspace(
-      "  install:\n    - true\n  dep-dirs:\n    - node_modules\n",
+      "  install:\n    - \"true\"\n  dep-dirs:\n    - node_modules\n",
     );
     register(workspaceDir, stateDir);
 
@@ -237,7 +251,7 @@ describe("install outcome — declared dep dirs must actually hold something", (
 
   it("succeeds when the tree matches the lockfile", async () => {
     const { workspaceDir, stateDir } = makeWorkspace(
-      "  install:\n    - true\n  dep-dirs:\n    - node_modules\n",
+      "  install:\n    - \"true\"\n  dep-dirs:\n    - node_modules\n",
     );
     writeNpmTree(workspaceDir, { "node_modules/vite": { version: "5.4.0" } }, { "node_modules/vite": { version: "5.4.0" } });
     register(workspaceDir, stateDir);
@@ -256,7 +270,7 @@ describe("install outcome — declared dep dirs must actually hold something", (
     // `node_modules` is populated but un-reified (no `.package-lock.json`) while
     // a lockfile sits beside it, and `dist/` holds a stale build nobody rebuilt.
     const { workspaceDir, stateDir } = makeWorkspace(
-      "  install:\n    - true\n  dep-dirs:\n    - node_modules\n    - dist\n",
+      "  install:\n    - \"true\"\n  dep-dirs:\n    - node_modules\n    - dist\n",
     );
     writeNpmTree(workspaceDir, { "node_modules/vite": { version: "5.4.0" } }, null);
     fs.mkdirSync(path.join(workspaceDir, "node_modules", "vite"), { recursive: true });
@@ -269,6 +283,72 @@ describe("install outcome — declared dep dirs must actually hold something", (
     expect(result.ok).toBe(true);
     expect(errorMessages()).toEqual([]);
     expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(true);
+  });
+
+  /**
+   * planning#480 — the npm-workspaces monorepo, reported from production. Three
+   * declared dep dirs; a root `npm install` hoists every package into the root
+   * tree and creates no `server/node_modules` at all. The overlay dep store
+   * mounts a volume at each declared dir anyway, so the two workspace dirs are
+   * present-and-EMPTY rather than absent, and `emptyDepDirsContradictingMarker`'s
+   * documented "absence keeps the skip" hatch never fired. Every session of the
+   * repo reported a permanent install failure, retrying every 30 seconds, while
+   * the app ran correctly the whole time.
+   */
+  it("succeeds when a workspaces install hoisted a declared dep dir away", async () => {
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - \"true\"\n  dep-dirs:\n    - node_modules\n" +
+        "    - server/node_modules\n    - web/node_modules\n",
+    );
+    // The root tree the install produced, carrying npm's own record of the two
+    // workspaces it reified as links.
+    const packages: Record<string, unknown> = { "": { name: "root", version: "1.0.0" } };
+    for (const [name, target] of [["@fix/server", "server"], ["@fix/web", "web"]]) {
+      packages[`node_modules/${name}`] = { resolved: target, link: true };
+      packages[target] = { name, version: "1.0.0" };
+    }
+    fs.mkdirSync(path.join(workspaceDir, "node_modules"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "node_modules", ".package-lock.json"),
+      JSON.stringify({ name: "root", lockfileVersion: 3, packages }),
+    );
+    // The overlay mount points, empty because everything hoisted to the root.
+    fs.mkdirSync(path.join(workspaceDir, "server", "node_modules"), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, "web", "node_modules"), { recursive: true });
+    register(workspaceDir, stateDir);
+
+    const result = await runInstall(["true"]);
+
+    expect(result.ok).toBe(true);
+    expect(errorMessages()).toEqual([]);
+    // The marker matters as much as the outcome: without it the next activation
+    // reinstalls, which is the 30-second retry loop the incident reported.
+    expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(true);
+    // Accepted, but not silently — the declaration still does not describe what
+    // this install produces, and only the user can decide whether to trim it.
+    const logs = events
+      .filter((e) => e.type === "install_log")
+      .map((e) => (e.data as { text: string }).text)
+      .join("");
+    expect(logs).toContain("server/node_modules, web/node_modules");
+  });
+
+  it("still fails a hoisting monorepo whose ROOT dep dir is empty", async () => {
+    // The exemption cannot excuse the dir it would have to be read from. With the
+    // root tree empty there is no npm record at all — the docs/183 mode 1 / mode 2
+    // signature, and the shape a laundered `npm ci` leaves behind.
+    const { workspaceDir, stateDir } = makeWorkspace(
+      "  install:\n    - false || true\n  dep-dirs:\n    - node_modules\n    - server/node_modules\n",
+    );
+    fs.mkdirSync(path.join(workspaceDir, "node_modules"), { recursive: true });
+    fs.mkdirSync(path.join(workspaceDir, "server", "node_modules"), { recursive: true });
+    register(workspaceDir, stateDir);
+
+    const result = await runInstall(["false || true"]);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("node_modules, server/node_modules");
+    expect(fs.existsSync(path.join(stateDir, INSTALL_MARKER_FILE))).toBe(false);
   });
 
   it("still reports a non-zero exit as the command failure it is", async () => {

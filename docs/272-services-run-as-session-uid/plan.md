@@ -202,13 +202,37 @@ happened — which removes the release-the-claim path entirely.
 The mode passes are additionally best-effort now, matching `chown_workspace`'s
 own, so a path another session unlinks mid-walk cannot kill a boot.
 
-**And an install's outcome is no longer its exit status.** `emptyDepDirsContradictingMarker`
+**And an install's outcome is no longer its exit status.** `classifyEmptyDepDirs`
+(then named `emptyDepDirsContradictingMarker`)
 was applied only when deciding whether to TRUST a marker. It is now applied when
 deciding whether to WRITE one: a declared dep dir that is present-and-EMPTY when
 the install commands finish fails the install, so the gate stays shut and the
 `install_error` names the directory instead of leaving `install finished` as the
 only account of what happened. Absent stays fine on both sides — a project that
 manages no dependency directory is not a failed install.
+
+**Correction (planning#480): "absent stays fine" was unreachable under the overlay
+dep store.** docs/183 mounts an overlay at every declared dep dir, and a mount
+point is a directory — so inside a container a declared dep dir is never absent,
+only present, and when the install does not fill it, always empty. An npm
+**workspaces** monorepo (root install hoists everything; `server/node_modules` is
+never created) therefore landed in the fatal branch on every session, retrying
+every 30 seconds forever while the app ran correctly, with no state the repo
+could reach that cleared it short of editing `agent.dep-dirs`.
+
+The fix reads npm's own record rather than loosening the predicate. An empty dep
+dir is excused only when a *populated* ancestor tree's hidden lockfile
+(`node_modules/.package-lock.json`) records the dir's package as a workspace
+`link` — positive, install-written evidence that this install reified that
+workspace and put its dependencies elsewhere. The looser alternative (fail only
+when EVERY declared dep dir is empty) was rejected: it keeps this incident's shape
+but opens a new one, where a monorepo's successful root install masks a laundered
+sub-install. The exemption cannot weaken what this section or docs/183 protects,
+because every exemption requires a hidden lockfile that only a real install
+writes: a laundered exit and both docs/183 flag-transition modes leave the ROOT
+dep dir empty, which is never eligible. It is applied inside the single shared
+predicate, so the trust side and the write side still cannot diverge. Full
+argument: `npm-workspace-hoist.ts`'s module doc.
 
 ### Key files (follow-on)
 
@@ -217,7 +241,12 @@ manages no dependency directory is not a failed install.
   `prune_stale_sentinels`.
 - `src/server/session/install-controller.ts` — the post-install dep-dir check and
   `finishInstallFailed`.
-- `src/server/session/install-failure.ts` — `formatEmptyDepDirsFailureMessage`.
+- `src/server/session/install-failure.ts` — `formatEmptyDepDirsFailureMessage`,
+  `formatHoistedDepDirsWarning`.
+- `src/server/session/overlay-dep-check.ts` — `classifyEmptyDepDirs`, the one
+  predicate both the trust side and the write side apply.
+- `src/server/session/npm-workspace-hoist.ts` — the planning#480 hoist exemption
+  and why it cannot weaken either side.
 - `src/server/orchestrator/session-worker-uid.ts` — `shareTreeOnce` carries the
   same one-shot hazard and is not wrong today; the docstring says when it becomes
   wrong and what it would cost to rotate.

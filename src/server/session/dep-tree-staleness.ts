@@ -233,7 +233,7 @@ export function npmLockfileMismatches(
  * Returns `[]` when nothing disagrees, when no declared dir is an npm-reified
  * tree, when an install command bypasses the lockfile, when the repo opted out
  * with `agent.dep-dirs: []`, or when the config cannot be read — conservative in
- * exactly the direction `emptyDepDirsContradictingMarker` is: an unreadable
+ * exactly the direction `classifyEmptyDepDirs` is: an unreadable
  * declaration never fails an install.
  */
 export function staleDepDirs(workspaceRoot: string, installCommands: string[]): StaleDepDir[] {
