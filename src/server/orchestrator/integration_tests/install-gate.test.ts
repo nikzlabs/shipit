@@ -23,11 +23,21 @@
  * so the worker no longer reports `{ completed }` and the gate has just these
  * two settle paths. These tests use small stub workers (no Docker, no real
  * `npm`) to isolate the gate-resolution contract from SSE delivery.
+ *
+ * The last test in the file is the exception to that isolation, and deliberately
+ * so: it drives a REAL `ServiceManager` alongside the stub worker so one test
+ * spans the whole incident — services running, torn down for a reinstall, the
+ * completion event lost, and the services actually started again.
  */
 import { describe, it, expect, afterEach } from "vitest";
 import Fastify from "fastify";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import { ServiceManager, type ComposeRunner, type ComposeQuery } from "../service-manager.js";
+import { SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -177,6 +187,27 @@ async function startStubWorker(opts: StubOpts): Promise<StubWorker> {
     sseConnects: () => sseConnects,
     releaseHeldStatus: () => { releaseHeldStatus(); },
   };
+}
+
+/**
+ * A real session layout in a temp dir: the clone at `<sessionDir>/workspace`,
+ * with `docker-compose.yml` in it. `ServiceManager` resolves its state dir from
+ * the clone path and REFUSES a clone that does not sit at `workspace/`
+ * (planning#288), so a bare temp dir is not a valid workspace.
+ */
+function makeSessionWorkspace(compose: string): { sessionDir: string; workspaceDir: string } {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "install-gate-e2e-"));
+  const workspaceDir = path.join(sessionDir, SESSION_WORKSPACE_SUBDIR);
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), compose);
+  return { sessionDir, workspaceDir };
+}
+
+/** Drain queued microtasks — several hops happen inside the gate-open path. */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 30; i++) {
+    await new Promise<void>((r) => setImmediate(r));
+  }
 }
 
 /** Resolves to true if `p` is still pending after `ms`. */
@@ -440,6 +471,103 @@ describe("Integration: install gate — resolution without SSE install_done (doc
       await withTimeout(runB, 3000, "runInstall B");
     } finally {
       runner.dispose({ force: true });
+    }
+  });
+
+  it("end-to-end: a lost install_done still gets the stopped services running again (docs/283)", async () => {
+    // The whole incident in one test. The other tests here cut it in half — one
+    // proves `runInstall` resolves without the SSE event, another proves the
+    // reinstall bracket reaches its `finally` — but each half can pass while
+    // the user-visible outcome fails, because neither watches a service. This
+    // one drives a REAL ServiceManager: the `preview: auto` service is running,
+    // the reinstall stops it, the completion event never arrives, and the only
+    // thing that can bring it back is the periodic probe resolving the gate.
+    const { sessionDir, workspaceDir } = makeSessionWorkspace(
+      "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n",
+    );
+
+    const upCalls: string[][] = [];
+    const stopCalls: string[] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) upCalls.push(args.slice(upIdx));
+      const stopIdx = args.indexOf("stop");
+      if (stopIdx >= 0) stopCalls.push(args[stopIdx + 1]);
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+    const webUps = () => upCalls.flat().filter(a => a === "web").length;
+
+    // The worker: the install settles, but its `install_done` is NEVER sent and
+    // the SSE stream never reconnects. Only the periodic probe can recover it.
+    // 3, not 1. There are two probes that are NOT the periodic poll — the one
+    // `runInstall` issues after the POST and the one `onSseOpen` issues — and
+    // either can answer "settled" and resolve the gate on its own. Reporting
+    // `running: true` for the first three is what forces the recovery to come
+    // from the poll, and is the difference between this test failing without
+    // the fix and passing for the wrong reason.
+    stub = await startStubWorker({
+      installResponse: { started: true },
+      status: { running: false, lastResult: null },
+      runningForStatusProbes: 3,
+    });
+
+    const mgr = new ServiceManager({
+      sessionId: "gate-e2e",
+      workspaceDir,
+      serviceEnvDir: path.resolve(workspaceDir, "..", "service-env"),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+    const runner = new ContainerSessionRunner({
+      sessionId: "gate-e2e",
+      sessionDir,
+      defaultAgentId: "claude",
+      workerUrl: stub.url,
+    });
+    setProbeInterval(runner, 50);
+    runner.setServiceManager(mgr);
+    runner.setDepReinstallInputs(["npm install"], ["package-lock.json"]);
+
+    try {
+      // Steady state: the gated service is up and running.
+      mgr.setInstallRunning(true);
+      await mgr.start();
+      mgr.setInstallRunning(false);
+      await flushMicrotasks();
+      expect(mgr.getService("web")?.status).toBe("running");
+      expect(webUps()).toBe(1);
+
+      // A dependency input changed → the bracketed mid-session reinstall.
+      await withTimeout(
+        (runner as unknown as { reinstallForDepChange(): Promise<void> }).reinstallForDepChange(),
+        5000,
+        "reinstallForDepChange",
+      );
+      await flushMicrotasks();
+
+      // The hold really did stop the service (this is the exit 137 the user
+      // saw), and the gate really did reopen and start it again — with no SSE
+      // completion event at any point.
+      expect(stopCalls).toContain("web");
+      expect(webUps()).toBe(2);
+      expect(mgr.getService("web")?.status).toBe("running");
+      expect(stub.installDoneSent()).toBe(false);
+      expect(mgr.installRunning).toBe(false);
+      // > 3 probes means the poll ran: the two non-periodic probes cannot get
+      // past the `running: true` answers configured above.
+      expect(stub.postPostStatusProbes()).toBeGreaterThan(3);
+    } finally {
+      runner.dispose({ force: true });
+      await mgr.stop();
+      fs.rmSync(sessionDir, { recursive: true, force: true });
     }
   });
 });

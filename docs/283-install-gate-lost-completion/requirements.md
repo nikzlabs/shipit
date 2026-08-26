@@ -1,25 +1,31 @@
 ---
 title: Install gate must not wedge on a lost completion event
-description: A mid-session reinstall whose install_done never arrives must still reopen the service gate, so preview services are started again.
+description: A mid-session reinstall must always reopen the service gate — whether the install's completion event is lost or its teardown never reports back.
 ---
 
 # Install gate must not wedge on a lost completion event
 
 1. When ShipIt stops a session's `preview: auto` services to re-run
-   `agent.install`, it must start them again once the install has finished —
-   including when ShipIt is never told that it finished.
+   `agent.install`, it must start them again — including when ShipIt is never
+   told the install finished, and including when the teardown that stopped them
+   never reports back.
 2. A completion event that never arrives must not hold the services stopped
    indefinitely. Recovery must not depend on the user reconnecting, switching
    sessions, or reloading the page.
 3. A genuinely slow install must not be cut short, and must never be reported
    as failed because it took a long time.
 4. The behaviour that stops ShipIt's own teardown from being reported to the
-   user as a service crash (docs/239) must be unchanged: the gate still waits
-   for the teardown before it reopens, and held services stay exempt from
-   crash reporting while it is in progress.
+   user as a service crash (docs/239) must hold for every teardown that is
+   working: the gate waits for it to land, however long the service's own
+   `stop_grace_period` says that may take, and held services stay exempt from
+   crash reporting while it is in progress. Only a teardown that has exceeded
+   what the compose file says is possible may be given up on.
 5. Recovering a lost completion must not open a gate early. An install that is
    still running must keep its services held, whatever ShipIt learns about any
    *other* install.
+6. A gate must only ever be opened by the teardown cycle that closed it. One
+   reinstall's teardown must never start services that a later reinstall's
+   teardown is in the middle of stopping.
 
 ## Open questions
 
@@ -31,9 +37,21 @@ description: A mid-session reinstall whose install_done never arrives must still
   `npm install` is not a fault, so the wait probes the worker for the real
   answer instead of assuming one (req 3).
 - 2026-08-26 — Should req 1 cover a hung `docker compose stop` too? No, not
-  here. Review raised it as a second, independent way the gate can stay shut
-  (see "Known separate hole" in [plan.md](./plan.md)), but the production
-  evidence rules it out for this incident, and bounding a compose child process
-  is a different mechanism in a different subsystem. Req 1 says "once the
-  install has finished" rather than "whatever happens" so it does not silently
-  claim that hole is closed.
+  in the first change. Review raised it as a second, independent way the gate
+  can stay shut, but the production evidence ruled it out for this incident and
+  bounding a compose child process is a different mechanism in a different
+  subsystem. Req 1 was worded "once the install has finished" so it did not
+  silently claim that hole was closed. **Superseded 2026-08-26 (below).**
+- 2026-08-26 — Nik asked for the deferred hole to be closed after all, in the
+  same breath as asking for an end-to-end regression test. So req 1 now covers
+  a teardown that never reports back, and req 6 records the ordering hazard
+  review found alongside it. Both are implemented; see
+  [plan.md](./plan.md) → "Bounding the teardown".
+- 2026-08-26 — Do reqs 1 and 4 contradict each other? Review flagged that they
+  did: req 1 demanded the gate always reopen, req 4 demanded it always wait for
+  the teardown, and nothing said which wins when a teardown never settles.
+  Resolved by making req 4 say what "waiting" is measured against — the
+  service's declared `stop_grace_period`, read from the compose file rather
+  than assumed. A teardown inside that budget is working and is waited for; one
+  past it has exceeded what its own file says is possible. The requirements no
+  longer disagree, and neither was weakened to achieve it.
