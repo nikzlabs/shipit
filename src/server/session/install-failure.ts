@@ -70,6 +70,34 @@ export function formatEmptyDepDirsFailureMessage(depDirs: string[]): string {
 }
 
 /**
+ * The advisory note for an install that exited 0 and left a declared dep dir
+ * empty **because npm hoisted its package's dependencies elsewhere**
+ * (planning#480).
+ *
+ * Deliberately NOT phrased as a misconfiguration to fix. Declaring a workspace's
+ * `node_modules` is legitimate and forward-looking: the moment a version
+ * conflict forces npm to build a nested tree there, the declaration is what gets
+ * that tree overlay-backed. The note exists so that an empty declared dir is
+ * never accepted *silently* — the breadcrumb matters if a gated service later
+ * fails looking for something in it — not to push the user into editing
+ * `shipit.yaml`.
+ *
+ * Streamed to `install_log` rather than raised as `install_error`, and only once
+ * the install has passed every other check, since the wording asserts success.
+ */
+export function formatHoistedDepDirsWarning(depDirs: string[]): string {
+  const list = depDirs.join(", ");
+  const plural = depDirs.length === 1 ? "" : "s";
+  const is = depDirs.length === 1 ? "is" : "are";
+  return (
+    `[install] accepted empty declared dep dir${plural}: ${list}. ` +
+    `npm's own record (.package-lock.json) links th${plural ? "ese" : "is"} package${plural} ` +
+    `into an ancestor node_modules and records no nested tree, so the ` +
+    `dependencies ${is} installed — just not there. The install succeeded.`
+  );
+}
+
+/**
  * The `install_error` message for an install whose commands all exited 0 but
  * left a declared dep dir holding a tree that does not match its
  * `package-lock.json` (nikzlabs#2496 — the STALE half of the same gate

@@ -25,6 +25,7 @@ import { installContentKeyDiagnostic } from "./install-content-key.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 
 const REMOTE = "https://github.com/owner/repo.git";
 
@@ -401,7 +402,9 @@ describe("applyShipitConfigChange", () => {
   });
 
   it("keeps the running stack when the incoming shipit.yaml is invalid", () => {
-    writeConfig("compose: [not, a, path]\n");
+    expectInvalidShipitConfig(() => {
+      writeConfig("compose: [not, a, path]\n");
+    });
     const runner = makeRunner();
     const mgr = makeFakeManager();
 

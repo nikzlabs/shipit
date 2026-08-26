@@ -35,6 +35,7 @@ import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
 import { initGlobalGitConfig } from "../git-config.js";
 import type { TrackerInfo, TrackerIssue } from "../../shared/types.js";
+import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -235,7 +236,9 @@ describe("Integration: declared issue trackers (docs/248)", () => {
   });
 
   it("degrades to no declared trackers when shipit.yaml is unparseable", async () => {
-    writeConfig("issues:\n  trackers:\n  - kind: github\n   repo: broken indent\n");
+    expectInvalidShipitConfig(() => {
+      writeConfig("issues:\n  trackers:\n  - kind: github\n   repo: broken indent\n");
+    });
     expect((await trackers()).map((t) => t.id)).toEqual(["github"]);
   });
 
@@ -341,7 +344,9 @@ describe("Integration: declared issue trackers (docs/248)", () => {
   });
 
   it("says so when shipit.yaml could not be parsed at all", async () => {
-    writeConfig("issues:\n  trackers:\n  - kind: github\n   repo: broken indent\n");
+    expectInvalidShipitConfig(() => {
+      writeConfig("issues:\n  trackers:\n  - kind: github\n   repo: broken indent\n");
+    });
     const { warnings } = await destinations();
     expect(warnings.some((w) => w.includes("could not be parsed"))).toBe(true);
   });

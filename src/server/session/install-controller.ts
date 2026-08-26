@@ -29,10 +29,11 @@ import {
   serializeMarker,
   type InstallMarkerStamp,
 } from "../shared/install-marker.js";
-import { emptyDepDirsContradictingMarker } from "./overlay-dep-check.js";
+import { classifyEmptyDepDirs } from "./overlay-dep-check.js";
 import { installSkipOutputWarning } from "./install-skip-warning.js";
 import {
   formatEmptyDepDirsFailureMessage,
+  formatHoistedDepDirsWarning,
   formatInstallFailureMessage,
   formatStaleDepDirsFailureMessage,
   INSTALL_STDERR_TAIL_BYTES,
@@ -164,7 +165,11 @@ export class InstallController {
         // contradiction, so a legitimately dep-less repo (e.g. default
         // node_modules on a non-Node repo) and the `agent.dep-dirs: []` opt-out
         // keep the marker-skip — non-overlay/no-deps sessions stay unchanged.
-        const contradicted = emptyDepDirsContradictingMarker(this.workspaceDir);
+        // planning#480 — and neither is an empty dir npm hoisted away, which
+        // the overlay's mount point makes present-but-empty rather than absent.
+        // Reinstalling on every resume for a workspaces monorepo would defeat
+        // the marker-skip permanently, exactly as it would for an absent dir.
+        const { contradicting: contradicted } = classifyEmptyDepDirs(this.workspaceDir);
         if (contradicted.length === 0) {
           // planning#2315 — the skip is honored, but say so when it is likely to
           // have dropped output no dep dir covers. Advisory only: never blocks,
@@ -462,8 +467,11 @@ export class InstallController {
       // built.
       //
       // Absent stays fine, exactly as it does in the skip path: a repo with no
-      // install-managed dep dir is not a failed install.
-      const empty = emptyDepDirsContradictingMarker(this.workspaceDir);
+      // install-managed dep dir is not a failed install. planning#480 — so is a
+      // dir npm hoisted away, which the overlay store's mount point turns from
+      // absent into present-and-empty; that one is reported, not failed, because
+      // npm's own record proves the install reified the workspace.
+      const { contradicting: empty, hoistedAway } = classifyEmptyDepDirs(this.workspaceDir);
       if (empty.length > 0) {
         const message = formatEmptyDepDirsFailureMessage(empty.map((c) => c.depDir));
         console.warn(`[install] ${message}`);
@@ -484,6 +492,16 @@ export class InstallController {
         console.warn(`[install] ${message}`);
         this.finishInstallFailed(message);
         return;
+      }
+
+      // planning#480 — say which declared dirs were accepted empty, but only once
+      // the install has actually passed every check. Emitted here rather than
+      // beside the emptiness classification above because the wording asserts
+      // success, and the staleness check below it can still fail the install.
+      if (hoistedAway.length > 0) {
+        const warning = formatHoistedDepDirsWarning(hoistedAway);
+        console.warn(warning);
+        this.broadcastSSE({ type: "install_log", data: { text: `${warning}\n`, stream: "stderr" } });
       }
 
       this.finishInstallOk(markerDir, markerFile, stamp);

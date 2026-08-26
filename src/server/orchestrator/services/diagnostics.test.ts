@@ -10,6 +10,7 @@ import type { ServiceManager, ManagedService } from "../service-manager.js";
 import type { LogRingEntry, WsServerMessage } from "../../shared/types.js";
 import { getSessionDiagnostics, describeProviderRoute } from "./diagnostics.js";
 import { evaluateContentKeyReport } from "../install-content-key.js";
+import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
 // Pin host detection to a large host so the host-relative default resource
 // ceilings (used when no MAX_SESSION_* env var is set) don't clamp the
@@ -268,7 +269,7 @@ describe("getSessionDiagnostics", () => {
     });
 
     it("captures YAML parse errors without failing the request", async () => {
-      const dir = workspace("agent: not_a_mapping\n");
+      const dir = expectInvalidShipitConfig(() => workspace("agent: not_a_mapping\n"));
       const result = await diagnose(dir);
       expect(result.parsedConfig?.parseError).toMatch(/agent/);
     });

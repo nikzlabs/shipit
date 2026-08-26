@@ -29,6 +29,7 @@ import { CredentialStore } from "../credential-store.js";
 import { SecretStore } from "../secret-store.js";
 import { initGlobalGitConfig } from "../git-config.js";
 import type { PluginReposSnapshot } from "../../shared/plugin-repos.js";
+import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
 /** The two-repo fixture shape (plan §5): self + a tracked repo by owner/name. */
 const DECLARE_FIXTURE = `
@@ -438,7 +439,9 @@ plugins:
   });
 
   it("a malformed document degrades to a warning, not a 500", async () => {
-    writeConfig("plugins: [unclosed\n  - broken yaml");
+    expectInvalidShipitConfig(() => {
+      writeConfig("plugins: [unclosed\n  - broken yaml");
+    });
     const snap = await snapshot();
     expect(snap.repos).toEqual([]);
     expect(snap.warnings).toContainEqual(expect.stringContaining("could not be parsed"));

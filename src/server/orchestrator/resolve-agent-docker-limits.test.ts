@@ -15,6 +15,7 @@ import path from "node:path";
 import os from "node:os";
 
 import { resolveAgentDockerLimits, deriveSessionMemorySizing } from "./session-container.js";
+import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -189,7 +190,9 @@ describe("resolveAgentDockerLimits", () => {
   it("auto-sizes on a YAML parse error", () => {
     stubHost(96 * GIB);
     const dir = setup();
-    write(dir, "agent: not_a_mapping\n");
+    expectInvalidShipitConfig(() => {
+      write(dir, "agent: not_a_mapping\n");
+    });
     expect(resolveAgentDockerLimits(dir).memoryLimit).toBe(44237 * MIB);
   });
 

@@ -22,6 +22,7 @@ import { buildPluginReposSnapshot } from "../../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
 import type { StagedGeneration } from "../plugin-generations.js";
+import { expectInvalidShipitConfig } from "../../shared/shipit-config-test-guard.js";
 
 let sessionDir: string;
 let workspaceDir: string;
@@ -400,7 +401,9 @@ services:
   });
 
   it("refuses when it cannot read the declaration at all", () => {
-    declare("plugins: [oh: : no\n");
+    expectInvalidShipitConfig(() => {
+      declare("plugins: [oh: : no\n");
+    });
     const verdict = judge();
 
     expect(verdict.ok).toBe(false);

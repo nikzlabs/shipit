@@ -21,6 +21,7 @@ import {
 import type { ContainerConfig } from "./session-container.js";
 import { allowEgressHost, clearEgressPolicy } from "./egress-policy.js";
 import { TEST_CREDENTIALS_DIR } from "./credentials-test-helpers.js";
+import { expectInvalidShipitConfig } from "../shared/shipit-config-test-guard.js";
 
 // ---------------------------------------------------------------------------
 // Mock Docker types
@@ -1792,7 +1793,9 @@ describe("readAgentConfig (W4a)", () => {
 
   it("logs the workspace + error and returns defaults when shipit.yaml is malformed", () => {
     // Malformed YAML — `: : :` is not parseable.
-    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: [unclosed\n: : :\n");
+    expectInvalidShipitConfig(() => {
+      fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  memory: [unclosed\n: : :\n");
+    });
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     const config = readAgentConfig(tmpDir);

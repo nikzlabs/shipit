@@ -202,13 +202,69 @@ happened — which removes the release-the-claim path entirely.
 The mode passes are additionally best-effort now, matching `chown_workspace`'s
 own, so a path another session unlinks mid-walk cannot kill a boot.
 
-**And an install's outcome is no longer its exit status.** `emptyDepDirsContradictingMarker`
+**And an install's outcome is no longer its exit status.** `classifyEmptyDepDirs`
+(then named `emptyDepDirsContradictingMarker`)
 was applied only when deciding whether to TRUST a marker. It is now applied when
 deciding whether to WRITE one: a declared dep dir that is present-and-EMPTY when
 the install commands finish fails the install, so the gate stays shut and the
 `install_error` names the directory instead of leaving `install finished` as the
 only account of what happened. Absent stays fine on both sides — a project that
 manages no dependency directory is not a failed install.
+
+**Correction (planning#480): "absent stays fine" was unreachable under the overlay
+dep store.** docs/183 mounts an overlay at every declared dep dir, and a mount
+point is a directory — so inside a container a declared dep dir is never absent,
+only present, and when the install does not fill it, always empty. An npm
+**workspaces** monorepo (root install hoists everything; `server/node_modules` is
+never created) therefore landed in the fatal branch on every session, retrying
+every 30 seconds forever while the app ran correctly, with no state the repo
+could reach that cleared it short of editing `agent.dep-dirs`.
+
+The fix reads npm's own record rather than loosening the predicate. An empty dep
+dir is excused only when **all three** of these hold for an ancestor package:
+
+1. the ancestor's **hidden** lockfile (`node_modules/.package-lock.json`, npm's
+   record of what it reified) **links** the dir's package —
+   `{ "resolved": "server", "link": true }`;
+2. that hidden lockfile records **no entry at all** under the package's own
+   `node_modules/`;
+3. the ancestor's **manifest** lockfile (`package-lock.json`) records none either.
+
+**Each condition closes a hole found in review; the first cut had only 1.**
+Verified against npm 10 and 11: a root on `lodash@4` with a workspace `server` on
+`lodash@3` writes BOTH the link and `server/node_modules/lodash@3.10.1` into the
+root hidden lockfile, and creates `server/node_modules` on disk — so a link alone
+proves nothing about the workspace's own dep dir.
+
+Condition 2 is **unfiltered**, and an intermediate cut got that wrong too by
+reusing the staleness check's `isRequired`. That predicate excludes optional,
+peer and platform-restricted entries because it reads the MANIFEST side, where a
+package npm never installed still appears. The hidden lockfile lists only what is
+on disk — verified: an optional dependency skipped for a platform mismatch is
+absent from it entirely — so those exclusions could only make ShipIt ignore a
+package that IS there. This repository's own hidden lockfile has 21 such entries.
+`isRequired` is now private again, with a docstring saying which side it is for.
+
+Condition 3 is what stops a **stale** record from laundering an install. The
+ancestor tree need not itself be a declared dep dir, so nothing else proves its
+record describes the install that just ran: for a repo declaring only
+`server/node_modules`, an older commit's root install recorded the link with
+everything hoisted, and a laundered install over a newer commit leaves that record
+in place. The manifest lockfile cannot drift that way — it is committed, current
+with the checkout by construction — so it is the statement the record is checked
+against. A missing manifest lockfile is therefore also a refusal.
+
+The looser alternative (fail only when EVERY declared dep dir is empty) was
+rejected: it keeps this incident's shape but opens a new one, where a monorepo's
+successful root install masks a laundered sub-install. The exemption cannot
+weaken what this section or docs/183 protects, because every exemption requires a
+hidden lockfile that only a real install writes: a laundered exit and both
+docs/183 flag-transition modes leave the ROOT dep dir empty, which is never
+eligible, and where only a nested dep dir is declared the surviving ancestor
+record is precisely what decides whether the empty mount point should hold
+anything. It is applied inside the single shared predicate, so the trust side and
+the write side still cannot diverge. Full argument, including why the path walk
+is deliberately lexical: `npm-workspace-hoist.ts`'s module doc.
 
 ### Key files (follow-on)
 
@@ -217,7 +273,33 @@ manages no dependency directory is not a failed install.
   `prune_stale_sentinels`.
 - `src/server/session/install-controller.ts` — the post-install dep-dir check and
   `finishInstallFailed`.
-- `src/server/session/install-failure.ts` — `formatEmptyDepDirsFailureMessage`.
+- `src/server/session/install-failure.ts` — `formatEmptyDepDirsFailureMessage`,
+  `formatHoistedDepDirsWarning`.
+- `src/server/session/overlay-dep-check.ts` — `classifyEmptyDepDirs`, the one
+  predicate both the trust side and the write side apply.
+- `src/server/session/npm-workspace-hoist.ts` — the planning#480 hoist exemption
+  and why it cannot weaken either side.
+- `src/server/shared/shipit-config-test-guard.ts` — the write hook that stops a
+  malformed `shipit.yaml` fixture from silently disabling any of these checks.
+  Installed suite-wide by `server-test-setup.ts`; `expectInvalidShipitConfig` is
+  the opt-out for a test whose point IS the invalid config.
+
+**A note on how the checks above are tested.** Every reader of the config here
+catches `ShipitConfigError` and falls back to a conservative empty result — right
+in production, and the reason a malformed *fixture* is invisible: the check
+evaluates nothing and the test still passes. Three of the tests in
+`install-controller-dep-dir-outcome.test.ts` were green that way, because YAML
+parses a bare `true` as a boolean and `agent.install: [- true]` is therefore
+rejected. Auditing for more of them by reading test sources cannot work, since
+fixtures are built by interpolation; validating every fixture at the moment it is
+written can, and does both jobs at once. Running the full suite behind that hook
+found no further vacuous fixtures and eleven tests that write a malformed config
+deliberately, now marked as such — twelve `expectInvalidShipitConfig` call sites
+across eleven files, counting the one in `shipit-config.test.ts` that predates the
+audit. The hook replaces the function on the `node:fs` default export, so a test
+reaching a write through a named or namespace import would not be intercepted;
+every fixture in the suite today uses the default form, which makes this a strong
+default rather than an airtight invariant.
 - `src/server/orchestrator/session-worker-uid.ts` — `shareTreeOnce` carries the
   same one-shot hazard and is not wrong today; the docstring says when it becomes
   wrong and what it would cost to rotate.

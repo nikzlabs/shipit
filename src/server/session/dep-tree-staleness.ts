@@ -114,8 +114,10 @@ export interface StaleDepDir {
 }
 
 /** The subset of a lockfile entry this module reads. */
-interface LockEntry {
+export interface LockEntry {
   version?: unknown;
+  /** For a `link` entry, the path of the linked package relative to the project root. */
+  resolved?: unknown;
   dev?: unknown;
   optional?: unknown;
   devOptional?: unknown;
@@ -133,8 +135,11 @@ interface LockEntry {
  * lockfile. A v1 lockfile (npm 6) has `dependencies` and no `packages`, and is
  * not comparable to a hidden lockfile — `null` means "skip this dir", never
  * "the tree is stale".
+ *
+ * Exported for `npm-workspace-hoist.ts`, which reads the same artifact to answer
+ * a different question about it (planning#480).
  */
-function parsePackages(text: string): Record<string, LockEntry> | null {
+export function parsePackages(text: string): Record<string, LockEntry> | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -153,6 +158,13 @@ function parsePackages(text: string): Record<string, LockEntry> | null {
  * `treeHasDev` is the self-calibration described in the module doc: the caller
  * passes whether the tree recorded any dev package at all, and dev entries are
  * required only then.
+ *
+ * **This reads the MANIFEST side of the comparison**, which lists every package
+ * the dependency graph knows about whether or not it was installed — hence the
+ * exclusions. It is the wrong predicate to point at a HIDDEN lockfile, which
+ * lists only what npm actually reified; `npm-workspace-hoist.ts` briefly reused
+ * it that way and the exclusions silently ignored packages that were on disk
+ * (planning#480). Kept private to make that mistake harder to repeat.
  */
 function isRequired(key: string, entry: LockEntry, treeHasDev: boolean): boolean {
   // The root project (`""`) and workspace paths (`packages/web`) are not things
@@ -233,7 +245,7 @@ export function npmLockfileMismatches(
  * Returns `[]` when nothing disagrees, when no declared dir is an npm-reified
  * tree, when an install command bypasses the lockfile, when the repo opted out
  * with `agent.dep-dirs: []`, or when the config cannot be read — conservative in
- * exactly the direction `emptyDepDirsContradictingMarker` is: an unreadable
+ * exactly the direction `classifyEmptyDepDirs` is: an unreadable
  * declaration never fails an install.
  */
 export function staleDepDirs(workspaceRoot: string, installCommands: string[]): StaleDepDir[] {
