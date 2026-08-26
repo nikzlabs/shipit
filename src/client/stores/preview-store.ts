@@ -473,9 +473,9 @@ interface PreviewTargetInputs {
  *
  * So the session's target is remembered **by service name**, and it is recorded
  * for whatever the pane is showing — a pin the user never had to make. A
- * remembered service that is not running right now falls back to the server's
- * default *for display only*: the memory is kept, so the pane returns to it the
- * moment it is running again.
+ * remembered service that is not running right now keeps the pane: a declared
+ * service keeps its port while stopped, so the pane holds that port and waits
+ * for the service to come back rather than showing a different app.
  *
  * `write`: `undefined` leaves the memory alone, `null` deletes the entry, an
  * object replaces it.
@@ -503,8 +503,13 @@ function resolvePreviewTarget(
 
   if (entry?.service) {
     const svc = state.services.find((s) => s.name === entry?.service);
-    const running = svc?.status === "running" && svc.port ? svc.port : null;
-    return { selectedPort: running };
+    // The port is held whatever the service's status is — a declared service
+    // keeps its port while stopped, so the pane can WAIT for it. Handing the
+    // user a different app for the duration is the replacement this exists to
+    // stop; `PreviewFrame` renders a waiting state over the dormant slot
+    // instead. A service with no port at all (a worker) has nothing to show, so
+    // that alone falls back.
+    return { selectedPort: svc?.port ?? null };
   }
   if (entry) {
     // Port-only memory: a preview no Compose service owns (Vite / `managed`).

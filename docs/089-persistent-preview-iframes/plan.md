@@ -203,18 +203,34 @@ Two rules make the pane hold still:
    watching the stack come up *is* looking at that service, and promoting a
    later arrival over it would be the replacement this whole section exists to
    stop. One click on the toolbar moves it.
-2. **A target that isn't running is fallen back from, never forgotten.** The
-   pane shows the server's default while the remembered service is down, and
-   returns to it the moment it reports `running` again. The memory is dropped
-   only when the user selects something else, or when an authoritative
-   (non-empty) `service_list` no longer declares that name at all — a rename or
-   a removal, after which the pane re-pins.
+2. **A target that isn't running is waited for, not fallen back from.** A
+   declared service keeps its `port` while stopped (`ServiceManager` writes it
+   at map-build time, before anything starts), so the pane *holds* that port and
+   `PreviewFrame` renders a waiting state over the dormant slot. Handing the
+   user a different app for the duration is the same replacement rule 1 exists
+   to stop — a restart is the commonest way to hit it. Only a remembered service
+   with no port at all (a worker) has nothing to wait on and falls back. The
+   memory is dropped when the user selects something else, or when an
+   authoritative (non-empty) `service_list` no longer declares that name — a
+   rename or a removal, after which the pane re-pins.
 
-**Known gap:** while the remembered service is down, the pane does show a
-different service rather than an explanatory "this service is stopped" state.
-Building that state is the stricter answer, but the toolbar's port selector is
-built from running ports only and cannot represent a stopped selection today.
-The fallback is bounded — it reverts by itself — where forgetting was not.
+What the wait costs, and what pays for it:
+
+- **The pane must not probe a port that answers nothing.** `usePreviewHealthPoller`
+  returns early while waiting. Without that it would poll for its full 15s
+  deadline and then create the slot *anyway* — a 502 document parked behind the
+  overlay, and a created slot is only ever promoted afterwards, never re-probed,
+  so it would still be there when the service came back.
+- **The wait must end on a live page.** The slot is deliberately retained
+  through the outage, so promoting it would re-show the document from before the
+  service went down. `PreviewFrame` bumps `refreshKey` on the
+  waiting → running edge, reusing the toolbar-refresh path.
+- **The wait must be escapable.** The toolbar's port list is built from
+  `detectedPorts`, which holds running ports only, so the parked service has no
+  row of its own — and with a single other service up, the selector would not
+  render at all. `allPorts` therefore gains the active service's own row, and
+  `showSelector` opens on `allPorts.length > 1`. `activeStatus` comes from the
+  service rather than from that list, so the dot reads stopped, not green.
 
 ### Session switch flow (session-actions.ts)
 
@@ -234,9 +250,9 @@ Multiple iframes emit `postMessage` errors. Extract sessionId from `event.origin
 
 | File | Change |
 |------|--------|
-| `src/client/components/PreviewFrame.tsx` | Iframe pool (main change) |
+| `src/client/components/PreviewFrame.tsx` | Iframe pool (main change); the waiting-for-its-service state |
 | `src/client/hooks/useIframePool.ts` | Slot map + LRU eviction |
-| `src/client/hooks/usePreviewHealthPoller.ts` | Slot creation; enters at the remembered path |
+| `src/client/hooks/usePreviewHealthPoller.ts` | Slot creation; enters at the remembered path; skips a service that isn't running |
 | `src/client/stores/preview-store.ts` | Snapshot/restore per session; `previewPaths`; `resolvePreviewTarget` / `reconcilePreviewTarget` |
 | `src/client/stores/preview-target-memory.ts` | Per-session remembered preview service (planning#478) |
 | `src/client/stores/actions/session-actions.ts` | Snapshot on switch instead of reset |

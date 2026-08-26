@@ -177,12 +177,11 @@ describe("preview target memory (planning#478)", () => {
       usePreviewStore.getState().setSelectedPort(3000);
       expect(usePreviewStore.getState().selectedPort).toBe(3000);
 
-      // `web` goes down: the pane falls back to what IS running…
+      // `web` goes down. The pane does NOT move to `api`: it holds `web`'s port
+      // and waits, which is what `PreviewFrame` renders the waiting state over.
       usePreviewStore.getState().updateService(svc("web", 3000, "starting"));
       usePreviewStore.getState().setStatus(statusFor(api));
-      expect(usePreviewStore.getState().selectedPort).toBeNull();
-      // …without forgetting the choice, which is what used to hand the pane
-      // over permanently.
+      expect(usePreviewStore.getState().selectedPort).toBe(3000);
       expect(usePreviewStore.getState().previewTargetMemory["session-a"]).toEqual({
         service: "web",
         port: 3000,
@@ -191,6 +190,42 @@ describe("preview target memory (planning#478)", () => {
       usePreviewStore.getState().updateService(web);
       usePreviewStore.getState().setStatus(statusFor(api, web));
       expect(usePreviewStore.getState().selectedPort).toBe(3000);
+    });
+  });
+
+  describe("waiting instead of falling back", () => {
+    it("holds a stopped service's port rather than handing the pane to another", () => {
+      const web = svc("web", 3000);
+      const api = svc("api", 4000);
+      usePreviewStore.getState().setServices([web, api]);
+      usePreviewStore.getState().setSelectedPort(4000);
+
+      usePreviewStore.getState().updateService(svc("api", 4000, "stopped"));
+      usePreviewStore.getState().setStatus(statusFor(web));
+      expect(usePreviewStore.getState().selectedPort).toBe(4000);
+    });
+
+    it("holds it through an error too", () => {
+      const web = svc("web", 3000);
+      usePreviewStore.getState().setServices([web, svc("api", 4000)]);
+      usePreviewStore.getState().setSelectedPort(4000);
+
+      usePreviewStore.getState().updateService({ ...svc("api", 4000, "error"), error: "exit 1" });
+      usePreviewStore.getState().setStatus(statusFor(web));
+      expect(usePreviewStore.getState().selectedPort).toBe(4000);
+    });
+
+    it("falls back only when the remembered service has no port to wait on", () => {
+      // A worker declares no ports, so there is nothing for the pane to show.
+      usePreviewStore.getState().setServices([
+        svc("web", 3000),
+        { name: "worker", status: "running", preview: "manual" },
+      ]);
+      usePreviewStore.setState({
+        previewTargetMemory: { "session-a": { service: "worker", port: 0 } },
+      });
+      usePreviewStore.getState().setStatus(statusFor(svc("web", 3000)));
+      expect(usePreviewStore.getState().selectedPort).toBeNull();
     });
   });
 
@@ -218,7 +253,9 @@ describe("preview target memory (planning#478)", () => {
       usePreviewStore.getState().restoreSession("session-a");
       usePreviewStore.getState().setServices([web, svc("api", 4000, "starting")]);
       usePreviewStore.getState().setStatus(statusFor(web));
-      expect(usePreviewStore.getState().selectedPort).toBeNull();
+      // Still A's own service, waiting — never `web`, which is the one that
+      // happened to boot first.
+      expect(usePreviewStore.getState().selectedPort).toBe(4000);
 
       usePreviewStore.getState().updateService(api);
       usePreviewStore.getState().setStatus(statusFor(web, api));

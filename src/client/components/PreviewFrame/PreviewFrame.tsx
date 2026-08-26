@@ -170,7 +170,17 @@ export function PreviewFrame({
   // disagree. The health poller compares it with a retained slot's recorded
   // owner and drops the slot when the port changed hands (planning#394).
   const services = usePreviewStore((s) => s.services);
-  const activeService = activePort ? services.find((s) => s.port === activePort)?.name : undefined;
+  const activeServiceState = activePort ? services.find((s) => s.port === activePort) : undefined;
+  const activeService = activeServiceState?.name;
+
+  /**
+   * The pane is parked on a service that is not up right now (planning#478).
+   * The session's target is remembered by service name and the pane holds it
+   * through a restart, a stopped service and a reclaimed container, so this is
+   * the state where it waits instead of showing whatever else happens to be
+   * running. No service row for the active port (a Vite preview) is never this.
+   */
+  const waitingForService = !!activeServiceState && activeServiceState.status !== "running";
 
   // Compute poll URL for the active slot
   const pollUrl = isContainerMode && sessionId
@@ -194,6 +204,7 @@ export function PreviewFrame({
     getSlot,
     dropSlot,
     activeService,
+    waitingForService,
   });
 
   // Derive active slot state for overlay/UI logic
@@ -521,6 +532,21 @@ export function PreviewFrame({
     }
   }, [refreshKey, activeSlotKey, activeSlotUrl, iframeRefs]);
 
+  // Reload the pane when the service it waited for comes back (planning#478).
+  // The slot is retained through the outage by design (docs/089), so promoting
+  // it would re-show the document the service served before it went down — the
+  // wait would end on a stale page. Only a slot that actually exists needs
+  // this; a new one enters at the right URL on its own.
+  const wasWaitingRef = useRef(false);
+  // eslint-disable-next-line no-restricted-syntax -- reacts to a service returning to `running` over WS
+  useEffect(() => {
+    const wasWaiting = wasWaitingRef.current;
+    wasWaitingRef.current = waitingForService;
+    if (wasWaiting && !waitingForService && activeSlotKey && createdSlotsRef.current.has(activeSlotKey)) {
+      setRefreshKey((k) => k + 1);
+    }
+  }, [waitingForService, activeSlotKey, createdSlotsRef]);
+
   // Remember the last port label so the top bar doesn't flash "Preview" during session switch
   const lastPortLabel = useRef<string | null>(null);
 
@@ -528,7 +554,6 @@ export function PreviewFrame({
   // By computing overlay content instead of returning early, we keep a single
   // DOM tree so the iframe element is never destroyed/recreated.
   const isRunning = !!preview?.running;
-  const showSelector = isRunning && (detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0));
   const startupSteps = usePreviewStore((s) => s.startupSteps);
 
   // Compute current port label and remember it for transitions
@@ -558,7 +583,24 @@ export function PreviewFrame({
     }
   }
 
-  const activeStatus = allPorts.find(p => p.port === activePort)?.status ?? (isRunning ? "running" : "stopped");
+  // The pane can be parked on a service that is NOT running, so its row is
+  // missing from `detectedPorts` above — add it, or the selector would have no
+  // entry for what the pane is actually on and (with one other service up)
+  // would not render at all, leaving no way back but the drawer.
+  if (isRunning && activeServiceState && !allPorts.some(p => p.port === activePort)) {
+    allPorts.push({ port: activePort, label: activeServiceState.name, status: activeServiceState.status });
+  }
+  const showSelector = isRunning && (
+    allPorts.length > 1
+    || detectedPorts.length > 1
+    || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0)
+  );
+
+  // The service's OWN status, not "whatever the port list says": a waiting pane
+  // must show its service stopped/starting rather than a green dot.
+  const activeStatus = activeServiceState?.status
+    ?? allPorts.find(p => p.port === activePort)?.status
+    ?? (isRunning ? "running" : "stopped");
 
   const hasErrors = errors.length > 0;
   const composeError = usePreviewStore((s) => s.composeError);
@@ -587,11 +629,12 @@ export function PreviewFrame({
   const suggestedWildcardHost = cannotSubdomainPreview ? suggestWildcardHost(apiHost) : null;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element
-  // alive) — and likewise whenever this pane is not the one on screen. Both
-  // reasons feed the same flag because both have the same two consequences: the
-  // slot is given `display: none`, which is what actually stops it rendering,
-  // and every mounted page is told `visible: false`.
-  const hideIframe = (!isRunning && !showStarting) || !paneVisible;
+  // alive) — and likewise whenever this pane is not the one on screen, or while
+  // it waits for its service to come back. All three reasons feed the same flag
+  // because they have the same two consequences: the slot is given
+  // `display: none`, which is what actually stops it rendering, and every
+  // mounted page is told `visible: false`.
+  const hideIframe = (!isRunning && !showStarting) || !paneVisible || waitingForService;
 
   // Keep every mounted page informed when its ShipIt surface becomes visible
   // or hidden. Background slots remain alive by design, so CSS alone is not a
@@ -623,6 +666,34 @@ export function PreviewFrame({
     overlayContent = <ComposeErrorBanner composeError={composeError} onSendToAgent={onSendCrashToAgent} />;
   } else if (showComposeHint) {
     overlayContent = <PreviewSetupInvite onSendToAgent={onSendComposeHintToAgent} />;
+  } else if (waitingForService && activeServiceState) {
+    // The pane holds its service through an outage rather than showing another
+    // one (planning#478). `starting` is a wait with an end in sight; `stopped`
+    // and `error` are not, so those say what the pane is waiting FOR and leave
+    // the Start control to the Services drawer docked right below, which owns
+    // every service's lifecycle already (docs/175) — this overlay does not
+    // duplicate it.
+    const starting = activeServiceState.status === "starting";
+    overlayContent = (
+      <div className="text-center space-y-3 max-w-sm px-4">
+        {starting
+          ? <CircleNotchIcon size={ICON_SIZE.MD} className="mx-auto animate-spin text-(--color-accent)" />
+          : <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />}
+        <p className="font-medium">
+          {starting
+            ? `Waiting for ${activeServiceState.name}…`
+            : `${activeServiceState.name} is not running`}
+        </p>
+        <p className="text-xs text-(--color-text-secondary)">
+          {starting
+            ? "The preview returns here as soon as the service is up."
+            : "The preview stays on this service and returns as soon as it is running again. Start it from the Services drawer below, or pick another service above."}
+        </p>
+        {activeServiceState.error && (
+          <p className="text-xs text-(--color-error) break-words">{activeServiceState.error}</p>
+        )}
+      </div>
+    );
   } else if (showStarting && !showIframe) {
     overlayContent = (
       <div className="text-center space-y-3">

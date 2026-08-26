@@ -1992,6 +1992,92 @@ describe("PreviewFrame", () => {
       vi.unstubAllEnvs();
     }
   });
+
+  // planning#478 — the pane holds the service it is on. When that service is
+  // down it waits for it rather than showing whatever else happens to be up.
+  describe("waiting for its own service", () => {
+    const WEB = { name: "web", status: "running" as const, port: 3000, preview: "auto" as const };
+    const API_STOPPED = { name: "api", status: "stopped" as const, port: 4000, preview: "auto" as const };
+    // `web` is the only running service, so this is what the pane would show if
+    // it fell back — `detectedPorts` never contains the stopped service.
+    const RUNNING: PreviewStatus = {
+      running: true, port: 3000, url: "/preview/s1/3000/", source: "detected", detectedPorts: [3000],
+    };
+
+    it("says what it is waiting for instead of showing the other service", async () => {
+      usePreviewStore.getState().setServices([WEB, API_STOPPED]);
+      render(
+        <PreviewFrame
+          preview={RUNNING} sessionId="s1" {...defaultProps}
+          detectedPorts={[3000]} selectedPort={4000} onSelectPort={vi.fn()}
+        />,
+      );
+      expect(await screen.findByText("api is not running")).toBeInTheDocument();
+      // The toolbar names the service the pane is on, not the running one.
+      expect(screen.getByText("api")).toBeInTheDocument();
+      expect(screen.queryByText("web")).not.toBeInTheDocument();
+    });
+
+    it("shows a spinner while the service is starting", async () => {
+      usePreviewStore.getState().setServices([WEB, { ...API_STOPPED, status: "starting" }]);
+      render(
+        <PreviewFrame
+          preview={RUNNING} sessionId="s1" {...defaultProps}
+          detectedPorts={[3000]} selectedPort={4000} onSelectPort={vi.fn()}
+        />,
+      );
+      expect(await screen.findByText("Waiting for api…")).toBeInTheDocument();
+    });
+
+    it("surfaces the service's own error", async () => {
+      usePreviewStore.getState().setServices([WEB, { ...API_STOPPED, status: "error", error: "exit 1" }]);
+      render(
+        <PreviewFrame
+          preview={RUNNING} sessionId="s1" {...defaultProps}
+          detectedPorts={[3000]} selectedPort={4000} onSelectPort={vi.fn()}
+        />,
+      );
+      expect(await screen.findByText("api is not running")).toBeInTheDocument();
+      expect(screen.getByText("exit 1")).toBeInTheDocument();
+    });
+
+    it("offers the running service in the selector, so the wait is escapable", async () => {
+      usePreviewStore.getState().setServices([WEB, API_STOPPED]);
+      const onSelectPort = vi.fn();
+      render(
+        <PreviewFrame
+          preview={RUNNING} sessionId="s1" {...defaultProps}
+          detectedPorts={[3000]} selectedPort={4000} onSelectPort={onSelectPort}
+        />,
+      );
+      // Without the stopped service's own row the selector would not render at
+      // all here — one detected port — stranding the user on the waiting state.
+      await userEvent.click(await screen.findByLabelText("Select preview port"));
+      await userEvent.click(await screen.findByRole("menuitem", { name: /web/ }));
+      expect(onSelectPort).toHaveBeenCalledWith(3000);
+    });
+
+    it("shows the preview once the service is running", async () => {
+      // Container mode: the slot is created only after `/api/preview-health`
+      // reports ready, so the default stub (an empty body) would never resolve.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(new Response(JSON.stringify({ ready: true }), { status: 200 })),
+      );
+      usePreviewStore.getState().setServices([
+        WEB,
+        { ...API_STOPPED, status: "running" },
+      ]);
+      render(
+        <PreviewFrame
+          preview={{ ...RUNNING, detectedPorts: [3000, 4000] }} sessionId="s1" {...defaultProps}
+          detectedPorts={[3000, 4000]} selectedPort={4000} onSelectPort={vi.fn()}
+        />,
+      );
+      expect(await screen.findByTitle("Live Preview")).toBeInTheDocument();
+      expect(screen.queryByText("api is not running")).not.toBeInTheDocument();
+    });
+  });
 });
 
 describe("formatErrorForMessage", () => {
