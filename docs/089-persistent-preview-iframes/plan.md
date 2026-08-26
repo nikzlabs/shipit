@@ -145,7 +145,6 @@ The preview store is global and gets `reset()` on every session switch, wiping e
 ```
 interface SessionPreviewSnapshot {
   status: PreviewStatus | null;
-  selectedPort: number | null;
   errors: PreviewError[];
   startupSteps: StartupStep[];
   autoFixRetries: number;
@@ -160,6 +159,103 @@ New methods:
 - `getSnapshot(sessionId)` — read-only access for background frames
 
 `autoFixEnabled` stays global (user preference). `reset()` clears everything including snapshots (used by `fullResetAllStores`).
+
+### Which service the pane is on (planning#478)
+
+The snapshot above shipped with `selectedPort` in it, and that was the wrong
+handle. **A port is a fact about the present**: it exists only while its service
+is running, `preview_status` carries only the ports currently running, and the
+orchestrator's default (`buildPreviewStatus` → `detectedPorts[0]`) is *the first
+running preview service*. Three ordinary events therefore moved the pane to a
+different app with nobody touching it:
+
+- a service restarting — it leaves `detectedPorts`, the handler cleared
+  `selectedPort` for not being among them, and the pane fell onto another
+  service **permanently**;
+- a *second* service starting — it can become `detectedPorts[0]`, and an
+  unselected pane follows that number;
+- switching back to a session whose container was reclaimed while it was off
+  screen — the services report in one at a time, and the first one up won.
+
+So the session's target is remembered **by service name**, in
+`previewTargetMemory` — a localStorage-backed `Record<sessionId, {service?,
+port}>` built exactly like `viewportMemory` (docs/278), and, like it, deliberately
+*not* part of `SessionPreviewSnapshot`, which cannot survive a reload.
+`selectedPort` is now derived from it, never owned: `reconcilePreviewTarget()`
+recomputes it inside `setStatus` / `setServices` / `updateService` /
+`restoreSession`, so no call site has to remember to.
+
+Two rules make the pane hold still:
+
+1. **The pane pins what it shows, even unasked.** A session with no memory yet
+   records the service behind the default port the first time a preview is
+   running. The user never had to make a choice for their choice to be honoured
+   — which is what stops a service that starts *later* from taking the pane.
+   Pinning waits for `service_list` when the source is `detected` (every such
+   port belongs to a Compose service, so no row yet means the list simply hasn't
+   landed) rather than recording the weaker port-only handle for something that
+   has a name.
+
+   **The consequence, taken knowingly:** on a first boot the services come up
+   one at a time, so whichever becomes previewable first is what gets pinned —
+   boot readiness turns into a durable choice, and it need not be the service
+   declared first. That is the requirement, not a side effect of it: a user
+   watching the stack come up *is* looking at that service, and promoting a
+   later arrival over it would be the replacement this whole section exists to
+   stop. One click on the toolbar moves it.
+2. **A target that isn't running is waited for, not fallen back from.** A
+   declared service keeps its `port` while stopped (`ServiceManager` writes it
+   at map-build time, before anything starts), so the pane *holds* that port and
+   `PreviewFrame` renders a waiting state over the dormant slot. Handing the
+   user a different app for the duration is the same replacement rule 1 exists
+   to stop — a restart is the commonest way to hit it. Only a remembered service
+   with no port at all (a worker) has nothing to wait on and falls back. The
+   memory is dropped when the user selects something else, or when an
+   authoritative (non-empty) `service_list` no longer declares that name — a
+   rename or a removal, after which the pane re-pins.
+
+What the wait costs, and what pays for it. Every item below is a place where a
+port-shaped assumption survived the rewrite and had to be dug out; four were
+found by adversarial review rather than by the first pass.
+
+- **"Nothing is running" must not discard the port.** `activePort` was gated on
+  `preview.running`, which is the *aggregate* — so the commonest restart of all,
+  the one where the parked service is the only preview service, zeroed the port
+  and produced the generic "No preview running". The pane lost the very identity
+  the wait exists to state. A retained `selectedPort` now outranks the aggregate.
+- **The pane's service is resolved by NAME, like the store's.** Resolving the row
+  by port instead disagrees with the store the moment two services declare the
+  same port — ShipIt warns about that but permits it, and `find` returns whoever
+  is listed first. The pane could then sit forever on "A is not running" while
+  the remembered B served that very port.
+- **A missing row is a gap, not an answer.** `resolvePreviewTarget` holds the
+  *recorded* port when the service list has no row at all — the list is empty in
+  the window before `service_list` lands, and surrendering the port there drops
+  the pane onto `status.port`, reintroducing the fallback through the back door.
+  The waiting predicate is keyed on the remembered name for the same reason.
+- **The pane must not probe a port that answers nothing.** `usePreviewHealthPoller`
+  returns early while waiting. Without that it would poll for its full 15s
+  deadline and then create the slot *anyway* — a 502 document parked behind the
+  overlay, and a created slot is only ever promoted afterwards, never re-probed,
+  so it would still be there when the service came back.
+- **The wait must end on a live page — and only for the slot that waited.** The
+  slot is deliberately retained through the outage, so promoting it would
+  re-show the document from before the service went down; `PreviewFrame` bumps
+  `refreshKey` on the recovery edge, reusing the toolbar-refresh path. That edge
+  is recorded as the waiting **slot key**, never a bare boolean: a key carries
+  the session, and switching from a waiting session A straight to a running
+  session B reads as "was waiting, isn't now" — reloading B's retained iframe
+  and destroying exactly the in-page state the pool exists to keep. The edge is
+  also `running` rather than "no longer waiting", so a row that blinks out of
+  the list is not mistaken for a recovery.
+- **The wait must be escapable, and must not lie.** The toolbar's port list is
+  built from `detectedPorts`, which holds running ports only, so the parked
+  service has no row of its own — and with a single other service up, the
+  selector would not render at all. `allPorts` therefore gains the active
+  service's own row, and `showSelector` opens on `allPorts.length > 1`.
+  `activeStatus` comes from the service rather than from that list — in *both*
+  toolbar branches, since the selector-less one hard-coded a success dot from
+  `isRunning` and would show green beside a "not running" overlay.
 
 ### Session switch flow (session-actions.ts)
 
@@ -179,10 +275,11 @@ Multiple iframes emit `postMessage` errors. Extract sessionId from `event.origin
 
 | File | Change |
 |------|--------|
-| `src/client/components/PreviewFrame.tsx` | Iframe pool (main change) |
+| `src/client/components/PreviewFrame.tsx` | Iframe pool (main change); the waiting-for-its-service state |
 | `src/client/hooks/useIframePool.ts` | Slot map + LRU eviction |
-| `src/client/hooks/usePreviewHealthPoller.ts` | Slot creation; enters at the remembered path |
-| `src/client/stores/preview-store.ts` | Snapshot/restore per session; `previewPaths` |
+| `src/client/hooks/usePreviewHealthPoller.ts` | Slot creation; enters at the remembered path; skips a service that isn't running |
+| `src/client/stores/preview-store.ts` | Snapshot/restore per session; `previewPaths`; `resolvePreviewTarget` / `reconcilePreviewTarget` |
+| `src/client/stores/preview-target-memory.ts` | Per-session remembered preview service (planning#478) |
 | `src/client/stores/actions/session-actions.ts` | Snapshot on switch instead of reset |
 | `src/client/hooks/usePreviewErrors.ts` | Origin-based session filtering |
 

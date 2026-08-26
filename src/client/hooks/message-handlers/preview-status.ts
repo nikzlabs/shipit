@@ -12,6 +12,12 @@ export const handlePreviewStatus: Handler<WsPreviewStatus> = (_ctx, data) => {
   // strict about the no-active-session window, which is where a claim leaves
   // the store (see `isForeignSession`).
   if (isForeignSession(data.sessionId)) return;
+  // `setStatus` re-derives `selectedPort` from the session's remembered target
+  // (planning#478). It deliberately does NOT forget a choice whose port is
+  // missing from this message: a service that is restarting, or a container
+  // that was reclaimed while the session sat off screen, drops out of
+  // `detectedPorts` for a while and comes back — and clearing here is what used
+  // to hand the pane to whichever other service was up at that moment.
   preview.setStatus({
     running: data.running,
     port: data.port,
@@ -19,14 +25,6 @@ export const handlePreviewStatus: Handler<WsPreviewStatus> = (_ctx, data) => {
     source: data.source,
     detectedPorts: data.detectedPorts,
   });
-  const currentPort = usePreviewStore.getState().selectedPort;
-  if (currentPort !== null) {
-    const allAvailable = [...(data.detectedPorts ?? [])];
-    if (data.source === "vite" || data.source === "managed") allAvailable.push(data.port);
-    if (!allAvailable.includes(currentPort)) {
-      preview.setSelectedPort(null);
-    }
-  }
   // Once the dev server is actually serving, complete the dev_server
   // step and then clear the startup-steps overlay so it doesn't sit on
   // top of the (now-running) iframe. Same intent as the service_status

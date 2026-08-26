@@ -18,13 +18,14 @@ import { useUiStore } from "../stores/ui-store.js";
  * store and this hook, mounted where the socket already is, acts on it.
  *
  * **The port must be reselected when the service reaches `running`.** This is
- * the part that does not fall out for free. Starting a service emits a
- * `preview_status` carrying only the ports currently running, and the client's
- * handler clears `selectedPort` when the selected one isn't among them. In a
- * session where service A is already running and the pointer targets stopped
- * service B, the panel would therefore stay on A after B starts — unless Compose
- * ordering happened to put B first. `selectedPort` is a view of the present,
- * never durable pending state, so the intent selects its own port explicitly.
+ * the part that does not fall out for free. `selectedPort` is derived from the
+ * session's remembered target and holds a port only while that target's service
+ * is actually running (planning#478), so selecting a stopped service's port up
+ * front is undone by the next reconcile. In a session where service A is already
+ * running and the pointer targets stopped service B, the panel would therefore
+ * stay on A after B starts. `selectedPort` is a view of the present, never
+ * durable pending state, so the intent selects its own port explicitly — which
+ * is also what records B as the session's target from then on.
  *
  * Navigating the slot itself belongs to `PreviewFrame`, which owns the iframe
  * pool; this hook stops once the right port is selected.

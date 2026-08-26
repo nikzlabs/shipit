@@ -54,9 +54,10 @@ describe("openShipitLink — preview (req 2, req 8)", () => {
   });
 
   it("leaves a stopped service's port unselected until it is running (req 12)", () => {
-    // `preview_status` clears `selectedPort` when the chosen port isn't among
-    // the running ones, so selecting up front would be undone. The intent
-    // reselects when the service reports `running`.
+    // `selectedPort` is derived from the session's remembered target and holds
+    // a port only while its service is running (planning#478), so selecting up
+    // front would be undone. The intent reselects when the service reports
+    // `running`.
     usePreviewStore.setState({ services: [WEB_STOPPED] });
     openShipitLink(link("shipit-preview://web/x"));
 

@@ -132,6 +132,14 @@ export interface UsePreviewHealthPollerParams {
    * serving the previous owner's already-loaded document.
    */
   activeService: string | undefined;
+  /**
+   * True while the pane is parked on a service that is not running
+   * (planning#478). Polling then is pointless — the port answers nothing — and
+   * creating a slot on the poll's timeout would put a dead 502 document behind
+   * the waiting overlay and keep it there, because a created slot is only ever
+   * promoted afterwards, never re-probed.
+   */
+  waitingForService: boolean;
 }
 
 /**
@@ -173,6 +181,7 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     getSlot,
     dropSlot,
     activeService,
+    waitingForService,
   } = params;
 
   // The ref-in-cleanup warning does not apply: `pollingRef` holds a Map owned
@@ -180,6 +189,10 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
   // eslint-disable-next-line no-restricted-syntax -- existing usage; hook-owned Map, see above
   useEffect(() => {
     if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
+    // Wait, don't probe. When the service comes back this effect re-runs and
+    // either promotes the retained slot (which `PreviewFrame` reloads) or polls
+    // for a new one.
+    if (waitingForService) return;
 
     // If slot already exists (previously visited), just promote it — unless
     // the port has been taken over by a different service since the slot was
@@ -283,7 +296,7 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       // eslint-disable-next-line react-hooks/exhaustive-deps -- `pollingRef` holds a hook-owned Map, not a DOM node, so deleting this key at cleanup is correct
       pollingRef.current.delete(key);
     };
-  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, getSlot, dropSlot, activeService, preview, createdSlotsRef, pollingRef]);
+  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, getSlot, dropSlot, activeService, waitingForService, preview, createdSlotsRef, pollingRef]);
 }
 
 // Re-export internal helpers for the consuming component, which also needs

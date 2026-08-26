@@ -1992,6 +1992,251 @@ describe("PreviewFrame", () => {
       vi.unstubAllEnvs();
     }
   });
+
+  // planning#478 — the pane holds the service it is on. When that service is
+  // down it waits for it rather than showing whatever else happens to be up.
+  describe("waiting for its own service", () => {
+    const WEB = { name: "web", status: "running" as const, port: 3000, preview: "auto" as const };
+    const API_STOPPED = { name: "api", status: "stopped" as const, port: 4000, preview: "auto" as const };
+    // `web` is the only running service, so this is what the pane would show if
+    // it fell back — `detectedPorts` never contains the stopped service.
+    const RUNNING: PreviewStatus = {
+      running: true, port: 3000, url: "/preview/s1/3000/", source: "detected", detectedPorts: [3000],
+    };
+    /** Everything down — the parked service was the only preview there was. */
+    const NOTHING_RUNNING: PreviewStatus = {
+      running: false, port: 4000, url: "/preview/s1/4000/", detectedPorts: [],
+    };
+
+    /** The pane's identity comes from the store's memory, keyed by name. */
+    function rememberApi(): void {
+      usePreviewStore.setState({ previewTargetMemory: { s1: { service: "api", port: 4000 } } });
+    }
+
+    function readyFetch() {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ready: true }), { status: 200 }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    function renderPane(props: {
+      preview: PreviewStatus;
+      detectedPorts: number[];
+      onSelectPort?: () => void;
+    }) {
+      return render(
+        <PreviewFrame
+          preview={props.preview} sessionId="s1" {...defaultProps}
+          detectedPorts={props.detectedPorts} selectedPort={4000}
+          onSelectPort={props.onSelectPort ?? vi.fn()}
+        />,
+      );
+    }
+
+    it("says what it is waiting for instead of showing the other service", async () => {
+      rememberApi();
+      usePreviewStore.getState().setServices([WEB, API_STOPPED]);
+      renderPane({ preview: RUNNING, detectedPorts: [3000] });
+
+      expect(await screen.findByText("api is not running")).toBeInTheDocument();
+      // The toolbar names the service the pane is on, not the running one.
+      expect(screen.getByText("api")).toBeInTheDocument();
+      expect(screen.queryByText("web")).not.toBeInTheDocument();
+    });
+
+    it("waits by name when another service declares the same port", async () => {
+      // ShipIt warns about a duplicate project port but permits it, and the
+      // clashing row is listed first. Resolving the pane's service by port
+      // alone would sit forever on "web is not running" while the remembered
+      // `api` served 4000 perfectly well.
+      readyFetch();
+      rememberApi();
+      usePreviewStore.getState().setServices([
+        { ...WEB, status: "stopped", port: 4000 },
+        { ...API_STOPPED, status: "running" },
+      ]);
+      renderPane({
+        preview: { ...RUNNING, port: 4000, detectedPorts: [4000] },
+        detectedPorts: [4000],
+      });
+
+      expect(await screen.findByTitle("Live Preview")).toBeInTheDocument();
+      expect(screen.queryByText("web is not running")).not.toBeInTheDocument();
+    });
+
+    it("names the service even when it is the only one and everything is down", async () => {
+      // The commonest restart of all. `preview.running` is false, so the pane
+      // used to drop the port and show the generic "No preview running".
+      rememberApi();
+      usePreviewStore.getState().setServices([{ ...API_STOPPED, status: "starting" }]);
+      renderPane({ preview: NOTHING_RUNNING, detectedPorts: [] });
+
+      expect(await screen.findByText("Waiting for api…")).toBeInTheDocument();
+      expect(screen.queryByText("No preview running")).not.toBeInTheDocument();
+    });
+
+    it("shows a spinner while the service is starting", async () => {
+      rememberApi();
+      usePreviewStore.getState().setServices([WEB, { ...API_STOPPED, status: "starting" }]);
+      renderPane({ preview: RUNNING, detectedPorts: [3000] });
+
+      expect(await screen.findByText("Waiting for api…")).toBeInTheDocument();
+      // The dot must agree with the overlay. `starting` is the warning colour;
+      // a green one beside "Waiting for api…" contradicts the pane.
+      expect(document.querySelector(".bg-\\(--color-warning\\)")).toBeInTheDocument();
+      expect(document.querySelector(".bg-\\(--color-success\\)")).not.toBeInTheDocument();
+    });
+
+    it("keeps the dot honest when the pane has no selector at all", async () => {
+      // One service, parked and stopped: the toolbar renders the plain-label
+      // branch, which used to hard-code a success dot from `isRunning`.
+      rememberApi();
+      usePreviewStore.getState().setServices([{ ...API_STOPPED, status: "starting" }]);
+      renderPane({ preview: NOTHING_RUNNING, detectedPorts: [] });
+
+      expect(await screen.findByText("Waiting for api…")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Select preview port")).not.toBeInTheDocument();
+      expect(document.querySelector(".bg-\\(--color-warning\\)")).toBeInTheDocument();
+      expect(document.querySelector(".bg-\\(--color-success\\)")).not.toBeInTheDocument();
+    });
+
+    it("surfaces the service's own error", async () => {
+      rememberApi();
+      usePreviewStore.getState().setServices([WEB, { ...API_STOPPED, status: "error", error: "exit 1" }]);
+      renderPane({ preview: RUNNING, detectedPorts: [3000] });
+
+      expect(await screen.findByText("api is not running")).toBeInTheDocument();
+      expect(screen.getByText("exit 1")).toBeInTheDocument();
+    });
+
+    it("never probes the port it is waiting on", async () => {
+      const fetchMock = readyFetch();
+      rememberApi();
+      usePreviewStore.getState().setServices([WEB, API_STOPPED]);
+      renderPane({ preview: RUNNING, detectedPorts: [3000] });
+
+      expect(await screen.findByText("api is not running")).toBeInTheDocument();
+      // A poll that ran would create a slot on its own timeout and park a dead
+      // document behind the overlay — which nothing re-probes afterwards.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.queryByTitle("Live Preview")).not.toBeInTheDocument();
+    });
+
+    it("offers the running service in the selector, so the wait is escapable", async () => {
+      rememberApi();
+      usePreviewStore.getState().setServices([WEB, API_STOPPED]);
+      const onSelectPort = vi.fn();
+      renderPane({ preview: RUNNING, detectedPorts: [3000], onSelectPort });
+
+      // Without the stopped service's own row the selector would not render at
+      // all here — one detected port — stranding the user on the waiting state.
+      await userEvent.click(await screen.findByLabelText("Select preview port"));
+      await userEvent.click(await screen.findByRole("menuitem", { name: /web/ }));
+      expect(onSelectPort).toHaveBeenCalledWith(3000);
+    });
+
+    it("shows the preview once the service is running", async () => {
+      // Container mode: the slot is created only after `/api/preview-health`
+      // reports ready, so the default stub (an empty body) would never resolve.
+      readyFetch();
+      rememberApi();
+      usePreviewStore.getState().setServices([WEB, { ...API_STOPPED, status: "running" }]);
+      renderPane({
+        preview: { ...RUNNING, detectedPorts: [3000, 4000] },
+        detectedPorts: [3000, 4000],
+      });
+
+      expect(await screen.findByTitle("Live Preview")).toBeInTheDocument();
+      expect(screen.queryByText("api is not running")).not.toBeInTheDocument();
+    });
+
+    it("reloads the retained slot when the service comes back", async () => {
+      readyFetch();
+      rememberApi();
+      usePreviewStore.getState().setServices([WEB, { ...API_STOPPED, status: "running" }]);
+      const view = renderPane({
+        preview: { ...RUNNING, detectedPorts: [3000, 4000] },
+        detectedPorts: [3000, 4000],
+      });
+      const iframe = await screen.findByTitle("Live Preview");
+      // Stand in for the page having navigated itself. The reload asks the
+      // injected script first and falls back to re-assigning `src` — and only
+      // a `src` that DIFFERS makes the reload observable at all; re-writing the
+      // same string would be indistinguishable from doing nothing.
+      const deepUrl = "http://s1--4000.localhost:3000/deep";
+      iframe.setAttribute("src", deepUrl);
+
+      // Down…
+      await act(async () => {
+        usePreviewStore.getState().updateService({ ...API_STOPPED, status: "starting" });
+      });
+      view.rerender(
+        <PreviewFrame
+          preview={RUNNING} sessionId="s1" {...defaultProps}
+          detectedPorts={[3000]} selectedPort={4000} onSelectPort={vi.fn()}
+        />,
+      );
+      expect(await screen.findByText("Waiting for api…")).toBeInTheDocument();
+
+      // …and back. The slot survived the outage by design, so without this the
+      // wait would end on the document the service served before it went down.
+      await act(async () => {
+        usePreviewStore.getState().updateService({ ...API_STOPPED, status: "running" });
+      });
+      view.rerender(
+        <PreviewFrame
+          preview={{ ...RUNNING, detectedPorts: [3000, 4000] }} sessionId="s1" {...defaultProps}
+          detectedPorts={[3000, 4000]} selectedPort={4000} onSelectPort={vi.fn()}
+        />,
+      );
+      await screen.findByTitle("Live Preview");
+      expect(iframe.getAttribute("src")).not.toBe(deepUrl);
+      expect(iframe.getAttribute("src")).toBe("http://s1--4000.localhost:3000/");
+    });
+
+    it("does not reload another session's iframe when a switch ends the wait", async () => {
+      readyFetch();
+      usePreviewStore.setState({
+        previewTargetMemory: {
+          s1: { service: "api", port: 4000 },
+          s2: { service: "web", port: 3000 },
+        },
+      });
+      usePreviewStore.getState().setServices([WEB, API_STOPPED]);
+
+      // Session s2 first, so its iframe is genuinely retained — the state the
+      // pool exists to preserve, and the thing a wrong reload would destroy.
+      const s2 = (
+        <PreviewFrame
+          preview={{ ...RUNNING, url: "/preview/s2/3000/" }} sessionId="s2" {...defaultProps}
+          detectedPorts={[3000]} selectedPort={3000} onSelectPort={vi.fn()}
+        />
+      );
+      const view = render(s2);
+      const iframe = await screen.findByTitle("Live Preview");
+      // s2's page has navigated somewhere. A reload would send it back to the
+      // slot's entry URL, so this string surviving IS the assertion.
+      const deepUrl = "http://s2--3000.localhost:3000/deep";
+      iframe.setAttribute("src", deepUrl);
+
+      // Switch to s1, whose service is down: the pane waits.
+      view.rerender(
+        <PreviewFrame
+          preview={RUNNING} sessionId="s1" {...defaultProps}
+          detectedPorts={[3000]} selectedPort={4000} onSelectPort={vi.fn()}
+        />,
+      );
+      expect(await screen.findByText("api is not running")).toBeInTheDocument();
+
+      // Straight back to s2. A bare "was waiting, isn't now" flag reads this as
+      // a recovery and reloads s2's retained iframe, which never waited at all.
+      view.rerender(s2);
+      await screen.findByTitle("Live Preview");
+      expect(iframe.getAttribute("src")).toBe(deepUrl);
+    });
+  });
 });
 
 describe("formatErrorForMessage", () => {

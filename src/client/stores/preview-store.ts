@@ -11,11 +11,18 @@ import {
   withViewportEntry,
   type PersistedViewport,
 } from "./viewport-memory.js";
+import {
+  loadPreviewTargetMemory,
+  savePreviewTargetMemory,
+  withPreviewTargetEntry,
+  type PersistedPreviewTarget,
+} from "./preview-target-memory.js";
 import type {
   ComposeServiceStatus,
   ComposeServicePreviewMode,
   ComposeServiceOriginView,
 } from "../../server/shared/types/ws-server-messages.js";
+import { deriveEffectivePreviewStatus } from "../utils/preview-status.js";
 import type { SecretRequirement } from "../../server/shared/types/domain-types.js";
 import type { PluginCredentialGroup } from "../../server/shared/plugin-credentials.js";
 
@@ -148,11 +155,14 @@ const DEDUP_WINDOW_MS = 1000;
  * The device-viewport choice is deliberately NOT here (docs/278): it lives in
  * `viewportMemory`, written through on every mutation and localStorage-backed,
  * so it survives a page reload — which this in-memory snapshot cannot. The
- * rest of the snapshot is transport state the server re-sends anyway.
+ * same now goes for which preview the pane is on (`previewTargetMemory`,
+ * planning#478): a snapshotted `selectedPort` is a port, and a port can change
+ * hands or stop existing while a session sits off screen, so it was never a
+ * safe thing to restore. The rest of the snapshot is transport state the server
+ * re-sends anyway.
  */
 export interface SessionPreviewSnapshot {
   status: PreviewStatus | null;
-  selectedPort: number | null;
   errors: PreviewError[];
   autoFixRetries: number;
   startupSteps: StartupStep[];
@@ -208,6 +218,16 @@ interface PreviewState {
    */
   viewportMemory: Record<string, PersistedViewport>;
 
+  /**
+   * Which preview each session is on, by Compose service name (planning#478).
+   * localStorage-backed like `viewportMemory`, and the single source of truth
+   * for `selectedPort`, which is derived from it. Written on an explicit
+   * selection AND pinned to whatever the pane first shows, so nothing but a
+   * user action can move the pane to a different service. Like `previewPaths`,
+   * it outlives the session-scoped `reset()`.
+   */
+  previewTargetMemory: Record<string, PersistedPreviewTarget>;
+
   /** Saved preview state per session, keyed by sessionId. */
   sessionSnapshots: Record<string, SessionPreviewSnapshot>;
 
@@ -248,7 +268,21 @@ interface PreviewState {
   servicesDrawerIdleCollapsed: boolean;
 
   setStatus: (status: PreviewStatus | null) => void;
+  /**
+   * Record an explicit choice of which preview to look at (planning#478). The
+   * owning service is resolved from `services` and remembered for the session,
+   * so the choice survives the service restarting, the session being switched
+   * away from, and a page reload. `null` forgets the choice, returning the
+   * session to "whatever the pane shows next" — which is then pinned in turn.
+   */
   setSelectedPort: (port: number | null) => void;
+  /**
+   * Re-derive `selectedPort` from the session's remembered target. Called by
+   * every action that can change the answer (`setStatus`, `setServices`,
+   * `updateService`, `restoreSession`); exposed for tests and for any future
+   * call site that mutates services outside those.
+   */
+  reconcilePreviewTarget: (forSessionId?: string) => void;
   setServicesDrawerExpanded: (expanded: boolean) => void;
   setServicesDrawerIdleCollapsed: (collapsed: boolean) => void;
   addError: (error: PreviewError) => void;
@@ -293,6 +327,8 @@ interface PreviewState {
   setFreeformSize: (width: number, height: number) => void;
   /** Forget every remembered viewport. Full reset only — see `reset`. */
   clearViewportMemory: () => void;
+  /** Forget every remembered preview target. Full reset only — see `reset`. */
+  clearPreviewTargetMemory: () => void;
   /** Save current top-level state into sessionSnapshots[sessionId]. */
   snapshotSession: (sessionId: string) => void;
   /** Restore from snapshot if exists, otherwise reset to defaults. */
@@ -402,9 +438,112 @@ function viewportMemoryUpdate(
   return { viewportMemory: withViewportEntry(current, sessionId, viewportEntryFromState(viewport)) };
 }
 
+// ---- Which preview the pane is on (planning#478) ----
+
+/** Every port the current `status` says is previewable, in the server's order. */
+function availablePreviewPorts(status: PreviewStatus | null): number[] {
+  if (!status?.running) return [];
+  const ports = [...(status.detectedPorts ?? [])];
+  if ((status.source === "vite" || status.source === "managed") && !ports.includes(status.port)) {
+    ports.push(status.port);
+  }
+  return ports;
+}
+
+/** The subset of store state {@link resolvePreviewTarget} reads. */
+interface PreviewTargetInputs {
+  previewTargetMemory: Record<string, PersistedPreviewTarget>;
+  services: ManagedServiceState[];
+  status: PreviewStatus | null;
+}
+
+/**
+ * Decide which preview the pane is on, and what to remember about it.
+ *
+ * The pane must never change service on its own (planning#478). Two things used
+ * to make it do exactly that, and both are the same defect — the pane's identity
+ * was a *port*, derived fresh from whatever was running:
+ *
+ * - `selectedPort` was cleared whenever the chosen port was not among the
+ *   running ones, so a session switch that found the container reclaimed (or
+ *   the service merely restarting) forgot the choice permanently.
+ * - With no choice recorded, the pane followed `status.port` — the server's
+ *   *first running* preview service. A second service starting, or the first
+ *   one restarting, silently moved the pane to a different app.
+ *
+ * So the session's target is remembered **by service name**, and it is recorded
+ * for whatever the pane is showing — a pin the user never had to make. A
+ * remembered service that is not running right now keeps the pane: a declared
+ * service keeps its port while stopped, so the pane holds that port and waits
+ * for the service to come back rather than showing a different app.
+ *
+ * `write`: `undefined` leaves the memory alone, `null` deletes the entry, an
+ * object replaces it.
+ */
+function resolvePreviewTarget(
+  state: PreviewTargetInputs,
+  sessionId: string | undefined,
+): { selectedPort: number | null; write?: PersistedPreviewTarget | null } {
+  // The SAME status the pane renders from, synthetic fallback included: the
+  // pane pins what it is showing, and `preview_status` can lag `service_status`
+  // by long enough for the two to disagree about which port that is.
+  const status = deriveEffectivePreviewStatus(state.status, state.services, sessionId);
+  let entry = sessionId ? state.previewTargetMemory[sessionId] : undefined;
+
+  // A remembered service that an authoritative list no longer declares is dead
+  // memory — the compose file renamed or dropped it. Forget it and pin afresh,
+  // rather than falling back forever to a name that will never come back. An
+  // empty list is not authoritative: it is also what the store holds in the
+  // moment before `service_list` arrives.
+  const forget =
+    !!entry?.service &&
+    state.services.length > 0 &&
+    !state.services.some((s) => s.name === entry?.service);
+  if (forget) entry = undefined;
+
+  if (entry?.service) {
+    const svc = state.services.find((s) => s.name === entry?.service);
+    // The port is held whatever the service's status is — a declared service
+    // keeps its port while stopped, so the pane can WAIT for it. Handing the
+    // user a different app for the duration is the replacement this exists to
+    // stop; `PreviewFrame` renders a waiting state over the dormant slot
+    // instead.
+    //
+    // With NO row at all, the recorded port is held rather than surrendered.
+    // The list is empty in the gap before `service_list` lands (and `forget`
+    // above deliberately treats that as non-authoritative), and returning null
+    // there would drop the pane onto `status.port` — the rejected fallback,
+    // arriving through the back door. A service with no port at all (a worker)
+    // is the one case with nothing to wait on; it cannot be pinned in the first
+    // place, since pinning resolves a service FROM a port.
+    return { selectedPort: svc ? svc.port ?? null : entry.port };
+  }
+  if (entry) {
+    // Port-only memory: a preview no Compose service owns (Vite / `managed`).
+    const ports = availablePreviewPorts(status);
+    return { selectedPort: ports.includes(entry.port) ? entry.port : null };
+  }
+
+  // Nothing remembered — pin what the pane is showing right now.
+  if (!sessionId || !status?.running || !status.port) {
+    return { selectedPort: null, write: forget ? null : undefined };
+  }
+  const svc = state.services.find((s) => s.port === status.port);
+  if (!svc && status.source === "detected") {
+    // Every `detected` port comes from a Compose service, so no row for it
+    // means `service_list` has not landed yet. Pinning by port here would
+    // record the weaker handle for something that HAS a name — wait for the
+    // list, which reconciles again the moment it arrives.
+    return { selectedPort: null, write: forget ? null : undefined };
+  }
+  return {
+    selectedPort: status.port,
+    write: svc ? { service: svc.name, port: status.port } : { port: status.port },
+  };
+}
+
 const initialSessionState: SessionPreviewSnapshot = {
   status: null,
-  selectedPort: null,
   errors: [],
   autoFixRetries: 0,
   startupSteps: [],
@@ -512,7 +651,11 @@ const initialState = {
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
   previewPaths: loadPreviewPaths(),
   viewportMemory: loadViewportMemory(),
+  previewTargetMemory: loadPreviewTargetMemory(),
   // Ephemeral state — never persisted into a session snapshot.
+  // `selectedPort` is derived, not owned: `reconcilePreviewTarget` recomputes it
+  // from `previewTargetMemory` whenever the status or the service list moves.
+  selectedPort: null as number | null,
   servicesDrawerIdleCollapsed: false,
   previewProxyError: null as PreviewState["previewProxyError"],
   previewLinkIntent: null as PreviewLinkIntent | null,
@@ -521,9 +664,42 @@ const initialState = {
 export const usePreviewStore = create<PreviewState>((set, get) => ({
   ...initialState,
 
-  setStatus: (status) => set({ status }),
+  setStatus: (status) => {
+    set({ status });
+    get().reconcilePreviewTarget();
+  },
 
-  setSelectedPort: (port) => set({ selectedPort: port }),
+  setSelectedPort: (port) => {
+    const sessionId = useSessionStore.getState().sessionId;
+    if (sessionId) {
+      const svc = port === null ? undefined : get().services.find((s) => s.port === port);
+      const entry = port === null ? null : svc ? { service: svc.name, port } : { port };
+      const previewTargetMemory = withPreviewTargetEntry(get().previewTargetMemory, sessionId, entry);
+      savePreviewTargetMemory(previewTargetMemory);
+      set({ previewTargetMemory, selectedPort: port });
+    } else {
+      set({ selectedPort: port });
+    }
+    // A cleared choice re-pins to whatever the pane shows now; an explicit one
+    // already agrees with the memory just written, so this would be a no-op.
+    if (port === null) get().reconcilePreviewTarget();
+  },
+
+  reconcilePreviewTarget: (forSessionId) => {
+    // The argument exists for `restoreSession`, which knows the incoming
+    // session id first-hand; everywhere else the store is the authority.
+    const sessionId = forSessionId ?? useSessionStore.getState().sessionId;
+    const state = get();
+    const { selectedPort, write } = resolvePreviewTarget(state, sessionId);
+    const changed = selectedPort !== state.selectedPort;
+    if (write !== undefined && sessionId) {
+      const previewTargetMemory = withPreviewTargetEntry(state.previewTargetMemory, sessionId, write);
+      savePreviewTargetMemory(previewTargetMemory);
+      set(changed ? { previewTargetMemory, selectedPort } : { previewTargetMemory });
+    } else if (changed) {
+      set({ selectedPort });
+    }
+  },
 
   setServicesDrawerExpanded: (servicesDrawerExpanded) => {
     try { localStorage.setItem(SERVICES_DRAWER_EXPANDED_KEY, servicesDrawerExpanded ? "1" : "0"); } catch { /* ignore */ }
@@ -655,11 +831,17 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     set({ viewportMemory: {} });
   },
 
-  setServices: (services) => set({ services, composeError: null, composeNotConfigured: false }),
+  setServices: (services) => {
+    set({ services, composeError: null, composeNotConfigured: false });
+    // The list is what says whether the remembered service is running, exists,
+    // or has come back — so the pane's target is re-derived here, never left to
+    // a caller to remember (planning#478).
+    get().reconcilePreviewTarget();
+  },
 
   setSecrets: (secrets) => set({ secrets }),
 
-  updateService: (update) =>
+  updateService: (update) => {
     set((state) => {
       const existing = state.services.find(s => s.name === update.name);
       if (existing) {
@@ -670,7 +852,9 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         };
       }
       return { services: [...state.services, update] };
-    }),
+    });
+    get().reconcilePreviewTarget();
+  },
 
   snapshotSession: (sessionId) =>
     set((state) => ({
@@ -678,7 +862,6 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         ...state.sessionSnapshots,
         [sessionId]: {
           status: state.status,
-          selectedPort: state.selectedPort,
           errors: state.errors,
           autoFixRetries: state.autoFixRetries,
           startupSteps: state.startupSteps,
@@ -701,12 +884,21 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const viewport = viewportStateFromEntry(get().viewportMemory[sessionId]);
     // A pointer's destination describes one session and is cancelled by leaving
     // it (docs/258) — it is never part of the restored snapshot.
+    // `selectedPort` is cleared rather than carried: it belongs to the outgoing
+    // session until the reconcile below re-derives it for this one, and a frame
+    // rendered in between would route the pane at the wrong session's port.
     if (snap) {
-      set({ ...snap, ...viewport, previewLinkIntent: null });
+      set({ ...snap, ...viewport, selectedPort: null, previewLinkIntent: null });
     } else {
       resetDedupState();
-      set({ ...initialSessionState, ...viewport, previewLinkIntent: null });
+      set({ ...initialSessionState, ...viewport, selectedPort: null, previewLinkIntent: null });
     }
+    // Same reasoning as the viewport, and the whole point of planning#478: the
+    // snapshot's `selectedPort` is a port that may have changed hands (or gone)
+    // while this session was off screen, so the pane's target is re-derived
+    // from the remembered SERVICE — on switches and cold loads alike. The
+    // incoming session's `service_list` reconciles again when it lands.
+    get().reconcilePreviewTarget(sessionId);
   },
 
   getSnapshot: (sessionId): SessionPreviewSnapshot | undefined => get().sessionSnapshots[sessionId],
@@ -747,7 +939,16 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       // session-scoped reset; `clearViewportMemory` (full reset) clears it.
       // Spreading `initialState` would otherwise resurrect the load-time map.
       viewportMemory: state.viewportMemory,
+      // Ditto — and load-bearing for planning#478: `reset()` runs on the way to
+      // the home screen, and forgetting here would mean the next visit to a
+      // session re-pins the pane to whatever service happens to be up.
+      previewTargetMemory: state.previewTargetMemory,
     }));
+  },
+
+  clearPreviewTargetMemory: () => {
+    savePreviewTargetMemory({});
+    set({ previewTargetMemory: {} });
   },
 
   clearPreviewPaths: () => {
