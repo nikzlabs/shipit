@@ -181,12 +181,17 @@ async function startStubWorker(opts: StubOpts): Promise<StubWorker> {
 
 /** Resolves to true if `p` is still pending after `ms`. */
 async function stillPending(p: Promise<unknown>, ms: number): Promise<boolean> {
-  const pending = Symbol("pending");
+  const PENDING = "pending";
+  // A rejection is a settlement too — either way `p` is no longer pending.
+  const settle = async (): Promise<string> => {
+    try { await p; } catch { /* settled by rejecting */ }
+    return "settled";
+  };
   const raced = await Promise.race([
-    p.then(() => "settled" as const),
-    new Promise<typeof pending>((r) => setTimeout(() => r(pending), ms)),
+    settle(),
+    new Promise<string>((r) => setTimeout(() => r(PENDING), ms)),
   ]);
-  return raced === pending;
+  return raced === PENDING;
 }
 
 describe("Integration: install gate — resolution without SSE install_done (docs/162)", () => {
