@@ -1455,3 +1455,91 @@ describe("markProviderAccountReauthenticated", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// A container that comes up after its runner was disposed (follow-up to PR #2585)
+// ---------------------------------------------------------------------------
+//
+// `createContainerForRunner` runs fire-and-forget, so a session can be archived
+// while its container is still being built. The failure path always checked
+// `runner.disposed`; the SUCCESS path did not, so a container that finished
+// after the archive was wired to a disposed runner — opening an SSE stream and
+// starting worker resources for a session nobody owns.
+
+describe("buildRunnerFactory — container ready after the runner was disposed", () => {
+  const SESSION = "disposed-mid-create";
+
+  /**
+   * Drive the fresh-create path with a `create()` the test releases by hand,
+   * disposing the runner while it is in flight.
+   *
+   * Spying on the prototype rather than the instance because the factory
+   * constructs the runner itself — the call we must not make happens inside it.
+   */
+  async function containerReadyAfterDispose(opts: { disposeBeforeRelease: boolean }) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-dispose-race-"));
+    fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
+
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    let reachedCreate!: () => void;
+    const atCreate = new Promise<void>((resolve) => { reachedCreate = resolve; });
+
+    const containerManager = {
+      get: () => undefined,
+      preparePnpmStore: () => undefined,
+      prepareOverlaySpecs: async () => [],
+      buildConfigForWorkspace: (c: unknown) => c,
+      recordCreateError: () => {},
+      clearCreateError: () => {},
+      destroy: async () => {},
+      create: async () => {
+        reachedCreate();
+        await paused;
+        return { id: "cid-1", workerUrl: "http://172.20.0.9:9100", containerIp: "172.20.0.9", status: "running" };
+      },
+    } as unknown as SessionContainerManager;
+
+    const setWorkerUrl = vi.spyOn(ContainerSessionRunner.prototype, "setWorkerUrl")
+      .mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager,
+      credentialsDir: TEST_CREDENTIALS_DIR,
+      runtimeMode: "containerized",
+    });
+    const runner = factory!({
+      sessionId: SESSION,
+      sessionDir: path.join(dir, "workspace"),
+      defaultAgentId: "claude" as AgentId,
+    });
+
+    await atCreate;
+    if (opts.disposeBeforeRelease) runner.dispose({ force: true });
+    release();
+    await vi.waitFor(() => { expect(setWorkerUrl.mock.calls.length + (runner.disposed ? 1 : 0)).toBeGreaterThan(0); });
+    // Let the post-create tail run to completion either way.
+    await new Promise((r) => setTimeout(r, 20));
+
+    const calls = setWorkerUrl.mock.calls.length;
+    setWorkerUrl.mockRestore();
+    warn.mockRestore();
+    log.mockRestore();
+    runner.dispose({ force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    return calls;
+  }
+
+  it("does not wire the worker URL into a runner that was disposed mid-create", async () => {
+    expect(await containerReadyAfterDispose({ disposeBeforeRelease: true })).toBe(0);
+  });
+
+  it("still wires it when the runner is alive", async () => {
+    // The other half — without this the first test passes if the wiring broke
+    // outright, which would be a far worse bug than the one it guards.
+    expect(await containerReadyAfterDispose({ disposeBeforeRelease: false })).toBe(1);
+  });
+});

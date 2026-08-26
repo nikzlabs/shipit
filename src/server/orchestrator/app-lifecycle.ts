@@ -10,6 +10,7 @@ import fs from "node:fs/promises";
 import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
 import { SessionContainerManager, resolveAgentDockerLimits } from "./session-container.js";
+import { ContainerCreateCancelledError } from "./container-lifecycle.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { PresentStore } from "./present-store.js";
@@ -502,6 +503,18 @@ async function createContainerForRunner(opts: CreateContainerForRunnerOpts): Pro
       return;
     }
 
+    // A teardown for this session cancelled the create. Not a failure to
+    // retry — someone asked for this container to go away, and retrying would
+    // rebuild the very thing they destroyed. Terminal, so a turn parked on the
+    // runner's worker-ready gate learns why instead of hanging.
+    if (err instanceof ContainerCreateCancelledError) {
+      console.warn(`[container] Container creation for ${sessionId} cancelled by a concurrent teardown — not retrying.`);
+      mgr.recordCreateError(sessionId, errMsg);
+      runner.markWorkerUnavailable(errMsg);
+      runner.dispose({ force: true });
+      return;
+    }
+
     if (!lastAttempt && isRetryableCreateFailure(errMsg)) {
       const delayMs = CONTAINER_CREATE_RETRY_DELAYS_MS[attempt] ?? 3000;
       console.warn(
@@ -622,6 +635,20 @@ async function attemptContainerCreate(
       mgr.recordCapabilitiesAtStart(sessionId, opts.session.capabilities);
     }
     console.log(`[container] Container ready for ${sessionId} at ${sc.workerUrl}`);
+    // The runner can be disposed during the await above, and only the FAILURE
+    // path checked for it. Handing a disposed runner a worker URL opens an SSE
+    // stream and starts worker resources for a session nobody owns any more.
+    // The container itself needs no cleanup here: it is published in the
+    // manager's map with its real id, so an archive tears it down and the idle
+    // enforcer reaps it otherwise — containers deliberately outlive runners.
+    if (runner.disposed) {
+      console.warn(
+        `[container] Container for ${sessionId} came up after its runner was disposed — `
+        + "not wiring it to the runner.",
+      );
+      mgr.clearCreateError(sessionId);
+      return null;
+    }
     runner.setWorkerUrl(sc.workerUrl);
     mgr.clearCreateError(sessionId);
     return null;

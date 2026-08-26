@@ -98,10 +98,45 @@ export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
 // Internal types for dependency injection
 // ---------------------------------------------------------------------------
 
+/**
+ * Thrown by {@link createContainer} when a teardown for the same session landed
+ * while it was still building. NOT a failure to create — the create is
+ * unwanted, so the caller must not retry it.
+ */
+export class ContainerCreateCancelledError extends Error {
+  readonly sessionId: string;
+  constructor(sessionId: string, at: string) {
+    super(`Container creation for ${sessionId} was cancelled by a concurrent teardown (at: ${at})`);
+    this.name = "ContainerCreateCancelledError";
+    this.sessionId = sessionId;
+  }
+}
+
 export interface LifecycleDeps {
   docker: Docker;
   containers: Map<string, SessionContainer>;
   standbySessionIds: Set<string>;
+  /**
+   * Per-session teardown counter — how `destroyContainer` cancels a create that
+   * is still in flight (planning follow-up to PR #2585).
+   *
+   * Container creation runs fire-and-forget and can take minutes (image pull,
+   * overlay provisioning), so an archive landing inside it is ordinary.
+   * `destroyContainer` cannot simply tear that container down, because for the
+   * stretch between the `containers.set` publish and the `sc.id = container.id`
+   * assignment there is no id to name it by. So destroy bumps this counter and
+   * `createContainer`, which captured it at entry, aborts at its next
+   * checkpoint and cleans up after itself.
+   *
+   * A counter rather than a flag because create/destroy legitimately alternate
+   * (retry, Rescue, image rotation): what matters is not "was a destroy ever
+   * requested" but "was one requested SINCE this create began".
+   *
+   * Bumped BEFORE destroy's `if (!sc) return`, so a destroy arriving before the
+   * create has published anything still cancels it — that window is precisely
+   * the one that produced an untracked container.
+   */
+  destroyEpochs: Map<string, number>;
   networkName: string;
   workerPort: number;
   skipHealthCheck: boolean;
@@ -963,6 +998,15 @@ export async function createContainer(
     throw new Error(`Container already exists for session ${config.sessionId}`);
   }
 
+  // Captured before the first `await` so no teardown can slip in unseen. Every
+  // checkpoint below compares against it; see `LifecycleDeps.destroyEpochs`.
+  const epochAtStart = deps.destroyEpochs.get(config.sessionId) ?? 0;
+  const abortIfTornDown = (at: string): void => {
+    if ((deps.destroyEpochs.get(config.sessionId) ?? 0) !== epochAtStart) {
+      throw new ContainerCreateCancelledError(config.sessionId, at);
+    }
+  };
+
   // Ensure the uploads directory exists on the host before mounting.
   if (config.uploadsDir) {
     fs.mkdirSync(config.uploadsDir, { recursive: true });
@@ -1235,6 +1279,10 @@ export async function createContainer(
       }
     }
 
+    // Cheapest place to give up: nothing has been created yet, so the catch has
+    // only the overlay volumes above to reclaim.
+    abortIfTornDown("before createContainer");
+
     // Remove any leftover container with the same name (e.g. from a crash)
     await removeStaleContainer(deps.docker, `agent-${shortId}`);
 
@@ -1329,6 +1377,13 @@ export async function createContainer(
         sessionId: config.sessionId,
       });
     }
+
+    // The container exists but has not run yet, and this is the last moment that
+    // is true. It matters beyond saving work: archive deletes the workspace this
+    // container bind-mounts, so starting one now boots an agent onto a tree that
+    // is being removed. The catch below removes the built-but-never-started
+    // container.
+    abortIfTornDown("before container start");
 
     await container.start();
 
@@ -1498,6 +1553,10 @@ export async function createContainer(
       }
     }
 
+    // Last word before this container is announced as usable. A teardown that
+    // lands after this sees a fully-published `sc` and tears it down normally.
+    abortIfTornDown("before returning a ready container");
+
     deps.emitter.emit("container_started", config.sessionId);
     return sc;
   } catch (err) {
@@ -1510,7 +1569,13 @@ export async function createContainer(
     // they keep a netns reference). cleanupSessionDockerResources is what reaps
     // them — the agent container itself isn't parent-session-labeled, so the
     // explicit stop/remove around the cleanup is still required.
-    deps.containers.delete(config.sessionId);
+    //
+    // Identity-checked: a cancelled create can now finish its cleanup while a
+    // LATER create owns the session's map entry, and evicting that one would
+    // untrack a healthy container. Delete only our own publish.
+    if (deps.containers.get(config.sessionId) === sc) {
+      deps.containers.delete(config.sessionId);
+    }
     // planning#313 — same reasoning as destroyContainer: the URL may already be
     // registered (the throw can come after the IP was resolved), and this
     // container is going away.
@@ -1683,6 +1748,13 @@ export async function destroyContainer(
   const stack = new Error("destroyContainer caller trace").stack;
   console.warn(`[container] destroyContainer(${sessionId}) called from:\n${stack}`);
 
+  // Cancel any create still in flight for this session. FIRST — before the
+  // `!sc` early return below, because the window this exists for is exactly the
+  // one where the create has not published its record yet, and returning early
+  // without bumping would let it go on to start an untracked container for a
+  // session that is being torn down. See `LifecycleDeps.destroyEpochs`.
+  deps.destroyEpochs.set(sessionId, (deps.destroyEpochs.get(sessionId) ?? 0) + 1);
+
   deps.standbySessionIds.delete(sessionId);
   const sc = deps.containers.get(sessionId);
   if (!sc) return;
@@ -1707,15 +1779,14 @@ export async function destroyContainer(
   // in `createContainer` already guards this way; this one did not.
   //
   // Skipping is right rather than merely safe: with no id there is no container we
-  // could name, and every call here needs one. What it does NOT do is stop the
-  // in-flight creation, so a container may still be started for a session that is
-  // being archived — a separate lifecycle defect (create/destroy are not
-  // serialized), which this log makes visible instead of silent.
+  // could name, and every call here needs one. The creation itself is cancelled by
+  // the epoch bump above, and its own catch reclaims whatever it had built — so
+  // this is a skip, not a leak.
   if (!sc.id) {
     console.warn(
       `[containers] destroy(${sessionId}) reached a container still being created `
-      + "(no id yet) — skipping the agent-container stop/remove. Its creation is not "
-      + "cancelled, so it may need the orphan sweep.",
+      + "(no id yet) — skipping the agent-container stop/remove; the creation has "
+      + "been cancelled and cleans up after itself.",
     );
   }
 

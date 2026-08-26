@@ -15,6 +15,7 @@ import {
   buildContainerConfig,
   createContainer,
   destroyContainer,
+  ContainerCreateCancelledError,
   prepareOverlayDirs,
   ensurePnpmStoreDir,
   selfHealWorkspaceOwnership,
@@ -852,6 +853,7 @@ describe("destroyContainer — overlay volume teardown", () => {
       docker: fakeDocker(removedVolumes, dockerOpts),
       containers: new Map([[sc.sessionId, sc]]),
       standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
       emitter,
     } as unknown as LifecycleDeps;
     return { deps, emitter };
@@ -1040,15 +1042,15 @@ describe("destroyContainer — overlay volume teardown", () => {
       }
     });
 
-    it("says so, because the in-flight creation is not cancelled", async () => {
+    it("says so, so the skip is visible rather than silent", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
         const { deps } = makeDeps([], creatingContainer());
 
         await destroyContainer(deps, "sess-x");
 
-        // The container being created may still start, for a session that no
-        // longer exists. Silence there would make that orphan undiagnosable.
+        // Hitting this branch at all means an archive raced a creation. The
+        // create is cancelled, but the coincidence is worth being able to grep.
         const skipped = warn.mock.calls.filter((c) => String(c[0]).includes("still being created"));
         expect(skipped).toHaveLength(1);
       } finally {
@@ -1129,6 +1131,7 @@ describe("createContainer — overlay volume re-verification (nikzlabs/shipit#24
       docker,
       containers: new Map(),
       standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
       emitter: new EventEmitter(),
       baseLabels: () => ({ "shipit-managed": "true" }),
       networkName: "shipit-net",
@@ -1602,5 +1605,166 @@ describe("selfHealWorkspaceOwnership", () => {
     const reconcile = vi.fn();
     selfHealWorkspaceOwnership({ workspaceDir: WS_DIR }, undefined, handBack, reconcile);
     expect(reconcile).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createContainer cancelled by a concurrent destroy (follow-up to PR #2585)
+// ---------------------------------------------------------------------------
+//
+// Container creation runs fire-and-forget and can take minutes, so an archive
+// landing inside it is ordinary. The dangerous stretch is between the map
+// publish (`id: ""`) and the `sc.id = container.id` assignment: destroy has no
+// id to tear the container down by, so before the epoch cancellation it simply
+// skipped — and the creation went on to start a container for a session whose
+// workspace was being deleted, tracked by nothing.
+
+describe("createContainer — cancelled by a concurrent destroy", () => {
+  const SESSION = "3f6d1497-c466-4b2c-b9af-0f1800fbf759";
+
+  /** A daemon whose `createContainer` blocks until the test releases it. */
+  function pausableDaemon() {
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    let reachedCreate!: () => void;
+    const atCreate = new Promise<void>((resolve) => { reachedCreate = resolve; });
+    const started: string[] = [];
+    const removed: string[] = [];
+
+    const docker = {
+      listContainers: async () => [],
+      listNetworks: async () => [],
+      listVolumes: async () => ({ Volumes: [] }),
+      getNetwork: () => ({ remove: async () => {} }),
+      getVolume: () => ({ remove: async () => {} }),
+      getContainer: (id: string) => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => { removed.push(id); },
+      }),
+      createContainer: async () => {
+        reachedCreate();
+        await paused;
+        return {
+          id: "cid-new",
+          start: async () => { started.push("cid-new"); },
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-net": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    } as unknown as Docker;
+
+    return { docker, release, atCreate, started, removed };
+  }
+
+  function raceDeps(docker: Docker): LifecycleDeps {
+    return {
+      docker,
+      containers: new Map(),
+      standbySessionIds: new Set<string>(),
+      destroyEpochs: new Map<string, number>(),
+      emitter: new EventEmitter(),
+      baseLabels: () => ({ "shipit-managed": "true" }),
+      networkName: "shipit-net",
+      workerPort: 9100,
+      imageName: "shipit-worker:test",
+      skipHealthCheck: true,
+    } as unknown as LifecycleDeps;
+  }
+
+  const raceTmpDirs: string[] = [];
+  function raceTmpDir(): string {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-race-"));
+    raceTmpDirs.push(d);
+    fs.mkdirSync(path.join(d, "session", "workspace"), { recursive: true });
+    return d;
+  }
+  afterEach(() => {
+    for (const d of raceTmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  /**
+   * Drive the race: begin a create, hold it inside `docker.createContainer`
+   * (where `sc.id` is still `""`), archive the session, then release it.
+   */
+  async function archiveMidCreate() {
+    const daemon = pausableDaemon();
+    const deps = raceDeps(daemon.docker);
+    const tmp = raceTmpDir();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const creating = createContainer(deps, baseConfig({
+      sessionId: SESSION,
+      sessionDir: path.join(tmp, "session"),
+      workspaceDir: path.join(tmp, "session", "workspace"),
+      sessionStateDir: path.join(tmp, "session", "state"),
+    }));
+    // Attached in this tick so the rejection is never unhandled while the test
+    // is off awaiting the pause point.
+    const settled: Promise<unknown> = (async () => {
+      try { await creating; return null; } catch (e) { return e; }
+    })();
+
+    await daemon.atCreate;
+    // The window this whole mechanism exists for.
+    expect(deps.containers.get(SESSION)?.id).toBe("");
+
+    await destroyContainer(deps, SESSION);
+    daemon.release();
+
+    const outcome = await settled;
+    warn.mockRestore();
+    return { deps, daemon, outcome };
+  }
+
+  it("aborts the creation instead of completing it", async () => {
+    const { outcome } = await archiveMidCreate();
+    expect(outcome).toBeInstanceOf(ContainerCreateCancelledError);
+  });
+
+  it("never starts the container it had already built", async () => {
+    const { daemon } = await archiveMidCreate();
+    // Archive deletes the workspace this container bind-mounts, so starting it
+    // would boot an agent onto a tree being removed.
+    expect(daemon.started).toEqual([]);
+  });
+
+  it("removes the container it built, and leaves nothing tracked", async () => {
+    const { daemon, deps } = await archiveMidCreate();
+    // Both halves of "no orphan": gone from Docker, and gone from the map.
+    // The map alone proves nothing — a destroy empties it whether or not the
+    // creation was stopped, which is precisely how the orphan went unnoticed.
+    expect(daemon.removed).toContain("cid-new");
+    expect(deps.containers.has(SESSION)).toBe(false);
+  });
+
+  // Not a detector for the bug above — it passes with no cancellation at all.
+  // It pins the SEMANTICS: a counter ("a teardown since this create began"),
+  // never a flag ("a teardown ever happened"). Create and destroy legitimately
+  // alternate on the retry, Rescue and image-rotation paths, and a flag would
+  // make every one of those creates cancel itself.
+  it("does not cancel a create that STARTED after the destroy", async () => {
+    const daemon = pausableDaemon();
+    const deps = raceDeps(daemon.docker);
+    const tmp = raceTmpDir();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await destroyContainer(deps, SESSION); // nothing to destroy — still bumps
+
+      daemon.release();
+      const sc = await createContainer(deps, baseConfig({
+        sessionId: SESSION,
+        sessionDir: path.join(tmp, "session"),
+        workspaceDir: path.join(tmp, "session", "workspace"),
+        sessionStateDir: path.join(tmp, "session", "state"),
+      }));
+
+      expect(sc.status).toBe("running");
+      expect(daemon.started).toEqual(["cid-new"]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -518,6 +518,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   private workerNodeVersion?: string;
   private standbySessionIds = new Set<string>();
+  /**
+   * Per-session teardown counter shared with `container-lifecycle.ts`, which is
+   * how `destroy()` cancels a `create()` that is still in flight. Lives on the
+   * manager (not in `lifecycleDeps()`, which rebuilds its object on every call)
+   * so both sides see the same map. See `LifecycleDeps.destroyEpochs`.
+   */
+  private destroyEpochs = new Map<string, number>();
   private healthMonitorState: HealthMonitorState = createHealthMonitorState();
   private _disposed = false;
   /**
@@ -897,6 +904,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       docker: this.docker,
       containers: this.containers,
       standbySessionIds: this.standbySessionIds,
+      destroyEpochs: this.destroyEpochs,
       networkName: this.networkName,
       workerPort: this.workerPort,
       skipHealthCheck: this.skipHealthCheck,
