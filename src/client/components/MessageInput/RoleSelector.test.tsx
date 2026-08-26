@@ -57,6 +57,30 @@ function setRoles(roles: RoleView[]) {
 }
 
 async function openRoleMenu() {
+  /*
+    **Let any scheduled textarea focus run BEFORE opening the menu.**
+
+    `MessageInput` focuses its textarea from a `requestAnimationFrame` whenever
+    `focusKey` changes — on first mount and on every session switch
+    (`MessageInput.tsx`, "Auto-focus textarea on mount and on session change").
+    Radix closes a dropdown as soon as focus leaves it, so a frame callback still
+    pending when the menu opens closes the menu again a few milliseconds later.
+
+    In CI that surfaced as "found `role-selector-menu`, could not find
+    `role-option-triage`" — the container outliving its rows by the moment Radix
+    takes to unmount them. It passed locally only because the synchronous
+    `getByTestId` ran before the frame callback did; the ordering was never
+    guaranteed. The `waitFor` below makes the same failure deterministic, which is
+    how this was finally pinned down: without this drain, two tests here fail
+    every run.
+
+    An rAF queued here runs after any already queued, so awaiting one means
+    "whatever focus was scheduled has now happened" — no timer constant to guess,
+    and it stays correct if the component changes how it schedules.
+  */
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => resolve(null));
+  });
   // Radix opens dropdown triggers on pointerdown. Using the complete synthetic
   // click sequence can race focus work when the full client suite runs.
   fireEvent.pointerDown(screen.getByTestId("role-selector-trigger"), {
@@ -64,7 +88,28 @@ async function openRoleMenu() {
     ctrlKey: false,
     pointerType: "mouse",
   });
-  await screen.findByTestId("role-selector-menu", {}, { timeout: 2000 });
+  const menu = await screen.findByTestId("role-selector-menu", {}, { timeout: 2000 });
+  /*
+    **Wait for the menu to be POPULATED, not merely mounted.**
+
+    The container carrying `role-selector-menu` and the rows inside it are not
+    guaranteed to be queryable in the same tick, and callers go straight from
+    here to `getByTestId("role-option-…")` / `role-adjust-parameters`. In CI this
+    failed as "found `role-selector-menu`, could not find `role-option-triage`" —
+    the container present with its rows absent, on a run of the full 16k-test
+    suite.
+
+    Kept alongside the focus drain above rather than replaced by it: the drain
+    fixes the cause we found, and this asserts the property the callers actually
+    depend on. It cannot hide a real fault — a menu that never populates still
+    fails, just with an honest timeout instead of a race — and it is what turns
+    a regression in the drain back into a deterministic failure rather than a
+    once-per-few-thousand-runs flake.
+  */
+  await waitFor(() => {
+    expect(menu.querySelector('[role="menuitem"]')).not.toBeNull();
+  });
+  return menu;
 }
 
 afterEach(() => {
