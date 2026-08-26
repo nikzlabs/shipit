@@ -1890,3 +1890,94 @@ describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () 
     expect(base(undefined).dockerAccess).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// A standby whose repo is removed mid-creation (review of PR #2587)
+// ---------------------------------------------------------------------------
+//
+// `createStandby` adds to `standbySessionIds` only once creation RETURNS, so
+// `isStandby()` is false for the whole build. Repo removal used to gate its
+// teardown on that predicate and so skipped exactly this window: the creation
+// finished afterwards, registered a deleted session as a standby, and the warm
+// pool began pre-installing into it. Teardown is now unconditional; this pins
+// what that unblocks.
+
+describe("createStandby cancelled by a concurrent destroy", () => {
+  const SESSION = "b1f0c2d3-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
+
+  it("neither completes nor registers the session as a standby", async () => {
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    let reachedCreate!: () => void;
+    const atCreate = new Promise<void>((resolve) => { reachedCreate = resolve; });
+    const started: string[] = [];
+
+    const docker = {
+      listContainers: async () => [],
+      listNetworks: async () => [],
+      listVolumes: async () => ({ Volumes: [] }),
+      getNetwork: () => ({ remove: async () => {} }),
+      getVolume: () => ({ remove: async () => {} }),
+      getContainer: () => ({
+        inspect: async () => { throw Object.assign(new Error("no such container"), { statusCode: 404 }); },
+        stop: async () => {},
+        remove: async () => {},
+      }),
+      createContainer: async () => {
+        reachedCreate();
+        await paused;
+        return {
+          id: "cid-standby",
+          start: async () => { started.push("cid-standby"); },
+          inspect: async () => ({
+            Config: { Labels: {} },
+            NetworkSettings: { Networks: { "shipit-test": { IPAddress: "172.20.0.9" } } },
+          }),
+        };
+      },
+    };
+
+    const manager = new SessionContainerManager({
+      docker: docker as never,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      skipHealthCheck: true,
+    });
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-standby-race-"));
+    fs.mkdirSync(path.join(tmp, "workspace"), { recursive: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config: ContainerConfig = {
+        sessionId: SESSION,
+        sessionDir: tmp,
+        workspaceDir: path.join(tmp, "workspace"),
+        sessionStateDir: path.join(tmp, "state"),
+        credentialsDir: TEST_CREDENTIALS_DIR,
+        imageName: "shipit-session-worker:test",
+        memoryLimit: 512 * 1024 * 1024,
+        cpuQuota: 50_000,
+        pidsLimit: 256,
+      } as ContainerConfig;
+
+      const creating = manager.createStandby(config);
+      const settled: Promise<unknown> = (async () => {
+        try { await creating; return null; } catch (e) { return e; }
+      })();
+
+      await atCreate;
+      // What repo removal now does unconditionally.
+      await manager.destroy(SESSION);
+      release();
+
+      expect(await settled).toBeInstanceOf(Error);
+      // The flag is the damaging part: `isStandby` gates the idle enforcer and
+      // the reattach path, so a stale one hides the container from both.
+      expect(manager.isStandby(SESSION)).toBe(false);
+      expect(started).toEqual([]);
+    } finally {
+      warn.mockRestore();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

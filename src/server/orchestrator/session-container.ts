@@ -24,6 +24,7 @@ import {
   buildContainerConfig,
   cleanupSessionDockerResources,
   type LifecycleDeps,
+  type CreateContainerOpts,
 } from "./container-lifecycle.js";
 import {
   rediscoverContainers,
@@ -518,6 +519,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   private workerNodeVersion?: string;
   private standbySessionIds = new Set<string>();
+  /**
+   * Per-session teardown counter shared with `container-lifecycle.ts`, which is
+   * how `destroy()` cancels a `create()` that is still in flight. Lives on the
+   * manager (not in `lifecycleDeps()`, which rebuilds its object on every call)
+   * so both sides see the same map. See `LifecycleDeps.destroyEpochs`.
+   */
+  private destroyEpochs = new Map<string, number>();
   private healthMonitorState: HealthMonitorState = createHealthMonitorState();
   private _disposed = false;
   /**
@@ -897,6 +905,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       docker: this.docker,
       containers: this.containers,
       standbySessionIds: this.standbySessionIds,
+      destroyEpochs: this.destroyEpochs,
       networkName: this.networkName,
       workerPort: this.workerPort,
       skipHealthCheck: this.skipHealthCheck,
@@ -1209,8 +1218,22 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * Create and start a container for the given session.
    * Returns the SessionContainer with its bridge IP and worker URL.
    */
-  async create(config: ContainerConfig): Promise<SessionContainer> {
-    return createContainer(this.lifecycleDeps(), config);
+  async create(config: ContainerConfig, opts?: CreateContainerOpts): Promise<SessionContainer> {
+    return createContainer(this.lifecycleDeps(), config, opts);
+  }
+
+  /**
+   * Snapshot this session's teardown counter — the value to hand back to
+   * {@link create} as `intentEpoch`.
+   *
+   * Take it the moment a creation is DECIDED ON, before any preflight `await`
+   * (workspace checks, overlay preparation). Without that, a teardown during
+   * the preflight is already counted by the time `create` looks, so it reads as
+   * "no teardown since we began" and the create runs to completion for a
+   * session that is gone. See `LifecycleDeps.destroyEpochs`.
+   */
+  teardownEpoch(sessionId: string): number {
+    return this.destroyEpochs.get(sessionId) ?? 0;
   }
 
   /**

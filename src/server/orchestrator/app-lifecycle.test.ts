@@ -1455,3 +1455,184 @@ describe("markProviderAccountReauthenticated", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// A container that comes up after its runner was disposed (follow-up to PR #2585)
+// ---------------------------------------------------------------------------
+//
+// `createContainerForRunner` runs fire-and-forget, so a session can be archived
+// while its container is still being built. The failure path always checked
+// `runner.disposed`; the SUCCESS path did not, so a container that finished
+// after the archive was wired to a disposed runner — opening an SSE stream and
+// starting worker resources for a session nobody owns.
+
+describe("buildRunnerFactory — container ready after the runner was disposed", () => {
+  const SESSION = "disposed-mid-create";
+
+  /**
+   * Drive the fresh-create path with a `create()` the test releases by hand,
+   * disposing the runner while it is in flight.
+   *
+   * Spying on the prototype rather than the instance because the factory
+   * constructs the runner itself — the call we must not make happens inside it.
+   */
+  async function containerReadyAfterDispose(opts: { disposeBeforeRelease: boolean }) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-dispose-race-"));
+    fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
+
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    let reachedCreate!: () => void;
+    const atCreate = new Promise<void>((resolve) => { reachedCreate = resolve; });
+
+    let markSettled!: () => void;
+    const createSettled = new Promise<void>((resolve) => { markSettled = resolve; });
+
+    const containerManager = {
+      get: () => undefined,
+      teardownEpoch: () => 0,
+      preparePnpmStore: () => undefined,
+      prepareOverlaySpecs: async () => [],
+      buildConfigForWorkspace: (c: unknown) => c,
+      recordCreateError: () => {},
+      // The last call on BOTH post-create branches — the wired one and the
+      // disposed-runner one — so it settles the test either way.
+      clearCreateError: () => { markSettled(); },
+      destroy: async () => {},
+      create: async () => {
+        reachedCreate();
+        await paused;
+        return { id: "cid-1", workerUrl: "http://172.20.0.9:9100", containerIp: "172.20.0.9", status: "running" };
+      },
+    } as unknown as SessionContainerManager;
+
+    const setWorkerUrl = vi.spyOn(ContainerSessionRunner.prototype, "setWorkerUrl")
+      .mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const factory = buildRunnerFactory({
+      deps: {},
+      containerManager,
+      credentialsDir: TEST_CREDENTIALS_DIR,
+      runtimeMode: "containerized",
+    });
+    const runner = factory!({
+      sessionId: SESSION,
+      sessionDir: path.join(dir, "workspace"),
+      defaultAgentId: "claude" as AgentId,
+    });
+
+    await atCreate;
+    if (opts.disposeBeforeRelease) runner.dispose({ force: true });
+    release();
+    // Settle on a signal the PRODUCTION code emits — `clearCreateError` is the
+    // last call on both post-create branches. Waiting on `runner.disposed`
+    // instead would be satisfied the instant we disposed it, and a sleep after
+    // that only hides how long the continuation really took: on a slow worker
+    // the spy would be restored before a late `setWorkerUrl` ever landed, and
+    // the test would pass without exercising the guard at all.
+    await createSettled;
+
+    const calls = setWorkerUrl.mock.calls.length;
+    setWorkerUrl.mockRestore();
+    warn.mockRestore();
+    log.mockRestore();
+    runner.dispose({ force: true });
+    fs.rmSync(dir, { recursive: true, force: true });
+    return calls;
+  }
+
+  it("does not wire the worker URL into a runner that was disposed mid-create", async () => {
+    expect(await containerReadyAfterDispose({ disposeBeforeRelease: true })).toBe(0);
+  });
+
+  it("still wires it when the runner is alive", async () => {
+    // The other half — without this the first test passes if the wiring broke
+    // outright, which would be a far worse bug than the one it guards.
+    expect(await containerReadyAfterDispose({ disposeBeforeRelease: false })).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A teardown during the create PREFLIGHT (review of PR #2587)
+// ---------------------------------------------------------------------------
+//
+// `attemptContainerCreate` validates the workspace and prepares overlay specs
+// before it calls `mgr.create()`. A teardown in there is already counted by the
+// time `createContainer` looks at the counter, so it reads as "no teardown
+// since we began" and the create runs to completion for an archived session.
+// The snapshot is therefore taken by the CALLER, before its own preflight.
+
+describe("buildRunnerFactory — teardown during the create preflight", () => {
+  const SESSION = "archived-during-preflight";
+
+  it("hands create the epoch from before the preflight, not after it", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-preflight-race-"));
+    fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
+
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => { release = resolve; });
+    let reachedPreflight!: () => void;
+    const atPreflight = new Promise<void>((resolve) => { reachedPreflight = resolve; });
+
+    // A real counter, so the test measures the actual snapshot-vs-compare
+    // relationship rather than a value the fake made up.
+    let epoch = 0;
+    let seenIntentEpoch: number | undefined;
+
+    const containerManager = {
+      get: () => undefined,
+      teardownEpoch: () => epoch,
+      destroy: async () => { epoch += 1; },
+      preparePnpmStore: () => undefined,
+      // The preflight await the teardown lands inside.
+      prepareOverlaySpecs: async () => { reachedPreflight(); await paused; return []; },
+      buildConfigForWorkspace: (c: unknown) => c,
+      recordCreateError: () => {},
+      clearCreateError: () => {},
+      create: async (_config: unknown, opts?: { intentEpoch?: number }) => {
+        seenIntentEpoch = opts?.intentEpoch;
+        return { id: "cid-1", workerUrl: "http://172.20.0.9:9100", containerIp: "172.20.0.9", status: "running" };
+      },
+    } as unknown as SessionContainerManager;
+
+    const setWorkerUrl = vi.spyOn(ContainerSessionRunner.prototype, "setWorkerUrl").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const factory = buildRunnerFactory({
+        deps: {},
+        containerManager,
+        credentialsDir: TEST_CREDENTIALS_DIR,
+        // Load-bearing: the overlay preflight runs only for a session the
+        // manager knows about, so without this there is no preflight to race.
+        sessionManager: { get: () => ({ id: SESSION }) } as unknown as SessionManager,
+        runtimeMode: "containerized",
+      });
+      const runner = factory!({
+        sessionId: SESSION,
+        sessionDir: path.join(dir, "workspace"),
+        defaultAgentId: "claude" as AgentId,
+      });
+
+      await atPreflight;
+      await containerManager.destroy(SESSION); // the archive
+      release();
+      await vi.waitFor(() => { expect(seenIntentEpoch).toBeDefined(); });
+
+      // 0, the value from before the archive — so `createContainer`'s compare
+      // against the now-bumped counter sees the teardown and cancels. Passing
+      // the post-preflight value (1) is what let the create through.
+      expect(seenIntentEpoch).toBe(0);
+      expect(epoch).toBe(1);
+
+      runner.dispose({ force: true });
+    } finally {
+      setWorkerUrl.mockRestore();
+      warn.mockRestore();
+      log.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
