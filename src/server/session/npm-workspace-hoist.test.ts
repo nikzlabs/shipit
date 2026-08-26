@@ -32,15 +32,27 @@ function hiddenLockfile(links: Record<string, string>, extra: Record<string, unk
   return JSON.stringify({ name: "root", lockfileVersion: 3, packages });
 }
 
+/**
+ * The committed `package-lock.json`. Current with the checkout by construction,
+ * which is what makes it the check a STALE hidden lockfile cannot pass.
+ */
+function manifestLockfile(extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    name: "root",
+    lockfileVersion: 3,
+    packages: { "": { name: "root", version: "1.0.0" }, ...extra },
+  });
+}
+
 describe("hoistedLinkTargets", () => {
   it("returns the package paths npm recorded as links with no nested tree", () => {
     const text = hiddenLockfile({ "@fix/server": "server", "@fix/web": "packages/web" });
-    expect(hoistedLinkTargets(text)).toEqual(new Set(["server", "packages/web"]));
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set(["server", "packages/web"]));
   });
 
   it("ignores ordinary reified packages — only `link: true` counts", () => {
     const text = hiddenLockfile({}, { "node_modules/ms": { version: "2.1.3", resolved: "https://x/ms" } });
-    expect(hoistedLinkTargets(text)).toEqual(new Set());
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set());
   });
 
   /**
@@ -55,21 +67,51 @@ describe("hoistedLinkTargets", () => {
       { "@fix/server": "server", "@fix/web": "web" },
       { "server/node_modules/lodash": { version: "3.10.1", resolved: "https://x/lodash" } },
     );
-    expect(hoistedLinkTargets(text)).toEqual(new Set(["web"]));
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set(["web"]));
   });
 
-  it("attributes a doubly-nested entry to the outermost owner", () => {
+  it("attributes a doubly-nested entry to the target that owns it", () => {
     const text = hiddenLockfile(
       { "@fix/server": "server" },
       { "server/node_modules/a/node_modules/b": { version: "1.0.0" } },
     );
-    expect(hoistedLinkTargets(text)).toEqual(new Set());
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set());
   });
 
-  it("keeps a target whose only nested entries npm legitimately skips", () => {
-    // Same rule set as the staleness check (`isRequiredTreeEntry`): an optional,
-    // peer or platform-restricted nested package is absent for a reason ShipIt
-    // cannot see, so demanding it would fail an install that succeeded.
+  it("does not misattribute a target whose own path contains `node_modules`", () => {
+    // Matching by prefix rather than by splitting on the first `/node_modules/`.
+    // Splitting would name `packages` as the owner here and wrongly KEEP the
+    // target, which the config parser permits a repo to declare.
+    const text = hiddenLockfile(
+      { "@fix/server": "packages/node_modules/server" },
+      { "packages/node_modules/server/node_modules/lodash": { version: "3.10.1" } },
+    );
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set());
+  });
+
+  it("does not let a SIBLING prefix disqualify a target", () => {
+    // `server-tools` starts with `server` textually; the trailing `/node_modules/`
+    // in the prefix is what keeps them distinct.
+    const text = hiddenLockfile(
+      { "@fix/server": "server", "@fix/tools": "server-tools" },
+      { "server-tools/node_modules/lodash": { version: "3.10.1" } },
+    );
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set(["server"]));
+  });
+
+  /**
+   * Regression for the second review's P1. An earlier cut filtered nested entries
+   * through the staleness check's `isRequired`, which excludes optional, peer and
+   * platform-restricted packages. That predicate is built for the MANIFEST
+   * lockfile, where a package npm never installed still appears. The HIDDEN
+   * lockfile lists ONLY what is on disk — verified: an optional dep skipped for a
+   * platform mismatch is absent from it entirely, while the manifest still lists
+   * it with `optional: true, os: ["darwin"]`. So an entry here means a real
+   * directory, whatever flags it carries, and filtering could only excuse a dep
+   * dir that genuinely holds something. This repository's own hidden lockfile has
+   * 21 entries those exclusions would have skipped.
+   */
+  it("drops a target whose nested entries are optional, peer or platform-restricted", () => {
     const text = hiddenLockfile(
       { "@fix/server": "server" },
       {
@@ -77,28 +119,53 @@ describe("hoistedLinkTargets", () => {
         "server/node_modules/react": { version: "19.2.4", peer: true },
       },
     );
-    expect(hoistedLinkTargets(text)).toEqual(new Set(["server"]));
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set());
+  });
+
+  /**
+   * Regression for the second review's other P1 — a STALE hidden lockfile. The
+   * ancestor tree need not be a declared dep dir, so nothing else proves its
+   * record describes the install that just ran: an older commit's root install
+   * recorded the link with everything hoisted, and a laundered install over a
+   * newer commit leaves that record in place. The manifest lockfile cannot drift
+   * that way (it is committed, current with the checkout) and names the nested
+   * tree the current commit requires.
+   */
+  it("refuses a target the MANIFEST lockfile says owns a nested tree", () => {
+    const stale = hiddenLockfile({ "@fix/server": "server", "@fix/web": "web" });
+    const current = manifestLockfile({
+      "server/node_modules/lodash": { version: "3.10.1", resolved: "https://x/lodash" },
+    });
+    expect(hoistedLinkTargets(stale, current)).toEqual(new Set(["web"]));
+  });
+
+  it("refuses everything when the manifest lockfile is missing or unreadable", () => {
+    // Without a current statement there is nothing to check a possibly-stale
+    // record against, so the safe direction is to excuse nothing.
+    const text = hiddenLockfile({ "@fix/server": "server" });
+    expect(hoistedLinkTargets(text, "")).toEqual(new Set());
+    expect(hoistedLinkTargets(text, "not json")).toEqual(new Set());
   });
 
   it("normalizes `./`-prefixed, `file:`-prefixed and trailing-slash targets", () => {
     // Normalized into the same shape `agent.dep-dirs` entries are, so the two
     // sides compare as strings without either having to guess the other's form.
     const text = hiddenLockfile({ a: "./server/", b: "file:packages/web", c: "web" });
-    expect(hoistedLinkTargets(text)).toEqual(new Set(["server", "packages/web", "web"]));
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set(["server", "packages/web", "web"]));
   });
 
   it("drops targets that cannot name a dep dir inside the workspace", () => {
     const text = hiddenLockfile({ a: "/abs/server", b: "../outside", c: "https://x/y", d: "" });
-    expect(hoistedLinkTargets(text)).toEqual(new Set());
+    expect(hoistedLinkTargets(text, manifestLockfile())).toEqual(new Set());
   });
 
   it("returns an empty set for unparseable or non-v2 lockfiles", () => {
     // The direction that exempts NOTHING. A lockfile ShipIt cannot read is never
     // a licence to accept an empty dep dir.
-    expect(hoistedLinkTargets("not json")).toEqual(new Set());
-    expect(hoistedLinkTargets("null")).toEqual(new Set());
-    expect(hoistedLinkTargets(JSON.stringify({ dependencies: { ms: {} } }))).toEqual(new Set());
-    expect(hoistedLinkTargets(JSON.stringify({ packages: [] }))).toEqual(new Set());
+    expect(hoistedLinkTargets("not json", manifestLockfile())).toEqual(new Set());
+    expect(hoistedLinkTargets("null", manifestLockfile())).toEqual(new Set());
+    expect(hoistedLinkTargets(JSON.stringify({ dependencies: { ms: {} } }), manifestLockfile())).toEqual(new Set());
+    expect(hoistedLinkTargets(JSON.stringify({ packages: [] }), manifestLockfile())).toEqual(new Set());
   });
 });
 
@@ -113,15 +180,24 @@ describe("hoistedAwayDepDirs", () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
-  /** Populate `<dir>/node_modules` with npm's record of the packages it linked. */
+  /**
+   * Populate `<dir>` with both lockfiles an npm install leaves behind: the hidden
+   * record of what was reified, and the committed manifest the exemption checks
+   * it against. `manifestExtra` defaults to matching the hidden record, which is
+   * what a real install produces — a test that wants them to DISAGREE (the stale
+   * record case) passes it explicitly.
+   */
   function writeTree(
     dir: string,
     links: Record<string, string>,
     extra: Record<string, unknown> = {},
+    manifestExtra: Record<string, unknown> = extra,
   ): void {
-    const nm = path.join(workspace, dir, "node_modules");
+    const base = path.join(workspace, dir);
+    const nm = path.join(base, "node_modules");
     fs.mkdirSync(nm, { recursive: true });
     fs.writeFileSync(path.join(nm, ".package-lock.json"), hiddenLockfile(links, extra));
+    fs.writeFileSync(path.join(base, "package-lock.json"), manifestLockfile(manifestExtra));
   }
 
   it("excuses a workspace dep dir the root tree records as a link", () => {
@@ -205,10 +281,34 @@ describe("hoistedAwayDepDirs", () => {
     ]);
   });
 
+  it("does not excuse it when only the MANIFEST names the nested tree (stale record)", () => {
+    // The hidden record is from an older install and still says "fully hoisted";
+    // the committed manifest, current with the checkout, says otherwise.
+    writeTree(
+      ".",
+      { "@fix/server": "server", "@fix/web": "web" },
+      {},
+      { "server/node_modules/lodash": { version: "3.10.1", resolved: "https://x/lodash" } },
+    );
+    expect(hoistedAwayDepDirs(workspace, ["server/node_modules", "web/node_modules"])).toEqual([
+      "web/node_modules",
+    ]);
+  });
+
   it("tolerates an unreadable ancestor lockfile by excusing nothing", () => {
     const nm = path.join(workspace, "node_modules");
     fs.mkdirSync(nm, { recursive: true });
     fs.writeFileSync(path.join(nm, ".package-lock.json"), "{ truncated");
+    fs.writeFileSync(path.join(workspace, "package-lock.json"), manifestLockfile());
+    expect(hoistedAwayDepDirs(workspace, ["server/node_modules"])).toEqual([]);
+  });
+
+  it("excuses nothing when the ancestor has no manifest lockfile beside it", () => {
+    // Only the hidden record exists (an install run with --no-package-lock, or a
+    // tree left behind by something else). Nothing current to check it against.
+    const nm = path.join(workspace, "node_modules");
+    fs.mkdirSync(nm, { recursive: true });
+    fs.writeFileSync(path.join(nm, ".package-lock.json"), hiddenLockfile({ "@fix/server": "server" }));
     expect(hoistedAwayDepDirs(workspace, ["server/node_modules"])).toEqual([]);
   });
 });

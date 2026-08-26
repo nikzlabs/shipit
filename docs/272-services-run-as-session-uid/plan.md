@@ -221,21 +221,38 @@ every 30 seconds forever while the app ran correctly, with no state the repo
 could reach that cleared it short of editing `agent.dep-dirs`.
 
 The fix reads npm's own record rather than loosening the predicate. An empty dep
-dir is excused only when a *populated* ancestor tree's hidden lockfile
-(`node_modules/.package-lock.json`) both **links** the dir's package
-(`{ "resolved": "server", "link": true }`) **and records no required package
-beneath that package's own `node_modules/`** — npm saying, in its own record,
-that it deliberately put nothing there.
+dir is excused only when **all three** of these hold for an ancestor package:
 
-**Both halves are load-bearing**, and the first cut of this fix had only the
-first — caught in review. Verified against npm 10 and 11: a root on `lodash@4`
-with a workspace `server` on `lodash@3` writes BOTH the link and
-`server/node_modules/lodash@3.10.1` into the root hidden lockfile, and creates
-`server/node_modules` on disk. A link alone therefore proves nothing about the
-workspace's own dep dir, and excusing on it would have let a conflicting
-workspace's empty mount point skip the reinstall. "Required" reuses
-`isRequiredTreeEntry`, shared verbatim with the staleness check, so an optional
-or platform-restricted nested package stays legitimately absent.
+1. the ancestor's **hidden** lockfile (`node_modules/.package-lock.json`, npm's
+   record of what it reified) **links** the dir's package —
+   `{ "resolved": "server", "link": true }`;
+2. that hidden lockfile records **no entry at all** under the package's own
+   `node_modules/`;
+3. the ancestor's **manifest** lockfile (`package-lock.json`) records none either.
+
+**Each condition closes a hole found in review; the first cut had only 1.**
+Verified against npm 10 and 11: a root on `lodash@4` with a workspace `server` on
+`lodash@3` writes BOTH the link and `server/node_modules/lodash@3.10.1` into the
+root hidden lockfile, and creates `server/node_modules` on disk — so a link alone
+proves nothing about the workspace's own dep dir.
+
+Condition 2 is **unfiltered**, and an intermediate cut got that wrong too by
+reusing the staleness check's `isRequired`. That predicate excludes optional,
+peer and platform-restricted entries because it reads the MANIFEST side, where a
+package npm never installed still appears. The hidden lockfile lists only what is
+on disk — verified: an optional dependency skipped for a platform mismatch is
+absent from it entirely — so those exclusions could only make ShipIt ignore a
+package that IS there. This repository's own hidden lockfile has 21 such entries.
+`isRequired` is now private again, with a docstring saying which side it is for.
+
+Condition 3 is what stops a **stale** record from laundering an install. The
+ancestor tree need not itself be a declared dep dir, so nothing else proves its
+record describes the install that just ran: for a repo declaring only
+`server/node_modules`, an older commit's root install recorded the link with
+everything hoisted, and a laundered install over a newer commit leaves that record
+in place. The manifest lockfile cannot drift that way — it is committed, current
+with the checkout by construction — so it is the statement the record is checked
+against. A missing manifest lockfile is therefore also a refusal.
 
 The looser alternative (fail only when EVERY declared dep dir is empty) was
 rejected: it keeps this incident's shape but opens a new one, where a monorepo's
@@ -277,7 +294,12 @@ rejected. Auditing for more of them by reading test sources cannot work, since
 fixtures are built by interpolation; validating every fixture at the moment it is
 written can, and does both jobs at once. Running the full suite behind that hook
 found no further vacuous fixtures and eleven tests that write a malformed config
-deliberately, now marked as such.
+deliberately, now marked as such — twelve `expectInvalidShipitConfig` call sites
+across eleven files, counting the one in `shipit-config.test.ts` that predates the
+audit. The hook replaces the function on the `node:fs` default export, so a test
+reaching a write through a named or namespace import would not be intercepted;
+every fixture in the suite today uses the default form, which makes this a strong
+default rather than an airtight invariant.
 - `src/server/orchestrator/session-worker-uid.ts` — `shareTreeOnce` carries the
   same one-shot hazard and is not wrong today; the docstring says when it becomes
   wrong and what it would cost to rotate.

@@ -37,15 +37,26 @@
  * Per-file discipline cannot close this — the same argument `server-test-setup.ts`
  * makes for the git-config and credential strips. A `writeShipitConfig()` helper
  * would guard the fixtures that adopt it and nothing else, and the next fixture
- * is written by whoever did not know the helper exists. Hooking the write catches
- * every fixture, including the ones built by interpolation
- * (`` `agent:\n  install:\n    - ${cmd}\n` ``) that no source-level scan can
+ * is written by whoever did not know the helper exists. Hooking the write also
+ * catches fixtures built by interpolation
+ * (`` `agent:\n  install:\n    - ${cmd}\n` ``), which no source-level scan can
  * evaluate.
  *
  * Scope is deliberately tiny: only a write whose basename is `shipit.yaml`, only
  * in the server test project, and the validation is the SAME parse the product
  * runs. Nothing about production behaviour changes — this module is imported by
  * the test setup only.
+ *
+ * **What it does not cover.** It replaces the function on the `node:fs` /
+ * `node:fs/promises` default exports, so a test reaching a write through some
+ * OTHER binding is not intercepted: `import { writeFileSync } from "node:fs"`
+ * and `import * as fs from "node:fs"` capture the original at module
+ * instantiation, and a test that stubs `fs` itself replaces the wrapper. Every
+ * fixture in the suite today uses the default-import form, so the coverage is
+ * complete in practice — but this is a strong default, not an airtight
+ * invariant, and it is not worth making airtight: the cost of a miss is one
+ * fixture that silently checks nothing, which is the status quo everywhere this
+ * guard does not reach.
  *
  * ## Opting out
  *
@@ -95,15 +106,6 @@ function rejectionReason(text: string): string | null {
   }
 }
 
-/**
- * An empty or whitespace-only fixture is valid (`resolveShipitConfig` returns
- * defaults), and `parseShipitConfig(null)` would reject it. Match the product's
- * own tolerance rather than inventing a stricter one.
- */
-function isEmptyFixture(text: string): boolean {
-  return text.trim().length === 0;
-}
-
 function checkFixture(file: string, data: unknown): void {
   if (invalidExpected > 0) return;
   if (path.basename(file) !== "shipit.yaml") return;
@@ -113,7 +115,8 @@ function checkFixture(file: string, data: unknown): void {
   else if (data instanceof Uint8Array) text = Buffer.from(data).toString("utf8");
   else return; // A stream/iterable fixture is not a shape any test writes.
 
-  if (isEmptyFixture(text)) return;
+  // An empty fixture needs no special case: `parseShipitConfig(parseYaml(""))`
+  // returns defaults, exactly as `resolveShipitConfig` does for an empty file.
   const reason = rejectionReason(text);
   if (reason === null) return;
 

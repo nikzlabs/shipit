@@ -307,11 +307,11 @@ describe("install outcome — declared dep dirs must actually hold something", (
       packages[`node_modules/${name}`] = { resolved: target, link: true };
       packages[target] = { name, version: "1.0.0" };
     }
+    const lockfile = JSON.stringify({ name: "root", lockfileVersion: 3, packages });
     fs.mkdirSync(path.join(workspaceDir, "node_modules"), { recursive: true });
-    fs.writeFileSync(
-      path.join(workspaceDir, "node_modules", ".package-lock.json"),
-      JSON.stringify({ name: "root", lockfileVersion: 3, packages }),
-    );
+    fs.writeFileSync(path.join(workspaceDir, "node_modules", ".package-lock.json"), lockfile);
+    // The committed manifest is the other half the exemption checks against.
+    fs.writeFileSync(path.join(workspaceDir, "package-lock.json"), lockfile);
     // The overlay mount points, empty because everything hoisted to the root.
     fs.mkdirSync(path.join(workspaceDir, "server", "node_modules"), { recursive: true });
     fs.mkdirSync(path.join(workspaceDir, "web", "node_modules"), { recursive: true });
@@ -350,11 +350,11 @@ describe("install outcome — declared dep dirs must actually hold something", (
     for (const [name, target] of [["@fix/server", "server"], ["@fix/web", "web"]]) {
       packages[`node_modules/${name}`] = { resolved: target, link: true };
     }
+    const lockfile = JSON.stringify({ name: "root", lockfileVersion: 3, packages });
     fs.mkdirSync(path.join(workspaceDir, "node_modules"), { recursive: true });
-    fs.writeFileSync(
-      path.join(workspaceDir, "node_modules", ".package-lock.json"),
-      JSON.stringify({ name: "root", lockfileVersion: 3, packages }),
-    );
+    fs.writeFileSync(path.join(workspaceDir, "node_modules", ".package-lock.json"), lockfile);
+    // The committed manifest is the other half the exemption checks against.
+    fs.writeFileSync(path.join(workspaceDir, "package-lock.json"), lockfile);
     fs.mkdirSync(path.join(workspaceDir, "server", "node_modules"), { recursive: true });
     fs.mkdirSync(path.join(workspaceDir, "web", "node_modules"), { recursive: true });
     register(workspaceDir, stateDir);

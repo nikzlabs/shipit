@@ -226,10 +226,12 @@ function writeHoistingRootTree(
     packages[`node_modules/${name}`] = { resolved: target, link: true };
     packages[target] = { name, version: "1.0.0" };
   }
+  const lockfile = JSON.stringify({ name: "root", lockfileVersion: 3, packages });
   const root = path.join(workspace, "node_modules");
   fs.mkdirSync(root, { recursive: true });
-  fs.writeFileSync(
-    path.join(root, ".package-lock.json"),
-    JSON.stringify({ name: "root", lockfileVersion: 3, packages }),
-  );
+  fs.writeFileSync(path.join(root, ".package-lock.json"), lockfile);
+  // The committed manifest too: the exemption checks the hidden record against
+  // it, so a fixture with only the hidden half excuses nothing. Matching the two
+  // is what a real install produces.
+  fs.writeFileSync(path.join(workspace, "package-lock.json"), lockfile);
 }

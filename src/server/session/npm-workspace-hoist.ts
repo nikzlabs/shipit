@@ -32,33 +32,46 @@
  * is laundered has a populated root and an empty sub-dir, and would pass. It
  * trades one silent gate-opening for another.
  *
- * npm already records the answer, in the hidden lockfile
- * (`node_modules/.package-lock.json`) it writes into the tree it reified —
- * npm's own statement of what it put on disk. Two entry kinds matter, and
- * **both halves are load-bearing**:
+ * npm already records the answer, across the two lockfiles beside an ancestor
+ * package. **All three conditions below are load-bearing**, and each was added
+ * because dropping it produced a real hole:
  *
- *  - A **link** entry (`{ "resolved": "server", "link": true }`) says npm
- *    reified `server` as a symlink in this tree rather than a copy.
- *  - An entry keyed **under that target's own `node_modules/`**
- *    (`server/node_modules/lodash`) says npm ALSO put a nested tree there,
- *    because that dependency could not hoist.
+ *  1. The **hidden** lockfile (`node_modules/.package-lock.json`, npm's record
+ *     of what it actually reified) holds a **link** entry for the target:
+ *     `{ "resolved": "server", "link": true }`. This proves the install ran and
+ *     covered this workspace.
+ *  2. The **hidden** lockfile holds **no entry at all** under that target's own
+ *     `node_modules/` (`server/node_modules/lodash`). npm writes such an entry
+ *     when a dependency could not hoist — verified against npm 10 and 11, a root
+ *     on `lodash@4` with a workspace `server` on `lodash@3` produces BOTH the
+ *     link and `server/node_modules/lodash@3.10.1`, and creates the directory on
+ *     disk. So condition 1 alone proves nothing about the workspace's own dep
+ *     dir.
+ *  3. The **manifest** lockfile (`package-lock.json`) holds no entry under that
+ *     target's `node_modules/` either.
  *
- * A link alone therefore proves nothing about the workspace's own dep dir.
- * Verified against npm 10 and 11: a root depending on `lodash@4` with a
- * workspace `server` depending on `lodash@3` produces BOTH
- * `node_modules/@scope/server → link` and `server/node_modules/lodash@3.10.1` in
- * the same root hidden lockfile — and npm creates `server/node_modules` on disk.
- * A sibling `web` with no conflict gets the link and no nested entries, and no
- * directory at all. So the exemption requires the link AND the absence of any
- * required entry beneath it: npm saying, in its own record, that it deliberately
- * put nothing there.
+ * **Condition 2 is unfiltered, deliberately.** The hidden lockfile lists ONLY
+ * what npm put on disk — verified: an optional dependency skipped for a platform
+ * mismatch is absent from it entirely, while the manifest lockfile still lists it
+ * with `optional: true, os: ["darwin"]`. So every entry present under a target
+ * means a real directory. An earlier cut filtered these through the staleness
+ * check's `isRequired`, which is built for the MANIFEST side where non-installed
+ * packages do appear; pointed at the hidden lockfile those exclusions silently
+ * ignore packages that ARE on disk. This repository's own hidden lockfile has 21
+ * such entries (`@esbuild/linux-x64`, `@testing-library/dom`, …).
  *
- * "Required" is {@link isRequiredTreeEntry}, shared verbatim with the staleness
- * check — an optional, peer, bundled or platform-restricted nested package is
- * legitimately absent, and demanding it would fail an install that succeeded.
- * One rule set for both callers, because both are answering "should this
- * directory hold something" and a drift between them would let one check fail a
- * repo the other excuses.
+ * **Condition 3 is what stops a STALE record from laundering an install.** The
+ * hidden lockfile lives in an ancestor tree that may not itself be a declared dep
+ * dir, in which case no other check covers it and nothing proves it describes the
+ * install that just ran. Consider a repo declaring only `server/node_modules`: an
+ * older commit's root install recorded the link with everything hoisted; a newer
+ * commit adds a conflicting `server` dependency; the install launders a failure
+ * and leaves the mount point empty. The stale root record still says "linked, no
+ * nested tree". The manifest lockfile cannot drift that way — it is a COMMITTED
+ * file, current with the checkout by construction — and for that repo it holds
+ * `server/node_modules/lodash`, so the exemption is refused and the install fails
+ * as it should. A missing manifest lockfile is therefore also a refusal: without
+ * it there is no current statement to check the record against.
  *
  * (`link: true` is not workspace-specific — npm writes it for `file:` local
  * dependencies too. That is fine here: the question this module answers is
@@ -99,12 +112,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import {
-  HIDDEN_LOCKFILE,
-  isRequiredTreeEntry,
-  parsePackages,
-  treeRecordsDevPackages,
-} from "./dep-tree-staleness.js";
+import { HIDDEN_LOCKFILE, NPM_LOCKFILE, parsePackages } from "./dep-tree-staleness.js";
 
 /**
  * Normalize a lockfile `resolved` path into the same shape `agent.dep-dirs`
@@ -123,27 +131,25 @@ function normalizeLinkTarget(resolved: string): string | null {
 }
 
 /**
- * The package paths this lockfile records as linked **and** as holding no
- * dependency tree of their own — the packages whose dependencies npm hoisted
- * into the tree the lockfile describes.
+ * The package paths whose dependencies npm hoisted away entirely — linked in the
+ * HIDDEN lockfile, and named by neither lockfile as owning a nested tree.
  *
- * A linked target with any required entry under its own `node_modules/` is
- * deliberately NOT returned: npm put a nested tree there, so an empty directory
- * at that path contradicts npm's record rather than confirming it. This is the
- * half that keeps a conflicting workspace (and a laundered sub-install over one)
- * failing.
- *
- * Pure (takes the text) so the whole rule is unit-testable without a filesystem.
- * Anything unparseable, non-v2+, or otherwise not a `packages` map yields an
- * empty set — the direction that exempts nothing, never the direction that
- * exempts everything.
+ * See the module doc for why all three conditions are needed. Pure (takes both
+ * texts) so the whole rule is unit-testable without a filesystem. An
+ * unparseable, non-v2+, or missing manifest lockfile yields an empty set — the
+ * direction that exempts nothing, never the direction that exempts everything.
  */
-export function hoistedLinkTargets(lockfileText: string): Set<string> {
-  const packages = parsePackages(lockfileText);
-  if (packages === null) return new Set();
+export function hoistedLinkTargets(
+  hiddenLockfileText: string,
+  manifestLockfileText: string,
+): Set<string> {
+  const installed = parsePackages(hiddenLockfileText);
+  const manifest = parsePackages(manifestLockfileText);
+  if (installed === null || manifest === null) return new Set();
 
+  // Condition 1 — npm reified this package as a link, so the install covered it.
   const hoisted = new Set<string>();
-  for (const entry of Object.values(packages)) {
+  for (const entry of Object.values(installed)) {
     if (typeof entry !== "object" || entry === null) continue;
     const resolved: unknown = entry.resolved;
     if (entry.link !== true || typeof resolved !== "string") continue;
@@ -152,18 +158,22 @@ export function hoistedLinkTargets(lockfileText: string): Set<string> {
   }
   if (hoisted.size === 0) return hoisted;
 
-  // Drop every target npm's own record says has a nested tree of its own. The
-  // key shape is `<target>/node_modules/<pkg>`; the FIRST `/node_modules/` is
-  // what names the owner, so a deeper `a/node_modules/b/node_modules/c` still
-  // attributes to `a`.
-  const treeHasDev = treeRecordsDevPackages(packages);
-  for (const [key, entry] of Object.entries(packages)) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const boundary = key.indexOf("/node_modules/");
-    if (boundary <= 0) continue;
-    const owner = key.slice(0, boundary);
-    if (!hoisted.has(owner)) continue;
-    if (isRequiredTreeEntry(entry, treeHasDev)) hoisted.delete(owner);
+  // Conditions 2 and 3 — drop every target either lockfile says owns a nested
+  // tree. Unfiltered on purpose (module doc): the hidden lockfile lists only what
+  // is on disk, and the manifest side is consulted for the CURRENT commit's
+  // intent, which a stale hidden lockfile cannot express.
+  //
+  // Matched by PREFIX against each candidate rather than by splitting keys on
+  // their first `/node_modules/` and attributing the result. Splitting is subtly
+  // wrong for a target whose own path contains a `node_modules` segment — the
+  // config parser permits `packages/node_modules/server`, and a `file:` link can
+  // resolve to one — where the first boundary names an ancestor instead of the
+  // target, and the target is then wrongly kept. Prefix matching cannot
+  // misattribute, and the candidate set is a handful of workspaces.
+  const keys = [...Object.keys(installed), ...Object.keys(manifest)];
+  for (const target of [...hoisted]) {
+    const prefix = `${target}/node_modules/`;
+    if (keys.some((key) => key.startsWith(prefix))) hoisted.delete(target);
   }
   return hoisted;
 }
@@ -190,11 +200,15 @@ export function hoistedAwayDepDirs(workspaceRoot: string, emptyDepDirs: string[]
     if (cached) return cached;
     let targets = new Set<string>();
     try {
-      const lockPath = path.join(workspaceRoot, ancestor, "node_modules", HIDDEN_LOCKFILE);
-      targets = hoistedLinkTargets(fs.readFileSync(lockPath, "utf8"));
+      const dir = path.join(workspaceRoot, ancestor);
+      targets = hoistedLinkTargets(
+        fs.readFileSync(path.join(dir, "node_modules", HIDDEN_LOCKFILE), "utf8"),
+        fs.readFileSync(path.join(dir, NPM_LOCKFILE), "utf8"),
+      );
     } catch {
-      // No hidden lockfile there (or unreadable): that ancestor reified nothing,
-      // so it excuses nothing. Never a reason to fail an install either.
+      // Either lockfile absent or unreadable: that ancestor reified nothing this
+      // module can vouch for, so it excuses nothing. Never a reason to FAIL an
+      // install either — the caller only ever drops entries from a list.
     }
     targetsByAncestor.set(ancestor, targets);
     return targets;
