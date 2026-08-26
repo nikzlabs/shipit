@@ -15,7 +15,8 @@
  * - container-health.ts   — health monitoring via Docker events
  */
 
-import Docker from "dockerode";
+import type Docker from "dockerode";
+import { createDockerClient } from "./docker-client.js";
 import { EventEmitter } from "node:events";
 import {
   createContainer,
@@ -531,7 +532,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   constructor(opts: SessionContainerManagerOpts = {}) {
     super();
-    this.docker = opts.docker ?? new Docker({ socketPath: opts.socketPath ?? "/var/run/docker.sock" });
+    this.docker = opts.docker ?? createDockerClient({ socketPath: opts.socketPath ?? "/var/run/docker.sock" });
     const imageName = opts.imageName ?? DEFAULT_IMAGE;
     if (!imageName) throw new Error("SESSION_WORKER_IMAGE env var is required when no imageName option is provided");
     this.imageName = imageName;
