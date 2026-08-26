@@ -8,6 +8,7 @@ import {
   NETWORK_JOIN_TIMEOUT_MS,
   STARTING_WATCHDOG_MS,
   STARTING_TIMEOUT_MESSAGE,
+  GATED_TEARDOWN_STOP_TIMEOUT_MS,
   UP_SILENCE_TIMEOUT_MS,
   UP_STALLED_MESSAGE,
   COMPOSE_LOG_PREFIX,
@@ -2889,6 +2890,142 @@ services:
 
     // The gate-open `up` scheduled a post-gate backoff retry (ps still says
     // exited) — dispose so that timer can't leak into later tests.
+    await mgr.stop();
+  });
+
+  it("reopens the gate when the teardown's compose stop never returns (docs/283)", async () => {
+    // The second route to the docs/283 symptom, found by review on the fix for
+    // the first. `releaseInstallGate` waits for the teardown ON PURPOSE (the
+    // test above is why), but `docker compose stop` has no timeout of its own,
+    // so a wedged daemon turned that deliberate wait into a permanent one: the
+    // services our teardown stopped stayed in `gatedServices`, where the poller
+    // and `handleNonZeroExit` deliberately ignore them, with nothing left that
+    // could ever start them again.
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    const upCalls: string[][] = [];
+    const composeRunner: ComposeRunner = async (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) upCalls.push(args.slice(upIdx));
+      // A stop that never returns at all — the wedged daemon.
+      if (args.includes("stop")) await new Promise<void>(() => { /* never settles */ });
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "gate-hung-teardown",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+    const webUps = () => upNames(upCalls).filter(n => n === "web").length;
+
+    // Bring the gated service up with the gate open. Real timers: the first
+    // bracket issues no teardown (no services parsed yet), so nothing here
+    // depends on the bound under test.
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    expect(mgr.getService("web")?.status).toBe("running");
+    const upsBefore = webUps();
+
+    // Mid-session re-install. The hold issues the stop that will never return.
+    vi.useFakeTimers();
+    mgr.setInstallRunning(true);
+    mgr.setInstallRunning(false);
+
+    // Still closed well past the 10s grace period the wait exists for, so the
+    // docs/239 guarantee is intact — this bound does not shorten that wait.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(webUps()).toBe(upsBefore);
+    expect(mgr.getService("web")?.status).toBe("starting");
+
+    // Past the bound the teardown is abandoned and the gate opens anyway.
+    await vi.advanceTimersByTimeAsync(GATED_TEARDOWN_STOP_TIMEOUT_MS);
+    expect(webUps()).toBe(upsBefore + 1);
+
+    await mgr.stop();
+  });
+
+  it("does not let an older teardown open a newer cycle's gate (docs/283)", async () => {
+    // `_gatedTeardown` is a single field, so a second hold overwrites the first
+    // teardown's handle while an earlier `releaseInstallGate` is still awaiting
+    // it. That callback re-checked only `_installRunning` — which the newer
+    // bracket's own release has already cleared — so the OLDER teardown could
+    // open the NEWER cycle's gate, starting services the newer teardown is in
+    // the middle of stopping. Raised by review on docs/283.
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    const upCalls: string[][] = [];
+    const stopReleases: (() => void)[] = [];
+    const composeRunner: ComposeRunner = async (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) upCalls.push(args.slice(upIdx));
+      // Each stop parks until the test lands it, so both teardowns can be in
+      // flight at once and land out of order.
+      if (args.includes("stop")) await new Promise<void>((r) => stopReleases.push(r));
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") return Promise.resolve(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "gate-teardown-generations",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+    const webUps = () => upNames(upCalls).filter(n => n === "web").length;
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    const upsBefore = webUps();
+
+    // Cycle 1: hold + release. Teardown 1 is parked, so this release is waiting.
+    mgr.setInstallRunning(true);
+    await flushMicrotasks();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    expect(stopReleases.length).toBe(1);
+
+    // Cycle 2: hold + release. Teardown 2 is parked too, and `_installRunning`
+    // is false again — so nothing but the generation distinguishes the two.
+    mgr.setInstallRunning(true);
+    await flushMicrotasks();
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+    expect(stopReleases.length).toBe(2);
+
+    // Teardown 1 lands late. It must NOT open cycle 2's gate: teardown 2 is
+    // still stopping the very containers an open would start.
+    stopReleases[0]();
+    await flushMicrotasks();
+    expect(webUps()).toBe(upsBefore);
+
+    // Teardown 2 lands — its own cycle's release opens the gate, exactly once.
+    stopReleases[1]();
+    await flushMicrotasks();
+    expect(webUps()).toBe(upsBefore + 1);
+
     await mgr.stop();
   });
 

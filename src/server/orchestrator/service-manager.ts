@@ -291,6 +291,51 @@ export const NETWORK_JOIN_TIMEOUT_MS = 30_000;
 export const STARTING_WATCHDOG_MS = 120_000;
 
 /**
+ * How long the mid-session re-install teardown waits for one
+ * `docker compose stop` before giving up on it.
+ *
+ * `releaseInstallGate` awaits that teardown, and the await is what makes the
+ * teardown's own SIGKILL land while the service is still gated (docs/239). But
+ * `docker compose stop` has no timeout of its own, so a wedged daemon turned
+ * that deliberate wait into a permanent one: services stopped by our teardown,
+ * never in `gatedServices`'s exit-reporting blind spot for a bounded window but
+ * forever, and no recovery path able to see them. That is the second route to
+ * the docs/283 symptom, found by review on that change.
+ *
+ * 60s is far past the semantics being waited on — `compose stop` is SIGTERM,
+ * a 10s grace period, then SIGKILL — so a stop still running at this point is
+ * wedged, not slow, and the normal case never reaches the bound.
+ */
+export const GATED_TEARDOWN_STOP_TIMEOUT_MS = 60_000;
+
+/**
+ * Await `work`, or give up after `ms` and say which happened.
+ *
+ * Reports the outcome instead of throwing on expiry because both outcomes are
+ * ordinary here and the caller logs them differently — a timeout is not an
+ * error the way a rejection is. `work` keeps running; only the waiting stops.
+ * A rejection still propagates, so a caller that handles failure keeps doing
+ * so. `Promise.race` leaves its handler attached to the loser, so a `work` that
+ * rejects after the timeout won is handled rather than unhandled.
+ */
+async function settleOrTimeout(work: Promise<void>, ms: number): Promise<"settled" | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settle = async (): Promise<"settled"> => {
+    await work;
+    return "settled";
+  };
+  const expire = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([settle(), expire]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Reason recorded on a service the {@link STARTING_WATCHDOG_MS} watchdog gives
  * up on. Written to `ManagedService.error`, so it reaches the services drawer,
  * `shipit service list`, and `GET /api/sessions/:id/services`.
@@ -762,6 +807,23 @@ export class ServiceManager extends EventEmitter {
    */
   private _gatedTeardown: Promise<void> | null = null;
 
+  /**
+   * Monotonic id of the newest gated-teardown cycle, and the id of the one
+   * `_gatedTeardown` belongs to.
+   *
+   * `releaseInstallGate` awaits a teardown and then opens the gate, so its
+   * callback runs at a moment that may belong to a LATER cycle: a second
+   * hold/release bracket can start and store its own teardown while the first
+   * is still stopping containers. The old callback re-checked only
+   * `_installRunning`, which the newer bracket's release has already cleared,
+   * so an older teardown could open a gate that is not its own — starting
+   * services the newer teardown is in the middle of stopping. Comparing
+   * generations is what makes an open provably belong to the cycle that
+   * scheduled it. Raised by review on docs/283.
+   */
+  private _gateGeneration = 0;
+  private _gatedTeardownGeneration = 0;
+
   constructor(opts: ServiceManagerOptions) {
     super();
     this.sessionId = opts.sessionId;
@@ -1148,6 +1210,7 @@ export class ServiceManager extends EventEmitter {
    */
   private releaseInstallGate(): void {
     const teardown = this._gatedTeardown;
+    const generation = this._gatedTeardownGeneration;
     this._gatedTeardown = null;
 
     const open = (): void => {
@@ -1169,9 +1232,14 @@ export class ServiceManager extends EventEmitter {
       return;
     }
     // Fire-and-forget from a sync caller (`setInstallRunning`): the gate opens
-    // once the teardown lands. `stopGatedForReinstall` never rejects.
+    // once the teardown lands. `stopGatedForReinstall` always settles — it
+    // swallows a rejection and bounds a hang (docs/283).
     void (async () => {
       await teardown;
+      // Only THIS cycle's teardown may open the gate it scheduled. A newer
+      // hold, or a full restart, has already superseded us — see
+      // {@link _gateGeneration}.
+      if (this._gateGeneration !== generation) return;
       open();
     })();
   }
@@ -1718,8 +1786,13 @@ export class ServiceManager extends EventEmitter {
     // no earlier per-service stop survives it (requirement 5).
     this.stoppedByUser.clear();
     // A full (re)start supersedes any pending mid-session teardown — the stack
-    // is being brought up from scratch, so the gate must not wait on it.
+    // is being brought up from scratch, so the gate must not wait on it. The
+    // generation bump is the other half: dropping the reference stops US from
+    // awaiting it, but an earlier `releaseInstallGate` may ALREADY be awaiting
+    // it, and that callback must not open a gate over the partition this
+    // restart is computing right now.
     this._gatedTeardown = null;
+    this._gateGeneration++;
     const gateOpen = !this._installRunning && !this._installFailed;
     const startNow: ManagedService[] = [];
     for (const svc of autoServices) {
@@ -3039,6 +3112,9 @@ export class ServiceManager extends EventEmitter {
       this.retry.resetOomBudget(svc.name);
     }
     // Retained so the gate-open path can await it — see `releaseInstallGate`.
+    // Stamped with a fresh generation so only THIS cycle's release can act on
+    // it, and so an earlier cycle's pending release is superseded here.
+    this._gatedTeardownGeneration = ++this._gateGeneration;
     this._gatedTeardown = this.stopGatedForReinstall([...this.gatedServices]);
   }
 
@@ -3049,14 +3125,36 @@ export class ServiceManager extends EventEmitter {
    * each `compose stop` can burn the full 10s SIGTERM grace period, so a
    * sequential loop would add 10s of preview downtime *per gated service* to
    * every re-install bracket. Stopping them together caps the added wait at one
-   * grace period for the whole stack. Never rejects — a stop failure is logged
-   * and swallowed so it can't wedge the gate closed.
+   * grace period for the whole stack.
+   *
+   * **Always settles**, which is the contract `releaseInstallGate` depends on
+   * and the reason this is the right place for the bound. A stop that REJECTS
+   * was already logged and swallowed; a stop that HANGS was not, and it wedged
+   * the gate shut permanently (docs/283). Both now end the same way — logged,
+   * and the gate reopens.
+   *
+   * Abandoning the wait does not cancel the operation: the stop is happening
+   * daemon-side, so killing the CLI process would not stop it either. If such a
+   * stop lands after the gate has reopened it kills a freshly-started container,
+   * which surfaces as an ordinary non-zero exit and goes through the normal
+   * retry path. That is a visible, self-correcting outcome, and it is strictly
+   * better than the invisible permanent one it replaces.
    */
   private async stopGatedForReinstall(names: string[]): Promise<void> {
     await Promise.all(names.map(async (name) => {
       if (this._disposed) return;
       try {
-        await this.compose.stop(name);
+        const outcome = await settleOrTimeout(
+          this.compose.stop(name),
+          GATED_TEARDOWN_STOP_TIMEOUT_MS,
+        );
+        if (outcome === "timeout") {
+          console.warn(
+            `[compose:${this.sessionId}] gated teardown: 'compose stop ${name}' still running after ` +
+            `${Math.round(GATED_TEARDOWN_STOP_TIMEOUT_MS / 1000)}s — abandoning the wait so the ` +
+            `install gate can reopen`,
+          );
+        }
       } catch (err) {
         console.warn(
           `[compose:${this.sessionId}] failed to stop gated service ${name} for re-install:`,

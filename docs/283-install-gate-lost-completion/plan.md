@@ -108,21 +108,58 @@ really is in flight, the next probe asks again.
 original same-cycle pre-POST race it was written for, but it is read before the
 await too, so it says nothing about which generation the answer belongs to.
 
-### Known separate hole — a hung teardown (NOT fixed here)
+## Bounding the teardown (req 1, req 6)
 
-`releaseInstallGate` awaits `_gatedTeardown` with no bound, and the
-`docker compose stop` underneath it (`defaultComposeRunner`, `compose-cli.ts`)
-has no timeout. A compose stop that hangs therefore leaves services gated
-forever by a different route, which this change does not address. Two reasons it
-is out of scope: the production evidence rules it out as this incident's cause
-(`docker top` on the orchestrator showed no `docker compose stop` process for
-the session's project, so `_gatedTeardown` had already resolved), and bounding a
-compose child process is a different mechanism in a different subsystem.
+Review on the change above found a **second, independent** route to the same
+user-visible symptom. It was deferred at the time — the production evidence
+ruled it out as this incident's cause — and then closed in a follow-up.
 
-Related and also unfixed: `_gatedTeardown` is a single field, so a later hold
-overwrites an earlier one, and the earlier release callback re-checks only
-`_installRunning` — an older teardown can reopen a newer gate. Both were raised
-by review on this change; neither is reachable from a lost completion event.
+### A `compose stop` that never returns (req 1)
+
+`releaseInstallGate` awaits `_gatedTeardown` *on purpose*: the wait is what
+makes the teardown's own SIGKILL land while the service is still gated, so our
+teardown is not reported to the user as a crash (docs/239). But
+`docker compose stop` has no timeout of its own, so a wedged daemon turned that
+deliberate wait into a permanent one — services stopped by us, sitting in
+`gatedServices` where the poller and `handleNonZeroExit` deliberately ignore
+them, with nothing able to start them again.
+
+The bound goes in `stopGatedForReinstall`, not in `releaseInstallGate` and not
+in `defaultComposeRunner`. That method's docstring already promised the
+invariant the code did not deliver — "never rejects … so it can't wedge the gate
+closed" — and a hang is the same failure as a rejection with a different shape.
+Bounding it there means the promise `releaseInstallGate` awaits is *guaranteed
+to settle*, so the gate logic needs no timeout of its own. Bounding
+`defaultComposeRunner` globally would be wrong: `up --build` legitimately runs
+for minutes.
+
+`GATED_TEARDOWN_STOP_TIMEOUT_MS` is 60s — far past `compose stop`'s own
+semantics (SIGTERM, 10s grace, SIGKILL), so a stop still running at that point
+is wedged rather than slow, and the normal case never reaches the bound. The
+docs/239 wait is therefore unchanged in every case it was written for.
+
+Abandoning the wait does **not** cancel the stop, and cancellation would not
+help: the operation is happening daemon-side, so killing the CLI process would
+not stop it. If such a stop lands after the gate reopened, it kills a
+freshly-started container, which surfaces as an ordinary non-zero exit and goes
+through the normal retry path — visible and self-correcting, and strictly better
+than the invisible permanent stop it replaces.
+
+### An older teardown opening a newer cycle's gate (req 6)
+
+`_gatedTeardown` is a single field, so a second hold overwrites the first
+teardown's handle while an earlier `releaseInstallGate` is still awaiting it.
+That callback re-checked only `_installRunning` — which the newer bracket's own
+release has already cleared — so the older teardown could open the newer cycle's
+gate, starting the very services the newer teardown was still stopping.
+
+`_gateGeneration` fixes it: `holdGatedServicesForReinstall` stamps each teardown
+with a fresh generation, and a release callback opens only if its generation is
+still current. `start()` bumps it too — dropping the `_gatedTeardown` reference
+stops *us* from awaiting it, but an earlier release may already be awaiting it,
+and that callback must not open a gate over the partition a full restart is
+computing. `stop()` needs no bump because it sets `_disposed`, which `open()`
+already checks first.
 
 ## Key files
 
@@ -130,16 +167,26 @@ by review on this change; neither is reachable from a lost completion event.
   `INSTALL_STATUS_PROBE_INTERVAL_MS`, `awaitInstallCompletion()`,
   `runInstall()`, `resyncInstallStateAfterReconnect()`.
 - `src/server/orchestrator/service-manager.ts` — `setInstallRunning()`,
-  `releaseInstallGate()` (unchanged; the gate this fix reopens).
+  `releaseInstallGate()`, `stopGatedForReinstall()`,
+  `holdGatedServicesForReinstall()`, `GATED_TEARDOWN_STOP_TIMEOUT_MS`,
+  `settleOrTimeout()`, `_gateGeneration`.
 - `src/server/session/install-controller.ts` — `/install/status` and the
   retained `_lastInstallResult` the probe reads (unchanged).
 - `src/server/orchestrator/integration_tests/install-gate.test.ts` —
-  regression tests.
+  regression tests for the completion wait, plus the end-to-end one.
+- `src/server/orchestrator/service-manager.test.ts` — regression tests for the
+  teardown bound and the gate generation, in the
+  `ServiceManager install gate (x-shipit-depends-on-install)` block.
 
 ## Tests
 
-Three tests. The first two hang without the fix — the production symptom
-exactly; the third fails a specific assertion:
+Every test below was verified to FAIL with its own fix reverted — see
+"A test that could not fail" for why that step is not a formality here.
+
+### The completion wait (`integration_tests/install-gate.test.ts`)
+
+The first two hang without the fix — the production symptom exactly; the third
+fails a specific assertion:
 
 - **`recovers an install_done lost MID-install, with no SSE reconnect`** — POST
   returns `{ started: true }`, the first two post-POST `/install/status` probes
@@ -154,10 +201,40 @@ exactly; the third fails a specific assertion:
   again. Scoped deliberately: it uses a recorder rather than a real
   `ServiceManager` (which needs Docker), so it observes the *bracket* reaching
   its `finally`, not `gatedServices`, `_gatedTeardown`, or a service actually
-  restarting — `service-manager.test.ts` covers the release itself. There is
-  still no single end-to-end regression spanning both halves.
+  restarting — `service-manager.test.ts` covers the release itself.
 - **`does not let a probe outlive its install and resolve the NEXT one`** (req
   5) — the stub holds install A's first `/install/status` open, A settles by
   SSE, install B starts, and only then does A's probe answer "settled". B must
   still be waiting. Without the generation re-check B resolves early, which is
   the failure this test names.
+
+### End to end (`integration_tests/install-gate.test.ts`)
+
+- **`a lost install_done still gets the stopped services running again`** — the
+  whole incident in one test, and the answer to "each half can pass while the
+  user-visible outcome fails". It drives a **real `ServiceManager`** (fake
+  compose runner, no Docker) alongside the stub worker: the `preview: auto`
+  service is running, the reinstall stops it (`stopCalls` contains `web` — the
+  exit 137 the user saw), the completion event never arrives, and the service is
+  `up` a second time and running at the end.
+
+### The teardown (`service-manager.test.ts`)
+
+- **`reopens the gate when the teardown's compose stop never returns`** (req 1)
+  — the stop hangs forever. The gate must still be closed at 30s (so the
+  docs/239 wait is not shortened) and open after the bound.
+- **`does not let an older teardown open a newer cycle's gate`** (req 6) — two
+  holds, both stops parked, both releases waiting. Teardown 1 lands first and
+  must not start anything; teardown 2 lands and the gate opens exactly once.
+
+### A test that could not fail
+
+The end-to-end test **passed with the fix reverted** on its first draft, and had
+to be rewritten. It configured `/install/status` to report `running: true` for
+only the first probe — but two probes are not the periodic poll (the one
+`runInstall` issues after the POST, and the one `onSseOpen` issues), and either
+answers "settled" and resolves the gate on its own. The test proved nothing
+about the mechanism it was named for. Reporting `running: true` for the first
+*three* probes is what forces the recovery to come from the poll, and the test
+now asserts `postPostStatusProbes() > 3` so the reason it passes is visible in
+the test itself rather than assumed.

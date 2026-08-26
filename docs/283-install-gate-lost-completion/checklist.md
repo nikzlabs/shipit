@@ -19,3 +19,20 @@
       actually observes.
 - [x] Review finding: record the hung-`_gatedTeardown` hole as separate and
       unfixed rather than letting req 1 imply it is closed.
+
+## Follow-up — closing the deferred hole
+
+- [x] Bound the gated teardown's `compose stop` in `stopGatedForReinstall`, so
+      the promise `releaseInstallGate` awaits always settles (req 1).
+- [x] Keep the bound far past `compose stop`'s own 10s grace period so the
+      docs/239 wait is unchanged in every case it was written for (req 4).
+- [x] Stamp each teardown with a gate generation so only its own cycle's release
+      can open the gate (req 6); bump it on `start()` too.
+- [x] Regression test: a `compose stop` that never returns still reopens the gate.
+- [x] Regression test: an older teardown does not open a newer cycle's gate.
+- [x] End-to-end test spanning both halves against a real `ServiceManager`.
+- [x] Verify each new test fails with its own fix reverted — the end-to-end one
+      passed on the first draft and had to be rewritten (see plan.md).
+- [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`.
+- [x] Independent review.
+- [x] Comment on planning#479.
