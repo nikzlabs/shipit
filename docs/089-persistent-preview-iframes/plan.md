@@ -195,6 +195,14 @@ Two rules make the pane hold still:
    port belongs to a Compose service, so no row yet means the list simply hasn't
    landed) rather than recording the weaker port-only handle for something that
    has a name.
+
+   **The consequence, taken knowingly:** on a first boot the services come up
+   one at a time, so whichever becomes previewable first is what gets pinned —
+   boot readiness turns into a durable choice, and it need not be the service
+   declared first. That is the requirement, not a side effect of it: a user
+   watching the stack come up *is* looking at that service, and promoting a
+   later arrival over it would be the replacement this whole section exists to
+   stop. One click on the toolbar moves it.
 2. **A target that isn't running is fallen back from, never forgotten.** The
    pane shows the server's default while the remembered service is down, and
    returns to it the moment it reports `running` again. The memory is dropped
